@@ -1,5 +1,5 @@
-// Track changes, in a real browser: suggest through the reader, accept from
-// the card, redlines since a checkpoint, and the CLI against the same server.
+// Track changes in a real browser: suggest through the reader, accept from
+// the card, and show redlines since a checkpoint.
 // Not part of `bun run check`: it needs the built binary and a chromium.
 // Run: node web/tools/track-changes-browser.mjs dist/librepaper
 
@@ -10,7 +10,7 @@
 // at: whether the frame gets painted, whether a reader sees an edit arrive,
 // whether the badge says the true thing when the socket is down. That is what
 // this does -- headless Chromium over the DevTools protocol, against a real
-// `librepaper serve` on a temporary directory.
+// `librepaper admin serve` on a temporary directory.
 //
 // Usage: browser-smoke.mjs <path-to-librepaper-binary>
 // Nothing here touches a deployment or any storage but its own temporary one.
@@ -452,20 +452,6 @@ async function run() {
   const cleared = await until("redlines cleared", async () => !(await editor.evalInFrame(`return Boolean(document.querySelector("mark.librepaper-ins, mark.librepaper-del"))`, slug)));
   check("leaving the history panel clears the redlines", cleared);
 
-  /* --- C. the CLI against the same server --------------------------------- */
-
-  const { execFileSync, spawnSync } = await import("node:child_process");
-  const cli = (args) => spawnSync(binary, [...args, "--server", BASE, "--key", editKey], { encoding: "utf8", env: { ...process.env, HOME: data } });
-  const suggested = cli(["suggest", slug, "--find", "opening paragraph", "--replace", "second paragraph", "--note", "from the terminal"]);
-  check("librepaper suggest prints a comment id", suggested.status === 0 && /^[0-9a-f-]{20,}\s*$/.test(suggested.stdout), `${suggested.status} ${suggested.stdout} ${suggested.stderr}`.slice(0, 200));
-  const twice = cli(["suggest", slug, "--find", "a", "--replace", "x"]);
-  check("librepaper suggest refuses an ambiguous passage with a count", twice.status !== 0 && /occurs [0-9]+ times/.test(twice.stderr), twice.stderr.slice(0, 200));
-  const accepted = cli(["accept", slug, suggested.stdout.trim()]);
-  check("librepaper accept applies it", accepted.status === 0 && /^accepted, resolved in [0-9a-f]{7}/.test(accepted.stdout), `${accepted.status} ${accepted.stdout} ${accepted.stderr}`.slice(0, 200));
-  const sourceAfterCli = await api(`/api/documents/${slug}/source`);
-  check("the CLI acceptance reached the source", (sourceAfterCli.source || "").includes("The second paragraph."), sourceAfterCli.source);
-  const again = cli(["accept", slug, suggested.stdout.trim()]);
-  check("accepting twice is refused", again.status === 1 && /already accepted/.test(again.stderr), `${again.status} ${again.stderr}`.slice(0, 200));
 }
 /* ------------------------------------------------------------------ report */
 

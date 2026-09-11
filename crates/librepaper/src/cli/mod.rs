@@ -1,7 +1,7 @@
 //! The command line: what `librepaper` accepts, and `main`, which runs it.
 //! Every command in the modules below talks to a deployment over HTTP, the
-//! way a browser does; `serve`, `seed` and `local` are the exceptions and
-//! live in their own modules.
+//! way a browser does; deployment administration and `local` are the
+//! exceptions and live in their own modules.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -15,11 +15,10 @@ use crate::document::render::{
     title_from_typst,
 };
 use crate::http::{
-    detail_of, get_as, get_json, get_with_token, post_directory, post_json, post_json_as, text,
-    Credentials,
+    detail_of, get_as, get_json, get_with_token, post_directory, post_json, text, Credentials,
 };
 use crate::storage::StorageFlags;
-use crate::util::{die, is_terminal_stdin, is_terminal_stdout, new_id, read_line};
+use crate::util::{die, is_terminal_stdout, new_id};
 
 /// Removed deployment settings must fail loudly even when they arrive through
 /// the process environment. Clap can reject removed arguments, but it cannot
@@ -75,7 +74,6 @@ fn parse_publishers(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
-pub(crate) mod assistant_tools;
 mod documents;
 pub mod export;
 mod history;
@@ -90,14 +88,11 @@ mod runner_lifecycle;
 pub(crate) mod runner_preview;
 mod runner_transport;
 mod skills;
-mod suggest;
 pub mod sync;
 mod tokens;
 
 pub use documents::*;
-pub use history::*;
 pub use publish::*;
-pub use suggest::*;
 pub use tokens::*;
 
 #[derive(Parser)]
@@ -452,11 +447,8 @@ fn backup_policy_from_config(path: Option<&std::path::Path>) -> crate::config::B
     config.backup
 }
 
-// `Serve` is a deployment's whole configuration and is much the largest
-// variant, which is what the lint is about. One of these is parsed, once, on
-// the way into `main`; boxing it would buy a few hundred bytes at the cost of
-// an indirection through every flag, and `clap` cannot flatten through a
-// `Box` anyway.
+// The nested `AdminCommand::Serve` flags determine this enum's size too; clap
+// parses one command once, so an extra indirection would not improve runtime.
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum Command {
@@ -483,64 +475,18 @@ pub(crate) enum Command {
         #[arg(long, value_name = "PATH")]
         main: Option<String>,
     },
-    /// Run the service on this machine
-    Serve {
-        /// Interface address; use 127.0.0.1 to accept only local connections
-        #[arg(
-            long,
-            env = "LIBREPAPER_BIND",
-            value_name = "ADDRESS",
-            default_value = "0.0.0.0"
-        )]
-        bind: std::net::IpAddr,
-        /// Port to listen on; default is the first free one from 8080 to 8099
-        #[arg(
-            long,
-            env = "LIBREPAPER_PORT",
-            value_name = "PORT",
-            default_value_t = 0,
-            hide_default_value = true
-        )]
-        port: u16,
-        #[command(flatten)]
-        service: ServiceFlags,
-        #[command(flatten)]
-        storage: StorageFlags,
-    },
-    /// Print the operator status surface from the local server.
-    Status {
-        #[command(flatten)]
-        storage: StorageFlags,
-        /// Loopback status endpoint; defaults to http://127.0.0.1:8080.
-        #[arg(long, value_name = "URL")]
-        endpoint: Option<String>,
-        /// Port used when no endpoint is supplied.
-        #[arg(long, default_value_t = 8080, value_name = "PORT")]
-        port: u16,
-    },
-    /// Rotate the local deployment's sealed-link key, retaining the old key
-    /// until every catalogue envelope has been resealed.
-    RotateLinkKey {
-        /// Local deployment directory containing catalog.db and secrets/.
-        dir: String,
+    /// Deployment administration and operator commands.
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
     },
     /// List your documents
     List,
-    /// Open a document for commenting
-    Comment {
+    /// Open a document in the browser
+    Open {
         /// A full slug, or one of the short handles `list` prints
         id: String,
-        /// A share link, or the key from one: act as its holder rather than
-        /// as your sign-in
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-    },
-    /// Edit a markdown or typst document, with live preview
-    Edit {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// A share link, or the key from one: act as its holder rather than
-        /// as your sign-in
+        /// A share link, or the key from one
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
     },
@@ -561,133 +507,6 @@ pub(crate) enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Show or change how a document is shared
-    Share {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// Mint or rotate the link carrying this role: 'read', 'comment', or
-        /// 'edit' (also accepted as 'reader', 'commenter', 'editor'). Minting
-        /// a role that already has a link replaces it, so the old one stops
-        /// working
-        #[arg(long, value_name = "ROLE")]
-        link: Option<String>,
-        /// When the new link stops working, such as 30d; 'never' for no
-        /// expiry
-        #[arg(long, value_name = "DURATION")]
-        until: Option<String>,
-        /// A memo describing what this role's link is used for, such as 'CI'.
-        /// It survives later rotations unless another label is supplied
-        #[arg(long, value_name = "TEXT")]
-        label: Option<String>,
-        /// Comment actions this link may make per clock hour. Omit to use the
-        /// deployment's ordinary comment limit
-        #[arg(long, value_name = "COUNT")]
-        budget: Option<i64>,
-        /// Turn off a role's link ('read', 'comment', or 'edit'), or take
-        /// away a legacy login
-        #[arg(long, value_name = "ROLE")]
-        revoke: Option<String>,
-    },
-    /// Hand a document, its history and its quota to another account
-    Transfer {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// The GitHub login to hand it to
-        to: String,
-        /// Skip the confirmation prompt
-        #[arg(long)]
-        yes: bool,
-    },
-    /// What a document used to say, and when
-    History {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// A share link, or the key from one: read as its holder rather than
-        /// as your sign-in
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-    },
-    /// Print the source diff between two checkpoints
-    Diff {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// The older checkpoint, as the digest `history` prints or its prefix
-        from: String,
-        /// The newer checkpoint, as the digest `history` prints or its prefix
-        to: String,
-        /// A share link, or the key from one
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-    },
-    /// Restore a checkpoint into the live document
-    Restore {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// The checkpoint, as the digest `history` prints or its prefix
-        sha: String,
-        /// An editor share link, or the key from one
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-    },
-    /// Name a checkpoint, so it stands out in the timeline
-    Label {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// The checkpoint, as the digest `history` prints or the start of it
-        sha: String,
-        /// What to call it; omit to take an existing name away
-        text: Option<String>,
-    },
-    /// Propose a replacement for a passage, for an editor to accept or reject
-    Suggest {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// The passage to replace, found once in the file
-        #[arg(long, value_name = "TEXT", conflicts_with_all = ["anchor", "batch"])]
-        find: Option<String>,
-        /// A source anchor copied from an assistant context, as JSON. The
-        /// object is sent unchanged to the comments endpoint.
-        #[arg(long, value_name = "JSON", conflicts_with_all = ["find", "batch"], requires = "revision")]
-        anchor: Option<String>,
-        /// The revision on which the anchor was captured.
-        #[arg(long, value_name = "SHA", value_parser = crate::cli::revision_value)]
-        revision: Option<String>,
-        /// JSON file containing a batch of anchored proposals.
-        #[arg(long, value_name = "FILE", conflicts_with_all = ["find", "anchor", "replace", "note"])]
-        batch: Option<String>,
-        /// What to put in its place; empty proposes deleting the passage
-        #[arg(long, value_name = "TEXT", default_value = "")]
-        replace: String,
-        /// Which file the passage is in; defaults to the document's main file
-        #[arg(long, value_name = "PATH")]
-        path: Option<String>,
-        /// An optional note explaining the suggestion
-        #[arg(long, value_name = "TEXT")]
-        note: Option<String>,
-        /// A comment or editor share link, or the key from one
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-    },
-    /// Apply a suggestion to the live document
-    Accept {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// The suggestion's comment id, as `suggest` printed it
-        comment_id: String,
-        /// An editor share link, or the key from one
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-    },
-    /// Resolve a suggestion without applying it
-    Reject {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// The suggestion's comment id, as `suggest` printed it
-        comment_id: String,
-        /// An editor share link, or the key from one
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-    },
     /// Annotations as W3C JSON-LD, markdown, or a response to reviewers
     Export {
         /// A full slug, or one of the short handles `list` prints
@@ -695,7 +514,7 @@ pub(crate) enum Command {
         /// jsonld (W3C Web Annotation), markdown, or response
         #[arg(long, value_name = "FORMAT", default_value = "jsonld")]
         format: String,
-        /// Only comments made at or after this checkpoint, as `history` prints it
+        /// Only comments made at or after this checkpoint, using its history digest
         #[arg(long, value_name = "SHA")]
         since: Option<String>,
         /// File to write; defaults to standard output
@@ -705,47 +524,6 @@ pub(crate) enum Command {
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-    },
-    /// Replace local or remote data with the example documents
-    Seed {
-        #[command(flatten)]
-        storage: StorageFlags,
-        /// The account that owns the local examples, as a GitHub login or a
-        /// Google address; without one nobody can edit or manage their sharing
-        #[arg(long, value_name = "ACCOUNT")]
-        owner: Option<String>,
-        /// Verified local backup required before replacing a nonempty catalog.
-        #[arg(long, value_name = "DIRECTORY")]
-        backup: Option<String>,
-    },
-    /// Create a verified offline SQLite/object/secrets recovery point.
-    Backup {
-        #[command(flatten)]
-        storage: StorageFlags,
-        /// Optional advanced YAML policy declaration; hidden from everyday
-        /// controls because it only describes operator-managed backups.
-        #[arg(
-            long = "config",
-            env = "LIBREPAPER_CONFIG",
-            value_name = "PATH",
-            hide = true
-        )]
-        advanced_config: Option<PathBuf>,
-        /// Directory in which the named backup directory is created.
-        #[arg(long, value_name = "DIRECTORY")]
-        output: String,
-        /// Backup name; defaults to a timestamped id.
-        #[arg(long, value_name = "ID")]
-        id: Option<String>,
-    },
-    /// Restore a verified local backup into a new deployment directory.
-    RestoreBackup {
-        /// Backup directory containing manifest.json.
-        #[arg(long, value_name = "DIRECTORY")]
-        backup: String,
-        /// New deployment directory; it must not already exist.
-        #[arg(long, value_name = "DIRECTORY")]
-        directory: String,
     },
     /// The local compilation service: run native TeX on this machine for
     /// the browser editor when its own compiler cannot
@@ -758,19 +536,84 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: quarto::QuartoCommand,
     },
-    /// Run a provider-neutral automation operation against a document link.
+    /// Run the MCP adapter or manage the local assistant runner.
     Agent {
         #[command(subcommand)]
         command: crate::cli::peer::AgentCommand,
     },
-    /// Delete one document and its comments
-    Destroy {
-        /// The document to delete, by ID or slug
+}
+
+/// Commands used to operate a deployment rather than work with documents.
+// `Serve` is a deployment's whole configuration and is much the largest
+// variant. One is parsed once on the way into `main`; clap cannot flatten its
+// flag groups through a box.
+#[allow(clippy::large_enum_variant)]
+#[derive(Subcommand)]
+pub(crate) enum AdminCommand {
+    /// Run the service on this machine
+    Serve {
+        #[arg(
+            long,
+            env = "LIBREPAPER_BIND",
+            value_name = "ADDRESS",
+            default_value = "0.0.0.0"
+        )]
+        bind: std::net::IpAddr,
+        #[arg(
+            long,
+            env = "LIBREPAPER_PORT",
+            value_name = "PORT",
+            default_value_t = 0,
+            hide_default_value = true
+        )]
+        port: u16,
+        #[command(flatten)]
+        service: ServiceFlags,
+        #[command(flatten)]
+        storage: StorageFlags,
+    },
+    /// Print the operator status surface from the local server.
+    Status {
+        #[command(flatten)]
+        storage: StorageFlags,
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        #[arg(long, default_value_t = 8080, value_name = "PORT")]
+        port: u16,
+    },
+    /// Rotate the local deployment's sealed-link key.
+    RotateLinkKey { dir: String },
+    /// Replace local or remote data with the example documents
+    Seed {
+        #[command(flatten)]
+        storage: StorageFlags,
+        #[arg(long, value_name = "ACCOUNT")]
+        owner: Option<String>,
+        #[arg(long, value_name = "DIRECTORY")]
+        backup: Option<String>,
+    },
+    /// Create a verified offline SQLite/object/secrets recovery point.
+    Backup {
+        #[command(flatten)]
+        storage: StorageFlags,
+        #[arg(
+            long = "config",
+            env = "LIBREPAPER_CONFIG",
+            value_name = "PATH",
+            hide = true
+        )]
+        advanced_config: Option<PathBuf>,
+        #[arg(long, value_name = "DIRECTORY")]
+        output: String,
         #[arg(long, value_name = "ID")]
-        document: String,
-        /// Skip the confirmation prompt (dangerous)
-        #[arg(long)]
-        yes: bool,
+        id: Option<String>,
+    },
+    /// Restore a verified local backup into a new deployment directory.
+    RestoreBackup {
+        #[arg(long, value_name = "DIRECTORY")]
+        backup: String,
+        #[arg(long, value_name = "DIRECTORY")]
+        directory: String,
     },
 }
 
@@ -928,7 +771,64 @@ pub async fn main() {
             )
             .await
         }
-        Command::Serve {
+        Command::Admin { command } => run_admin(command, server, token).await,
+        Command::List => list_documents(server, token).await,
+        Command::Open { id, key } => {
+            open_document(&id, server, token, key.unwrap_or_default()).await
+        }
+        Command::Sync {
+            id,
+            file,
+            interval,
+            key,
+            dry_run,
+        } => {
+            crate::cli::sync::sync_document(
+                &id,
+                &file,
+                server,
+                token,
+                interval.unwrap_or_default(),
+                key.unwrap_or_default(),
+                dry_run,
+            )
+            .await
+        }
+        Command::Export {
+            id,
+            format,
+            since,
+            out,
+            key,
+        } => {
+            crate::cli::export::export_document(
+                &id,
+                server,
+                token,
+                &format,
+                out.unwrap_or_default(),
+                since.unwrap_or_default(),
+                key.unwrap_or_default(),
+            )
+            .await
+        }
+        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
+        Command::Quarto { command } => {
+            if let Err(error) = quarto::run(command, server, token).await {
+                die(error);
+            }
+        }
+        Command::Agent { command } => {
+            if let Err(err) = crate::cli::peer::run_cli(command, server, token).await {
+                die(err);
+            }
+        }
+    }
+}
+
+async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<String>) {
+    match command {
+        AdminCommand::Serve {
             bind,
             port,
             service,
@@ -953,7 +853,7 @@ pub async fn main() {
             })
             .await
         }
-        Command::Status {
+        AdminCommand::Status {
             endpoint,
             port,
             storage,
@@ -995,7 +895,7 @@ pub async fn main() {
                 )))
             );
         }
-        Command::RotateLinkKey { dir } => {
+        AdminCommand::RotateLinkKey { dir } => {
             let root = std::path::PathBuf::from(dir);
             let _writer_lock =
                 crate::server::serve::acquire_writer_lock(&root.join("state/writer.lock"))
@@ -1017,11 +917,6 @@ pub async fn main() {
                 .and_then(|primary| keys.iter().position(|key| key_id(key) == primary))
                 .unwrap_or(0);
             let source = keys[source_index].clone();
-            // If the file was updated before a process died, its first key is
-            // the durable destination even though SQLite still names the old
-            // primary. Reuse it; otherwise create a new destination. This
-            // makes rerunning the command resume instead of starting a second
-            // rotation with an undecryptable source.
             let destination = if key_id(&keys[0]) != key_id(&source) {
                 keys[0].clone()
             } else {
@@ -1050,149 +945,7 @@ pub async fn main() {
                 .unwrap_or_else(|error| die(error.to_string()));
             println!("resealed {changed} links");
         }
-        Command::List => list_documents(server, token).await,
-        Command::Comment { id, key } => {
-            comment_document(&id, server, token, key.unwrap_or_default()).await
-        }
-        Command::Edit { id, key } => {
-            edit_document(&id, server, token, key.unwrap_or_default()).await
-        }
-        Command::Sync {
-            id,
-            file,
-            interval,
-            key,
-            dry_run,
-        } => {
-            crate::cli::sync::sync_document(
-                &id,
-                &file,
-                server,
-                token,
-                interval.unwrap_or_default(),
-                key.unwrap_or_default(),
-                dry_run,
-            )
-            .await
-        }
-        Command::Share {
-            id,
-            link,
-            until,
-            label,
-            budget,
-            revoke,
-        } => {
-            share_document(
-                &id,
-                server,
-                token,
-                link.unwrap_or_default(),
-                until.unwrap_or_default(),
-                label,
-                budget,
-                revoke.unwrap_or_default(),
-            )
-            .await
-        }
-        Command::Transfer { id, to, yes } => transfer_document(&id, &to, server, token, yes).await,
-        Command::History { id, key } => {
-            history_document(&id, server, token, key.unwrap_or_default()).await
-        }
-        Command::Diff { id, from, to, key } => {
-            diff_document(&id, &from, &to, server, token, key.unwrap_or_default()).await
-        }
-        Command::Restore { id, sha, key } => {
-            restore_document(&id, &sha, server, token, key.unwrap_or_default()).await
-        }
-        Command::Label { id, sha, text } => {
-            label_checkpoint(&id, &sha, text.unwrap_or_default(), server, token).await
-        }
-        Command::Suggest {
-            id,
-            find,
-            anchor,
-            revision,
-            batch,
-            replace,
-            path,
-            note,
-            key,
-        } => match batch {
-            Some(batch) => {
-                suggest_batch(
-                    &id,
-                    &batch,
-                    revision.unwrap_or_default(),
-                    server,
-                    token,
-                    key.unwrap_or_default(),
-                )
-                .await
-            }
-            None => match (find, anchor) {
-                (Some(find), None) => {
-                    let path = path.unwrap_or_default();
-                    let note = note.unwrap_or_default();
-                    let key = key.unwrap_or_default();
-                    match revision.unwrap_or_default() {
-                        revision if revision.is_empty() => {
-                            suggest_passage(&id, &find, &replace, path, note, server, token, key)
-                                .await
-                        }
-                        revision => {
-                            suggest_passage_with_revision(
-                                &id, &find, &replace, path, note, revision, server, token, key,
-                            )
-                            .await
-                        }
-                    }
-                }
-                (None, Some(anchor)) => {
-                    suggest_anchor(
-                        &id,
-                        &anchor,
-                        &replace,
-                        note.unwrap_or_default(),
-                        revision.unwrap_or_default(),
-                        server,
-                        token,
-                        key.unwrap_or_default(),
-                    )
-                    .await
-                }
-                _ => die("provide exactly one of --find, --anchor, or --batch"),
-            },
-        },
-        Command::Accept {
-            id,
-            comment_id,
-            key,
-        } => accept_suggestion(&id, &comment_id, server, token, key.unwrap_or_default()).await,
-        Command::Reject {
-            id,
-            comment_id,
-            key,
-        } => reject_suggestion(&id, &comment_id, server, token, key.unwrap_or_default()).await,
-        Command::Export {
-            id,
-            format,
-            since,
-            out,
-            key,
-        } => {
-            crate::cli::export::export_document(
-                &id,
-                server,
-                token,
-                &format,
-                out.unwrap_or_default(),
-                since.unwrap_or_default(),
-                key.unwrap_or_default(),
-            )
-            .await
-        }
-        Command::Seed {
+        AdminCommand::Seed {
             storage,
             owner,
             backup,
@@ -1219,7 +972,7 @@ pub async fn main() {
                 },
             }
         }
-        Command::Backup {
+        AdminCommand::Backup {
             storage,
             output,
             id,
@@ -1234,21 +987,9 @@ pub async fn main() {
             )
             .await
         }
-        Command::RestoreBackup { backup, directory } => {
+        AdminCommand::RestoreBackup { backup, directory } => {
             crate::storage::backup::restore_cli(backup, directory).await
         }
-        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
-        Command::Quarto { command } => {
-            if let Err(error) = quarto::run(command, server, token).await {
-                die(error);
-            }
-        }
-        Command::Agent { command } => {
-            if let Err(err) = crate::cli::peer::run_cli(command, server, token).await {
-                die(err);
-            }
-        }
-        Command::Destroy { document, yes } => destroy_document(&document, server, token, yes).await,
     }
 }
 

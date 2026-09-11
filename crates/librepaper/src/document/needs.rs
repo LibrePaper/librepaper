@@ -388,6 +388,7 @@ pub fn untar(tar: &[u8]) -> Vec<(String, Vec<u8>)> {
 /// Compiles, and compiles again with what the cache already has for the
 /// families the first compile named. Never fetches: this is the path for the
 /// places that have no deployment to ask, and for a machine that is offline.
+#[cfg(test)]
 pub fn resolve_cached(
     cache: Option<&Cache>,
     mut compile: impl FnMut(&[(String, Vec<u8>)]) -> Noted,

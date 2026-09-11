@@ -1,7 +1,7 @@
 # SPEC: remaining history work
 
 Steps 8 and 9 are implemented: passage and file comparisons, replacement
-quotations, the live merge editor, CLI diff and restore, authorized whole-version
+quotations, the live merge editor, browser diff and restore, authorized whole-version
 restore, and checkpoint links. The work below remains.
 
 ## Git provenance

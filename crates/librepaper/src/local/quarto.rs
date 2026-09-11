@@ -63,7 +63,7 @@ pub const HOSTED_BINDING: &str = "hosted";
 pub struct BindingStore {
     path: PathBuf,
     /// Where hosted workspaces live, one directory per project slug, when
-    /// this service belongs to a running `librepaper serve`. None for the
+    /// this service belongs to a running `librepaper admin serve`. None for the
     /// standalone local app, which executes only explicitly granted roots.
     hosted: Option<PathBuf>,
 }

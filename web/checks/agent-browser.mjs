@@ -202,7 +202,7 @@ try {
   assert.doesNotMatch(await page.evaluate("window.copiedInstructions"),/chat watch/);
   const setupPrompt = await page.evaluate("window.copiedInstructions");
   assert.doesNotMatch(setupPrompt, /export LIBREPAPER_|\$LIBREPAPER_/);
-  assert.match(setupPrompt, /librepaper agent capabilities 'http[^\n]+#k=commenter'/);
+  assert.doesNotMatch(setupPrompt, /librepaper agent capabilities/);
   assert.match(setupPrompt, /LIBREPAPER_CHAT_TOKEN='secret-token' librepaper agent connect 'http[^\n]+#k=commenter' --conversation 'conversation-[^']+' --background/);
 
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='First';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true}));})()`);

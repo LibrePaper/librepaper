@@ -31,7 +31,7 @@ fn removed_flags_are_rejected_with_migration_messages() {
         ("--fonts", "--typst-fonts"),
         ("--biber-vm", "Biber WASM"),
     ] {
-        let output = cli(&["serve", flag, "value"]);
+        let output = cli(&["admin", "serve", flag, "value"]);
         assert!(!output.status.success(), "{flag} unexpectedly parsed");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains(flag), "migration omitted {flag}: {error}");
@@ -68,6 +68,7 @@ async fn startup_reports_transfer_zero_and_asset_limit_origins() {
     let fonts = tempfile::tempdir().expect("font directory");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_librepaper"))
         .args([
+            "admin",
             "serve",
             "--bind",
             "127.0.0.1",
@@ -137,6 +138,7 @@ async fn startup_reports_builtin_asset_default_and_environment_origin() {
     let data = tempfile::tempdir().expect("server data directory");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_librepaper"))
         .args([
+            "admin",
             "serve",
             "--bind",
             "127.0.0.1",

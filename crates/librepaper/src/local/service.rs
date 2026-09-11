@@ -363,7 +363,7 @@ impl LocalService {
     /// The same service, additionally admitting the hosted binding for every
     /// document and executing it in a workspace under `base`. The runner
     /// handed in must have been built with the same base. `fixed_code` is
-    /// the pairing code as for `new`; the service inside `librepaper serve`
+    /// the pairing code as for `new`; the service inside `librepaper admin serve`
     /// passes none, since it pairs through its consent page alone.
     pub fn with_hosted_workspaces_and_code(
         port: u16,

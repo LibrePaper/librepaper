@@ -1,4 +1,4 @@
-//! Exercise export/history failures and source comparisons through the CLI.
+//! Exercise export failures and source comparisons through the CLI.
 
 use std::process::{Output, Stdio};
 use std::time::Duration;
@@ -54,8 +54,9 @@ async fn history_outage_fails_export_without_overwriting_output() {
     let directory = tempfile::tempdir().unwrap();
     let out = directory.path().join("response.md");
     std::fs::write(&out, "previous response").unwrap();
-    for args in [
-        vec![
+    let output = cli(
+        &server,
+        &[
             "export",
             "paper",
             "--format",
@@ -63,12 +64,10 @@ async fn history_outage_fails_export_without_overwriting_output() {
             "--out",
             out.to_str().unwrap(),
         ],
-        vec!["history", "paper"],
-    ] {
-        let output = cli(&server, &args).await;
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("503"));
-    }
+    )
+    .await;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("503"));
     assert_eq!(std::fs::read_to_string(out).unwrap(), "previous response");
     task.abort();
 }

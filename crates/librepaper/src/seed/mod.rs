@@ -269,7 +269,7 @@ fn reset_catalog(catalog: &crate::storage::catalog::Catalog) -> Result<(), Strin
 /// from nothing: seeding is for looking at the result, not for adding to
 /// whatever was there. Test-only, for cases that want the example documents
 /// without paying for a catalogue and a writer lock; `seed_with_backup` is
-/// what `librepaper seed` actually runs.
+/// what `librepaper admin seed` actually runs.
 ///
 /// `owner` is the account handle or visitor key the examples belong to, or
 /// "" for nobody. Ownerless examples can be read and commented on, but nobody

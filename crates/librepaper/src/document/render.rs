@@ -10,7 +10,9 @@ use wasm_markdown::markdown;
 use wasm_typst::typst;
 
 use super::html;
-use super::needs::{self, Cache};
+#[cfg(test)]
+use super::needs;
+use super::needs::Cache;
 
 pub fn is_markdown(name: &str) -> bool {
     markdown::is_markdown(name)
@@ -375,6 +377,7 @@ pub fn compile_from_files(
 }
 
 /// The same, with only what the cache already holds: no fetching.
+#[cfg(test)]
 pub fn read_and_note_from_files(
     name: &str,
     source: &str,

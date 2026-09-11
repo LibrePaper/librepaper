@@ -637,7 +637,7 @@ pub fn render_response_with_replacements(
 }
 
 /// The first seven characters of a digest, which is how the timeline prints
-/// one and what `librepaper label` accepts.
+/// one and what the history interface accepts.
 fn short(sha: &str) -> String {
     sha.chars().take(7).collect()
 }

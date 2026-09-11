@@ -1,4 +1,4 @@
-//! The local app that `librepaper serve` runs for the machine it is on.
+//! The local app that `librepaper admin serve` runs for the machine it is on.
 //!
 //! The standalone `librepaper local start` exists so a browser on the author's
 //! machine can hand work to tools installed there, and it asks for a pairing

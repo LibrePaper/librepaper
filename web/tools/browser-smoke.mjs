@@ -5,7 +5,7 @@
 // at: whether the frame gets painted, whether a reader sees an edit arrive,
 // whether the badge says the true thing when the socket is down. That is what
 // this does -- headless Chromium over the DevTools protocol, against a real
-// `librepaper serve` on a temporary directory.
+// `librepaper admin serve` on a temporary directory.
 //
 // Usage: browser-smoke.mjs <path-to-librepaper-binary>
 // Nothing here touches a deployment or any storage but its own temporary one.

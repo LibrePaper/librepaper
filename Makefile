@@ -149,7 +149,7 @@ clean:  ## Remove build output
 # The port is fixed because the GitHub OAuth app's callback URL names it.
 PORT       ?= 8081
 DATA       ?= librepaper-data
-# Ownership for the manual seed command, derived from .env's own
+# Ownership for the manual admin seed command, derived from .env's own
 # LIBREPAPER_PUBLISHERS (exported above). Account onboarding creates private
 # copies for each signed-in account automatically.
 comma := ,
@@ -162,7 +162,7 @@ LATEX_MIRROR_FLAG ?= $(if $(LATEX_MIRROR),--latex-mirror $(LATEX_MIRROR))
 
 serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX_MIRROR=; everything else through .env)
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@$(BIN) serve --port $(PORT) --data $(DATA) $(LATEX_MIRROR_FLAG)
+	@$(BIN) admin serve --port $(PORT) --data $(DATA) $(LATEX_MIRROR_FLAG)
 
 # One tutorial project per source format LibrePaper accepts. Each project has
 # a source file and the same relative icon asset; no example is generated.
@@ -173,18 +173,18 @@ examples: $(EXAMPLES)
 
 # Not in the help: it is a step of `deploy`, not a thing to run on its own.
 # A deployment is seeded once. Resetting a nonempty catalogue is a `librepaper
-# seed --backup <verified-point>` the operator runs deliberately, so a second
+# admin seed --backup <verified-point>` the operator runs deliberately, so a second
 # `make deploy` serves what is there rather than refusing to start.
 seed: $(BIN) $(EXAMPLES)
 	@if [ -e $(DATA)/catalog.db ]; then \
 		echo "$(DATA) is already seeded; serving it as is (move it aside to reseed)"; \
 	else \
-		$(BIN) seed --data $(DATA) $(if $(OWNER),--owner $(OWNER)); \
+		$(BIN) admin seed --data $(DATA) $(if $(OWNER),--owner $(OWNER)); \
 	fi
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
-	@pkill -f '[d]ist/librepaper serve' && echo "stopped" || echo "nothing to stop"
+	@pkill -f '[d]ist/librepaper admin serve' && echo "stopped" || echo "nothing to stop"
 
 .PHONY: deploy latex-check latex-smoke
 

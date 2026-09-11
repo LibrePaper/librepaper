@@ -1,7 +1,7 @@
 # Operator cost policy
 
 This document describes the version 1 cost and capacity policy exposed by
-`librepaper serve`. It is a deployment policy, expressed in bytes, counts, and
+`librepaper admin serve`. It is a deployment policy, expressed in bytes, counts, and
 time windows. It does not predict a provider bill. The effective policy is
 printed at startup as the `cost_policy` event and is available from the
 loopback-only status surface.
@@ -14,10 +14,10 @@ origin, browser's persistent document store, edge caches, and backups do not
 retain that result. An input PDF supplied as a document asset remains an input
 asset and is charged normally.
 
-## Everyday controls
+## Operator controls
 
-The ordinary server CLI has one new cost control. Existing storage, document,
-history, expiry, and publishing controls remain separate.
+The operator CLI has cost controls under `librepaper admin serve`. Existing
+storage, document, history, expiry, and publishing controls remain separate.
 
 | Option | Environment | Meaning and default |
 | --- | --- | --- |
@@ -210,7 +210,7 @@ preserves an object when the catalog still identifies it as an input asset.
 Accepted edits are persisted before idle rooms are evicted. A graceful shutdown
 flushes rooms and runs final local deletion and journal cleanup passes.
 
-Backups are outside the primary storage quota. `librepaper backup` makes a
+Backups are outside the primary storage quota. `librepaper admin backup` makes a
 verified new full copy, including the catalog, retained source objects, secrets,
 and deployment identity. Its output reports both:
 
@@ -232,7 +232,7 @@ testing. The command also emits a `backup_completed` JSON event with the
 backup counter, logical input bytes, bytes written, full-copy mode, and the
 declared policy metadata; it contains no filesystem path or secret.
 
-`librepaper restore-backup` requires a new destination directory. It validates
+`librepaper admin restore-backup` requires a new destination directory. It validates
 the backup and required destination capacity before writing, reserves the
 logical input estimate plus 64 MiB staging, and publishes the restored tree by
 rename. It does not overwrite an existing deployment. Backups contain source
@@ -246,8 +246,8 @@ connection. It rejects non-loopback peers and requests carrying forwarded host
 or client headers. Query it with:
 
 ```sh
-librepaper status
-librepaper status --endpoint http://127.0.0.1:8080
+librepaper admin status
+librepaper admin status --endpoint http://127.0.0.1:8080
 ```
 
 The command prints the live policy, usage by resource class, and `Normal` or
@@ -298,22 +298,22 @@ Each example changes only the named limit:
 
 ```sh
 # Allow 10 GiB of origin response bodies per rolling 24 hours.
-librepaper serve --budget-transfer 10GiB
+librepaper admin serve --budget-transfer 10GiB
 
 # Reserve 10,240 MiB of charged deployment storage.
-librepaper serve --storage 10240
+librepaper admin serve --storage 10240
 
 # Limit one owner's charged storage to 500 MiB.
-librepaper serve --quota 500
+librepaper admin serve --quota 500
 
 # Limit combined input assets in one document to 16 MiB.
-librepaper serve --budget-document-assets 16
+librepaper admin serve --budget-document-assets 16
 
 # Retain at most 100 checkpoints per document.
-librepaper serve --history 100
+librepaper admin serve --history 100
 
 # Wait five quiet minutes before an automatic checkpoint.
-librepaper serve --checkpoint 5
+librepaper admin serve --checkpoint 5
 ```
 
 The values are not named profiles and do not imply authentication, expiry,

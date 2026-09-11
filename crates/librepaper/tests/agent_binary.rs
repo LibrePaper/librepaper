@@ -1,22 +1,13 @@
 //! Executable boundary tests for `librepaper agent`.
 //!
-//! These tests build and spawn the real binary, start a real `serve` process,
-//! and use only its HTTP API to publish and share documents. The in-process
-//! room/concurrency coverage remains in `src/tests/agent_cli.rs`, where the
-//! private test harness can coordinate Yjs replicas and restarts.
+//! These tests build and spawn the real binary, start a real `admin serve`
+//! process, and exercise the local assistant runner at the executable boundary.
 
 use std::fs;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::ws::{Message as WsMessage, WebSocketUpgrade};
-use axum::extract::State;
-use axum::response::IntoResponse;
-use axum::routing::{get, post};
-use axum::{Json, Router};
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
@@ -24,7 +15,6 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -33,13 +23,11 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 struct CliOutput {
     status: i32,
     stdout: String,
-    stderr: String,
 }
 
 struct LiveServer {
     base: String,
     auth_cookie: String,
-    auth_token: String,
     #[allow(dead_code)]
     data: TempDir,
     child: Child,
@@ -57,6 +45,7 @@ impl LiveServer {
         let port = available_port();
         let mut child = Command::new(env!("CARGO_BIN_EXE_librepaper"))
             .args([
+                "admin",
                 "serve",
                 "--data",
                 data.path().to_str().expect("data path is UTF-8"),
@@ -143,24 +132,9 @@ impl LiveServer {
         let signature =
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
         let auth_cookie = format!("librepaper_session=v2.{payload}.{signature}");
-        let expiry = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock")
-            .as_secs() as i64
-            + 3600;
-        let device_payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(format!("github|agent|github:agent|{generation}||agent|{expiry}").as_bytes());
-        let mut device_mac = Hmac::<Sha256>::new_from_slice(&key).expect("device HMAC key");
-        device_mac.update(b"device-v2");
-        device_mac.update(b"\0");
-        device_mac.update(device_payload.as_bytes());
-        let device_signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(device_mac.finalize().into_bytes());
-        let auth_token = format!("lp_v2.{device_payload}.{device_signature}");
         Self {
             base,
             auth_cookie,
-            auth_token,
             data,
             child,
         }
@@ -185,18 +159,6 @@ async fn agent(args: &[&str]) -> CliOutput {
     cli(&command).await
 }
 
-async fn authenticated_agent(server: &LiveServer, args: &[&str]) -> CliOutput {
-    let mut command = vec![
-        "--server",
-        server.base.as_str(),
-        "--token",
-        server.auth_token.as_str(),
-        "agent",
-    ];
-    command.extend_from_slice(args);
-    cli(&command).await
-}
-
 async fn cli(args: &[&str]) -> CliOutput {
     let config_home = tempfile::tempdir().expect("agent config directory");
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
@@ -214,7 +176,6 @@ async fn cli(args: &[&str]) -> CliOutput {
     CliOutput {
         status: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
 }
 
@@ -240,47 +201,6 @@ async fn publish_markdown(server: &LiveServer, source: &str) -> Value {
     let payload: Value = response.json().await.expect("markdown JSON");
     assert_eq!(status, 201, "publishing markdown: {payload}");
     payload
-}
-
-async fn publish_directory(server: &LiveServer) -> Value {
-    let form = reqwest::multipart::Form::new()
-        .text("title", "Agent directory")
-        .text("main", "main.md")
-        .part(
-            "file",
-            reqwest::multipart::Part::text("# Main\n\nHello.\n").file_name("main.md"),
-        )
-        .part(
-            "file",
-            reqwest::multipart::Part::text("Chapter one before.\n").file_name("chapters/one.md"),
-        );
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/documents", server.base))
-        .header("cookie", &server.auth_cookie)
-        .header("x-librepaper-client", "1")
-        .multipart(form)
-        .send()
-        .await
-        .expect("directory upload");
-    let status = response.status();
-    let payload: Value = response.json().await.expect("directory JSON");
-    assert_eq!(status, 201, "publishing directory: {payload}");
-    payload
-}
-
-async fn mint_role(server: &LiveServer, slug: &str, role: &str) -> String {
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/documents/{slug}/share", server.base))
-        .header("cookie", &server.auth_cookie)
-        .header("x-librepaper-client", "1")
-        .json(&json!({"link": {"role": role, "until": "never"}}))
-        .send()
-        .await
-        .expect("mint share link");
-    let status = response.status();
-    let payload: Value = response.json().await.expect("share JSON");
-    assert_eq!(status, 200, "minting {role} link: {payload}");
-    payload["key"].as_str().expect("share key").to_string()
 }
 
 fn text(value: &Value, field: &str) -> String {
@@ -410,148 +330,17 @@ input.on('line', line => {{
     script
 }
 
-#[derive(Clone)]
-struct MockPeerState {
-    source: String,
-    state_update: String,
-    annotation_attempts: Arc<AtomicUsize>,
-    annotation_payloads: Arc<Mutex<Vec<Value>>>,
-}
-
-async fn mock_document(State(_state): State<Arc<MockPeerState>>) -> Json<Value> {
-    Json(json!({
-        "slug": "mock",
-        "role": "owner",
-        "can_read": true,
-        "can_comment": true,
-        "can_edit": true,
-        "can_resolve": true,
-        "can_delete": true,
-        "can_checkpoint": true,
-    }))
-}
-
-async fn mock_snapshot(State(state): State<Arc<MockPeerState>>) -> Json<Value> {
-    let source = state.source.clone();
-    Json(json!({
-        "version": 1,
-        "protocol": "librepaper.snapshot.v1",
-        "slug": "mock",
-        "source": source,
-        "source_sha": librepaper::peer::source_sha(&state.source),
-        "format": "markdown",
-        "comments": [],
-        "texts": {},
-    }))
-}
-
-async fn mock_comments(
-    State(state): State<Arc<MockPeerState>>,
-    Json(payload): Json<Value>,
-) -> impl IntoResponse {
-    state.annotation_payloads.lock().await.push(payload);
-    let attempt = state.annotation_attempts.fetch_add(1, Ordering::SeqCst);
-    if attempt == 0 {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error":"try again"})),
-        );
-    }
-    (axum::http::StatusCode::OK, Json(json!({"ok":true})))
-}
-
-async fn mock_socket(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<MockPeerState>>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |mut socket| async move {
-        while let Some(Ok(message)) = socket.recv().await {
-            let WsMessage::Text(raw) = message else {
-                continue;
-            };
-            let Ok(value) = serde_json::from_str::<Value>(&raw) else {
-                continue;
-            };
-            match value["type"].as_str().unwrap_or_default() {
-                "y-open" => {
-                    let response = json!({
-                        "type": "y-state",
-                        "update": state.state_update.clone(),
-                        "version": 1,
-                        "protocol": "librepaper.room.v1",
-                    });
-                    let _ = socket
-                        .send(WsMessage::Text(response.to_string().into()))
-                        .await;
-                }
-                "y-update-end" => {
-                    let _ = socket.send(WsMessage::Close(None)).await;
-                    return;
-                }
-                _ => {}
-            }
-        }
-    })
-}
-
-async fn start_mock_peer_server() -> (String, Arc<MockPeerState>, tokio::task::JoinHandle<()>) {
-    let source = "original".to_string();
-    let document = librepaper::session::new_doc();
-    librepaper::session::replace_text(&document, &source, "main.md");
-    use base64::Engine;
-    let state = Arc::new(MockPeerState {
-        source,
-        state_update: base64::engine::general_purpose::STANDARD
-            .encode(librepaper::session::encode_state(&document)),
-        annotation_attempts: Arc::new(AtomicUsize::new(0)),
-        annotation_payloads: Arc::new(Mutex::new(Vec::new())),
-    });
-    let router = Router::new()
-        .route("/api/documents/mock", get(mock_document))
-        .route("/api/documents/mock/snapshot", get(mock_snapshot))
-        .route("/api/documents/mock/comments", post(mock_comments))
-        .route("/ws/mock", get(mock_socket))
-        .with_state(state.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("mock peer listener");
-    let address = listener.local_addr().expect("mock peer address");
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .await
-            .expect("mock peer server");
-    });
-    (format!("http://{address}"), state, handle)
-}
-
 #[tokio::test]
-async fn skill_examples_are_present_in_agent_help() {
+async fn agent_help_lists_only_integration_and_lifecycle_commands() {
     let output = agent(&["--help"]).await;
     assert_eq!(output.status, 0, "agent help failed: {output:?}");
-    for command in [
-        "capabilities",
-        "read",
-        "source",
-        "comments",
-        "comment",
-        "reply",
-        "resolve",
-        "delete",
-        "edit",
-        "checkpoint",
-        "connect",
-        "status",
-        "stop",
-        "preview",
-        "inspect",
-        "refine",
-    ] {
+    for command in ["mcp", "connect", "status", "stop", "preview"] {
         assert!(
             output
                 .stdout
                 .lines()
                 .any(|line| line.trim_start().starts_with(command)),
-            "SKILL.md command {command:?} is absent from `librepaper agent --help`: {}",
+            "agent command {command:?} is absent from `librepaper agent --help`: {}",
             output.stdout
         );
     }
@@ -601,10 +390,7 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
         }
     }
     assert!(saw_runner, "runner never joined");
-    let captured = agent(&["read", &link]).await;
-    assert_eq!(captured.status, 0, "capture selection: {captured:?}");
-    let captured = json_stdout(&captured);
-    let revision = text(&captured, "sha");
+    let revision = text(&document, "sha");
     browser.send(TungsteniteMessage::Text(json!({
         "type":"message", "id":"request-success", "text":"Tighten this paragraph",
         "task":{"kind":"tighten","scope":"selection"},
@@ -735,21 +521,12 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
             let request_id = frame["context"]["input"]["request_id"]
                 .as_str()
                 .expect("input request id");
-            let snapshot_output = agent(&["read", &link]).await;
-            assert_eq!(
-                snapshot_output.status, 0,
-                "read before preview failed: {snapshot_output:?}"
-            );
-            let snapshot = json_stdout(&snapshot_output);
-            let base_revision = text(&snapshot, "sha");
+            let base_revision = revision.clone();
             assert!(
                 !base_revision.is_empty(),
-                "snapshot has no tree revision: {snapshot}"
+                "published document has no tree revision"
             );
-            let candidate_source = format!(
-                "{}\nCandidate text.\n",
-                snapshot["texts"]["main.md"].as_str().expect("main source")
-            );
+            let candidate_source = "# Runner\n\nA paragraph.\n\nCandidate text.\n";
             let preview_files = tools.path().join("preview-files.json");
             fs::write(
                 &preview_files,
@@ -983,333 +760,4 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
         .expect("runner stop timeout")
         .expect("runner wait");
     assert!(exited.success(), "runner exited with {exited}");
-}
-
-#[tokio::test]
-async fn cli_reads_comments_edits_and_keeps_link_permissions() {
-    let server = LiveServer::start().await;
-    let document = publish_markdown(&server, "# Agent paper\n\nHello 😀.\n").await;
-    let slug = text(&document, "slug");
-    let reader = read_key_of(&document);
-    let commenter = mint_role(&server, &slug, "commenter").await;
-    let editor = mint_role(&server, &slug, "editor").await;
-
-    let read = agent(&["read", &server.link(&slug, &reader)]).await;
-    assert_eq!(read.status, 0, "read failed: {read:?}");
-    let snapshot = json_stdout(&read);
-    assert_eq!(snapshot["source"], "# Agent paper\n\nHello 😀.\n");
-    assert_eq!(
-        snapshot["source_sha"],
-        librepaper::peer::source_sha(snapshot["source"].as_str().expect("source"))
-    );
-
-    let comment = agent(&[
-        "comment",
-        &server.link(&slug, &commenter),
-        "--body",
-        "Please check this sentence.",
-        "--exact",
-        "Hello 😀.",
-        "--request-id",
-        "cli-comment-1",
-    ])
-    .await;
-    assert_eq!(comment.status, 0, "comment failed: {comment:?}");
-    let comment_result = json_stdout(&comment);
-    assert_eq!(comment_result["outcome"], "success");
-    assert_eq!(comment_result["request_id"], "cli-comment-1");
-
-    let comment_retry = agent(&[
-        "comment",
-        &server.link(&slug, &commenter),
-        "--body",
-        "Please check this sentence.",
-        "--exact",
-        "Hello 😀.",
-        "--request-id",
-        "cli-comment-1",
-    ])
-    .await;
-    assert_eq!(
-        comment_retry.status, 0,
-        "comment retry failed: {comment_retry:?}"
-    );
-    assert_eq!(json_stdout(&comment_retry)["value"]["noop"], true);
-
-    let source = agent(&["source", &server.link(&slug, &editor)]).await;
-    assert_eq!(source.status, 0, "source failed: {source:?}");
-    let source_text = json_stdout(&source).as_str().expect("source").to_string();
-    let expected = librepaper::peer::source_sha(&source_text);
-    let noop = authenticated_agent(
-        &server,
-        &[
-            "edit",
-            &server.link(&slug, &editor),
-            "--source",
-            &source_text,
-            "--expected-sha",
-            &expected,
-        ],
-    )
-    .await;
-    assert_eq!(noop.status, 0, "no-op failed: {noop:?}");
-    assert_eq!(json_stdout(&noop)["outcome"], "no-op");
-    let edited = "# Agent paper\n\nHello 😀, edited by an agent.\n";
-    let edit = authenticated_agent(
-        &server,
-        &[
-            "edit",
-            &server.link(&slug, &editor),
-            "--source",
-            edited,
-            "--expected-sha",
-            &expected,
-        ],
-    )
-    .await;
-    assert_eq!(edit.status, 0, "edit failed: {edit:?}");
-    assert_eq!(json_stdout(&edit)["outcome"], "success");
-
-    let denied_comment = agent(&[
-        "comment",
-        &server.link(&slug, &reader),
-        "--body",
-        "must be rejected",
-    ])
-    .await;
-    assert_ne!(
-        denied_comment.status, 0,
-        "reader comment unexpectedly succeeded"
-    );
-    assert!(
-        denied_comment.stderr.contains("cannot add annotations"),
-        "{denied_comment:?}"
-    );
-
-    let denied_edit = agent(&[
-        "edit",
-        &server.link(&slug, &commenter),
-        "--source",
-        "must be rejected",
-        "--expected-sha",
-        "permission-check",
-    ])
-    .await;
-    assert_ne!(
-        denied_edit.status, 0,
-        "commenter edit unexpectedly succeeded"
-    );
-    assert!(
-        denied_edit.stderr.contains("cannot edit source"),
-        "{denied_edit:?}"
-    );
-}
-
-#[tokio::test]
-async fn cli_selected_file_uses_file_sha_and_refuses_stale_input() {
-    let server = LiveServer::start().await;
-    let document = publish_directory(&server).await;
-    let slug = text(&document, "slug");
-    let editor = mint_role(&server, &slug, "editor").await;
-    let document_link = server.link(&slug, &editor);
-
-    let read = agent(&["read", &document_link]).await;
-    assert_eq!(read.status, 0, "directory read failed: {read:?}");
-    let snapshot = json_stdout(&read);
-    let old = snapshot["texts"]["chapters/one.md"]
-        .as_str()
-        .expect("selected file");
-    let old_sha = librepaper::peer::source_sha(old);
-
-    let selected_link = document_link.replace("#k=", "?file=chapters%2Fone.md#k=");
-    let selected = agent(&["read", &selected_link]).await;
-    assert_eq!(
-        selected.status, 0,
-        "selected link read failed: {selected:?}"
-    );
-    let selected = json_stdout(&selected);
-    assert_eq!(selected["source"], old);
-    assert_eq!(selected["source_sha"], old_sha);
-    assert_eq!(selected["path"], "chapters/one.md");
-
-    let replacement = tempfile::NamedTempFile::new().expect("replacement file");
-    std::fs::write(replacement.path(), "Chapter one after.\n").expect("write replacement");
-    let replacement_path = replacement.path().to_str().expect("replacement path");
-    let edit = authenticated_agent(
-        &server,
-        &[
-            "edit",
-            &selected_link,
-            "--file",
-            replacement_path,
-            "--expected-sha",
-            &old_sha,
-        ],
-    )
-    .await;
-    assert_eq!(edit.status, 0, "selected-file edit failed: {edit:?}");
-    assert_eq!(json_stdout(&edit)["outcome"], "success");
-
-    let stale = authenticated_agent(
-        &server,
-        &[
-            "edit",
-            &document_link,
-            "--source",
-            "Chapter one stale.\n",
-            "--path",
-            "chapters/one.md",
-            "--expected-sha",
-            &old_sha,
-        ],
-    )
-    .await;
-    assert_ne!(
-        stale.status, 0,
-        "stale selected-file edit unexpectedly succeeded"
-    );
-    let stale_result = json_stdout(&stale);
-    assert_eq!(stale_result["outcome"], "stale-input");
-    assert_eq!(stale_result["status"], 409);
-    assert_ne!(stale_result["value"]["actual_sha"], old_sha);
-}
-
-#[tokio::test]
-async fn cli_edit_chunks_an_large_update() {
-    let server = LiveServer::start().await;
-    let old = format!("# Large\n\n{}", "a".repeat(800_000));
-    let document = publish_markdown(&server, &old).await;
-    let slug = text(&document, "slug");
-    let editor = mint_role(&server, &slug, "editor").await;
-    let link = server.link(&slug, &editor);
-    let replacement = tempfile::NamedTempFile::new().expect("replacement file");
-    let new_source = format!("# Large\n\n{}", "b".repeat(800_000));
-    std::fs::write(replacement.path(), &new_source).expect("write large replacement");
-    let replacement_path = replacement
-        .path()
-        .to_str()
-        .expect("replacement path is UTF-8");
-    let edited = authenticated_agent(
-        &server,
-        &[
-            "edit",
-            &link,
-            "--file",
-            replacement_path,
-            "--expected-sha",
-            &librepaper::peer::source_sha(&old),
-        ],
-    )
-    .await;
-    assert_eq!(edited.status, 0, "large edit failed: {edited:?}");
-    assert_eq!(json_stdout(&edited)["outcome"], "success");
-}
-
-#[tokio::test]
-async fn cli_edit_reports_unknown_when_socket_closes_after_submission() {
-    let (server, _state, handle) = start_mock_peer_server().await;
-    let expected = librepaper::peer::source_sha("original");
-    let edited = agent(&[
-        "edit",
-        &format!("{server}/docs/mock"),
-        "--source",
-        "changed",
-        "--expected-sha",
-        &expected,
-    ])
-    .await;
-    handle.abort();
-    assert_ne!(edited.status, 0, "unknown edit unexpectedly succeeded");
-    let result = json_stdout(&edited);
-    assert_eq!(result["outcome"], "unknown");
-    assert_eq!(result["status"], 504);
-    assert_eq!(result["value"]["expected_sha"], expected);
-    assert_eq!(
-        result["value"]["submitted_sha"],
-        librepaper::peer::source_sha("changed")
-    );
-    assert!(result["value"]["reason"].as_str().is_some());
-}
-
-#[tokio::test]
-async fn cli_annotation_retries_a_transient_response_with_same_submission_id() {
-    let (server, state, handle) = start_mock_peer_server().await;
-    let commented = agent(&[
-        "comment",
-        &format!("{server}/docs/mock"),
-        "--body",
-        "Please check this.",
-        "--exact",
-        "original",
-        "--request-id",
-        "retry-comment",
-    ])
-    .await;
-    handle.abort();
-    assert_eq!(
-        commented.status, 0,
-        "annotation retry failed: {commented:?}"
-    );
-    assert_eq!(json_stdout(&commented)["outcome"], "success");
-    assert_eq!(state.annotation_attempts.load(Ordering::SeqCst), 2);
-    let payloads = state.annotation_payloads.lock().await;
-    assert_eq!(payloads.len(), 2);
-    assert_eq!(payloads[0]["request_id"], "retry-comment");
-    assert_eq!(payloads[0]["temp_id"], payloads[1]["temp_id"]);
-}
-
-#[tokio::test]
-async fn assistant_binary_anchor_and_partial_batch_preserve_review_contract() {
-    let server = LiveServer::start().await;
-    let document = publish_markdown(&server, "# Paper\n\nsame\n\nsame\n").await;
-    let slug = document["slug"].as_str().unwrap();
-    let key = mint_role(&server, slug, "commenter").await;
-    let link = server.link(slug, &key);
-    let read = agent(&["read", &link]).await;
-    assert_eq!(read.status, 0, "{read:?}");
-    let snapshot = json_stdout(&read);
-    let revision = snapshot["sha"]
-        .as_str()
-        .expect("live revision exposed by agent read");
-    let anchor =
-        json!({"path":"main.md","exact":"same","prefix":"\n\n","suffix":"\n","position":15});
-    let single = cli(&[
-        "suggest",
-        &link,
-        "--anchor",
-        &anchor.to_string(),
-        "--revision",
-        revision,
-        "--replace",
-        "changed",
-    ])
-    .await;
-    assert_eq!(single.status, 0, "{single:?}");
-    assert!(!single.stdout.trim().is_empty());
-    let directory = tempfile::tempdir().unwrap();
-    let batch_path = directory.path().join("batch.json");
-    std::fs::write(&batch_path, json!({"revision": revision,"items":[
-        {"anchor":anchor,"proposed":"another"},
-        {"anchor":{"path":"main.md","exact":"absent","prefix":"","suffix":"","position":0},"proposed":"missing"}
-    ]}).to_string()).unwrap();
-    let batch = cli(&["suggest", &link, "--batch", batch_path.to_str().unwrap()]).await;
-    assert_eq!(batch.status, 0, "{batch:?}");
-    let results = json_stdout(&batch);
-    assert!(!results["pass"].as_str().unwrap().is_empty());
-    assert_eq!(results["results"][0]["status"], "created");
-    assert_eq!(results["results"][1]["status"], "anchor-not-found");
-    let read_link = server.link(slug, &read_key_of(&document));
-    let denied = cli(&[
-        "suggest",
-        &read_link,
-        "--batch",
-        batch_path.to_str().unwrap(),
-    ])
-    .await;
-    assert_ne!(denied.status, 0, "{denied:?}");
-    let after = json_stdout(&agent(&["read", &link]).await);
-    assert_eq!(
-        after["sha"], snapshot["sha"],
-        "suggestions never edit source"
-    );
 }

@@ -5,7 +5,7 @@ comments and highlights in real time.
 
 - Highlight passages, suggest edits, and comment on figures
 - Multiple people can annotate simultaneously, with live updates
-- Publish and manage documents from the web or CLI
+- Publish documents from the CLI; review and manage them in the browser
 - Trivial to deploy: one static binary, on your laptop or on a small server
 - Free public sandbox for small, short-lived notebooks
 - Allow anonymous comments or require GitHub authentication
@@ -32,7 +32,7 @@ template. Compiler downloads do not send document source or private input
 assets to the mirror.
 
 An operator can host a copy and keep compiler requests on their own
-infrastructure by passing `--latex-mirror URL` to `librepaper serve`. The URL
+infrastructure by passing `--latex-mirror URL` to `librepaper admin serve`. The URL
 must be an HTTPS static mirror with the documented mirror layout and headers.
 
 ## Install
@@ -82,7 +82,13 @@ Click on the thumbnails near to top of this page for screenshots of the LibrePap
 
 ## CLI
 
-Every command executed from the CLI must point to a specific LibrePaper server. Typically, users will specify their server with a flag. For example, to make a request against the LibrePaper sandbox, a live instance maintained by the developers, use:
+The CLI is the bridge between a local project and LibrePaper. Its everyday
+commands are `login`, `logout`, `publish`, `open`, `sync`, `list`, and
+`export`; review and document management happen in the browser. Every command
+executed from the CLI must point to a specific LibrePaper server. Typically,
+users will specify their server with a flag. For example, to make a request
+against the LibrePaper sandbox, a live instance maintained by the developers,
+use:
 
 ```sh
 librepaper <COMMAND> --server https://librepaper.arelbundock.com
@@ -95,6 +101,10 @@ export LIBREPAPER_SERVER="https://librepaper.arelbundock.com"
 
 librepaper <COMMAND>
 ```
+
+Operator commands live under `librepaper admin` (including `serve`, `status`,
+backups, seeding, and link-key rotation). `local`, `quarto`, `agent`, and
+`skills` remain specialist namespaces for integrations and local tooling.
 
 In the examples below, we use the environment variables and omit the flag.
 
@@ -192,7 +202,16 @@ librepaper list
 …  2026-09-11  Learn LibrePaper with Quarto
 ```
 
-### Share
+### Open
+
+Open a document in the browser using the short ID from `list` (a full slug also
+works):
+
+```sh
+librepaper open c9k
+```
+
+### Share in the browser
 
 A document says who may do what to it. There are four roles, as a ladder, each
 including the ones beneath it:
@@ -205,35 +224,27 @@ including the ones beneath it:
 | owner | share, transfer, destroy |
 
 A document is shared with links, not people, and a link is the only way in.
-There are four: the owner's own, which is the document's bare URL and opens
-for the owner's sign-in alone, and three the owner mints, one per role --
-read, comment, edit -- each of which can be created, replaced, revoked and
-given an expiry. Minting one is the whole act of sharing:
+The owner mints and manages read, comment, and edit links in the browser's
+**Share** pane. Links can be labelled, given a comments-per-hour budget, set to
+expire, rotated, or revoked. `publish` prints the initial read link; use the
+browser when a document needs a different link or role.
 
-```sh
-librepaper share c9k                       # print the owner's link and every role's link
-librepaper share c9k --link comment        # mint (or rotate) the comment link
-librepaper share c9k --link edit --until 30d
-librepaper share c9k --link comment --label "Review bot" --budget 20
-librepaper share c9k --revoke edit         # turn the edit link off
-```
-
-That prints one URL with a key in its fragment. A fragment is never sent to a
-server, so the key lands in no access log and on no `Referer` header. Minting a
-role's link again rotates it: the old key dies and the new one takes over,
-which is how a leaked link is killed without losing the role it stood for.
-Links expire after six months unless `--until` says otherwise (`--until never`
-for one that does not). `librepaper publish` mints the read link when it creates
-a document and prints that, with no expiry, so what it prints is the thing to
-send; revoke it and the document is yours alone until you mint another.
+Each link contains a key in its fragment. A fragment is never sent to a server,
+so the key lands in no access log and on no `Referer` header. Minting a role's
+link again rotates it: the old key dies and the new one takes over, which is
+how a leaked link is killed without losing the role it stood for. Links expire
+after six months by default; the browser's Share pane can set a different
+expiry, including no expiry. `publish` mints the read link when it creates a
+document and prints that, so what it prints is the thing to send; revoke it and
+the document is yours alone until you mint another.
 
 A link may have a label, which is only the owner's memo about what the one
 role link is for, and a comments-per-hour budget. Every person or machine
-holding that link shares its budget, even from different addresses; without
-`--budget`, the deployment's ordinary comment limit applies. The label
-survives a rotation unless another is supplied, and both values disappear
-when the link is revoked. The same controls are beside each role in the
-browser's **Share** pane.
+holding that link shares its budget, even from different addresses; without a
+custom budget, the deployment's ordinary comment limit applies. The label
+survives a rotation unless another is supplied, and both values disappear when
+the link is revoked. These controls are beside each role in the browser's
+**Share** pane.
 
 A read link is read-only, whatever `--commenters` says: the switch is a
 ceiling on what a link may carry, not a grant to whoever reaches the document.
@@ -253,53 +264,20 @@ that is what lets an HTML document's own scripts run for whoever may read it
 and for nobody else.
 
 Named grants -- an editor or a commenter added by GitHub login, from before
-links existed -- are legacy: still honoured, still revocable by that login,
-but a document never grows new ones. `librepaper share c9k` lists any that remain
-under a `people (legacy)` heading.
+links existed -- are legacy, but remain revocable by that login. `list` marks
+documents shared with you with the role you hold.
 
-Every command that acts on one document takes `--key` with a link, or the key
-out of one, and then acts as that link's holder rather than as your sign-in:
+Sharing, transfer, deletion, comments, suggestions, decisions, editing,
+history, comparisons, restores, and labels are browser workflows. The **Share**,
+**Files**, **Comments**, and **History** controls in the reader provide these
+operations with the document visible beside them.
 
-```sh
-librepaper comment c9k --key 'https://librepaper.example.org/docs/c9k#k=…'
-librepaper sync c9k paper.typ --key …      # an edit link; no login needed where
-                                        # the deployment asks for none
-librepaper export c9k --key …
-```
-
-The owner is one account, because the storage quota and `destroy` both need an
-answer to "whose". Handing it on is its own command, confirmed the way
-`destroy` is:
-
-```sh
-librepaper transfer c9k alice
-```
-
-The document, its history, its comments and its storage quota all move. An
-editor cannot share: the owner is the one whose quota and whose name are on the
-document. In the browser, all of this is the **Share** button in the reader,
-and `librepaper list` marks the documents shared with you with the role you hold.
-
-### Comment
-
-Open a document in your browser for commenting. The ID is the one `list`
-prints (a full slug also works), and `--key` takes a link you were sent:
-
-```sh
-librepaper comment c9k
-```
-
-### Edit
+### Edit in the browser
 
 A document published from markdown or typst keeps that source, so it can be
 edited in the page it is read in: the source on one side, the document as it will be
 published on the other, and the comments beside both. Either of the two panes
-next to the source folds away. `edit` takes the same ID `comment` does, and
-just opens that page:
-
-```sh
-librepaper edit c9k
-```
+next to the source folds away.
 
 The **Files** sidebar is a folder tree. Its toolbar creates files and folders
 inside the selection, or uploads files from your computer; the **File** menu
@@ -497,8 +475,8 @@ make mirror
 make push
 # back here: use that mirror
 make deploy LATEX_MIRROR=https://bucket.example.com  # use that mirror locally
-librepaper serve --latex-mirror https://bucket.example.com
-librepaper serve                                     # defaults to the project mirror:
+librepaper admin serve --latex-mirror https://bucket.example.com
+librepaper admin serve                                     # defaults to the project mirror:
                                                       # https://latex.librepaper.workers.dev/
 ```
 
@@ -530,7 +508,7 @@ command line keeps them where the `typst` binary keeps its own, under
 Any other family comes from the deployment's own font library:
 
 ```sh
-librepaper serve --typst-fonts /srv/librepaper/fonts      # a directory of .ttf/.otf files
+librepaper admin serve --typst-fonts /srv/librepaper/fonts      # a directory of .ttf/.otf files
 ```
 
 The directory is read once at startup for the families each file carries, and
@@ -581,8 +559,8 @@ pairing code the app prints still works as a fallback under Tools, **Local
 app settings…**. Nothing rendered is ever uploaded: the server holds only the
 `.qmd` source and its declared shared resources.
 
-When `librepaper serve` runs on the machine you browse from, it runs the local
-app itself: nothing to start. Pass `--no-local` to turn that off.
+When `librepaper admin serve` runs on the machine you browse from, it runs the
+local app itself: nothing to start. Pass `--no-local` to turn that off.
 
 Publishing a project directory includes editorial resources and code, but skips
 generated output directories, execution caches, environments, and raw data by
@@ -743,34 +721,14 @@ Export again to a fresh directory after upgrading. Installing from the repositor
 with `npx skills add LibrePaper/librepaper` remains an optional alternative.
 
 - [`librepaper-document`](skills/librepaper-document/SKILL.md): read, comment on,
-  and edit a document from its link.
+  and edit through the configured MCP tools.
 - [`librepaper-pair`](skills/librepaper-pair/SKILL.md): pair live in the sidebar
   chat.
 - [`librepaper-write`](skills/librepaper-write/SKILL.md): proofread, tighten, rewrite,
   and explain with anchored suggestions an editor reviews.
 
-Each explains how to install the single LibrePaper binary locally and use its
-commands. Any agent that can run commands can use them:
-
-```sh
-librepaper agent capabilities 'https://librepaper.example.org/docs/paper#k=YOUR_KEY'
-librepaper agent read 'https://librepaper.example.org/docs/paper#k=YOUR_KEY'
-librepaper agent comment 'https://librepaper.example.org/docs/paper#k=YOUR_KEY' \
-  --exact 'selected words' --body 'Please explain this assumption.'
-```
-
-Each command returns JSON. Read the current source before editing, save the
-revised text locally, and pass the source SHA you read:
-
-```sh
-librepaper agent edit "$LIBREPAPER_DOCUMENT" --file revised.md --expected-sha SOURCE_SHA
-librepaper agent checkpoint "$LIBREPAPER_DOCUMENT"
-```
-
-`--file` names the local input; `--path` selects a remote file inside a
-project. A stale SHA refuses the edit so the agent can read again and account
-for other people's changes. Edits synchronize through the same collaborative
-session as the browser and wait for durable acknowledgement.
+The skills teach agents to use LibrePaper's MCP tools. Direct document
+operations are deliberately not duplicated as shell commands.
 
 The robot icon opens the assistant panel. **Copy setup prompt** gives your
 existing agent instructions to start a local runner. The runner owns a separate
@@ -804,14 +762,8 @@ source context and revision. Suggestions use the ordinary review interface,
 with Accept, Reject, and Refine; refinement updates the existing proposal and
 refuses changes to a proposal that was already decided or modified elsewhere.
 
-Focused tools let the assistant inspect files, headings, source sections,
-passages, comment threads, bibliography source, and changes since a checkpoint:
-
-```sh
-librepaper agent inspect "$LIBREPAPER_DOCUMENT" headings
-librepaper agent inspect "$LIBREPAPER_DOCUMENT" search 'selected words'
-librepaper agent inspect "$LIBREPAPER_DOCUMENT" thread COMMENT_ID
-```
+`document_read` provides focused queries for files, headings, source sections,
+passages, comment threads, bibliography source, and changes since a checkpoint.
 
 Candidate verification uses the browser's renderer on temporary source files.
 It does not apply the candidate to the collaborative document. A render result
@@ -836,25 +788,9 @@ records the whole directory, so a chapter and the file that includes it can
 never come back out of step. Routine recovery points become less dense as
 they age. Retention does not delay ordinary live saving.
 
-```sh
-librepaper history c9k
-```
-
-```
-sha      at                    by                  why      label
-8b03d77  2026-09-03 09:12:40   vincentarelbundock  cli
-4f2a91c  2026-09-05 14:02:11   vincentarelbundock  cli      sent to the journal
-c07e1aa  2026-09-05 16:40:03   annegrandchamp      comment
-d1e0f42  2026-09-05 17:02:19   vincentarelbundock  left     *
-```
-
-Name a moment so it stands out and is preferentially retained. Names do not
-guarantee permanent storage: deployment count and storage limits still apply.
-
-```sh
-librepaper label c9k 4f2a91c "sent to the journal"
-librepaper label c9k 4f2a91c            # and to take the name off again
-```
+In the browser's History panel, name a moment so it stands out and is
+preferentially retained. Names do not guarantee permanent storage: deployment
+count and storage limits still apply.
 
 In the reader, the history button opens the same list beside the document,
 newest first, with the live document as the top row. Picking a moment shows
@@ -884,55 +820,22 @@ The changes are also listed as prose, folded away under the count, and the
 files that changed open source comparisons; editors can compare two
 checkpoints and bring individual changes into the live source.
 
-The same comparisons and whole-version restore are available in the terminal:
-
-```sh
-librepaper diff c9k 8b03d77 4f2a91c
-librepaper restore c9k 8b03d77
-```
-
-Restore requires editor access. It records the current version before applying
-the earlier directory through the shared editing session, then records the
-restore in history. Both versions remain available, subject to the deployment's
-history quota. Use `--key` with a share link on either command.
+The same comparisons and whole-version restore are available from the History
+panel in the browser. Restore requires editor access; it records the current
+version before applying the earlier directory, so both versions remain
+available subject to the deployment's history quota.
 
 ### Suggestions
 
-A suggestion is a comment that proposes a replacement for a passage, inert
-until an editor decides it. Propose one by naming the passage rather than a
-position, so it still finds its place after the file has moved on underneath
-it:
-
-```sh
-librepaper suggest c9k --find "with 95% probability" --replace "in 95% of samples"
-```
-
-`--find` must occur exactly once in the file (the main file by default;
-`--path` names another one); `librepaper suggest` refuses and says how many
-times otherwise, so the anchor is never ambiguous. An empty `--replace`
-proposes deleting the passage; `--note` adds an optional remark. It prints
-the new comment's id, which is what `accept` and `reject` take:
-
-```sh
-librepaper accept c9k 22222222-2222-4222-8222-222222222222
-librepaper reject c9k 22222222-2222-4222-8222-222222222222
-```
-
-`accept` requires editor access. It applies the proposal to the live source
-through the shared editing session, the way `restore` does, and records a
-checkpoint whose sha it prints; `reject` resolves the suggestion without
-touching the document. When the passage has changed too much since the
-suggestion was made for the change to land -- even against a three-way merge
-with whatever else happened meanwhile -- `accept` exits with status 3 rather
-than the usual 1, so a script can tell a stale suggestion apart from an
-outright refusal and fall back to the reader's merge editor instead of
-retrying blindly. Use `--key` with a share link on all three commands, the
-same as `comment`.
+Suggestions are made by selecting a passage in the browser and choosing
+**Suggest**. Editors can then refine, accept, or reject them in the comment
+thread; stale suggestions are reported there without silently changing the
+document.
 
 ### Export
 
-Export annotations as readable Markdown. `export` takes the same ID `comment`
-does, a short ID from `list`:
+Export annotations as readable Markdown. `export` takes the short ID from
+`list` (a full slug also works):
 
 ```sh
 librepaper export c9k --format markdown --out comments.md
@@ -966,8 +869,8 @@ librepaper export c9k --format response --since 4f2a91c --out response.md
 ```
 
 Replying to a comment in the reader is writing this document. `--since` takes
-a checkpoint from `librepaper history` and keeps the comments made at or after
-it, which is a round of review.
+a checkpoint selected in the browser's History panel and keeps the comments
+made at or after it, which is a round of review.
 
 **Then** is a quotation rather than a recollection, because every comment
 records the checkpoint it was made on. **Now** says whether the passage is
@@ -976,18 +879,10 @@ identify it. The line is left out entirely for a
 document this machine cannot render -- a LaTeX paper, whose compiler is in a
 browser.
 
-### Destroy
+### Delete a document
 
-Delete one document, including its history and comments. It takes the same ID
-`comment` and `export` do -- the short one from `list`, or a full slug -- and
-asks you to type the full slug to confirm unless `--yes` is supplied:
-
-```sh
-librepaper destroy --document c9k
-```
-
-It deletes the document, its history and its comments. Nothing else on the
-server is touched.
+Owners delete a document, including its history and comments, from the
+browser's document management controls. Nothing else on the server is touched.
 
 ## Deploy
 
@@ -1000,7 +895,7 @@ small host for something durable.
 Run a public local instance with no GitHub setup at all:
 
 ```sh
-librepaper serve --port 8081 --publishers YOUR-GITHUB-LOGIN
+librepaper admin serve --port 8081 --publishers YOUR-GITHUB-LOGIN
 ```
 
 Open <http://localhost:8081>. Everything is stored in `librepaper-data` (see [Storage](#storage)).
@@ -1011,7 +906,7 @@ Run the bundled server on your own host, with `--data` set to a persistent
 directory:
 
 ```sh
-librepaper serve --port 8080 --data /var/lib/librepaper --publishers YOUR-GITHUB-LOGIN
+librepaper admin serve --port 8080 --data /var/lib/librepaper --publishers YOUR-GITHUB-LOGIN
 ```
 
 To let people sign in, set up a [GitHub app](#github-oauth) for this server's address.
@@ -1023,7 +918,7 @@ Run the server behind a reverse proxy that terminates HTTPS, and have the proxy 
 Delete documents automatically after their most recent publication:
 
 ```sh
-librepaper serve --expire-after 24h
+librepaper admin serve --expire-after 24h
 ```
 
 For a fixed lifetime from the first upload, use `--expire-from created`. Use
@@ -1032,14 +927,15 @@ hourly pass, and once at startup.
 
 ### Storage
 
-`librepaper serve` keeps everything in the directory named by `--data` or
+`librepaper admin serve` keeps everything in the directory named by `--data` or
 `LIBREPAPER_DATA`, `librepaper-data` in the working directory by default: the
 catalogue (`catalog.db`), the objects it names, private server state, and the
 secrets that keep sessions and share links valid. Back it up if the instance
-holds real work; `librepaper backup` writes a verified recovery point of all
-of it, and `librepaper restore-backup` restores one into a fresh directory.
+holds real work; `librepaper admin backup` writes a verified recovery point of
+all of it, and `librepaper admin restore-backup` restores one into a fresh
+directory.
 See the [operator cost policy](docs/cost-policy.md) for the complete defaults,
-advanced YAML schema, status command, capacity accounting, and backup
+advanced YAML schema, `admin status` command, capacity accounting, and backup
 reservations.
 
 The storage flags bound what a deployment will store:
@@ -1054,7 +950,7 @@ The storage flags bound what a deployment will store:
 | `--uploads-per-hour` | uploads one publisher may make in an hour | 30 |
 
 ```sh
-librepaper serve --max-size 8 --budget-document-assets 16 --quota 500 --storage 10240
+librepaper admin serve --max-size 8 --budget-document-assets 16 --quota 500 --storage 10240
 ```
 
 `--max-size` may not be set above 8 MB. It bounds the text a person can see;
@@ -1079,7 +975,7 @@ document spending a publisher's whole allowance on images.
 Origin transfer has its own rolling 24-hour budget:
 
 ```sh
-librepaper serve --budget-transfer 10GiB
+librepaper admin serve --budget-transfer 10GiB
 ```
 
 The value is bytes (binary suffixes such as `KiB`, `MiB`, `GiB`, and `TiB` are
@@ -1099,7 +995,7 @@ Two flags say who may do what.
 annotate them. Both accept a comma-separated list of names:
 
 ```sh
-librepaper serve --publishers alice,anne@example.org --commenters @example.org
+librepaper admin serve --publishers alice,anne@example.org --commenters @example.org
 ```
 
 A name is a GitHub login, a Google account's verified email address, or a whole
@@ -1184,7 +1080,7 @@ Homepage URL:               https://docs.example.org
 Authorization callback URL: https://docs.example.org/auth/callback
 ```
 
-Pass the client id to `serve` with `--github-client-id`, or its environment
+Pass the client id to `admin serve` with `--github-client-id`, or its environment
 variable `LIBREPAPER_GITHUB_CLIENT_ID`; the secret is environment only, since
 an argument is visible in `ps` to every process on the machine and an
 environment variable is not:
@@ -1215,7 +1111,7 @@ only to you, in the bar, and its address is kept in your own session cookie.
 
 Service settings that support environment variables follow the same name:
 `--foo-bar` is `LIBREPAPER_FOO_BAR`, and the flag wins when both are set.
-`librepaper serve --help` (and every other subcommand's `--help`) is the
+`librepaper admin serve --help` (and every other subcommand's `--help`) is the
 reference for the full list. Advanced guardrails may be overridden in an
 optional YAML file selected with `--config PATH` (or `LIBREPAPER_CONFIG`). The
 proxy list is the top-level `trusted_proxies` key; `cost.trusted_proxies` is

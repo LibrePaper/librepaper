@@ -1704,7 +1704,7 @@ pub(super) fn request_digest(value: &Value) -> String {
 /// accept/reject in `room/comments.rs` and `room/suggestions.rs`) instead
 /// writes only the one row it changed and never reaches this function; the
 /// only production caller is `seed::seed_annotations`, which uses it to write
-/// a handful of demo annotations once per document when `librepaper seed`
+/// a handful of demo annotations once per document when `librepaper admin seed`
 /// populates an empty deployment. That caller's input is small and bounded by
 /// the fixed example set, so the O(comments²) catalogue traffic (this runs
 /// once per comment added, each time reconciling every comment added so far)

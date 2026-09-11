@@ -9,24 +9,10 @@
 //! it: an HTML document is shown as it was published, which it always was, and
 //! now for the same reason a markdown document is shown as its markdown says.
 
-use wasm_helpers::diagnostic::Compiled;
-
 /// Says whether a filename is one this renders.
 pub fn is_html(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.ends_with(".html") || lower.ends_with(".htm")
-}
-
-/// The identity. The title is ignored, because an HTML document carries its
-/// own and replacing it would rewrite bytes a reader already downloaded.
-pub fn render(source: &str, _title: &str) -> String {
-    source.to_string()
-}
-
-/// The same, in the shape every other renderer answers in. HTML never fails,
-/// so the list is always empty.
-pub fn compile(source: &str, title: &str) -> Compiled {
-    Compiled::page(render(source, title))
 }
 
 /// The document's own title: its `<title>`, or failing that its first `<h1>`.
@@ -126,18 +112,6 @@ fn collapse(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rendering_is_the_identity() {
-        let source = "<!doctype html><title>A</title><p>hello</p>";
-        assert_eq!(render(source, "Something Else"), source);
-        let compiled = compile(source, "");
-        assert_eq!(
-            compiled.output.as_ref().and_then(|output| output.html()),
-            Some(source)
-        );
-        assert!(compiled.diagnostics.is_empty());
-    }
 
     #[test]
     fn a_document_is_named_by_its_own_title() {

@@ -566,12 +566,12 @@ pub(super) fn report_published(server: &str, document: &Value, path: &str) {
     if share.is_empty() {
         eprintln!(
             "\nThis link opens for you alone; the document has no read link.\n\
-             To mint one:\n  librepaper share {slug} --link read"
+             Open it and use Share to mint a read link:\n  librepaper open {slug}"
         );
     } else {
         eprintln!(
             "\nShare this link; anyone with it can read, no account needed.\n\
-             For a link that also lets them comment:\n  librepaper share {slug} --link comment"
+             To create a comment link, open it and use Share:\n  librepaper open {slug}"
         );
     }
     eprintln!(

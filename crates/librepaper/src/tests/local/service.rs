@@ -69,7 +69,7 @@ async fn start_test_service(runner: Arc<dyn Runner>) -> LocalTest {
 }
 
 /// Same as `spawn_service`, but the service also admits the hosted binding,
-/// executing it under `base` -- the shape `librepaper serve` runs with.
+/// executing it under `base` -- the shape `librepaper admin serve` runs with.
 async fn spawn_hosted_service(
     state_home: &std::path::Path,
     cache_home: &std::path::Path,

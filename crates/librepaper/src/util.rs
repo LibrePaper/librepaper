@@ -48,18 +48,6 @@ pub fn is_terminal_stdout() -> bool {
     std::io::stdout().is_terminal()
 }
 
-pub fn is_terminal_stdin() -> bool {
-    use std::io::IsTerminal;
-    std::io::stdin().is_terminal()
-}
-
-/// Reads one line from standard input, trimmed.
-pub fn read_line() -> String {
-    let mut line = String::new();
-    let _ = std::io::stdin().read_line(&mut line);
-    line.trim().to_string()
-}
-
 pub fn now_unix() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
 }

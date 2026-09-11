@@ -42,11 +42,10 @@ Set the supplied values in the process environment using safe shell quoting:
 Then:
 
 ```sh
-librepaper agent capabilities "$LIBREPAPER_DOCUMENT"
 librepaper agent connect "$LIBREPAPER_DOCUMENT" --conversation "$LIBREPAPER_CONVERSATION" --background
 ```
 
-Wait for successful capability verification before starting. Check the runner's
+The runner establishes and verifies its own MCP document session. Check its
 status using `librepaper agent status --help` and the matching document and
 conversation. A spawned process alone is not proof of a connected model
 session. Report readiness only when confirmed; otherwise report its startup

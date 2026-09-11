@@ -72,7 +72,7 @@ export async function label(slug, sha, text, headers = {}) {
 }
 
 /// The shortest name for a checkpoint that is still a name: seven characters,
-/// which is what git prints and what `librepaper label` accepts.
+/// which is what git prints and the history API accepts.
 export const shortSha = (sha) => (sha || "").slice(0, 7);
 
 /// The shared word-level diff, with a test seam for callers that already have

@@ -1,4 +1,4 @@
-//! `librepaper serve`: the whole service in this process.
+//! `librepaper admin serve`: the whole service in this process.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

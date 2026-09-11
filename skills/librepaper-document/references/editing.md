@@ -1,67 +1,45 @@
-# Editing source
+# Editing through MCP
 
-## The SHA is the contract
+## Captured source is the contract
 
-`librepaper agent read` and `librepaper agent source` return the source together
-with its SHA. `--expected-sha` must be the SHA of the source **you actually
-inspected and revised** — not one carried over from an earlier read, and not
-omitted.
+Read the relevant source with `document_read`. Each returned `range_id` is
+bound to the immutable view in which it was captured. Pass its `view_id` and
+operation epoch to `document_propose`; do not calculate offsets or source
+hashes yourself.
 
-```sh
-librepaper agent source "$LIBREPAPER_DOCUMENT"
-# ... revise, writing the full new source to revised.md ...
-librepaper agent edit "$LIBREPAPER_DOCUMENT" --file revised.md --expected-sha SOURCE_SHA
-```
+A patch contains a `range_id`, its complete replacement, and optionally a
+short reviewer note. Use `find` only to distinguish one exact occurrence
+inside a captured range. Include other read handles in `dependencies` when the
+change relies on them.
 
-If the edit fails as stale, someone changed the document while you worked.
-Read again, reconcile their changes into your revision, and retry with the new
-SHA. Never remove the check to force the edit through: that discards their
-work silently.
+## Proposals and direct edits
 
-## Input
+Suggestions are inert and are the default, including for an editor. Use
+`publish: "private"` when constructing a candidate that should not create
+review annotations. Call `document_apply` only after the user has authorized a
+direct edit, using the returned candidate ID and a new operation identity.
 
-- `--file PATH` reads the new source from a local UTF-8 file. Prefer this.
-- `--source TEXT` passes source inline. Only for short, single-line content —
-  it goes through the shell and through your transcript.
+Use an atomic batch for one coherent change. Use independent items only when
+each can stand on its own, and inspect every item result. Never weaken
+`exact_tree` consistency merely to bypass a conflict.
 
-The two conflict; pass exactly one. An edit replaces the whole source, so the
-file must contain the complete document, not a fragment or a diff.
+## Projects and compilation
 
-## Multi-file projects
+Read the manifest or file list before changing a multi-file project and capture
+the range from the correct path. A range belongs to that file and view; it is
+not interchangeable with a similar passage elsewhere.
 
-A directory document has several files. `--path` selects one, relative to the
-document root; omitted, it means the document's main file.
+When compilation is required, request `validation: "compile"`. Pending render
+work must be checked with `document_result`. Only render evidence tied to the
+candidate revision verifies that candidate.
 
-```sh
-librepaper agent edit "$LIBREPAPER_DOCUMENT" \
-  --path chapters/introduction.tex \
-  --file introduction.tex \
-  --expected-sha SHA_OF_THAT_FILE
-```
+## Conflicts and retries
 
-The SHA belongs to the file named by `--path`, not to the document as a whole.
-`librepaper agent comment` takes `--path` the same way for annotations that
-anchor inside a non-main file.
+If the source changed, read fresh evidence and reconcile the intended change
+with it. Do not substitute the latest revision silently. For a lost response,
+reuse the exact original operation identity and arguments or retrieve its
+receipt with `document_result`; a new ID represents new intent and could
+duplicate an effect.
 
-## Checkpoints
-
-```sh
-librepaper agent checkpoint "$LIBREPAPER_DOCUMENT" --why "revised methods section"
-```
-
-A checkpoint asks the server for a durable point in the document's history.
-Take one after a substantive set of edits so the user has something to return
-to. `--why` defaults to `agent`; a short description is more useful.
-
-## Transport
-
-Edits synchronize through the live collaborative session and wait for durable
-acknowledgement — the same path the browser editor uses. Do not attempt to
-write source through an unrelated HTTP endpoint; it bypasses the merge, the
-comment re-anchoring, and the permission model.
-
-## Don't reformat what you weren't asked to
-
-A formatter that rewrites every line is a change against everyone in the
-document and re-anchors every comment. Change the text the task calls for and
-leave the rest byte-identical.
+Avoid broad formatter rewrites unless requested. They create needless review
+noise and can disturb anchors throughout the document.

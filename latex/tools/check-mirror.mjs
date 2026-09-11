@@ -93,6 +93,6 @@ try {
 } catch (error) {
   console.error(`LaTeX mirror unavailable at ${base}: ${error.message}\n` +
     "The mirror is built and pushed from the wasm-latex repository: `make mirror` there, then `make push`.\n" +
-    "Point LibrePaper at it with `make deploy LATEX_MIRROR=<mirror URL>` or `librepaper serve --latex-mirror <url>`.");
+    "Point LibrePaper at it with `make deploy LATEX_MIRROR=<mirror URL>` or `librepaper admin serve --latex-mirror <url>`.");
   process.exitCode = 1;
 }
