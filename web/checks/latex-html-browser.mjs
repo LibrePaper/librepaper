@@ -13,28 +13,46 @@ import { browser, until } from "../tools/browser-driver.mjs";
 const root = resolve(import.meta.dirname, "../..");
 const engineRoot = resolve(process.env.LATEXML_DIST || join(root, "../wasm-latex/wasm-build/dist"));
 const mirror = resolve(process.env.MIRROR || join(root, "../wasm-latex/mirror"));
-const manifest = JSON.parse(readFileSync(join(mirror, "manifest.json"), "utf8"));
+const mirrorUrl = process.env.LATEXML_MIRROR_URL;
+const manifest = mirrorUrl
+  ? await (await fetch(new URL("manifest.json", mirrorUrl))).json()
+  : JSON.parse(readFileSync(join(mirror, "manifest.json"), "utf8"));
 const release = structuredClone(manifest.releases[manifest.default_release]);
+// Exercise the actual deployment manifest when checking an assembled mirror.
+// Otherwise overlay freshly built artifacts for engine development.
+const useMirror = Boolean(mirrorUrl) || process.env.LATEXML_USE_MIRROR === "1";
 const engineFiles = [
   "latexml.worker.js", "latexml.js", "latexml.wasm", "kpse-resolve.js", "bundle-mode.js", "latexml.css",
   "LaTeXML-blue.css", "LaTeXML-marginpar.css", "LaTeXML-navbar-left.css", "LaTeXML-navbar-right.css",
   "ltx-amsart.css", "ltx-apj.css", "ltx-article.css", "ltx-book.css", "ltx-listings.css",
   "ltx-report.css", "ltx-svjour.css", "ltx-ulem.css",
 ];
-release.engines.latexml = { worker: "../../latexml-test/latexml.worker.js", files: engineFiles };
-release.files = { ...release.files, ...Object.fromEntries(engineFiles.map((name) => {
-  const bytes = readFileSync(join(engineRoot, name));
-  return [name, { url: `latexml-test/${name}`, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }];
-})) };
-manifest.releases[manifest.default_release] = release;
+if (useMirror) {
+  assert.ok(release.engines.latexml, "the deployment mirror must advertise LaTeXML");
+} else {
+  release.engines.latexml = { worker: "../../latexml-test/latexml.worker.js", files: engineFiles };
+  release.files = { ...release.files, ...Object.fromEntries(engineFiles.map((name) => {
+    const bytes = readFileSync(join(engineRoot, name));
+    return [name, { url: `latexml-test/${name}`, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }];
+  })) };
+  manifest.releases[manifest.default_release] = release;
+}
 const contentTypes = { ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".css": "text/css" };
 let bundleRequests = 0;
-const server = createServer((req, res) => {
+const server = createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url, "http://localhost").pathname;
     if (pathname === "/") {
       res.setHeader("content-type", "text/html");
       res.end('<!doctype html><meta charset="utf-8"><script type="module">import {compile,cancel} from "/src/lib/latex/html.js";window.compile=compile;window.cancel=cancel;</script>');
+      return;
+    }
+    // Workers require same-origin scripts. Proxy the hosted mirror just as
+    // the application does, while retaining the published bytes and manifest.
+    if (mirrorUrl && pathname.startsWith("/latex/")) {
+      const response = await fetch(new URL(pathname.slice(7), mirrorUrl));
+      res.writeHead(response.status, { "content-type": response.headers.get("content-type") || "application/octet-stream" });
+      res.end(Buffer.from(await response.arrayBuffer()));
       return;
     }
     if (pathname === "/latex/manifest.json") {
@@ -108,15 +126,17 @@ See equation~\eqref{eq:test}.
     const appBase = `http://localhost:${port}`;
     const data = join(scratch, "data");
     const localMirror = join(scratch, "mirror");
-    mkdirSync(localMirror);
-    for (const name of readdirSync(mirror)) {
-      if (name !== "manifest.json") symlinkSync(join(mirror, name), join(localMirror, name));
+    if (!mirrorUrl) {
+      mkdirSync(localMirror);
+      for (const name of readdirSync(mirror)) {
+        if (name !== "manifest.json") symlinkSync(join(mirror, name), join(localMirror, name));
+      }
+      symlinkSync(engineRoot, join(localMirror, "latexml-test"));
+      writeFileSync(join(localMirror, "manifest.json"), JSON.stringify(manifest));
     }
-    symlinkSync(engineRoot, join(localMirror, "latexml-test"));
-    writeFileSync(join(localMirror, "manifest.json"), JSON.stringify(manifest));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("LIBREPAPER_")));
     app = spawn(resolve(process.env.LIBREPAPER_BIN), ["serve", "--port", String(port), "--data", data,
-      "--publishers", "anyone", "--commenters", "anyone", "--latex", localMirror], { env, stdio: ["ignore", "ignore", "pipe"] });
+      "--publishers", "anyone", "--commenters", "anyone", "--latex", mirrorUrl || localMirror], { env, stdio: ["ignore", "ignore", "pipe"] });
     let appLog = "";
     app.stderr.on("data", (bytes) => { appLog += bytes; });
     await until("app startup", async () => {
