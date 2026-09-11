@@ -80,7 +80,6 @@ pub async fn spawn_background(
     command.args([
         "local",
         "start",
-        "--foreground",
         "--port",
         &if port == 0 { DEFAULT_PORT } else { port }.to_string(),
     ]);

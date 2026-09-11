@@ -42,7 +42,7 @@ Set the supplied values in the process environment using safe shell quoting:
 Then:
 
 ```sh
-librepaper agent connect "$LIBREPAPER_DOCUMENT" --conversation "$LIBREPAPER_CONVERSATION" --background
+librepaper agent connect "$LIBREPAPER_DOCUMENT" "$LIBREPAPER_CONVERSATION" --background
 ```
 
 The runner establishes and verifies its own MCP document session. Check its

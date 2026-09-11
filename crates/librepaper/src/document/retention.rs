@@ -66,7 +66,7 @@ pub fn parse_expire_from(value: &str) -> Result<String, String> {
     }
     if value != "created" && value != "updated" {
         return Err(format!(
-            "--expire-from must be 'created' or 'updated', not {value:?}"
+            "--document-expire-from must be 'created' or 'updated', not {value:?}"
         ));
     }
     Ok(value)

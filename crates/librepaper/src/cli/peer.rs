@@ -585,7 +585,6 @@ pub enum AgentCommand {
     Connect {
         link: String,
         /// Private conversation identifier from the LibrePaper sidebar.
-        #[arg(long)]
         conversation: String,
         /// Conversation credential
         #[arg(
@@ -595,7 +594,11 @@ pub enum AgentCommand {
         )]
         chat_token: Option<String>,
         /// Directory for the local thread id and completed task ids.
-        #[arg(long, env = "LIBREPAPER_ASSISTANT_STATE_DIR", value_name = "DIR")]
+        #[arg(
+            long = "state-directory",
+            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
+            value_name = "DIRECTORY"
+        )]
         state_dir: Option<std::path::PathBuf>,
         /// The Codex executable the runner drives.
         #[arg(
@@ -617,33 +620,42 @@ pub enum AgentCommand {
     /// Show the local runner state for a conversation.
     Status {
         link: String,
-        #[arg(long)]
         conversation: String,
-        #[arg(long, env = "LIBREPAPER_ASSISTANT_STATE_DIR", value_name = "DIR")]
+        #[arg(
+            long = "state-directory",
+            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
+            value_name = "DIRECTORY"
+        )]
         state_dir: Option<std::path::PathBuf>,
     },
     /// Ask the local runner to stop through its nonce-bound control file.
     Stop {
         link: String,
-        #[arg(long)]
         conversation: String,
-        #[arg(long, env = "LIBREPAPER_ASSISTANT_STATE_DIR", value_name = "DIR")]
+        #[arg(
+            long = "state-directory",
+            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
+            value_name = "DIRECTORY"
+        )]
         state_dir: Option<std::path::PathBuf>,
     },
     /// Ask the connected runner to have the browser render a candidate tree.
     Preview {
         link: String,
-        #[arg(long)]
         conversation: String,
         #[arg(long)]
         revision: String,
         #[arg(long, value_name = "FILE")]
         files: std::path::PathBuf,
-        #[arg(long)]
+        #[arg(long, value_name = "ID")]
         task_id: String,
         /// The runner's state directory; the runner hands it to the tools it
         /// spawns through the environment.
-        #[arg(long, env = "LIBREPAPER_ASSISTANT_STATE_DIR", value_name = "DIR")]
+        #[arg(
+            long = "state-directory",
+            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
+            value_name = "DIRECTORY"
+        )]
         state_dir: Option<std::path::PathBuf>,
     },
 }

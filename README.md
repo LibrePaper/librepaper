@@ -586,12 +586,12 @@ render jobs for the document:
 
 ```sh
 librepaper local doctor
-librepaper local bind-quarto --origin https://your-librepaper-server.example \
-  --project <document-slug> --root /path/to/project --main paper.qmd
+librepaper local quarto bind https://your-librepaper-server.example <document-slug> \
+  --root /path/to/project --main paper.qmd
 ```
 
 The paired app renders against that project instead of its hosted workspace
-for this document. Revoke it with `librepaper local unbind-quarto <binding>`.
+for this document. Revoke it with `librepaper local quarto unbind <binding>`.
 
 For parser inspection without execution, use
 `librepaper quarto inspect paper.qmd`.
@@ -714,7 +714,7 @@ using bundled skills does not require an online latest-release check. The
 sidebar's connection prompt tells the agent how to read them.
 
 For agents that discover skills through directories, export the complete bundle
-with `librepaper skills export --directory ./librepaper-skills`, then copy the
+with `librepaper skills export ./librepaper-skills`, then copy the
 desired skill directories into your agent's skill directory. The export target
 must be new and its parent must exist; existing files are never overwritten.
 Export again to a fresh directory after upgrading. Installing from the repository
@@ -738,7 +738,7 @@ credentials or run inference on the document server.
 
 ```sh
 librepaper agent connect "$LIBREPAPER_DOCUMENT" \
-  --conversation "$LIBREPAPER_CONVERSATION" --background
+  "$LIBREPAPER_CONVERSATION" --background
 ```
 
 The setup prompt supplies `LIBREPAPER_CHAT_TOKEN` separately from the document
@@ -838,7 +838,7 @@ Export annotations as readable Markdown. `export` takes the short ID from
 `list` (a full slug also works):
 
 ```sh
-librepaper export c9k --format markdown --out comments.md
+librepaper export c9k --format markdown --output comments.md
 ```
 
 Without `--format markdown`, LibrePaper exports W3C Web Annotation JSON-LD.
@@ -851,7 +851,7 @@ within each, with the remark, the passage as that reviewer saw it, what became
 of it since, and the thread underneath as the answer.
 
 ```sh
-librepaper export c9k --format response --since 4f2a91c --out response.md
+librepaper export c9k --format response --since 4f2a91c --output response.md
 ```
 
 ```markdown
@@ -902,11 +902,11 @@ Open <http://localhost:8081>. Everything is stored in `librepaper-data` (see [St
 
 ### Self-managed server
 
-Run the bundled server on your own host, with `--data` set to a persistent
+Run the bundled server on your own host, with `--data-directory` set to a persistent
 directory:
 
 ```sh
-librepaper admin serve --port 8080 --data /var/lib/librepaper --publishers YOUR-GITHUB-LOGIN
+librepaper admin serve --port 8080 --data-directory /var/lib/librepaper --publishers YOUR-GITHUB-LOGIN
 ```
 
 To let people sign in, set up a [GitHub app](#github-oauth) for this server's address.
@@ -918,21 +918,21 @@ Run the server behind a reverse proxy that terminates HTTPS, and have the proxy 
 Delete documents automatically after their most recent publication:
 
 ```sh
-librepaper admin serve --expire-after 24h
+librepaper admin serve --document-expire-after 24h
 ```
 
-For a fixed lifetime from the first upload, use `--expire-from created`. Use
-`--expire-after never` to disable expiry. Expired documents are removed by an
+For a fixed lifetime from the first upload, use `--document-expire-from created`. Use
+`--document-expire-after never` to disable expiry. Expired documents are removed by an
 hourly pass, and once at startup.
 
 ### Storage
 
-`librepaper admin serve` keeps everything in the directory named by `--data` or
+`librepaper admin serve` keeps everything in the directory named by `--data-directory` or
 `LIBREPAPER_DATA`, `librepaper-data` in the working directory by default: the
 catalogue (`catalog.db`), the objects it names, private server state, and the
 secrets that keep sessions and share links valid. Back it up if the instance
-holds real work; `librepaper admin backup` writes a verified recovery point of
-all of it, and `librepaper admin restore-backup` restores one into a fresh
+holds real work; `librepaper admin backup create` writes a verified recovery point of
+all of it, and `librepaper admin backup restore` restores one into a fresh
 directory.
 See the [operator cost policy](docs/cost-policy.md) for the complete defaults,
 advanced YAML schema, `admin status` command, capacity accounting, and backup
@@ -942,18 +942,18 @@ The storage flags bound what a deployment will store:
 
 | Flag | Caps | Default |
 | --- | --- | --- |
-| `--max-size` | combined source text of one document | 4 MB (maximum 8) |
-| `--budget-document-assets` | combined input assets of one document | 32 MiB |
-| `--quota` | everything one publisher holds | 100 MB |
-| `--storage` | the whole deployment | 5120 MB |
-| `--max-documents` | documents one publisher may hold | 50 |
-| `--uploads-per-hour` | uploads one publisher may make in an hour | 30 |
+| `--document-size-limit` | combined source text of one document | 4 MB (maximum 8) |
+| `--document-assets-limit` | combined input assets of one document | 32 MiB |
+| `--publisher-storage-limit` | everything one publisher holds | 100 MB |
+| `--deployment-storage-limit` | the whole deployment | 5120 MB |
+| `--publisher-document-limit` | documents one publisher may hold | 50 |
+| `--publisher-upload-limit` | uploads one publisher may make in an hour | 30 |
 
 ```sh
-librepaper admin serve --max-size 8 --budget-document-assets 16 --quota 500 --storage 10240
+librepaper admin serve --document-size-limit 8 --document-assets-limit 16 --publisher-storage-limit 500 --deployment-storage-limit 10240
 ```
 
-`--max-size` may not be set above 8 MB. It bounds the text a person can see;
+`--document-size-limit` may not be set above 8 MB. It bounds the text a person can see;
 what has to be durably saved is the CRDT snapshot behind that text, which
 carries the document's edit history and metadata as well, and this deployment
 supports snapshots up to 16 MB. A document can therefore reach that second
@@ -962,20 +962,20 @@ for that reason says so, and says that the history counts too. A configuration
 whose ceilings could accept work the journal could not durably save is refused
 at startup rather than at the first save.
 
-A document is a directory, so `--max-size` bounds the sum of its texts and
-`--budget-document-assets` bounds the combined input assets. Both count against `--quota`; a figure is
-an upload and counts against `--uploads-per-hour` like any other. A Typst or
+A document is a directory, so `--document-size-limit` bounds the sum of its texts and
+`--document-assets-limit` bounds the combined input assets. Both count against `--publisher-storage-limit`; a figure is
+an upload and counts against `--publisher-upload-limit` like any other. A Typst or
 LaTeX document keeps source and input assets only. PDF and HTML output created
 by a browser or companion is transient and never counts toward storage,
 quotas, or uploads. On a deployment with many publishers,
-`--budget-document-assets` is the one worth lowering:
+`--document-assets-limit` is the one worth lowering:
 figures are where a paper's bytes actually are, and it is what stops a single
 document spending a publisher's whole allowance on images.
 
 Origin transfer has its own rolling 24-hour budget:
 
 ```sh
-librepaper admin serve --budget-transfer 10GiB
+librepaper admin serve --transfer-budget 10GiB
 ```
 
 The value is bytes (binary suffixes such as `KiB`, `MiB`, `GiB`, and `TiB` are

@@ -34,7 +34,7 @@ fn the_formerly_accepted_hundred_megabyte_configuration_is_refused() {
     let error = config
         .set_max_document(Some(100))
         .expect_err("100 MB used to be accepted and could never be durably saved");
-    assert!(error.contains("--max-size"), "{error}");
+    assert!(error.contains("--document-size-limit"), "{error}");
     assert!(error.contains("not supported"), "{error}");
     // Refused, not silently clamped: the operator asked for something this
     // deployment cannot do and has to be told so.

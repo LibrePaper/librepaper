@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 
 use crate::cli::state_home;
-use crate::cli::{LocalArgs, LocalCommand, StartupCommand};
+use crate::cli::{LocalArgs, LocalCommand, LocalQuartoCommand, StartupCommand};
 use crate::local::pairing::{generate_code, PairingStore, ServiceState};
 use crate::local::protocol::{self, DEFAULT_PORT};
 use crate::local::quarto::BindingStore;
@@ -23,11 +23,9 @@ pub async fn run(args: LocalArgs) {
     match args.command {
         LocalCommand::Start {
             port,
-            foreground,
-            background,
             code,
             tex_path,
-        } => start(port, !background || foreground, code, tex_path).await,
+        } => start(port, true, code, tex_path).await,
         LocalCommand::Launch { port } => launch(port).await,
         LocalCommand::Manage => open("librepaper://manage").await,
         LocalCommand::Stop => stop().await,
@@ -38,14 +36,21 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Doctor { tex_path } => doctor(tex_path).await,
         LocalCommand::Disconnect { origin, all } => disconnect(origin, all),
         LocalCommand::Rescan { tex_path } => rescan(tex_path).await,
-        LocalCommand::BindQuarto {
-            origin,
-            project,
-            root,
-            main,
+        LocalCommand::Quarto {
+            command:
+                LocalQuartoCommand::Bind {
+                    origin,
+                    project,
+                    root,
+                    main,
+                },
         } => bind_quarto(&origin, &project, &root, &main),
-        LocalCommand::UnbindQuarto { binding } => unbind_quarto(&binding),
-        LocalCommand::QuartoBindings { origin, project } => list_quarto_bindings(&origin, &project),
+        LocalCommand::Quarto {
+            command: LocalQuartoCommand::Unbind { binding },
+        } => unbind_quarto(&binding),
+        LocalCommand::Quarto {
+            command: LocalQuartoCommand::List { origin, project },
+        } => list_quarto_bindings(&origin, &project),
     }
 }
 
@@ -164,7 +169,7 @@ async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<
 
     // Every document renders in a workspace of its own under the cache,
     // written from the files the browser sends with each job: nothing has
-    // to be bound by hand. A `bind-quarto` grant still wins for a project
+    // to be bound by hand. A `quarto bind` grant still wins for a project
     // that keeps data the document does not share.
     let workspaces = cache_home()
         .join("librepaper")

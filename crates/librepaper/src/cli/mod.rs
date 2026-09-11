@@ -28,7 +28,7 @@ fn reject_removed_settings() {
     let removed = [
         (
             "LIBREPAPER_MAX_ASSETS",
-            "--budget-document-assets / LIBREPAPER_BUDGET_DOCUMENT_ASSETS",
+            "--document-assets-limit / LIBREPAPER_BUDGET_DOCUMENT_ASSETS",
         ),
         (
             "LIBREPAPER_LATEX",
@@ -54,7 +54,7 @@ fn reject_removed_settings() {
         } else if argument == "--fonts" || argument.starts_with("--fonts=") {
             ("--fonts", "--typst-fonts")
         } else if argument == "--max-assets" || argument.starts_with("--max-assets=") {
-            ("--max-assets", "--budget-document-assets")
+            ("--max-assets", "--document-assets-limit")
         } else if argument == "--biber-vm" || argument.starts_with("--biber-vm=") {
             ("--biber-vm", "Biber WASM from the configured LaTeX mirror")
         } else {
@@ -149,34 +149,70 @@ pub(crate) struct ServiceFlags {
     #[arg(long, env = "LIBREPAPER_NO_LISTING")]
     no_listing: bool,
     /// Largest document accepted, in megabytes (default 4, maximum 8)
-    #[arg(long, env = "LIBREPAPER_MAX_SIZE", value_name = "MB")]
+    #[arg(
+        long = "document-size-limit",
+        env = "LIBREPAPER_MAX_SIZE",
+        value_name = "MB"
+    )]
     max_size: Option<usize>,
     /// Combined input assets one document may hold, in MiB (default 32).
-    #[arg(long, env = "LIBREPAPER_BUDGET_DOCUMENT_ASSETS", value_name = "MIB")]
+    #[arg(
+        long = "document-assets-limit",
+        env = "LIBREPAPER_BUDGET_DOCUMENT_ASSETS",
+        value_name = "MIB"
+    )]
     budget_document_assets: Option<usize>,
     /// Most one publisher may store across their documents, in megabytes (default 100)
-    #[arg(long, env = "LIBREPAPER_QUOTA", value_name = "MB")]
+    #[arg(
+        long = "publisher-storage-limit",
+        env = "LIBREPAPER_QUOTA",
+        value_name = "MB"
+    )]
     quota: Option<usize>,
     /// Most the whole deployment will store, in megabytes (default 5120)
-    #[arg(long, env = "LIBREPAPER_STORAGE", value_name = "MB")]
+    #[arg(
+        long = "deployment-storage-limit",
+        env = "LIBREPAPER_STORAGE",
+        value_name = "MB"
+    )]
     storage: Option<usize>,
     /// Most documents one publisher may hold (default 50)
-    #[arg(long, env = "LIBREPAPER_MAX_DOCUMENTS", value_name = "N")]
+    #[arg(
+        long = "publisher-document-limit",
+        env = "LIBREPAPER_MAX_DOCUMENTS",
+        value_name = "N"
+    )]
     max_documents: Option<usize>,
     /// Most uploads one publisher may make in an hour (default 30)
-    #[arg(long, env = "LIBREPAPER_UPLOADS_PER_HOUR", value_name = "N")]
+    #[arg(
+        long = "publisher-upload-limit",
+        env = "LIBREPAPER_UPLOADS_PER_HOUR",
+        value_name = "N"
+    )]
     uploads_per_hour: Option<usize>,
     /// Minutes of quiet before a document is checkpointed (default: 30 seconds)
-    #[arg(long, env = "LIBREPAPER_CHECKPOINT", value_name = "MINUTES")]
+    #[arg(
+        long = "history-checkpoint-minutes",
+        env = "LIBREPAPER_CHECKPOINT",
+        value_name = "MINUTES"
+    )]
     checkpoint: Option<usize>,
     /// Most checkpoints one document keeps (default unlimited); 0 keeps only the current text
-    #[arg(long, env = "LIBREPAPER_HISTORY", value_name = "N")]
+    #[arg(long = "history-limit", env = "LIBREPAPER_HISTORY", value_name = "N")]
     history: Option<usize>,
     /// Delete documents after this duration, for example 24h or 30d (default never)
-    #[arg(long, env = "LIBREPAPER_EXPIRE_AFTER", value_name = "DURATION")]
+    #[arg(
+        long = "document-expire-after",
+        env = "LIBREPAPER_EXPIRE_AFTER",
+        value_name = "DURATION"
+    )]
     expire_after: Option<String>,
     /// Start expiry at 'updated' (default; last publication) or 'created'
-    #[arg(long, env = "LIBREPAPER_EXPIRE_FROM", value_name = "FROM")]
+    #[arg(
+        long = "document-expire-from",
+        env = "LIBREPAPER_EXPIRE_FROM",
+        value_name = "FROM"
+    )]
     expire_from: Option<String>,
     /// HTTPS static mirror from which browsers fetch LaTeX distributions.
     #[arg(
@@ -193,7 +229,7 @@ pub(crate) struct ServiceFlags {
     typst_fonts: Option<String>,
     /// Daily origin response allowance. Bare integers mean bytes; binary
     /// suffixes such as 10GiB are accepted. Omit for unlimited transfer.
-    #[arg(long, value_parser = parse_budget_transfer, env = "LIBREPAPER_BUDGET_TRANSFER", value_name = "BYTES")]
+    #[arg(long = "transfer-budget", value_parser = parse_budget_transfer, env = "LIBREPAPER_BUDGET_TRANSFER", value_name = "BYTES")]
     budget_transfer: Option<u64>,
     /// Do not run the local app for this machine. By default `serve` also
     /// starts the loopback service that lets an editor whose browser is on
@@ -335,55 +371,55 @@ impl ServiceFlags {
         for (key, flag, environment, present) in [
             (
                 "cost.transfer_bytes",
-                "budget-transfer",
+                "transfer-budget",
                 "LIBREPAPER_BUDGET_TRANSFER",
                 self.budget_transfer.is_some(),
             ),
             (
                 "max_assets",
-                "budget-document-assets",
+                "document-assets-limit",
                 "LIBREPAPER_BUDGET_DOCUMENT_ASSETS",
                 self.budget_document_assets.is_some(),
             ),
             (
                 "max_document",
-                "max-size",
+                "document-size-limit",
                 "LIBREPAPER_MAX_SIZE",
                 self.max_size.is_some(),
             ),
             (
                 "storage.total",
-                "storage",
+                "deployment-storage-limit",
                 "LIBREPAPER_STORAGE",
                 self.storage.is_some(),
             ),
             (
                 "storage.per_owner",
-                "quota",
+                "publisher-storage-limit",
                 "LIBREPAPER_QUOTA",
                 self.quota.is_some(),
             ),
             (
                 "storage.documents_per_owner",
-                "max-documents",
+                "publisher-document-limit",
                 "LIBREPAPER_MAX_DOCUMENTS",
                 self.max_documents.is_some(),
             ),
             (
                 "storage.uploads_per_hour",
-                "uploads-per-hour",
+                "publisher-upload-limit",
                 "LIBREPAPER_UPLOADS_PER_HOUR",
                 self.uploads_per_hour.is_some(),
             ),
             (
                 "session.history_max",
-                "history",
+                "history-limit",
                 "LIBREPAPER_HISTORY",
                 self.history.is_some(),
             ),
             (
                 "session.checkpoint_seconds",
-                "checkpoint",
+                "history-checkpoint-minutes",
                 "LIBREPAPER_CHECKPOINT",
                 self.checkpoint.is_some(),
             ),
@@ -519,7 +555,7 @@ pub(crate) enum Command {
         since: Option<String>,
         /// File to write; defaults to standard output
         #[arg(long, value_name = "FILE")]
-        out: Option<String>,
+        output: Option<String>,
         /// A share link, or the key from one: read as its holder rather than
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
@@ -581,8 +617,11 @@ pub(crate) enum AdminCommand {
         #[arg(long, default_value_t = 8080, value_name = "PORT")]
         port: u16,
     },
-    /// Rotate the local deployment's sealed-link key.
-    RotateLinkKey { dir: String },
+    /// Manage the keys used by a deployment.
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
     /// Replace local or remote data with the example documents
     Seed {
         #[command(flatten)]
@@ -592,8 +631,26 @@ pub(crate) enum AdminCommand {
         #[arg(long, value_name = "DIRECTORY")]
         backup: Option<String>,
     },
-    /// Create a verified offline SQLite/object/secrets recovery point.
+    /// Create or restore verified deployment backups.
     Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum KeyCommand {
+    /// Rotate the local deployment's sealed-link key.
+    Rotate {
+        /// Deployment data directory
+        directory: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BackupCommand {
+    /// Create a verified offline SQLite/object/secrets recovery point.
+    Create {
         #[command(flatten)]
         storage: StorageFlags,
         #[arg(
@@ -603,16 +660,17 @@ pub(crate) enum AdminCommand {
             hide = true
         )]
         advanced_config: Option<PathBuf>,
-        #[arg(long, value_name = "DIRECTORY")]
-        output: String,
+        /// New directory to create
+        directory: String,
+        /// Identifier to record for this backup; generated when omitted
         #[arg(long, value_name = "ID")]
         id: Option<String>,
     },
-    /// Restore a verified local backup into a new deployment directory.
-    RestoreBackup {
-        #[arg(long, value_name = "DIRECTORY")]
+    /// Restore a verified backup into a new deployment directory.
+    Restore {
+        /// Backup directory to read
         backup: String,
-        #[arg(long, value_name = "DIRECTORY")]
+        /// New deployment directory to create
         directory: String,
     },
 }
@@ -620,25 +678,10 @@ pub(crate) enum AdminCommand {
 /// `librepaper local <command>`. See `crate::local::cli`.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalCommand {
-    /// Grant this machine permission to render a linked Quarto project
-    BindQuarto {
-        #[arg(long)]
-        origin: String,
-        #[arg(long)]
-        project: String,
-        #[arg(long, default_value = ".")]
-        root: String,
-        #[arg(long, default_value = "main.qmd")]
-        main: String,
-    },
-    /// Revoke a local Quarto execution binding
-    UnbindQuarto { binding: String },
-    /// List bindings for an origin and document
-    QuartoBindings {
-        #[arg(long)]
-        origin: String,
-        #[arg(long)]
-        project: String,
+    /// Manage local Quarto execution permissions.
+    Quarto {
+        #[command(subcommand)]
+        command: LocalQuartoCommand,
     },
     /// Start the loopback service and print its pairing code
     Start {
@@ -651,12 +694,6 @@ pub enum LocalCommand {
             env = "LIBREPAPER_LOCAL_PORT"
         )]
         port: u16,
-        /// Stay attached to the terminal (the default)
-        #[arg(long)]
-        foreground: bool,
-        /// Start detached in the background.
-        #[arg(long, conflicts_with = "foreground")]
-        background: bool,
         /// Fixed pairing code to use instead of a random one each run
         #[arg(
             long,
@@ -730,6 +767,23 @@ pub enum LocalCommand {
 }
 
 #[derive(Subcommand, Clone, Debug)]
+pub enum LocalQuartoCommand {
+    /// Grant this machine permission to render a linked Quarto project
+    Bind {
+        origin: String,
+        project: String,
+        #[arg(long, default_value = ".", value_name = "DIRECTORY")]
+        root: String,
+        #[arg(long, default_value = "main.qmd", value_name = "FILE")]
+        main: String,
+    },
+    /// Revoke a local Quarto execution binding
+    Unbind { binding: String },
+    /// List bindings for an origin and document
+    List { origin: String, project: String },
+}
+
+#[derive(Subcommand, Clone, Debug)]
 pub enum StartupCommand {
     Enable,
     Disable,
@@ -798,7 +852,7 @@ pub async fn main() {
             id,
             format,
             since,
-            out,
+            output,
             key,
         } => {
             crate::cli::export::export_document(
@@ -806,7 +860,7 @@ pub async fn main() {
                 server,
                 token,
                 &format,
-                out.unwrap_or_default(),
+                output.unwrap_or_default(),
                 since.unwrap_or_default(),
                 key.unwrap_or_default(),
             )
@@ -895,8 +949,10 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                 )))
             );
         }
-        AdminCommand::RotateLinkKey { dir } => {
-            let root = std::path::PathBuf::from(dir);
+        AdminCommand::Key {
+            command: KeyCommand::Rotate { directory },
+        } => {
+            let root = directory;
             let _writer_lock =
                 crate::server::serve::acquire_writer_lock(&root.join("state/writer.lock"))
                     .unwrap_or_else(|error| die(error));
@@ -973,23 +1029,26 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
             }
         }
         AdminCommand::Backup {
-            storage,
-            output,
-            id,
-            advanced_config,
+            command:
+                BackupCommand::Create {
+                    storage,
+                    directory,
+                    id,
+                    advanced_config,
+                },
         } => {
             let backup_policy = backup_policy_from_config(advanced_config.as_deref());
             crate::storage::backup::backup_cli(
                 storage.options(),
-                output,
+                directory,
                 id.unwrap_or_default(),
                 backup_policy,
             )
             .await
         }
-        AdminCommand::RestoreBackup { backup, directory } => {
-            crate::storage::backup::restore_cli(backup, directory).await
-        }
+        AdminCommand::Backup {
+            command: BackupCommand::Restore { backup, directory },
+        } => crate::storage::backup::restore_cli(backup, directory).await,
     }
 }
 

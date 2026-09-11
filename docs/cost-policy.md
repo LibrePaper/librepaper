@@ -21,16 +21,16 @@ storage, document, history, expiry, and publishing controls remain separate.
 
 | Option | Environment | Meaning and default |
 | --- | --- | --- |
-| `--budget-transfer BYTES` | `LIBREPAPER_BUDGET_TRANSFER` | Origin response-body allowance over one rolling 24-hour window. Bare integers are bytes; `B`, `KiB`, `MiB`, `GiB`, and `TiB` are accepted. Omitted means unlimited and emits a warning. `0` refuses ordinary transfer while retaining the emergency reserve. |
-| `--budget-document-assets MIB` | `LIBREPAPER_BUDGET_DOCUMENT_ASSETS` | Combined input-asset ceiling per document, in MiB; default 32 MiB, accepted range 1–1024 MiB. It is not a per-file or asset-count limit. |
-| `--max-size MB` | `LIBREPAPER_MAX_SIZE` | Combined source-text ceiling per document; default 4 MB, maximum 8 MB. |
-| `--quota MB` | `LIBREPAPER_QUOTA` | Charged durable storage per owner; default 100 MB. |
-| `--storage MB` | `LIBREPAPER_STORAGE` | Charged durable storage for the deployment; default 5120 MB. Physical headroom is separate and can stop growth first. |
-| `--max-documents N` | `LIBREPAPER_MAX_DOCUMENTS` | Documents per owner; default 50. |
-| `--uploads-per-hour N` | `LIBREPAPER_UPLOADS_PER_HOUR` | Uploads per owner over a rolling hour; default 30. |
-| `--checkpoint MINUTES` | `LIBREPAPER_CHECKPOINT` | Quiet period before an automatic checkpoint. The value is in minutes. If omitted, the built-in session quiet period is 30 seconds. |
-| `--history N` | `LIBREPAPER_HISTORY` | Checkpoints retained per document. Omission leaves the built-in unlimited count. A finite value is retained as at least one newest checkpoint. |
-| `--expire-after DURATION` | `LIBREPAPER_EXPIRE_AFTER` | Document lifetime; default never. `--expire-from created` selects creation time instead of the last publication. |
+| `--transfer-budget BYTES` | `LIBREPAPER_BUDGET_TRANSFER` | Origin response-body allowance over one rolling 24-hour window. Bare integers are bytes; `B`, `KiB`, `MiB`, `GiB`, and `TiB` are accepted. Omitted means unlimited and emits a warning. `0` refuses ordinary transfer while retaining the emergency reserve. |
+| `--document-assets-limit MIB` | `LIBREPAPER_BUDGET_DOCUMENT_ASSETS` | Combined input-asset ceiling per document, in MiB; default 32 MiB, accepted range 1–1024 MiB. It is not a per-file or asset-count limit. |
+| `--document-size-limit MB` | `LIBREPAPER_MAX_SIZE` | Combined source-text ceiling per document; default 4 MB, maximum 8 MB. |
+| `--publisher-storage-limit MB` | `LIBREPAPER_QUOTA` | Charged durable storage per owner; default 100 MB. |
+| `--deployment-storage-limit MB` | `LIBREPAPER_STORAGE` | Charged durable storage for the deployment; default 5120 MB. Physical headroom is separate and can stop growth first. |
+| `--publisher-document-limit N` | `LIBREPAPER_MAX_DOCUMENTS` | Documents per owner; default 50. |
+| `--publisher-upload-limit N` | `LIBREPAPER_UPLOADS_PER_HOUR` | Uploads per owner over a rolling hour; default 30. |
+| `--history-checkpoint-minutes MINUTES` | `LIBREPAPER_CHECKPOINT` | Quiet period before an automatic checkpoint. The value is in minutes. If omitted, the built-in session quiet period is 30 seconds. |
+| `--history-limit N` | `LIBREPAPER_HISTORY` | Checkpoints retained per document. Omission leaves the built-in unlimited count. A finite value is retained as at least one newest checkpoint. |
+| `--document-expire-after DURATION` | `LIBREPAPER_EXPIRE_AFTER` | Document lifetime; default never. `--document-expire-from created` selects creation time instead of the last publication. |
 | `--latex-mirror URL` | `LIBREPAPER_LATEX_MIRROR` | HTTPS static mirror fetched directly by browsers. The default is `https://latex.librepaper.workers.dev/`. |
 | `--typst-fonts DIR` | `LIBREPAPER_TYPST_FONTS` | Optional local directory of additional Typst fonts served by the origin. |
 
@@ -195,7 +195,7 @@ producers; a single catalog request may carry at most 4 MiB.
 
 ## Storage, maintenance, and backups
 
-`--quota` and `--storage` constrain charged retained physical bytes. They do not
+`--publisher-storage-limit` and `--deployment-storage-limit` constrain charged retained physical bytes. They do not
 include all space needed to operate the deployment. The server also tracks
 allocated primary bytes, reserved bytes, cache bytes, backup-output bytes, and
 filesystem free bytes. SQLite pages, indexes, allocator slack, logs, deletion
@@ -210,7 +210,7 @@ preserves an object when the catalog still identifies it as an input asset.
 Accepted edits are persisted before idle rooms are evicted. A graceful shutdown
 flushes rooms and runs final local deletion and journal cleanup passes.
 
-Backups are outside the primary storage quota. `librepaper admin backup` makes a
+Backups are outside the primary storage quota. `librepaper admin backup create` makes a
 verified new full copy, including the catalog, retained source objects, secrets,
 and deployment identity. Its output reports both:
 
@@ -232,7 +232,7 @@ testing. The command also emits a `backup_completed` JSON event with the
 backup counter, logical input bytes, bytes written, full-copy mode, and the
 declared policy metadata; it contains no filesystem path or secret.
 
-`librepaper admin restore-backup` requires a new destination directory. It validates
+`librepaper admin backup restore` requires a new destination directory. It validates
 the backup and required destination capacity before writing, reserves the
 logical input estimate plus 64 MiB staging, and publishes the restored tree by
 rename. It does not overwrite an existing deployment. Backups contain source
@@ -298,22 +298,22 @@ Each example changes only the named limit:
 
 ```sh
 # Allow 10 GiB of origin response bodies per rolling 24 hours.
-librepaper admin serve --budget-transfer 10GiB
+librepaper admin serve --transfer-budget 10GiB
 
 # Reserve 10,240 MiB of charged deployment storage.
-librepaper admin serve --storage 10240
+librepaper admin serve --deployment-storage-limit 10240
 
 # Limit one owner's charged storage to 500 MiB.
-librepaper admin serve --quota 500
+librepaper admin serve --publisher-storage-limit 500
 
 # Limit combined input assets in one document to 16 MiB.
-librepaper admin serve --budget-document-assets 16
+librepaper admin serve --document-assets-limit 16
 
 # Retain at most 100 checkpoints per document.
-librepaper admin serve --history 100
+librepaper admin serve --history-limit 100
 
 # Wait five quiet minutes before an automatic checkpoint.
-librepaper admin serve --checkpoint 5
+librepaper admin serve --history-checkpoint-minutes 5
 ```
 
 The values are not named profiles and do not imply authentication, expiry,

@@ -157,7 +157,7 @@ export function setAddress(url) {
 
 // The binding every document has without anyone granting one: the local app
 // renders it in a workspace of its own, written from the files the browser
-// sends with each job. An explicit `bind-quarto` id, entered in the render
+// sends with each job. An explicit `quarto bind` id, entered in the render
 // settings, replaces it for a project that keeps data the document does not
 // share.
 export const HOSTED_BINDING = "hosted";

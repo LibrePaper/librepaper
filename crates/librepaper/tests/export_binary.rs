@@ -61,7 +61,7 @@ async fn history_outage_fails_export_without_overwriting_output() {
             "paper",
             "--format",
             "response",
-            "--out",
+            "--output",
             out.to_str().unwrap(),
         ],
     )

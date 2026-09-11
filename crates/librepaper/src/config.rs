@@ -519,10 +519,10 @@ fn validate_proxy_network(value: &str) -> Result<(), String> {
 pub fn parse_budget_transfer(value: &str) -> Result<u64, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err("--budget-transfer needs a byte count (for example 10GiB)".into());
+        return Err("--transfer-budget needs a byte count (for example 10GiB)".into());
     }
     if value.starts_with('-') {
-        return Err(format!("--budget-transfer {value:?} cannot be negative"));
+        return Err(format!("--transfer-budget {value:?} cannot be negative"));
     }
     let split = value
         .bytes()
@@ -531,12 +531,12 @@ pub fn parse_budget_transfer(value: &str) -> Result<u64, String> {
     let (digits, unit) = value.split_at(split);
     if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(format!(
-            "--budget-transfer {value:?} is not a byte count; use an integer with an optional B, KiB, MiB, GiB, or TiB suffix"
+            "--transfer-budget {value:?} is not a byte count; use an integer with an optional B, KiB, MiB, GiB, or TiB suffix"
         ));
     }
     let number = digits
         .parse::<u64>()
-        .map_err(|_| format!("--budget-transfer {value:?} is too large"))?;
+        .map_err(|_| format!("--transfer-budget {value:?} is too large"))?;
     let multiplier = match unit.to_ascii_lowercase().as_str() {
         "" | "b" => 1,
         "kib" => 1 << 10,
@@ -545,13 +545,13 @@ pub fn parse_budget_transfer(value: &str) -> Result<u64, String> {
         "tib" => 1 << 40,
         _ => {
             return Err(format!(
-                "--budget-transfer {value:?} has an unknown unit; use B, KiB, MiB, GiB, or TiB"
+                "--transfer-budget {value:?} has an unknown unit; use B, KiB, MiB, GiB, or TiB"
             ))
         }
     };
     number
         .checked_mul(multiplier)
-        .ok_or_else(|| format!("--budget-transfer {value:?} is too large"))
+        .ok_or_else(|| format!("--transfer-budget {value:?} is too large"))
 }
 
 /// What the server-held document may cost: how often it is written, how big a
@@ -1278,14 +1278,14 @@ impl Configuration {
         };
         let bytes = megabytes
             .checked_mul(1024 * 1024)
-            .ok_or_else(|| "--max-size is too large".to_string())?;
+            .ok_or_else(|| "--document-size-limit is too large".to_string())?;
         let candidate = PersistenceLimits {
             max_source_bytes: bytes,
             ..self.persistence
         };
         candidate
             .validate()
-            .map_err(|why| format!("--max-size: {why}"))?;
+            .map_err(|why| format!("--document-size-limit: {why}"))?;
         self.max_document = bytes;
         Ok(())
     }
@@ -1295,14 +1295,14 @@ impl Configuration {
     ///
     /// Worth setting low on a deployment anybody may publish to. Figures are
     /// where the bytes of a paper actually go, and while they count against
-    /// `--quota` like everything else, this is what stops one document from
+    /// `--publisher-storage-limit` like everything else, this is what stops one document from
     /// spending a publisher's whole allowance on images.
     pub fn set_budget_document_assets(&mut self, megabytes: Option<usize>) -> Result<(), String> {
         let Some(megabytes) = megabytes else {
             return Ok(());
         };
         if !(1..=1024).contains(&megabytes) {
-            return Err("--budget-document-assets must be between 1 and 1024 MiB".into());
+            return Err("--document-assets-limit must be between 1 and 1024 MiB".into());
         }
         self.max_assets = (megabytes * 1024 * 1024) as i64;
         // One figure may never be more than all of them.
@@ -1390,7 +1390,7 @@ impl Configuration {
         }
         if self.storage.per_owner > self.storage.total {
             return Err(format!(
-                "--quota ({} MB) cannot exceed --storage ({} MB)",
+                "--publisher-storage-limit ({} MB) cannot exceed --deployment-storage-limit ({} MB)",
                 self.storage.per_owner >> 20,
                 self.storage.total >> 20
             ));
@@ -1401,7 +1401,7 @@ impl Configuration {
     /// Overrides the history settings an operator has a reason to change: how
     /// long a document has to be quiet before a checkpoint is taken, in
     /// minutes, and how many checkpoints one document keeps. `None` leaves a
-    /// default alone; `--history 0` is "no history beyond the session state",
+    /// default alone; `--history-limit 0` is "no history beyond the session state",
     /// which is expressed as a cap of one, since the newest checkpoint is
     /// never shed.
     pub fn set_history(
@@ -1439,7 +1439,7 @@ impl Configuration {
 /// The source ceiling a deployment gets without saying otherwise.
 pub const DEFAULT_MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 
-/// The supported source ceiling, in bytes. `--max-size` may not exceed it.
+/// The supported source ceiling, in bytes. `--document-size-limit` may not exceed it.
 ///
 /// It is a policy, not a theorem: nothing proves that eight megabytes of text
 /// can never encode past [`PersistenceLimits::max_encoded_snapshot_bytes`].
@@ -1478,7 +1478,7 @@ pub const SNAPSHOT_COPY_FACTOR: usize = 8;
 /// write, what a CRDT snapshot of it encodes to, and what the journal can
 /// carry to storage.
 ///
-/// It exists because the three used to be set independently: `--max-size`
+/// It exists because the three used to be set independently: `--document-size-limit`
 /// accepted a hundred megabytes of source while the journal queue held
 /// sixty-four and a recovery base could decode sixty-four, so a deployment
 /// could be configured to accept work it could never durably save. Every

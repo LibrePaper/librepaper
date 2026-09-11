@@ -71,7 +71,7 @@ fn create_private_dir(path: &std::path::Path) -> Result<(), String> {
 pub struct StorageFlags {
     /// The deployment directory: catalog.db, objects/, state/ and secrets/.
     #[arg(
-        long,
+        long = "data-directory",
         env = "LIBREPAPER_DATA",
         default_value = "librepaper-data",
         value_name = "DIR"

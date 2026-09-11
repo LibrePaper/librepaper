@@ -47,7 +47,7 @@ impl LiveServer {
             .args([
                 "admin",
                 "serve",
-                "--data",
+                "--data-directory",
                 data.path().to_str().expect("data path is UTF-8"),
                 "--port",
                 &port.to_string(),
@@ -363,11 +363,10 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
             "agent",
             "connect",
             &link,
-            "--conversation",
             &conversation,
             "--chat-token",
             &token,
-            "--state-dir",
+            "--state-directory",
             state.to_str().unwrap(),
         ])
         .env_remove("LIBREPAPER_TOKEN")
@@ -538,7 +537,6 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
                     "agent",
                     "preview",
                     &link,
-                    "--conversation",
                     &conversation,
                     "--revision",
                     &base_revision,
@@ -546,7 +544,7 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
                     preview_files.to_str().unwrap(),
                     "--task-id",
                     "request-input",
-                    "--state-dir",
+                    "--state-directory",
                     state.to_str().unwrap(),
                 ])
                 .env_remove("LIBREPAPER_TOKEN")
@@ -721,9 +719,8 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
     let status = agent(&[
         "status",
         &link,
-        "--conversation",
         &conversation,
-        "--state-dir",
+        "--state-directory",
         state.to_str().unwrap(),
     ])
     .await;
@@ -736,9 +733,8 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
         status = agent(&[
             "status",
             &link,
-            "--conversation",
             &conversation,
-            "--state-dir",
+            "--state-directory",
             state.to_str().unwrap(),
         ])
         .await;
@@ -748,9 +744,8 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
     let stop = agent(&[
         "stop",
         &link,
-        "--conversation",
         &conversation,
-        "--state-dir",
+        "--state-directory",
         state.to_str().unwrap(),
     ])
     .await;

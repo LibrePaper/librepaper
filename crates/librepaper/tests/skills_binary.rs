@@ -41,7 +41,7 @@ fn bundled_skills_work_outside_the_checkout_and_export_references() {
         reference.stdout,
         include_bytes!("../../../skills/librepaper-document/references/editing.md")
     );
-    let exported = cli(temp.path(), &["skills", "export", "--directory", "bundle"]);
+    let exported = cli(temp.path(), &["skills", "export", "bundle"]);
     assert!(exported.status.success(), "{:?}", exported);
     assert_eq!(
         std::fs::read(
@@ -58,7 +58,7 @@ fn bundled_skills_work_outside_the_checkout_and_export_references() {
     let custom = temp.path().join("bundle/librepaper-write/SKILL.md");
     std::fs::write(&custom, "custom instructions").unwrap();
     assert!(
-        !cli(temp.path(), &["skills", "export", "--directory", "bundle"])
+        !cli(temp.path(), &["skills", "export", "bundle"])
             .status
             .success()
     );

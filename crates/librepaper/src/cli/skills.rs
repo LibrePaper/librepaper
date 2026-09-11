@@ -21,7 +21,6 @@ pub(crate) enum SkillsCommand {
     /// Export all skills and references into a new directory
     Export {
         /// Must not already exist; use a fresh directory after upgrading
-        #[arg(long)]
         directory: PathBuf,
     },
 }

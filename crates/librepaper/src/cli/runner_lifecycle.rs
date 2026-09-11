@@ -233,11 +233,11 @@ pub(crate) fn start_background(
     let mut command = Command::new(executable);
     // Keep the document key out of the child process command line. `-` is an
     // internal argv sentinel resolved from this short lived environment.
-    command.args(["agent", "connect", "-", "--conversation", conversation]);
+    command.args(["agent", "connect", "-", conversation]);
     command.args(["--codex", codex]);
     if let Some(path) = state_dir {
         command.args([
-            "--state-dir",
+            "--state-directory",
             path.to_str()
                 .ok_or_else(|| "state directory is not valid UTF-8".to_string())?,
         ]);

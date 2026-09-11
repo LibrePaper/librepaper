@@ -100,7 +100,7 @@
       "Reuse recent LibrePaper CLI/version checks from this session when the installation has not changed; connecting another document does not require checking for a newer release. Otherwise check: librepaper --version && librepaper skills list && librepaper agent connect --help. If missing or these commands are unavailable, install or upgrade from https://github.com/LibrePaper/librepaper#install before continuing.",
       "Reuse LibrePaper skills already in context for the installed version. Load only missing skills with librepaper skills show librepaper-pair; librepaper skills show librepaper-document; librepaper skills show librepaper-write. Read references only as needed with librepaper skills show <name> --file references/<file>. Refresh affected instructions after an upgrade or a command/version mismatch. No separate skill installation is needed.",
       "Run each command below as written. Each is self-contained and can run in a separate shell.",
-      `LIBREPAPER_CHAT_TOKEN=${shell(connection.token)} librepaper agent connect ${shell(documentLink)} --conversation ${shell(connection.id)} --background`,
+      `LIBREPAPER_CHAT_TOKEN=${shell(connection.token)} librepaper agent connect ${shell(documentLink)} ${shell(connection.id)} --background`,
       mode === "tracked"
         ? "Use track changes for every edit: create anchored LibrePaper suggestions for the user to accept or reject. Never write directly to document source or accept your own suggestions. This commenter link deliberately prevents direct source edits. Keep the runner attached and report suggestion identifiers in context.results."
         : mode === "editor"

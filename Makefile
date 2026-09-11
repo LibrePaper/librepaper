@@ -162,7 +162,7 @@ LATEX_MIRROR_FLAG ?= $(if $(LATEX_MIRROR),--latex-mirror $(LATEX_MIRROR))
 
 serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX_MIRROR=; everything else through .env)
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@$(BIN) admin serve --port $(PORT) --data $(DATA) $(LATEX_MIRROR_FLAG)
+	@$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(LATEX_MIRROR_FLAG)
 
 # One tutorial project per source format LibrePaper accepts. Each project has
 # a source file and the same relative icon asset; no example is generated.
@@ -179,7 +179,7 @@ seed: $(BIN) $(EXAMPLES)
 	@if [ -e $(DATA)/catalog.db ]; then \
 		echo "$(DATA) is already seeded; serving it as is (move it aside to reseed)"; \
 	else \
-		$(BIN) admin seed --data $(DATA) $(if $(OWNER),--owner $(OWNER)); \
+		$(BIN) admin seed --data-directory $(DATA) $(if $(OWNER),--owner $(OWNER)); \
 	fi
 
 kill:  ## Stop a server started with make serve

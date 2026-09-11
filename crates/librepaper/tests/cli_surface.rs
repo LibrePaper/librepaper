@@ -49,19 +49,72 @@ fn operator_commands_are_only_exposed_under_admin() {
     assert!(output.status.success(), "{output:?}");
     let help = String::from_utf8_lossy(&output.stdout);
 
-    for command in [
-        "serve",
-        "status",
-        "rotate-link-key",
-        "seed",
-        "backup",
-        "restore-backup",
-    ] {
+    for command in ["serve", "status", "key", "seed", "backup"] {
         assert!(
             lists_command(&help, command),
             "operator command {command:?} is absent from admin help:\n{help}"
         );
     }
+}
+
+#[test]
+fn compound_resources_use_subcommand_namespaces() {
+    for (path, commands) in [
+        (&["admin", "key"][..], &["rotate"][..]),
+        (&["admin", "backup"][..], &["create", "restore"][..]),
+        (&["local", "quarto"][..], &["bind", "unbind", "list"][..]),
+    ] {
+        let mut args = path.to_vec();
+        args.push("--help");
+        let output = cli(&args);
+        assert!(output.status.success(), "{output:?}");
+        let help = String::from_utf8_lossy(&output.stdout);
+        for command in commands {
+            assert!(
+                lists_command(&help, command),
+                "command {command:?} is absent from `{}`:\n{help}",
+                path.join(" ")
+            );
+        }
+    }
+
+    for removed in ["rotate-link-key", "restore-backup"] {
+        let output = cli(&["admin", removed]);
+        assert!(
+            !output.status.success(),
+            "legacy command {removed:?} survived"
+        );
+    }
+    for removed in ["bind-quarto", "unbind-quarto", "quarto-bindings"] {
+        let output = cli(&["local", removed]);
+        assert!(
+            !output.status.success(),
+            "legacy command {removed:?} survived"
+        );
+    }
+}
+
+#[test]
+fn operands_are_positional_and_modifiers_are_named() {
+    for args in [
+        &["skills", "export", "--help"][..],
+        &["admin", "backup", "create", "--help"][..],
+        &["admin", "backup", "restore", "--help"][..],
+        &["local", "quarto", "bind", "--help"][..],
+    ] {
+        let output = cli(args);
+        assert!(output.status.success(), "{output:?}");
+        let help = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            help.contains("Arguments:"),
+            "no positional operands in:\n{help}"
+        );
+    }
+
+    let output = cli(&["export", "--help"]);
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--output <FILE>"), "{help}");
+    assert!(!help.contains("--out "), "legacy --out survived:\n{help}");
 }
 
 #[test]

@@ -439,12 +439,12 @@ pub async fn serve(options: ServeOptions) {
     println!("    trusted proxies: {}", config.cost.trusted_proxies.len());
     if config.session.history_max == 0 {
         eprintln!(
-            "warning: unlimited checkpoint history is enabled; set --history to a finite count"
+            "warning: unlimited checkpoint history is enabled; set --history-limit to a finite count"
         );
     }
     if config.cost.transfer_bytes.is_none() {
         eprintln!(
-            "warning: no daily origin transfer budget is configured; use --budget-transfer BYTES"
+            "warning: no daily origin transfer budget is configured; use --transfer-budget BYTES"
         );
     }
     if let Some(library) = &instance.fonts {
