@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from "svelte";
   // The timeline, as a column beside the document.
   //
   // A history is read backwards -- what happened, then what happened before
@@ -39,6 +40,10 @@
     onclosefilediff,
     onview,
     oncompare,
+    oncomparecurrent,
+    onrefreshcurrent,
+    comparingCurrent = false,
+    newerEdits = false,
     onstep,
     onfilediff,
     oncheckpointfile,
@@ -47,12 +52,15 @@
     problem = "",
     onback,
     onname,
+    currentLabel = "",
   } = $props();
 
   // The runs a reader has asked to see inside, by the SHA of the row that
   // stands for them. Forgotten when the panel closes, which is the right
   // lifetime: it is a glance, not a setting.
   let opened = $state(new Set());
+  let namedOnly = $state(false);
+  let lastRevealed = $state("");
 
   // The checkpoint being named, and what it is being named. One at a time,
   // because naming two moments at once is not a thing anybody does.
@@ -60,7 +68,15 @@
   let draft = $state("");
   let field = $state(null);
 
-  const days = $derived(timeline(checkpoints));
+  // Filtering affects the rows a reader sees, while the selected checkpoint
+  // remains in the list so its preview never disappears under the filter.
+  const timelinePoints = $derived.by(() => {
+    if (!namedOnly) return checkpoints;
+    const selected = checkpoints.find((point) => point.sha === viewing);
+    return checkpoints.filter((point) => point.label || point.sha === viewing);
+  });
+  const days = $derived(timeline(timelinePoints));
+  const namedCount = $derived(checkpoints.filter((point) => point.label).length);
 
   // Where each checkpoint stands in the manifest, oldest first, so that the
   // range can be drawn: every row strictly after the baseline and up to the
@@ -104,6 +120,32 @@
     opened = next;
   }
 
+  function toggleFold(row) {
+    const next = new Set(opened);
+    if (next.has(row.first.sha)) next.delete(row.first.sha);
+    else next.add(row.first.sha);
+    opened = next;
+  }
+
+  // A direct link may point into a collapsed session. Reveal that row as soon
+  // as it becomes the selected preview.
+  $effect(() => {
+    if (!viewing) {
+      lastRevealed = "";
+      return;
+    }
+    const row = days.flatMap(({ rows }) => rows).find((candidate) =>
+      candidate.kind === "folded" && [candidate.first, ...candidate.hidden, candidate.last].some((point) => point.sha === viewing),
+    );
+    const key = row ? `${viewing}:${row.first.sha}` : "";
+    if (row && key !== lastRevealed) {
+      const next = new Set(untrack(() => opened));
+      next.add(row.first.sha);
+      opened = next;
+      lastRevealed = key;
+    }
+  });
+
   // The time alone: the day is the heading above it, and repeating the date on
   // every row is thirty copies of what the reader just read.
   function clock(at) {
@@ -111,6 +153,33 @@
     return Number.isNaN(when.getTime())
       ? ""
       : when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function stamp(at) {
+    const when = new Date(at);
+    return Number.isNaN(when.getTime()) ? "" : when.toLocaleString([], {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+  }
+
+  function dayLabel(day) {
+    if (!day) return "Unknown date";
+    const today = new Date();
+    const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    const yesterdayKey = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+    if (day === todayKey) return "Today";
+    if (day === yesterdayKey) return "Yesterday";
+    const date = new Date(`${day}T12:00:00`);
+    return Number.isNaN(date.getTime()) ? day : date.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+  }
+
+  function sessionSummary(row) {
+    const count = row.hidden.length + 2;
+    const range = `${clock(row.last.at)}–${clock(row.first.at)}`;
+    return `${range} · ${row.first.by || "somebody"} · ${count} versions`;
   }
 
   // What a checkpoint was taken for, in words rather than in the manifest's
@@ -130,7 +199,7 @@
     accept: "accepted a suggestion",
     render: "rendered",
   };
-  const QUIET = new Set(["quiet", "left", "render"]);
+  const QUIET = new Set(["quiet", "left", "render", "automatic", "sync"]);
   const reason = (why) => WHY[why] || why;
   const said = (point) => (QUIET.has(point.why) ? "" : reason(point.why));
 
@@ -142,9 +211,11 @@
   }
 
   function finishNaming() {
+    if (!naming) return;
     const sha = naming;
     const given = draft.trim();
     naming = "";
+    if (sha === "current" && !given) return;
     onname?.(sha, given);
   }
 
@@ -154,7 +225,7 @@
   const visibleChanges = $derived(Array.isArray(changes) ? changes : []);
   const groups = $derived(coalesce(visibleChanges));
   const paths = $derived([...new Set([...(changedPaths || []), ...visibleChanges.map((hunk) => hunk.path).filter(Boolean)])]);
-  const name = (point) => (point ? point.label || shortSha(point.sha) : "");
+  const name = (point) => (point ? point.label || stamp(point.at) || "Unnamed version" : "");
 
   // The words around a change, a few of them: the diff keeps six on each
   // side so that a deletion still has a place, but a row in a narrow column
@@ -181,7 +252,9 @@
     onstep?.(groups[step]);
   }
   const count = $derived(
-    groups.length === 1 ? "1 change" : `${groups.length} changes`,
+    step >= 0
+      ? `Change ${step + 1} of ${groups.length}`
+      : groups.length === 1 ? "1 change" : `${groups.length} changes`,
   );
 
   // `]` and `[` step the same as the two arrow buttons, for whoever would
@@ -207,28 +280,48 @@
   <PanelHeader
     title="History"
     meta={checkpoints.length
-      ? `${checkpoints.length} checkpoint${checkpoints.length === 1 ? "" : "s"}`
+      ? `${checkpoints.length} version${checkpoints.length === 1 ? "" : "s"}`
       : undefined}
   >
     {#if problem}
       <p class="text-error-500">{problem}</p>
     {:else if checkpoints.length === 0}
       <p class="panel-muted">
-        Nothing yet. A checkpoint is taken when the typing stops, when the last
+        Nothing yet. A version is saved when the typing stops, when the last
         editor leaves, and whenever the document is published to.
       </p>
     {/if}
   </PanelHeader>
 
   {#if checkpoints.length > 0}
+    <label class="history-switch label px-2 py-1">
+      <input type="checkbox" class="checkbox" bind:checked={namedOnly} />
+      <span class="label-text text-xs">Named versions only</span>
+    </label>
+    {#if namedOnly && namedCount === 0}
+      <p class="panel-muted px-2 py-1 text-sm" role="status">No named versions yet. Name a version to find it here.</p>
+    {:else if namedOnly && viewing && !checkpoints.find((point) => point.sha === viewing)?.label}
+      <p class="panel-muted px-2 py-1 text-sm" role="status">The selected version is shown below even though it is unnamed.</p>
+    {/if}
+  {/if}
+
+  {#if checkpoints.length > 0}
     <section class="history-range border-surface-200-800 border-b" aria-label="Changes">
       {#if !baseline}
-        <p class="panel-muted text-sm">Choose a checkpoint to see the words that changed.</p>
+        <p class="panel-muted text-sm">Choose a version to see the words that changed.</p>
       {:else}
         <p class="history-span panel-meta">
           {#if target}Changes from <strong>{name(baseline)}</strong> to <strong>{name(target)}</strong>
           {:else}Changes since <strong>{name(baseline)}</strong>{/if}
         </p>
+        {#if viewing && !comparingCurrent}
+          <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => oncomparecurrent?.(viewing)}>Compare with current</button>
+        {:else if comparingCurrent}
+          <p class="history-span panel-meta">Comparing <strong>{name(baseline)}</strong> with <strong>Current version</strong>.</p>
+          {#if newerEdits}
+            <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onrefreshcurrent?.()}>Newer edits available · Refresh</button>
+          {/if}
+        {/if}
         <div class="history-nav">
           {#if problem}
             <span class="panel-muted text-sm">The passage comparison is unavailable.</span>
@@ -237,11 +330,11 @@
           {:else if changes === null}
             <span class="panel-muted text-sm" role="status">Loading changes…</span>
           {:else if !groups.length}
-            <span class="panel-muted text-sm">No text changed.</span>
+            <span class="panel-muted text-sm">{!comparingCurrent && viewing === checkpoints[0]?.sha ? "First version." : "No text changed."}</span>
           {:else}
             <span class="history-count text-sm">{count}</span>
             <span class="history-steps">
-              <IconButton icon="chevron-up" tone="plain" size="btn-icon-sm" label="Previous change ([)" onclick={() => goTo(step - 1)} />
+              <IconButton icon="chevron-up" tone="plain" size="btn-icon-sm" label="Previous change ([)" onclick={() => goTo(step < 0 ? groups.length - 1 : step - 1)} />
               <IconButton icon="chevron-down" tone="plain" size="btn-icon-sm" label="Next change (])" onclick={() => goTo(step + 1)} />
             </span>
           {/if}
@@ -252,7 +345,7 @@
               checked={redlines}
               onchange={(event) => onredlines?.(event.currentTarget.checked)}
             />
-            <span class="label-text text-xs">Show in document</span>
+            <span class="label-text text-xs">Show changes</span>
           </label>
         </div>
         {#if groups.length}
@@ -321,7 +414,20 @@
         class:in-range={!target && baselineAt >= 0}
         class:range-end={!target && baselineAt >= 0}
       >
-        <button
+        {#if naming === "current"}
+          <input
+            bind:this={field}
+            bind:value={draft}
+            class="input"
+            placeholder="Name this version"
+            aria-label="Name the current version"
+            onkeydown={(event) => {
+              if (event.key === "Enter") finishNaming();
+              if (event.key === "Escape") naming = "";
+            }}
+            onblur={finishNaming}
+          />
+        {:else}<button
           type="button"
           class="timeline-point"
           class:timeline-here={!viewing}
@@ -331,12 +437,18 @@
         >
           <span class="timeline-dot timeline-dot-now"></span>
           <span class="timeline-when panel-meta">now</span>
-          <span class="timeline-what"><span class="timeline-who">Live document</span></span>
+          <span class="timeline-what">{#if currentLabel}<strong>{currentLabel}</strong>{/if}<span class="timeline-who">Current version</span></span>
         </button>
+        {/if}
+        {#if canEdit && naming !== "current"}
+          <span class="timeline-actions">
+            <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label="Name the current version" onclick={() => startNaming({ sha: "current", label: currentLabel })} />
+          </span>
+        {/if}
       </li>
       {#each days as { day, rows } (day)}
         <li class="timeline-day-row" class:in-range={throughDay(rows)}>
-          <h4 class="panel-section-title timeline-day sticky top-0 z-1">{day}</h4>
+          <h4 class="panel-section-title timeline-day sticky top-0 z-1">{dayLabel(day)}</h4>
         </li>
         {#each rows as row (row.kind === "point" ? row.point.sha : row.first.sha)}
           {#if row.kind === "point"}
@@ -347,12 +459,16 @@
               {@render mark(point)}
             {/each}
             {@render mark(row.last)}
+            <li class="timeline-row timeline-fold">
+              <button type="button" class="timeline-folded" onclick={() => toggleFold(row)} aria-label="Collapse editing session">Collapse session</button>
+            </li>
           {:else}
             {@render mark(row.first)}
             <li class="timeline-row timeline-fold" class:in-range={inRange(row.hidden[0].sha)}>
-              <button type="button" class="timeline-folded" onclick={() => unfold(row)}>
-                {row.hidden.length} more by {row.first.by || "somebody"}
+              <button type="button" class="timeline-folded" onclick={() => onview?.(row.first.sha)} title="Show the newest version in this session">
+                {sessionSummary(row)}
               </button>
+              <IconButton icon="chevron-down" tone="plain" size="btn-icon-sm" label="Expand editing session" onclick={() => unfold(row)} />
             </li>
             {@render mark(row.last)}
           {/if}
@@ -392,7 +508,7 @@
         class:timeline-named={Boolean(point.label)}
         class:timeline-here={viewing === point.sha}
         aria-current={viewing === point.sha ? "true" : undefined}
-        title="Show the document as it was at {shortSha(point.sha)} ({point.by || "somebody"} {reason(point.why)})"
+        title="Show version from {stamp(point.at) || shortSha(point.sha)} ({point.by || "somebody"} {reason(point.why)})"
         onclick={() => onview?.(point.sha)}
       >
         <span class="timeline-dot {swatch(point.by)}"></span>
@@ -418,7 +534,7 @@
           icon="diff"
           tone={baseline?.sha === point.sha ? "tonal" : "plain"}
           size="btn-icon-sm"
-          label="Compare since this checkpoint"
+          label="Compare since this version"
           pressed={baseline?.sha === point.sha}
           onclick={() => oncompare?.(point.sha)}
         />
@@ -430,9 +546,9 @@
             label={point.label ? "Rename this point" : "Name this point"}
             onclick={() => startNaming(point)}
           />
-          <IconButton icon="history" tone="plain" size="btn-icon-sm" label="Restore this checkpoint" onclick={() => onrestore?.(point.sha)} />
+          <IconButton icon="history" tone="plain" size="btn-icon-sm" label="Restore this version" onclick={() => onrestore?.(point.sha)} />
         {/if}
-        <CopyLink href={oncopy?.(point.sha) || undefined} label="Copy the link to this checkpoint" tone="plain" />
+        <CopyLink href={oncopy?.(point.sha) || undefined} label="Copy the link to this version" tone="plain" />
       </span>
     {/if}
   </li>
@@ -441,7 +557,7 @@
          no other: each opens against the checkpoint before. -->
     <li class="timeline-row timeline-files" class:in-range={inRange(point.sha)}>
       {#each point.changed as path (path)}
-        <button type="button" class="timeline-file" onclick={() => oncheckpointfile?.(point, path)} title="Compare this file with the previous checkpoint">{path}</button>
+        <button type="button" class="timeline-file" onclick={() => oncheckpointfile?.(point, path)} title="Compare this file with the previous version">{path}</button>
       {/each}
     </li>
   {/if}

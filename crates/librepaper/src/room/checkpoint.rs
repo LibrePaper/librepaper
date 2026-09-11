@@ -550,6 +550,9 @@ impl Room {
                     state.session.last_checkpoint = existing.clone();
                     state.session.last_tree = Some(tree.clone());
                     state.session.checkpoint_generation = tree_generation;
+                    if state.session.generation == tree_generation {
+                        state.session.pending_checkpoint_since = 0;
+                    }
                     drop(state);
                     // A replacement of identical content still has a
                     // prepared publication receipt. Reuse the already
@@ -785,6 +788,9 @@ impl Room {
             // arrived while objects were being written, retain the captured
             // generation so the room stays dirty and is flushed again.
             state.session.checkpoint_generation = tree_generation;
+            if state.session.generation == tree_generation {
+                state.session.pending_checkpoint_since = 0;
+            }
             shed = shed_now;
         }
         let mut shed = shed;

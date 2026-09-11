@@ -323,4 +323,64 @@ for (const outcome of ["current", "closed", "revoked", "disposed", "baseline"]) 
   assert.equal(controller.changes[1].who, "sam");
 }
 
+// Explicit current comparisons capture both the target tree and its text.
+// Incoming edits are visible as a prompt, not silently incorporated; refresh
+// deliberately creates a new target. Ordinary selection then returns to the
+// predecessor rule.
+{
+  let currentText = "live one";
+  const session = { tree: () => point("live", currentText), idOf: () => "main", textOf: () => currentText, awareness: {} };
+  const controller = createHistoryController({
+    slug: "doc",
+    history: {
+      load: async () => [point("A", "old"), point("B", "middle"), point("C", "new")],
+      wordDiff: async () => [],
+      hunks,
+    },
+    passages: { textAt: async (_slug, sha) => ({ A: "old", B: "middle", C: "new" }[sha]) },
+    live: () => ({ session, text: currentText }),
+    readBaseline: () => "A",
+    rememberBaseline: () => {},
+  });
+  await controller.load();
+  await controller.compareWithCurrent("A");
+  const captured = controller.capturedCurrent;
+  assert.equal(controller.comparingCurrent, true);
+  assert.equal(captured.texts["main.md"], "live one");
+  assert.deepEqual(controller.changedPaths, ["main.md"], "file/source paths remain available when rendered text is unavailable");
+  assert.equal(controller.newerEdits, false);
+  currentText = "live two";
+  controller.noteLiveChange();
+  assert.equal(controller.newerEdits, true);
+  await controller.refreshCurrent();
+  assert.equal(controller.newerEdits, false);
+  assert.equal(controller.capturedCurrent.texts["main.md"], "live two");
+  await controller.compareTo("C");
+  assert.equal(controller.comparingCurrent, false);
+  assert.equal(controller.baseline.sha, "B");
+  assert.equal(controller.target.sha, "C");
+}
+
+// A delayed current-tree digest cannot commit after a newer ordinary click.
+{
+  const digest = deferred();
+  const controller = createHistoryController({
+    slug: "doc",
+    history: { load: async () => [point("A"), point("B")], wordDiff: async () => [], hunks },
+    passages: { textAt: async () => "same" },
+    live: () => ({ session: liveSession("live"), text: "live" }),
+    snapshotDigest: async () => digest.promise,
+    readBaseline: () => "A",
+    rememberBaseline: () => {},
+  });
+  await controller.load();
+  const pending = controller.compareWithCurrent("A");
+  await Promise.resolve();
+  await controller.compareTo("B");
+  digest.resolve("current-digest");
+  await pending;
+  assert.equal(controller.comparingCurrent, false);
+  assert.equal(controller.target.sha, "B");
+}
+
 console.log("history-controller: compiled state, baseline/target/file races, compareTo, lazy merge ownership and disposal passed");

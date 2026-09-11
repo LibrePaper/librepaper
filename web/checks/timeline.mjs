@@ -82,6 +82,26 @@ const shas = (rows) =>
   check("nothing is lost around a label", shas(rows).length === 9);
 }
 
+{
+  // A fifteen-minute pause starts another session, even with the same author
+  // and calendar day. The manifest is oldest first; timeline reverses it.
+  const points = marks("05", "vincent", 7);
+  points[3].at = "2026-09-05T09:20:00Z";
+  points[4].at = "2026-09-05T09:19:00Z";
+  const rows = rowsOf(timeline(points));
+  check("a fifteen-minute gap starts a new session", rows.length === 2 && rows.every((row) => row.kind === "folded"));
+  check("the gap split preserves every checkpoint", shas(rows).length === points.length);
+}
+
+{
+  const points = marks("05", "vincent", 7);
+  points[3].why = "restore";
+  const rows = rowsOf(timeline(points));
+  check("a restoration milestone remains visible", rows.some((row) => row.kind === "point" && row.point.why === "restore"));
+  check("a milestone splits routine sessions", rows.length === 3);
+  check("a milestone split preserves every checkpoint", shas(rows).length === points.length);
+}
+
 /* ------------------------------------------------------- one change, read */
 
 {

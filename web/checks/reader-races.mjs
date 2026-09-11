@@ -104,6 +104,9 @@ const context = (values) => vm.createContext({
   previewMain: "",
   previewFile: "",
   session: null,
+  viewing: null,
+  historyController: { noteLiveChange: () => {} },
+  checkpointNavigationPending: 0,
   diagnosticContext,
   snapshotDigest: async () => "test-render-digest",
   historyDiffGeneration: 0,
@@ -379,6 +382,21 @@ for (const invalidate of [null, "navigation", "main"]) {
   await new Promise(setImmediate);
   assert.equal(delivered.at(-1), "latest");
   assert.equal(ctx.previewPaintBusy, false);
+}
+
+// Peer updates notify history without repainting the frozen preview.
+{
+  let notified = 0;
+  const ctx = context({
+    sourceGeneration: 0, viewing: { sha: "old" },
+    outlineRevision: 0,
+    historyController: { noteLiveChange: () => notified++ },
+    diagnosticPainter: { typed: () => assert.fail("historical preview must remain stable") },
+  });
+  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
+  vm.runInContext("sourceChanged()", ctx);
+  assert.equal(notified, 1);
+  assert.equal(ctx.sourceGeneration, 1);
 }
 
 // Further keystrokes must not postpone an editor's already scheduled preview.
@@ -735,6 +753,20 @@ for (const latest of [
   assert.equal(ctx.previewMain, 'paper.qmd');
 }
 console.log('reader-races: explicit preview selection, auxiliary files, rename and deletion passed');
+
+// Initial live-file discovery must not cancel a historical link being fetched.
+{
+  const ctx = context({
+    session: { mainPath: () => 'main.md' }, files: [],
+    previewMain: '', sourceFormat: 'markdown', navigationGeneration: 7,
+    checkpointNavigationPending: 7, mayEdit: false,
+    renderers: { formatOf: () => 'markdown' }, configureLatex: () => {},
+  });
+  vm.runInContext(body('  function updatePreviewTarget()', '  function previewThisFile()'), ctx);
+  vm.runInContext('updatePreviewTarget()', ctx);
+  assert.equal(ctx.previewMain, 'main.md');
+  assert.equal(ctx.navigationGeneration, 7, 'pending checkpoint navigation retains ownership');
+}
 
 // A secondary file's PDF must not overwrite or replay the shared main's PDF.
 {

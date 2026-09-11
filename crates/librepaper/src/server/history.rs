@@ -177,7 +177,10 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        if !is_sha(sha) {
+        // `current` is a virtual row used by the history panel. Naming it
+        // first captures pending edits, then labels the resulting checkpoint.
+        let current = sha == "current";
+        if !current && !is_sha(sha) {
             return plain(404, "not found");
         }
         if cross_site_refused(request.headers(), arrival) {
@@ -212,22 +215,34 @@ impl Server {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
         };
-        match room
-            .label_as_authority(
-                sha,
-                &label,
-                Some(crate::storage::catalog::MutationAuthority {
-                    account_id: who.id.id.as_str(),
-                    owner_key: who.key.as_str(),
-                    generation: who.id.session_generation.as_str(),
-                    link_hash: who.link.as_str(),
-                    policy_editor: self.publishers.allows(&who.id.handle),
-                    automation: who.automation,
-                    unowned_publisher: false,
-                }),
-            )
-            .await
-        {
+        let authority = crate::storage::catalog::MutationAuthority {
+            account_id: who.id.id.as_str(),
+            owner_key: who.key.as_str(),
+            generation: who.id.session_generation.as_str(),
+            link_hash: who.link.as_str(),
+            policy_editor: self.publishers.allows(&who.id.handle),
+            automation: who.automation,
+            unowned_publisher: false,
+        };
+        let sha = if current {
+            match room
+                .checkpoint_now_with_authority("label", who.attribution(), authority)
+                .await
+            {
+                Ok(Some(sha)) => sha,
+                Ok(None) => return plain(404, "not found"),
+                Err(error) => {
+                    return refused_with(
+                        &format!("could not name the current draft of {slug}"),
+                        &error,
+                        &[],
+                    )
+                }
+            }
+        } else {
+            sha.to_string()
+        };
+        match room.label_as_authority(&sha, &label, Some(authority)).await {
             Ok(true) => write_json(200, &json!({"sha": sha, "label": label})),
             Ok(false) => plain(404, "not found"),
             Err(error) => refused_with(

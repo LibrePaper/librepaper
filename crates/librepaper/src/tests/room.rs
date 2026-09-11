@@ -1153,7 +1153,7 @@ async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
 }
 
 #[tokio::test]
-async fn automatic_checkpoint_uses_hourly_interval_without_quiet_time() {
+async fn automatic_checkpoint_uses_max_interval_without_quiet_time() {
     let mut config = Configuration::default();
     config.session.checkpoint_seconds = 60 * 60;
     config.session.history_interval_seconds = 1;
@@ -1162,11 +1162,42 @@ async fn automatic_checkpoint_uses_hourly_interval_without_quiet_time() {
     room.set_source("B", "markdown").await.unwrap();
     {
         let mut state = room.state.lock().await;
-        state.session.last_checkpoint_at = crate::util::now_unix() - 2;
+        state.session.pending_checkpoint_since = crate::util::now_unix() - 2;
         state.session.updated_at = crate::util::now_unix();
     }
     assert!(!room.tick().await);
     assert_eq!(room.manifest().await.checkpoints.len(), 2);
+}
+
+#[tokio::test]
+async fn checkpoint_deadline_survives_intermediate_session_persists() {
+    let mut config = Configuration::default();
+    config.session.checkpoint_seconds = i64::MAX;
+    config.session.history_interval_seconds = 300;
+    let (_dir, _store, rooms) = fixture(config).await;
+    let room = rooms.get("probe").await;
+
+    room.set_source("B", "markdown").await.unwrap();
+    {
+        let mut state = room.state.lock().await;
+        state.session.pending_checkpoint_since = crate::util::now_unix() - 290;
+    }
+    room.persist().await.unwrap();
+    // A later edit and another durable session write must not restart the
+    // checkpoint deadline: dirty_since belongs only to the flush debounce.
+    room.set_source("C", "markdown").await.unwrap();
+    room.persist().await.unwrap();
+    room.tick().await;
+    assert_eq!(room.manifest().await.checkpoints.len(), 1);
+
+    {
+        let mut state = room.state.lock().await;
+        state.session.pending_checkpoint_since = crate::util::now_unix() - 301;
+    }
+
+    assert!(!room.tick().await);
+    assert_eq!(room.manifest().await.checkpoints.len(), 2);
+    assert_eq!(room.state.lock().await.session.pending_checkpoint_since, 0);
 }
 
 #[tokio::test]

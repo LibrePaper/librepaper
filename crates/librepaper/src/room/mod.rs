@@ -187,6 +187,10 @@ pub struct Session {
     /// Start of the current dirty interval. It is deliberately not refreshed
     /// by every edit: the flush deadline is a deadline, not a debounce timer.
     pub dirty_since: i64,
+    /// Start of edits not yet covered by a checkpoint. Unlike `dirty_since`,
+    /// this survives durable session writes and resets only when a checkpoint
+    /// captures the current generation.
+    pub pending_checkpoint_since: i64,
     /// Last successful durable snapshot, used for the deployment-wide flush
     /// floor. It is separate from checkpoint time: a busy room still gets a
     /// bounded journal flush cadence without creating history entries.
@@ -267,6 +271,9 @@ pub struct Session {
 
 impl Session {
     fn mark_dirty(&mut self, at: i64) {
+        if self.generation == self.checkpoint_generation && self.pending_checkpoint_since == 0 {
+            self.pending_checkpoint_since = at;
+        }
         if !self.dirty {
             self.dirty_since = at;
         }
@@ -929,6 +936,7 @@ impl RoomSet {
                     doc: session::new_doc(),
                     dirty: false,
                     dirty_since: 0,
+                    pending_checkpoint_since: 0,
                     last_persist_at: 0,
                     generation: 0,
                     encoded_size: None,
@@ -1420,6 +1428,7 @@ impl Room {
                     // mistaken for an idempotent retry.
                     state.session.generation = durable_journal_sequence;
                     state.session.checkpoint_generation = 0;
+                    state.session.pending_checkpoint_since = now_unix();
                 } else {
                     eprintln!(
                         "warning: the session for {} is unreadable; preserving it and trying to \
@@ -2812,6 +2821,7 @@ impl Room {
             dirty,
             quiet_for,
             dirty_for,
+            pending_checkpoint_for,
             last_persist_at,
             asked,
             sockets,
@@ -2824,6 +2834,11 @@ impl Room {
                 state.session.dirty,
                 now - state.session.updated_at,
                 now - state.session.dirty_since,
+                if state.session.pending_checkpoint_since > 0 {
+                    now - state.session.pending_checkpoint_since
+                } else {
+                    0
+                },
                 state.session.last_persist_at,
                 state.session.asked.clone(),
                 state.sockets.len(),
@@ -2865,9 +2880,13 @@ impl Room {
         }
         if differs
             && (quiet_for >= limits.checkpoint_seconds
-                || since_checkpoint >= limits.history_interval_seconds)
+                // The maximum interval is from the first edit still pending,
+                // rather than from the preceding checkpoint. This prevents a
+                // continuously edited document from postponing its checkpoint
+                // forever, while preserving the quiet-time tuning knob.
+                || pending_checkpoint_for >= limits.history_interval_seconds)
         {
-            let why = if since_checkpoint >= limits.history_interval_seconds {
+            let why = if pending_checkpoint_for >= limits.history_interval_seconds {
                 "automatic"
             } else {
                 "quiet"

@@ -8,6 +8,7 @@ import * as historyApi from "../history.js";
 import * as passagesApi from "../passages.js";
 import { read, write } from "../storage.js";
 import { attribution, attributeChain } from "../redlines.js";
+import { snapshotDigest as digestTree } from "../tree-digest.js";
 
 const emptyLive = () => ({ session: null, text: null });
 
@@ -21,6 +22,7 @@ export function createHistoryController({
   live = emptyLive,
   viewing = () => null,
   sourceFormat = () => "markdown",
+  snapshotDigest = digestTree,
   mayEdit = () => false,
   editing = () => false,
   onRedlines = () => {},
@@ -39,6 +41,11 @@ export function createHistoryController({
     // changes are, and the panel only says which range is being shown.
     redlines: true,
     fileDiff: null,
+    // An explicit comparison has a frozen copy of the live tree as its
+    // target.  Keeping this separate from `target` is useful to callers that
+    // need to distinguish a checkpoint from the captured current document.
+    comparingCurrent: false,
+    newerEdits: false,
   });
 
   let disposed = false;
@@ -77,6 +84,52 @@ export function createHistoryController({
     return state.checkpoints.find((point) => point.sha === sha) || null;
   }
 
+  const treeSignature = (tree) => JSON.stringify({
+    main: tree?.main || "", texts: tree?.texts || {}, files: tree?.files || {},
+    digests: tree?.digests || {}, settings: tree?.settings || {},
+  });
+  async function liveSnapshot() {
+    const liveState = live() || emptyLive();
+    const session = liveState.session;
+    if (!session) return null;
+    const sourceTree = liveState.tree || session.tree?.() || {};
+    const texts = { ...(sourceTree.texts || {}) };
+    const files = Object.fromEntries(Object.entries(sourceTree.files || {}).map(([path, file]) => [path, { ...file }]));
+    const tree = {
+      ...sourceTree,
+      texts,
+      files,
+      digests: { ...(sourceTree.digests || {}) },
+      settings: sourceTree.settings ? { ...sourceTree.settings } : sourceTree.settings,
+    };
+    const at = new Date().toISOString();
+    const sha = await snapshotDigest(tree);
+    const snapshot = {
+      ...tree,
+      sha,
+      at,
+      label: "Current version",
+      _current: true,
+      _signature: treeSignature(tree),
+      texts,
+      files,
+    };
+    return snapshot;
+  }
+
+  function currentSnapshotChanged(point = state.target) {
+    if (!point?._current) return false;
+    const now = live() || emptyLive();
+    const tree = now.tree || now.session?.tree?.() || {};
+    return point._signature !== treeSignature(tree);
+  }
+
+  // Reader calls this when its live source changes. Keeping mutation out of
+  // the `newerEdits` getter makes that getter safe to consume from `$derived`.
+  function noteLiveChange() {
+    if (state.comparingCurrent && currentSnapshotChanged()) state.newerEdits = true;
+  }
+
   const indexOf = (sha) => state.checkpoints.findIndex((point) => point.sha === sha);
 
   async function load() {
@@ -112,6 +165,8 @@ export function createHistoryController({
       const point = listed.texts ? listed : await history.checkpoint(slug, sha, headers());
       if (!current(generation, "baseline") || manifestGeneration !== loadGeneration) return;
       state.baseline = point;
+      state.comparingCurrent = false;
+      state.newerEdits = false;
       // The range reads forward from the baseline. A compare point at or
       // before it is no longer one, so the comparison runs to the live
       // document instead.
@@ -132,6 +187,8 @@ export function createHistoryController({
     const manifestGeneration = loadGeneration;
     onMerge(null);
     invalidateFileDiff();
+    state.comparingCurrent = false;
+    state.newerEdits = false;
     if (!sha) {
       state.target = null;
       state.changes = null;
@@ -168,13 +225,71 @@ export function createHistoryController({
     }
     const at = indexOf(sha);
     if (at < 0) return;
-    const baselineAt = state.baseline ? indexOf(state.baseline.sha) : -1;
-    if (baselineAt < 0 || baselineAt >= at) {
-      const before = state.checkpoints[Math.max(0, at - 1)];
-      await chooseBaseline(before.sha);
-      if (!alive() || state.baseline?.sha !== before.sha) return;
-    }
+    // Ordinary selection always means this checkpoint versus its immediate
+    // predecessor.  It must not inherit a baseline chosen by a prior action.
+    const before = state.checkpoints[Math.max(0, at - 1)];
+    const pending = chooseBaseline(before.sha);
+    const generation = baselineGeneration;
+    await pending;
+    if (!current(generation, "baseline") || state.baseline?.sha !== before.sha) return;
     await chooseTarget(sha);
+  }
+
+  // Enter a stable comparison against the current document.  The target is
+  // copied now; later edits are reported, but never folded into the diff.
+  async function compareWithCurrent(sha) {
+    if (disposed || !sha || indexOf(sha) < 0) return;
+    const pending = chooseBaseline(sha);
+    const generation = baselineGeneration;
+    await pending;
+    if (!current(generation, "baseline") || state.baseline?.sha !== sha) return;
+    const captureGeneration = baselineGeneration;
+    const snapshot = await liveSnapshot();
+    if (!alive() || captureGeneration !== baselineGeneration) return;
+    if (!snapshot) return;
+    ++baselineGeneration;
+    state.target = snapshot;
+    state.comparingCurrent = true;
+    state.newerEdits = false;
+    // Edits may have landed while the digest/render capture was pending.
+    noteLiveChange();
+    clearComparison();
+    state.problem = "";
+    await computeChanges(state.baseline);
+  }
+
+  async function refreshCurrent() {
+    if (disposed || !state.comparingCurrent || !state.baseline) return;
+    const captureGeneration = baselineGeneration;
+    const snapshot = await liveSnapshot();
+    if (!alive() || captureGeneration !== baselineGeneration) return;
+    if (!snapshot) return;
+    ++baselineGeneration;
+    state.target = snapshot;
+    state.newerEdits = false;
+    noteLiveChange();
+    clearComparison();
+    await computeChanges(state.baseline);
+  }
+
+  function updateChangedPaths(point, target, session) {
+    const paths = new Set();
+    const baselineTexts = point.texts || {};
+    const targetTree = target || session.tree();
+    const targetTexts = targetTree.texts || {};
+    for (const path of new Set([...Object.keys(baselineTexts), ...Object.keys(targetTexts)])) {
+      if ((baselineTexts[path] || "") !== (targetTexts[path] || "")) paths.add(path);
+    }
+    const oldFiles = point.files || {};
+    const newFiles = targetTree.files || {};
+    for (const path of new Set([...Object.keys(oldFiles), ...Object.keys(newFiles)])) {
+      const oldEntry = oldFiles[path] || null;
+      const newEntry = newFiles[path] || null;
+      if (!oldEntry || !newEntry || oldEntry.kind !== newEntry.kind) paths.add(path);
+      else if (oldEntry.kind === "asset" && oldEntry.sha !== newEntry.sha) paths.add(path);
+      else if (oldEntry.kind === "text" && (baselineTexts[path] || "") !== (targetTexts[path] || "")) paths.add(path);
+    }
+    state.changedPaths = [...paths].sort();
   }
 
   async function computeChanges(point = state.baseline) {
@@ -189,11 +304,14 @@ export function createHistoryController({
     const request = ++diffGeneration;
     try {
       const oldVisible = await passages.textAt(slug, point.sha, headers());
-      const targetVisible = target
+      const targetVisible = target?._current
+        ? await passages.textAt(slug, target.sha, headers(), { history: { checkpoint: async () => target } })
+        : target
         ? await passages.textAt(slug, target.sha, headers())
         : liveText;
       if (!current(request, "diff") || baselineGenerationAtStart !== baselineGeneration || target !== state.target) return;
       if (live().session !== session || (!target && live().text !== liveText)) return;
+      updateChangedPaths(point, target, session);
       if (typeof oldVisible !== "string" || typeof targetVisible !== "string") {
         state.changes = [];
         state.problem = "Changes are unavailable for this checkpoint.";
@@ -222,27 +340,6 @@ export function createHistoryController({
         };
       });
 
-      const paths = new Set();
-      const baselineTexts = point.texts || {};
-      const targetTree = target ? target : session.tree();
-      const targetTexts = targetTree.texts || {};
-      for (const path of new Set([...Object.keys(baselineTexts), ...Object.keys(targetTexts)])) {
-        if ((baselineTexts[path] || "") !== (targetTexts[path] || "")) paths.add(path);
-      }
-      const oldFiles = point.files || {};
-      const newFiles = targetTree.files || {};
-      for (const path of new Set([...Object.keys(oldFiles), ...Object.keys(newFiles)])) {
-        const oldEntry = oldFiles[path] || null;
-        const newEntry = newFiles[path] || null;
-        if (!oldEntry || !newEntry || oldEntry.kind !== newEntry.kind) {
-          paths.add(path);
-        } else if (oldEntry.kind === "asset" && oldEntry.sha !== newEntry.sha) {
-          paths.add(path);
-        } else if (oldEntry.kind === "text" && (baselineTexts[path] || "") !== (targetTexts[path] || "")) {
-          paths.add(path);
-        }
-      }
-      state.changedPaths = [...paths].sort();
       state.problem = "";
       notifyRedlines();
 
@@ -375,6 +472,7 @@ export function createHistoryController({
   // Checkpoint navigation belongs to Reader, but a navigation invalidates a
   // live-document comparison that was waiting on the old visible page.
   function invalidateChanges() {
+    baselineGeneration += 1;
     diffGeneration += 1;
     if (!state.target) state.changes = null;
   }
@@ -393,6 +491,11 @@ export function createHistoryController({
     get problem() { return state.problem; },
     get baseline() { return state.baseline; },
     get target() { return state.target; },
+    get capturedCurrent() { return state.target?._current ? state.target : null; },
+    get comparingCurrent() { return state.comparingCurrent; },
+    get newerEdits() {
+      return state.newerEdits;
+    },
     get changes() { return state.changes; },
     get changedPaths() { return state.changedPaths; },
     get redlines() { return state.redlines; },
@@ -401,6 +504,9 @@ export function createHistoryController({
     chooseBaseline,
     chooseTarget,
     compareTo,
+    compareWithCurrent,
+    refreshCurrent,
+    noteLiveChange,
     computeChanges,
     openCheckpointFile,
     openFileDiff,

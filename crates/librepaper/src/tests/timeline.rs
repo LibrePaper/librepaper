@@ -287,6 +287,42 @@ async fn naming_a_checkpoint_takes_an_editor() {
     );
 }
 
+/// Naming the current row captures an uncheckpointed draft, and is idempotent
+/// with respect to content: renaming it updates one row rather than adding a
+/// second checkpoint. Read links and strangers cannot trigger that capture.
+#[tokio::test]
+async fn naming_current_captures_pending_content_without_duplicates() {
+    let server = new_test_server().await;
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let read_key = read_key_of(&document);
+    let cookie = session_as(TEST_PUBLISHER);
+    let room = server.instance.rooms.get(&slug).await;
+    room.set_source("pending draft", "markdown").await.unwrap();
+
+    let (status, answer) = patch_label(&cookie, &server.url, &slug, "current", "Draft").await;
+    assert_eq!(status, 200, "{answer}");
+    let sha = text(&answer, "sha");
+    assert!(!sha.is_empty());
+    assert_eq!(text(&answer, "label"), "Draft");
+    let (_, checkpoint) = get_checkpoint(&cookie, &server.url, &slug, &sha).await;
+    let main = text(&checkpoint, "main");
+    assert_eq!(checkpoint["texts"][main], "pending draft");
+    assert_eq!(history_of(&cookie, &server.url, &slug).await.len(), 2);
+
+    let (status, renamed) = patch_label(&cookie, &server.url, &slug, "current", "Renamed").await;
+    assert_eq!(status, 200, "{renamed}");
+    assert_eq!(text(&renamed, "sha"), sha);
+    assert_eq!(history_of(&cookie, &server.url, &slug).await.len(), 2);
+
+    let (status, _) =
+        patch_label_keyed("", &read_key, &server.url, &slug, "current", "intruder").await;
+    assert_eq!(status, 404);
+    let (status, _) = patch_label("", &server.url, &slug, "current", "intruder").await;
+    assert_eq!(status, 404);
+    assert_eq!(history_of(&cookie, &server.url, &slug).await.len(), 2);
+}
+
 /// A label is trimmed rather than refused, the way every other text a caller
 /// sends is: control characters out, one line, and bounded.
 #[tokio::test]

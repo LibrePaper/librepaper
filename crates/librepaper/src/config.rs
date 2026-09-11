@@ -283,6 +283,16 @@ pub struct SessionLimit {
     pub updates_per_minute: i64,
 }
 
+/// The quiet period before an edited document receives an automatic checkpoint.
+/// Keep this separate from the configurable session limit so deployments can
+/// tune policy without changing the scheduling algorithm.
+pub const CHECKPOINT_QUIET_SECONDS: i64 = 30;
+
+/// The maximum age of a pending edit before an automatic checkpoint is due.
+/// This is measured from the first uncheckpointed edit, not from the previous
+/// checkpoint, so continuous editing cannot postpone it indefinitely.
+pub const CHECKPOINT_MAX_INTERVAL_SECONDS: i64 = 5 * 60;
+
 /// A checkpoint asked for within this many seconds of the last one waits until
 /// they have passed. A burst of saves is one mark in the timeline, and a sync
 /// client writing all day is two marks a minute at most. A constant rather
@@ -397,8 +407,8 @@ impl Default for Configuration {
             max_replies: 100,
             session: SessionLimit {
                 write_after_seconds: 2,
-                checkpoint_seconds: 5 * 60,
-                history_interval_seconds: 60 * 60,
+                checkpoint_seconds: CHECKPOINT_QUIET_SECONDS,
+                history_interval_seconds: CHECKPOINT_MAX_INTERVAL_SECONDS,
                 checkpoint_owner_per_hour: 300,
                 checkpoint_deployment_per_hour: 10_000,
                 history_max: 0,

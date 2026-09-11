@@ -319,7 +319,8 @@
   function applyRedlines() {
     if (!frameReady) return;
     const showable = historyRedlines && panel === "history" && !redlinesDisabledReason &&
-      historyBaseline && Array.isArray(historyChanges);
+      historyBaseline && Array.isArray(historyChanges) &&
+      (viewing?.sha || "") === (historyComparePoint?.sha || "");
     // Each hunk already carries its own author in `who` when the history
     // controller's chained attribution ran (`hunk.who`, read by `itemsFor`
     // in preference to the range-level fallback below); `author` turns that
@@ -1152,7 +1153,7 @@
     slug: SLUG,
     headers: () => keyHeaders(KEY),
     comments: () => comments,
-    live: () => ({ session, text: docText }),
+    live: () => ({ session, text: docText, tree: liveTreeNow() }),
     viewing: () => viewing,
     sourceFormat: () => sourceFormat,
     mayEdit: () => mayEdit,
@@ -1190,6 +1191,7 @@
   let dictationSnapshot = $state({ state: "idle", progress: null, model: null, device: null, reason: null, speaking: false });
   $effect(() => getDictation().subscribe((value) => { dictationSnapshot = value; }));
   let navigationGeneration = 0;
+  let checkpointNavigationPending = 0;
   // Which checkpoint the reader arrived asking for, out of the link somebody
   // sent them. Read once, because after that the panel is where the answer is.
   const ARRIVED_AT = new URLSearchParams(location.search).get("at") || "";
@@ -1262,8 +1264,46 @@
     if (viewing && !historyComparePoint) backToNow();
   }
 
-  async function restoreCheckpoint(sha) {
+  async function compareWithCurrent(sha) {
+    const mine = ++navigationGeneration;
+    await historyController.compareWithCurrent(sha);
+    if (mine !== navigationGeneration || !historyController.capturedCurrent) return;
+    await showCapturedCurrent();
+  }
+
+  async function refreshHistoryCurrent() {
+    const mine = ++navigationGeneration;
+    await historyController.refreshCurrent();
+    if (mine !== navigationGeneration || !historyController.capturedCurrent) return;
+    await showCapturedCurrent();
+  }
+
+  async function showCapturedCurrent() {
+    renderingStore?.invalidate();
+    issued += 1;
+    dropHeldRendering();
+    viewing = historyController.capturedCurrent;
+    showMobileView("document");
+    await paintPreview();
+  }
+
+  let restoring = $state(false);
+  let restoreSha = $state("");
+  let restoreBusy = $state(false);
+  const restoreName = $derived.by(() => {
+    const point = checkpoints.find((point) => point.sha === restoreSha);
+    return point ? `${point.label ? `${point.label} · ` : ""}${new Date(point.at).toLocaleString()}` : "this version";
+  });
+  function restoreCheckpoint(sha) {
     if (!mayEdit || !sha) return;
+    restoreSha = sha;
+    restoring = true;
+  }
+
+  async function confirmRestore() {
+    const sha = restoreSha;
+    if (!mayEdit || !sha) return;
+    restoreBusy = true;
     try {
       const response = await fetch(`/api/documents/${SLUG}/restore`, {
         method: "POST",
@@ -1272,11 +1312,15 @@
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || "that checkpoint could not be restored");
+      restoring = false;
       mergeTarget = null;
       backToNow();
       await loadHistory();
+      await chooseHistoryTarget("");
     } catch (error) {
       toastProblem(error.message || "that checkpoint could not be restored");
+    } finally {
+      restoreBusy = false;
     }
   }
 
@@ -1287,15 +1331,16 @@
   // did not, because a figure is served immutably by its digest and the ones
   // this checkpoint used may well be the ones on the screen already.
   function checkpointTree(point) {
-    const digests = {};
+    const digests = { ...(point.digests || {}) };
     for (const [path, file] of Object.entries(point.files || {})) {
       if (file.kind !== "text") digests[path] = file.sha;
     }
-    return { main: point.main, texts: point.texts || {}, digests, files: point.files || {} };
+    return { ...point, main: point.main, texts: point.texts || {}, digests, files: point.files || {} };
   }
 
   async function showCheckpoint(sha) {
     const mine = ++navigationGeneration;
+    checkpointNavigationPending = mine;
     historyController.invalidateChanges();
     renderingStore?.invalidate();
     issued += 1;
@@ -1310,6 +1355,8 @@
       if (mine !== navigationGeneration) return;
       historyNavigationProblem = error.message || "that checkpoint could not be read";
       return;
+    } finally {
+      if (checkpointNavigationPending === mine) checkpointNavigationPending = 0;
     }
     if (mine === navigationGeneration) await paintPreview();
   }
@@ -1317,6 +1364,7 @@
   function backToNow() {
     const wasCheckpoint = Boolean(viewing) || frameShowsCheckpoint;
     navigationGeneration += 1;
+    checkpointNavigationPending = 0;
     renderingStore?.invalidate();
     issued += 1;
     dropHeldRendering();
@@ -1410,7 +1458,7 @@
   // What the bar over the document calls what it is showing: the name somebody
   // gave the moment, or the digest, which is the name it has anyway.
   const viewingName = $derived(
-    !viewing ? "" : viewing.label || history.shortSha(viewing.sha),
+    !viewing ? "" : `${viewing.label ? `${viewing.label} · ` : ""}${new Date(viewing.at).toLocaleString()}`,
   );
 
   // The document as a renderer takes it: every text in it, the figures by
@@ -1703,8 +1751,8 @@
       : sourceFormat === "latex" && renderers.compilerAvailable("latex")
     ),
   );
-  const unrendered = $derived(pdfOutput && !compilesHere && !everPaintedShown);
-  const failedBeforeRender = $derived(pdfOutput && compilesHere && pdfFailure && !everPaintedShown);
+  const unrendered = $derived(pdfOutput && (viewing || !compilesHere) && !everPaintedShown);
+  const failedBeforeRender = $derived(pdfOutput && !viewing && compilesHere && pdfFailure && !everPaintedShown);
 
   // A paged compile that is running says so, and says how long the last one
   // took once there has been one. Before the first, there is no honest number
@@ -2103,6 +2151,9 @@
     if (readerDisposed) return;
     sourceGeneration += 1;
     outlineRevision += 1;
+    historyController.noteLiveChange?.();
+    // A peer edit must not repaint or invalidate the historical document.
+    if (viewing) return;
     if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
       clearTimeout(quartoLiveSyncTimer);
       quartoLiveSyncTimer = setTimeout(() => void quartoPreviewController.sync(), 500);
@@ -2338,6 +2389,12 @@
   // column is drawn empty rather than as one audience's and then the other's.
   let settled = $state(false);
 
+  $effect(() => {
+    if (panel !== "history") return;
+    const timer = setInterval(() => void historyController.load(), 15000);
+    return () => clearInterval(timer);
+  });
+
   // Showing a panel; "" closes the column. Leaving the timeline is leaving it:
   // what the document pane shows goes back to the text as it stands, because
   // a page nobody can see the history behind is a page with no way back.
@@ -2348,6 +2405,7 @@
       backToNow();
       if (!hadCheckpoint) navigationGeneration += 1;
     }
+    if (name === "history" && panel !== "history") setHistoryRedlines(true);
     panel = name;
     if (compact) mobileView = name ? "sidebar" : "document";
     if (remembered) write(PANEL, name);
@@ -2631,7 +2689,7 @@
       quartoBindingId = localQuarto.bindingId();
       void localQuarto.probe();
     }
-    if (!previous || viewing) return;
+    if (!previous || viewing || checkpointNavigationPending) return;
     // Invalidate both running compiles and replayed pages, even when the
     // two selected files use the same renderer or both produce PDFs.
     navigationGeneration += 1;
@@ -3302,9 +3360,11 @@
 {#if viewing}
   <div class="workspace-banner preset-tonal-warning" role="region" aria-label="Historical version">
     <span title={new Date(viewing.at).toLocaleString()}>Showing {viewingName}</span>
-    <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={backToNow}>Back to now</button>
-    {#if mayEdit}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => restoreCheckpoint(viewing.sha)}>Restore this version</button>{/if}
-    <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
+    <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => viewPoint("")}>Back to current</button>
+    {#if !viewing._current}
+      {#if mayEdit}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => restoreCheckpoint(viewing.sha)}>Restore this version</button>{/if}
+      <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
+    {/if}
   </div>
 {/if}
 <!-- The status row. Everything the document has to say about its own state
@@ -3435,6 +3495,8 @@
                      provenance={lastLatexResult?.provenance || null} attempts={lastLatexResult?.attempts || []} />
       {:else if tab.id === "history"}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
+                 comparingCurrent={historyController.comparingCurrent} newerEdits={historyController.newerEdits}
+                 oncomparecurrent={compareWithCurrent} onrefreshcurrent={refreshHistoryCurrent}
                  problem={historyProblem}
                  baseline={historyBaseline} changes={historyChanges}
                  changedPaths={historyChangedPaths}
@@ -3544,10 +3606,20 @@
   {:else if shown.document && unrendered}
     <section class="latexpane">
       <div class="notyet">
-        <h2 class="h4">Not yet rendered</h2>
+        <h2 class="h4">{viewing ? "Historical preview unavailable" : "Not yet rendered"}</h2>
         <p class="text-surface-700-300 text-sm">
-          This {sourceFormat === "typst" ? "Typst" : "paged"} document has no stored PDF yet. When an editor compiles it, its pages appear here.
+          {#if viewing}
+            This version has no stored PDF. You can read its source below or compare files in History.
+          {:else}
+            This {sourceFormat === "typst" ? "Typst" : "paged"} document has no stored PDF yet. When an editor compiles it, its pages appear here.
+          {/if}
         </p>
+        {#if viewing?.texts?.[viewing.main] !== undefined}
+          <details>
+            <summary>View source · {viewing.main}</summary>
+            <pre>{viewing.texts[viewing.main]}</pre>
+          </details>
+        {/if}
       </div>
     </section>
   {/if}
@@ -3686,6 +3758,16 @@
       disabled={!identity && me.comments_need_login}
     >
       Save
+    </button>
+  {/snippet}
+</Modal>
+
+<Modal bind:open={restoring} title="Restore this version?"
+  description={`Restore ${restoreName}. Your current draft will be preserved in history.`}>
+  {#snippet footer()}
+    <button type="button" class="btn preset-outlined-surface-300-700" disabled={restoreBusy} onclick={() => (restoring = false)}>Cancel</button>
+    <button type="button" class="btn preset-filled-primary-500" disabled={restoreBusy || !mayEdit} onclick={confirmRestore}>
+      {restoreBusy ? "Restoring…" : "Restore version"}
     </button>
   {/snippet}
 </Modal>

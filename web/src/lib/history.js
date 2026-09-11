@@ -221,10 +221,23 @@ const dayOf = isoDay;
 /// middle of the run is folded away. Two is not a run; three is the smallest
 /// number where folding hides anything at all.
 const RUN = 3;
+/// A long pause starts a new editing session, even when the same person
+/// returns later on the same day. This is presentation only: no checkpoints
+/// are removed from the manifest.
+export const SESSION_GAP_MS = 15 * 60 * 1000;
+
+/// Publication and restoration are milestones in the timeline. The server has
+/// used both `cli` and `publish` for publication over time, so retain both
+/// spellings at the presentation boundary.
+export const MILESTONE_REASONS = new Set(["cli", "publish", "restore", "restored"]);
+
+export function isMilestone(point) {
+  return MILESTONE_REASONS.has(point?.why);
+}
 
 /// The manifest as a list somebody reads: newest first, grouped by day, and
 /// with runs of unlabelled checkpoints by one person folded to their first and
-/// last.
+/// last. A run is also split by a fifteen-minute gap or a milestone.
 ///
 /// The folding is the whole point. A working afternoon is thirty quiet
 /// checkpoints by one author, and thirty rows of the same name and the same
@@ -252,7 +265,7 @@ function fold(points) {
   let at = 0;
   while (at < points.length) {
     const point = points[at];
-    if (point.label) {
+    if (point.label || isMilestone(point)) {
       rows.push({ kind: "point", point });
       at += 1;
       continue;
@@ -261,7 +274,9 @@ function fold(points) {
     while (
       end + 1 < points.length &&
       !points[end + 1].label &&
-      points[end + 1].by === point.by
+      !isMilestone(points[end + 1]) &&
+      points[end + 1].by === point.by &&
+      !startsSession(points[end].at, points[end + 1].at)
     ) {
       end += 1;
     }
@@ -279,4 +294,10 @@ function fold(points) {
     at = end + 1;
   }
   return rows;
+}
+
+function startsSession(previous, next) {
+  const before = new Date(previous).getTime();
+  const after = new Date(next).getTime();
+  return Number.isFinite(before) && Number.isFinite(after) && Math.abs(after - before) >= SESSION_GAP_MS;
 }
