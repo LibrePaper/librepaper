@@ -55,9 +55,9 @@ function fakeCollaboration() {
 }
 
 const deferred = () => {
-  let resolve;
-  const promise = new Promise((done) => (resolve = done));
-  return { promise, resolve };
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 };
 
 // A replaced boot cannot let old identity or document responses populate the
@@ -107,6 +107,8 @@ const context = (values) => vm.createContext({
   Uint8Array,
   ArrayBuffer,
   readerDisposed: false,
+  editing: true,
+  latexOutput: "pdf",
   outlineRevision: 0,
   sourceFormat: "",
   typstOutput: "pdf",
@@ -589,6 +591,24 @@ for (const invalidate of [null, "navigation", "main"]) {
   ctx.renderers.render = async () => ({ pdf: null, log: "", diagnostics: [], failure: { message: "The mirror has no engine release" } });
   await vm.runInContext("paintPreview()", ctx);
   assert.equal(ctx.pdfFailureReason, "The mirror has no engine release");
+
+  // HTML conversion errors belong to the source snapshot that caused them.
+  const pendingHtml = deferred();
+  ctx.latexOutput = "html";
+  ctx.pdfOutput = false;
+  ctx.pdfFailure = false;
+  ctx.pdfFailureReason = "";
+  ctx.renderers.render = (_tree, _title, options) => {
+    assert.equal(options.format, "html");
+    return pendingHtml.promise;
+  };
+  const htmlPaint = vm.runInContext("paintPreview()", ctx);
+  await new Promise(setImmediate);
+  ctx.sourceGeneration++;
+  pendingHtml.reject(new Error("old conversion failed"));
+  await htmlPaint;
+  assert.equal(ctx.pdfFailure, false, "an old HTML error cannot mark a newer edit failed");
+  assert.equal(ctx.pdfFailureReason, "");
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
@@ -810,6 +830,7 @@ console.log('reader-races: explicit preview selection, auxiliary files, rename a
     previewThisFile: () => commands.push('file'),
     setQuartoPreviewMode: mode => commands.push(mode),
     setTypstPreviewMode: mode => commands.push(mode),
+    setLatexOutput: mode => commands.push(`latex-${mode}`),
     chose: value => commands.push(value),
     FILE_COMMANDS: [], chooseToolCommand: () => { throw Error('preview dispatched to Tools'); },
   });
@@ -817,6 +838,8 @@ console.log('reader-races: explicit preview selection, auxiliary files, rename a
   vm.runInContext(body('  function chooseCompactCommand(value)', '  /* ------------------------------------------------------------------- boot */'), ctx);
   vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("preview-quarto"); chooseCompactCommand("preview-markdown"); chooseCompactCommand("preview-typst"); chooseCompactCommand("preview-calepin"); chooseViewCommand("layout-split")', ctx);
   assert.deepEqual(commands, ['file','quarto','markdown','typst','calepin','layout-split']);
+  vm.runInContext('chooseViewCommand("preview-latex-html"); chooseCompactCommand("preview-latex-pdf")', ctx);
+  assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
   const view = body('{#snippet viewItems()}', '{#snippet toolItems()}');
   const tools = body('{#snippet toolItems()}', '<Nav {me}>');
   assert.match(view, /Preview this file/);

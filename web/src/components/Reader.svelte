@@ -211,6 +211,31 @@
   // stored renderings continue to use the document's PDF output.
   const TYPST_OUTPUT_KEY = `librepaper-typst-output:${SLUG}`;
   let typstOutput = $state(read(TYPST_OUTPUT_KEY, "pdf") === "html" ? "html" : "pdf");
+  const LATEX_OUTPUT_KEY = `librepaper-latex-output:${SLUG}`;
+  let latexOutput = $state(read(LATEX_OUTPUT_KEY, "pdf") === "html" ? "html" : "pdf");
+
+  async function setLatexOutput(format) {
+    const next = format === "html" ? "html" : "pdf";
+    if (latexOutput === next) return;
+    latexOutput = next;
+    write(LATEX_OUTPUT_KEY, next);
+    navigationGeneration += 1;
+    renderers.cancelPreview();
+    latex.cancel();
+    renderingStore?.reset();
+    framePreview?.clear();
+    renderedSha = null;
+    deliveredKind = "";
+    frameShowsCheckpoint = false;
+    everPainted = false;
+    everPaintedShown = false;
+    pdfFailure = false;
+    pdfFailureReason = "";
+    clearTimeout(previewTimer);
+    previewTimer = null;
+    await tick();
+    if (!readerDisposed) void paintPreview();
+  }
 
   async function setQuartoPreviewMode(mode) {
     navigationGeneration += 1;
@@ -1706,9 +1731,11 @@
   // This browser-only choice affects the pane. Publication and stored
   // renderings continue to use the Typst document's PDF output.
   const previewFormat = $derived(
-    editing && displayedFormat === "typst" && typstOutput === "html" ? "html" : displayedFormat,
+    editing && ((displayedFormat === "typst" && typstOutput === "html") ||
+      (displayedFormat === "latex" && latexOutput === "html")) ? "html" : displayedFormat,
   );
   const typstHtmlPreview = $derived(editing && displayedFormat === "typst" && typstOutput === "html");
+  const latexHtmlPreview = $derived(editing && displayedFormat === "latex" && latexOutput === "html");
   const paintsTheFrame = $derived(Boolean(viewing) || editing || displayedFormat !== "html");
 
   /* -------------------------------------------------------------- LaTeX */
@@ -1820,7 +1847,7 @@
     ),
   );
   const unrendered = $derived(pdfOutput && (viewing || !compilesHere) && !everPaintedShown);
-  const failedBeforeRender = $derived(pdfOutput && !viewing && compilesHere && pdfFailure && !everPaintedShown);
+  const failedBeforeRender = $derived((pdfOutput || latexHtmlPreview) && !viewing && compilesHere && pdfFailure && !everPaintedShown);
 
   // A paged compile that is running says so, and says how long the last one
   // took once there has been one. Before the first, there is no honest number
@@ -1940,11 +1967,11 @@
   );
 
   const previewBusy = $derived(Boolean(
-    (sourceFormat === "latex" && ["loading", "compiling", "checking-local", "local-biber", "vm-preparing", "vm-biber", "native"].includes(latexPhase))
+    (sourceFormat === "latex" && !latexHtmlPreview && ["loading", "compiling", "checking-local", "local-biber", "vm-preparing", "vm-biber", "native"].includes(latexPhase))
       || compileBadge || quartoPreviewStarting || quartoRendering || calepinRendering,
   ));
   const previewProblem = $derived(Boolean(
-    (sourceFormat === "latex" && latexPhase === "failed") || quartoPreviewError || (!typstHtmlPreview && calepinPreviewError)
+    (sourceFormat === "latex" && (latexHtmlPreview ? pdfFailure : latexPhase === "failed")) || quartoPreviewError || (!typstHtmlPreview && calepinPreviewError)
       || quartoNeedsLocalApp || typstNeedsLocalApp || typstNeedsCalepinCommand,
   ));
   const previewStatusLabel = $derived(
@@ -2062,7 +2089,7 @@
     const snapshotNavigation = navigationGeneration;
     const snapshotSource = sourceGeneration;
     const format = renderers.formatOf(tree.main);
-    const htmlPreview = format === "typst" && typstOutput === "html" && editing;
+    const htmlPreview = editing && ((format === "typst" && typstOutput === "html") || (format === "latex" && latexOutput === "html"));
     const paged = renderers.producesPdf(format) && !htmlPreview;
     const slow = format === "latex";
     if (previewPaintBusy) {
@@ -2079,7 +2106,7 @@
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
         if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
-        if (paged) {
+        if (paged || (format === "latex" && htmlPreview)) {
           if (missing.length) {
             throw new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
           }
@@ -2132,7 +2159,7 @@
         if ((paged || htmlPreview) && mine > painted) compiling = false;
       }
       if (readerDisposed) return;
-      if (format === "latex") lastLatexResult = rendered;
+      if (format === "latex" && !htmlPreview) lastLatexResult = rendered;
       const { html, pdf, synctex, diagnostics: said, seconds, log, provenance } = rendered;
       const contextualDiagnostics = (said || []).map((item) => diagnosticContext(item, tree, renderingName));
       // An in-flight preview may finish after another keystroke: HTML and
@@ -2141,7 +2168,7 @@
       // LaTeX keeps its strict source guard.
       if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
       painted = mine;
-      if (paged && seconds) lastCompile = seconds;
+      if ((paged || htmlPreview) && seconds) lastCompile = seconds;
       // A render carries `html` or `pdf`, and the reader posts whichever it
       // has. The bytes are transferred rather than copied: a PDF is megabytes
       // and this page has no further use for it once the frame has it.
@@ -2168,6 +2195,7 @@
         return;
       }
       if (typeof html === "string") {
+        if (format === "latex") { pdfFailure = false; pdfFailureReason = ""; }
         // The page is what the document says now, so every error said about an
         // earlier state of it is cleared at once. The warnings that came with
         // this page are painted on the same slow schedule the errors are, so
@@ -2183,7 +2211,7 @@
       // it does not compile now, and where -- once the typing has stopped.
       if (snapshotSource !== sourceGeneration) return;
       diagnosticPainter.rendered({ page: null, diagnostics: contextualDiagnostics });
-      if (paged) {
+      if (paged || (format === "latex" && htmlPreview)) {
         pdfFailure = true;
         // A log the parser found nothing in is still the only account there
         // is of what happened, and its last lines are where an engine says
@@ -2191,7 +2219,7 @@
         pdfFailureReason = said?.length
           ? ""
           : rendered.failure?.message || (log || "").trim().split("\n").slice(-12).join("\n") ||
-            "the compiler produced no PDF and no log";
+            "the compiler produced no preview and no log";
         if (pdfFailureReason) console.error("latex: could not render:", pdfFailureReason);
       }
       // Unless nothing was ever painted, which is what someone who opens the
@@ -2208,9 +2236,9 @@
       // Not a document that did not compile: a renderer that could not be
       // fetched, which is this page's problem rather than the author's.
       const currentSnapshot = snapshotNavigation === navigationGeneration &&
-        (!paged || snapshotSource === sourceGeneration);
-      if (mine > painted && currentSnapshot) {
-        if (paged) {
+        (!(paged || slow) || snapshotSource === sourceGeneration);
+      if (mine > painted && currentSnapshot && error.name !== "Superseded") {
+        if (paged || (format === "latex" && htmlPreview)) {
           pdfFailure = true;
           pdfFailureReason = error.message || "could not render";
           console.error("latex: could not render:", error);
@@ -2601,6 +2629,8 @@
   }
 
   function chooseViewCommand(value) {
+    if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
+    if (value === "preview-latex-html") return void setLatexOutput("html");
     if (value === "preview-file") return previewThisFile();
     if (value === "preview-markdown") return void setQuartoPreviewMode("markdown");
     if (value === "preview-quarto") return void setQuartoPreviewMode("quarto");
@@ -3208,6 +3238,7 @@
       stopQuartoStatus();
       issued += 1;
       navigationGeneration += 1;
+      renderers.cancelPreview();
       clearTimeout(previewTimer);
       previewTimer = null;
       boot.dispose();
@@ -3333,6 +3364,16 @@
 {/snippet}
 
 {#snippet previewItems()}
+  {#if displayedFormat === "latex" && !viewing}
+    <div class="menu-section-label">Preview format</div>
+    <Menu.Item value="preview-latex-pdf" class="menuitem">
+      <span class="w-4">{latexOutput === "pdf" ? "✓" : ""}</span>PDF
+    </Menu.Item>
+    <Menu.Item value="preview-latex-html" class="menuitem">
+      <span class="w-4">{latexOutput === "html" ? "✓" : ""}</span>HTML
+    </Menu.Item>
+    <hr class="hr my-1" />
+  {/if}
   {#if sourceFormat === "quarto" && !viewing}
     <!-- Nothing rendered is ever uploaded: choosing "Quarto preview" runs
          the document's code with Quarto on this computer, through the local
@@ -3678,7 +3719,10 @@
   {#snippet previewStatusDetails()}
     <div class="preview-status-details">
       {#if renderedNote}<p>{renderedNote}</p>{/if}
-      {#if sourceFormat === "latex" && editing}
+      {#if latexHtmlPreview}
+        {#if compileBadge}<p>{compileBadge}</p>{/if}
+        {#if pdfFailureReason}<p>{pdfFailureReason}</p>{/if}
+      {:else if sourceFormat === "latex" && editing}
         <LatexStatus onconnect={() => openSettings("local")} onretrybrowser={() => void paintPreview()} />
       {:else if sourceFormat === "typst" && compileBadge}
         <p>{compileBadge}</p>
@@ -3953,6 +3997,7 @@
   .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-surface-200-800); color: var(--color-surface-700-300); font-size: .65rem; }
   .preview-status-details { display: grid; gap: calc(var(--spacing) * 2); }
+  .menu-section-label { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2); color: var(--color-surface-600-400); font-size: var(--text-xs); font-weight: 600; }
   .preview-status-details :global(.latex-status) { display: flex; }
   @media (max-width: 600px) {
     .desktop-workspace-menu { display: none; }

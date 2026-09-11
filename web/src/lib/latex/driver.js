@@ -61,7 +61,7 @@ const FMT_FILENAME = { xetex: "xetex.fmt", luatex: "luatex.fmt" };
 /// Kinds whose controller answers `loadbundleindex`/`preloadbundle` (the
 /// engine repository's `bundle-mode.js`, imported by every worker
 /// but LuaTeX today). Kept in sync with `worker.js`'s own `BUNDLE_CAPABLE`.
-const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex"]);
+const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex", "latexml"]);
 
 export function createEngine({ kind, url, texliveUrl, format, release, onProgress, onDownload }) {
   return new EngineDriver(kind, url, texliveUrl, format, release, onProgress, onDownload);
@@ -300,6 +300,10 @@ class EngineDriver {
       status: typeof reply.status === "number" ? reply.status : ok ? 0 : 1,
       ok,
       pdf: reply.pdf ? new Uint8Array(reply.pdf) : null,
+      ...(this.kind === "latexml" ? {
+        html: typeof reply.html === "string" ? reply.html : null,
+        diagnostics: Array.isArray(reply.diagnostics) ? reply.diagnostics : [],
+      } : {}),
       synctex: reply.synctex ? new Uint8Array(reply.synctex) : null,
       log: reply.log || "",
       inputs: Array.isArray(reply.inputFiles) ? reply.inputFiles : null,

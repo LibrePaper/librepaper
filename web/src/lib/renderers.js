@@ -15,6 +15,7 @@ import { needsBibliography } from "./bibliography-engine.js";
 // that speaks to it.
 
 import * as latex from "./latex.js";
+import * as latexHtml from "./latex/html.js";
 import * as quarto from "./engines/quarto.js";
 
 import { rendererRequest } from "./renderer-client.js";
@@ -57,6 +58,10 @@ export function outputKind(format) {
 
 export function producesPdf(format) {
   return outputKind(format) === "pdf";
+}
+
+export function cancelPreview() {
+  latexHtml.cancel();
 }
 
 // Whether this browser can compile a source document. Stored artifacts remain
@@ -132,6 +137,9 @@ export async function render(tree, title, { manual = false, format: requestedFor
   // assets/<sha>` out of anything rendered: on a private document that route
   // needs a credential, and a credential does not belong in a page.
   if (format === "latex") {
+    if (requestedFormat === "html") {
+      return latexHtml.compile(tree, { base: latex.at(), settings: latex.settings() });
+    }
     const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok } = await latex.compile(tree, { manual });
     // Keep the output channels explicit. In particular, a failed LaTeX
     // compile has no HTML page; `undefined` would look like a page to callers

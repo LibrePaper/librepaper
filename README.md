@@ -430,6 +430,16 @@ storage so the next document costs nothing to fetch. The TeX engines carry
 their own licences, and Biber is AGPL-3.0. They are fetched at run time;
 their notices travel with the mirror.
 
+In the editor, **View → Preview format → HTML** selects a live LaTeXML
+preview; **PDF** returns to the printed layout. The choice is remembered in
+this browser for this document. HTML conversion runs in a separate WebAssembly
+worker and reuses the mirror's verified TeX package bundles. It requires a
+mirror release containing the `latexml` engine, built and hosted by
+[`wasm-latex`](https://github.com/LibrePaper/wasm-latex). The app contains only
+the adapter and preview controls. HTML is a reading view; shared renderings
+and publication continue to use PDF. An unsuccessful edit leaves the last
+successful preview visible and reports the conversion diagnostics.
+
 The project engine (Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX) and the pinned
 browser release are project settings in the Settings dialog. Automatic honours
 a `% !TEX program = xelatex` line in the main file, then looks for packages
