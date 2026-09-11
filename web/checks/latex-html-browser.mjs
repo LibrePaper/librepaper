@@ -166,7 +166,7 @@ See equation~\eqref{eq:test}.
     const port = 22000 + Math.floor(Math.random() * 1000);
     const appBase = `http://localhost:${port}`;
     const env = { ...process.env, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" };
-    app = spawn(resolve(process.env.LIBREPAPER_BIN), ["serve", "--port", String(port), "--data", appData,
+    app = spawn(resolve(process.env.LIBREPAPER_BIN), ["admin", "serve", "--port", String(port), "--data-directory", appData,
       "--publishers", "any", "--commenters", "anyone", "--latex-mirror", mirrorBase], { env, stdio: ["ignore", "ignore", "pipe"] });
     let appLog = "";
     app.stderr.on("data", (bytes) => { appLog += bytes; });

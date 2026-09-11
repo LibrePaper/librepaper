@@ -64,7 +64,7 @@ async function until(what, predicate, timeout = 15000) {
 
 const server = spawn(
   binary,
-  ["serve", "--port", String(PORT), "--data", data, "--publishers", "anyone", "--commenters", "anyone"],
+  ["admin", "serve", "--port", String(PORT), "--data-directory", data, "--publishers", "any", "--commenters", "anyone"],
   { stdio: ["ignore", "pipe", "pipe"] },
 );
 const serverLog = [];

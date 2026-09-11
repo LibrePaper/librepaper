@@ -103,7 +103,7 @@ async function main() {
     ? MIRROR_ARG.replace(/\/?$/, "/")
     : (mirror = await ephemeralMirror(MIRROR_ARG)).url;
   const args = [
-    "serve", "--port", String(PORT), "--data", data,
+    "admin", "serve", "--port", String(PORT), "--data-directory", data,
     "--publishers", "any", "--commenters", "anyone", "--latex-mirror", mirrorUrl,
   ];
   server = spawn(BINARY, args, {

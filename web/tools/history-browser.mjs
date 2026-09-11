@@ -43,7 +43,7 @@ for (const name of browsers) {
   const port = 20000 + Math.floor(Math.random() * 10000);
   const base = `http://localhost:${port}`;
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("LIBREPAPER_")));
-  const server = spawn(binary, ["serve", "--port", String(port), "--data", join(directory, "data"), "--publishers", "anyone", "--commenters", "anyone"], {
+  const server = spawn(binary, ["admin", "serve", "--port", String(port), "--data-directory", join(directory, "data"), "--publishers", "any", "--commenters", "anyone"], {
     stdio: ["ignore", "ignore", "pipe"], env: environment,
   });
   let serverError = "";

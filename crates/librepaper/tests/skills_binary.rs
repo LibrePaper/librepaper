@@ -57,11 +57,9 @@ fn bundled_skills_work_outside_the_checkout_and_export_references() {
         .is_file());
     let custom = temp.path().join("bundle/librepaper-write/SKILL.md");
     std::fs::write(&custom, "custom instructions").unwrap();
-    assert!(
-        !cli(temp.path(), &["skills", "export", "bundle"])
-            .status
-            .success()
-    );
+    assert!(!cli(temp.path(), &["skills", "export", "bundle"])
+        .status
+        .success());
     assert_eq!(
         std::fs::read_to_string(custom).unwrap(),
         "custom instructions"
