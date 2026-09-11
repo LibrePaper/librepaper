@@ -2,10 +2,10 @@
 // freshly built engine files beside the existing mirror's verified bundles;
 // no release, deployment, or existing mirror is modified by this check.
 import assert from "node:assert/strict";
-import { createHash, createHmac } from "node:crypto";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, symlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { browser, until } from "../tools/browser-driver.mjs";
@@ -15,7 +15,12 @@ const engineRoot = resolve(process.env.LATEXML_DIST || join(root, "../wasm-latex
 const mirror = resolve(process.env.MIRROR || join(root, "../wasm-latex/mirror"));
 const manifest = JSON.parse(readFileSync(join(mirror, "manifest.json"), "utf8"));
 const release = structuredClone(manifest.releases[manifest.default_release]);
-const engineFiles = ["latexml.worker.js", "latexml.js", "latexml.wasm", "kpse-resolve.js", "bundle-mode.js", "latexml.css"];
+const engineFiles = [
+  "latexml.worker.js", "latexml.js", "latexml.wasm", "kpse-resolve.js", "bundle-mode.js", "latexml.css",
+  "LaTeXML-blue.css", "LaTeXML-marginpar.css", "LaTeXML-navbar-left.css", "LaTeXML-navbar-right.css",
+  "ltx-amsart.css", "ltx-apj.css", "ltx-article.css", "ltx-book.css", "ltx-listings.css",
+  "ltx-report.css", "ltx-svjour.css", "ltx-ulem.css",
+];
 release.engines.latexml = { worker: "../../latexml-test/latexml.worker.js", files: engineFiles };
 release.files = { ...release.files, ...Object.fromEntries(engineFiles.map((name) => {
   const bytes = readFileSync(join(engineRoot, name));
@@ -101,33 +106,44 @@ See equation~\eqref{eq:test}.
     const port = 22000 + Math.floor(Math.random() * 1000);
     const appBase = `http://localhost:${port}`;
     const data = join(scratch, "data");
+    const localMirror = join(scratch, "mirror");
+    mkdirSync(localMirror);
+    for (const name of readdirSync(mirror)) {
+      if (name !== "manifest.json") symlinkSync(join(mirror, name), join(localMirror, name));
+    }
+    symlinkSync(engineRoot, join(localMirror, "latexml-test"));
+    writeFileSync(join(localMirror, "manifest.json"), JSON.stringify(manifest));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("LIBREPAPER_")));
     app = spawn(resolve(process.env.LIBREPAPER_BIN), ["serve", "--port", String(port), "--data", data,
-      "--publishers", "anyone", "--commenters", "anyone", "--latex", `${base}/latex/`], { env, stdio: ["ignore", "ignore", "pipe"] });
+      "--publishers", "anyone", "--commenters", "anyone", "--latex", localMirror], { env, stdio: ["ignore", "ignore", "pipe"] });
     let appLog = "";
     app.stderr.on("data", (bytes) => { appLog += bytes; });
     await until("app startup", async () => {
       if (app.exitCode !== null) throw new Error(appLog);
       return (await fetch(`${appBase}/api/config`)).ok;
     });
-    const key = Buffer.from(readFileSync(join(data, "session.key"), "utf8").trim(), "hex");
-    const payload = Buffer.from(`owner|owner|${Math.floor(Date.now() / 1000) + 3600}`).toString("base64url");
-    const cookie = `${payload}.${createHmac("sha256", key).update(payload).digest("base64url")}`;
-    const appSource = String.raw`\documentclass{article}\begin{document}First app paragraph. $y=x^2$\end{document}`;
-    const created = await fetch(`${appBase}/api/documents`, { method: "POST", headers: {
-      "content-type": "application/json", "x-librepaper-client": "1", cookie: `librepaper_session=${cookie}`,
-    }, body: JSON.stringify({ title: "LaTeXML preview", source_format: "latex", source: appSource }) });
-    assert.equal(created.status, 201, await created.clone().text());
-    const { slug } = await created.json();
     await tab.navigate(appBase);
-    await tab.evaluate(`document.cookie=${JSON.stringify(`librepaper_session=${cookie}; path=/`)}`);
+    await until("app page", () => tab.evaluate(`location.origin === ${JSON.stringify(appBase)} && document.readyState === 'complete'`));
+    const appSource = String.raw`\documentclass{article}\begin{document}First app paragraph. $y=x^2$\end{document}`;
+    const body = JSON.stringify({ title: "LaTeXML preview", source_format: "latex", source: appSource });
+    const created = JSON.parse(await tab.evaluate(`(async () => {
+      const response = await fetch('/api/documents', {method:'POST',headers:{'content-type':'application/json','x-librepaper-client':'1'},body:${JSON.stringify(body)}});
+      return JSON.stringify({status:response.status,body:await response.json()});
+    })()`));
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const { slug } = created.body;
     await tab.resize(1300, 900);
     await tab.navigate(`${appBase}/docs/${slug}`);
     await until("initial PDF", async () => (await tab.text()).includes("First app paragraph"), 245000);
+    console.log("latex-html-browser: app PDF ready");
     async function choose(label) {
       await tab.evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='View' && b.getClientRects().length).click()`);
       await until(`${label} menu item`, () => tab.evaluate(`Array.from(document.querySelectorAll('[role="menuitem"]')).some(e=>e.textContent.replace('✓','').trim()===${JSON.stringify(label)} && e.getClientRects().length)`));
-      await tab.evaluate(`Array.from(document.querySelectorAll('[role="menuitem"]')).find(e=>e.textContent.replace('✓','').trim()===${JSON.stringify(label)} && e.getClientRects().length).click()`);
+      await tab.evaluate(`(() => {
+        const item = Array.from(document.querySelectorAll('[role="menuitem"]')).find(e=>e.textContent.replace('✓','').trim()===${JSON.stringify(label)} && e.getClientRects().length);
+        item.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse',button:0}));
+        item.click();
+      })()`);
     }
     await choose("HTML");
     await until("HTML frame", () => tab.evaluate(`document.querySelector('iframe').src.includes('/raw/')`));
@@ -144,6 +160,11 @@ See equation~\eqref{eq:test}.
     await until("PDF preview after switch", async () => (await tab.text()).includes("Third app paragraph"), 245000);
     console.log("latex-html-browser: View menu, successive edits, remembered choice and PDF switch passed");
   }
+} catch (error) {
+  if (tab) {
+    console.error("Page at failure:", await tab.evaluate("JSON.stringify({text:document.body.innerText,frames:Array.from(document.querySelectorAll('iframe')).map(f=>f.src),storage:{...localStorage}})").catch(() => "unavailable"));
+  }
+  throw error;
 } finally {
   await tab?.close();
   app?.kill();

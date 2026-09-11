@@ -114,4 +114,14 @@ const failure = await failed.compile(tree("bad"), { base });
 assert.equal(failure.html, null);
 assert.equal(failure.diagnostics[0].message, "Undefined macro");
 failed.cancel();
+
+let trapRuns = 0;
+const trapped = harness({ run: () => ++trapRuns === 1
+  ? { ok: false, status: -254, log: "unreachable" }
+  : { ok: true, status: 0, html: "recovered" } });
+assert.equal((await trapped.compile(tree("trap"), { base })).ok, false);
+assert.equal(trapped.instances[0].dead, true, "a runtime trap retires the damaged engine");
+assert.equal((await trapped.compile(tree("fixed"), { base })).html, "recovered");
+assert.equal(trapped.instances.length, 2);
+trapped.cancel();
 console.log("latex-html: warm resources, snapshots, queued edits, cancellation, deadlines, paths and failures passed");

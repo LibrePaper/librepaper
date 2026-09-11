@@ -102,6 +102,9 @@ export function createHtmlCompiler({
     target.setMainFile(tree.main);
     const result = await target.run("compilelatex");
     if (current !== epoch) throw superseded();
+    // A WASM trap can leave Rust's thread-local state borrowed or incomplete.
+    // Document errors are reusable; a failed runtime needs a fresh worker.
+    if (result.status < 0) retire();
     const ok = result.ok && typeof result.html === "string" && result.html.length > 0;
     return {
       html: ok ? result.html : null,
