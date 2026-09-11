@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { cellFingerprint, composeDraft, contextId, contextFingerprint, mapQuartoDiagnostics, outputMarkup, parseQuarto, safeFragment, virtualTree } from "../src/lib/quarto.js";
+import { cellFingerprint, composeDraft, contextId, contextFingerprint, mapQuartoDiagnostics, outputMarkup, parseQuarto, safeFragment, virtualTree } from "../src/lib/engines/quarto.js";
 import { formatOf, outputKind } from "../src/lib/renderers.js";
 import { quartoRequest } from "../src/lib/latex/local.js";
 

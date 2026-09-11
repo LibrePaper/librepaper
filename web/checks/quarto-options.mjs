@@ -6,7 +6,7 @@ import {
   renderOptionsStorageKey,
   saveRenderOptions,
 } from "../src/lib/quarto-options.js";
-import { parameterSha256 } from "../src/lib/quarto.js";
+import { parameterSha256 } from "../src/lib/engines/quarto.js";
 
 assert.deepEqual(parseRenderOptions(), { format: "default", profile: "", parameters: {} });
 assert.deepEqual(parseRenderOptions({ format: "pdf", profile: "  nightly  ", parameters: '{"seed":1,"enabled":true,"label":"1","missing":null}' }), {

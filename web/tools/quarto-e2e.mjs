@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { browser, until, pause } from "./browser-driver.mjs";
-import { contextFingerprint, contextId, parameterSha256, parseQuarto } from "../src/lib/quarto.js";
+import { contextFingerprint, contextId, parameterSha256, parseQuarto } from "../src/lib/engines/quarto.js";
 
 const binary = resolve(process.argv[2] || process.env.LIBREPAPER_BINARY || "target/debug/librepaper");
 const directory = mkdtempSync(join(tmpdir(), "librepaper-quarto-e2e-"));

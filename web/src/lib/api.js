@@ -36,17 +36,6 @@ export const authHeaders = (key, contentType) => ({
 
 export const get = (path) => fetch(path).then(json);
 
-/// A read on behalf of somebody holding a link.
-export const getKeyed = (path, key) => fetch(path, { headers: keyHeaders(key) }).then(json);
-
-/// A write on behalf of somebody holding a link.
-export const postKeyed = (path, body, key) =>
-  fetch(path, {
-    method: "POST",
-    headers: authHeaders(key, "application/json"),
-    body: JSON.stringify(body ?? {}),
-  }).then(json);
-
 export const getPrivate = (path) => fetch(path, { headers: SHELL_HEADERS }).then(json);
 
 export const post = (path, body) =>
@@ -55,15 +44,6 @@ export const post = (path, body) =>
     headers: { "content-type": "application/json", ...SHELL_HEADERS },
     body: JSON.stringify(body ?? {}),
   }).then(json);
-
-/// A POST whose status matters to the caller, since a refused save says what
-/// to do about it and a thrown error would lose that.
-export const postRaw = (path, body) =>
-  fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...SHELL_HEADERS },
-    body: JSON.stringify(body),
-  });
 
 export const upload = (form) =>
   fetch("/api/documents", { method: "POST", headers: SHELL_HEADERS, body: form });

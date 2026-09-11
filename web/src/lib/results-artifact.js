@@ -139,8 +139,3 @@ export async function prepareResultsArtifact(manifest, artifactBytes, readAsset)
     throw error;
   }
 }
-
-// Concise generic aliases used by new readers; the longer names make call
-// sites that handle several result types self-documenting.
-export const prepareArtifact = prepareResultsArtifact;
-export const artifactReference = resultsArtifactReference;

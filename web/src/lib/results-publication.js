@@ -11,8 +11,8 @@ function submittedFieldsMatch(saved, submitted) {
 export async function publishResultsBundle(api, payload, knownManifest = null) {
   const known = new Set([knownManifest?.artifact?.sha256, ...(knownManifest?.assets || []).map((asset) => asset.sha256)].filter(Boolean));
   const reduced = { ...payload, blobs: payload.blobs.filter((blob) => !known.has(blob.sha256)) };
-  const publish = api.publishResults || api.quartoPublish;
-  const bundle = api.resultBundle || api.quartoBundle;
+  const publish = api.publishResults;
+  const bundle = api.resultBundle;
   let response = await publish.call(api, reduced);
   // Another selection/GC pass can retire a previously known blob. Retry the
   // original bounded payload once, preserving the render ID and generation.
@@ -28,5 +28,3 @@ export async function publishResultsBundle(api, payload, knownManifest = null) {
   const failure = await response.json().catch(() => null);
   throw new Error(failure?.error || failure?.message || `Sharing failed (${response.status}).`);
 }
-
-export const publishResultBundle = publishResultsBundle;

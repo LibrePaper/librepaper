@@ -65,8 +65,4 @@ export function validateResultsManifest(manifest, { requireQuarto = true } = {})
   return engine;
 }
 
-export function browserCanExecute(engine) {
-  return resultEngineOf(engine) === "quarto";
-}
-
 export { ENGINES as supportedResultEngines, DRAFT_FORMATS as supportedDraftFormats };

@@ -104,7 +104,3 @@ export async function clearPendingResults(slug, renderId) {
     };
   });
 }
-
-export const savePendingResult = savePendingResults;
-export const loadPendingResult = loadPendingResults;
-export const clearPendingResult = clearPendingResults;

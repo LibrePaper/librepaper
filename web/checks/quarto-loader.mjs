@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createQuartoLoader } from "../src/lib/quarto-loader.js";
+import { createResultsLoader } from "../src/lib/results-loader.js";
 
 const jsonResponse = (body, ok = true, status = ok ? 200 : 404) => ({
   ok, status,
@@ -20,12 +20,12 @@ const manifest = (context, renderId = `render-${context}`) => ({
 let selectedCalls = 0;
 let applied = [];
 const api = {
-  quartoSelected: async (context) => { selectedCalls += 1; return jsonResponse({ manifest: manifest(context), selection: { generation: 2 } }); },
-  quartoArtifact: async () => artifactResponse(),
-  quartoAsset: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }),
+  selectedResults: async (context) => { selectedCalls += 1; return jsonResponse({ manifest: manifest(context), selection: { generation: 2 } }); },
+  resultArtifact: async () => artifactResponse(),
+  resultAsset: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }),
 };
 const prepared = { html: "<p>saved</p>", dispose() {} };
-const loader = createQuartoLoader({ api, apply: (value) => applied.push(value), prepare: async () => prepared });
+const loader = createResultsLoader({ api, apply: (value) => applied.push(value), prepare: async () => prepared });
 const sameA = loader.load("html");
 const sameB = loader.load("html");
 assert.strictEqual(sameA, sameB, "concurrent same-context loads are deduplicated");
@@ -40,12 +40,12 @@ let oldPrepareStarted;
 const oldStarted = new Promise((resolve) => { oldPrepareStarted = resolve; });
 let forceCalls = 0;
 const forceApi = {
-  quartoSelected: async (context) => { forceCalls += 1; return jsonResponse({ manifest: manifest("html", forceCalls === 1 ? "old" : "new"), selection: { generation: forceCalls } }); },
-  quartoArtifact: async () => artifactResponse(),
-  quartoAsset: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }),
+  selectedResults: async (context) => { forceCalls += 1; return jsonResponse({ manifest: manifest("html", forceCalls === 1 ? "old" : "new"), selection: { generation: forceCalls } }); },
+  resultArtifact: async () => artifactResponse(),
+  resultAsset: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }),
 };
 const disposed = [];
-const forceLoader = createQuartoLoader({
+const forceLoader = createResultsLoader({
   api: forceApi,
   apply: (value) => applied.push(value),
   prepare: async (m) => { if (m.render_id === "old") { oldPrepareStarted(); await oldPrepared; } return { html: m.render_id, dispose: () => disposed.push(m.render_id) }; },
@@ -61,7 +61,7 @@ assert.deepEqual(disposed, ["old"]);
 // A failed preparation leaves the last good value available for the next
 // ordinary load, without applying a partially downloaded bundle.
 let prepareCalls = 0;
-const stable = createQuartoLoader({
+const stable = createResultsLoader({
   api,
   apply: (value) => applied.push(value),
   prepare: async () => {
@@ -77,8 +77,8 @@ assert.strictEqual(await stable.load("stable"), good);
 // A selection tombstone clears the selected value while retaining its
 // generation so a subsequent render cannot reuse generation zero.
 let tombstone;
-const tombstoneLoader = createQuartoLoader({
-  api: { quartoSelected: async () => jsonResponse({ generation: 17, selection: { generation: 17 }, message: "No saved output" }, false, 404) },
+const tombstoneLoader = createResultsLoader({
+  api: { selectedResults: async () => jsonResponse({ generation: 17, selection: { generation: 17 }, message: "No saved output" }, false, 404) },
   apply: (value) => { tombstone = value; },
   prepare: async () => { throw new Error("must not prepare a tombstone"); },
 });
@@ -92,10 +92,10 @@ console.log("quarto loader: request deduplication, supersession disposal, failur
 // A portable cell-output bundle need not include a complete Quarto artifact.
 const cellsOnly = { ...manifest("cells"), artifact:null };
 let cellsPrepared = false;
-const cellLoader = createQuartoLoader({
+const cellLoader = createResultsLoader({
   api: {
-    quartoSelected: async () => jsonResponse({ manifest:cellsOnly, selection:{ generation:3 } }),
-    quartoArtifact: async () => { throw new Error("no full artifact exists"); },
+    selectedResults: async () => jsonResponse({ manifest:cellsOnly, selection:{ generation:3 } }),
+    resultArtifact: async () => { throw new Error("no full artifact exists"); },
   },
   apply: () => {},
   prepare: async (bundle, bytes) => {

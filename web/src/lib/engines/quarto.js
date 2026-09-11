@@ -694,34 +694,4 @@ export async function contextId({ format = "html", profiles = [], parameters = {
   return `ctx-${digest.slice(0, 16)}`;
 }
 
-export function classifyFreshness(parsed, bundle, { currentContext = "", sourceCompatible = false, trackedInputsMatch = null } = {}) {
-  if (!bundle) return { state: "missing", message: "No saved result" };
-  if (parsed?.diagnostics?.length) return { state: "unknown", message: "Could not verify saved results for this source" };
-  if (bundle.provenance?.kind === "imported" || bundle.provenance?.kind === "import") return { state: "unknown", message: "Imported results; freshness unknown" };
-  if (trackedInputsMatch === false) return { state: "potentially-stale", message: "Results may be outdated" };
-  if (bundle.source?.verification === "unverified" || bundle.provenance?.input_stable === false || bundle.provenance?.inputStable === false) {
-    return { state: "unknown", message: "Saved results; freshness unknown" };
-  }
-  if (currentContext && bundle.context?.computation_sha256) {
-    return currentContext === bundle.context.computation_sha256
-      ? { state: "matches-recorded-inputs", message: "Saved results; computation source unchanged" }
-      : { state: "potentially-stale", message: "Results may be outdated" };
-  }
-  if (sourceCompatible && bundle.context?.computation_sha256) return { state: "source-compatible", message: "Showing saved results" };
-  return { state: "unknown", message: "Saved results; freshness unknown" };
-}
-
-export function cellAssociation(parsed, bundle) {
-  const result = new Map();
-  for (const cell of parsed.cells) {
-    const match = outputFor(bundle, cell);
-    result.set(cell.id, match ? (cell.ambiguous ? "ambiguous" : "mapped") : "unmapped");
-  }
-  return result;
-}
-
 export { escapeHtml, safeFragment, outputMarkup };
-// Short aliases used by native/browser parity checks and future adapters.
-export const parseQmd = parseQuarto;
-export const transformQuarto = composeDraft;
-export const draftOf = composeDraft;

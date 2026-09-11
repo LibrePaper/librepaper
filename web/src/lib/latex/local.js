@@ -999,13 +999,6 @@ export async function runQuarto({ job = {}, tree, options = {} }, { signal, onPr
   };
 }
 
-export async function cancelQuarto(jobId) {
-  const pairing = requirePairing();
-  if (!jobId) throw new Error("a Quarto job id is required");
-  await send("POST", `jobs/${encodeURIComponent(jobId)}/cancel`, { token: pairing.token });
-  return true;
-}
-
 /** Start a live preview on either engine. For `quarto` this produces exactly
  * the JSON `startQuartoPreview` always has; for `calepin`, `options` is the
  * `{ entrypoint, format }` pair validated by `calepinOptions`. */
@@ -1115,12 +1108,6 @@ export async function quartoPreviewPage(id, opts) {
 }
 
 // -------------------------------------------------------------- workspace sync
-
-/** The manifest entries `syncWorkspace` uploads for a shared tree: the same
- * `{path, sha256, size}` triples `buildQuartoForm` computes for a job. */
-export async function workspaceManifest(tree) {
-  return manifestOf(collectTreeFiles(tree));
-}
 
 async function buildWorkspaceForm(tree) {
   const files = collectTreeFiles(tree);

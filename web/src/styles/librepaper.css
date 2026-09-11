@@ -30,18 +30,7 @@ body > nav {
 }
 .nav-identity > a { flex-shrink: 0; }
 .share-panel { font-family: var(--typo-base--font-family); font-size: var(--panel-font-size); line-height: var(--panel-line-height); }
-.share-field {
-  font: inherit;
-  border: 1px solid var(--color-surface-300-700);
-  border-radius: var(--radius-base);
-  padding: --spacing(2) --spacing(3);
-}
-.share-access { padding: --spacing(3); border: 1px solid var(--color-surface-200-800); border-radius: var(--radius-base); }
-.share-tabs { display: flex; gap: --spacing(4); border-bottom: 1px solid var(--color-surface-200-800); }
-.share-tab { padding-block: --spacing(2); border-bottom: 2px solid transparent; color: var(--color-surface-600-400); font: inherit; }
-.share-tab[data-selected] { border-bottom-color: var(--color-primary-500); color: var(--color-surface-950-50); font-weight: 600; }
 .share-person { display: flex; align-items: center; gap: --spacing(2); padding-block: --spacing(2); }
-.share-avatar { display: grid; place-items: center; width: --spacing(7); height: --spacing(7); flex-shrink: 0; border-radius: 50%; background: var(--color-surface-100-900); color: var(--color-surface-600-400); }
 
 /* ------------------------------------------------------------------ reader */
 
@@ -127,6 +116,7 @@ main.reader {
 .explorer-chevron { width: --spacing(3); flex-shrink: 0; color: var(--color-surface-600-400); }
 .explorer-chevron svg { width: --spacing(3); height: --spacing(3); }
 .viewport {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
@@ -144,17 +134,38 @@ main.reader {
   border: 0;
   background: var(--color-shell);
 }
-.preview-filename {
-  flex: 0 0 auto;
-  padding: --spacing(1) --spacing(3);
+.preview-header {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: --spacing(2);
+  min-height: --spacing(7);
+  padding-inline: --spacing(3);
   border-bottom: 1px solid var(--color-divider);
   background: var(--color-shell);
+}
+.preview-filename {
+  min-width: 0;
   color: var(--panel-muted);
 }
-/* The tools stay in view while the comments scroll under them, so they need a
-   ground of their own -- the shell's, not a shade of it. */
-.toolrow {
-  background: var(--color-sidebar);
+.preview-activity {
+  position: absolute;
+  z-index: 1;
+  top: --spacing(10);
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: --spacing(2);
+  transform: translateX(-50%);
+  padding: --spacing(2) --spacing(3);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-container);
+  background: color-mix(in srgb, var(--color-shell) 92%, transparent);
+  box-shadow: var(--shadow-md);
+  color: var(--color-surface-700-300);
+  pointer-events: none;
 }
 /* The column, at the left of the window: the tabs, then whichever panel they
    chose. The panel is what scrolls, so the tabs stay where they are, and a
@@ -177,9 +188,7 @@ main.reader {
   font-size: var(--panel-font-size);
   line-height: var(--panel-line-height);
 }
-.panel-header { display: flex; flex-direction: column; gap: --spacing(2); margin-bottom: --spacing(3); }
-.panel-heading { display: flex; align-items: center; flex-wrap: wrap; gap: --spacing(2); min-height: --spacing(8); }
-.panel-title { margin: 0; margin-right: auto; font: inherit; font-size: var(--panel-title-size); font-weight: var(--panel-title-weight); }
+.panel-status { margin-bottom: --spacing(3); }
 .panel-actions { display: flex; align-items: center; flex-wrap: wrap; gap: --spacing(1); margin-bottom: --spacing(4); }
 .panel-intro { margin-bottom: var(--panel-section-gap); }
 .panel-intro:empty { display: none; }
@@ -557,9 +566,6 @@ main.reader.source-right .latexpane {
    in it. The column stays first whichever way round the other two are. */
 main.reader.source-right .viewport {
   order: 1;
-}
-main.reader.source-right .grip-editor {
-  order: 2;
 }
 main.reader.source-right .editorpane {
   order: 3;

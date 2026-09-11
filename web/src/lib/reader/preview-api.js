@@ -20,8 +20,7 @@ export function createPreviewApi({ slug, key, shellHeaders, keyHeaders, request 
     // rendering row. Deployments may return an inline artifact descriptor or
     // a URL; callers keep both forms behind this document-scoped API.
     // Shared-results names use the existing Quarto routes until another
-    // execution engine is introduced. Keeping both surfaces lets old browser
-    // extensions and outbox records continue to use their original methods.
+    // execution engine is introduced.
     selectedResults(context = "html") {
       return request(`/api/documents/${slug}/quarto/bundles/selected/${encodeURIComponent(context)}`, { headers });
     },
@@ -33,13 +32,6 @@ export function createPreviewApi({ slug, key, shellHeaders, keyHeaders, request 
         method: "POST",
         headers: { ...headers, "content-type": "application/json" },
         body: JSON.stringify(bundle),
-      });
-    },
-    quartoCheckpoint(treeSha256) {
-      return request(`/api/documents/${slug}/quarto/checkpoint`, {
-        method: "POST",
-        headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ tree_sha256: String(treeSha256 || "") }),
       });
     },
     resultArtifact(renderId, name = "artifact.html") {
@@ -59,11 +51,5 @@ export function createPreviewApi({ slug, key, shellHeaders, keyHeaders, request 
       });
     },
   };
-  return Object.assign(api, {
-    quartoSelected: api.selectedResults,
-    quartoBundle: api.resultBundle,
-    quartoPublish: api.publishResults,
-    quartoArtifact: api.resultArtifact,
-    quartoAsset: api.resultAsset,
-  });
+  return api;
 }

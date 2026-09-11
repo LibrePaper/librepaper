@@ -32,8 +32,6 @@ export function pageForOffset(offset) {
   return page;
 }
 
-export const pageCount = () => pageStarts.length;
-
 let generation = 0;
 
 /// Open `bytes` as a pdf.js document, run `fn` against it, and tear the

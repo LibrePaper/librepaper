@@ -17,12 +17,6 @@ const STORAGE_PREFIX = "librepaper-quarto-render-options-v1";
 const encoder = new TextEncoder();
 const byteLength = (value) => encoder.encode(String(value)).byteLength;
 
-export const DEFAULT_RENDER_OPTIONS = Object.freeze({
-  format: "default",
-  profile: "",
-  parameters: Object.freeze({}),
-});
-
 function emptyOptions() {
   return { format: "default", profile: "", parameters: {} };
 }

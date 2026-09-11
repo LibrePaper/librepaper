@@ -4,10 +4,6 @@ import { prepareResultsArtifact } from "./results-artifact.js";
 // downloads leave the last good resources alive; superseded loads release
 // their newly prepared URLs without touching the currently displayed URLs.
 export function createResultsLoader({ api, apply, prepare = prepareResultsArtifact }) {
-  const apiCall = (name, legacy, ...args) => {
-    const method = api[name] || api[legacy];
-    return method.call(api, ...args);
-  };
   let epoch = 0;
   let flight = null;
   let loadedContext = "";
@@ -19,7 +15,7 @@ export function createResultsLoader({ api, apply, prepare = prepareResultsArtifa
       if (!force && loadedContext === context) return Promise.resolve(value);
       const serial = ++epoch;
       const promise = (async () => {
-        const response = await apiCall("selectedResults", "quartoSelected", context);
+        const response = await api.selectedResults(context);
         const descriptor = await response.json().catch(() => null);
         if (serial !== epoch) return null;
         if (!response.ok && response.status !== 404) throw new Error(descriptor?.error || "Saved results could not be loaded.");
@@ -34,12 +30,12 @@ export function createResultsLoader({ api, apply, prepare = prepareResultsArtifa
         if (!manifest?.render_id || manifest.context?.id !== context) throw new Error("The saved Quarto bundle has an invalid context.");
         let artifactBytes = null;
         if (manifest.artifact) {
-          const artifact = await apiCall("resultArtifact", "quartoArtifact", manifest.render_id);
+          const artifact = await api.resultArtifact(manifest.render_id);
           if (!artifact.ok) throw new Error("The saved results artifact could not be loaded.");
           artifactBytes = new Uint8Array(await artifact.arrayBuffer());
         }
         const prepared = await prepare(manifest, artifactBytes, async (asset) => {
-          const response = await apiCall("resultAsset", "quartoAsset", manifest.render_id, asset.path);
+          const response = await api.resultAsset(manifest.render_id, asset.path);
           if (!response.ok) throw new Error(`Saved result resource is missing: ${asset.path}`);
           return new Uint8Array(await response.arrayBuffer());
         });
@@ -55,5 +51,3 @@ export function createResultsLoader({ api, apply, prepare = prepareResultsArtifa
     },
   };
 }
-
-export const createResultLoader = createResultsLoader;

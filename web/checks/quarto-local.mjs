@@ -4,7 +4,7 @@ import vm from "node:vm";
 import * as localBridge from "../src/lib/latex/local.js";
 import { createLocalPreview } from "../src/lib/reader/local-preview.js";
 import { _testing, configure, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus, quartoPreviewPage, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../src/lib/latex/local.js";
-import { parameterSha256 } from "../src/lib/quarto.js";
+import { parameterSha256 } from "../src/lib/engines/quarto.js";
 
 const digest = "a".repeat(64);
 
