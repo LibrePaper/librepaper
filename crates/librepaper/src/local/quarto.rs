@@ -185,6 +185,16 @@ impl BindingStore {
         self.save(&file).is_ok()
     }
 
+    pub fn revoke_scoped(&self, id: &str, origin: &str, project: &str) -> bool {
+        let origin = super::pairing::normalize_origin(origin);
+        let mut file = self.load();
+        let old = file.bindings.len();
+        file.bindings.retain(|binding| {
+            !(binding.id == id && binding.origin == origin && binding.project == project)
+        });
+        old != file.bindings.len() && self.save(&file).is_ok()
+    }
+
     pub fn get_scoped(&self, id: &str, origin: &str, project: &str) -> Option<ProjectBinding> {
         if id == HOSTED_BINDING {
             return self.hosted_binding(origin, project);
@@ -220,6 +230,24 @@ impl BindingStore {
             .bindings
             .into_iter()
             .filter(|binding| binding.origin == origin && binding.project == project)
+            .collect()
+    }
+
+    /// Public metadata for the management API. Absolute roots intentionally
+    /// stay inside the companion and are never serialized onto the wire.
+    pub fn summaries_scoped(
+        &self,
+        origin: &str,
+        project: &str,
+    ) -> Vec<super::protocol::BindingSummary> {
+        self.list_scoped(origin, project)
+            .into_iter()
+            .map(|binding| super::protocol::BindingSummary {
+                id: binding.id,
+                project: binding.project,
+                entrypoint: binding.entrypoint,
+                created_at: binding.created_at,
+            })
             .collect()
     }
 }

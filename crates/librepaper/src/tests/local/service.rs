@@ -1898,3 +1898,112 @@ async fn capabilities_report_calepin_availability() {
         assert!(calepin["version"].is_string(), "{calepin}");
     }
 }
+
+#[tokio::test]
+async fn deep_link_pair_request_claim_is_scoped_one_time_and_has_no_cors() {
+    let test = start_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "123123");
+    let verifier = "test-verifier-that-is-kept-only-by-the-browser";
+    let challenge = hex::encode(Sha256::digest(verifier.as_bytes()));
+    let request = "abcdefghijklmnopqrstuvwxyz123456";
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("origin", ORIGIN)
+        .append_pair("project", "paper")
+        .append_pair("request", request)
+        .append_pair("challenge", &challenge)
+        .finish();
+    let registered = test
+        .client
+        .get(format!("{}/pair/request?{}", test.base, query))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(registered.status(), 200);
+    assert!(registered
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
+    assert!(registered.text().await.unwrap().contains("Allow"));
+
+    let local_origin = format!(
+        "http://127.0.0.1:{}",
+        url::Url::parse(&test.base).unwrap().port().unwrap()
+    );
+    let consent = test
+        .client
+        .post(format!("{}/pair", test.base))
+        .header("Origin", &local_origin)
+        .form(&[
+            ("origin", ORIGIN),
+            ("project", "paper"),
+            ("request", request),
+            ("challenge", &challenge),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(consent.status(), 200);
+
+    let claim = |origin: &str, project: &str, verifier: &str| {
+        let builder = test.client.post(format!("{}/connect/claim", test.base))
+            .header("Origin", origin)
+            .json(&json!({"origin": origin, "project": project, "request": request, "verifier": verifier}));
+        async move { builder.send().await.expect("claim") }
+    };
+    // The token is available once and is scoped to the exact origin/project.
+    let claimed = claim(ORIGIN, "paper", verifier).await;
+    assert_eq!(claimed.status(), 200);
+    let token: Value = claimed.json().await.unwrap();
+    assert_eq!(token["instance"], "test-instance");
+    let replay = claim(ORIGIN, "paper", verifier).await;
+    assert_eq!(replay.status(), 404);
+
+    let wrong_origin = test.client.post(format!("{}/connect/claim", test.base)).header("Origin", "https://other.example").json(&json!({"origin": ORIGIN, "project": "paper", "request": request, "verifier": verifier})).send().await.expect("foreign claim");
+    assert_eq!(wrong_origin.status(), 403);
+}
+
+#[tokio::test]
+async fn deep_link_pair_request_duplicate_mismatch_and_wrong_verifier_are_rejected() {
+    let test = start_test_service(Arc::new(FakeRunner::default())).await;
+    let challenge = hex::encode(Sha256::digest(b"correct-verifier-with-32-random-bytes"));
+    let request = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+    let query = format!(
+        "origin={}&project=paper&request={}&challenge={}",
+        url::form_urlencoded::byte_serialize(ORIGIN.as_bytes()).collect::<String>(),
+        request,
+        challenge
+    );
+    let first = test
+        .client
+        .get(format!("{}/pair/request?{}", test.base, query))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let duplicate = test
+        .client
+        .get(format!("{}/pair/request?{}", test.base, query))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(duplicate.status(), 200);
+    let mismatch = test
+        .client
+        .get(format!(
+            "{}/pair/request?origin={}&project=other&request={}&challenge={}",
+            test.base, ORIGIN, request, challenge
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mismatch.status(), 409);
+    let bad = test
+        .client
+        .post(format!("{}/connect/claim", test.base))
+        .header("Origin", ORIGIN)
+        .json(&json!({"origin":ORIGIN,"project":"paper","request":request,"verifier":"wrong"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 403);
+}

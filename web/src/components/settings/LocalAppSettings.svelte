@@ -5,7 +5,7 @@
   import SettingRow from "./SettingRow.svelte";
   import * as localBridge from "../../lib/latex/local.js";
 
-  let { sourceFormat = "", bindingId = "", onbindingid } = $props();
+  let { sourceFormat = "", main = "", bindingId = "", onbindingid } = $props();
   const quarto = $derived(sourceFormat === "quarto");
 
   let local = $state(localBridge.status());
@@ -15,6 +15,9 @@
   let pairingCode = $state("");
   let connecting = $state(false);
   let doctor = $state("");
+  let choosingFolder = $state(false);
+  let entrypoint = $state("");
+  $effect(() => { entrypoint = main; });
 
   const WORDS = {
     unknown: "Not checked yet.",
@@ -25,8 +28,9 @@
     connected: "Connected.",
     incompatible: "Connected, but its version does not match this browser.",
   };
-  const paired = $derived(["connected", "unauthorized", "incompatible"].includes(local?.state));
-  const tone = $derived(local?.state === "connected" ? "good" : paired || local?.state === "reachable" ? "warn" : "off");
+  const connected = $derived(local?.state === "connected");
+  const canPair = $derived(["unauthorized", "reachable"].includes(local?.state));
+  const tone = $derived(connected ? "good" : canPair || local?.state === "incompatible" ? "warn" : "off");
 
   async function connect() {
     if (!pairingCode || connecting) return;
@@ -34,7 +38,8 @@
     try {
       await localBridge.connect(pairingCode);
       pairingCode = "";
-    } catch {
+    } catch (error) {
+      doctor = error?.message || "The pairing code was not accepted. Check the code and retry.";
     } finally {
       connecting = false;
     }
@@ -48,6 +53,31 @@
       doctor = error?.message || "librepaper local doctor could not be reached";
     }
   }
+
+  async function pair() {
+    if (connecting) return;
+    connecting = true;
+    try {
+      if (canPair) await localBridge.pairViaApp();
+      else await localBridge.connectViaApp();
+    }
+    catch (error) { doctor = error?.message || "Could not open the companion permission window."; }
+    finally { connecting = false; }
+  }
+
+  async function chooseFolder() {
+    if (choosingFolder) return;
+    choosingFolder = true;
+    try {
+      const result = await localBridge.chooseFolderBinding({ entrypoint: entrypoint.trim() });
+      if (result?.id) onbindingid?.(result.id);
+      entrypoint = result?.entrypoint || entrypoint;
+      doctor = "Project folder connected. Its path stays on this computer.";
+    } catch (error) { doctor = error?.message || "The companion could not choose a project folder."; }
+    finally { choosingFolder = false; }
+  }
+
+  function openCompanion() { return pair(); }
 </script>
 
 <div id="local-status" class="setting-status" data-tone={tone}>
@@ -55,44 +85,77 @@
   <div class="setting-status-words">
     <div class="setting-title">{WORDS[local?.state] || WORDS.unknown}</div>
     <div class="setting-description">
-      {#if paired}
-        {quarto ? "Renders run on this computer, with your installed Quarto and packages." : "PDF builds can use the LaTeX installed on this computer."}
+      {#if connected}
+        {#if quarto && local?.capabilities?.quarto?.tool?.available === false}
+          Quarto was not found on this computer. Install Quarto, then check the local setup below.
+        {:else}
+          {quarto ? "Renders run on this computer, with your installed Quarto and packages." : "PDF builds can use the LaTeX installed on this computer."}
+        {/if}
+      {:else if local?.state === "unreachable"}
+        Start the companion once; this page will reconnect automatically when it is available.
+      {:else if local?.state === "denied"}
+        Allow local-network access for this site, then retry. The browser is preventing the connection.
+      {:else if local?.state === "unauthorized" || local?.state === "reachable"}
+        The companion is running. Allow this site to use it, or use the advanced pairing code below.
       {:else}
-        Run <code>librepaper local start</code> in a terminal on this computer; a LibrePaper server running here already provides it.
-        {#if local?.instructions}{local.instructions}{/if}
+        {local?.instructions || "The companion is not ready yet."}
       {/if}
     </div>
   </div>
   <div class="setting-control">
-    {#if paired}
+    {#if local?.state === "unreachable"}<button type="button" class="btn btn-sm preset-filled-primary-500" disabled={connecting} onclick={openCompanion}>Open companion</button>{/if}
+    {#if connected}
       <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void localBridge.disconnect()}>Disconnect</button>
     {/if}
+    {#if canPair}<button type="button" class="btn btn-sm preset-filled-primary-500" disabled={connecting} onclick={pair}>{connecting ? "Waiting…" : "Enable local rendering"}</button>{/if}
     <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void localBridge.retry()}>Retry</button>
   </div>
 </div>
 
-{#if !paired}
-  <SettingRow id="local-pairing" title="Pairing code"
-              description="The code the local app prints when it starts. Choosing a render from the menu asks the app to allow this site instead, without a code.">
+{#if !connected}
+  <p class="setting-description local-install-help">
+    Install the companion once, then return here:
+    <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/install-companion.sh">Linux installer</a>,
+    <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper_darwin_arm64.app.zip">macOS Apple silicon</a>,
+    <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper_darwin_amd64.app.zip">macOS Intel</a>, or
+    <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/install-companion.cmd">Windows setup</a>.
+    <a href="https://github.com/LibrePaper/librepaper/blob/main/deploy/README.md" target="_blank" rel="noreferrer">Installation instructions</a>.
+  </p>
+{/if}
+
+{#if !connected}
+  <details id="local-pairing" class="setting-advanced">
+    <summary>Advanced connection options</summary>
+    <SettingRow title="Pairing code"
+                description="Enter the one-time code printed by the companion if the permission window cannot open.">
     <input class="input input-sm setting-input" type="text" inputmode="numeric" aria-label="Pairing code"
            bind:value={pairingCode} placeholder="Code from the local app" />
     <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={connecting || !pairingCode} onclick={connect}>Connect</button>
-  </SettingRow>
+    </SettingRow>
+  </details>
 {/if}
 
 <SettingRow id="local-address" title="Address" description="Keep the default unless you started the local app on another address or port.">
   <input class="input input-sm setting-input" type="text" aria-label="Local app address" value={address}
          oninput={(event) => (address = event.currentTarget.value)} onblur={() => localBridge.setAddress(address)} />
 </SettingRow>
+<p class="setting-description"><a href={`${local?.address || localBridge.address()}librepaper/local/v1/manage`} target="_blank" rel="noreferrer">Open companion settings</a></p>
 
 {#if quarto}
-  <SettingRow id="local-binding" title="Binding ID" description="An explicitly granted local project for render jobs. Live preview uses the shared project workspace synchronized from this browser.">
-    <input class="input input-sm setting-input" type="text" aria-label="Local Quarto binding ID" placeholder="binding ID" value={bindingId}
-           onchange={(event) => onbindingid?.(event.currentTarget.value.trim())} />
+  <SettingRow id="local-binding" title="Project folder" description="Use this folder for Quarto render and export jobs. Live preview uses the shared project workspace. Selecting a folder does not upload its contents.">
+    <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder="main.qmd" bind:value={entrypoint} />
+    <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!connected || choosingFolder || !entrypoint.trim()} onclick={() => chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose project folder…"}</button>
   </SettingRow>
+  <details class="setting-advanced">
+    <summary>Advanced: use an existing binding</summary>
+    <SettingRow title="Binding ID" description="For projects already configured with the companion CLI.">
+      <input class="input input-sm setting-input" type="text" aria-label="Local Quarto binding ID" placeholder="binding ID" value={bindingId}
+             onchange={(event) => onbindingid?.(event.currentTarget.value.trim())} />
+    </SettingRow>
+  </details>
 {/if}
 
-<h4 class="settings-heading">Diagnostics</h4>
+<details><summary>Details and troubleshooting</summary>
 {#if local?.capabilities?.tools}
   <SettingRow id="local-tools" title="Available tools" stacked
               description="What the local app found on this computer. File access protection: {local.capabilities.confinement?.kind || 'none'}{local.capabilities.confinement?.reason ? ` (${local.capabilities.confinement.reason})` : ''}.">
@@ -114,3 +177,5 @@
   <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={doctorReport}>Check</button>
   {#if doctor}<pre class="setting-log">{doctor}</pre>{/if}
 </SettingRow>
+
+</details>

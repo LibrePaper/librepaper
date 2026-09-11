@@ -62,6 +62,43 @@ pub struct ConnectRequest {
 pub struct ConnectResponse {
     pub token: String,
     pub expires: i64,
+    /// Changes when the companion process restarts. Clients may retain their
+    /// token and reconnect after observing a new instance.
+    #[serde(default)]
+    pub instance: String,
+}
+
+/// Request a native folder chooser for a previously paired project. The
+/// chooser is deliberately initiated by an explicit POST from the UI; paths
+/// never cross this protocol.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FolderBindingRequest {
+    pub project: String,
+    pub entrypoint: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FolderBindingResponse {
+    pub id: String,
+    pub project: String,
+    pub entrypoint: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BindingSummary {
+    pub id: String,
+    pub project: String,
+    pub entrypoint: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PairClaimRequest {
+    pub request: String,
+    pub origin: String,
+    pub project: String,
+    pub verifier: String,
 }
 
 /// One native tool, as the browser is allowed to know it: whether, which

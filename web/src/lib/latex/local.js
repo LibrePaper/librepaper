@@ -38,6 +38,7 @@ const HEALTH_TIMEOUT_MS = 2000;
 const POLL_FAST_MS = 500;
 const POLL_SLOW_MS = 1000;
 const POLL_SLOW_AFTER_MS = 10 * 1000;
+const RECONNECT_INTERVAL_MS = 15 * 1000;
 
 function realWait(ms, signal) {
   return new Promise((resolve) => {
@@ -66,11 +67,13 @@ export const _testing = {
   reset() {
     deps = defaultDeps();
     negative = null;
-    current = { project: null, origin: "" };
+    current = { project: null, origin: "", active: true };
     lastInstance = null;
     addressSpaceSupported = true;
     listeners.clear();
+    subscriberCount = 0;
     currentStatus = initialStatus();
+    cancelAutoReconnect();
   },
 };
 
@@ -128,6 +131,18 @@ function validAddress(value) {
   }
 }
 
+function randomUrlToken(bytes = 18) {
+  const values = new Uint8Array(bytes);
+  crypto.getRandomValues(values);
+  return btoa(String.fromCharCode(...values)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+async function sha256Hex(value) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export function address() {
   return validAddress(readRaw(ADDRESS_KEY)) || DEFAULT_ADDRESS;
 }
@@ -161,20 +176,28 @@ export function setBindingId(id) {
   return value;
 }
 
+/** Whether this browser should quietly re-use an existing project pairing. */
 // -------------------------------------------------------------- pairings
 
-let current = { project: null, origin: "" };
+let current = { project: null, origin: "", active: true };
 
-export function configure({ project, origin } = {}) {
+export function configure({ project, origin, active = true } = {}) {
+  const previous = pairingKey();
+  cancelAutoReconnect();
   current = {
     project: project !== undefined ? project : current.project,
     origin: origin !== undefined ? origin : current.origin,
+    active,
   };
+  if (previous !== pairingKey()) { lastInstance = null; negative = null; setStatus(initialStatus()); }
+  scheduleAutoReconnect();
 }
 
 function pairingKey() {
   return `${current.origin}|${current.project}`;
 }
+
+export function hasPairing() { return Boolean(getPairing()?.token); }
 
 function getPairing() {
   const all = readJSON(PAIRINGS_KEY, {});
@@ -239,6 +262,24 @@ function initialStatus() {
 let currentStatus = initialStatus();
 const listeners = new Set();
 let lastInstance = null;
+let autoReconnectTimer = null;
+let subscriberCount = 0;
+
+function cancelAutoReconnect() {
+  if (autoReconnectTimer) clearTimeout(autoReconnectTimer);
+  autoReconnectTimer = null;
+}
+
+function scheduleAutoReconnect() {
+  if (autoReconnectTimer || !current.active || subscriberCount === 0 || !getPairing()) return;
+  autoReconnectTimer = setTimeout(async () => {
+    autoReconnectTimer = null;
+    if (!current.active || subscriberCount === 0 || !getPairing()) return;
+    await probe().catch(() => {});
+    scheduleAutoReconnect();
+  }, RECONNECT_INTERVAL_MS);
+  autoReconnectTimer.unref?.();
+}
 
 export function status() {
   return currentStatus;
@@ -246,8 +287,14 @@ export function status() {
 
 export function subscribe(listener) {
   listeners.add(listener);
+  subscriberCount = listeners.size;
   listener(currentStatus);
-  return () => listeners.delete(listener);
+  scheduleAutoReconnect();
+  return () => {
+    if (!listeners.delete(listener)) return;
+    subscriberCount = Math.max(0, subscriberCount - 1);
+    if (!subscriberCount) cancelAutoReconnect();
+  };
 }
 
 function setStatus(patch) {
@@ -333,6 +380,7 @@ async function throwOnFailure(response) {
 /// drops the pairing and is `Unauthorized`, any other non-2xx is `Refused`
 /// with the server's own message when it gave one.
 async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
+  const scope = pairingKey();
   const addr = address();
   const url = addr + "librepaper/local/v1/" + path;
   const headers = { Accept: "application/json" };
@@ -353,6 +401,7 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
     }
     throw named("Unreachable", String(error?.message || error));
   }
+  if (scope !== pairingKey() || addr !== address()) throw named("Canceled", "The local project changed.");
   await throwOnFailure(response);
   return response;
 }
@@ -363,7 +412,10 @@ async function bytesOfResponse(response) {
 
 // -------------------------------------------------------------- probe
 
-export async function probe({ force = false } = {}) {
+export async function probe({ force = false, pairedOnly = false } = {}) {
+  if (pairedOnly && !getPairing()) return currentStatus;
+  const scope = pairingKey();
+  const scopedStatus = (patch) => scope === pairingKey() ? setStatus(patch) : currentStatus;
   const startMs = deps.now();
   if (!force && negative && startMs < negative.until) {
     return currentStatus;
@@ -374,7 +426,7 @@ export async function probe({ force = false } = {}) {
   // version vary -- so it is noted in the backoff cache and reported once.
   const markUnreachable = (error, version = null) => {
     noteNegative(deps.now());
-    return setStatus({
+    return scopedStatus({
       state: "unreachable", address: addr, protocol: null, version, capabilities: null,
       checkedAt: deps.now(), error, instructions: instructionsFor("unreachable"),
     });
@@ -387,11 +439,12 @@ export async function probe({ force = false } = {}) {
     const denied = /permission|blocked|private network/i.test(message);
     const state = denied ? "denied" : "unreachable";
     noteNegative(deps.now());
-    return setStatus({
+    return scopedStatus({
       state, address: addr, protocol: null, version: null, capabilities: null,
       checkedAt: deps.now(), error: message, instructions: instructionsFor(state),
     });
   }
+  if (scope !== pairingKey() || addr !== address()) return currentStatus;
   if (!response.ok) {
     return markUnreachable(`health responded ${response.status}`);
   }
@@ -401,13 +454,17 @@ export async function probe({ force = false } = {}) {
   } catch {
     return markUnreachable("malformed health response");
   }
+  if (scope !== pairingKey() || addr !== address()) return currentStatus;
   if (body?.service !== "librepaper-local" || !Array.isArray(body?.protocol)) {
     return markUnreachable("unrecognised local service", body?.version || null);
+  }
+  if (lastInstance && body.instance && lastInstance !== body.instance) {
+    setStatus({ state: "reachable", capabilities: null, instance: body.instance });
   }
   lastInstance = body.instance || null;
   if (!body.protocol.includes(1)) {
     resetNegativeCache();
-    return setStatus({
+    return scopedStatus({
       state: "incompatible", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
       checkedAt: deps.now(), error: "protocol mismatch", instructions: instructionsFor("incompatible"),
     });
@@ -415,7 +472,7 @@ export async function probe({ force = false } = {}) {
   resetNegativeCache();
   // Both an unpaired app and a pairing the bridge no longer honours report
   // the same "unauthorized" status once the health check itself succeeded.
-  const markUnauthorized = () => setStatus({
+  const markUnauthorized = () => scopedStatus({
     state: "unauthorized", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
     checkedAt: deps.now(), error: null, instructions: instructionsFor("unauthorized"),
   });
@@ -426,17 +483,19 @@ export async function probe({ force = false } = {}) {
   try {
     const capsResponse = await send("GET", "capabilities", { token: pairing.token });
     const caps = await capsResponse.json();
-    return setStatus({
-      state: "connected", address: addr, protocol: body.protocol, version: body.version || null, capabilities: caps,
+    const connectedStatus = scopedStatus({
+      state: "connected", address: addr, protocol: body.protocol, version: body.version || null, capabilities: caps, instance: lastInstance,
       checkedAt: deps.now(), error: null, instructions: instructionsFor("connected"),
     });
+    scheduleAutoReconnect();
+    return connectedStatus;
   } catch (error) {
     if (error?.name === "Unauthorized") {
       return markUnauthorized();
     }
     // The health check just succeeded, so the service is up; a hiccup
     // verifying the token is not the same claim as "unreachable".
-    return setStatus({
+    return scopedStatus({
       state: "reachable", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
       checkedAt: deps.now(), error: String(error?.message || error), instructions: instructionsFor("reachable"),
     });
@@ -477,6 +536,7 @@ export async function connect(code) {
 export function pairViaApp({ timeoutMs = 5 * 60 * 1000 } = {}) {
   const addr = address();
   const appOrigin = new URL(addr).origin;
+  const scope = pairingKey();
   const url = `${addr}librepaper/local/v1/pair?origin=${encodeURIComponent(current.origin)}&project=${encodeURIComponent(current.project)}`;
   const sameOrigin = (a, b) => String(a || "").replace(/\/+$/, "").toLowerCase() === String(b || "").replace(/\/+$/, "").toLowerCase();
   return new Promise((resolve, reject) => {
@@ -497,7 +557,7 @@ export function pairViaApp({ timeoutMs = 5 * 60 * 1000 } = {}) {
       resolve(value);
     };
     const onMessage = (event) => {
-      if (event.origin !== appOrigin) return;
+      if (event.origin !== appOrigin || event.source !== popup || scope !== pairingKey()) return;
       const data = event.data;
       if (!data || data.type !== "librepaper-local-pairing") return;
       if (data.project !== current.project || !sameOrigin(data.origin, current.origin)) return;
@@ -509,6 +569,77 @@ export function pairViaApp({ timeoutMs = 5 * 60 * 1000 } = {}) {
     watch = setInterval(() => { if (popup.closed) setTimeout(() => finish(currentStatus), 300); }, 400);
     timer = setTimeout(() => finish(currentStatus), timeoutMs);
   });
+}
+
+// Start a consent request through an installed companion protocol handler.
+// The verifier stays in this page; the deep link contains only its SHA-256
+// challenge. The companion registers the request when it opens its consent UI.
+let connectionAttempt = null;
+
+export function connectViaApp(options = {}) {
+  if (connectionAttempt) return connectionAttempt;
+  connectionAttempt = runAppConnection(options).finally(() => { connectionAttempt = null; });
+  return connectionAttempt;
+}
+
+async function runAppConnection({ timeoutMs = 120 * 1000, pollMs = 700, signal } = {}) {
+  const { origin, project } = current;
+  if (!origin || !project) throw named("Unauthorized", "Open a document before enabling local rendering.");
+  const addr = address();
+  const scope = pairingKey();
+  const checkScope = () => {
+    if (signal?.aborted || scope !== pairingKey() || addr !== address()) {
+      throw named("Canceled", "The document or companion address changed. Connect again in the current document.");
+    }
+  };
+  const paired = getPairing();
+  const request = randomUrlToken(24);
+  const verifier = randomUrlToken(32);
+  const challenge = await sha256Hex(verifier);
+  checkScope();
+  // Existing grants need only a launch, not another consent ceremony.
+  launchLink(paired ? "librepaper://launch" : `librepaper://connect?${new URLSearchParams({ origin, project, request, challenge })}`);
+  const started = deps.now();
+  while (deps.now() - started < timeoutMs) {
+    await deps.wait(pollMs, signal);
+    checkScope();
+    if (paired) {
+      const status = await probe({ force: true });
+      checkScope();
+      if (status.state === "connected") return status;
+      if (status.state === "unauthorized") throw named("Unauthorized", "This document's permission expired or was revoked. Enable local rendering again to approve it.");
+      if (status.state === "denied" || status.state === "incompatible") throw named("Refused", status.instructions);
+      continue;
+    }
+    let response;
+    try {
+      response = await deps.fetch(`${addr}librepaper/local/v1/connect/claim`, {
+        method: "POST", mode: "cors", credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
+        body: JSON.stringify({ request, origin, project, verifier }),
+      });
+    } catch (error) {
+      checkScope();
+      if (/permission|blocked|private network/i.test(String(error?.message || error))) {
+        throw named("Refused", "Allow this site's local-network permission in your browser, then retry.");
+      }
+      continue; // The installed companion may still be starting.
+    }
+    checkScope();
+    if (response.status === 202 || response.status === 404) continue;
+    if (response.status === 403) throw named("Unauthorized", "This connection request expired or was refused. Enable local rendering again.");
+    if (!response.ok) throw named("Refused", `The companion could not connect (${response.status}). Retry or open companion settings.`);
+    const data = await response.json();
+    checkScope();
+    if (typeof data.token !== "string" || !data.token || !Number.isFinite(data.expires)) {
+      throw named("Refused", "The companion returned an invalid connection response.");
+    }
+    setPairing({ token: data.token, expires: data.expires, instance: data.instance || null });
+    resetNegativeCache();
+    return probe({ force: true });
+  }
+  throw named("Unreachable", "The companion did not connect. Install or open it, approve the local permission window, then retry.");
 }
 
 export async function disconnect() {
@@ -539,6 +670,19 @@ export async function capabilities({ rescan = false } = {}) {
   return data;
 }
 
+/** Ask the companion to open its native directory chooser and bind the
+ * selected project folder. The absolute path never crosses the wire. */
+export async function chooseFolderBinding({ entrypoint = "" } = {}) {
+  const pairing = requirePairing();
+  const response = await send("POST", "bindings/folder", {
+    token: pairing.token,
+    jsonBody: { project: current.project, entrypoint: String(entrypoint || "") },
+  });
+  const data = await response.json();
+  if (data?.id) setBindingId(data.id);
+  return data;
+}
+
 /// The one-line pairing instruction, unchanged from what `openApp()` and the
 /// status line already show for an unpaired local app -- reused verbatim by
 /// `latex.js`'s "a package the bundle index says the mirror does not have"
@@ -548,16 +692,21 @@ export function pairingInstruction() {
   return instructionsFor("unauthorized");
 }
 
+function launchLink(url) {
+  if (typeof window === "undefined" || !window.document?.body) {
+    throw named("Unreachable", "Open LibrePaper in a browser to launch the companion.");
+  }
+  const frame = window.document.createElement("iframe");
+  frame.hidden = true;
+  frame.src = url;
+  window.document.body.appendChild(frame);
+  const timer = setTimeout(() => frame.remove(), 3000);
+  timer.unref?.();
+}
+
 export function openApp() {
-  try {
-    if (typeof window !== "undefined" && window.document?.body) {
-      const iframe = window.document.createElement("iframe");
-      iframe.style.display = "none";
-      iframe.src = "librepaper://local/open";
-      window.document.body.appendChild(iframe);
-      setTimeout(() => iframe.remove(), 3000);
-    }
-  } catch { /* no protocol handler registered, or no DOM at all; the CLI instructions still apply */ }
+  try { launchLink("librepaper://launch"); }
+  catch { /* Keep this synchronous compatibility entrypoint usable without a DOM. */ }
   return instructionsFor(currentStatus.state === "connected" ? "connected" : "unauthorized");
 }
 

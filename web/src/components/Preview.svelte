@@ -8,7 +8,7 @@
   //
   // Everything arriving from the frame is untrusted. The agent shares an
   // origin with the document, and a hostile document can rewrite it.
-  let { src, docsOrigin, onmessage, path = "", grabbing = false, away = false } = $props();
+  let { src, docsOrigin, onmessage, path = "", grabbing = false, away = false, status, overlay } = $props();
 
   let frame = $state(null);
   let viewport = $state(null);
@@ -46,7 +46,12 @@
 
 <section class="viewport" class:away bind:this={viewport} inert={away}
          style:--held-width="{heldWidth}px" style:--held-height="{heldHeight}px">
-  {#if path}<div class="preview-filename truncate" title={path} aria-label="Previewed file">{path}</div>{/if}
+  {#if path || status}
+    <div class="preview-header">
+      {#if path}<div class="preview-filename truncate" title={path} aria-label="Previewed file">{path}</div>{/if}
+      {@render status?.()}
+    </div>
+  {/if}
   <!-- allow-same-origin refers to the document's own origin, not this one, so
        the agent can read the document while the document can read nothing
        here. While a separator is being dragged the frame is deafened: it
@@ -61,4 +66,5 @@
       sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
     ></iframe>
   {/key}
+  {@render overlay?.()}
 </section>

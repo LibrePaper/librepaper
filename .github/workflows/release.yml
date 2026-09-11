@@ -66,6 +66,28 @@ jobs:
             7z a dist/${{ matrix.name }}.zip ./target/${{ matrix.target }}/release/librepaper.exe README.md
           else
             tar -czf dist/${{ matrix.name }}.tar.gz -C target/${{ matrix.target }}/release librepaper -C ../../.. README.md
+            if [ "${{ matrix.os }}" = "macos-latest" ]; then
+              cp "target/${{ matrix.target }}/release/librepaper" dist/librepaper-companion-binary
+              osacompile -o "dist/LibrePaper Companion.app" -e 'on run
+                do shell script quoted form of ((POSIX path of (path to me)) & "Contents/Resources/librepaper") & " local manage"
+              end run
+              on open location theURL
+                do shell script quoted form of ((POSIX path of (path to me)) & "Contents/Resources/librepaper") & " local open " & quoted form of theURL
+              end open location'
+              mkdir -p "dist/LibrePaper Companion.app/Contents/Resources"
+              cp dist/librepaper-companion-binary "dist/LibrePaper Companion.app/Contents/Resources/librepaper"
+              chmod +x "dist/LibrePaper Companion.app/Contents/Resources/librepaper"
+              rm dist/librepaper-companion-binary
+              /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier org.librepaper.companion" "dist/LibrePaper Companion.app/Contents/Info.plist"
+              /usr/libexec/PlistBuddy -c "Set :CFBundleName LibrePaper Companion" "dist/LibrePaper Companion.app/Contents/Info.plist"
+              /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "dist/LibrePaper Companion.app/Contents/Info.plist"
+              /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "dist/LibrePaper Companion.app/Contents/Info.plist"
+              /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "dist/LibrePaper Companion.app/Contents/Info.plist"
+              /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string librepaper" "dist/LibrePaper Companion.app/Contents/Info.plist"
+              codesign --force --deep --sign - "dist/LibrePaper Companion.app"
+              (cd dist && zip -qry "${{ matrix.name }}.app.zip" "LibrePaper Companion.app")
+              rm -rf "dist/LibrePaper Companion.app"
+            fi
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -76,12 +98,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
       - name: Checksums
-        run: cd dist && sha256sum * > checksums.txt
+        run: |
+          cp deploy/install-companion.sh deploy/install-companion.ps1 deploy/install-companion.cmd deploy/install.sh dist/
+          cd dist && sha256sum * > checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*

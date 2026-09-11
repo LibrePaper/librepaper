@@ -437,10 +437,28 @@ in the browser. Without the app, a deployment configured with `--biber-vm` boots
 worker (a Debian image holding Biber and nothing else, run by v86) and runs
 the real Biber there; slower, but nothing to install.
 
-The local app is the same binary:
+The local companion extends the online editor with the tools installed on
+your computer. Documents and collaboration stay in the website. Install the
+companion from the document's **Enable local rendering** settings, then use
+**Open companion** to launch it. The first connection asks permission for
+the named site and document; subsequent connections reuse that permission,
+including after restarting the companion.
+
+The companion's local settings page shows discovered tools and connected
+documents, lets you revoke access, and offers **Start at login** and **Quit
+companion**. Startup at login is optional. A browser may separately ask for
+permission to connect to a local service; allow that for the LibrePaper site
+you use. Compilation permissions do not grant the website access to these
+local management controls.
+
+The companion is the same binary as the CLI. Terminal users can still use:
 
 ```sh
-librepaper local start        # a loopback service; prints a pairing code
+librepaper local launch       # run in the background
+librepaper local start        # run in a terminal; prints a fallback pairing code
+librepaper local stop         # stop the background companion
+librepaper local startup enable   # optional: start when you log in
+librepaper local startup disable
 librepaper local doctor       # which TeX tools it found, and whether it can confine them
 librepaper local status
 librepaper local disconnect --all
@@ -536,10 +554,11 @@ per document (default: **Quarto preview**):
   through the local app.
 
 Rendering runs on your own computer, with Quarto and R or Python installed
-there. Start the local app once:
+there. Enable local rendering from the preview banner, or start the companion
+from a terminal:
 
 ```sh
-librepaper local start
+librepaper local launch
 ```
 
 The first time you pick Quarto preview, a small window from the local app
@@ -571,8 +590,14 @@ Review the publication inventory. Shared source and assets are readable by
 collaborators with document access. Files needed only for local execution can
 remain in the author's project.
 
-A project that keeps data the document does not share can still be linked
-explicitly, and that link then takes precedence for the document:
+A project that keeps data the document does not share can be linked with
+**Choose project folder…** in the local rendering settings. The native folder
+dialog runs on this computer, and the selection is remembered for this site
+and document. Choosing a folder does not upload its contents. The website
+receives an opaque binding identifier, not the folder's absolute path.
+
+Terminal users can make the same explicit link, which takes precedence for
+render jobs for the document:
 
 ```sh
 librepaper local doctor

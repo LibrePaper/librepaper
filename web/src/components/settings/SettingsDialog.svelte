@@ -27,6 +27,7 @@
     onlatexsettings,
     // The Quarto project and the local app it renders on.
     bindingId = "",
+    main = "",
     onbindingid,
     options,
     viewing = null,
@@ -86,7 +87,7 @@
         {:else if shown.id === "rendering"}
           <RenderingSettings {options} {viewing} {onapplyoptions} />
         {:else if shown.id === "local"}
-          <LocalAppSettings {sourceFormat} {bindingId} {onbindingid} />
+          <LocalAppSettings {main} {sourceFormat} {bindingId} {onbindingid} />
         {/if}
       {/if}
     </div>

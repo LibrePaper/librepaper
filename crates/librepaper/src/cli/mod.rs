@@ -524,9 +524,12 @@ pub enum LocalCommand {
             env = "LIBREPAPER_LOCAL_PORT"
         )]
         port: u16,
-        /// Stay attached to the terminal rather than detaching
+        /// Stay attached to the terminal (the default)
         #[arg(long)]
         foreground: bool,
+        /// Start detached in the background.
+        #[arg(long, conflicts_with = "foreground")]
+        background: bool,
         /// Fixed pairing code to use instead of a random one each run
         #[arg(
             long,
@@ -543,6 +546,27 @@ pub enum LocalCommand {
             value_delimiter = ':'
         )]
         tex_path: Vec<PathBuf>,
+    },
+    /// Start the local companion in the background.
+    Launch {
+        #[arg(long, default_value_t = 0, hide_default_value = true)]
+        port: u16,
+    },
+    /// Open the local companion settings, starting it if needed.
+    Manage,
+    /// Ask a running companion to stop cleanly.
+    Stop,
+    /// Restart the background companion.
+    Restart {
+        #[arg(long, default_value_t = 0, hide_default_value = true)]
+        port: u16,
+    },
+    /// Launch the companion and open a validated local connection link.
+    Open { url: String },
+    /// Enable or disable starting the companion when you log in.
+    Startup {
+        #[command(subcommand)]
+        command: StartupCommand,
     },
     /// Whether the service is running, its address, code and pairings
     Status,
@@ -576,6 +600,12 @@ pub enum LocalCommand {
         )]
         tex_path: Vec<PathBuf>,
     },
+}
+
+#[derive(Subcommand, Clone, Debug)]
+pub enum StartupCommand {
+    Enable,
+    Disable,
 }
 
 /// The arguments `librepaper local` hands to `crate::local::run`.

@@ -381,4 +381,47 @@ mod tests {
             normalize_origin("https://librepaper.example:5173")
         );
     }
+
+    #[test]
+    fn replacing_a_grant_invalidates_the_previous_token() {
+        let (_dir, store) = store();
+        let (old, _) = store
+            .issue("https://example.test", "paper", "old")
+            .expect("issue");
+        let (new, _) = store
+            .issue("https://example.test", "paper", "new")
+            .expect("issue");
+        assert_eq!(store.authenticate("https://example.test", &old), None);
+        assert_eq!(
+            store.authenticate("https://example.test", &new),
+            Some("paper".into())
+        );
+    }
+
+    #[test]
+    fn expired_grants_and_wrong_origin_or_project_scope_are_rejected() {
+        let (_dir, store) = store();
+        let (token, _) = store
+            .issue("https://example.test", "paper", "")
+            .expect("issue");
+        let mut grants = store.load();
+        let key = key_of("https://example.test", "paper");
+        grants.get_mut(&key).expect("grant").expires = now_unix() - 1;
+        store.save(&grants).expect("save");
+        assert_eq!(store.authenticate("https://example.test", &token), None);
+        assert_eq!(store.authenticate("https://other.test", &token), None);
+        // Authentication returns the token's project; callers must compare it
+        // with the requested project before accepting a job or binding.
+        let (token, _) = store
+            .issue("https://example.test", "paper", "")
+            .expect("issue");
+        assert_eq!(
+            store.authenticate("https://example.test", &token),
+            Some("paper".into())
+        );
+        assert_ne!(
+            store.authenticate("https://example.test", &token),
+            Some("other".into())
+        );
+    }
 }

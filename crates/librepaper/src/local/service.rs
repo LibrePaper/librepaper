@@ -300,7 +300,20 @@ struct DurableQuartoFile {
     storage: String,
 }
 
+const PAIR_REQUEST_TTL: Duration = Duration::from_secs(120);
+
+struct PendingPair {
+    origin: String,
+    project: String,
+    challenge: String,
+    expires: Instant,
+    token: Option<(String, i64)>,
+}
+
 struct Inner {
+    state_home: PathBuf,
+    management_nonce: String,
+    folder_dialog: Mutex<()>,
     instance: String,
     port: u16,
     pairing: PairingStore,
@@ -313,6 +326,7 @@ struct Inner {
     /// `<cache_home>/librepaper/local/jobs`; each job gets `<jobs>/<id>/`.
     jobs_root: PathBuf,
     connect_attempts: Mutex<HashMap<String, VecDeque<Instant>>>,
+    pending_pairs: Mutex<HashMap<String, PendingPair>>,
 }
 
 /// The running local service: owns the job table and the background worker
@@ -388,6 +402,9 @@ impl LocalService {
             quarto_bindings = quarto_bindings.with_hosted_workspaces(base);
         }
         let inner = Arc::new(Inner {
+            state_home: state_home.to_path_buf(),
+            management_nonce: pairing::random_token(),
+            folder_dialog: Mutex::new(()),
             instance,
             port,
             pairing: PairingStore::new(state_home, fixed_code),
@@ -399,6 +416,7 @@ impl LocalService {
             work: Notify::new(),
             jobs_root,
             connect_attempts: Mutex::new(HashMap::new()),
+            pending_pairs: Mutex::new(HashMap::new()),
         });
         tokio::spawn(run_worker(inner.clone()));
         tokio::spawn(run_reaper(inner.clone()));
@@ -799,13 +817,16 @@ async fn handle(
     let route = path
         .strip_prefix(BASE_PATH)
         .map(|rest| rest.trim_matches('/').to_string());
-    let is_open_route = matches!(route.as_deref(), Some("health") | Some("connect"));
+    let is_open_route = matches!(
+        route.as_deref(),
+        Some("health") | Some("connect") | Some("connect/claim")
+    );
     let is_preflight = method == Method::OPTIONS;
 
     let response = if is_preflight {
         Response::new(Body::empty())
     } else {
-        match route {
+        match route.as_ref() {
             None => plain(404, "not found"),
             Some(rest) => {
                 let segs: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
@@ -823,9 +844,14 @@ async fn handle(
         }
     };
 
-    let allow_origin = origin
-        .as_deref()
-        .is_some_and(|o| is_open_route || inner.pairing.has_live_pairing(o));
+    let local_page = matches!(
+        route.as_deref(),
+        Some("pair") | Some("pair/request") | Some("manage")
+    );
+    let allow_origin = !local_page
+        && origin
+            .as_deref()
+            .is_some_and(|o| is_open_route || inner.pairing.has_live_pairing(o));
     apply_common_headers(response, origin.as_deref(), allow_origin, is_preflight)
 }
 
@@ -839,12 +865,34 @@ async fn dispatch(
     request: Request<Body>,
 ) -> Reply {
     match segs {
+        ["manage"] if *method == Method::GET || *method == Method::POST => {
+            super::management::handle(
+                &inner.state_home,
+                inner.port,
+                &inner.instance,
+                &inner.management_nonce,
+                inner.runner.as_ref(),
+                request,
+            )
+            .await
+        }
         ["health"] if *method == Method::GET => handle_health(inner),
         ["connect"] if *method == Method::POST => handle_connect(inner, peer, request).await,
+        ["connect", "claim"] if *method == Method::POST => handle_pair_claim(inner, request).await,
+        ["pair", "request"] if *method == Method::GET => handle_pair_request(inner, request).await,
         ["pair"] if *method == Method::GET => handle_pair_page(&request),
         ["pair"] if *method == Method::POST => handle_pair_consent(inner, peer, request).await,
         ["disconnect"] if *method == Method::POST => {
             handle_disconnect(inner, headers, origin).await
+        }
+        ["bindings"] if *method == Method::GET => {
+            handle_bindings_list(inner, headers, origin).await
+        }
+        ["bindings", "folder"] if *method == Method::POST => {
+            handle_binding_folder(inner, headers, origin, request).await
+        }
+        ["bindings", id] if *method == Method::DELETE => {
+            handle_binding_revoke(inner, headers, origin, id).await
         }
         ["capabilities"] if *method == Method::GET => {
             handle_capabilities(inner, headers, origin, false).await
@@ -934,14 +982,117 @@ async fn handle_connect(inner: &Arc<Inner>, peer: SocketAddr, request: Request<B
     match inner.pairing.issue(&body.origin, &body.project, "browser") {
         Ok((token, expires)) => write_json(
             200,
-            &serde_json::to_value(protocol::ConnectResponse { token, expires })
-                .unwrap_or(Value::Null),
+            &serde_json::to_value(protocol::ConnectResponse {
+                token,
+                expires,
+                instance: inner.instance.clone(),
+            })
+            .unwrap_or(Value::Null),
         ),
         Err(err) => write_json(
             500,
             &json!({"error": format!("could not store the pairing: {err}")}),
         ),
     }
+}
+
+/* ------------------------------------------------------- folder bindings */
+
+async fn handle_bindings_list(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
+    let project = match authenticate(inner, headers, origin) {
+        Ok(project) => project,
+        Err(response) => return response,
+    };
+    write_json(
+        200,
+        &json!({
+            "bindings": inner.quarto_bindings.summaries_scoped(origin.unwrap_or_default(), &project)
+        }),
+    )
+}
+
+async fn handle_binding_revoke(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    id: &str,
+) -> Reply {
+    let project = match authenticate(inner, headers, origin) {
+        Ok(project) => project,
+        Err(response) => return response,
+    };
+    let revoked = inner
+        .quarto_bindings
+        .revoke_scoped(id, origin.unwrap_or_default(), &project);
+    write_json(200, &json!({"revoked": revoked}))
+}
+
+async fn handle_binding_folder(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    let project = match authenticate(inner, headers, origin) {
+        Ok(project) => project,
+        Err(response) => return response,
+    };
+    let body = match read_json_body::<protocol::FolderBindingRequest>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    if body.project != project {
+        return write_json(
+            403,
+            &json!({"error": "project does not match the connected token"}),
+        );
+    }
+    if let Err(error) = crate::local::quarto::validate_main(&body.entrypoint) {
+        return write_json(400, &json!({"error": error}));
+    }
+    let Ok(_dialog) = inner.folder_dialog.try_lock() else {
+        return write_json(
+            409,
+            &json!({"error": "A folder chooser is already open on this computer."}),
+        );
+    };
+    // Opening a native chooser is itself the local user's explicit gesture;
+    // the endpoint is authenticated and POST-only so a drive-by page cannot
+    // bind an arbitrary directory without the existing grant.
+    let root = match super::folder::choose_directory(origin.unwrap_or_default(), &project).await {
+        Ok(root) => root,
+        Err(error) => return write_json(400, &json!({"error": error})),
+    };
+    // Permission may have been revoked while the user considered the dialog.
+    if authenticate(inner, headers, origin).ok().as_deref() != Some(&project) {
+        return write_json(
+            401,
+            &json!({"error": "This document is no longer connected."}),
+        );
+    }
+    let binding = match inner.quarto_bindings.grant(
+        origin.unwrap_or_default(),
+        &project,
+        &root,
+        &body.entrypoint,
+    ) {
+        Ok(binding) => binding,
+        Err(_) => {
+            return write_json(
+                400,
+                &json!({"error": "The selected folder must contain the named Quarto entrypoint. Check the filename and choose its project folder again."}),
+            )
+        }
+    };
+    write_json(
+        200,
+        &json!(protocol::FolderBindingResponse {
+            id: binding.id,
+            project: binding.project,
+            entrypoint: binding.entrypoint,
+            created_at: binding.created_at,
+        }),
+    )
 }
 
 /* ------------------------------------------------------------ pair page */
@@ -964,6 +1115,133 @@ fn pair_query(query: &str) -> Option<(String, String)> {
         }
     }
     Some((origin?, project?))
+}
+
+fn pair_request_fields(query: &str) -> Option<(String, String)> {
+    let mut request = None;
+    let mut challenge = None;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match &*key {
+            "request" => request = valid_request_id(&value),
+            "challenge" => challenge = valid_challenge(&value),
+            _ => {}
+        }
+    }
+    Some((request?, challenge?))
+}
+
+fn valid_request_id(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    (value.len() >= 32
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+    .then(|| value.to_string())
+}
+
+fn valid_challenge(raw: &str) -> Option<String> {
+    let value = raw.trim().to_ascii_lowercase();
+    (value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit())).then_some(value)
+}
+
+async fn handle_pair_request(inner: &Inner, request: Request<Body>) -> Reply {
+    let query = request.uri().query().unwrap_or_default();
+    let Some((origin, project)) = pair_query(query) else {
+        return write_json(
+            400,
+            &json!({"error": "pair request needs an origin and project"}),
+        );
+    };
+    let Some((request_id, challenge)) = pair_request_fields(query) else {
+        return write_json(
+            400,
+            &json!({"error": "pair request needs a request id and challenge"}),
+        );
+    };
+    let Some(challenge) = valid_challenge(&challenge) else {
+        return write_json(
+            400,
+            &json!({"error": "challenge must be a SHA-256 hex digest"}),
+        );
+    };
+    let mut pending = inner.pending_pairs.lock().await;
+    pending.retain(|_, item| item.expires > Instant::now());
+    if pending.len() >= 64 && !pending.contains_key(&request_id) {
+        return write_json(429, &json!({"error": "too many pending pair requests"}));
+    }
+    if let Some(existing) = pending.get(&request_id) {
+        if existing.origin != origin
+            || existing.project != project
+            || existing.challenge != challenge
+        {
+            return write_json(409, &json!({"error": "request id is already registered"}));
+        }
+    } else {
+        pending.insert(
+            request_id,
+            PendingPair {
+                origin,
+                project,
+                challenge,
+                expires: Instant::now() + PAIR_REQUEST_TTL,
+                token: None,
+            },
+        );
+    }
+    handle_pair_page(&request)
+}
+
+async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> Reply {
+    let sent_origin = header_str(request.headers(), "origin").map(str::to_string);
+    let body = match read_json_body::<protocol::PairClaimRequest>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    if !sent_origin.as_deref().is_some_and(|sent| {
+        pairing::normalize_origin(sent) == pairing::normalize_origin(&body.origin)
+    }) {
+        return write_json(403, &json!({"error": "origin does not match the request"}));
+    }
+    let mut pending = inner.pending_pairs.lock().await;
+    let Some(item) = pending.get_mut(&body.request) else {
+        return write_json(404, &json!({"error": "pair request expired or unknown"}));
+    };
+    if item.expires <= Instant::now()
+        || pairing::normalize_origin(&item.origin) != pairing::normalize_origin(&body.origin)
+        || item.project != body.project
+        || body.verifier.len() < 32
+        || body.verifier.len() > 128
+        || !constant_time_hex_eq(
+            &item.challenge,
+            &hex::encode(Sha256::digest(body.verifier.as_bytes())),
+        )
+    {
+        return write_json(403, &json!({"error": "pair request does not match"}));
+    }
+    let Some((token, expires)) = item.token.take() else {
+        return write_json(202, &json!({"pending": true}));
+    };
+    pending.remove(&body.request);
+    write_json(
+        200,
+        &json!(protocol::ConnectResponse {
+            token,
+            expires,
+            instance: inner.instance.clone()
+        }),
+    )
+}
+
+fn constant_time_hex_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.bytes().zip(b.bytes()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// An origin as a browser would send it: an http(s) scheme and a host, and
@@ -1030,6 +1308,10 @@ fn handle_pair_page(request: &Request<Body>) -> Reply {
     let name = html_escape::encode_text(&project);
     let origin_attr = html_escape::encode_double_quoted_attribute(&origin);
     let project_attr = html_escape::encode_double_quoted_attribute(&project);
+    let request_fields = request.uri().query().and_then(pair_request_fields).map(|(id, challenge)| format!(
+        "<input type=\"hidden\" name=\"request\" value=\"{}\"><input type=\"hidden\" name=\"challenge\" value=\"{}\">",
+        html_escape::encode_double_quoted_attribute(&id), html_escape::encode_double_quoted_attribute(&challenge)
+    )).unwrap_or_default();
     let page = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
@@ -1041,7 +1323,7 @@ with the Quarto and TeX tools installed on this computer.</p>\
 Only allow sites you trust.</p>\
 <form method=\"post\" action=\"{BASE_PATH}/pair\">\
 <input type=\"hidden\" name=\"origin\" value=\"{origin_attr}\">\
-<input type=\"hidden\" name=\"project\" value=\"{project_attr}\">\
+<input type=\"hidden\" name=\"project\" value=\"{project_attr}\">{request_fields}\
 <div class=\"row\"><button type=\"submit\" class=\"allow\" autofocus>Allow</button>\
 <button type=\"button\" onclick=\"window.close()\">Cancel</button></div></form>\
 </body></html>"
@@ -1098,10 +1380,35 @@ async fn handle_pair_consent(
     let Some((origin, project)) = pair_query(std::str::from_utf8(&body).unwrap_or("")) else {
         return plain(400, "pair needs an origin and a project");
     };
+    let request_fields = pair_request_fields(std::str::from_utf8(&body).unwrap_or(""));
+    let has_request_fields =
+        url::form_urlencoded::parse(&body).any(|(key, _)| key == "request" || key == "challenge");
+    if has_request_fields && request_fields.is_none() {
+        return plain(400, "invalid pair request");
+    }
+    let mut pending = inner.pending_pairs.lock().await;
+    if let Some((request_id, challenge)) = &request_fields {
+        let valid = pending.get(request_id).is_some_and(|item| {
+            item.expires > Instant::now()
+                && item.project == project
+                && item.origin == origin
+                && item.challenge == challenge.to_ascii_lowercase()
+                && item.token.is_none()
+        });
+        if !valid {
+            return plain(400, "pair request expired, unknown, or already used");
+        }
+    }
     let (token, expires) = match inner.pairing.issue(&origin, &project, "consent page") {
         Ok(issued) => issued,
-        Err(err) => return plain(500, &format!("could not store the pairing: {err}")),
+        Err(_) => return plain(500, "could not store the pairing"),
     };
+    if let Some((request_id, _)) = request_fields {
+        if let Some(item) = pending.get_mut(&request_id) {
+            item.token = Some((token.clone(), expires));
+        }
+    }
+    drop(pending);
     // The pairing goes to the window that opened this one and to that
     // window only: postMessage's target origin is the origin that was
     // allowed, so a page anywhere else never receives it.

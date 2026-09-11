@@ -1,12 +1,8 @@
 //! `librepaper local <command>`: the command line front end for the loopback
 //! service.
 //!
-//! This first version runs `start` in the foreground always: `--foreground`
-//! is accepted and honoured (there is nothing else to do yet) but detaching
-//! into a background process is platform work saved for later, as the spec
-//! allows -- "Final command naming can follow the existing CLI conventions"
-//! does not promise a daemon on day one, and a foreground process a terminal
-//! can Ctrl-C is a perfectly good first local service.
+//! `start` stays in the foreground for scripts; `launch` starts an
+//! independent background process and waits for it to become ready.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -16,7 +12,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 
 use crate::cli::state_home;
-use crate::cli::{LocalArgs, LocalCommand};
+use crate::cli::{LocalArgs, LocalCommand, StartupCommand};
 use crate::local::pairing::{generate_code, PairingStore, ServiceState};
 use crate::local::protocol::{self, DEFAULT_PORT};
 use crate::local::quarto::BindingStore;
@@ -28,9 +24,16 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Start {
             port,
             foreground,
+            background,
             code,
             tex_path,
-        } => start(port, foreground, code, tex_path).await,
+        } => start(port, !background || foreground, code, tex_path).await,
+        LocalCommand::Launch { port } => launch(port).await,
+        LocalCommand::Manage => open("librepaper://manage").await,
+        LocalCommand::Stop => stop().await,
+        LocalCommand::Restart { port } => restart(port).await,
+        LocalCommand::Open { url } => open(&url).await,
+        LocalCommand::Startup { command } => startup(command),
         LocalCommand::Status => status().await,
         LocalCommand::Doctor { tex_path } => doctor(tex_path).await,
         LocalCommand::Disconnect { origin, all } => disconnect(origin, all),
@@ -102,47 +105,35 @@ fn cache_home() -> PathBuf {
     }
 }
 
-/// Whether `pid` still names a live process. Best-effort: `kill -0` is
-/// portable across Linux and macOS without a process-inspection dependency;
-/// on a platform where it is unavailable we assume the pid is gone rather
-/// than refusing to start forever on a stale `service.json`. The real guard
-/// either way is the port bind right after this check, which fails loudly
-/// if something is actually still listening.
-#[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn process_alive(_pid: u32) -> bool {
-    false
-}
-
 async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<PathBuf>) {
     if !foreground {
-        println!(
-            "note: --foreground has no effect yet; librepaper local always stays attached to \
-             this terminal in this version. Detaching is planned but not built."
-        );
+        if let Err(error) =
+            crate::local::lifecycle::spawn_background(port, code.as_deref(), &tex_path).await
+        {
+            die(error);
+        }
+        println!("librepaper local companion started in the background");
+        return;
     }
 
     let state_home = state_home();
     let pairing = PairingStore::new(&state_home, code.clone());
     let port = if port == 0 { DEFAULT_PORT } else { port };
 
-    if let Some(existing) = pairing.read_service() {
-        if existing.port == port && process_alive(existing.pid) {
-            die(format!(
-                "librepaper local is already running on port {} (pid {}). Use `librepaper local \
-                 status` to check it or stop that process first.",
-                existing.port, existing.pid
-            ));
-        }
+    let local_dir = state_home.join("librepaper/local");
+    if let Err(error) = std::fs::create_dir_all(&local_dir) {
+        die(error);
     }
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(local_dir.join("companion.lock"))
+        .unwrap_or_else(|error| die(error));
+    if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
+        die("The companion is already running. Use `librepaper local launch` to reuse it.");
+    }
+    crate::local::lifecycle::clear_stop_request(&state_home);
 
     let listener = match TcpListener::bind(("127.0.0.1", port)).await {
         Ok(listener) => listener,
@@ -203,18 +194,32 @@ async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<
     print_pairings(&pairing);
     println!("Ctrl-C to stop.");
 
-    if let Some(v6) = listener_v6 {
+    let v6_task = if let Some(v6) = listener_v6 {
         let make_v6 = router
             .clone()
             .into_make_service_with_connect_info::<SocketAddr>();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let _ = axum::serve(v6, make_v6).await;
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     let make_v4 = router.into_make_service_with_connect_info::<SocketAddr>();
-    let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
+    let shutdown = async move {
+        let stop_poll = async {
+            let mut poll = tokio::time::interval(Duration::from_millis(250));
+            loop {
+                poll.tick().await;
+                if crate::local::lifecycle::stop_requested(&state_home) {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = stop_poll => {},
+        }
     };
     if let Err(err) = axum::serve(listener, make_v4)
         .with_graceful_shutdown(shutdown)
@@ -223,9 +228,65 @@ async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<
         eprintln!("error: {err}");
     }
 
+    if let Some(task) = v6_task {
+        task.abort();
+    }
     service.stop_previews().await;
     pairing.remove_service();
     println!("librepaper local stopped");
+}
+
+async fn stop() {
+    if let Err(error) = crate::local::lifecycle::stop(&state_home()).await {
+        die(error);
+    }
+    println!("librepaper local companion stopped");
+}
+
+async fn launch(port: u16) {
+    match crate::local::lifecycle::spawn_background(port, None, &[]).await {
+        Ok(state) => println!("librepaper local companion ready on port {}", state.port),
+        Err(error) => die(error),
+    }
+}
+
+async fn restart(port: u16) {
+    let home = state_home();
+    let previous = PairingStore::new(&home, None).read_service();
+    let port = if port == 0 {
+        previous.map_or(DEFAULT_PORT, |state| state.port)
+    } else {
+        port
+    };
+    if let Err(error) = crate::local::lifecycle::stop(&home).await {
+        die(error);
+    }
+    launch(port).await;
+}
+
+async fn open(url: &str) {
+    // Validate before causing even a launch side effect.
+    if let Err(error) = crate::local::lifecycle::connection_target(url, DEFAULT_PORT) {
+        die(error);
+    }
+    let state = crate::local::lifecycle::spawn_background(0, None, &[])
+        .await
+        .unwrap_or_else(|error| die(error));
+    let target = crate::local::lifecycle::connection_target(url, state.port)
+        .unwrap_or_else(|error| die(error));
+    if !target.is_empty() {
+        if let Err(error) = crate::local::lifecycle::open_browser(&target) {
+            die(error);
+        }
+    }
+}
+
+fn startup(command: StartupCommand) {
+    let enabled = matches!(command, StartupCommand::Enable);
+    match crate::local::lifecycle::set_startup(enabled) {
+        Ok(()) => println!("startup {}", if enabled { "enabled" } else { "disabled" }),
+        Err(error) => die(error),
+    }
 }
 
 async fn status() {

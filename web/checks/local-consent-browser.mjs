@@ -24,14 +24,21 @@ import { browser, until } from "../tools/browser-driver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(here));
-const binary = join(root, "dist", "librepaper");
+const binary = process.env.LIBREPAPER_TEST_BINARY || join(root, "dist", "librepaper");
 assert.ok(existsSync(binary), "run `make build` first");
 
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-consent-check-"));
 const output = join(temporary, "build");
 const entry = join(temporary, "entry.js");
-const appPort = 18700 + Math.floor(Math.random() * 200);
-const pagePort = 19100 + Math.floor(Math.random() * 200);
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+const appPort = await freePort();
+let pagePort = 0;
 const appAddress = `http://127.0.0.1:${appPort}/`;
 
 writeFileSync(entry, `
@@ -66,6 +73,7 @@ const server = createServer((request, response) => {
   response.end(page);
 });
 await new Promise((resolve) => server.listen(pagePort, "127.0.0.1", resolve));
+pagePort = server.address().port;
 
 // The local app, with its state and cache kept out of the real home.
 const stateHome = join(temporary, "state");
@@ -84,7 +92,7 @@ await until("local app health", async () => {
 
 let b;
 try {
-  b = await browser("chromium", join(temporary, "chrome"), 19400 + Math.floor(Math.random() * 200));
+  b = await browser("chromium", join(temporary, "chrome"), await freePort());
   await b.navigate(`http://localhost:${pagePort}/`);
   await until("client loaded", () => b.evaluate("Boolean(window.local)"), 10000);
   assert.equal(await b.evaluate("window.local.bindingId()"), "hosted", "the hosted binding is the default");

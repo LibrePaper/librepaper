@@ -192,9 +192,9 @@
   /// holds is verified now, so the workspace banner shows a connected
   /// preview without a first failed attempt to start one.
   function pairLocalQuarto() {
-    localQuarto.configure({ project: SLUG, origin: location.origin });
+    localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
     quartoBindingId = localQuarto.bindingId();
-    void localQuarto.probe();
+    if (mayEdit) void localQuarto.probe({ pairedOnly: true });
   }
   // Which of Quarto's own live preview, or this browser's own Markdown
   // draft, a Quarto document shows. One person's choice, remembered per
@@ -1036,17 +1036,10 @@
   // and to click Allow once; the status text says which when it fails.
   async function ensureLocalApp() {
     localConnectionError = "";
-    localQuarto.configure({ project: SLUG, origin: location.origin });
+    localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
     let status = await localQuarto.retry();
-    if (status.state === "unreachable") {
-      // A registered `librepaper://` handler starts the app; without one
-      // this is a no-op and the retry below says so.
-      localQuarto.openApp();
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      status = await localQuarto.retry();
-    }
-    if (status.state === "unauthorized" || status.state === "reachable") {
-      try { status = await localQuarto.pairViaApp(); }
+    if (["unreachable", "unauthorized", "reachable"].includes(status.state)) {
+      try { status = status.state === "unreachable" ? await localQuarto.connectViaApp() : await localQuarto.pairViaApp(); }
       catch (error) { localConnectionError = error.message; showPanel("diagnostics"); return false; }
     }
     if (status.state !== "connected") {
@@ -3647,10 +3640,11 @@
         <p>{compileBadge}</p>
       {/if}
       {#if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
-        <p>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Connect the local LibrePaper app to run Quarto."}</p>
+        <p>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Use Quarto on this computer to generate the full preview."}</p>
         <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void setQuartoPreviewMode("quarto")}>
-          {quartoNeedsLocalApp ? "Connect" : "Retry Quarto preview"}
+          {quartoNeedsLocalApp ? "Enable local rendering" : "Retry Quarto preview"}
         </button>
+        {#if quartoNeedsLocalApp}<button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => openSettings("local")}>Install or configure companion</button>{/if}
       {/if}
       {#if sourceFormat === "typst" && (typstNeedsLocalApp || typstNeedsCalepinCommand || calepinPreviewError)}
         <p>{calepinPreviewError || localConnectionError || (typstNeedsCalepinCommand ? "Install the calepin command to use this preview." : "Connect the local LibrePaper app to use Calepin preview.")}</p>
@@ -3728,7 +3722,7 @@
                 {sourceFormat} {mayEdit}
                 {keys} onkeys={setKeys}
                 latexSettings={latexSettingsState} onlatexsettings={(next) => session?.setLatexSettings(next)}
-                bindingId={quartoBindingId} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
+                main={previewMain} bindingId={quartoBindingId} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
                 options={quartoOptions} {viewing}
                 onapplyoptions={applyRenderOptions} />
 
