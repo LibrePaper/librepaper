@@ -17,8 +17,6 @@ says which.
 - A room fenced as `FenceReason::Oversized` stays read-only until its
   instance is evicted, and eviction refuses a dirty session, so an oversized
   write leaves no way back short of a restart.
-- Checkpoint rate limiting counts in fixed hourly buckets (`bucket = now /
-  3600`) where the doc comments describe a rolling hour.
 - Comment, reply and suggestion catalogue writes do not carry the session
   generation that ownership transfer and room-level mutations check.
 

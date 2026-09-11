@@ -1995,11 +1995,11 @@ fn measured_reconciliation_preserves_inflight_object_reservation() {
 }
 
 #[test]
-fn checkpoint_budget_cleanup_is_bounded_and_keeps_recent_hours() {
+fn checkpoint_budget_cleanup_is_bounded_and_keeps_the_rolling_hour() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog
         .with_connection(|connection| {
-            for bucket in 0..5_i64 {
+            for bucket in [0_i64, 1, 3_599, 3_600, 3_601] {
                 connection
                     .execute(
                         "INSERT INTO checkpoint_budgets(scope,bucket,owner_key,used)
@@ -2011,7 +2011,7 @@ fn checkpoint_budget_cleanup_is_bounded_and_keeps_recent_hours() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(catalog.prune_checkpoint_budgets(5 * 3600, 2).unwrap(), 2);
+    assert_eq!(catalog.prune_checkpoint_budgets(3_601, 2).unwrap(), 2);
     let remaining: i64 = catalog
         .with_connection(|connection| {
             connection

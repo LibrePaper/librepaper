@@ -160,6 +160,43 @@ fn checkpoint_budget_token_refunds_original_owner_and_bucket() {
 }
 
 #[test]
+fn checkpoint_budget_is_rolling_across_clock_hour_boundaries() {
+    let catalog = crate::storage::catalog::Catalog::open_in_memory().unwrap();
+    catalog
+        .create_document(&crate::storage::catalog::NewDocument {
+            slug: "rolling-budget".into(),
+            storage_id: "rolling-budget-storage".into(),
+            title: "Rolling budget".into(),
+            sha: "source".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            published_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            example: false,
+            owner_key: "alice".into(),
+            owner_id: None,
+            status: "active".into(),
+            size: 1,
+            counted_size: 1,
+            maintenance_reserved: 0,
+            last_auto_checkpoint_at: 0,
+            source_format: "markdown".into(),
+            main: "main.md".into(),
+        })
+        .unwrap();
+
+    assert!(catalog
+        .admit_checkpoint_with_limits("rolling-budget", 3_599, false, 1, 1)
+        .unwrap());
+    let error = catalog
+        .admit_checkpoint_with_limits("rolling-budget", 3_601, false, 1, 1)
+        .unwrap_err();
+    assert!(error.to_string().contains("checkpoint budget exhausted"));
+    assert!(catalog
+        .admit_checkpoint_with_limits("rolling-budget", 7_199, false, 1, 1)
+        .unwrap());
+}
+
+#[test]
 fn catalogue_retention_sheds_history_beyond_resident_tail() {
     let catalog = crate::storage::catalog::Catalog::open_in_memory().unwrap();
     catalog

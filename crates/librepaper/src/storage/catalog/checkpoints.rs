@@ -390,27 +390,26 @@ impl Catalog {
                 .optional()
                 .map_err(CatalogError::from)?
                 .ok_or(CatalogError::NotFound)?;
-            let bucket = now / 3600;
+            // One row per admission second makes this a true rolling hour.
+            // Clock-hour buckets allow two full allowances to be spent across
+            // an hour boundary. Admissions in the same second still coalesce.
+            let bucket = now;
             let owner_used: i64 = tx
                 .query_row(
-                    "SELECT COALESCE(used,0) FROM checkpoint_budgets
-                     WHERE scope='owner' AND bucket=?1 AND owner_key=?2",
-                    params![bucket, owner],
+                    "SELECT COALESCE(SUM(used),0) FROM checkpoint_budgets
+                     WHERE scope='owner' AND bucket>?1 AND bucket<=?2 AND owner_key=?3",
+                    params![now.saturating_sub(3600), now, owner],
                     |row| row.get(0),
                 )
-                .optional()
-                .map_err(CatalogError::from)?
-                .unwrap_or(0);
+                .map_err(CatalogError::from)?;
             let deployment_used: i64 = tx
                 .query_row(
-                    "SELECT COALESCE(used,0) FROM checkpoint_budgets
-                     WHERE scope='deployment' AND bucket=?1 AND owner_key=''",
-                    [bucket],
+                    "SELECT COALESCE(SUM(used),0) FROM checkpoint_budgets
+                     WHERE scope='deployment' AND bucket>?1 AND bucket<=?2 AND owner_key=''",
+                    params![now.saturating_sub(3600), now],
                     |row| row.get(0),
                 )
-                .optional()
-                .map_err(CatalogError::from)?
-                .unwrap_or(0);
+                .map_err(CatalogError::from)?;
             if owner_used >= owner_limit || deployment_used >= deployment_limit {
                 if automatic {
                     return Ok(None);
@@ -711,7 +710,7 @@ impl Catalog {
                 .optional()
                 .map_err(CatalogError::from)?
                 .ok_or(CatalogError::NotFound)?;
-            Self::refund_checkpoint_in_tx(tx, &owner, now / 3600)
+            Self::refund_checkpoint_in_tx(tx, &owner, now)
         })
     }
 
@@ -738,8 +737,8 @@ impl Catalog {
         Ok(())
     }
 
-    /// Bound the persisted rolling counters without touching the current or
-    /// immediately previous hour (a late retry can still need the latter).
+    /// Bound the persisted rolling counters without touching the preceding
+    /// hour (a late retry can still need any second in that window).
     /// Cleanup is intentionally capped so a large historical catalogue never
     /// turns maintenance into one unbounded transaction.
     pub fn prune_checkpoint_budgets(&self, now: i64, limit: u32) -> CatalogResult<u32> {
@@ -750,10 +749,10 @@ impl Catalog {
         self.immediate(|tx| {
             let removed = tx.execute(
                 "DELETE FROM checkpoint_budgets
-                     WHERE bucket < ?1 / 3600 - 1
+                     WHERE bucket <= ?1 - 3600
                        AND (scope,bucket,owner_key) IN (
                            SELECT scope,bucket,owner_key FROM checkpoint_budgets
-                           WHERE bucket < ?1 / 3600 - 1
+                           WHERE bucket <= ?1 - 3600
                            ORDER BY bucket,scope,owner_key LIMIT ?2
                        )",
                 params![now, limit],
