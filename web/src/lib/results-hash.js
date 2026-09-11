@@ -2,6 +2,8 @@
 // has no source-format imports: saved-result comments and storage can be used by
 // any engine adapter.
 
+import { sha256Hex } from "./digest.js";
+
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   if (value && typeof value === "object") {
@@ -12,8 +14,7 @@ function stableStringify(value) {
 
 export async function sha256Bytes(bytes) {
   if (!globalThis.crypto?.subtle) throw new Error("Web Crypto SHA-256 is required for result identity");
-  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
-    .map((x) => x.toString(16).padStart(2, "0")).join("");
+  return sha256Hex(bytes);
 }
 
 export async function sha256(value) {

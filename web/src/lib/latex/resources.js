@@ -22,6 +22,8 @@
 // explicit argument rather than through hidden module state -- easier to
 // test and it makes "which cache" visible at every call site.
 
+import { sha256Hex } from "../digest.js";
+
 const PREFIX = "librepaper-latex-";
 const REMEMBER_KEY = "librepaper-latex-used";
 const REMEMBER_LIMIT = 2000;
@@ -34,15 +36,6 @@ const REMEMBER_LIMIT = 2000;
 export function namespace(release) {
   const digest = release?.digest ?? "";
   return `${PREFIX}${digest.slice(0, 16)}`;
-}
-
-function toHex(buffer) {
-  return Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function sha256Hex(bytes) {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return toHex(digest);
 }
 
 async function openStore(release) {

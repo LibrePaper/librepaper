@@ -23,6 +23,17 @@ export const KEY_HEADER = "X-LibrePaper-Key";
 
 export const keyHeaders = (key) => (key ? { [KEY_HEADER]: key } : {});
 
+/// The headers a keyed call to the server carries: the shell marker always,
+/// the link key when there is one, and -- when the call has a JSON body --
+/// a content-type. Header names are case-insensitive on the wire, so this
+/// is safe to use wherever a site built the same three headers by hand,
+/// whatever case or order it happened to spell them in.
+export const authHeaders = (key, contentType) => ({
+  ...(contentType ? { "content-type": contentType } : {}),
+  ...SHELL_HEADERS,
+  ...keyHeaders(key),
+});
+
 export const get = (path) => fetch(path).then(json);
 
 /// A read on behalf of somebody holding a link.
@@ -32,7 +43,7 @@ export const getKeyed = (path, key) => fetch(path, { headers: keyHeaders(key) })
 export const postKeyed = (path, body, key) =>
   fetch(path, {
     method: "POST",
-    headers: { "content-type": "application/json", ...SHELL_HEADERS, ...keyHeaders(key) },
+    headers: authHeaders(key, "application/json"),
     body: JSON.stringify(body ?? {}),
   }).then(json);
 
@@ -89,6 +100,6 @@ export const signInHref = () => `/auth/login?next=${encodeURIComponent(location.
 export const uploadAsset = (slug, file, key) =>
   fetch(`/api/documents/${slug}/assets`, {
     method: "PUT",
-    headers: { ...SHELL_HEADERS, ...keyHeaders(key) },
+    headers: authHeaders(key),
     body: file,
   }).then(json);

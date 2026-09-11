@@ -11,6 +11,7 @@
 // untrusted input rather than as fact.
 
 import { createMathTypesetter } from "../lib/math.js";
+import { sha256HexOfText } from "../lib/digest.js";
 
 (() => {
   const READER = new URL(document.currentScript.src).searchParams.get("reader") || "*";
@@ -669,12 +670,7 @@ import { createMathTypesetter } from "../lib/math.js";
       digests.set(image, { identity, digest: stable });
       return stable;
     }
-    const bytes = new TextEncoder().encode(source);
-    const hash = await crypto.subtle.digest("SHA-256", bytes);
-    const hex = [...new Uint8Array(hash)]
-      .slice(0, 8)
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
+    const hex = (await sha256HexOfText(source)).slice(0, 16);
     digests.set(image, { identity, digest: hex });
     return hex;
   }

@@ -8,6 +8,18 @@
 // `vm-worker.js`'s header, without booting an actual v86 guest. It also
 // checks the pure helpers (`validateRelativePath`, `parseDoneMarker`,
 // `detectIncompatible`) that `vm-worker.js` keeps its own literal copy of.
+//
+// `vm-worker.js` is a classic worker -- it needs `importScripts` for v86s
+// `libv86.js`, which module workers do not have -- so it genuinely cannot
+// import those helpers from `vm.js`, and the copies have to stay. What was
+// missing was any way to notice them drifting apart: the two copies were kept
+// in step by a comment asking the next editor to remember, and one of them is
+// the guest-path traversal guard, where drift is a sandbox bug rather than an
+// untidiness. `testWorkerCopiesAgree` below lifts both functions out of the
+// workers source and runs them against the same tables as the canonical ones.
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import * as vm from "../src/lib/latex/vm.js";
 
@@ -30,10 +42,23 @@ async function rejects(promise, name, what) {
 
 /* --------------------------------------------------------- pure helpers */
 
+// The tables live at module scope rather than inline because
+// `testWorkerCopiesAgree` runs `vm-worker.js`'s own copies of these helpers
+// against exactly the same inputs. A case added here is therefore a case the
+// worker's copy has to agree on too.
+const VALID_PATHS = ["refs.bib", "assets/img/fig.pdf"];
+const INVALID_PATHS = ["/etc/passwd", "..\\x", "a/../b", "a/./b", "a//b", "", "a\x00b", "a\x7fb"];
+const BLG_SAMPLES = [
+  ["ERROR - Found biblatex control file version 3.2, expected 3.4", true],
+  ["INFO - This is Biber 2.21\nINFO - Reading main.bcf\n", false],
+  [undefined, false],
+];
+
 function testValidateRelativePath() {
-  check("a plain relative path is valid", vm.validateRelativePath("refs.bib") === "refs.bib");
-  check("a nested relative path is valid", vm.validateRelativePath("assets/img/fig.pdf") === "assets/img/fig.pdf");
-  for (const bad of ["/etc/passwd", "..\\x", "a/../b", "a/./b", "a//b", "", "a\x00b", "a\x7fb"]) {
+  for (const good of VALID_PATHS) {
+    check(`a relative path is valid: ${JSON.stringify(good)}`, vm.validateRelativePath(good) === good);
+  }
+  for (const bad of INVALID_PATHS) {
     let threw = false;
     try { vm.validateRelativePath(bad); } catch { threw = true; }
     check(`rejects ${JSON.stringify(bad)}`, threw);
@@ -47,9 +72,57 @@ function testParseDoneMarker() {
 }
 
 function testDetectIncompatible() {
-  check("recognises a control file version mismatch", vm.detectIncompatible("ERROR - Found biblatex control file version 3.2, expected 3.4") === true);
-  check("an ordinary blg is compatible", vm.detectIncompatible("INFO - This is Biber 2.21\nINFO - Reading main.bcf\n") === false);
-  check("handles a missing blg", vm.detectIncompatible(undefined) === false);
+  for (const [blg, wanted] of BLG_SAMPLES) {
+    check(`detectIncompatible(${JSON.stringify(blg)}) is ${wanted}`, vm.detectIncompatible(blg) === wanted);
+  }
+}
+
+/// One of `vm-worker.js`'s literal copies, lifted out of its source text.
+///
+/// The worker can be neither imported here nor made to import `vm.js`, so
+/// reading the function out and evaluating it is the only way to exercise the
+/// code that will really run alongside the emulator. Brace counting is sound
+/// for these two helpers -- neither contains a string, comment or regex with
+/// an unbalanced brace -- and the check fails loudly if a rename ever moves
+/// them, which is itself worth knowing.
+function workerCopy(name) {
+  const source = readFileSync(fileURLToPath(new URL("../src/lib/latex/vm-worker.js", import.meta.url)), "utf8");
+  const start = source.indexOf(`function ${name}(`);
+  if (start < 0) throw new Error(`vm-worker.js no longer defines ${name}`);
+  let depth = 0;
+  let end = -1;
+  for (let at = source.indexOf("{", start); at < source.length; at++) {
+    if (source[at] === "{") depth += 1;
+    else if (source[at] === "}" && (depth -= 1) === 0) { end = at + 1; break; }
+  }
+  if (end < 0) throw new Error(`could not read ${name} out of vm-worker.js`);
+  return new Function(`return (${source.slice(start, end)});`)();
+}
+
+// The drift guard the "keep the two in sync" comments were asking for. One of
+// these copies is the guest-path traversal check, so a copy that has quietly
+// fallen behind is a sandbox hole, not a tidiness problem.
+function testWorkerCopiesAgree() {
+  const validate = workerCopy("validateRelativePath");
+  const detect = workerCopy("detectIncompatible");
+  const verdict = (fn, path) => { try { return `ok:${fn(path)}`; } catch { return "threw"; } };
+
+  for (const path of [...VALID_PATHS, ...INVALID_PATHS]) {
+    const canonical = verdict(vm.validateRelativePath, path);
+    const copy = verdict(validate, path);
+    check(
+      `vm-worker.js validateRelativePath agrees on ${JSON.stringify(path)}`,
+      canonical === copy,
+      `vm.js says ${canonical}, vm-worker.js says ${copy}`,
+    );
+  }
+  for (const [blg] of BLG_SAMPLES) {
+    check(
+      `vm-worker.js detectIncompatible agrees on ${JSON.stringify(blg)}`,
+      detect(blg) === vm.detectIncompatible(blg),
+      `vm.js says ${vm.detectIncompatible(blg)}, vm-worker.js says ${detect(blg)}`,
+    );
+  }
 }
 
 /* --------------------------------------------------------- supported() */
@@ -306,6 +379,7 @@ const tests = [
   testValidateRelativePath,
   testParseDoneMarker,
   testDetectIncompatible,
+  testWorkerCopiesAgree,
   testSupported,
   testPrepareProgress,
   testPrepareIdempotent,

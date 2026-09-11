@@ -21,7 +21,15 @@ const body = (start, end) => {
 
 const showCheckpoint = body("  async function showCheckpoint(sha)", "  async function nameCheckpoint");
 const backToNow = body("  function backToNow()", "  async function nameCheckpoint");
-const paintPreview = body("  async function paintPreview()", "  // Editors refresh at a bounded cadence");
+// `paintPreview` delegates its staleness guard and its figure fetch to two
+// helpers defined next to it. They are sliced in with it so the five contexts
+// below exercise the real guard rather than a stand-in -- which is the whole
+// point of the coalescing and invalidation cases further down.
+const previewHelpers = body("  function superseded(mine", "  // Outline reads the same live text");
+// `updatePreviewTarget` points the local app at this document through a small
+// helper now, so that helper is sliced in wherever the function is exercised.
+const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which of Quarto's own live preview");
+const paintPreview = `${previewHelpers}\n${body("  async function paintPreview()", "  // Editors refresh at a bounded cadence")}`;
 
 // Session lifecycle checks use the extracted resource owners directly. The
 // fake room/session expose only the contracts Reader needs, which keeps these
@@ -719,7 +727,7 @@ for (const latest of [
     renderingStore: {reset: () => {}}, framePreview: {clear: () => cleared++},
     dropHeldRendering: () => {}, tick: async () => {}, paintPreview: () => painted++,
   });
-  vm.runInContext(body('  function updatePreviewTarget()', '  // A file added'), ctx);
+  vm.runInContext(`${pairLocalQuarto}\n${body('  function updatePreviewTarget()', '  // A file added')}`, ctx);
   vm.runInContext(body('  function treeNow()', '  // Painting the preview'), ctx);
   for (const path of ['notes.typ', 'other.typ', 'paper.qmd']) {
     const previous = ctx.previewMain;
@@ -762,7 +770,7 @@ console.log('reader-races: explicit preview selection, auxiliary files, rename a
     checkpointNavigationPending: 7, mayEdit: false,
     renderers: { formatOf: () => 'markdown' }, configureLatex: () => {},
   });
-  vm.runInContext(body('  function updatePreviewTarget()', '  function previewThisFile()'), ctx);
+  vm.runInContext(`${pairLocalQuarto}\n${body('  function updatePreviewTarget()', '  function previewThisFile()')}`, ctx);
   vm.runInContext('updatePreviewTarget()', ctx);
   assert.equal(ctx.previewMain, 'main.md');
   assert.equal(ctx.navigationGeneration, 7, 'pending checkpoint navigation retains ownership');

@@ -28,7 +28,7 @@ import * as Y from "yjs";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { cacheName, restoreLegacyCache } from "./collab-cache.js";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate } from "y-protocols/awareness.js";
-import { SHELL_HEADERS, keyHeaders } from "./api.js";
+import { authHeaders } from "./api.js";
 import { keyFor } from "./storage.js";
 import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
 
@@ -531,7 +531,7 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
         // refused, which is what the notebook examples were doing.
         const response = await fetch(state.ref, {
           credentials: "same-origin",
-          headers: { ...SHELL_HEADERS, ...keyHeaders(key || keyFor(slug)) },
+          headers: authHeaders(key || keyFor(slug)),
         });
         if (!response.ok) throw new Error("could not fetch the document");
         Y.applyUpdate(doc, new Uint8Array(await response.arrayBuffer()), "remote");

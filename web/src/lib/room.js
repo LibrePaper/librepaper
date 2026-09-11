@@ -7,7 +7,7 @@
 // people's comments as they arrive, which is worth saying -- but only once it
 // has lasted longer than a blip, and only while it is true.
 
-import { SHELL_HEADERS, keyHeaders } from "./api.js";
+import { authHeaders } from "./api.js";
 
 export function openRoom(slug, { onMessage, onConnected, key = "" }) {
   let socket = null;
@@ -86,7 +86,7 @@ export function openRoom(slug, { onMessage, onConnected, key = "" }) {
       }
       return fetch(`/api/documents/${slug}/comments`, {
         method: "POST",
-        headers: { "content-type": "application/json", ...SHELL_HEADERS, ...keyHeaders(key) },
+        headers: authHeaders(key, "application/json"),
         body: JSON.stringify(message),
       })
         .then(async (response) => {

@@ -43,6 +43,11 @@ assert.deepEqual(vm.runInContext("treeNow()", context), {
   digests: {},
 });
 
+// `downloadTree`/`downloadEntry` call this shared helper, so it has to be
+// evaluated alongside them rather than stubbed: the point of the check is the
+// order of the directory snapshot against the asset fetch, which happens
+// inside it.
+const gatherFigures = body("  async function gatherFigures(digests)", "  // Outline reads the same live text");
 const downloadTree = body("  async function downloadTree()", "  // A text dropped");
 const downloadEntry = body("  async function downloadEntry(entry)", "  // Dropping a file");
 
@@ -66,6 +71,7 @@ async function runDownload(source, entry) {
     KEY: "key",
     SLUG: "paper",
     keyHeaders: () => ({}),
+    authHeaders: () => ({}),
     basename: (path) => path.split("/").pop(),
     inside: (path, parent) => path === parent || path.startsWith(`${parent}/`),
     say: (message) => { throw new Error(message); },
@@ -80,7 +86,7 @@ async function runDownload(source, entry) {
     'const zip = (files) => { captured = files; return new Blob(); };',
   );
   assert(!executable.includes('await import("../lib/zip.js")'));
-  vm.runInContext(`${liveTreeNow}\n${treeNow}\n${executable}`, context);
+  vm.runInContext(`${liveTreeNow}\n${treeNow}\n${gatherFigures}\n${executable}`, context);
   const pending = vm.runInContext(`${entry ? "downloadEntry(entry)" : "downloadTree()"}`, context, {
     filename: "Reader.svelte",
   });

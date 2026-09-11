@@ -30,6 +30,7 @@
 
 import { createEngine } from "./driver.js";
 import { fetchVerified } from "./resources.js";
+import { sha256Hex } from "../digest.js";
 
 /// Which underlying engine kinds a project engine name needs, in the order
 /// their controllers should be driven: the first is the one that runs LaTeX
@@ -51,11 +52,6 @@ const KINDS = {
 const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex"]);
 
 const GZIP_MAGIC = [0x1f, 0x8b];
-
-async function sha256Hex(bytes) {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 async function ensureGzip(bytes) {
   if (!bytes || !bytes.length) return null;
@@ -391,11 +387,8 @@ class Worker2 {
     // each and finds no citations at all.
     let auxText = new TextDecoder().decode(aux);
     for (const path of nestedAuxPaths(aux)) {
-      const bytes = await primary.readFile(path, true);
-      if (!bytes) continue;
-      await ensureDirs(helper, path);
-      await helper.writeFile(path, bytes);
-      auxText += new TextDecoder().decode(bytes);
+      const bytes = await copyFromPrimary(primary, helper, path);
+      if (bytes) auxText += new TextDecoder().decode(bytes);
     }
     await stageProjectFiles(helper, this.tree, [".bib", ".bst"]);
     // A `\bibdata{...}` name is not always a project source file: `biblatex`
@@ -408,10 +401,7 @@ class Worker2 {
       const path = `${name}.bib`;
       const alreadyStaged = pathIn(this.tree, path);
       if (alreadyStaged) continue;
-      const bytes = await primary.readFile(path, true);
-      if (!bytes) continue;
-      await ensureDirs(helper, path);
-      await helper.writeFile(path, bytes);
+      await copyFromPrimary(primary, helper, path);
     }
     const pass = await helper.run(eight ? "compilebibtex8" : "compilebibtex", { url: stem });
     const bbl = await helper.readFile(`${stem}.bbl`, true);
@@ -475,6 +465,20 @@ async function ensureDirs(engine, path) {
   // A file at the root has no directory to make, and the engine's
   // `mkdir .` is an error it prints to the console for every file.
   if (dir && dir !== "." && dir !== "/") await engine.mkdir(dir);
+}
+
+/// Reads `path` from the primary engine's filesystem and, if present, mirrors
+/// it into `helper`'s -- the "does the aux/bibdata name a file the primary
+/// engine actually has" check `bibtex()` needs twice: once for `\@input`ed
+/// nested aux files, once for `\bibdata` names a `filecontents`/biblatex
+/// backend wrote at compile time rather than staged from the tree. Returns
+/// the bytes, or `null` when the primary engine has no such file.
+async function copyFromPrimary(primary, helper, path) {
+  const bytes = await primary.readFile(path, true);
+  if (!bytes) return null;
+  await ensureDirs(helper, path);
+  await helper.writeFile(path, bytes);
+  return bytes;
 }
 
 async function writeFiles(engine, files) {

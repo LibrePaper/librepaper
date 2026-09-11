@@ -27,6 +27,7 @@
   import PendingAnnotations from "./PendingAnnotations.svelte";
   import {
     SHELL_HEADERS,
+    authHeaders,
     config as loadConfig,
     keyHeaders,
     signInHref,
@@ -59,7 +60,7 @@
   import DictationDownload from "./DictationDownload.svelte";
   import DictationPill from "./DictationPill.svelte";
   import Row from "./layout/Row.svelte";
-  import { problem as toastProblem, said as toastSaid, unsay as toastUnsay } from "../lib/toast.svelte.js";
+  import { done as toastDone, problem as toastProblem, said as toastSaid, unsay as toastUnsay } from "../lib/toast.svelte.js";
   import { availableDownloads, inlineBlobUrls, saveBlob } from "../lib/reader/downloads.js";
   import { getDictation } from "../lib/dictation/service.js";
   import { targetForActiveElement, textareaTarget } from "../lib/dictation/targets.js";
@@ -73,6 +74,8 @@
   import Diagnostics from "./Diagnostics.svelte";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import LatexStatus from "./LatexStatus.svelte";
+  import PreviewStatus from "./PreviewStatus.svelte";
+  import Avatar from "./Avatar.svelte";
   import Files from "./Files.svelte";
   import Outline from "./Outline.svelte";
   import { extractOutline } from "../lib/outline.js";
@@ -183,6 +186,16 @@
   let quartoOptions = $state(loadRenderOptions(SLUG));
   let quartoBindingId = $state("");
   let localAppStatus = $state(localQuarto.status());
+
+  /// Points the local-app pairing at this document and picks up whatever
+  /// binding it already remembers for it. A pairing this browser already
+  /// holds is verified now, so the workspace banner shows a connected
+  /// preview without a first failed attempt to start one.
+  function pairLocalQuarto() {
+    localQuarto.configure({ project: SLUG, origin: location.origin });
+    quartoBindingId = localQuarto.bindingId();
+    void localQuarto.probe();
+  }
   // Which of Quarto's own live preview, or this browser's own Markdown
   // draft, a Quarto document shows. One person's choice, remembered per
   // document, in this browser.
@@ -429,6 +442,23 @@
     setTimeout(backfillSourceAnchors, 0);
   }
 
+  /// Marks (or clears) every named comment's region as placeable, reassigning
+  /// `comments` afterward -- not because the loop above needs it, but because
+  /// that reassignment is what tells Svelte the array changed.
+  function markRegionsPlaceable(ids, placeable, reason) {
+    for (const comment of comments) {
+      if (!comment.region || !ids.has(String(comment.id))) continue;
+      if (placeable) {
+        delete comment.regionUnplaceable;
+        delete comment.regionUnplaceableReason;
+      } else {
+        comment.regionUnplaceable = true;
+        comment.regionUnplaceableReason = String(reason || "figure-unavailable");
+      }
+    }
+    comments = comments;
+  }
+
   function fromFrame(message) {
     switch (message.type) {
       case "ready":
@@ -477,25 +507,13 @@
       case "regions-unplaceable": {
         const ids = new Set((message.ids || []).map(String));
         if (!ids.size) break;
-        for (const comment of comments) {
-          if (comment.region && ids.has(String(comment.id))) {
-            comment.regionUnplaceable = true;
-            comment.regionUnplaceableReason = String(message.reason || "figure-unavailable");
-          }
-        }
-        comments = comments;
+        markRegionsPlaceable(ids, false, message.reason);
         break;
       }
       case "regions-placeable": {
         const ids = new Set((message.ids || []).map(String));
         if (!ids.size) break;
-        for (const comment of comments) {
-          if (comment.region && ids.has(String(comment.id))) {
-            delete comment.regionUnplaceable;
-            delete comment.regionUnplaceableReason;
-          }
-        }
-        comments = comments;
+        markRegionsPlaceable(ids, true);
         break;
       }
       case "caret":
@@ -603,7 +621,7 @@
     // that the runner used when it proposed its revision.
     const tree = capturePreviewTree(treeNow());
     if (Object.keys(tree.digests || {}).length) {
-      const held = await figures.gather(SLUG, tree.digests, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
+      const held = await figures.gather(SLUG, tree.digests, authHeaders(KEY));
       tree.assets = held.assets;
       tree.urls = held.urls;
     }
@@ -744,7 +762,7 @@
 
   async function rejectConfirmed(comment) {
     const response = await fetch(`/api/documents/${SLUG}/comments`, {
-      method: "POST", headers: { ...SHELL_HEADERS, ...keyHeaders(KEY), "Content-Type": "application/json" },
+      method: "POST", headers: authHeaders(KEY, "application/json"),
       body: JSON.stringify({ type: "reject", comment_id: comment.id, request_id: crypto.randomUUID() }),
       signal: AbortSignal.timeout(15000),
     });
@@ -884,7 +902,7 @@
         // key a reader who arrived by one is a stranger here, and the catch
         // below would swallow the 404 and leave the list uncorrected.
         fetch(`/api/documents/${SLUG}/comments`, {
-          headers: { ...SHELL_HEADERS, ...keyHeaders(KEY) },
+          headers: authHeaders(KEY),
         })
           .then((response) => response.json())
           .then((data) => receive({ type: "hello", comments: data.comments }))
@@ -975,6 +993,7 @@
   let mayEdit = $state(false);
   let sourceFormat = $state("");
   let peers = $state(1);
+  let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
 
   // Routine saving stays quiet; losing the connection still needs a warning,
@@ -1307,7 +1326,7 @@
     try {
       const response = await fetch(`/api/documents/${SLUG}/restore`, {
         method: "POST",
-        headers: { ...SHELL_HEADERS, ...keyHeaders(KEY), "content-type": "application/json" },
+        headers: authHeaders(KEY, "application/json"),
         body: JSON.stringify({ sha }),
       });
       const payload = await response.json().catch(() => ({}));
@@ -1517,6 +1536,33 @@
   let issued = 0;
   let painted = 0;
   let sourceGeneration = 0;
+
+  /// The staleness guard a paint checks before it commits: true once a newer
+  /// paint has already landed, the reader has navigated since this one was
+  /// captured, the source has changed underneath a renderer slow enough (or
+  /// quirky enough, for Quarto) to care, or the tree painted is no longer the
+  /// live main file. Shared by the two guard points in the paint pipeline so
+  /// they cannot drift apart.
+  function superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree) {
+    return (
+      mine <= painted ||
+      snapshotNavigation !== navigationGeneration ||
+      ((slow || format === "quarto") && snapshotSource !== sourceGeneration) ||
+      tree.main !== treeNow().main
+    );
+  }
+
+  /// Fetches the figures a tree's digests point to and reports which of the
+  /// requested digests the server did not have, so a caller can decide
+  /// whether a hole in the result is tolerable or should fail the whole call.
+  async function gatherFigures(digests) {
+    const held = await figures.gather(SLUG, digests, authHeaders(KEY));
+    const missing = Object.keys(digests).filter(
+      (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
+    );
+    return { held, missing };
+  }
+
   // Outline reads the same live text as the editor. The revision dependency
   // is explicit because Yjs changes happen outside Svelte's normal tracking;
   // both local and remote source observers increment it.
@@ -1741,8 +1787,8 @@
   // Whether this browser is the one producing the pages. There is no chooser
   // and no "not ready yet" gate any more: an editor's browser initializes
   // the engine automatically the first time it is asked to compile (`paintPreview`
-  // below), and the loading itself is what the status line under the toolbar
-  // reports. Everybody else -- a reader, or anyone on a deployment with no
+  // below), and the loading itself is what the Preview header reports.
+  // Everybody else -- a reader, or anyone on a deployment with no
   // mirror -- is shown what the server kept.
   const compilesHere = $derived(
     editing && mayEdit && (
@@ -1756,17 +1802,18 @@
 
   // A paged compile that is running says so, and says how long the last one
   // took once there has been one. Before the first, there is no honest number
-  // to give. LaTeX has its own, richer status line -- `LatexStatus.svelte`,
+  // to give. LaTeX has its own, richer status detail -- `LatexStatus.svelte`,
   // fed straight from `latex.subscribe` -- so this badge is Typst's alone.
   const compileBadge = $derived(
     !compiling ? "" : lastCompile ? `compiling… (last took ${lastCompile.toFixed(1)}s)` : "compiling…",
   );
 
   // Whether `LatexStatus` has anything to draw. It draws nothing while the
-  // engine is idle, and the status row must know that, or a LaTeX document
-  // would wear an empty strip under the toolbar until its first compile.
-  let latexPhase = $state(latex.status().phase);
-  $effect(() => latex.subscribe((next) => (latexPhase = next.phase)));
+  // engine is idle, and the Preview header uses the phase for its compact
+  // control and activity overlay.
+  let latexState = $state.raw(latex.status());
+  const latexPhase = $derived(latexState.phase);
+  $effect(() => latex.subscribe((next) => (latexState = next)));
 
   // Quarto preview mode chosen, but not yet paired with the local app on
   // this computer: the pane shows the draft, and Diagnostics explains why.
@@ -1800,16 +1847,6 @@
     void editing;
     untrack(() => paintCombinedDiagnostics());
   });
-
-  // Whether the status row under the toolbar has a reason to exist.
-  const statusRow = $derived(Boolean(
-    connectionNote
-      || renderedNote
-      || (editing && (peers > 1 || (sourceFormat === "latex" ? latexPhase !== "idle" : compileBadge)))
-      || quartoRendering || quartoPreviewStarting || quartoNeedsLocalApp
-      || (sourceFormat === "quarto" && quartoPreviewMode === "quarto" && quartoPreviewError)
-      || calepinRendering,
-  ));
 
   let frameShowsCheckpoint = false;
   // The kind of the payload the frame was last handed -- "pdf", "html", or
@@ -1879,6 +1916,40 @@
         ? "not yet rendered"
         : renderedNoteText(rendering),
   );
+
+  const previewBusy = $derived(Boolean(
+    (sourceFormat === "latex" && ["loading", "compiling", "checking-local", "local-biber", "vm-preparing", "vm-biber", "native"].includes(latexPhase))
+      || compileBadge || quartoPreviewStarting || quartoRendering || calepinRendering,
+  ));
+  const previewProblem = $derived(Boolean(
+    (sourceFormat === "latex" && latexPhase === "failed") || quartoPreviewError || calepinPreviewError
+      || quartoNeedsLocalApp || typstNeedsLocalApp || typstNeedsCalepinCommand,
+  ));
+  const previewStatusLabel = $derived(
+    previewProblem ? "Preview needs attention"
+      : previewBusy ? (sourceFormat === "quarto" ? "Rendering Quarto" : sourceFormat === "typst" ? "Rendering Typst" : "Compiling")
+      : renderedNote ? (renderedNote === "not yet rendered" || renderedNote === "this version was never rendered" ? "Not rendered" : "Earlier rendering")
+      : "",
+  );
+
+  let previousConnected = null;
+  let previousLatexPhase = null;
+  let previousQuartoRendering = null;
+  let previousCalepinRendering = null;
+  $effect(() => {
+    if (previousConnected === false && connected) toastDone("Connection restored", { id: "reader:connection-restored" });
+    previousConnected = connected;
+  });
+  $effect(() => {
+    if (previousLatexPhase !== null && latexPhase === "ready" && previousLatexPhase !== "ready") toastDone("Preview ready", { id: "reader:preview-ready" });
+    previousLatexPhase = latexPhase;
+  });
+  $effect(() => {
+    if (previousQuartoRendering === true && !quartoRendering) toastDone("Quarto preview ready", { id: "reader:quarto-ready" });
+    previousQuartoRendering = quartoRendering;
+    if (previousCalepinRendering === true && !calepinRendering) toastDone("Calepin preview ready", { id: "reader:calepin-ready" });
+    previousCalepinRendering = calepinRendering;
+  });
 
   renderingStore = createRenderingStore({
     api: previewApi,
@@ -1983,17 +2054,9 @@
       // document with holes in it and replace it a moment later, which reads
       // as a flicker rather than as progress.
       if (Object.keys(tree.digests || {}).length) {
-        const held = await figures.gather(SLUG, tree.digests, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
-        if (
-          mine <= painted ||
-          snapshotNavigation !== navigationGeneration ||
-          ((slow || format === "quarto") && snapshotSource !== sourceGeneration) ||
-          tree.main !== treeNow().main
-        ) return;
+        const { held, missing } = await gatherFigures(tree.digests);
+        if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
         if (paged) {
-          const missing = Object.keys(tree.digests).filter(
-            (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
-          );
           if (missing.length) {
             throw new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
           }
@@ -2051,12 +2114,7 @@
       // Typst may show that intermediate progress while the queued render
       // catches up. Navigation and main-file changes still invalidate it;
       // LaTeX keeps its strict source guard.
-      if (
-        mine <= painted ||
-        snapshotNavigation !== navigationGeneration ||
-        ((slow || format === "quarto") && snapshotSource !== sourceGeneration) ||
-        tree.main !== treeNow().main
-      ) return;
+      if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
       painted = mine;
       if (paged && seconds) lastCompile = seconds;
       // A render carries `html` or `pdf`, and the reader posts whichever it
@@ -2684,11 +2742,7 @@
     sourceFormat = format;
     configureLatex(format);
     if (mayEdit) renderers.warm(format);
-    if (format === "quarto" || format === "typst") {
-      localQuarto.configure({ project: SLUG, origin: location.origin });
-      quartoBindingId = localQuarto.bindingId();
-      void localQuarto.probe();
-    }
+    if (format === "quarto" || format === "typst") pairLocalQuarto();
     if (!previous || viewing || checkpointNavigationPending) return;
     // Invalidate both running compiles and replayed pages, even when the
     // two selected files use the same renderer or both produce PDFs.
@@ -2737,14 +2791,18 @@
   }
 
   function refreshPeers() {
-    if (session) peersByFile = session.whereEveryoneIs();
+    if (!session) return;
+    peersByFile = session.whereEveryoneIs();
+    participants = [...session.awareness.getStates().entries()]
+      .filter(([client, state]) => client !== session.doc.clientID && state?.user)
+      .map(([client, state]) => ({ key: String(client), name: state.user.name || "Anonymous" }));
   }
 
   function openTheFile(file) {
-    if (openFile !== file.id) outlineActiveFrom = null;
     // A figure has no editor: choosing one shows it. The id of an asset is
     // its path, since its bytes are not in the shared document and there is
     // nothing else to key it by.
+    if (openFile !== file.id) outlineActiveFrom = null;
     openFile = file.id;
     shownFigure = file.kind === "asset" ? file : null;
     // Choosing a file is asking to see it, so an arrangement with no source
@@ -2788,7 +2846,7 @@
       return;
     }
     figures
-      .gather(SLUG, { [wanted.path]: wanted.sha }, { ...SHELL_HEADERS, ...keyHeaders(KEY) })
+      .gather(SLUG, { [wanted.path]: wanted.sha }, authHeaders(KEY))
       .then((held) => {
         if (shownFigure === wanted) figureUrl = held.urls[wanted.path] || "";
       })
@@ -2861,7 +2919,7 @@
   async function previewInsertAsset(path) {
     const sha = session?.tree?.().digests?.[path];
     if (!sha) return "";
-    const held = await figures.gather(SLUG, { [path]: sha }, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
+    const held = await figures.gather(SLUG, { [path]: sha }, authHeaders(KEY));
     return held.urls[path] || "";
   }
 
@@ -2877,13 +2935,7 @@
       const files = { ...tree.texts };
       for (const path of currentFolders) files[`${path}/`] = new Uint8Array();
       if (Object.keys(tree.digests || {}).length) {
-        const held = await figures.gather(SLUG, tree.digests, {
-          ...SHELL_HEADERS,
-          ...keyHeaders(KEY),
-        });
-        const missing = Object.keys(tree.digests).filter(
-          (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
-        );
+        const { held, missing } = await gatherFigures(tree.digests);
         if (missing.length) {
           throw new Error(`could not download ${missing.join(", ")}`);
         }
@@ -2920,7 +2972,7 @@
       const content = Object.fromEntries(Object.entries(tree.texts).filter(([path]) => selected(path)));
       const digests = Object.fromEntries(Object.entries(tree.digests || {}).filter(([path]) => selected(path)));
       if (Object.keys(digests).length) {
-        const held = await figures.gather(SLUG, digests, { ...SHELL_HEADERS, ...keyHeaders(KEY) });
+        const held = await figures.gather(SLUG, digests, authHeaders(KEY));
         if (Object.keys(digests).some((path) => !Object.prototype.hasOwnProperty.call(held.assets, path))) throw new Error("Could not download all selected files.");
         Object.assign(content, held.assets);
       }
@@ -2988,6 +3040,7 @@
         session = active;
         handledFileTransactions = new WeakSet();
         refreshFiles();
+        refreshPeers();
       },
       onSource: (active) => {
         sourceChanged();
@@ -3032,14 +3085,7 @@
         ? resultsIdentity.draft_format
         : "html";
     sourceFormat = format;
-    if (format === "quarto" || format === "typst") {
-      localQuarto.configure({ project: SLUG, origin: location.origin });
-      quartoBindingId = localQuarto.bindingId();
-      // A pairing this browser already holds is verified now, so the
-      // workspace banner shows a connected preview without a first failed
-      // attempt to start one.
-      void localQuarto.probe();
-    }
+    if (format === "quarto" || format === "typst") pairLocalQuarto();
     // A document is shown by output kind. Paged documents use stored PDFs when
     // this deployment has no browser compiler, so opening a Typst paper never
     // depends on downloading Typst WASM. Compiler availability only controls
@@ -3304,6 +3350,16 @@
 {/snippet}
 
 <Nav {me}>
+  {#snippet tools()}
+    <div class="presence" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
+      <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
+      {#if !connected}<span class="connection-label">Offline</span>{/if}
+      {#each participants.slice(0, 3) as person (person.key)}
+        <Avatar name={person.name} key={person.key} size={6} />
+      {/each}
+      {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
+    </div>
+  {/snippet}
   {#snippet menus()}
     {#if mayEdit}
       <div class="desktop-workspace-menu">
@@ -3367,50 +3423,6 @@
     {/if}
   </div>
 {/if}
-<!-- The status row. Everything the document has to say about its own state
-     -- the connection, what rendering is on screen, who else is here, how a
-     compile is going -- used to be badges on the bar, in the smallest type
-     on the page and clipped to an ellipsis as soon as the bar ran out of
-     room, which on a laptop it always did. Here it has the whole width, the
-     page's own type size, and room to wrap; a LaTeX failure can carry its
-     hint and its buttons on one readable line. The row is absent, not empty,
-     when there is nothing to say. -->
-{#if statusRow}
-  <div class="workspace-banner workspace-status" role="status" aria-label="Document status">
-    {#if connectionNote}<span class="status-warning">{connectionNote}</span>{/if}
-    {#if renderedNote}<span>{renderedNote}</span>{/if}
-    {#if editing}
-      {#if peers > 1}<span>{peers} people editing</span>{/if}
-      {#if sourceFormat === "latex"}
-        <LatexStatus onconnect={() => openSettings("local")} onretrybrowser={() => void paintPreview()} />
-      {:else if compileBadge}
-        <span><span class="spinner" aria-hidden="true"></span>{compileBadge}</span>
-      {/if}
-    {/if}
-    {#if sourceFormat === "quarto"}
-      <span aria-label="Quarto preview">
-        {#if quartoPreviewMode === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
-          <span>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Connect the local LibrePaper app to run Quarto."}</span>
-          <button class="link" onclick={() => void setQuartoPreviewMode("quarto")}>{quartoNeedsLocalApp ? "Connect" : "Retry Quarto preview"}</button>
-        {/if}
-        {#if quartoPreviewStarting}
-          <span><span class="spinner" aria-hidden="true"></span>Starting Quarto preview…</span>
-        {/if}
-        {#if quartoRendering}
-          <span title="Quarto is re-rendering the live preview."><span class="spinner" aria-hidden="true"></span>Rendering the live preview…</span>
-        {/if}
-      </span>
-    {/if}
-    {#if sourceFormat === "typst"}
-      <span aria-label="Calepin preview">
-        {#if calepinRendering}
-          <span title="Calepin is re-rendering the preview."><span class="spinner" aria-hidden="true"></span>Rendering the preview…</span>
-        {/if}
-      </span>
-    {/if}
-  </div>
-{/if}
-
 </div>
 
 <main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
@@ -3582,8 +3594,8 @@
 
   <!-- What stands where the document would be, before there is one to show.
        There is no compiler card any more: an editor's browser initializes
-       the engine on its own, automatically, and the status line under the
-       toolbar carries the loading and failure states. Every paged format
+       the engine on its own, automatically, and the Preview header carries
+       loading and failure states. Every paged format
        still gets an explicit not-yet-rendered state until a stored PDF
        arrives -- readers never load a compiler merely to read an existing
        artifact. -->
@@ -3626,8 +3638,41 @@
 
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
+  {#snippet previewStatusDetails()}
+    <div class="preview-status-details">
+      {#if renderedNote}<p>{renderedNote}</p>{/if}
+      {#if sourceFormat === "latex" && editing}
+        <LatexStatus onconnect={() => openSettings("local")} onretrybrowser={() => void paintPreview()} />
+      {:else if sourceFormat === "typst" && compileBadge}
+        <p>{compileBadge}</p>
+      {/if}
+      {#if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
+        <p>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Connect the local LibrePaper app to run Quarto."}</p>
+        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void setQuartoPreviewMode("quarto")}>
+          {quartoNeedsLocalApp ? "Connect" : "Retry Quarto preview"}
+        </button>
+      {/if}
+      {#if sourceFormat === "typst" && (typstNeedsLocalApp || typstNeedsCalepinCommand || calepinPreviewError)}
+        <p>{calepinPreviewError || localConnectionError || (typstNeedsCalepinCommand ? "Install the calepin command to use this preview." : "Connect the local LibrePaper app to use Calepin preview.")}</p>
+      {/if}
+      {#if previewProblem}
+        <button class="btn btn-sm preset-tonal-surface" onclick={() => showPanel("diagnostics")}>Open Diagnostics</button>
+      {/if}
+    </div>
+  {/snippet}
+  {#snippet previewStatusControl()}
+    <PreviewStatus label={previewStatusLabel} busy={previewBusy}
+      tone={previewProblem ? "error" : renderedNote ? "warning" : "neutral"}>
+      {#snippet details()}{@render previewStatusDetails()}{/snippet}
+    </PreviewStatus>
+  {/snippet}
+  {#snippet previewOverlay()}
+    {#if previewBusy}
+      <div class="preview-activity" role="status"><span class="spinner" aria-hidden="true"></span>{previewStatusLabel}…</div>
+    {/if}
+  {/snippet}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
-           path={viewing?.main || previewMain}
+           path={viewing?.main || previewMain} status={previewStatusControl} overlay={previewOverlay}
            away={!shown.document || unrendered || failedBeforeRender} />
 
   <nav class="mobile-pane-nav" aria-label="Workspace view">
@@ -3833,6 +3878,7 @@
     gap: var(--spacing);
     width: var(--librepaper-activity);
     padding-block: calc(var(--spacing) * 3);
+    border-right: 1px solid var(--color-divider);
   }
   .activity-sections {
     display: flex;
@@ -3840,15 +3886,36 @@
     align-items: center;
     gap: var(--spacing);
   }
+  .activity-sections :global(.icon-control) {
+    position: relative;
+    width: 2rem;
+    height: 2rem;
+    border-radius: var(--radius-base);
+  }
+  .activity-sections :global(.icon-control[aria-pressed="true"]) {
+    background: var(--color-primary-100-900);
+    color: var(--color-primary-700-300);
+  }
+  .activity-sections :global(.icon-control[aria-pressed="true"]::before) {
+    content: "";
+    position: absolute;
+    left: calc((2rem - var(--librepaper-activity)) / 2 + 1px);
+    top: 0.375rem;
+    bottom: 0.375rem;
+    width: 3px;
+    border-radius: 0 2px 2px 0;
+    background: var(--color-primary-500);
+  }
   .compact-workspace-menu { display: none; }
   .workspace-banner { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4); border-bottom: 1px solid var(--color-divider); }
-  /* The status row wears the page's own type, not a badge's: what it says is
-     meant to be read across the room, and an offline warning in particular is
-     not something to squint at. Each item is one inline group, so a spinner
-     stays beside its words when the row wraps. */
-  .workspace-status { color: var(--color-surface-700-300); }
-  .workspace-status > * { display: inline-flex; align-items: center; gap: var(--spacing); }
-  .workspace-status .status-warning { color: var(--color-warning-600-400); font-weight: 500; }
+  .presence { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-surface-600-400); font-size: var(--text-xs); }
+  .connection-dot { width: .5rem; height: .5rem; margin-inline: var(--spacing); border-radius: 50%; background: var(--color-success-500); }
+  .connection-dot.offline { background: var(--color-warning-500); }
+  .connection-label { color: var(--color-warning-600-400); font-weight: 600; }
+  .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
+  .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-surface-200-800); color: var(--color-surface-700-300); font-size: .65rem; }
+  .preview-status-details { display: grid; gap: calc(var(--spacing) * 2); }
+  .preview-status-details :global(.latex-status) { display: flex; }
   @media (max-width: 600px) {
     .desktop-workspace-menu { display: none; }
     .compact-workspace-menu { display: block; }

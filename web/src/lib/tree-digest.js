@@ -5,6 +5,9 @@
 // to that shape: the rendering name must identify the exact source that was
 // compiled, rather than the source that happened to be current a moment later.
 
+import { sha256Hex as digest } from "./digest.js";
+import { maybeBytes as bytesOf } from "./bytes.js";
+
 const encoder = new TextEncoder();
 
 function compareUtf8(left, right) {
@@ -15,21 +18,6 @@ function compareUtf8(left, right) {
     if (a[at] !== b[at]) return a[at] - b[at];
   }
   return a.length - b.length;
-}
-
-async function digest(bytes) {
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(hash)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function bytesOf(value) {
-  if (value == null) return null;
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  return null;
 }
 
 /// Returns the server's canonical digest for a renderer tree. `tree.files`,

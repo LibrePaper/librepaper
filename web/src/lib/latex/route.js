@@ -74,6 +74,19 @@ function markVm(state, identity) {
   };
 }
 
+/// The one place the "may the VM take this?" policy is decided, so the four
+/// call sites below cannot drift apart: eligible (a valid BCF and VM support,
+/// per `vmEligible`) and not already attempted for this bibliography
+/// identity. Returns the `try-vm` result, with `state` updated to record the
+/// attempt, or `null` when the caller must fall through to whatever it does
+/// when the VM cannot be used.
+function vmStep(state, event) {
+  if (vmEligible(state, event, event.validBcf) && !vmAttempted(state, event.identity)) {
+    return { action: "try-vm", state: markVm(state, event.identity), failure: null };
+  }
+  return null;
+}
+
 const LOCAL_UNAVAILABLE = { kind: "local-unavailable", message: "Local LibrePaper is unavailable" };
 
 /// `event` is `{ type, ...context }`. `state` is whatever the previous
@@ -94,9 +107,8 @@ export function decide(event, state) {
       if (reachableOrUnknown(state.localStatus)) {
         return { action: "try-local-biber", state, failure: null };
       }
-      if (vmEligible(state, event, event.validBcf) && !vmAttempted(state, event.identity)) {
-        return { action: "try-vm", state: markVm(state, event.identity), failure: null };
-      }
+      const vm = vmStep(state, event);
+      if (vm) return vm;
       return { action: "show-browser", state, failure: LOCAL_UNAVAILABLE };
     }
 
@@ -107,16 +119,18 @@ export function decide(event, state) {
     // remaining work -- it never substitutes for a failed browser TeX pass.
     case "local-unreachable":
     case "local-denied": {
-      if (event.onlyBibliography && vmEligible(state, event, event.validBcf) && !vmAttempted(state, event.identity)) {
-        return { action: "try-vm", state: markVm(state, event.identity), failure: null };
+      if (event.onlyBibliography) {
+        const vm = vmStep(state, event);
+        if (vm) return vm;
       }
       return { action: "stop", state, failure: LOCAL_UNAVAILABLE };
     }
 
     // The app answered but the required tool is missing on that machine.
     case "local-tool-missing": {
-      if (event.onlyBibliography && vmEligible(state, event, event.validBcf) && !vmAttempted(state, event.identity)) {
-        return { action: "try-vm", state: markVm(state, event.identity), failure: null };
+      if (event.onlyBibliography) {
+        const vm = vmStep(state, event);
+        if (vm) return vm;
       }
       return {
         action: "stop",
@@ -135,9 +149,8 @@ export function decide(event, state) {
       if (event.localTexAvailable && !nativeAttempted(state, snapshot)) {
         return { action: "try-native", state: markNative(state, snapshot), failure: null };
       }
-      if (vmEligible(state, event, event.validBcf) && !vmAttempted(state, event.identity)) {
-        return { action: "try-vm", state: markVm(state, event.identity), failure: null };
-      }
+      const vm = vmStep(state, event);
+      if (vm) return vm;
       return {
         action: "stop",
         state,

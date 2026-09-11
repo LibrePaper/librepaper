@@ -36,14 +36,12 @@ export const pageCount = () => pageStarts.length;
 
 let generation = 0;
 
-/// Draw `bytes` into `root`, replacing whatever was there.
-///
-/// A second `preview` arrives on every recompile, so this has to be safe to
-/// call again while the last one is still rendering: `generation` is the
-/// token that lets a superseded run drop its pages on the floor instead of
-/// appending them under the new document's.
-export async function render(bytes, root, mode = "auto") {
-  const mine = ++generation;
+/// Open `bytes` as a pdf.js document, run `fn` against it, and tear the
+/// worker down afterward. `fn` receives the resolved document and its
+/// result becomes this function's result; whatever `fn` throws or returns
+/// early propagates the same way, since the teardown lives in `finally` and
+/// runs on every path.
+async function withDocument(bytes, fn) {
   const loading = pdfjs.getDocument({
     data: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
     // No fetching of anything, from anywhere, at draw time. A PDF that names
@@ -56,6 +54,33 @@ export async function render(bytes, root, mode = "auto") {
   let document_ = null;
   try {
     document_ = await loading.promise;
+    return await fn(document_);
+  } finally {
+    // A loading task owns a worker even after its promise resolves. Destroy
+    // both the document and task on success, failure, and generation
+    // cancellation so repeated previews do not accumulate pdf.js workers.
+    try {
+      await document_?.destroy();
+    } catch {
+      /* cleanup must not mask the render result */
+    }
+    try {
+      await loading.destroy();
+    } catch {
+      /* the document destroy above is sufficient on older pdf.js versions */
+    }
+  }
+}
+
+/// Draw `bytes` into `root`, replacing whatever was there.
+///
+/// A second `preview` arrives on every recompile, so this has to be safe to
+/// call again while the last one is still rendering: `generation` is the
+/// token that lets a superseded run drop its pages on the floor instead of
+/// appending them under the new document's.
+export async function render(bytes, root, mode = "auto") {
+  const mine = ++generation;
+  return withDocument(bytes, async (document_) => {
     if (mine !== generation) return 0;
 
     // Everything is built off-document and swapped in at the end. Painting page
@@ -134,51 +159,20 @@ export async function render(bytes, root, mode = "auto") {
     root.replaceChildren(staging);
     pageStarts = starts;
     return document_.numPages;
-  } finally {
-    // A loading task owns a worker even after its promise resolves. Destroy
-    // both the document and task on success, failure, and generation
-    // cancellation so repeated previews do not accumulate pdf.js workers.
-    try {
-      await document_?.destroy();
-    } catch {
-      /* cleanup must not mask the render result */
-    }
-    try {
-      await loading.destroy();
-    } catch {
-      /* the document destroy above is sufficient on older pdf.js versions */
-    }
-  }
+  });
 }
 
 /// Extract the same normalized visible text the viewer publishes, without
 /// creating a canvas or requiring a LaTeX compiler. Historical passage lookup
 /// uses this for PDFs already stored by an editor.
 export async function text(bytes) {
-  const loading = pdfjs.getDocument({
-    data: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
-    isEvalSupported: false,
-    disableFontFace: false,
-  });
-  let document_ = null;
-  try {
-    document_ = await loading.promise;
+  return withDocument(bytes, async (document_) => {
     const pages = [];
     for (let number = 1; number <= document_.numPages; number++) {
       const page = await document_.getPage(number);
       try {
         const content = await page.getTextContent();
-        pages.push(
-          content.items
-            .filter((item) => item.str !== undefined)
-            .map((item) => ({
-              text: item.str,
-              left: item.transform[4],
-              width: item.width,
-              height: Math.hypot(item.transform[2], item.transform[3]) || item.height || 1,
-              eol: Boolean(item.hasEOL),
-            })),
-        );
+        pages.push(runsOf(content.items));
       } finally {
         page.cleanup();
       }
@@ -186,14 +180,24 @@ export async function text(bytes) {
     return piecesOf(pages)
       .map((piece) => piece.text)
       .join("");
-  } finally {
-    try {
-      await document_?.destroy();
-    } catch {}
-    try {
-      await loading.destroy();
-    } catch {}
-  }
+  });
+}
+
+/// Map pdf.js text-content items to the run shape `piecesOf` consumes.
+///
+/// pdf.js emits marked-content markers alongside real text items, and those
+/// markers carry no `str`; the filter drops them so `piecesOf` only ever
+/// sees runs with actual text.
+function runsOf(items) {
+  return items
+    .filter((item) => item.str !== undefined)
+    .map((item) => ({
+      text: item.str,
+      left: item.transform[4],
+      width: item.width,
+      height: Math.hypot(item.transform[2], item.transform[3]) || item.height || 1,
+      eol: Boolean(item.hasEOL),
+    }));
 }
 
 /// Turn pdf.js's spans into something the agent can read as prose.
@@ -206,15 +210,7 @@ export async function text(bytes) {
 /// Returns how many characters of joined text this page contributed, so the
 /// caller can keep the page-start table.
 function rewrite(textDivs, items, leadingBreak) {
-  const runs = items
-    .filter((item) => item.str !== undefined)
-    .map((item) => ({
-      text: item.str,
-      left: item.transform[4],
-      width: item.width,
-      height: Math.hypot(item.transform[2], item.transform[3]) || item.height || 1,
-      eol: Boolean(item.hasEOL),
-    }));
+  const runs = runsOf(items);
   // `piecesOf` puts the blank line between pages; here each page is rewritten
   // on its own, so it is asked for one page and the break is added by hand.
   const pieces = piecesOf([runs]);

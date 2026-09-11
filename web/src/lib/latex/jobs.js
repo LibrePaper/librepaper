@@ -16,13 +16,7 @@
 // a snapshot even across a page reload, which is what lets a still-warm
 // bibliography cache or a still-valid generated aux state survive one.
 
-const encoder = new TextEncoder();
-
-async function sha256Hex(text) {
-  const bytes = encoder.encode(text);
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+import { sha256HexOfText } from "../digest.js";
 
 /// Builds a Job from what the controller already knows: `inputs` is the
 /// source/asset digest (`tree-digest.js`'s `snapshotDigest`, computed by the
@@ -32,7 +26,7 @@ async function sha256Hex(text) {
 /// compiles that resolve to the same engine, and must differ the moment
 /// either does not.
 export async function makeJob({ project, generation, tree, inputs, engine, release }) {
-  const snapshot = await sha256Hex(`${inputs}\n${engine}\n${release}`);
+  const snapshot = await sha256HexOfText(`${inputs}\n${engine}\n${release}`);
   return {
     id: `${project}:${generation}`,
     project,

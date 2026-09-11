@@ -415,18 +415,7 @@
         class:range-end={!target && baselineAt >= 0}
       >
         {#if naming === "current"}
-          <input
-            bind:this={field}
-            bind:value={draft}
-            class="input"
-            placeholder="Name this version"
-            aria-label="Name the current version"
-            onkeydown={(event) => {
-              if (event.key === "Enter") finishNaming();
-              if (event.key === "Escape") naming = "";
-            }}
-            onblur={finishNaming}
-          />
+          {@render nameField("Name this version", "Name the current version")}
         {:else}<button
           type="button"
           class="timeline-point"
@@ -478,6 +467,21 @@
   {/if}
 </div>
 
+{#snippet nameField(placeholder, label)}
+  <input
+    bind:this={field}
+    bind:value={draft}
+    class="input"
+    {placeholder}
+    aria-label={label}
+    onkeydown={(event) => {
+      if (event.key === "Enter") finishNaming();
+      if (event.key === "Escape") naming = "";
+    }}
+    onblur={finishNaming}
+  />
+{/snippet}
+
 {#snippet mark(point)}
   <li
     class="timeline-row"
@@ -489,18 +493,7 @@
     {#if naming === point.sha}
       <!-- Naming happens where the name will appear, rather than in a dialog
            over the list: what is being named is the row under the cursor. -->
-      <input
-        bind:this={field}
-        bind:value={draft}
-        class="input"
-        placeholder="sent to the journal"
-        aria-label="Name this point"
-        onkeydown={(event) => {
-          if (event.key === "Enter") finishNaming();
-          if (event.key === "Escape") naming = "";
-        }}
-        onblur={finishNaming}
-      />
+      {@render nameField("sent to the journal", "Name this point")}
     {:else}
       <button
         type="button"

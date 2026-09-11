@@ -10,25 +10,15 @@
 // engine, never touches a worker, and is exercised in `latex-bibliography.mjs`
 // with a handful of hand-written aux/bcf/log strings.
 
+import { sha256Hex } from "../digest.js";
+import { bytesOrEmpty } from "../bytes.js";
+
 const encoder = new TextEncoder();
-
-async function sha256Hex(bytes) {
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function bytesOf(value) {
-  if (value == null) return new Uint8Array(0);
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  return encoder.encode(String(value));
-}
 
 function textOf(value) {
   if (value == null) return "";
   if (typeof value === "string") return value;
-  return new TextDecoder().decode(bytesOf(value));
+  return new TextDecoder().decode(bytesOrEmpty(value));
 }
 
 function dirname(path) {
@@ -76,16 +66,23 @@ function bibdataNames(auxText) {
   return names;
 }
 
-/// `\bibstyle{name}` -> the `.bst` classic BibTeX was told to use.
-function bibstyleNames(auxText) {
+/// The trimmed, non-empty capture groups of every match of `re` against
+/// `text` -- the "find every `\command{...}`" scan `bibstyleNames` and
+/// `inputAuxPaths` both do, with only the regex and what happens to each name
+/// differing between them.
+function matchedNames(text, re) {
   const names = [];
-  const re = /\\bibstyle\{([^}]*)\}/g;
   let match;
-  while ((match = re.exec(auxText))) {
+  while ((match = re.exec(text))) {
     const trimmed = match[1].trim();
-    if (trimmed) names.push(withExtension(trimmed, ".bst"));
+    if (trimmed) names.push(trimmed);
   }
   return names;
+}
+
+/// `\bibstyle{name}` -> the `.bst` classic BibTeX was told to use.
+function bibstyleNames(auxText) {
+  return matchedNames(auxText, /\\bibstyle\{([^}]*)\}/g).map((name) => withExtension(name, ".bst"));
 }
 
 /// `<bcf:datasource type="file" ...>name.bib</bcf:datasource>` -> Biber's own
@@ -107,14 +104,7 @@ function bcfDatasources(bcfText) {
 /// recursively so a multi-file document's bibliography commands are found
 /// wherever `\include`d chapters put them.
 function inputAuxPaths(auxText) {
-  const paths = [];
-  const re = /\\@input\{([^}]*)\}/g;
-  let match;
-  while ((match = re.exec(auxText))) {
-    const trimmed = match[1].trim();
-    if (trimmed) paths.push(trimmed);
-  }
-  return paths;
+  return matchedNames(auxText, /\\@input\{([^}]*)\}/g);
 }
 
 /// Whether the log is asking for Biber, in Biber's own words -- `biblatex`
@@ -159,7 +149,7 @@ export function inspect({ stem, outputs = {}, log = "", tree = {} }) {
   }
 
   const bcfPath = `${stem}.bcf`;
-  const bcf = outputs[bcfPath] instanceof Uint8Array ? outputs[bcfPath] : outputs[bcfPath] ? bytesOf(outputs[bcfPath]) : null;
+  const bcf = outputs[bcfPath] instanceof Uint8Array ? outputs[bcfPath] : outputs[bcfPath] ? bytesOrEmpty(outputs[bcfPath]) : null;
   if (bcf) {
     for (const name of bcfDatasources(textOf(bcf))) bibNames.add(name);
   }
@@ -219,7 +209,7 @@ export function inspect({ stem, outputs = {}, log = "", tree = {} }) {
 /// none of those -- reuses it exactly.
 export async function identity({ kind, controlBytes, files = {}, engine, release, tool }) {
   const entries = Object.entries(files)
-    .map(([path, bytes]) => [path, bytesOf(bytes)])
+    .map(([path, bytes]) => [path, bytesOrEmpty(bytes)])
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 
   const toolTag =
@@ -228,7 +218,7 @@ export async function identity({ kind, controlBytes, files = {}, engine, release
   const parts = [
     encoder.encode(`kind:${kind || ""}\nengine:${engine || ""}\nrelease:${release || ""}\ntool:${toolTag}\n`),
   ];
-  const control = bytesOf(controlBytes);
+  const control = bytesOrEmpty(controlBytes);
   parts.push(encoder.encode(`control:${control.length}\n`));
   parts.push(control);
   for (const [path, bytes] of entries) {

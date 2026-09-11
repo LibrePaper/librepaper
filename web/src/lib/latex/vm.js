@@ -28,6 +28,9 @@
 // `deps`, so the check can run this exact module under Node with a fake
 // worker standing in for the emulator.
 
+import { bytesOf, toArrayBuffer } from "../bytes.js";
+import { named } from "./errors.js";
+
 const BOOT_TIMEOUT_MS = 120 * 1000;
 const JOB_TIMEOUT_MS = 600 * 1000;
 const IDLE_TEARDOWN_MS = 5 * 60 * 1000;
@@ -131,15 +134,11 @@ async function loadResources() {
 }
 
 function unsupportedError(reason) {
-  const error = new Error(reason);
-  error.name = "VmUnsupported";
-  return error;
+  return named("VmUnsupported", reason);
 }
 
 function unavailableError(reason) {
-  const error = new Error(reason);
-  error.name = "VmUnavailable";
-  return error;
+  return named("VmUnavailable", reason);
 }
 
 /// `vmConfig` is `/api/config`'s `biberVm` field: `{url, sha256}`, the
@@ -279,9 +278,7 @@ let sequence = 0;
 export function runBiber(request, opts = {}) {
   return new Promise((resolve, reject) => {
     if (queued) {
-      const error = new Error("Superseded by a newer bibliography job");
-      error.name = "Superseded";
-      queued.reject(error);
+      queued.reject(named("Superseded", "Superseded by a newer bibliography job"));
     }
     queued = { request, opts, resolve, reject };
     pump();
@@ -351,9 +348,7 @@ function settleRunning(msg) {
   job.signal?.removeEventListener("abort", job.onAbort);
   scheduleIdleTeardown();
   if (msg.error) {
-    const error = new Error(msg.error);
-    error.name = msg.name || (job.canceling ? "Canceled" : "VmFailed");
-    job.reject(error);
+    job.reject(named(msg.name || (job.canceling ? "Canceled" : "VmFailed"), msg.error));
     return;
   }
   job.resolve({
@@ -364,18 +359,6 @@ function settleRunning(msg) {
     tool: { name: "biber", version: msg.biberVersion || null, backend: "vm" },
     incompatible: !!msg.incompatible,
   });
-}
-
-function bytesOf(value) {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  if (typeof value === "string") return new TextEncoder().encode(value);
-  throw new TypeError("expected bytes");
-}
-
-function toArrayBuffer(bytes) {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
 // -------------------------------------------------------------- teardown

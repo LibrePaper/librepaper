@@ -155,15 +155,34 @@ export function createHistoryController({
     }
   }
 
-  async function chooseBaseline(sha) {
-    if (disposed) return;
-    const generation = ++baselineGeneration;
-    const manifestGeneration = loadGeneration;
+  // The shared body of `chooseBaseline`/`chooseTarget`: look up the listed
+  // checkpoint, fetch its full text when the manifest carries only a summary,
+  // revalidate against the generation counters the caller captured before the
+  // fetch, and hand the point to `use`.
+  //
+  // `use` runs inside the `try`, which is where each caller's work sat before
+  // this was extracted, and that placement is load-bearing twice over: a
+  // failure in `computeChanges` is still reported as `state.problem` rather
+  // than escaping as an unhandled rejection, and the caller's first statement
+  // still runs in the same tick as the staleness check above it, so nothing
+  // can invalidate the point in between.
+  async function withComparisonPoint(sha, generation, manifestGeneration, use) {
     const listed = listedPoint(sha);
     if (!listed) return;
     try {
       const point = listed.texts ? listed : await history.checkpoint(slug, sha, headers());
       if (!current(generation, "baseline") || manifestGeneration !== loadGeneration) return;
+      await use(point);
+    } catch (error) {
+      if (current(generation, "baseline") && manifestGeneration === loadGeneration) state.problem = error.message || "that checkpoint could not be read";
+    }
+  }
+
+  async function chooseBaseline(sha) {
+    if (disposed) return;
+    const generation = ++baselineGeneration;
+    const manifestGeneration = loadGeneration;
+    await withComparisonPoint(sha, generation, manifestGeneration, async (point) => {
       state.baseline = point;
       state.comparingCurrent = false;
       state.newerEdits = false;
@@ -176,9 +195,7 @@ export function createHistoryController({
       state.problem = "";
       rememberBaseline(sha);
       await computeChanges(point);
-    } catch (error) {
-      if (current(generation, "baseline") && manifestGeneration === loadGeneration) state.problem = error.message || "that checkpoint could not be read";
-    }
+    });
   }
 
   async function chooseTarget(sha) {
@@ -197,18 +214,12 @@ export function createHistoryController({
       await computeChanges();
       return;
     }
-    const listed = listedPoint(sha);
-    if (!listed) return;
-    try {
-      const point = listed.texts ? listed : await history.checkpoint(slug, sha, headers());
-      if (!current(generation, "baseline") || manifestGeneration !== loadGeneration) return;
+    await withComparisonPoint(sha, generation, manifestGeneration, async (point) => {
       state.target = point;
       clearComparison();
       state.problem = "";
       await computeChanges();
-    } catch (error) {
-      if (current(generation, "baseline") && manifestGeneration === loadGeneration) state.problem = error.message || "that checkpoint could not be read";
-    }
+    });
   }
 
   // What changed up to a checkpoint, as the timeline asks it: the checkpoint
@@ -235,6 +246,30 @@ export function createHistoryController({
     await chooseTarget(sha);
   }
 
+  // Shared by `compareWithCurrent`/`refreshCurrent`: capture a live snapshot
+  // as the new comparison target, revalidating against `baselineGeneration`
+  // both before and after the (async) capture, since edits -- or a fresher
+  // call to `chooseBaseline`/`chooseTarget` -- may have landed while it was
+  // pending. Returns `false` exactly where the two callers used to bail out
+  // early, leaving them nothing to do but return in turn. `enterComparingCurrent`
+  // lets `compareWithCurrent` set `state.comparingCurrent = true` at the same
+  // point in the sequence -- right after `state.target` is assigned, before
+  // `state.newerEdits` is cleared -- that it did before extraction.
+  async function captureLiveTarget({ enterComparingCurrent = false } = {}) {
+    const captureGeneration = baselineGeneration;
+    const snapshot = await liveSnapshot();
+    if (!alive() || captureGeneration !== baselineGeneration) return false;
+    if (!snapshot) return false;
+    ++baselineGeneration;
+    state.target = snapshot;
+    if (enterComparingCurrent) state.comparingCurrent = true;
+    state.newerEdits = false;
+    // Edits may have landed while the digest/render capture was pending.
+    noteLiveChange();
+    clearComparison();
+    return true;
+  }
+
   // Enter a stable comparison against the current document.  The target is
   // copied now; later edits are reported, but never folded into the diff.
   async function compareWithCurrent(sha) {
@@ -243,32 +278,14 @@ export function createHistoryController({
     const generation = baselineGeneration;
     await pending;
     if (!current(generation, "baseline") || state.baseline?.sha !== sha) return;
-    const captureGeneration = baselineGeneration;
-    const snapshot = await liveSnapshot();
-    if (!alive() || captureGeneration !== baselineGeneration) return;
-    if (!snapshot) return;
-    ++baselineGeneration;
-    state.target = snapshot;
-    state.comparingCurrent = true;
-    state.newerEdits = false;
-    // Edits may have landed while the digest/render capture was pending.
-    noteLiveChange();
-    clearComparison();
+    if (!(await captureLiveTarget({ enterComparingCurrent: true }))) return;
     state.problem = "";
     await computeChanges(state.baseline);
   }
 
   async function refreshCurrent() {
     if (disposed || !state.comparingCurrent || !state.baseline) return;
-    const captureGeneration = baselineGeneration;
-    const snapshot = await liveSnapshot();
-    if (!alive() || captureGeneration !== baselineGeneration) return;
-    if (!snapshot) return;
-    ++baselineGeneration;
-    state.target = snapshot;
-    state.newerEdits = false;
-    noteLiveChange();
-    clearComparison();
+    if (!(await captureLiveTarget())) return;
     await computeChanges(state.baseline);
   }
 

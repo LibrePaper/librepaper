@@ -21,6 +21,9 @@
 // overrides them; `_testing.reset` restores the defaults and clears every
 // module-level variable so checks do not leak into each other.
 
+import { bytesOf, toArrayBuffer } from "../bytes.js";
+import { named } from "./errors.js";
+
 export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
 export const QUARTO_PROTOCOL = 1;
 export const QUARTO_JOB_KINDS = Object.freeze(["render", "refresh", "frozen"]);
@@ -194,9 +197,7 @@ function dropPairing() {
 function requirePairing() {
   const pairing = getPairing();
   if (!pairing || !pairing.token) {
-    const error = new Error("No local pairing for this project");
-    error.name = "Unauthorized";
-    throw error;
+    throw named("Unauthorized", "No local pairing for this project");
   }
   return pairing;
 }
@@ -302,21 +303,29 @@ async function healthFetch(addr) {
   return deps.fetch(url, init);
 }
 
-function bytesOf(value) {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  if (typeof value === "string") return new TextEncoder().encode(value);
-  throw new TypeError("expected bytes");
-}
-
-function toArrayBuffer(bytes) {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-}
-
 async function sha256hex(bytes) {
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Shared by `send()` and `localPreviewPage()`: a 401 drops the stored
+// pairing and is `Unauthorized`; any other non-2xx is `Refused`, carrying the
+// server's own JSON `error` message when it gave one. A caller that must
+// recognise a 404 specially (`localPreviewPage`'s "not rendered yet") checks
+// that before calling this, since a 404 would otherwise land in `Refused`.
+async function throwOnFailure(response) {
+  if (response.status === 401) {
+    dropPairing();
+    throw named("Unauthorized", "Local LibrePaper rejected the stored pairing");
+  }
+  if (!response.ok) {
+    let message = `Local LibrePaper refused the request (${response.status})`;
+    try {
+      const data = await response.clone().json();
+      if (data && typeof data.error === "string") message = data.error;
+    } catch { /* not a JSON body; keep the generic message */ }
+    throw named("Refused", message, { status: response.status });
+  }
 }
 
 /// The one place a request is sent to the bridge once paired. Classifies
@@ -340,31 +349,11 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
     response = await deps.fetch(url, { method, mode: "cors", credentials: "omit", headers, body, signal });
   } catch (error) {
     if (signal?.aborted) {
-      const canceled = new Error("Canceled");
-      canceled.name = "Canceled";
-      throw canceled;
+      throw named("Canceled", "Canceled");
     }
-    const wrapped = new Error(String(error?.message || error));
-    wrapped.name = "Unreachable";
-    throw wrapped;
+    throw named("Unreachable", String(error?.message || error));
   }
-  if (response.status === 401) {
-    dropPairing();
-    const error = new Error("Local LibrePaper rejected the stored pairing");
-    error.name = "Unauthorized";
-    throw error;
-  }
-  if (!response.ok) {
-    let message = `Local LibrePaper refused the request (${response.status})`;
-    try {
-      const data = await response.clone().json();
-      if (data && typeof data.error === "string") message = data.error;
-    } catch { /* not a JSON body; keep the generic message */ }
-    const error = new Error(message);
-    error.name = "Refused";
-    error.status = response.status;
-    throw error;
-  }
+  await throwOnFailure(response);
   return response;
 }
 
@@ -380,6 +369,16 @@ export async function probe({ force = false } = {}) {
     return currentStatus;
   }
   const addr = address();
+  // Every "no usable local app yet" outcome below shares this shape -- only
+  // the message and (once the health body has been read) the reported
+  // version vary -- so it is noted in the backoff cache and reported once.
+  const markUnreachable = (error, version = null) => {
+    noteNegative(deps.now());
+    return setStatus({
+      state: "unreachable", address: addr, protocol: null, version, capabilities: null,
+      checkedAt: deps.now(), error, instructions: instructionsFor("unreachable"),
+    });
+  };
   let response;
   try {
     response = await healthFetch(addr);
@@ -394,28 +393,16 @@ export async function probe({ force = false } = {}) {
     });
   }
   if (!response.ok) {
-    noteNegative(deps.now());
-    return setStatus({
-      state: "unreachable", address: addr, protocol: null, version: null, capabilities: null,
-      checkedAt: deps.now(), error: `health responded ${response.status}`, instructions: instructionsFor("unreachable"),
-    });
+    return markUnreachable(`health responded ${response.status}`);
   }
   let body;
   try {
     body = await response.json();
   } catch {
-    noteNegative(deps.now());
-    return setStatus({
-      state: "unreachable", address: addr, protocol: null, version: null, capabilities: null,
-      checkedAt: deps.now(), error: "malformed health response", instructions: instructionsFor("unreachable"),
-    });
+    return markUnreachable("malformed health response");
   }
   if (body?.service !== "librepaper-local" || !Array.isArray(body?.protocol)) {
-    noteNegative(deps.now());
-    return setStatus({
-      state: "unreachable", address: addr, protocol: null, version: body?.version || null, capabilities: null,
-      checkedAt: deps.now(), error: "unrecognised local service", instructions: instructionsFor("unreachable"),
-    });
+    return markUnreachable("unrecognised local service", body?.version || null);
   }
   lastInstance = body.instance || null;
   if (!body.protocol.includes(1)) {
@@ -426,12 +413,15 @@ export async function probe({ force = false } = {}) {
     });
   }
   resetNegativeCache();
+  // Both an unpaired app and a pairing the bridge no longer honours report
+  // the same "unauthorized" status once the health check itself succeeded.
+  const markUnauthorized = () => setStatus({
+    state: "unauthorized", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
+    checkedAt: deps.now(), error: null, instructions: instructionsFor("unauthorized"),
+  });
   const pairing = getPairing();
   if (!pairing || !pairing.token) {
-    return setStatus({
-      state: "unauthorized", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-      checkedAt: deps.now(), error: null, instructions: instructionsFor("unauthorized"),
-    });
+    return markUnauthorized();
   }
   try {
     const capsResponse = await send("GET", "capabilities", { token: pairing.token });
@@ -442,10 +432,7 @@ export async function probe({ force = false } = {}) {
     });
   } catch (error) {
     if (error?.name === "Unauthorized") {
-      return setStatus({
-        state: "unauthorized", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-        checkedAt: deps.now(), error: null, instructions: instructionsFor("unauthorized"),
-      });
+      return markUnauthorized();
     }
     // The health check just succeeded, so the service is up; a hiccup
     // verifying the token is not the same claim as "unreachable".
@@ -622,6 +609,28 @@ function quartoPolicy(kind, policy) {
   return value;
 }
 
+// Same top-level envelope the bridge expects for every preview/render request
+// on either engine (`protocol`, `kind`, `project`, `origin`, `snapshot`,
+// `generation`, `manifest`, `options`) -- `quartoRequest` layers `quarto`
+// alongside it, `buildCalepinForm` layers `engine`/`calepin` the same way,
+// and `kind` stays the value the Rust `JobRequest` already deserializes
+// today for both.
+function jobEnvelope({ job, manifest, inputRevision }) {
+  return {
+    protocol: QUARTO_PROTOCOL,
+    kind: "quarto",
+    project: current.project,
+    origin: current.origin,
+    snapshot: String(inputRevision || job.inputRevision || ""),
+    generation: Number.isFinite(job.generation) ? Math.max(0, Math.floor(job.generation)) : 0,
+    manifest,
+    options: {
+      deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
+      max_passes: Number.isFinite(job.maxPasses) ? Math.max(1, Math.floor(job.maxPasses)) : 8,
+    },
+  };
+}
+
 /** Build the JSON part of a Quarto request without accepting shell fragments. */
 export function quartoRequest({ job = {}, entrypoint, format = "html", profile = null, parameters = {}, policy, kind = "render", inputRevision = "", inputDigest = "", files = [] } = {}) {
   const main = relativePath(entrypoint || job.entrypoint || "");
@@ -659,17 +668,7 @@ export function quartoRequest({ job = {}, entrypoint, format = "html", profile =
     manifest.push({ path, sha256: safeSha256(file.sha256, "file digest"), size: safeSize(file.size) });
   }
   return {
-    protocol: QUARTO_PROTOCOL,
-    kind: "quarto",
-    project: current.project,
-    origin: current.origin,
-    snapshot: String(inputRevision || job.inputRevision || ""),
-    generation: Number.isFinite(job.generation) ? Math.max(0, Math.floor(job.generation)) : 0,
-    manifest,
-    options: {
-      deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
-      max_passes: Number.isFinite(job.maxPasses) ? Math.max(1, Math.floor(job.maxPasses)) : 8,
-    },
+    ...jobEnvelope({ job, manifest, inputRevision }),
     quarto: {
       binding_id: binding,
       main,
@@ -724,23 +723,8 @@ async function buildCalepinForm({ job = {}, tree, options = {} }) {
   }
   const binding = boundedString(job.binding || job.bindingId || "", "binding");
   if (!/^[A-Za-z0-9._:-]+$/.test(binding)) throw new Error("invalid Calepin binding");
-  // Same top-level envelope the bridge expects for every preview request
-  // (`protocol`, `kind`, `project`, `origin`, `snapshot`, `generation`,
-  // `manifest`, `options`); `kind` stays the value the Rust `JobRequest`
-  // already deserializes today, with `engine`/`calepin` layered alongside it
-  // the way `quarto` sits alongside a Quarto request.
   const request = {
-    protocol: QUARTO_PROTOCOL,
-    kind: "quarto",
-    project: current.project,
-    origin: current.origin,
-    snapshot: String(options.inputRevision || job.inputRevision || ""),
-    generation: Number.isFinite(job.generation) ? Math.max(0, Math.floor(job.generation)) : 0,
-    manifest,
-    options: {
-      deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
-      max_passes: Number.isFinite(job.maxPasses) ? Math.max(1, Math.floor(job.maxPasses)) : 8,
-    },
+    ...jobEnvelope({ job, manifest, inputRevision: options.inputRevision }),
     engine: "calepin",
     calepin: { binding_id: binding, main, format },
   };
@@ -811,9 +795,7 @@ async function pollJob(id, token, signal) {
   for (;;) {
     if (signal?.aborted) {
       await send("POST", `jobs/${id}/cancel`, { token }).catch(() => {});
-      const error = new Error("Canceled");
-      error.name = "Canceled";
-      throw error;
+      throw named("Canceled", "Canceled");
     }
     const response = await send("GET", `jobs/${id}`, { token, signal });
     const status = await response.json();
@@ -835,17 +817,13 @@ async function submitAndAwait(pairing, form, signal, { retryPost = false } = {})
     if (!retryPost || error?.name !== "Unreachable" || signal?.aborted) throw error;
     await deps.wait(250, signal);
     if (signal?.aborted) {
-      const canceled = new Error("Canceled");
-      canceled.name = "Canceled";
-      throw canceled;
+      throw named("Canceled", "Canceled");
     }
     submitted = await send("POST", "jobs", { token: pairing.token, formBody: form }).then((r) => r.json());
   }
   const status = await pollJob(submitted.id, pairing.token, signal);
   if (status.status === "canceled") {
-    const error = new Error("Canceled");
-    error.name = "Canceled";
-    throw error;
+    throw named("Canceled", "Canceled");
   }
   return { id: submitted.id, status };
 }
@@ -1114,35 +1092,14 @@ export async function localPreviewPage(id, { etag } = {}) {
   try {
     response = await deps.fetch(url, { method: "GET", mode: "cors", credentials: "omit", headers });
   } catch (error) {
-    const wrapped = new Error(String(error?.message || error));
-    wrapped.name = "Unreachable";
-    throw wrapped;
+    throw named("Unreachable", String(error?.message || error));
   }
   const rendering = renderingHeaderOf(response);
   if (response.status === 304) return { rendering };
   if (response.status === 404) {
-    const error = new Error("not rendered yet");
-    error.name = "NotRendered";
-    error.rendering = rendering;
-    throw error;
+    throw named("NotRendered", "not rendered yet", { rendering });
   }
-  if (response.status === 401) {
-    dropPairing();
-    const error = new Error("Local LibrePaper rejected the stored pairing");
-    error.name = "Unauthorized";
-    throw error;
-  }
-  if (!response.ok) {
-    let message = `Local LibrePaper refused the request (${response.status})`;
-    try {
-      const data = await response.clone().json();
-      if (data && typeof data.error === "string") message = data.error;
-    } catch { /* not a JSON body; keep the generic message */ }
-    const error = new Error(message);
-    error.name = "Refused";
-    error.status = response.status;
-    throw error;
-  }
+  await throwOnFailure(response);
   const etagOut = response.headers?.get?.("etag") || null;
   const contentType = response.headers?.get?.("content-type") || "";
   const isPdf = kindHeaderOf(response) === "pdf" || /application\/pdf/i.test(contentType);

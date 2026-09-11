@@ -54,6 +54,8 @@ import * as statusStore from "./latex/status.js";
 import * as logMod from "./latex/log.js";
 import * as engineMod from "./latex/engine.js";
 import { snapshotDigest } from "./tree-digest.js";
+import { maybeBytes as toBytes } from "./bytes.js";
+import { named } from "./latex/errors.js";
 
 export const DEBOUNCE = 1500;
 export const DEFAULT_BASE = "/latex/";
@@ -142,9 +144,7 @@ class WorkerDied extends Error {
 }
 
 function supersededError() {
-  const error = new Error("Superseded");
-  error.name = "Superseded";
-  return error;
+  return named("Superseded", "Superseded");
 }
 
 /// Points this module at a mirror. Called once, by whatever knows the
@@ -358,8 +358,7 @@ function call(target, cmd, payload, { timeoutMs = 0 } = {}) {
       timer = setTimeout(() => {
         if (!pendingCalls.has(id)) return;
         pendingCalls.delete(id);
-        const error = new Error(`the compiler did not answer ${cmd} within its time budget`);
-        error.name = "WorkerTimeout";
+        const error = named("WorkerTimeout", `the compiler did not answer ${cmd} within its time budget`);
         if (worker === target) retireWorker();
         reject(error);
       }, timeoutMs);
@@ -466,14 +465,6 @@ function normalizeOutputs(raw) {
     out[path] = bytes instanceof Uint8Array ? bytes : bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
   }
   return out;
-}
-
-function toBytes(value) {
-  if (value == null) return null;
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  return null;
 }
 
 function fileBytes(tree, path) {

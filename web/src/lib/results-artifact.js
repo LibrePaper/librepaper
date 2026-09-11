@@ -3,6 +3,7 @@
 // nested CSS imports and fonts. No URL is resolved against the app's location.
 import { artifactPages } from "./results-interactive.js";
 import { validateResultsManifest } from "./engines/identity.js";
+import { sha256Hex } from "./digest.js";
 
 const ROOT = "https://librepaper-results.invalid/";
 
@@ -27,7 +28,7 @@ export function resultsArtifactReference(value, containingPath) {
 async function verified(bytes, descriptor) {
   const value = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   if (value.byteLength !== Number(descriptor.size)) throw new Error(`Saved result resource has the wrong size: ${descriptor.path || descriptor.entrypoint}`);
-  const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", value))].map((part) => part.toString(16).padStart(2, "0")).join("");
+  const digest = await sha256Hex(value);
   if (digest !== descriptor.sha256) throw new Error(`Saved result resource has the wrong digest: ${descriptor.path || descriptor.entrypoint}`);
   return value;
 }

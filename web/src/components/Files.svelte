@@ -185,6 +185,19 @@
     }
   }
   function dragEnd() { hover = null; clearTimeout(hoverTimer); }
+  // The six drag-and-drop handlers a row needs are the same whether the row
+  // is a folder or a file; only the node dragged and the path dropped onto
+  // differ, so a tree row spreads this rather than repeating them.
+  function dragAttrs(node, dropPath) {
+    return {
+      draggable: mayEdit && !editing,
+      ondragstart: (event) => dragStart(event, node),
+      ondragend: dragEnd,
+      ondragover: (event) => dragOver(event, dropPath),
+      ondrop: (event) => drop(event, dropPath),
+      ondblclick: (event) => renameOnDoubleClick(event, node),
+    };
+  }
   async function drop(event, path) {
     event.preventDefault(); event.stopPropagation(); dragEnd();
     if (!mayEdit || busy) return;
@@ -294,9 +307,7 @@
             {#snippet element(attributes)}
               <div {...attributes}>
                 <TreeView.BranchControl class="explorer-row {hover === node.path ? 'drop-target' : ''}" title={node.path}
-                  draggable={mayEdit && !editing} ondragstart={(event) => dragStart(event, node)} ondragend={dragEnd}
-                  ondragover={(event) => dragOver(event, node.path)} ondrop={(event) => drop(event, node.path)}
-                  ondblclick={(event) => renameOnDoubleClick(event, node)}>
+                  {...dragAttrs(node, node.path)}>
                   {@render row(node)}
                 </TreeView.BranchControl>
               </div>
@@ -314,9 +325,7 @@
           {#snippet element(attributes)}
             <div {...attributes}>
               <TreeView.Item class="explorer-row {open === node.fileId ? 'explorer-open' : ''} {hover === parentPath(node.path) ? 'drop-target' : ''}" title={node.path}
-                draggable={mayEdit && !editing} ondragstart={(event) => dragStart(event, node)} ondragend={dragEnd}
-                ondragover={(event) => dragOver(event, parentPath(node.path))} ondrop={(event) => drop(event, parentPath(node.path))}
-                ondblclick={(event) => renameOnDoubleClick(event, node)}>
+                {...dragAttrs(node, parentPath(node.path))}>
                 {@render row(node)}
               </TreeView.Item>
             </div>
