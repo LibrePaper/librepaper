@@ -93,16 +93,24 @@ assert.equal(new TextDecoder().decode(await first.arrayBuffer()), AMSMATH);
 assert.equal(network.calls, 1, "first fetchVerified call hits the network");
 
 // A second call must be served from the cache, not the network.
-const second = await resources.fetchVerified(release, amsmathUrl, { sha256: amsmathSha });
+const second = await resources.fetchVerified(release, amsmathUrl, { sha256: amsmathSha, size: AMSMATH.length });
 assert.equal(new TextDecoder().decode(await second.arrayBuffer()), AMSMATH);
 assert.equal(network.calls, 1, "a cache hit does not refetch");
+
+// Both pieces of manifest metadata are mandatory even when the URL is
+// already cached: callers must never turn an unverified response into a
+// trusted compiler input by omitting one check.
+await assert.rejects(resources.fetchVerified(release, amsmathUrl, { sha256: amsmathSha }), /size/);
+await assert.rejects(resources.fetchVerified(release, amsmathUrl, { size: AMSMATH.length }), /sha256/);
+await assert.rejects(resources.fetchVerified(release, amsmathUrl, { sha256: "", size: AMSMATH.length }), /sha256/);
+await assert.rejects(resources.fetchVerified(release, amsmathUrl, { sha256: amsmathSha, size: -1 }), /size/);
 
 // --- sha256 mismatch on a fresh fetch: throws, and nothing is cached ------
 
 const badUrl = "https://mirror.example/texlive/pdftex/26/bad.sty";
 put(badUrl, "wrong bytes");
 await assert.rejects(
-  resources.fetchVerified(other, badUrl, { sha256: "0".repeat(64) }),
+  resources.fetchVerified(other, badUrl, { sha256: "0".repeat(64), size: 11 }),
   /sha256/,
 );
 const readAfterBadFetch = await resources.readiness(other, [{ key: "pdftex/26/bad.sty", url: badUrl }]);
@@ -114,13 +122,13 @@ const corruptUrl = "https://mirror.example/texlive/pdftex/26/corrupt.sty";
 const CORRUPT_GOOD = "good bytes\n";
 put(corruptUrl, CORRUPT_GOOD);
 const corruptSha = await sha256Hex(CORRUPT_GOOD);
-await resources.fetchVerified(release, corruptUrl, { sha256: corruptSha });
+await resources.fetchVerified(release, corruptUrl, { sha256: corruptSha, size: CORRUPT_GOOD.length });
 // Poison the cache entry directly (simulating storage corruption) without
 // going through resources.js.
 const store = await caches.open(resources.namespace(release));
 await store.put(corruptUrl, new Response(new TextEncoder().encode("corrupted!!"), { headers: { "content-length": "11" } }));
 network.calls = 0;
-const healed = await resources.fetchVerified(release, corruptUrl, { sha256: corruptSha });
+const healed = await resources.fetchVerified(release, corruptUrl, { sha256: corruptSha, size: CORRUPT_GOOD.length });
 assert.equal(new TextDecoder().decode(await healed.arrayBuffer()), CORRUPT_GOOD);
 assert.equal(network.calls, 1, "a corrupt hit triggers exactly one refetch, not a permanent failure");
 
@@ -128,13 +136,13 @@ assert.equal(network.calls, 1, "a corrupt hit triggers exactly one refetch, not 
 
 const missingUrl = "https://mirror.example/texlive/pdftex/26/missing.sty";
 network.fail.add(missingUrl);
-await assert.rejects(resources.fetchVerified(release, missingUrl, {}), /simulated network failure/);
+await assert.rejects(resources.fetchVerified(release, missingUrl, { sha256: "0".repeat(64), size: 0 }), /simulated network failure/);
 const readMissing = await resources.readiness(release, [{ key: "pdftex/26/missing.sty", url: missingUrl }]);
 assert.equal(readMissing.ready, false);
 
 // A 404 also throws and caches nothing.
 const notFoundUrl = "https://mirror.example/texlive/pdftex/26/nothere.sty";
-await assert.rejects(resources.fetchVerified(release, notFoundUrl, {}), /404/);
+await assert.rejects(resources.fetchVerified(release, notFoundUrl, { sha256: "0".repeat(64), size: 0 }), /404/);
 
 // --- prefetch: parallel, verified, progress reported ------------------------
 

@@ -31,8 +31,8 @@ import * as renderers from "./renderers.js";
 import { projectHtml, validateProjection, PROJECTION_VERSION } from "./diff-display.js";
 
 // Passage lookups can outlive a single comment card in a long-lived reader.
-// Keep enough history for the usual review, while making navigation across
-// many documents unable to retain every source and rendered string forever.
+// Keep enough source responses for the usual review, while never retaining
+// generated pages after the active lookup has consumed them.
 const CACHE_LIMIT = 64;
 
 // A checkpoint SHA can be shared by documents and a reader can arrive with a
@@ -68,15 +68,10 @@ function remember(cache, key, value) {
   }
 }
 
-// One rendering per document/checkpoint, whatever asks for it. A document
-// under review has a handful of comments on one or two moments, so this is
-// nearly always one entry deep.
-const htmlRendered = new Map();
-const projections = new Map();
-const projectionSizes = new Map();
-const htmlSizes = new Map();
-const HTML_CACHE_ENTRIES = 32;
-const HTML_CACHE_BYTES = 12 * 1024 * 1024;
+// Simultaneous requests for one historical page share the in-flight work, but
+// generated HTML is released as soon as that work settles. Generated output
+// is never retained as a history or document cache.
+const pendingHtml = new Map();
 
 function assetEvidence(tree, gathered) {
   const paths = {};
@@ -92,28 +87,6 @@ function assetEvidence(tree, gathered) {
     };
   }
   return { paths };
-}
-
-function rememberHtml(key, value) {
-  htmlRendered.set(key, value);
-  while (htmlRendered.size > HTML_CACHE_ENTRIES) {
-    const oldest = htmlRendered.keys().next().value;
-    if (oldest === undefined) break;
-    htmlRendered.delete(oldest);
-    htmlSizes.delete(oldest);
-  }
-}
-
-function accountHtml(key, html) {
-  htmlSizes.set(key, typeof html === "string" ? html.length * 2 : 0);
-  let total = [...htmlSizes.values()].reduce((sum, bytes) => sum + bytes, 0);
-  while (total > HTML_CACHE_BYTES && htmlRendered.size) {
-    const oldest = htmlRendered.keys().next().value;
-    if (oldest === undefined) break;
-    htmlRendered.delete(oldest);
-    total -= htmlSizes.get(oldest) || 0;
-    htmlSizes.delete(oldest);
-  }
 }
 
 /// The visible text of a checkpoint, derived from its contemporary HTML
@@ -147,7 +120,7 @@ export async function renderTree(slug, point, headers = {}, services = {}) {
   }
   const key = JSON.stringify([point.storage_id || slug, point.tree_sha || point.sha,
     scope, configuration.identity, PROJECTION_VERSION]);
-  if (htmlRendered.has(key)) return htmlRendered.get(key);
+  if (pendingHtml.has(key)) return pendingHtml.get(key);
   const pending = (async () => {
     const tree = {
       main: point.main,
@@ -159,9 +132,8 @@ export async function renderTree(slug, point, headers = {}, services = {}) {
     for (const [path, file] of Object.entries(point.files || {})) {
       if (file.kind !== "text") tree.digests[path] = file.sha;
     }
-    // Historical comparisons always use the current HTML-capable renderer.
-    // In particular, never extract text from a saved PDF: a PDF is an
-    // ordinary latest-publication artifact, not the history display source.
+    // Historical comparisons always use the current HTML-capable renderer
+    // from the checkpoint source. Generated output is never a history input.
     const gathered = point.assets && Object.keys(tree.digests).every((path) => point.assets[path])
       ? { assets: point.assets, urls: point.urls || {} }
       : await figureApi.gather(slug, tree.digests, headers, { strict: true });
@@ -188,12 +160,10 @@ export async function renderTree(slug, point, headers = {}, services = {}) {
       assetEvidence: assetEvidence(tree, gathered),
     };
   })();
-  rememberHtml(key, pending);
+  pendingHtml.set(key, pending);
   pending.then(
-    (value) => {
-      if (htmlRendered.get(key) === pending) accountHtml(key, value.html);
-    },
-    () => { if (htmlRendered.get(key) === pending) htmlRendered.delete(key); },
+    () => { if (pendingHtml.get(key) === pending) pendingHtml.delete(key); },
+    () => { if (pendingHtml.get(key) === pending) pendingHtml.delete(key); },
   );
   return pending;
 }
@@ -203,10 +173,9 @@ export async function textAt(slug, sha, headers = {}, services = {}) {
   return typeof html === "string" ? visibleText(html) : null;
 }
 
-// One checkpoint fetch per document/sha, whatever asks for it -- the same
-// sharing `textAt` gives the rendering, kept separately because a comment can
-// have both a source anchor and, on an older version, a rendered one, and the
-// two must not evict each other.
+// One checkpoint fetch per document/sha can be shared while concurrent source
+// lookups are active. It is released when the callers finish; generated pages
+// have the separate in-flight map above and are never retained.
 const points = new Map();
 
 /// Drop historical passage responses when a reader changes link or signs out.
@@ -214,15 +183,12 @@ const points = new Map();
 /// map entry that has since been replaced.
 export function clearPassageCache() {
   cacheGeneration++;
-  htmlRendered.clear();
-  htmlSizes.clear();
-  projections.clear();
-  projectionSizes.clear();
+  pendingHtml.clear();
   points.clear();
   scopes.clear();
 }
 
-/** Render and project a captured tree without putting it in history caches. */
+/** Render and project a captured tree without retaining generated output. */
 export async function projectionTree(tree, title = "Document", services = {}) {
   const result = await renderTree(services.slug || tree.storage_id || "", { ...tree, label: title }, services.headers || {}, services);
   const projection = projectHtml(result.html, { ...(services.projection || {}), assetEvidence: result.assetEvidence });
@@ -238,29 +204,17 @@ export async function captureTree(slug, tree, headers = {}) {
   return { ...tree, digests, assets: Object.fromEntries(Object.entries(gathered.assets).map(([path, bytes]) => [path, bytes.slice()])), urls: { ...gathered.urls } };
 }
 
-/** Historical endpoint projection, keyed by checkpoint and authorization scope. */
+/** Historical endpoint projection, computed for this request only. */
 export async function projectionAt(slug, sha, headers = {}, services = {}) {
   const generation = cacheGeneration;
-  // Revalidate retained membership and authorization before a private cache hit.
+  // Revalidate retained membership and authorization before this private
+  // source read and transient projection.
   const point = await (services.history || history).checkpoint(slug, sha, headers);
   if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
   const result = await renderTree(slug, point, headers, services);
   if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
-  const key = result.cacheKey;
-  if (projections.has(key)) return projections.get(key);
   const projection = projectHtml(result.html, { ...(services.projection || {}), assetEvidence: result.assetEvidence });
-  const value = validateProjection(projection) ? projection : { ...projection, complete: false, incomplete: "invalid-projection" };
-  remember(projections, key, value);
-  projectionSizes.set(key, JSON.stringify(value).length * 2);
-  for (const old of projectionSizes.keys()) if (!projections.has(old)) projectionSizes.delete(old);
-  let total = [...projectionSizes.values()].reduce((sum, bytes) => sum + bytes, 0);
-  while (total > HTML_CACHE_BYTES && projections.size) {
-    const old = projections.keys().next().value;
-    projections.delete(old);
-    total -= projectionSizes.get(old) || 0;
-    projectionSizes.delete(old);
-  }
-  return value;
+  return validateProjection(projection) ? projection : { ...projection, complete: false, incomplete: "invalid-projection" };
 }
 
 /// The text of one file of a checkpoint, as it was written. Unlike `textAt`

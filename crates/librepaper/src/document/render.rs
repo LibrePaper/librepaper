@@ -214,19 +214,9 @@ pub fn render_markdown_document(source: &str, title: &str) -> String {
 /// own directory is the root: a document may import what sits beside it and
 /// nothing above it, which a reader that refuses to leave the root is what
 /// enforces.
+#[cfg(test)]
 pub fn render_typst_document(file: &Path, source: &str, title: &str) -> Compiled {
     read_and_note(file, source, title).0
-}
-
-/// Takes ownership of the typed PDF emitted by the Typst backend. Keeping this
-/// at the host boundary prevents callers from accidentally treating binary
-/// PDF bytes as the legacy HTML `page` string.
-pub fn pdf_of(compiled: &Compiled) -> Option<Vec<u8>> {
-    compiled
-        .output
-        .as_ref()
-        .and_then(|rendered| rendered.pdf())
-        .map(ToOwned::to_owned)
 }
 
 /// The same, and what the compile asked for beside it.
@@ -237,6 +227,7 @@ pub fn pdf_of(compiled: &Compiled) -> Option<Vec<u8>> {
 /// and the document that compiled here does not compile for a reader. Knowing
 /// which files were read is what lets `publish` say so, which is the whole
 /// reason the closure records rather than merely answering.
+#[cfg(test)]
 pub fn read_and_note(file: &Path, source: &str, title: &str) -> (Compiled, Vec<String>) {
     let (root, name) = match root_and_name(file) {
         Ok(found) => found,
@@ -319,6 +310,7 @@ pub fn compile_in_root(
 /// The same, with only what the cache already holds: no fetching. What
 /// `read_and_note` and its kind answer, for the callers that have nowhere to
 /// fetch from.
+#[cfg(test)]
 pub fn read_and_note_in_root(
     root: &Path,
     name: &str,
@@ -493,7 +485,7 @@ pub fn document_format(name: &str) -> Option<&'static str> {
     } else if is_latex(name) {
         // Nothing here can render it, which is a fact about this process and
         // not about the filename. What a `.tex` file is does not change with
-        // whether a deployment was started with `--latex`.
+        // whether a deployment was started with `--latex-mirror`.
         Some("latex")
     } else if is_quarto(name) {
         Some("quarto")

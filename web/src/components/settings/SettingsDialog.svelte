@@ -23,7 +23,7 @@
     keys = "default",
     onkeys,
     // The LaTeX project.
-    latexSettings = { engine: "auto", release: null },
+    latexSettings = { engine: "auto" },
     onlatexsettings,
     // The Quarto project and the local app it renders on.
     bindingId = "",

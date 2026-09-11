@@ -129,56 +129,17 @@ impl Server {
                     .await
                     .map_err(|error| error.to_string())?;
             }
-            let sha = room
+            room
                 // First sign-in provisioning is the new account's own write.
                 .checkpoint(
                     "onboarding",
                     crate::room::Attribution::account(&who.id, &who.handle),
                 )
                 .await
-                .map_err(|e| e.to_string())?
-                .unwrap_or(room.tree().await.digest());
-            if starter.format == "typst" {
-                let source = room.source().await;
-                let pdf = tokio::task::spawn_blocking(move || {
-                    let files = vec![
-                        ("librepaper.typ".to_string(), source.clone().into_bytes()),
-                        (
-                            "librepaper-icon.png".to_string(),
-                            include_bytes!(
-                                "../../../../examples/tutorial-typst/librepaper-icon.png"
-                            )
-                            .to_vec(),
-                        ),
-                        (
-                            "sections/rendering.typ".to_string(),
-                            include_bytes!(
-                                "../../../../examples/tutorial-typst/sections/rendering.typ"
-                            )
-                            .to_vec(),
-                        ),
-                    ];
-                    let rendered = crate::document::render::compile_from_files(
-                        "librepaper.typ",
-                        &source,
-                        "Learn LibrePaper with Typst",
-                        &files,
-                        &[],
-                        None,
-                    );
-                    crate::document::render::pdf_of(&rendered.compiled)
-                        .ok_or_else(|| "could not render the starter Typst document".to_string())
-                })
-                .await
-                .map_err(|e| e.to_string())??;
-                room.put_rendering(&sha, false, pdf)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            // The starter document, its checkpoint and its rendering are all
-            // durable before this runs, so a caller cancelled after dispatch
-            // still marks the example complete and the retry above finds
-            // nothing left to provision.
+                .map_err(|e| e.to_string())?;
+            // The starter document and its checkpoint are durable before this
+            // runs. Rendering is an on-demand browser/companion concern and
+            // creates no deployment artifact during provisioning.
             let account_id = who.id.clone();
             catalog
                 .execute_catalog(

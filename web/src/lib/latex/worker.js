@@ -42,6 +42,7 @@ const KINDS = {
   pdflatex: ["pdftex"],
   xelatex: ["xetex", "dvipdfm"],
   lualatex: ["luatex"],
+  latexml: ["latexml"],
 };
 
 /// Engine kinds whose worker answers `loadbundleindex` (see the engine
@@ -49,7 +50,7 @@ const KINDS = {
 /// LuaTeX is left out because it is not shipped at all: `ensureEngine` below
 /// fails a request for it with "not available in this release" rather than
 /// reaching for a per-file path that no longer exists in this worker.
-const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex"]);
+const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex", "latexml"]);
 
 const GZIP_MAGIC = [0x1f, 0x8b];
 
@@ -150,11 +151,18 @@ class Worker2 {
     if (!release?.bundles) {
       throw new Error("this mirror predates bundled releases");
     }
+    const bundleInfo = Object.values(release.files || {}).find((file) => file?.url === release.bundles.index);
+    if (!bundleInfo || !/^[a-f0-9]{64}$/.test(bundleInfo.sha256) || !Number.isInteger(bundleInfo.size) || bundleInfo.size < 0) {
+      throw new Error("Missing or invalid manifest metadata for bundles.json");
+    }
     const url = resolve(this.base, release.bundles.index);
     const response = await fetch(url, { cache: "no-cache" });
     if (!response.ok) throw new Error(`bundles.json fetch failed: ${url}: ${response.status}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (release.bundles.sha256 && (await sha256Hex(bytes)) !== release.bundles.sha256) {
+    if (bytes.length !== bundleInfo.size) {
+      throw new Error(`bundles.json size mismatch (expected ${bundleInfo.size}, got ${bytes.length})`);
+    }
+    if ((await sha256Hex(bytes)) !== bundleInfo.sha256 || bundleInfo.sha256 !== release.bundles.sha256) {
       throw new Error("bundles.json digest mismatch");
     }
     this.bundleIndexBytes = bytes;
@@ -181,6 +189,16 @@ class Worker2 {
     const spec = this.release?.engines?.[kind];
     if (!spec) throw new Error(`release ${this.release?.id} has no ${kind} engine`);
     const workerUrl = resolve(this.base, `${this.release.base}${spec.worker}`);
+    const names = [...new Set(spec.files || [spec.worker])];
+    if (!names.includes(spec.worker)) throw new Error(`Incomplete ${kind} asset inventory: ${spec.worker}`);
+    const assets = {};
+    for (const name of names) {
+      const info = this.release.files?.[name];
+      if (!info || !/^[a-f0-9]{64}$/.test(info.sha256) || !Number.isInteger(info.size) || info.size < 0) {
+        throw new Error(`Missing or invalid manifest metadata for ${kind} asset ${name}`);
+      }
+      assets[name] = info;
+    }
     // A release with `bundles` has no separate TeX Live snapshot mirror to
     // point the resolver at (SPEC-latex.md "The unit": the bundle tree is
     // now part of the release payload) -- `settexliveurl` gets the
@@ -204,9 +222,12 @@ class Worker2 {
     const engine = createEngine({
       kind,
       url: workerUrl,
+      base: this.base,
       texliveUrl,
       format,
       release: this.release,
+      assets,
+      workerName: spec.worker,
       onProgress: (progress) => this.emit("progress", progress),
       onDownload: (info) => this.emit("downloading", info),
     });
@@ -214,6 +235,7 @@ class Worker2 {
     try {
       await engine.init();
     } catch (error) {
+      engine.terminate();
       this.engines.delete(kind);
       throw error;
     }

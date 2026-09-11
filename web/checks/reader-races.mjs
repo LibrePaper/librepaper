@@ -283,7 +283,7 @@ console.log("reader-races: all checks passed");
   const ctx = context({
     session: {
       files: {}, list: () => [], folders: () => [], mainId: () => "main",
-      mainPath: () => "paper.tex", latexSettings: () => ({ engine: "auto", release: null }),
+      mainPath: () => "paper.tex", latexSettings: () => ({ engine: "auto" }),
     },
     files: [], folders: [], openFile: "", previewMain: "", sourceFormat: "markdown", shownFigure: null,
     viewing: null, tick: async () => {}, paintPreview: () => {},
@@ -303,7 +303,7 @@ console.log("reader-races: all checks passed");
 }
 
 // LaTeX configuration follows format/session lifetime. Shared settings reach
-// the compiler once, and a late mirror response cannot write into a later session.
+// the compiler once, and session changes do not trigger a release pin.
 {
   const releases = [];
   const configurations = [];
@@ -311,7 +311,7 @@ console.log("reader-races: all checks passed");
   let paints = 0;
   const makeSession = () => {
     const observers = new Set();
-    let settings = { engine: "auto", release: null };
+    let settings = { engine: "auto" };
     return {
       observers, writes: [],
       meta: { observe: (fn) => observers.add(fn), unobserve: (fn) => observers.delete(fn) },
@@ -330,7 +330,9 @@ console.log("reader-races: all checks passed");
     latex: {
       configure: (value) => configurations.push(value), cancel: () => {},
       setSettings: (value) => updates.push(value),
-      releases: () => { const pending = deferred(); releases.push(pending); return pending.promise; },
+      // Compiler releases are mirror-global. Reader setup must not fetch a
+      // release list or write an automatic project pin.
+      releases: () => { throw new Error("reader must not load compiler releases"); },
     },
   });
   vm.runInContext(body("  let latexObservedSession = null;", "  // The most recent LaTeX compile result"), ctx);
@@ -346,28 +348,22 @@ console.log("reader-races: all checks passed");
   assert.equal(first.observers.size, 0);
   vm.runInContext('configureLatex("latex")', ctx);
   assert.equal(first.observers.size, 1);
-  releases[0].resolve({ default: "stale" });
-  await Promise.resolve();
   assert.equal(first.writes.length, 0);
   const second = makeSession();
   ctx.session = second;
   vm.runInContext('configureLatex("latex")', ctx);
   assert.equal(first.observers.size, 0);
   assert.equal(second.observers.size, 1);
-  releases[1].resolve({ default: "old-session" });
-  await Promise.resolve();
   assert.equal(first.writes.length, 0);
   assert.equal(second.writes.length, 0);
-  releases[2].resolve({ default: "current" });
-  await Promise.resolve();
-  assert.equal(second.writes[0].release, "current");
+  assert.equal(releases.length, 0, "readers must not load or pin a compiler release");
   vm.runInContext('stopLatex()', ctx);
   assert.equal(second.observers.size, 0);
   ctx.session = makeSession();
   ctx.mayEdit = false;
   vm.runInContext('configureLatex("latex")', ctx);
-  assert.equal(configurations.at(-1).mayCompile, false);
-  assert.equal(releases.length, 3, "readers must not pin the default release");
+  assert.equal(configurations.at(-1).mayCompile, true, "cold readers compile from source without edit permission");
+  assert.equal(releases.length, 0, "readers must not pin the default release");
   vm.runInContext('stopLatex()', ctx);
 }
 
@@ -628,7 +624,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   second.resolve({ pdf: Uint8Array.of(2), diagnostics: [] });
   await new Promise(setImmediate);
   assert.deepEqual(delivered, [1, 2], "Typst may show an intermediate PDF, then the latest one");
-  assert.equal(held.length, 1, "only the current Typst snapshot is eligible for storage");
+  assert.equal(held.length, 0, "Typst output is transient and is never retained");
   assert.equal(diagnostics.length, 1, "an intermediate Typst PDF cannot clear newer diagnostics");
 }
 
@@ -875,7 +871,7 @@ console.log('reader-races: explicit preview selection, auxiliary files, rename a
     session: { mainPath: () => 'main.md' }, files: [],
     previewMain: '', sourceFormat: 'markdown', navigationGeneration: 7,
     checkpointNavigationPending: 7, mayEdit: false,
-    renderers: { formatOf: () => 'markdown' }, configureLatex: () => {},
+    renderers: { formatOf: () => 'markdown', warm: () => {} }, configureLatex: () => {},
   });
   vm.runInContext(`${pairLocalQuarto}\n${body('  function updatePreviewTarget()', '  function previewThisFile()')}`, ctx);
   vm.runInContext('updatePreviewTarget()', ctx);
@@ -883,25 +879,8 @@ console.log('reader-races: explicit preview selection, auxiliary files, rename a
   assert.equal(ctx.navigationGeneration, 7, 'pending checkpoint navigation retains ownership');
 }
 
-// A secondary file's PDF must not overwrite or replay the shared main's PDF.
-{
-  let fetched = 0, held = 0;
-  const ctx = context({
-    viewing: null, previewMain: 'notes.typ',
-    session: {mainPath: () => 'paper.qmd'},
-    renderingStore: {paint: () => fetched++, hold: () => held++},
-  });
-  vm.runInContext(body('  const previewsSharedMain =', '  const dropHeldRendering'), ctx);
-  await vm.runInContext('paintRendering()', ctx);
-  vm.runInContext('holdRendering("secondary", new ArrayBuffer(1))', ctx);
-  assert.equal(fetched, 0);
-  assert.equal(held, 0);
-  ctx.previewMain = 'paper.qmd';
-  await vm.runInContext('paintRendering()', ctx);
-  vm.runInContext('holdRendering("main", new ArrayBuffer(1))', ctx);
-  assert.equal(fetched, 1);
-  assert.equal(held, 1);
-}
+// Main and secondary previews never expose the retired rendering store.
+assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//);
 
 // Desktop View and the compact menu dispatch the same preview commands.
 {

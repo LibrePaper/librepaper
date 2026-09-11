@@ -21,13 +21,9 @@ use serde_json::{json, Value};
 use crate::auth::{link_sealing_key_file, session_key_file};
 use crate::cli::{server_or_die, stored_token_for};
 use crate::config::Configuration;
-use crate::document::render::{
-    is_latex, is_markdown, is_typst, render_markdown_document, render_typst_document,
-};
+use crate::document::render::{is_latex, is_markdown, is_typst, render_markdown_document};
 use crate::document::store::{example_suffix, slugify, Publication, Store};
-use crate::http::{
-    detail_of, get_json, get_with_token, post_directory, post_json, put_current_bytes, text,
-};
+use crate::http::{detail_of, get_json, post_directory, post_json, text};
 use crate::room::{Comment, Message, Region, Reply, Room, RoomSet, SourceAnchor};
 use crate::storage::backup::verify_local_backup;
 use crate::storage::blob::{clear_storage_checked, release_room_locks};
@@ -102,12 +98,9 @@ fn seed_assets(document: &SeedDocument) -> Vec<(String, Vec<u8>)> {
 }
 
 /// What to anchor the annotations against, the source to store, and its
-/// format. The markdown and typst examples are rendered here the way
-/// publishing renders them; the HTML one is its own rendering; and the LaTeX
-/// one is not rendered at all, because nothing on this side of the network
-/// can. Its annotations are anchored against the prose of the source, and the
-/// browser re-anchors them into the PDF's text once it has compiled one.
-pub fn read_seed_document(document: &SeedDocument) -> (String, String, String, Option<Vec<u8>>) {
+/// format. Rendered text exists only long enough to place seed annotations;
+/// generated output is never uploaded or stored.
+pub fn read_seed_document(document: &SeedDocument) -> (String, String, String) {
     let raw = std::fs::read_to_string(&document.file).unwrap_or_else(|err| {
         die(format!(
             "could not read {}: {err}\n\n  Run `make examples` first, which renders them.",
@@ -119,34 +112,17 @@ pub fn read_seed_document(document: &SeedDocument) -> (String, String, String, O
             render_markdown_document(&raw, document.title),
             raw,
             "markdown".into(),
-            None,
         );
     }
     if is_typst(&document.file) {
-        // Loudly, with the list: a seeded example that stops compiling against
-        // a new pinned typst is a thing to hear about here rather than to find
-        // in the browser.
-        let compiled = render_typst_document(Path::new(&document.file), &raw, document.title);
-        crate::document::render::report(&compiled.diagnostics, &document.file);
-        if compiled.output.is_none() {
-            die(format!("could not render {}", document.file));
-        }
-        // Typst's canonical output is a PDF. Seed anchors are source
-        // quotations, so retaining the source here lets the browser's PDF
-        // text layer re-anchor them without inventing an HTML migration page.
-        return (
-            raw.clone(),
-            raw,
-            "typst".into(),
-            crate::document::render::pdf_of(&compiled),
-        );
+        return (raw.clone(), raw, "typst".into());
     }
     if is_latex(&document.file) {
-        return (latex_prose(&raw), raw, "latex".into(), None);
+        return (latex_prose(&raw), raw, "latex".into());
     }
     // An HTML example is its own source, through the identity renderer, and is
     // as editable as the other two.
-    (raw.clone(), raw, "html".into(), None)
+    (raw.clone(), raw, "html".into())
 }
 
 /// The words of a LaTeX source, near enough: comments dropped, and whitespace
@@ -405,7 +381,7 @@ async fn seed_with_store(
         // Rendered in memory, and not stored: the rendering is here only to
         // anchor the example annotations against the text a browser will
         // show, exactly as `visible_text` did when the HTML was stored.
-        let (raw, source, format, pdf) = read_seed_document(document);
+        let (raw, source, format) = read_seed_document(document);
         let base = slugify(document.title, &config);
         let slug = format!("{base}-{}", example_suffix(&base, &config));
         let main = seed_main(document);
@@ -450,7 +426,7 @@ async fn seed_with_store(
         // Seeded and imported documents have no authenticated caller behind
         // them: the operator ran a command. There is no account to record,
         // and the empty display name is the one this path has always written.
-        let sha = match room
+        match room
             .checkpoint("cli", crate::room::Attribution::system())
             .await
         {
@@ -458,11 +434,6 @@ async fn seed_with_store(
             Ok(None) => room.tree().await.digest(),
             Err(err) => die(format!("could not store {}: {err}", document.file)),
         };
-        if let Some(pdf) = pdf {
-            room.put_rendering(&sha, false, pdf)
-                .await
-                .unwrap_or_else(|err| die(format!("could not store {} PDF: {err}", document.file)));
-        }
         let (placed, missed) =
             seed_annotations(&room, &document.annotations, &text, &source, &main).await;
         seeded.push(slug.clone());
@@ -537,7 +508,7 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
     println!("seeding {server}");
     let config = Configuration::default();
     for document in documents {
-        let (raw, source, _format, pdf) = read_seed_document(document);
+        let (raw, source, _format) = read_seed_document(document);
         let main = seed_main(document);
         let mut files = vec![(main.clone(), source.clone().into_bytes())];
         files.extend(seed_text_files(document));
@@ -562,9 +533,6 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
         }
 
         let slug = text(&uploaded, "slug");
-        if let Some(pdf) = pdf {
-            seed_remote_pdf(&server, &slug, &token, pdf).await;
-        }
         let (placed, missed) = if uploaded
             .get("example")
             .and_then(Value::as_bool)
@@ -595,55 +563,6 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
             print!(", {missed} could not be anchored");
         }
         println!();
-    }
-}
-
-/// Stores the PDF compiled while seeding a Typst example. The source publish
-/// is already complete; a failure is reported separately so a source example
-/// remains recoverable and can be retried later.
-async fn seed_remote_pdf(server: &str, slug: &str, token: &str, pdf: Vec<u8>) {
-    let (status, latest) = match get_with_token(
-        &format!("{server}/api/documents/{slug}/renderings/latest"),
-        token,
-        Duration::from_secs(60),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(err) => {
-            eprintln!("warning: seeded {slug} source, but could not find its PDF tree: {err}");
-            return;
-        }
-    };
-    if status != 200 {
-        eprintln!(
-            "warning: seeded {slug} source, but could not find its PDF tree: {}",
-            detail_of(&latest)
-        );
-        return;
-    }
-    let sha = text(&latest, "live");
-    let expected = text(&latest, "inputs");
-    if sha.is_empty() || expected.is_empty() {
-        eprintln!("warning: seeded {slug} source, but its canonical Typst inputs were unavailable");
-        return;
-    }
-    let result = put_current_bytes(
-        &format!("{server}/api/documents/{slug}/renderings/{sha}"),
-        pdf,
-        token,
-        "application/pdf",
-        &expected,
-        Duration::from_secs(300),
-    )
-    .await;
-    match result {
-        Ok((200, _)) => {}
-        Ok((status, reply)) => eprintln!(
-            "warning: seeded {slug} source, but PDF upload failed ({status}): {}",
-            detail_of(&reply)
-        ),
-        Err(err) => eprintln!("warning: seeded {slug} source, but PDF upload failed: {err}"),
     }
 }
 

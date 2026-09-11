@@ -2,7 +2,7 @@
 // actually uses.
 //
 // These were five separate copies -- in `tree-digest.js`, `latex.js`,
-// `latex/vm.js`, `latex/local.js` and `latex/bibliography.js` -- and they had
+// `latex/local.js` and `latex/bibliography.js` -- and they had
 // already drifted into three different answers for the same input: a string
 // was `null` in one, encoded UTF-8 in another; an unrecognised value was
 // `null` in one and a thrown `TypeError` in another. Collapsing them to a

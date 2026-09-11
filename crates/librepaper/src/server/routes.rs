@@ -38,19 +38,7 @@ pub(super) fn is_sha(value: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
-/// The last segment of a rendering's URL, split into the checkpoint it belongs
-/// to and whether it is the SyncTeX file rather than the PDF. `None` for
-/// anything else, because this becomes a storage key and a key is never built
-/// from something a caller can shape.
-pub(super) fn split_rendering_name(name: &str) -> Option<(String, bool)> {
-    let (sha, synctex) = match name.strip_suffix(".synctex") {
-        Some(sha) => (sha, true),
-        None => (name, false),
-    };
-    is_sha(sha).then(|| (sha.to_string(), synctex))
-}
-
-pub(super) async fn handle(
+pub(super) async fn dispatch(
     axum::extract::State(server): axum::extract::State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request<Body>,
@@ -124,7 +112,11 @@ pub(super) async fn handle(
             let Ok(body) = to_bytes(request.into_body(), 1 << 14).await else {
                 return write_json(413, &json!({"error": "that is too much body for a code"}));
             };
-            let source = crate::room::rate_key(&client_address(peer, &headers));
+            let source = crate::room::rate_key(&client_address(
+                peer,
+                &headers,
+                &server.config.cost.trusted_proxies,
+            ));
             return server
                 .handle_device(&path, &headers, &arrival, &body, &source)
                 .await;
@@ -182,24 +174,6 @@ pub(super) async fn handle(
         return redirect(&format!("{}/raw/{slug}/", arrival.docs_origin()));
     }
 
-    // --- the LaTeX mirror --------------------------------------------------
-    // Static files, same-origin, and not part of the API: no identity is
-    // consulted, nothing here belongs to a document, and a distribution is
-    // public bytes whoever asks. It is on the reader's origin because that is
-    // where the compile runs -- the worker is the reader's, not the frame's.
-    // See `crate::server::latex` for why this is a proxy rather than a redirect.
-    if let Some(rest) = path.strip_prefix("/latex/") {
-        if method != Method::GET && method != Method::HEAD {
-            return plain(405, "method not allowed");
-        }
-        let Some(mirror) = &server.latex else {
-            // No mirror is not a broken mirror. This deployment simply serves
-            // no LaTeX, which `/api/config` has already told the reader.
-            return plain(404, "not found");
-        };
-        return mirror.response(rest, method == Method::HEAD).await;
-    }
-
     // --- the font library --------------------------------------------------
     // The same shape: public bytes, no identity, on the reader's origin
     // because the compile that asks for a family runs there. `publish` asks
@@ -211,7 +185,14 @@ pub(super) async fn handle(
         let Some(library) = &server.fonts else {
             return plain(404, "not found");
         };
-        return library.response(rest, method == Method::HEAD).await;
+        return library
+            .response(
+                rest,
+                method == Method::HEAD,
+                request.headers(),
+                &server.cost,
+            )
+            .await;
     }
 
     // --- api ---------------------------------------------------------------
@@ -241,6 +222,12 @@ pub(super) async fn handle(
         let identity = server.whoami(request.headers(), &arrival).await;
         if !identity.is_signed_in() {
             return write_json(401, &json!({"error": "sign in to erase this account"}));
+        }
+        if !server.provider_configured(&identity) {
+            return write_json(
+                401,
+                &json!({"error": "authentication provider is not configured"}),
+            );
         }
         let Some(catalog) = &server.store.catalog else {
             return write_json(503, &json!({"error": "local catalogue unavailable"}));
@@ -443,7 +430,9 @@ pub(super) async fn handle(
     }
 
     if let ["api", "documents", slug, "chat", tail @ ..] = &parts[..] {
-        return server.handle_chat(request, &arrival, slug, tail).await;
+        return server
+            .handle_chat(request, peer, &arrival, slug, tail)
+            .await;
     }
 
     if let ["api", "documents", slug, "suggestions"] = parts[..] {
@@ -487,102 +476,6 @@ pub(super) async fn handle(
                 .await;
         }
     }
-    if let ["api", "documents", slug, "quarto", "bundles"] = parts[..] {
-        if method == Method::POST {
-            return server.handle_quarto_publish(request, &arrival, slug).await;
-        }
-    }
-    if let ["api", "documents", slug, "quarto", "bundles", "selected", context] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_quarto_selected(
-                    request.headers(),
-                    &arrival,
-                    slug,
-                    context,
-                    request.uri().query(),
-                )
-                .await;
-        }
-    }
-    if let ["api", "documents", slug, "quarto", "bundles", render, "artifact"] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_quarto_artifact(
-                    request.headers(),
-                    &arrival,
-                    slug,
-                    render,
-                    request.uri().query(),
-                )
-                .await;
-        }
-    }
-    if let ["api", "documents", slug, "quarto", "bundles", render] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_quarto_manifest(
-                    request.headers(),
-                    &arrival,
-                    slug,
-                    render,
-                    request.uri().query(),
-                )
-                .await;
-        }
-    }
-    if let ["api", "documents", slug, "quarto", "bundles", render, "asset"] = parts[..] {
-        if method == Method::GET {
-            let Some(path) = request.uri().query().and_then(|query| {
-                url::form_urlencoded::parse(query.as_bytes())
-                    .find(|(key, _)| key == "path")
-                    .map(|(_, value)| value.to_string())
-            }) else {
-                return write_json(400, &json!({"error": "asset path is required"}));
-            };
-            return server
-                .handle_quarto_asset(
-                    request.headers(),
-                    &arrival,
-                    slug,
-                    render,
-                    &path,
-                    request.uri().query(),
-                )
-                .await;
-        }
-    }
-
-    // The renderings: the PDF an editor's browser compiled, stored beside the
-    // checkpoint it was compiled from. Putting one takes an editor, because
-    // only somebody who may change the document may say what it looks like;
-    // reading one takes whatever reading the document takes, because a
-    // rendering is the document.
-    //
-    // `latest` is not a SHA and never can be -- a SHA is sixty-four hex
-    // characters -- so it sits in the same shape without ambiguity: it answers
-    // with which rendering a reader should ask for, and whether it is the text
-    // as it stands.
-    if let ["api", "documents", slug, "renderings", "latest"] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_rendering_latest(request.headers(), &arrival, slug)
-                .await;
-        }
-    }
-    if let ["api", "documents", slug, "renderings", name] = parts[..] {
-        if method == Method::PUT || method == Method::POST {
-            return server
-                .handle_rendering_upload(request, &arrival, slug, name)
-                .await;
-        }
-        if method == Method::GET {
-            return server
-                .handle_rendering_read(request.headers(), &arrival, slug, name)
-                .await;
-        }
-    }
-
     // Who a document is shared with. Reading it takes a place on the document;
     // changing it takes the owner, because sharing is not delegated.
     if let ["api", "documents", slug, "share"] = parts[..] {
@@ -839,7 +732,7 @@ impl Server {
     /// Which formats this deployment can render again in a reader, and so
     /// offer an editor for. The compiled-in ones come from the build; `latex`
     /// is the one that depends on the deployment rather than on the binary,
-    /// because the compiler is not in the binary at all -- it is at `--latex`,
+    /// because the compiler is not in the binary at all -- it is at `--latex-mirror`,
     /// and a deployment without a mirror has nowhere to send a browser for it.
     pub fn renderers(&self) -> Vec<String> {
         let mut list = renderers();

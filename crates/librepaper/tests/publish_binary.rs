@@ -222,7 +222,7 @@ async fn binary_quarto_publication_preserves_local_entrypoint_without_execution(
 }
 
 #[tokio::test]
-async fn binary_quarto_import_uses_the_selected_context_generation() {
+async fn binary_removed_quarto_import_cannot_publish_a_retained_result() {
     let server = mock_server(1024 * 1024).await;
     let directory = tempfile::tempdir().unwrap();
     let artifact = directory.path().join("analysis.html");
@@ -245,18 +245,14 @@ async fn binary_quarto_import_uses_the_selected_context_generation() {
         .output()
         .await
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(!output.status.success());
     let observation = server.state.observation.lock().await;
-    assert_eq!(observation.uploads, 1);
-    let payload: Value = serde_json::from_slice(&observation.upload_bodies[0]).unwrap();
-    assert_eq!(payload["expected_generation"], 7);
-    assert_eq!(payload["manifest"]["source"]["main"], "analysis.qmd");
-    assert_eq!(payload["manifest"]["source"]["verification"], "imported");
-    assert!(payload["manifest"]["source"]["tree_sha256"].is_null());
+    assert_eq!(observation.uploads, 0);
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("unrecognized subcommand") || error.contains("unexpected argument"),
+        "removed quarto import did not fail at the CLI boundary: {error}"
+    );
 }
 
 #[tokio::test]

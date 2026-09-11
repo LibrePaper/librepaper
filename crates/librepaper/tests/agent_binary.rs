@@ -17,8 +17,11 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
+use sha2::Sha256;
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -35,7 +38,8 @@ struct CliOutput {
 
 struct LiveServer {
     base: String,
-    visitor_cookie: String,
+    auth_cookie: String,
+    auth_token: String,
     #[allow(dead_code)]
     data: TempDir,
     child: Child,
@@ -59,10 +63,12 @@ impl LiveServer {
                 "--port",
                 &port.to_string(),
                 "--publishers",
-                "anyone",
+                "any",
                 "--commenters",
                 "anyone",
             ])
+            .env("LIBREPAPER_GITHUB_CLIENT_ID", "test-client")
+            .env("LIBREPAPER_GITHUB_CLIENT_SECRET", "test-secret")
             .env_remove("LIBREPAPER_DATA")
             .env_remove("LIBREPAPER_LATEX")
             .stdout(Stdio::null())
@@ -75,7 +81,7 @@ impl LiveServer {
             .build()
             .expect("HTTP client");
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        let visitor_cookie = loop {
+        loop {
             assert!(
                 std::time::Instant::now() < deadline,
                 "serve did not become ready within 15 seconds"
@@ -85,21 +91,76 @@ impl LiveServer {
             }
             if let Ok(response) = client.get(format!("{base}/")).send().await {
                 if response.status().is_success() {
-                    let cookie = response
-                        .headers()
-                        .get_all("set-cookie")
-                        .iter()
-                        .filter_map(|value| value.to_str().ok())
-                        .find_map(|value| value.split(';').next().map(str::to_string))
-                        .expect("serve issues a visitor cookie on the shell");
-                    break cookie;
+                    break;
                 }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
-        };
+        }
+        // The real server signs sessions with the key in its private state.
+        // Seed one configured OAuth account in the test catalogue, then mint
+        // the same signed session that the OAuth callback would issue. This
+        // keeps the binary boundary real while avoiding a network OAuth flow.
+        let key = hex::decode(
+            String::from_utf8_lossy(
+                &fs::read(data.path().join("secrets/session.key")).expect("session key"),
+            )
+            .trim(),
+        )
+        .expect("hex session key");
+        let generation = "agent-test-generation";
+        let catalog = librepaper::catalog::Catalog::open(data.path().join("catalog.db"))
+            .expect("test catalogue opens");
+        catalog
+            .upsert_account(&librepaper::catalog::Account {
+                id: "github:agent".into(),
+                provider: "github".into(),
+                handle: "agent".into(),
+                name: "agent".into(),
+                email: String::new(),
+                first_seen: "2026-01-01T00:00:00Z".into(),
+                last_seen: "2026-01-01T00:00:00Z".into(),
+                plan: "test".into(),
+                status: "active".into(),
+                session_generation: generation.into(),
+                erasure_cursor: None,
+            })
+            .expect("test account is recorded");
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            format!(
+                "github|agent|github:agent|{generation}||agent|{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock")
+                    .as_secs()
+                    + 3600
+            )
+            .as_bytes(),
+        );
+        let mut mac = Hmac::<Sha256>::new_from_slice(&key).expect("session HMAC key");
+        mac.update(b"session-v2");
+        mac.update(b"\0");
+        mac.update(payload.as_bytes());
+        let signature =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+        let auth_cookie = format!("librepaper_session=v2.{payload}.{signature}");
+        let expiry = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs() as i64
+            + 3600;
+        let device_payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(format!("github|agent|github:agent|{generation}||agent|{expiry}").as_bytes());
+        let mut device_mac = Hmac::<Sha256>::new_from_slice(&key).expect("device HMAC key");
+        device_mac.update(b"device-v2");
+        device_mac.update(b"\0");
+        device_mac.update(device_payload.as_bytes());
+        let device_signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(device_mac.finalize().into_bytes());
+        let auth_token = format!("lp_v2.{device_payload}.{device_signature}");
         Self {
             base,
-            visitor_cookie,
+            auth_cookie,
+            auth_token,
             data,
             child,
         }
@@ -120,6 +181,18 @@ fn available_port() -> u16 {
 
 async fn agent(args: &[&str]) -> CliOutput {
     let mut command = vec!["agent"];
+    command.extend_from_slice(args);
+    cli(&command).await
+}
+
+async fn authenticated_agent(server: &LiveServer, args: &[&str]) -> CliOutput {
+    let mut command = vec![
+        "--server",
+        server.base.as_str(),
+        "--token",
+        server.auth_token.as_str(),
+        "agent",
+    ];
     command.extend_from_slice(args);
     cli(&command).await
 }
@@ -153,7 +226,7 @@ fn json_stdout(output: &CliOutput) -> Value {
 async fn publish_markdown(server: &LiveServer, source: &str) -> Value {
     let response = reqwest::Client::new()
         .post(format!("{}/api/documents", server.base))
-        .header("cookie", &server.visitor_cookie)
+        .header("cookie", &server.auth_cookie)
         .header("x-librepaper-client", "1")
         .json(&json!({
             "title": "Agent paper",
@@ -183,7 +256,7 @@ async fn publish_directory(server: &LiveServer) -> Value {
         );
     let response = reqwest::Client::new()
         .post(format!("{}/api/documents", server.base))
-        .header("cookie", &server.visitor_cookie)
+        .header("cookie", &server.auth_cookie)
         .header("x-librepaper-client", "1")
         .multipart(form)
         .send()
@@ -198,7 +271,7 @@ async fn publish_directory(server: &LiveServer) -> Value {
 async fn mint_role(server: &LiveServer, slug: &str, role: &str) -> String {
     let response = reqwest::Client::new()
         .post(format!("{}/api/documents/{slug}/share", server.base))
-        .header("cookie", &server.visitor_cookie)
+        .header("cookie", &server.auth_cookie)
         .header("x-librepaper-client", "1")
         .json(&json!({"link": {"role": role, "until": "never"}}))
         .send()
@@ -967,26 +1040,32 @@ async fn cli_reads_comments_edits_and_keeps_link_permissions() {
     assert_eq!(source.status, 0, "source failed: {source:?}");
     let source_text = json_stdout(&source).as_str().expect("source").to_string();
     let expected = librepaper::peer::source_sha(&source_text);
-    let noop = agent(&[
-        "edit",
-        &server.link(&slug, &editor),
-        "--source",
-        &source_text,
-        "--expected-sha",
-        &expected,
-    ])
+    let noop = authenticated_agent(
+        &server,
+        &[
+            "edit",
+            &server.link(&slug, &editor),
+            "--source",
+            &source_text,
+            "--expected-sha",
+            &expected,
+        ],
+    )
     .await;
     assert_eq!(noop.status, 0, "no-op failed: {noop:?}");
     assert_eq!(json_stdout(&noop)["outcome"], "no-op");
     let edited = "# Agent paper\n\nHello 😀, edited by an agent.\n";
-    let edit = agent(&[
-        "edit",
-        &server.link(&slug, &editor),
-        "--source",
-        edited,
-        "--expected-sha",
-        &expected,
-    ])
+    let edit = authenticated_agent(
+        &server,
+        &[
+            "edit",
+            &server.link(&slug, &editor),
+            "--source",
+            edited,
+            "--expected-sha",
+            &expected,
+        ],
+    )
     .await;
     assert_eq!(edit.status, 0, "edit failed: {edit:?}");
     assert_eq!(json_stdout(&edit)["outcome"], "success");
@@ -1056,28 +1135,34 @@ async fn cli_selected_file_uses_file_sha_and_refuses_stale_input() {
     let replacement = tempfile::NamedTempFile::new().expect("replacement file");
     std::fs::write(replacement.path(), "Chapter one after.\n").expect("write replacement");
     let replacement_path = replacement.path().to_str().expect("replacement path");
-    let edit = agent(&[
-        "edit",
-        &selected_link,
-        "--file",
-        replacement_path,
-        "--expected-sha",
-        &old_sha,
-    ])
+    let edit = authenticated_agent(
+        &server,
+        &[
+            "edit",
+            &selected_link,
+            "--file",
+            replacement_path,
+            "--expected-sha",
+            &old_sha,
+        ],
+    )
     .await;
     assert_eq!(edit.status, 0, "selected-file edit failed: {edit:?}");
     assert_eq!(json_stdout(&edit)["outcome"], "success");
 
-    let stale = agent(&[
-        "edit",
-        &document_link,
-        "--source",
-        "Chapter one stale.\n",
-        "--path",
-        "chapters/one.md",
-        "--expected-sha",
-        &old_sha,
-    ])
+    let stale = authenticated_agent(
+        &server,
+        &[
+            "edit",
+            &document_link,
+            "--source",
+            "Chapter one stale.\n",
+            "--path",
+            "chapters/one.md",
+            "--expected-sha",
+            &old_sha,
+        ],
+    )
     .await;
     assert_ne!(
         stale.status, 0,
@@ -1104,14 +1189,17 @@ async fn cli_edit_chunks_an_large_update() {
         .path()
         .to_str()
         .expect("replacement path is UTF-8");
-    let edited = agent(&[
-        "edit",
-        &link,
-        "--file",
-        replacement_path,
-        "--expected-sha",
-        &librepaper::peer::source_sha(&old),
-    ])
+    let edited = authenticated_agent(
+        &server,
+        &[
+            "edit",
+            &link,
+            "--file",
+            replacement_path,
+            "--expected-sha",
+            &librepaper::peer::source_sha(&old),
+        ],
+    )
     .await;
     assert_eq!(edited.status, 0, "large edit failed: {edited:?}");
     assert_eq!(json_stdout(&edited)["outcome"], "success");

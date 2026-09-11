@@ -1,5 +1,5 @@
-//! The bridge to the catalogue: reading a room's comments, manifest and
-//! renderings out of it when the room loads, and writing them back.
+//! The bridge to the catalogue: reading a room's comments and manifest out of
+//! it when the room loads, and writing them back.
 //!
 //! Every function here submits its SQL through the catalogue's execution
 //! boundary rather than running it on the caller's Tokio worker.  The shapes
@@ -596,15 +596,9 @@ pub(super) struct ObjectChangeGuard {
     change: ObjectChange,
     slot: Arc<ReservationSlot<()>>,
     actor: Option<OwnedAuthority>,
-    quarto_selection: Option<crate::quarto::Selection>,
 }
 
 impl ObjectChangeGuard {
-    pub(super) fn with_quarto_selection(mut self, selection: crate::quarto::Selection) -> Self {
-        self.quarto_selection = Some(selection);
-        self
-    }
-
     /// The object is written: turn the reservation into durable accounting.
     /// A failed commit aborts inside the same job, so the reservation is
     /// released even if this caller never sees the answer.
@@ -612,22 +606,11 @@ impl ObjectChangeGuard {
         let change = self.change.clone();
         let input_bytes = change.bytes() + at.len();
         let actor = self.actor.clone();
-        let change_selection = self.quarto_selection.clone();
         let committed = self
             .catalog
             .execute_catalog(input_bytes, move |catalog| {
-                let result = match (actor.as_ref(), change_selection.as_ref()) {
-                    (Some(actor), Some(selection)) => catalog
-                        .commit_quarto_selection_with_authority(
-                            &change.storage_id,
-                            &change.operation_id,
-                            &change.object_key,
-                            &change.kind,
-                            &at,
-                            selection,
-                            actor.borrow(),
-                        ),
-                    (Some(actor), None) => catalog.commit_object_change_with_authority(
+                let result = match actor.as_ref() {
+                    Some(actor) => catalog.commit_object_change_with_authority(
                         &change.storage_id,
                         &change.operation_id,
                         &change.object_key,
@@ -635,16 +618,13 @@ impl ObjectChangeGuard {
                         &at,
                         actor.borrow(),
                     ),
-                    (None, None) => catalog.commit_object_change(
+                    None => catalog.commit_object_change(
                         &change.storage_id,
                         &change.operation_id,
                         &change.object_key,
                         &change.kind,
                         &at,
                     ),
-                    (None, Some(_)) => Err(crate::storage::catalog::CatalogError::Invalid(
-                        "Quarto selection requires mutation authority".into(),
-                    )),
                 };
                 match result {
                     Ok(()) => Ok(()),
@@ -766,7 +746,6 @@ pub(super) async fn reserve_object_change(
         change: change.clone(),
         slot: slot.clone(),
         actor: actor.clone(),
-        quarto_selection: None,
     };
     let cleanup = ObjectChangeCleanup {
         change: change.clone(),
@@ -1165,36 +1144,6 @@ pub(super) async fn label_checkpoint(
     }
 }
 
-/// One rendering row, read through the boundary.
-pub(super) async fn read_catalog_rendering(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    tree_sha: &str,
-) -> Option<crate::storage::catalog::Rendering> {
-    let slug = slug.to_string();
-    let tree_sha = tree_sha.to_string();
-    catalog
-        .execute_catalog(
-            slug.len() + tree_sha.len() + DESCRIPTOR_BYTES,
-            move |catalog| catalog.rendering(&slug, &tree_sha),
-        )
-        .await
-        .ok()
-        .flatten()
-}
-
-pub(super) async fn read_catalog_renderings(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-) -> Result<Vec<crate::storage::catalog::Rendering>, CatalogExecError> {
-    let slug = slug.to_string();
-    catalog
-        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            catalog.renderings(&slug)
-        })
-        .await
-}
-
 /// One checkpoint row, read through the boundary.
 pub(super) async fn read_catalog_checkpoint(
     catalog: &Arc<Catalog>,
@@ -1208,176 +1157,6 @@ pub(super) async fn read_catalog_checkpoint(
             catalog.checkpoint(&slug, &sha)
         })
         .await
-}
-
-/// Read a committed Quarto selection pointer through the catalogue boundary.
-pub(super) async fn read_quarto_selection(
-    catalog: &Arc<Catalog>,
-    storage_id: &str,
-    document_id: &str,
-    context_id: &str,
-) -> Result<Option<crate::storage::catalog::QuartoSelection>, CatalogExecError> {
-    let storage_id = storage_id.to_owned();
-    let document_id = document_id.to_owned();
-    let context_id = context_id.to_owned();
-    catalog
-        .execute_catalog(
-            storage_id.len() + document_id.len() + context_id.len() + DESCRIPTOR_BYTES,
-            move |catalog| catalog.quarto_selection(&storage_id, &document_id, &context_id),
-        )
-        .await
-}
-
-/// Read the durable selection epoch, including when the current pointer was
-/// cleared by a source restore.
-pub(super) async fn read_quarto_selection_generation(
-    catalog: &Arc<Catalog>,
-    storage_id: &str,
-    document_id: &str,
-    context_id: &str,
-) -> Result<u64, CatalogExecError> {
-    let storage_id = storage_id.to_owned();
-    let document_id = document_id.to_owned();
-    let context_id = context_id.to_owned();
-    catalog
-        .execute_catalog(
-            storage_id.len() + document_id.len() + context_id.len() + DESCRIPTOR_BYTES,
-            move |catalog| {
-                catalog.quarto_selection_generation(&storage_id, &document_id, &context_id)
-            },
-        )
-        .await
-}
-
-pub(super) async fn read_quarto_selection_epochs(
-    catalog: &Arc<Catalog>,
-    storage_id: &str,
-    document_id: &str,
-) -> Result<Vec<(String, u64)>, CatalogExecError> {
-    let storage_id = storage_id.to_owned();
-    let document_id = document_id.to_owned();
-    catalog
-        .execute_catalog(
-            storage_id.len() + document_id.len() + DESCRIPTOR_BYTES,
-            move |catalog| catalog.quarto_selection_epochs(&storage_id, &document_id),
-        )
-        .await
-}
-
-pub(super) async fn read_quarto_selections(
-    catalog: &Arc<Catalog>,
-    storage_id: &str,
-    document_id: &str,
-) -> Result<Vec<crate::storage::catalog::QuartoSelection>, CatalogExecError> {
-    let storage_id = storage_id.to_owned();
-    let document_id = document_id.to_owned();
-    catalog
-        .execute_catalog(
-            storage_id.len() + document_id.len() + DESCRIPTOR_BYTES,
-            move |catalog| catalog.quarto_selections(&storage_id, &document_id),
-        )
-        .await
-}
-
-pub(super) async fn clear_quarto_selection_with_authority(
-    catalog: &Arc<Catalog>,
-    storage_id: &str,
-    document_id: &str,
-    context_id: &str,
-    actor: OwnedAuthority,
-) -> Result<usize, CatalogExecError> {
-    let storage_id = storage_id.to_owned();
-    let document_id = document_id.to_owned();
-    let context_id = context_id.to_owned();
-    catalog
-        .execute_catalog(
-            storage_id.len()
-                + document_id.len()
-                + context_id.len()
-                + actor.bytes()
-                + DESCRIPTOR_BYTES,
-            move |catalog| {
-                catalog.clear_quarto_selection_with_authority(
-                    &storage_id,
-                    &document_id,
-                    &context_id,
-                    actor.borrow(),
-                )
-            },
-        )
-        .await
-}
-
-pub(super) async fn quarto_object_committed(
-    catalog: &Arc<Catalog>,
-    storage_id: &str,
-    object_key: &str,
-    version: &str,
-) -> Result<bool, CatalogExecError> {
-    let storage_id = storage_id.to_owned();
-    let object_key = object_key.to_owned();
-    let version = version.to_owned();
-    catalog
-        .execute_catalog(
-            storage_id.len() + object_key.len() + version.len() + DESCRIPTOR_BYTES,
-            move |catalog| catalog.quarto_object_committed(&storage_id, &object_key, &version),
-        )
-        .await
-}
-
-/// The newest rendering this document could show, read through the boundary.
-pub(super) async fn read_rendering_candidates(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-) -> Option<Vec<crate::storage::catalog::RenderingCandidate>> {
-    let slug = slug.to_string();
-    catalog
-        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            catalog.rendering_candidates(&slug)
-        })
-        .await
-        .ok()
-}
-
-/// Release the object accounting for a blob that has been deleted.
-pub(super) async fn release_object_accounting(catalog: &Arc<Catalog>, key: &str) {
-    let key = key.to_string();
-    let _ = catalog
-        .execute_catalog(key.len() + DESCRIPTOR_BYTES, move |catalog| {
-            catalog.release_object_accounting_key(&key)
-        })
-        .await;
-}
-
-/// Retire a pruning pass's renderings.  One job for the whole pass: the
-/// per-rendering retirements were already separate transactions, and issuing
-/// them from one blocking thread keeps a long pass from taking the connection
-/// once per rendering from a Tokio worker.
-pub(super) async fn retire_renderings(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    shas: Vec<String>,
-    now: i64,
-) {
-    let input_bytes = slug.len()
-        + DESCRIPTOR_BYTES
-        + shas
-            .iter()
-            .map(|sha| sha.len())
-            .sum::<usize>()
-            .min(crate::storage::catalog::MAX_REQUEST_BYTES);
-    let slug = slug.to_string();
-    let _ = catalog
-        .execute_catalog(
-            input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
-            move |catalog| {
-                for sha in &shas {
-                    let _ = catalog.retire_rendering(&slug, sha, now, now);
-                }
-                Ok(())
-            },
-        )
-        .await;
 }
 
 /// Load the mutable annotation state from SQLite.  The JSON room object is
@@ -2289,94 +2068,6 @@ fn manifest_rows_to_write(
         }
     }
     Ok(rows)
-}
-
-/// Record a rendering's catalogue row: read what is there, merge this
-/// upload's half of it, publish.
-///
-/// The read and the publish are one job.  They were two transactions before
-/// and they still are, but a caller cancelled between them used to leave the
-/// blocking read having parked a Tokio worker for nothing; now the whole
-/// sequence belongs to the service once it is dispatched, and the publish
-/// happens whether or not the uploader is still waiting for its answer.  The
-/// authority travels owned into the job because it is re-checked inside the
-/// publishing transaction.
-pub(super) async fn save_catalog_rendering_with_authority(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    tree_sha: &str,
-    synctex: bool,
-    size: i64,
-    actor: Option<OwnedAuthority>,
-) -> Result<(), WriteError> {
-    let input_bytes = slug.len()
-        + tree_sha.len()
-        + DESCRIPTOR_BYTES
-        + actor
-            .as_ref()
-            .map(OwnedAuthority::bytes)
-            .unwrap_or_default();
-    let slug = slug.to_string();
-    let tree_sha = tree_sha.to_string();
-    catalog
-        .execute_catalog(input_bytes, move |catalog| {
-            save_catalog_rendering_blocking(catalog, &slug, &tree_sha, synctex, size, actor)
-        })
-        .await
-        .map_err(WriteError::from)
-}
-
-fn save_catalog_rendering_blocking(
-    catalog: &Catalog,
-    slug: &str,
-    tree_sha: &str,
-    synctex: bool,
-    size: i64,
-    actor: Option<OwnedAuthority>,
-) -> crate::storage::catalog::CatalogResult<()> {
-    let previous = catalog.rendering(slug, tree_sha)?;
-    let rendering = crate::storage::catalog::Rendering {
-        slug: slug.to_string(),
-        tree_sha: tree_sha.to_string(),
-        at: timestamp(),
-        backend: previous
-            .as_ref()
-            .map(|row| row.backend.clone())
-            .unwrap_or_default(),
-        engine: previous
-            .as_ref()
-            .map(|row| row.engine.clone())
-            .unwrap_or_default(),
-        release: previous
-            .as_ref()
-            .map(|row| row.release.clone())
-            .unwrap_or_default(),
-        tools: previous
-            .as_ref()
-            .map(|row| row.tools.clone())
-            .unwrap_or_default(),
-        bytes: if synctex {
-            previous.as_ref().map(|row| row.bytes).unwrap_or_default()
-        } else {
-            size
-        },
-        synctex: synctex || previous.as_ref().is_some_and(|row| row.synctex),
-        synctex_bytes: if synctex {
-            size
-        } else {
-            previous
-                .as_ref()
-                .map(|row| row.synctex_bytes)
-                .unwrap_or_default()
-        },
-    };
-    if let Some(actor) = actor {
-        catalog
-            .publish_rendering_with_authority(&rendering, actor.borrow())
-            .map(|_| ())
-    } else {
-        catalog.publish_rendering(&rendering).map(|_| ())
-    }
 }
 
 #[cfg(test)]

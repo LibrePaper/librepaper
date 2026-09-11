@@ -9,8 +9,12 @@ const deferred = () => {
 const manifest = {
   format: 1, default_release: "r1",
   releases: Object.fromEntries(["r1", "r2"].map((id) => [id, {
-    id, base: `engines/${id}/`, engines: { latexml: { worker: "latexml.worker.js" } },
+    id, base: `engines/${id}/`, engines: { latexml: { worker: "latexml.worker.js", files: ["latexml.worker.js"] } },
     bundles: { index: "bundles/bundles.json", sha256: "a".repeat(64) },
+    files: {
+      "bundles/bundles.json": { url: "bundles/bundles.json", sha256: "a".repeat(64), size: 2 },
+      "latexml.worker.js": { url: "latexml.worker.js", sha256: "b".repeat(64), size: 1 },
+    },
   }])),
 };
 function harness(options = {}) {
@@ -57,8 +61,8 @@ assert.equal(warm.verified[0].check.sha256, "a".repeat(64));
 assert.equal(warm.instances[0].config.texliveUrl, "https://example.org/latex/bundles/");
 assert.equal(warm.instances[0].runs[1].files["fig.png"], undefined, "deleted files do not leak into a later edit");
 await warm.compile(tree("new release"), { base, settings: { release: "r2" } });
-assert.equal(warm.instances.length, 2);
-assert.equal(warm.instances[0].dead, true);
+assert.equal(warm.instances.length, 1, "legacy release settings do not pin HTML previews");
+assert.equal(warm.instances[0].dead, false);
 warm.cancel();
 
 const legacyManifest = structuredClone(manifest);
@@ -67,7 +71,7 @@ const legacy = harness({ manifest: legacyManifest });
 const pinnedSettings = Object.freeze({ release: "legacy", engine: "pdflatex" });
 assert.equal((await legacy.compile(tree("existing document"), { base, settings: pinnedSettings })).ok, true);
 assert.equal(legacy.instances[0].config.url, "https://example.org/latex/engines/r1/latexml.worker.js");
-assert.equal(pinnedSettings.release, "legacy", "HTML preview preserves the PDF release pin");
+assert.equal(pinnedSettings.release, "legacy", "legacy settings remain immutable at the caller");
 legacy.cancel();
 const unsupported = harness({ manifest: { format: 1, default_release: "legacy", releases: { legacy: legacyManifest.releases.legacy } } });
 await assert.rejects(unsupported.compile(tree("no renderer"), { base, settings: pinnedSettings }), /does not include the HTML preview renderer/);

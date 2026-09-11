@@ -6,10 +6,12 @@
 //! place, so a restart can retry without double-releasing capacity.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 
+use crate::storage::backup::is_generated_output_key;
 use crate::storage::blob::{
     content_prefix, examples_key, history_index_key, room_key, room_lock_key, session_key,
     source_prefix, BlobStore,
@@ -91,6 +93,560 @@ impl From<crate::storage::catalog::CatalogExecError> for MaintenanceError {
 const MAINTENANCE_JOB_BYTES: usize = 512;
 
 pub type MaintenanceResult<T> = Result<T, MaintenanceError>;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GeneratedOutputReport {
+    pub references_removed: usize,
+    pub objects_deleted: usize,
+    pub objects_deferred: usize,
+    pub bytes_reclaimed: i64,
+}
+
+/// Durable limits for the one-time renderer retirement.  The compatibility
+/// entry point below maps its object limit onto all three count limits; the
+/// byte and wall-clock limits keep a large legacy deployment from monopolising
+/// the maintenance worker.
+#[derive(Clone, Debug)]
+pub struct GeneratedOutputLimits {
+    pub max_objects: usize,
+    pub max_rows: usize,
+    pub max_bytes: i64,
+    pub max_wall_time: Duration,
+}
+
+impl GeneratedOutputLimits {
+    fn validate(&self) -> MaintenanceResult<()> {
+        if self.max_objects == 0
+            || self.max_rows == 0
+            || self.max_bytes < 0
+            || self.max_wall_time.is_zero()
+        {
+            return Err(MaintenanceError::Invalid(
+                "invalid generated-output collection limits".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct GeneratedMigrationState {
+    phase: String,
+    validation_cursor: Option<String>,
+    accounting_cursor: Option<String>,
+    blob_cursor: Option<String>,
+    reference_stage: i64,
+}
+
+const GENERATED_REFERENCE_STAGES: usize = 4;
+
+fn generated_schema(connection: &rusqlite::Connection) -> Result<(), CatalogError> {
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS legacy_generated_output_migration (
+                 id INTEGER PRIMARY KEY CHECK (id=1),
+                 phase TEXT NOT NULL,
+                 validation_cursor TEXT,
+                 accounting_cursor TEXT,
+                 blob_cursor TEXT,
+                 reference_stage INTEGER NOT NULL DEFAULT 0,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS legacy_generated_output_queue (
+                 object_key TEXT PRIMARY KEY,
+                 storage_id TEXT NOT NULL DEFAULT '',
+                 bytes INTEGER NOT NULL CHECK (bytes >= 0),
+                 status TEXT NOT NULL CHECK (status IN ('pending','failed')),
+                 last_error TEXT,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS legacy_generated_output_queue_due
+                 ON legacy_generated_output_queue(status, object_key);",
+        )
+        .map_err(CatalogError::from)?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO legacy_generated_output_migration
+             (id,phase,reference_stage,updated_at) VALUES (1,'validate',0,0)",
+            [],
+        )
+        .map_err(CatalogError::from)?;
+    Ok(())
+}
+
+fn read_generated_state(
+    connection: &rusqlite::Connection,
+) -> Result<GeneratedMigrationState, CatalogError> {
+    connection
+        .query_row(
+            "SELECT phase,validation_cursor,accounting_cursor,blob_cursor,reference_stage
+             FROM legacy_generated_output_migration WHERE id=1",
+            [],
+            |row| {
+                Ok(GeneratedMigrationState {
+                    phase: row.get(0)?,
+                    validation_cursor: row.get(1)?,
+                    accounting_cursor: row.get(2)?,
+                    blob_cursor: row.get(3)?,
+                    reference_stage: row.get(4)?,
+                })
+            },
+        )
+        .map_err(CatalogError::from)
+}
+
+fn write_generated_state(
+    connection: &rusqlite::Connection,
+    state: &GeneratedMigrationState,
+    now: i64,
+) -> Result<(), CatalogError> {
+    connection
+        .execute(
+            "UPDATE legacy_generated_output_migration
+             SET phase=?1,validation_cursor=?2,accounting_cursor=?3,
+                 blob_cursor=?4,reference_stage=?5,updated_at=?6 WHERE id=1",
+            params![
+                &state.phase,
+                state.validation_cursor.as_deref(),
+                state.accounting_cursor.as_deref(),
+                state.blob_cursor.as_deref(),
+                state.reference_stage,
+                now,
+            ],
+        )
+        .map_err(CatalogError::from)?;
+    Ok(())
+}
+
+fn generated_key_sql() -> &'static str {
+    "(object_key LIKE 'quarto/%' OR object_key LIKE 'documents/%'
+      OR object_key LIKE 'renderings/%'
+      OR object_key GLOB 'content/*/renderings/*')"
+}
+
+/// Validation cursors are encoded as JSON so storage and object identifiers
+/// can contain any ordinary catalogue character.  The composite order matches
+/// the indexes on each protected-object table; a global object-key sort would
+/// force SQLite to scan every storage on every bounded pass.
+fn decode_validation_cursor(cursor: Option<&str>) -> Option<(String, String)> {
+    cursor.and_then(|value| serde_json::from_str(value).ok())
+}
+
+fn encode_validation_cursor(storage_id: &str, object_key: &str) -> String {
+    serde_json::to_string(&(storage_id, object_key)).expect("validation cursor is serializable")
+}
+
+fn validation_page(
+    connection: &rusqlite::Connection,
+    stage: i64,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<Vec<(String, String)>, CatalogError> {
+    let table = match stage {
+        0 => "checkpoint_asset_refs",
+        1 => "source_history_objects",
+        2 => "source_history_write_leases",
+        3 => "object_accounting",
+        _ => return Ok(Vec::new()),
+    };
+    let filter = if stage == 3 {
+        " AND kind NOT IN ('rendering','rendering-provenance','quarto','result')"
+    } else {
+        ""
+    };
+    let rows = if let Some((storage_id, object_key)) = decode_validation_cursor(cursor) {
+        let sql = format!(
+            "SELECT storage_id,object_key FROM {table}
+             WHERE (storage_id > ?1 OR (storage_id=?1 AND object_key>?2)){filter}
+             ORDER BY storage_id,object_key LIMIT ?3"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params![storage_id, object_key, limit as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        let sql = format!(
+            "SELECT storage_id,object_key FROM {table}
+             WHERE 1=1{filter}
+             ORDER BY storage_id,object_key LIMIT ?1"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map([limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    Ok(rows)
+}
+
+/// Run one bounded migration pass. State and pending objects are catalogue
+/// rows, so a crash between listing, deleting, and accounting cannot lose the
+/// next key or release a charge on an uncertain deletion.
+pub async fn collect_legacy_generated_outputs_with_limits(
+    catalog: &Arc<Catalog>,
+    blobs: &Arc<dyn BlobStore>,
+    limits: GeneratedOutputLimits,
+) -> MaintenanceResult<GeneratedOutputReport> {
+    limits.validate()?;
+    let started = Instant::now();
+    catalog
+        .execute(MAINTENANCE_JOB_BYTES, |connection| {
+            generated_schema(connection)
+        })
+        .await
+        .map_err(MaintenanceError::from)?;
+
+    // Validation is a separate durable phase. Each protected-object table is
+    // walked independently with its composite storage/object index, while the
+    // number of rows and object-store probes is bounded by this pass.
+    let state = catalog
+        .execute(MAINTENANCE_JOB_BYTES, |connection| {
+            read_generated_state(connection)
+        })
+        .await
+        .map_err(MaintenanceError::from)?;
+    if state.phase == "validate" {
+        let (stage, cursor) = match decode_validation_cursor(state.validation_cursor.as_deref()) {
+            Some((storage_id, object_key)) => {
+                // The stage is stored alongside the composite cursor.  A
+                // malformed/legacy cursor safely restarts validation.
+                let mut parts = storage_id.splitn(2, '\u{1f}');
+                let stage = parts.next().and_then(|part| part.parse::<i64>().ok());
+                match (stage, parts.next()) {
+                    (Some(stage), Some(storage_id)) => (
+                        stage,
+                        Some(encode_validation_cursor(storage_id, &object_key)),
+                    ),
+                    _ => (0, None),
+                }
+            }
+            None => (0, None),
+        };
+        let keys = catalog
+            .execute(MAINTENANCE_JOB_BYTES, move |connection| {
+                validation_page(connection, stage, cursor.as_deref(), limits.max_rows)
+            })
+            .await
+            .map_err(MaintenanceError::from)?;
+        for (storage_id, key) in &keys {
+            if started.elapsed() >= limits.max_wall_time {
+                return Ok(GeneratedOutputReport::default());
+            }
+            if !blobs
+                .exists(key)
+                .await
+                .map_err(|error| MaintenanceError::Storage(error.to_string()))?
+            {
+                return Err(MaintenanceError::Invalid(format!(
+                    "cannot collect generated outputs: protected input object is missing: {key}"
+                )));
+            }
+            // Persist after each probe. A slow object store must not cause a
+            // wall-time bounded pass to repeat the same successful probes.
+            let cursor = encode_validation_cursor(&format!("{stage}\u{1f}{storage_id}"), key);
+            catalog
+                .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
+                    catalog.with_connection(|connection| {
+                        let mut next = read_generated_state(connection)?;
+                        next.validation_cursor = Some(cursor);
+                        write_generated_state(connection, &next, crate::util::now_unix())
+                    })
+                })
+                .await
+                .map_err(MaintenanceError::from)?;
+        }
+        let complete = keys.len() < limits.max_rows;
+        catalog
+            .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
+                catalog.with_connection(|connection| {
+                    let mut next = read_generated_state(connection)?;
+                    if complete {
+                        if stage + 1 >= GENERATED_REFERENCE_STAGES as i64 {
+                            next.phase = "references".into();
+                            next.validation_cursor = None;
+                        } else {
+                            let next_stage = stage + 1;
+                            next.validation_cursor =
+                                Some(encode_validation_cursor(&format!("{next_stage}\u{1f}"), ""));
+                        }
+                    }
+                    write_generated_state(connection, &next, crate::util::now_unix())
+                })
+            })
+            .await
+            .map_err(MaintenanceError::from)?;
+        return Ok(GeneratedOutputReport::default());
+    }
+
+    // Remove renderer references in bounded SQL batches. The rows are selected
+    // first and then deleted by their primary keys; this works for WITHOUT
+    // ROWID tables and never relies on SQLite's optional DELETE ... LIMIT.
+    if state.phase == "references" {
+        let (removed, _done) = catalog
+            .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
+                catalog.with_connection(|connection| {
+                    let tx = connection
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .map_err(CatalogError::from)?;
+                    let stage = read_generated_state(&tx)?;
+                    let mut removed = 0usize;
+                    match stage.reference_stage {
+                        0 => {
+                            let mut s = tx.prepare("SELECT slug,tree_sha FROM renderings LIMIT ?1")?;
+                            let rows = s.query_map([limits.max_rows as i64], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                            drop(s);
+                            for (slug, tree) in rows { removed += tx.execute("DELETE FROM renderings WHERE slug=?1 AND tree_sha=?2", params![slug, tree])?; }
+                        }
+                        1 => {
+                            let mut s = tx.prepare("SELECT rowid FROM quarto_selections LIMIT ?1")?;
+                            let rows = s.query_map([limits.max_rows as i64], |r| r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                            drop(s);
+                            for rowid in rows { removed += tx.execute("DELETE FROM quarto_selections WHERE rowid=?1", [rowid])?; }
+                        }
+                        2 => {
+                            let mut s = tx.prepare("SELECT rowid FROM quarto_selection_epochs LIMIT ?1")?;
+                            let rows = s.query_map([limits.max_rows as i64], |r| r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                            drop(s);
+                            for rowid in rows { removed += tx.execute("DELETE FROM quarto_selection_epochs WHERE rowid=?1", [rowid])?; }
+                        }
+                        3 => {
+                            let mut s = tx.prepare("SELECT storage_id,document_id,context_id,render_id FROM quarto_selection_history LIMIT ?1")?;
+                            let rows = s.query_map([limits.max_rows as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                            drop(s);
+                            for (storage, document, context, render) in rows { removed += tx.execute("DELETE FROM quarto_selection_history WHERE storage_id=?1 AND document_id=?2 AND context_id=?3 AND render_id=?4", params![storage,document,context,render])?; }
+                        }
+                        _ => {}
+                    }
+                    let mut next = stage;
+                    let empty = match next.reference_stage {
+                        0 => tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM renderings)", [], |r| r.get::<_,bool>(0))?,
+                        1 => tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM quarto_selections)", [], |r| r.get::<_,bool>(0))?,
+                        2 => tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM quarto_selection_epochs)", [], |r| r.get::<_,bool>(0))?,
+                        3 => tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM quarto_selection_history)", [], |r| r.get::<_,bool>(0))?,
+                        _ => true,
+                    };
+                    if empty { next.reference_stage += 1; }
+                    let done = next.reference_stage as usize >= GENERATED_REFERENCE_STAGES;
+                    if done { next.phase = "accounting".into(); }
+                    write_generated_state(&tx, &next, crate::util::now_unix())?;
+                    tx.commit().map_err(CatalogError::from)?;
+                    Ok((removed, done))
+                })
+            })
+            .await
+            .map_err(MaintenanceError::from)?;
+        return Ok(GeneratedOutputReport {
+            references_removed: removed,
+            ..Default::default()
+        });
+    }
+
+    // Keyset-discover accounted objects first, then all object-store keys. The
+    // latter intentionally walks every namespace with one global cursor, so a
+    // long run of source/history objects cannot starve a generated key.
+    if state.phase == "accounting" {
+        let cursor = state.accounting_cursor.clone();
+        let rows = catalog
+            .execute(MAINTENANCE_JOB_BYTES, move |connection| {
+                let sql = format!("SELECT storage_id,object_key,bytes FROM object_accounting WHERE (?1 IS NULL OR object_key > ?1) AND {generated} ORDER BY object_key LIMIT ?2", generated=generated_key_sql());
+                let mut s = connection.prepare(&sql)?;
+                let rows = s.query_map(params![cursor, limits.max_rows as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?)))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>().map_err(CatalogError::from)
+            })
+            .await
+            .map_err(MaintenanceError::from)?;
+        let complete = rows.len() < limits.max_rows;
+        let last = rows.last().map(|(_, key, _)| key.clone());
+        catalog
+            .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
+                catalog.with_connection(|connection| {
+                    let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(CatalogError::from)?;
+                    for (storage, key, bytes) in &rows {
+                        tx.execute("INSERT OR IGNORE INTO legacy_generated_output_queue(object_key,storage_id,bytes,status,updated_at) VALUES(?1,?2,?3,'pending',?4)", params![key,storage,bytes,crate::util::now_unix()])?;
+                    }
+                    let mut next = read_generated_state(&tx)?;
+                    next.accounting_cursor = last;
+                    if complete { next.phase = "blobs".into(); next.accounting_cursor = None; }
+                    write_generated_state(&tx, &next, crate::util::now_unix())?;
+                    tx.commit().map_err(CatalogError::from)
+                })
+            })
+            .await
+            .map_err(MaintenanceError::from)?;
+        return Ok(GeneratedOutputReport::default());
+    }
+    if state.phase == "blobs" {
+        let cursor = state.blob_cursor.clone();
+        let page = blobs
+            .list_page("", cursor.as_deref(), limits.max_rows)
+            .await
+            .map_err(|error| MaintenanceError::Storage(error.to_string()))?;
+        let mut candidates = page
+            .iter()
+            .filter(|item| is_generated_output_key(&item.key))
+            .map(|item| (item.key.clone(), item.size.max(0)))
+            .collect::<Vec<_>>();
+        candidates.sort_by(|a, b| a.0.cmp(&b.0));
+        let last = page.last().map(|item| item.key.clone());
+        let complete = page.len() < limits.max_rows;
+        catalog
+            .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
+                catalog.with_connection(|connection| {
+                    let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(CatalogError::from)?;
+                    for (key, bytes) in &candidates {
+                        let storage: String = tx.query_row("SELECT COALESCE((SELECT storage_id FROM object_accounting WHERE object_key=?1 LIMIT 1), '')", [key], |r| r.get(0))?;
+                        tx.execute("INSERT OR IGNORE INTO legacy_generated_output_queue(object_key,storage_id,bytes,status,updated_at) VALUES(?1,?2,?3,'pending',?4)", params![key,storage,bytes,crate::util::now_unix()])?;
+                    }
+                    let mut next = read_generated_state(&tx)?;
+                    next.blob_cursor = last;
+                    if complete { next.phase = "delete".into(); next.blob_cursor = None; }
+                    write_generated_state(&tx, &next, crate::util::now_unix())?;
+                    tx.commit().map_err(CatalogError::from)
+                })
+            })
+            .await
+            .map_err(MaintenanceError::from)?;
+        return Ok(GeneratedOutputReport::default());
+    }
+
+    if state.phase == "delete" {
+        let rows = catalog
+            .execute(MAINTENANCE_JOB_BYTES, move |connection| {
+                let mut s = connection.prepare("SELECT object_key,storage_id,bytes FROM legacy_generated_output_queue WHERE status IN ('pending','failed') ORDER BY object_key LIMIT ?1")?;
+                let rows = s.query_map([limits.max_objects as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?)))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>().map_err(CatalogError::from)
+            })
+            .await
+            .map_err(MaintenanceError::from)?;
+        if rows.is_empty() {
+            catalog
+                .execute_catalog(MAINTENANCE_JOB_BYTES, |catalog| {
+                    catalog.with_connection(|connection| {
+                        let mut next = read_generated_state(connection)?;
+                        next.phase = "done".into();
+                        write_generated_state(connection, &next, crate::util::now_unix())
+                    })
+                })
+                .await
+                .map_err(MaintenanceError::from)?;
+            return Ok(GeneratedOutputReport::default());
+        }
+        let mut report = GeneratedOutputReport::default();
+        let mut batch_bytes = 0i64;
+        let mut confirmed = Vec::new();
+        for (key, storage, bytes) in rows {
+            if started.elapsed() >= limits.max_wall_time || confirmed.len() >= limits.max_objects {
+                break;
+            }
+            // A single large object must not pin the queue forever or prevent
+            // smaller later candidates from using this pass's byte budget.
+            // Leave the row pending for a later pass with a larger allowance.
+            if bytes > limits.max_bytes.saturating_sub(batch_bytes) {
+                report.objects_deferred += 1;
+                continue;
+            }
+            let protected = catalog
+                .execute(MAINTENANCE_JOB_BYTES, {
+                    let key = key.clone();
+                    move |connection| {
+                        // Accounting kind is a legacy label and can be stale for
+                        // an object whose namespace is unambiguously generated.
+                        // The durable input graph remains authoritative, while a
+                        // path in a renderer namespace must still be collected.
+                        let sql = format!(
+                            "SELECT EXISTS(
+                           SELECT 1 FROM checkpoint_asset_refs WHERE object_key=?1
+                           UNION ALL SELECT 1 FROM source_history_objects WHERE object_key=?1
+                           UNION ALL SELECT 1 FROM source_history_write_leases WHERE object_key=?1
+                           UNION ALL SELECT 1 FROM object_reservations WHERE object_key=?1
+                           UNION ALL SELECT 1 FROM object_accounting
+                            WHERE object_key=?1
+                              AND kind NOT IN ('rendering','rendering-provenance','quarto','result')
+                              AND NOT ({generated})
+                         )",
+                            generated = generated_key_sql(),
+                        );
+                        let exists: i64 = connection.query_row(&sql, params![key], |r| r.get(0))?;
+                        Ok(exists != 0)
+                    }
+                })
+                .await
+                .map_err(MaintenanceError::from)?;
+            if protected {
+                catalog
+                    .execute_catalog(MAINTENANCE_JOB_BYTES, {
+                        let key = key.clone();
+                        move |catalog| {
+                            catalog.with_connection(|c| {
+                                c.execute(
+                                    "DELETE FROM legacy_generated_output_queue WHERE object_key=?1",
+                                    [key],
+                                )?;
+                                Ok(())
+                            })
+                        }
+                    })
+                    .await
+                    .map_err(MaintenanceError::from)?;
+                continue;
+            }
+            let outcomes = blobs
+                .delete_each(std::slice::from_ref(&key))
+                .await
+                .map_err(|e| MaintenanceError::Storage(e.to_string()))?;
+            let outcome = outcomes.into_iter().next().ok_or_else(|| {
+                MaintenanceError::Storage("blob store returned no deletion outcome".into())
+            })?;
+            if outcome.confirmed() {
+                batch_bytes = batch_bytes.saturating_add(bytes);
+                confirmed.push((key, storage, bytes));
+            } else {
+                report.objects_deferred += 1;
+                let why = outcome.why().to_owned();
+                catalog.execute_catalog(MAINTENANCE_JOB_BYTES, { let key=key.clone(); move |catalog| catalog.with_connection(|c| { c.execute("UPDATE legacy_generated_output_queue SET status='failed',last_error=?2,updated_at=?3 WHERE object_key=?1", params![key,why,crate::util::now_unix()])?; Ok(()) }) }).await.map_err(MaintenanceError::from)?;
+            }
+        }
+        if !confirmed.is_empty() {
+            report.objects_deleted = confirmed.len();
+            let reclaimed = catalog.execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| catalog.with_connection(|connection| {
+                let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(CatalogError::from)?;
+                let mut reclaimed = 0i64;
+                for (key, storage, bytes) in &confirmed {
+                    let actual: Option<i64> = tx.query_row("SELECT bytes FROM object_accounting WHERE object_key=?1 AND (?2='' OR storage_id=?2) LIMIT 1", params![key,storage], |r| r.get(0)).optional().map_err(CatalogError::from)?;
+                    reclaimed = reclaimed.saturating_add(actual.unwrap_or(*bytes));
+                    tx.execute("DELETE FROM object_accounting WHERE object_key=?1 AND (?2='' OR storage_id=?2)", params![key,storage])?;
+                    tx.execute("DELETE FROM legacy_generated_output_queue WHERE object_key=?1", [key])?;
+                }
+                tx.commit().map_err(CatalogError::from)?;
+                Ok(reclaimed)
+            })).await.map_err(MaintenanceError::from)?;
+            report.bytes_reclaimed = reclaimed;
+        }
+        return Ok(report);
+    }
+    Ok(GeneratedOutputReport::default())
+}
+
+/// Migrate a deployment away from renderer products. The catalogue references
+/// are removed in one bounded transaction, while object deletion happens
+/// outside SQL and only confirmed removals release physical accounting. Input
+/// assets live under `content/<id>/assets/` and are therefore never selected.
+pub async fn collect_legacy_generated_outputs(
+    catalog: &Arc<Catalog>,
+    blobs: &Arc<dyn BlobStore>,
+    max_objects: usize,
+) -> MaintenanceResult<GeneratedOutputReport> {
+    collect_legacy_generated_outputs_with_limits(
+        catalog,
+        blobs,
+        GeneratedOutputLimits {
+            max_objects,
+            max_rows: max_objects,
+            max_bytes: i64::MAX,
+            max_wall_time: Duration::from_secs(2),
+        },
+    )
+    .await
+}
 
 /// Advance account erasure without ever loading an account's whole history.
 /// Owned documents are completed by `DeletionWorker`; cross-document
@@ -1716,6 +2272,334 @@ mod tests {
         fn describe(&self) -> String {
             self.inner.describe()
         }
+    }
+
+    fn migration_document(catalog: &Catalog, slug: &str, storage_id: &str) {
+        catalog
+            .create_document(&NewDocument {
+                slug: slug.into(),
+                storage_id: storage_id.into(),
+                title: slug.into(),
+                sha: String::new(),
+                created_at: "2026-01-01T00:00:00.000Z".into(),
+                published_at: "2026-01-01T00:00:00.000Z".into(),
+                updated_at: "2026-01-01T00:00:00.000Z".into(),
+                example: false,
+                owner_key: "owner".into(),
+                owner_id: None,
+                status: "active".into(),
+                size: 0,
+                counted_size: 0,
+                maintenance_reserved: 0,
+                last_auto_checkpoint_at: 0,
+                source_format: "markdown".into(),
+                main: "README.md".into(),
+            })
+            .expect("migration document");
+    }
+
+    fn migration_phase(catalog: &Catalog) -> String {
+        catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT phase FROM legacy_generated_output_migration WHERE id=1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)
+            })
+            .unwrap_or_default()
+    }
+
+    fn migration_limits() -> GeneratedOutputLimits {
+        GeneratedOutputLimits {
+            max_objects: 2,
+            max_rows: 2,
+            max_bytes: 1_000,
+            max_wall_time: Duration::from_secs(5),
+        }
+    }
+
+    #[tokio::test]
+    async fn generated_output_migration_preserves_the_input_graph_across_documents() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+        migration_document(&catalog, "one", "storage-one");
+        migration_document(&catalog, "two", "storage-two");
+        let directory = tempfile::tempdir().expect("blob directory");
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), false));
+
+        let shared_asset = "content/shared/assets/logo.pdf";
+        let source_key = "content/storage-one/trees/source";
+        let leased_key = "content/storage-two/history/in-flight";
+        let outputs = [
+            "quarto/blobs/storage-one/rendered",
+            "documents/storage-one/output",
+            "renderings/storage-two/output",
+            "content/storage-one/renderings/tree/pdf",
+        ];
+        for (key, bytes) in [
+            (shared_asset, 7usize),
+            (source_key, 11),
+            (leased_key, 13),
+            (outputs[0], 17),
+            (outputs[1], 19),
+            (outputs[2], 23),
+            (outputs[3], 29),
+        ] {
+            blobs
+                .put(key, vec![b'x'; bytes], "application/octet-stream")
+                .await
+                .expect("fixture object");
+        }
+        catalog
+            .with_connection(|connection| {
+                // The same physical asset is retained by two documents.
+                for (storage_id, checkpoint) in [("storage-one", "checkpoint-one"), ("storage-two", "checkpoint-two")] {
+                    connection.execute(
+                        "INSERT INTO checkpoint_asset_refs(storage_id,checkpoint_sha,object_key,bytes)
+                         VALUES(?1,?2,?3,7)",
+                        params![storage_id, checkpoint, shared_asset],
+                    )?;
+                }
+                connection.execute(
+                    "INSERT INTO source_history_encodings
+                     (storage_id,file_digest,recipe_key,recipe_digest,codec,uncompressed_bytes,recipe_bytes,created_at)
+                     VALUES('storage-one','file','recipe','digest',1,11,11,1)",
+                    [],
+                )?;
+                connection.execute(
+                    "INSERT INTO source_history_objects(storage_id,file_digest,object_key,kind,bytes)
+                     VALUES('storage-one','file',?1,'source',11)",
+                    [source_key],
+                )?;
+                connection.execute(
+                    "INSERT INTO source_history_write_leases
+                     (storage_id,operation_id,object_key,bytes,created_at,expires_at)
+                     VALUES('storage-two','operation',?1,13,1,100)",
+                    [leased_key],
+                )?;
+                for (storage_id, key, bytes) in [
+                    ("storage-one", source_key, 11),
+                    ("storage-two", leased_key, 13),
+                    ("storage-one", outputs[0], 17),
+                    ("storage-one", outputs[1], 19),
+                    ("storage-two", outputs[2], 23),
+                    ("storage-one", outputs[3], 29),
+                ] {
+                    connection.execute(
+                        "INSERT INTO object_accounting(storage_id,object_key,kind,bytes)
+                         VALUES(?1,?2,?3,?4)",
+                        params![storage_id, key, if key.starts_with("content/") { "source" } else { "quarto" }, bytes],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("input graph");
+        for slug in ["one", "two"] {
+            catalog
+                .insert_comment(&Comment {
+                    slug: slug.into(),
+                    id: format!("annotation-{slug}"),
+                    seq: 1,
+                    motivation: "commenting".into(),
+                    body: "durable annotation".into(),
+                    creator: "owner".into(),
+                    author: "owner".into(),
+                    via: "test".into(),
+                    created: "2026-01-01T00:00:00.000Z".into(),
+                    exact: "source".into(),
+                    prefix: String::new(),
+                    suffix: String::new(),
+                    position: None,
+                    point: false,
+                    color: None,
+                    region: None,
+                    quarto_output: Some("transient-output".into()),
+                    source_path: Some("README.md".into()),
+                    source_exact: Some("source".into()),
+                    source_prefix: None,
+                    source_suffix: None,
+                    source_position: None,
+                    proposed: None,
+                    outcome: String::new(),
+                    accept_request: String::new(),
+                    revision: String::new(),
+                    pass: String::new(),
+                    resolved: false,
+                    resolved_at: None,
+                    resolved_in: String::new(),
+                })
+                .expect("annotation");
+        }
+        // Seed every renderer reference family. Their rows are removed in
+        // bounded reference stages, while comments and source anchors survive.
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO renderings(slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes)
+                     VALUES('one','old','2026-01-01','test','test','','',17,0,0)",
+                    [],
+                )?;
+                connection.execute(
+                    "INSERT INTO quarto_selections(storage_id,document_id,context_id,generation,render_id,source_revision,object_key,object_version,updated_at)
+                     VALUES('storage-one','one','html',1,'render','source',?1,'',1)",
+                    [outputs[0]],
+                )?;
+                connection.execute(
+                    "INSERT INTO quarto_selection_epochs(storage_id,document_id,context_id,generation)
+                     VALUES('storage-one','one','html',1)",
+                    [],
+                )?;
+                connection.execute(
+                    "INSERT INTO quarto_selection_history(storage_id,document_id,context_id,render_id,generation)
+                     VALUES('storage-one','one','html','render',1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("renderer references");
+
+        for pass in 0..64 {
+            if migration_phase(&catalog) == "done" {
+                break;
+            }
+            collect_legacy_generated_outputs_with_limits(&catalog, &blobs, migration_limits())
+                .await
+                .unwrap_or_else(|error| panic!("migration pass {pass}: {error}"));
+        }
+        assert_eq!(migration_phase(&catalog), "done");
+        for key in outputs {
+            assert!(blobs.get(key).await.is_err(), "output survived: {key}");
+        }
+        for key in [shared_asset, source_key, leased_key] {
+            assert!(
+                blobs.get(key).await.is_ok(),
+                "protected input disappeared: {key}"
+            );
+        }
+        catalog
+            .with_connection(|connection| {
+                let output_rows: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM object_accounting WHERE kind IN ('quarto','rendering')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(output_rows, 0);
+                let protected_refs: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM checkpoint_asset_refs WHERE object_key=?1",
+                    [shared_asset],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(protected_refs, 2, "shared asset reference was lost");
+                let comments: i64 =
+                    connection.query_row("SELECT COUNT(*) FROM comments", [], |row| row.get(0))?;
+                assert_eq!(comments, 2, "annotations were lost");
+                let history: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM source_history_objects",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let leases: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM source_history_write_leases",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!((history, leases), (1, 1));
+                Ok(())
+            })
+            .expect("post-migration graph");
+    }
+
+    #[tokio::test]
+    async fn missing_protected_input_aborts_before_generated_delete() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+        migration_document(&catalog, "missing", "storage-missing");
+        let directory = tempfile::tempdir().expect("blob directory");
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), false));
+        let output = "documents/storage-missing/output";
+        blobs
+            .put(output, vec![1, 2], "application/octet-stream")
+            .await
+            .expect("output");
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO checkpoint_asset_refs(storage_id,checkpoint_sha,object_key,bytes)
+                     VALUES('storage-missing','checkpoint','content/storage-missing/assets/missing',3)",
+                    [],
+                )?;
+                connection.execute(
+                    "INSERT INTO object_accounting(storage_id,object_key,kind,bytes)
+                     VALUES('storage-missing',?1,'quarto',2)",
+                    [output],
+                )?;
+                Ok(())
+            })
+            .expect("missing input fixture");
+        let error =
+            collect_legacy_generated_outputs_with_limits(&catalog, &blobs, migration_limits())
+                .await
+                .expect_err("missing input was silently collected");
+        assert!(matches!(error, MaintenanceError::Invalid(message) if message.contains("missing")));
+        assert!(
+            blobs.get(output).await.is_ok(),
+            "output was deleted before validation"
+        );
+        assert_eq!(migration_phase(&catalog), "validate");
+    }
+
+    #[tokio::test]
+    async fn an_oversized_first_output_does_not_starve_a_later_candidate() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+        migration_document(&catalog, "budget", "storage-budget");
+        let directory = tempfile::tempdir().expect("blob directory");
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), false));
+        let large = "documents/storage-budget/large";
+        let small = "quarto/storage-budget/small";
+        blobs
+            .put(large, vec![0; 100], "application/octet-stream")
+            .await
+            .expect("large");
+        blobs
+            .put(small, vec![0; 1], "application/octet-stream")
+            .await
+            .expect("small");
+        catalog
+            .with_connection(|connection| {
+                for (key, bytes, kind) in [(large, 100, "result"), (small, 1, "quarto")] {
+                    connection.execute(
+                        "INSERT INTO object_accounting(storage_id,object_key,kind,bytes)
+                         VALUES('storage-budget',?1,?2,?3)",
+                        params![key, kind, bytes],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("output accounting");
+        let limits = GeneratedOutputLimits {
+            max_bytes: 4,
+            ..migration_limits()
+        };
+        for pass in 0..64 {
+            if migration_phase(&catalog) == "delete" {
+                break;
+            }
+            collect_legacy_generated_outputs_with_limits(&catalog, &blobs, limits.clone())
+                .await
+                .unwrap_or_else(|error| panic!("migration pass {pass}: {error}"));
+        }
+        assert_eq!(migration_phase(&catalog), "delete");
+        let report = collect_legacy_generated_outputs_with_limits(&catalog, &blobs, limits)
+            .await
+            .expect("bounded delete pass");
+        assert_eq!(report.objects_deleted, 1);
+        assert_eq!(report.objects_deferred, 1);
+        assert!(blobs.get(small).await.is_err(), "small candidate starved");
+        assert!(
+            blobs.get(large).await.is_ok(),
+            "oversized candidate was deleted"
+        );
     }
 
     // Physical reclamation releases capacity only for objects the store said

@@ -360,6 +360,10 @@ pub(super) async fn publish_directory(
 ) {
     let title_explicit = !title.is_empty();
     let server = server_or_die(server);
+    // Publishing is an authenticated operation on every deployment. Resolve
+    // the device/OAuth credential before doing the remote preflight so an
+    // unsigned CLI cannot proceed as an anonymous publisher.
+    let token = require_token_for(&server, token.as_deref());
     let config = publish_limits(&server)
         .await
         .map(config_with_publish_limits)
@@ -463,9 +467,6 @@ pub(super) async fn publish_directory(
     // the server works it out again from the same name -- so this is only for
     // the title and, for typst, for the compile that says whether the document
     // is one a reader will be able to render.
-    let mut typst_pdf = None;
-    let mut typst_dependencies = Vec::new();
-    let mut typst_inputs = String::new();
     if is_typst(&main) {
         if title.is_empty() {
             title = title_from_typst(&source);
@@ -486,9 +487,7 @@ pub(super) async fn publish_directory(
             )
         })
         .await;
-        let (compiled, dependencies) = (noted.compiled, noted.read);
-        typst_dependencies = dependencies;
-        typst_inputs = input_digest_for_typst(&main, &files, &rules);
+        let compiled = noted.compiled;
         report(&compiled.diagnostics, &main);
         if compiled.output.is_none() {
             die(format!(
@@ -496,7 +495,6 @@ pub(super) async fn publish_directory(
                 counted(compiled.errors().count().max(1), "error")
             ))
         }
-        typst_pdf = pdf_of(&compiled);
     } else if title.is_empty() {
         // A format with no heading scan of its own is named by its file, which
         // is what `title_or` below does anyway. Better that than running an
@@ -510,7 +508,7 @@ pub(super) async fn publish_directory(
         };
     }
     if !title_explicit {
-        preserve_revision_title(&server, &slug, &mut title, token.as_deref())
+        preserve_revision_title(&server, &slug, &mut title, Some(&token))
             .await
             .unwrap_or_else(|err| die(err));
     }
@@ -530,17 +528,13 @@ pub(super) async fn publish_directory(
         }
     );
 
-    let uploaded_paths: std::collections::HashSet<String> = files
-        .iter()
-        .map(|(path, _)| crate::document::paths::normalise(path))
-        .collect();
     let (status, document) = post_directory(
         &format!("{server}/api/documents"),
         &title,
         &slug,
         &main,
         files,
-        &stored_token_for(&server, token.as_deref()),
+        &token,
         Duration::from_secs(600),
     )
     .await
@@ -552,21 +546,6 @@ pub(super) async fn publish_directory(
         ));
     }
     report_published(&server, &document, &format!("{}", root.display()));
-    if let Some(pdf) = typst_pdf {
-        let missing: Vec<String> = typst_dependencies
-            .iter()
-            .filter(|path| !uploaded_paths.contains(&crate::document::paths::normalise(path)))
-            .cloned()
-            .collect();
-        if missing.is_empty() {
-            upload_typst_pdf(&server, &document, pdf, &typst_inputs, token.as_deref()).await;
-        } else {
-            eprintln!(
-                "warning: source published, but no PDF artifact was uploaded; the local compile read files not in the published tree: {}",
-                missing.join(", ")
-            );
-        }
-    }
 }
 
 /// What `publish` prints: the read link when the document has one, since
@@ -609,6 +588,9 @@ pub(super) async fn publish_file(
 ) {
     let title_explicit = !title.is_empty();
     let server = server_or_die(server);
+    // The server rejects anonymous publication even when an old deployment
+    // still advertises a public publisher policy.
+    let token = require_token_for(&server, token.as_deref());
     let path = Path::new(file);
     let base_name = path
         .file_name()
@@ -650,8 +632,6 @@ pub(super) async fn publish_file(
     // the identity, so an HTML document's source is the HTML it was published
     // as.
     let (mut source, mut source_format) = (String::new(), String::new());
-    let mut typst_pdf = None;
-    let mut typst_inputs = String::new();
 
     if is_typst(file) {
         if title.is_empty() {
@@ -726,15 +706,9 @@ pub(super) async fn publish_file(
             ))
         }
         if siblings.is_empty() {
-            typst_pdf = pdf_of(&compiled);
-            typst_inputs = input_digest_for_typst(
-                &canonical_main,
-                &[(canonical_main.clone(), raw.clone())],
-                &config.paths(),
-            );
         } else {
             eprintln!(
-                "warning: source will be published without a PDF artifact because the local compile read files not included in this one-file publish: {}",
+                "warning: local validation read files not included in this one-file publish: {}",
                 siblings.join(", ")
             );
         }
@@ -800,7 +774,7 @@ pub(super) async fn publish_file(
         // Publishing a revision keeps the existing title even when the new
         // source has a heading of its own. The authenticated lookup matters
         // for private documents, whose metadata is invisible anonymously.
-        preserve_revision_title(&server, &slug, &mut title, token.as_deref())
+        preserve_revision_title(&server, &slug, &mut title, Some(&token))
             .await
             .unwrap_or_else(|err| die(err));
     }
@@ -808,9 +782,8 @@ pub(super) async fn publish_file(
         title = title_or("", file);
     }
 
-    // stored_token, not require_token: a deployment whose publishers are
-    // "anyone" takes documents with no sign-in, and one that does need an
-    // account answers with its own message.
+    // The server requires a provider-backed credential for every publication;
+    // the token was resolved before local preflight above.
     // A local Quarto binding names the author's actual entrypoint. Preserve
     // that filename even for a one-file publication so paper.qmd can be
     // rendered in place without renaming it to the JSON API's main.qmd.
@@ -821,7 +794,7 @@ pub(super) async fn publish_file(
             &slug,
             &base_name,
             vec![(base_name.clone(), source.into_bytes())],
-            &stored_token_for(&server, token.as_deref()),
+            &token,
             Duration::from_secs(300),
         )
         .await
@@ -834,7 +807,7 @@ pub(super) async fn publish_file(
         // readable and a document that does not compile is not one -- but what
         // it produces is a check, not a payload.
         &json!({"title": title, "slug": slug, "source": source, "source_format": source_format}),
-        &stored_token_for(&server, token.as_deref()),
+        &token,
         Duration::from_secs(300),
     )
         .await
@@ -848,130 +821,8 @@ pub(super) async fn publish_file(
     }
 
     report_published(&server, &document, file);
-    if let Some(pdf) = typst_pdf {
-        // A one-file publish is allowed to remain source-only when the local
-        // compile had imports beside it. The source is still useful, but the
-        // PDF must never be attached to a server tree that does not contain
-        // those inputs.
-        if source_format == "typst" {
-            upload_typst_pdf(&server, &document, pdf, &typst_inputs, token.as_deref()).await;
-        }
-    }
-}
-
-/// Uploads the native Typst PDF after the source tree has been accepted. The
-/// server's `live` digest is authoritative: a revision may be checkpointed
-/// lazily, and the response's historical `sha` can therefore lag the exact
-/// tree the upload just installed.
-pub(super) async fn upload_typst_pdf(
-    server: &str,
-    document: &Value,
-    pdf: Vec<u8>,
-    expected_inputs: &str,
-    token: Option<&str>,
-) {
-    let slug = text(document, "slug");
-    if slug.is_empty() {
-        eprintln!("warning: source published, but its PDF artifact has no document slug");
-        return;
-    }
-    let token = crate::cli::stored_token_for(server, token);
-    let (status, latest) = match get_with_token(
-        &format!("{server}/api/documents/{slug}/renderings/latest"),
-        &token,
-        Duration::from_secs(60),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(err) => {
-            eprintln!(
-                "warning: source published, but could not find its live tree for the PDF: {err}"
-            );
-            return;
-        }
-    };
-    if status != 200 {
-        eprintln!(
-            "warning: source published, but could not find its live tree for the PDF: {}",
-            detail_of(&latest)
-        );
-        return;
-    }
-    let sha = text(&latest, "live");
-    if sha.is_empty() {
-        eprintln!(
-            "warning: source published, but the server returned no live tree digest for the PDF"
-        );
-        return;
-    }
-    if text(&latest, "inputs") != expected_inputs {
-        eprintln!(
-            "warning: source published, but its canonical file tree differs from the local Typst inputs; no PDF artifact was uploaded"
-        );
-        return;
-    }
-    let (status, reply) = match put_current_bytes(
-        &format!("{server}/api/documents/{slug}/renderings/{sha}"),
-        pdf,
-        &token,
-        "application/pdf",
-        expected_inputs,
-        Duration::from_secs(300),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(err) => {
-            eprintln!("warning: source published, but PDF artifact upload failed: {err}");
-            return;
-        }
-    };
-    if status != 200 {
-        eprintln!(
-            "warning: source published, but PDF artifact upload failed ({}): {}\n  Retry by compiling the Typst source again and PUTting it to /api/documents/{slug}/renderings/{sha}",
-            status,
-            detail_of(&reply)
-        );
-    } else {
-        eprintln!("uploaded Typst PDF artifact for tree {sha}");
-    }
-}
-
-/// Builds the same source-input identity the server reports for a live room.
-/// Yjs item ids are intentionally omitted: they identify an editing history,
-/// while this digest identifies the exact main file and dependency bytes used
-/// by the native compiler.
-pub(super) fn input_digest_for_typst(
-    main: &str,
-    files: &[(String, Vec<u8>)],
-    rules: &crate::document::paths::Rules<'_>,
-) -> String {
-    let mut tree = crate::document::history::Tree {
-        main: main.to_string(),
-        files: std::collections::BTreeMap::new(),
-        settings: None,
-    };
-    for (path, bytes) in files {
-        let kind = match crate::document::paths::check(rules, path) {
-            Ok(kind) => kind,
-            Err(_) => continue,
-        };
-        let kind = match kind {
-            crate::document::paths::Kind::Text => "text",
-            crate::document::paths::Kind::Asset => "asset",
-        };
-        tree.files.insert(
-            crate::document::paths::normalise(path),
-            crate::document::history::TreeEntry {
-                kind: kind.to_string(),
-                id: String::new(),
-                sha: crate::document::store::digest_of_bytes(bytes),
-                size: bytes.len() as i64,
-            },
-        );
-    }
-    tree.input_digest()
+    // Rendering remains a transient local validation step. The published
+    // document contains source and inputs only.
 }
 
 /// Falls back to the filename, the way an untitled document is named.

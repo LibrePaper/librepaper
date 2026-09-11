@@ -2,13 +2,16 @@
 //
 // A qmd is always kept as source.  This module builds a short lived draft
 // representation for the Markdown renderer and records enough structure to
-// associate saved display outputs without guessing from rendered paragraphs.
+// map durable source annotations without guessing from rendered paragraphs.
 // It deliberately does not execute code, filters, shortcodes, or JavaScript.
 
 import { sha256, sha256Bytes } from "../results-hash.js";
-import { escapeHtml, safeFragment } from "../results-content.js";
 
 export { sha256, sha256Bytes };
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+}
 
 const CELL_FENCE = /^ {0,3}(`{3,}|~{3,})\s*(.*?)\s*$/;
 const DIV_FENCE = /^ {0,3}(:{3,})(?:(?:\s+|\s*(?=\{))(.+?))?\s*$/;
@@ -29,8 +32,6 @@ function executableInline(line) {
   return false;
 }
 const OPTION = /^\s*#\|\s*([^:]+?)\s*:\s*(.*?)\s*$/;
-
-export const QUARTO_SCHEMA = "librepaper-quarto-bundle/v1";
 
 function lineOffsets(source) {
   const offsets = [0];
@@ -287,47 +288,6 @@ export function parseQuarto(source, { path = "main.qmd" } = {}) {
   };
 }
 
-function outputFor(bundle, cell) {
-  if (!bundle) return null;
-  if (cell.ambiguous || cell.source_ambiguous) return null;
-  const entries = Array.isArray(bundle.cells) ? bundle.cells : [];
-  if (!cell.label) {
-    // Ordinals are locations, not identity. An inserted cell must never
-    // acquire the old occupant's plot merely by taking its position.
-    if (!cell.source_sha256 || cell.source_ambiguous) return null;
-    const candidates = entries.filter((entry) => entry.source_path === cell.path && entry.source_sha256 === cell.source_sha256);
-    return candidates.length === 1 && !candidates[0].ambiguous && candidates[0].coverage !== "ambiguous" ? candidates[0] : null;
-  }
-  return entries.find((entry) => entry.id === cell.id && !entry.ambiguous && entry.coverage !== "ambiguous") ||
-    (cell.label && entries.find((entry) => entry.label === cell.label && entry.source_path === cell.path && !entry.ambiguous && entry.coverage !== "ambiguous")) || null;
-}
-
-function outputMarkup(output, assets = {}, cell = null, references = new Map()) {
-  if (!output || output.coverage === "hidden" || output.coverage === "unavailable") return "";
-  const outputs = Array.isArray(output.outputs) ? output.outputs : [output];
-  return outputs.map((item, index) => {
-    if (item.kind === "image" || /^image\//.test(item.mime || "")) {
-      const url = item.url || assets[item.asset || item.path] || "";
-      if (!url) return `<div class="quarto-output-missing">Saved image is unavailable.</div>`;
-      const label = index === 0 && cell?.label && /^(?:fig|tbl)-/.test(cell.label) ? ` id="${escapeHtml(cell.label)}"` : "";
-      const caption = (outputs.length === 1 && (cell?.options?.["fig-cap"] || cell?.options?.["tbl-cap"])) || item.caption || "";
-      const target = cell?.label ? references.get(cell.label) : null;
-      const number = target && (target.kind === "fig" || target.kind === "tbl") ? `<span class="quarto-figure-number">${target.kind === "fig" ? "Figure" : "Table"} ${target.number}.</span> ` : "";
-      return `<figure class="quarto-cached-output"${label} data-librepaper-generated="quarto"><img src="${escapeHtml(url)}" alt="${escapeHtml(item.alt || cell?.options?.["fig-alt"] || "")}">${caption ? `<figcaption>${number}${escapeHtml(caption)}</figcaption>` : number ? `<figcaption>${number.trim()}</figcaption>` : ""}</figure>`;
-    }
-    if (item.kind === "table") {
-      const label = index === 0 && cell?.label && /^tbl-/.test(cell.label) ? ` id="${escapeHtml(cell.label)}"` : "";
-      const html = safeFragment(item.html || item.text || "");
-      const caption = (outputs.length === 1 && cell?.options?.["tbl-cap"]) || item.caption || "";
-      const target = cell?.label ? references.get(cell.label) : null;
-      const number = target?.kind === "tbl" ? `<span class="quarto-figure-number">Table ${target.number}.</span> ` : "";
-      return `<div class="quarto-cached-table"${label} data-librepaper-generated="quarto">${html}${caption || number ? `<div class="quarto-table-caption">${number}${escapeHtml(caption)}</div>` : ""}</div>`;
-    }
-    if (item.kind === "html") return `<div data-librepaper-generated="quarto">${safeFragment(item.html || item.text || "")}</div>`;
-    return `<div class="quarto-cached-text" data-librepaper-generated="quarto"><pre><code>${escapeHtml(item.text ?? item.value ?? "")}</code></pre></div>`;
-  }).filter(Boolean).join("\n");
-}
-
 function referenceKind(id) {
   const match = /^(fig|tbl|sec|eq|lst)-/.exec(String(id || "").split("#").pop());
   return match?.[1] || "";
@@ -379,20 +339,7 @@ function metadataMarkup(parsed) {
   return parts.join("");
 }
 
-function inlineValueFor(values, record, currentContext = "") {
-  if (!values || !record) return null;
-  const candidate = Array.isArray(values)
-    ? values.find((item) => item?.id === record.id)
-    : values[record.id];
-  if (!candidate || typeof candidate !== "object" || candidate.expression !== record.expression || Number(candidate.line) !== record.line) return null;
-  if (candidate.source_path != null && candidate.source_path !== record.id.split("#", 1)[0]) return null;
-  if (candidate.column != null && Number(candidate.column) !== record.column) return null;
-  if (!currentContext || candidate.context_sha256 !== currentContext) return null;
-  const value = candidate.text ?? candidate.value;
-  return value == null ? null : String(value);
-}
-
-function proseLine(line, labels, { lineNumber = 0, inlineRecords = [], inlineValues = null, currentContext = "" } = {}) {
+function proseLine(line, labels, { lineNumber = 0, inlineRecords = [] } = {}) {
   // Keep inline code and links opaque while making the common Quarto cross
   // references readable.  An unresolved reference remains source text.
   const inlineOrdinals = new Map();
@@ -403,8 +350,9 @@ function proseLine(line, labels, { lineNumber = 0, inlineRecords = [], inlineVal
       const ordinal = inlineOrdinals.get(expression) || 0;
       inlineOrdinals.set(expression, ordinal + 1);
       const record = inlineRecords.filter((item) => item.line === lineNumber && item.expression === expression)[ordinal];
-      const value = inlineValueFor(inlineValues, record, currentContext);
-      return value == null ? chunk : `<span class="quarto-inline-value" data-inline-id="${escapeHtml(record.id)}" title="Captured inline result" aria-label="Captured inline result from saved computation">${escapeHtml(value)}</span>`;
+      // Code expressions stay source text until a local Quarto companion
+      // evaluates them. No prior computation is reused in this draft.
+      return chunk;
     }
     return chunk.replace(/@(fig|tbl|sec|eq|lst)-([A-Za-z0-9_:-]+(?:\.[A-Za-z0-9_:-]+)*)/g, (whole, kind, label) => {
       const id = `${kind}-${label}`;
@@ -430,7 +378,7 @@ function verbatimFence(text) {
   return backtick <= tilde ? { char: "`", length: backtick } : { char: "~", length: tilde };
 }
 
-export function composeDraft(source, { path = "main.qmd", bundle = null, assets = {}, expandIncludes: includes = {}, maxIncludeDepth = 8, cellFingerprints = {}, inlineValues = null, currentContext = "" } = {}) {
+export function composeDraft(source, { path = "main.qmd", assets = {}, expandIncludes: includes = {}, maxIncludeDepth = 8, cellFingerprints = {} } = {}) {
   const parsed = parseQuarto(source, { path });
   for (const cell of parsed.cells) {
     cell.source_sha256 = cellFingerprints[cell.id]?.sha256 || "";
@@ -538,8 +486,6 @@ export function composeDraft(source, { path = "main.qmd", bundle = null, assets 
           line = proseLine(line, references, {
             lineNumber: i + 1,
             inlineRecords: parsed.inlineRecords,
-            inlineValues: inlineValues || bundle?.inline_results || bundle?.inline || bundle?.inline_values || null,
-            currentContext: currentContext || bundle?.context?.computation_sha256 || "",
           });
         }
       }
@@ -549,25 +495,15 @@ export function composeDraft(source, { path = "main.qmd", bundle = null, assets 
       push(line, lines[i].includes("{{<") ? null : i);
       continue;
     }
-    // The draft never guesses at include/echo/eval/output semantics: a cell
-    // shows its saved result when the bundle maps one, and otherwise renders
-    // exactly as written — fence lines included — inside a verbatim block
-    // whose own fence outruns any run of the same fence character within it.
-    const outputEntry = outputFor(bundle, cell);
-    const output = outputMarkup(outputEntry, assets, cell, references);
     i = cell.endLine;
-    if (output) {
-      push(output);
-    } else {
-      const cellText = cell.source.replace(/\n$/, "");
-      const { char, length } = verbatimFence(cellText);
-      const outerFence = char.repeat(length);
-      push(outerFence);
-      push(cellText, cell.startLine);
-      push(outerFence);
-    }
+    const cellText = cell.source.replace(/\n$/, "");
+    const { char, length } = verbatimFence(cellText);
+    const outerFence = char.repeat(length);
+    push(outerFence);
+    push(cellText, cell.startLine);
+    push(outerFence);
   }
-  return { ...parsed, markdown: out.join("\n"), lineMap, diagnostics: [...parsed.diagnostics, ...generatedDiagnostics], source, assets, bundle };
+  return { ...parsed, markdown: out.join("\n"), lineMap, diagnostics: [...parsed.diagnostics, ...generatedDiagnostics], source, assets };
 }
 
 export async function virtualTree(tree, options = {}) {
@@ -694,4 +630,4 @@ export async function contextId({ format = "html", profiles = [], parameters = {
   return `ctx-${digest.slice(0, 16)}`;
 }
 
-export { escapeHtml, safeFragment, outputMarkup };
+export { escapeHtml };

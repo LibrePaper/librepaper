@@ -22,6 +22,19 @@ comments and highlights in real time.
 </figure>
 </div>
 
+# Privacy
+
+Browsers download the LaTeX compiler distribution directly from the default
+project mirror, `https://latex.librepaper.workers.dev/`. The mirror receives
+the browser's IP address and the digest-named files it requests. Those
+requests can reveal package choices and suggest a document's field or
+template. Compiler downloads do not send document source or private input
+assets to the mirror.
+
+An operator can host a copy and keep compiler requests on their own
+infrastructure by passing `--latex-mirror URL` to `librepaper serve`. The URL
+must be an HTTPS static mirror with the documented mirror layout and headers.
+
 ## Install
 
 ```sh
@@ -118,16 +131,11 @@ Publish an HTML, Markdown, or Quarto document:
 librepaper publish paper.html --title "My Paper"
 ```
 
-HTML files must be self-contained, with images, styles, and fonts embedded. For
-an HTML-only Quarto publication, render with:
-
-```sh
-quarto render paper.qmd --to html -M embed-resources:true
-```
-
-To collaborate on the Quarto source, publish `paper.qmd` instead. This preserves
-the source and does not run its code. See [Quarto documents](#quarto-documents)
-for the two preview modes and local rendering.
+An HTML file is accepted as source and may be self-contained, with images,
+styles, and fonts embedded. For a Quarto project, publish `paper.qmd` and its
+declared input files instead of uploading a generated HTML result. This
+preserves the source and does not run its code. See [Quarto documents](#quarto-documents)
+for browser preview and local rendering.
 
 Publishing a file again, to a document that already exists, writes the file's
 text into the live document and marks a checkpoint in its history. It never
@@ -232,8 +240,8 @@ ceiling on what a link may carry, not a grant to whoever reaches the document.
 An edit link authorizes, and the account attributes: editing requires an
 account wherever `--publishers` does, so on a server that names its publishers
 the holder of an edit link must sign in as one of them before the link edits,
-and until then it only comments. Under `--publishers anyone` it edits as it
-is. Anonymous commenters still need telling apart, so each gets a stable
+and until then it only comments. Under `--publishers any` it edits as an
+authenticated account. Anonymous commenters still need telling apart, so each gets a stable
 per-document pseudonym such as `AmberAgama-a3f2`, shown next to their comments
 instead of a name they typed.
 
@@ -296,10 +304,9 @@ librepaper edit c9k
 The **Files** sidebar is a folder tree. Its toolbar creates files and folders
 inside the selection, or uploads files from your computer; the **File** menu
 at the top of the page offers the same, along with downloads and shortcuts to
-the Share and History panels. **Download PDF** or **Download HTML** saves the
-rendering on screen, whichever kind the document produces (LaTeX and Typst
-make a PDF; Markdown, Quarto and HTML make a page), and is greyed out until
-one exists; **Download project** saves every file as a ZIP. Drag files or
+the Share and History panels. **Download PDF** or **Download HTML** exports the
+currently rendered result to the user's computer; LibrePaper does not retain
+that result. **Download project** saves every source and input file as a ZIP. Drag files or
 folders onto another folder to move them; drop onto empty space in the sidebar
 to move them to the top level. Dropping files or directories from your computer uploads them with
 their folder structure. Upload name collisions offer **Keep both** or **Skip**.
@@ -327,14 +334,14 @@ rather than quietly dropped.
 
 Several people can edit at once. The source is a CRDT (Yjs), so two people
 typing in the same sentence converge without either waiting for the other, and
-the status row under the toolbar says how many are in the session. The server holds the document,
-relays every update and keeps the result, so closing the last tab loses nothing
+the status row under the toolbar says how many are in the session. The server holds the document source,
+relays every update and keeps it, so closing the last tab loses nothing
 and whoever opens the document next, in a browser or with `librepaper sync`, joins
 what is there.
 
 What is shared is the source. The preview is not: each browser renders what it
-now has, so a session costs the deployment no CPU and no bandwidth beyond
-relaying a few dozen bytes per keystroke.
+now has. The origin still pays for source and asset transfer, collaboration,
+persistence, and history maintenance; these are included in its cost policy.
 
 History is kept for you. The server takes a checkpoint of the source when the
 document has been quiet for a while, when the last editor leaves, when someone
@@ -344,11 +351,11 @@ read earlier versions, compare changes, and restore a whole version or bring
 back individual passages in the editor.
 
 Rendering happens on clients. Markdown readers render HTML in the browser;
-Typst editors compile PDF or experimental HTML previews in a WebAssembly worker, using the same compiler
-as the command line. The deployment stores Typst and LaTeX PDFs under the
-digest of their source tree, so readers can view them without downloading a
-compiler. The server synchronizes source and stores artifacts; it does not
-compile documents.
+Typst editors compile PDF or experimental HTML previews in a WebAssembly worker,
+and LaTeX readers compile from the configured browser mirror. Generated results
+are transient and are never stored by the deployment, browser document store,
+or backup. The server synchronizes source and input assets; it does not compile
+documents.
 
 The formats, and they are not available in the same places:
 
@@ -358,7 +365,7 @@ The formats, and they are not available in the same places:
 | **Quarto** | `librepaper publish paper.qmd` | Markdown draft; optional local Quarto render | Reuses the Markdown renderer |
 | **Typst** | `librepaper publish paper.typ` | typst | ~13 MB compressed |
 | **HTML** | `librepaper publish paper.html` | the identity | nothing |
-| **LaTeX** | `librepaper publish paper.tex` | the browser engine, fetched by the browser | ~6 MB for pdfTeX and its format, then the packages a document asks for |
+| **LaTeX** | `librepaper publish paper.tex` | the browser engine, fetched directly from the mirror | ~6 MB and requested packages from the mirror; these are not origin transfer |
 
 Both renderers are the same crate the binary itself renders with, compiled to
 WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs
@@ -381,15 +388,10 @@ for this document in this browser. HTML supports semantic text, tables,
 citations, embedded images, and MathML equations, but does not reproduce all
 PDF formatting; some templates require HTML-specific show rules. It always
 uses the browser compiler, including when Calepin is selected for PDF previews.
-HTML previews are not stored as PDF renderings. Switch back to PDF to refresh
-the shared PDF after editing; native publishing continues to produce PDF.
-
-The first successful PDF is stored immediately; later versions are stored
-after the source stays quiet or a checkpoint is named. A compile error keeps
-the last successful preview and shows diagnostics. Documents created through
-the source API, and older Typst documents without a stored PDF, show "Not yet
-rendered" until an editor compiles them. Native Typst publishing uploads its
-PDF when the compiled inputs match the published project.
+HTML previews are transient client results. PDF and HTML exports are generated
+again on demand, and a compile error keeps source access available while
+showing diagnostics; readers can retry in the browser or use their local
+companion.
 
 The Typst renderer is fetched with the other pinned browser modules as part of
 `make build`, so every deployment serves the same four renderer interfaces.
@@ -401,10 +403,8 @@ marimo produce, so the live preview, the co-editing and the comments reach the
 documents most papers actually arrive in. A document published before HTML was
 a source format needs no republishing: the HTML that is stored is its source.
 
-The one thing to know about editing a generated file: the next `quarto render`
-produces a new HTML containing none of what was typed into the old one in the
-browser. The `.qmd` is where a lasting change belongs; the browser is for the
-fix that cannot wait for a render.
+The `.qmd` is the durable Quarto source. Generated previews remain local to the
+rendering client and are never published as retained document artifacts.
 
 #### LaTeX
 
@@ -416,12 +416,10 @@ embeds one, and there is no `make latex`.
 LaTeX is compiled in the browser, by LibrePaper's own pinned release of the
 browser engines: pdfTeX, XeTeX and BibTeX built for WebAssembly, with
 the formats generated for those exact binaries and a pinned TeX Live package
-set. An editor's browser
-loads the engine the project needs the first time it opens a LaTeX document
-and compiles automatically from then on; readers see the stored PDF and fetch
-no compiler at all. Packages arrive as verified, content-addressed bundles
-from the deployment's mirror as a compile asks for them, and stay in browser
-storage so the next document costs nothing to fetch. The TeX engines carry
+set. An editor's browser fetches the current release from the configured HTTPS
+mirror and compiles automatically; readers render the source on demand.
+Packages arrive as verified, content-addressed bundles from that mirror and
+stay in browser storage so the next document costs nothing to fetch. The TeX engines carry
 their own licences, and Biber is AGPL-3.0. They are fetched at run time;
 their notices travel with the mirror.
 
@@ -431,25 +429,24 @@ this browser for this document. HTML conversion runs in a separate WebAssembly
 worker and reuses the mirror's verified TeX package bundles. It requires a
 mirror release containing the `latexml` engine, built and hosted by
 [`wasm-latex`](https://github.com/LibrePaper/wasm-latex). The app contains only
-the adapter and preview controls. HTML is a reading view; shared renderings
-and publication continue to use PDF. An unsuccessful edit leaves the last
-successful preview visible and reports the conversion diagnostics.
+the adapter and preview controls. HTML is a transient reading view. An
+unsuccessful edit may leave the current preview visible while reporting
+conversion diagnostics; it does not create a stored rendering.
 
-The project engine (Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX) and the pinned
-browser release are project settings in the Settings dialog. Automatic honours
+The project engine (Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX) is a project
+setting in the Settings dialog. Every compile uses the mirror's current
+default release; documents do not pin a browser release. Automatic honours
 a `% !TEX program = xelatex` line in the main file, then looks for packages
 that only a Unicode engine can load, and otherwise uses pdfLaTeX. LuaLaTeX
 remains in the selector for release compatibility, but selecting it with the
 current release reports that it is not available in this release.
 
 BibTeX and Biber run in the browser when the release provides them. Biber
-documents use the release's bundled biblatex pairing; releases without a
-Biber engine fall back to the local app and then the browser VM.
-In that fallback flow, if LibrePaper's local app is running, the reader hands it the
-`.bcf` and the `.bib` files, runs your own Biber, and continues typesetting
-in the browser. Without the app, a deployment configured with `--biber-vm` boots a small Linux guest in a
-worker (a Debian image holding Biber and nothing else, run by v86) and runs
-the real Biber there; slower, but nothing to install.
+documents use the release's bundled biblatex pairing. If browser Biber has an
+infrastructure failure, the reader can hand the `.bcf` and `.bib` files to the
+local companion and continue typesetting in the browser. Bibliography input
+errors are shown directly and are not retried through another backend. If the
+companion is unavailable, the reader explains that local Biber is required.
 
 The local companion extends the online editor with the tools installed on
 your computer. Documents and collaboration stay in the website. Install the
@@ -499,12 +496,9 @@ A self-hoster says where the browser distribution comes from:
 make mirror
 make push
 # back here: use that mirror
-make deploy LATEX=../wasm-latex/mirror              # use that mirror locally
-librepaper serve --latex /srv/librepaper/latex          # or a copied mirror
-librepaper serve --latex https://bucket.example.com  # or a bucket serving one
-librepaper serve                                     # LibrePaper always serves LaTeX; with
-                                                      # no --latex this defaults to the
-                                                      # project's own mirror,
+make deploy LATEX_MIRROR=https://bucket.example.com  # use that mirror locally
+librepaper serve --latex-mirror https://bucket.example.com
+librepaper serve                                     # defaults to the project mirror:
                                                       # https://latex.librepaper.workers.dev/
 ```
 
@@ -515,12 +509,11 @@ and SwiftLaTeX/BusyTeX releases are rejected as legacy. `make latex-smoke` compi
 in a fresh Chromium profile against MIRROR= and requires visible PDF pages
 and selectable text before you point a deployment at it.
 
-LibrePaper always serves the LaTeX editor and compiler. Browsers only ever fetch `/latex/` on
-your own origin: the server reads from the bucket, the browser never does,
-because the list of packages a document asks for is a description of the
-document and should go no further than the deployment that already has the
-source. An `http:` mirror is refused at startup, since the page a document is
-framed in will not load a compiler over one.
+LibrePaper always serves the LaTeX editor and compiler configuration. Browsers
+fetch distribution files directly from the HTTPS mirror; the origin does not
+proxy or cache them. A directory path or an `http:` mirror is refused at
+startup. The browser verifies each file against the mirror manifest before
+use.
 
 ### Typst packages and fonts
 
@@ -537,13 +530,13 @@ command line keeps them where the `typst` binary keeps its own, under
 Any other family comes from the deployment's own font library:
 
 ```sh
-librepaper serve --fonts /srv/librepaper/fonts      # a directory of .ttf/.otf files
+librepaper serve --typst-fonts /srv/librepaper/fonts      # a directory of .ttf/.otf files
 ```
 
 The directory is read once at startup for the families each file carries, and
 served by family at `/api/fonts/`. The editor asks for a family the compiler
 warned about; `publish` asks the same deployment for the same files, so the
-preview and the stored PDF are set in the same faces. Without `--fonts`, a
+preview uses the same faces. Without `--typst-fonts`, a
 document naming a family the compiler does not embed is set in Typst's
 default faces and warned about, as it would be by the binary on a machine
 without that font. Which fonts a deployment offers, and under what licence, is
@@ -663,9 +656,9 @@ and saving text the document already has is none. If the file is not there
 when you start, it is written from the document, which is how you pull one
 down to edit locally.
 
-For Quarto source documents, synchronize `paper.qmd` and share rendered outputs
-separately. Synchronizing `paper.html` is also supported for documents deliberately
-published as HTML; that workflow edits the generated file.
+For Quarto source documents, synchronize `paper.qmd` and its declared inputs.
+Synchronizing `paper.html` is supported only when that HTML is deliberately
+published as the document's source; generated preview output is not retained.
 
 **The one thing worth understanding.** Your editor is a snapshot client: it
 read the file at some moment and writes its whole buffer back when you save.
@@ -1045,20 +1038,23 @@ catalogue (`catalog.db`), the objects it names, private server state, and the
 secrets that keep sessions and share links valid. Back it up if the instance
 holds real work; `librepaper backup` writes a verified recovery point of all
 of it, and `librepaper restore-backup` restores one into a fresh directory.
+See the [operator cost policy](docs/cost-policy.md) for the complete defaults,
+advanced YAML schema, status command, capacity accounting, and backup
+reservations.
 
-Six flags bound what a deployment will store:
+The storage flags bound what a deployment will store:
 
 | Flag | Caps | Default |
 | --- | --- | --- |
-| `--max-size` | the texts of one document, and any one rendering of it | 4 MB (maximum 8) |
-| `--max-assets` | the figures of one document | 32 MB |
+| `--max-size` | combined source text of one document | 4 MB (maximum 8) |
+| `--budget-document-assets` | combined input assets of one document | 32 MiB |
 | `--quota` | everything one publisher holds | 100 MB |
 | `--storage` | the whole deployment | 5120 MB |
 | `--max-documents` | documents one publisher may hold | 50 |
 | `--uploads-per-hour` | uploads one publisher may make in an hour | 30 |
 
 ```sh
-librepaper serve --max-size 8 --max-assets 16 --quota 500 --storage 10240
+librepaper serve --max-size 8 --budget-document-assets 16 --quota 500 --storage 10240
 ```
 
 `--max-size` may not be set above 8 MB. It bounds the text a person can see;
@@ -1071,23 +1067,30 @@ whose ceilings could accept work the journal could not durably save is refused
 at startup rather than at the first save.
 
 A document is a directory, so `--max-size` bounds the sum of its texts and
-`--max-assets` bounds its figures. Both count against `--quota`; a figure is
+`--budget-document-assets` bounds the combined input assets. Both count against `--quota`; a figure is
 an upload and counts against `--uploads-per-hour` like any other. A Typst or
-LaTeX document also keeps the PDF a client compiled, so that a reader
-never has to compile one: `--max-size` bounds that PDF too, it counts against
-the quota and the hourly uploads like a figure. The latest successfully
-published PDF bundle is retained independently of its source checkpoint;
-names do not archive older PDFs. Superseded bundles are eligible for cleanup
-after the upload grace period. On a
-deployment anybody may publish to, `--max-assets` is the one worth lowering:
+LaTeX document keeps source and input assets only. PDF and HTML output created
+by a browser or companion is transient and never counts toward storage,
+quotas, or uploads. On a deployment with many publishers,
+`--budget-document-assets` is the one worth lowering:
 figures are where a paper's bytes actually are, and it is what stops a single
 document spending a publisher's whole allowance on images.
 
-Under `--publishers anyone` (see [Rights](#rights)), a browser's quota is tied
-to a cookie rather than an account, so clearing cookies gets a new one;
-`--storage` is the bound that actually holds under that policy. Signing in
-moves what that browser published onto the account, quota and all, so the way
-to stop depending on a cookie is to sign in before clearing it.
+Origin transfer has its own rolling 24-hour budget:
+
+```sh
+librepaper serve --budget-transfer 10GiB
+```
+
+The value is bytes (binary suffixes such as `KiB`, `MiB`, `GiB`, and `TiB` are
+accepted). An explicit `0` refuses ordinary transfer while retaining the small
+emergency allowance for control and durability responses. Omitting the flag
+keeps transfer unlimited and produces a startup warning. Compiler files come
+from the direct mirror and do not count against this origin budget.
+
+Publishing is always attributed to an authenticated Google or GitHub account
+and charged against that account's quota. Anonymous readers and commenters do
+not receive a publishing quota.
 
 ### Rights
 
@@ -1101,7 +1104,8 @@ librepaper serve --publishers alice,anne@example.org --commenters @example.org
 
 A name is a GitHub login, a Google account's verified email address, or a whole
 domain of them; the shape of the entry is what decides which, so the forms mix
-freely in one list. Besides a list, each flag takes two keywords:
+freely in one list. `any` admits signed-in accounts; `anyone` is available only
+for commenting:
 
 | Value | Meaning |
 | --- | --- |
@@ -1109,14 +1113,15 @@ freely in one list. Besides a list, each flag takes two keywords:
 | `alice@example.org` | the Google account whose verified email is that address |
 | `@example.org` | any Google account on that domain |
 | `any` | any signed-in account, on either provider |
-| `anyone` | no sign-in at all |
+| `anyone` | unsigned-in commenting; rejected for publishing |
 
 A domain matches the part after the `@` exactly, so `@example.org` admits
 `alice@example.org` and not `alice@mail.example.org`.
 
 `--publishers` has no default: the server insists you say who may publish.
-`anyone` is allowed, which is what makes the local trial above work without any
-OAuth setup; on a host the internet can reach, name the accounts instead.
+Publishing requires a Google or GitHub OAuth provider. Use `any` for any
+authenticated account, or name specific accounts. The old `anyone` spelling is
+rejected at startup.
 `--commenters` defaults to `anyone`,
 so readers can annotate a document straight from its link; use `any` to
 attribute every comment to an account, or a list to keep a draft among named
@@ -1130,6 +1135,20 @@ Nothing a document says can widen `--publishers` or `--commenters`.
 `--no-listing` turns the public front page off: the reserved examples stop
 being listed to people who hold nothing on them, and nothing else was ever
 listed to strangers.
+
+Forwarded client identity is trusted only from networks listed in the advanced
+configuration file. A single loopback proxy can use:
+
+```yaml
+trusted_proxies:
+  - 127.0.0.1/32
+  - ::1/128
+```
+
+The proxy must append the actual client address to `X-Forwarded-For` and
+overwrite any incoming value. Without this setting, the TCP peer address is
+used, so visitors behind one proxy share its IP based limits. The server walks
+trusted proxy hops from right to left and stops at the first untrusted address.
 
 Authentication hardening updates browser and terminal credentials to separate,
 versioned signatures. After upgrading from unversioned credentials, sign in
@@ -1194,18 +1213,30 @@ are matched against, and where a retention notice is sent; it is shown to no
 other reader anywhere. Other readers see the profile name. The picture is shown
 only to you, in the bar, and its address is kept in your own session cookie.
 
-Every command-line option has exactly one flag and one environment variable of
-the same name: `--foo-bar` is `LIBREPAPER_FOO_BAR`, and the flag wins when both
-are set. `librepaper serve --help` (and every other subcommand's `--help`) is
-the reference for the full list. There is no config file.
+Service settings that support environment variables follow the same name:
+`--foo-bar` is `LIBREPAPER_FOO_BAR`, and the flag wins when both are set.
+`librepaper serve --help` (and every other subcommand's `--help`) is the
+reference for the full list. Advanced guardrails may be overridden in an
+optional YAML file selected with `--config PATH` (or `LIBREPAPER_CONFIG`). The
+proxy list is the top-level `trusted_proxies` key; `cost.trusted_proxies` is
+not accepted. An optional `backup` map is reporting metadata for
+operator-managed backups (`destination_class`, `frequency` in seconds,
+`retained_count`, `encrypted`, and `warning_count`); it does not schedule or
+delete backups. Omitted keys retain their documented defaults.
 
-The exceptions, which are environment only because they are secrets or belong
-to the installer rather than the binary:
+These variables are useful in deployment files. Secrets are environment-only;
+service settings have corresponding CLI flags, and installer variables control
+the installation script:
 
 | Variable | Purpose |
 | --- | --- |
 | `LIBREPAPER_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
 | `LIBREPAPER_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `LIBREPAPER_BUDGET_TRANSFER` | rolling 24-hour origin response budget; bare values are bytes |
+| `LIBREPAPER_BUDGET_DOCUMENT_ASSETS` | combined input assets per document, in MiB |
+| `LIBREPAPER_LATEX_MIRROR` | HTTPS static mirror URL fetched directly by browsers |
+| `LIBREPAPER_TYPST_FONTS` | optional local directory of additional Typst fonts |
+| `LIBREPAPER_CONFIG` | optional advanced YAML policy overrides |
 | `LIBREPAPER_VERSION` | Version the installer fetches |
 | `LIBREPAPER_BIN_DIR` | Installation directory the installer uses |
 
@@ -1245,8 +1276,8 @@ TAG=v0.2.0`, then review the resulting Cargo and lockfile diff.
 private, editable examples, one each in HTML, Markdown, Typst, LaTeX, and Quarto.
 These are your own documents. In **Share**, create a Read, Comment, or Edit
 link and open it in a separate browser or private window to try that role.
-Use `PUBLISHERS=anyone COMMENTERS=anyone` for links that work without sign-in;
-these are the Makefile defaults. An owner opening a link still has owner rights.
+Use `PUBLISHERS=any COMMENTERS=anyone` for local development. Publishing still
+requires an authenticated account, while comments may remain anonymous.
 
 Examples are created once per new account, survive restarts, and stay deleted
 if you remove them. Existing accounts are left unchanged. `make deploy` never

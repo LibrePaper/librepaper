@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import * as route from "../src/lib/latex/route.js";
 
 function fresh(overrides = {}) {
-  return route.initialState({ snapshot: "s1", localStatus: "unknown", vmSupported: true, ...overrides });
+  return route.initialState({ snapshot: "s1", localStatus: "unknown", ...overrides });
 }
 
 // Biber needed, local status unknown -> try local first (optimistic: SPEC
@@ -26,19 +26,18 @@ function fresh(overrides = {}) {
   assert.equal(action, "try-local-biber");
 }
 
-// Biber needed, local known unreachable, VM eligible -> VM.
+// Biber needed, local known unreachable -> show the browser result.
 {
   const state = fresh({ localStatus: "unreachable" });
   const { action, state: next } = route.decide({ type: "biber-needed", identity: "id1", validBcf: true }, state);
-  assert.equal(action, "try-vm");
-  assert.equal(next.attempts.vm.id1, 1);
+  assert.equal(action, "show-browser");
+  assert.deepEqual(next, state);
 }
 
-// Biber needed, local unreachable, VM not eligible (unsupported browser or
-// no valid bcf yet) -> show the browser output with "Local LibrePaper is
-// unavailable".
+// Biber needed, local unavailable -> show the browser output with
+// "Local LibrePaper is unavailable".
 {
-  const state = fresh({ localStatus: "unreachable", vmSupported: false });
+  const state = fresh({ localStatus: "unreachable" });
   const { action, failure } = route.decide({ type: "biber-needed", identity: "id1", validBcf: true }, state);
   assert.equal(action, "show-browser");
   assert.equal(failure.kind, "local-unavailable");
@@ -50,14 +49,16 @@ function fresh(overrides = {}) {
   assert.equal(failure.kind, "local-unavailable");
 }
 
-// try-local-biber actually turned out unreachable/denied: VM only when
-// browser TeX already succeeded (only bibliography work remains).
+// try-local-biber actually turned out unreachable/denied: preserve the
+// browser result and report the companion failure.
 {
   const state = fresh();
   const unreachable = route.decide({ type: "local-unreachable", identity: "id1", validBcf: true, onlyBibliography: true }, state);
-  assert.equal(unreachable.action, "try-vm");
+  assert.equal(unreachable.action, "show-browser");
+  assert.equal(unreachable.failure.kind, "local-unavailable");
   const denied = route.decide({ type: "local-denied", identity: "id2", validBcf: true, onlyBibliography: true }, state);
-  assert.equal(denied.action, "try-vm");
+  assert.equal(denied.action, "show-browser");
+  assert.equal(denied.failure.kind, "local-unavailable");
 }
 {
   const state = fresh();
@@ -73,7 +74,7 @@ function fresh(overrides = {}) {
     { type: "local-tool-missing", identity: "id1", validBcf: true, onlyBibliography: true },
     state,
   );
-  assert.equal(action, "try-vm");
+  assert.equal(action, "show-browser");
 }
 {
   const state = fresh();
@@ -86,7 +87,7 @@ function fresh(overrides = {}) {
 }
 
 // Local Biber incompatible with the browser release's control-file version:
-// prefer a complete native build over the VM when local TeX exists.
+// prefer a complete native build when local TeX exists.
 {
   const state = fresh();
   const { action, state: next } = route.decide(
@@ -102,10 +103,10 @@ function fresh(overrides = {}) {
     { type: "local-incompatible", identity: "id1", validBcf: true, localTexAvailable: false },
     state,
   );
-  assert.equal(action, "try-vm");
+  assert.equal(action, "stop");
 }
 {
-  const state = fresh({ vmSupported: false });
+  const state = fresh();
   const { action, failure } = route.decide(
     { type: "local-incompatible", identity: "id1", validBcf: true, localTexAvailable: false },
     state,
@@ -114,7 +115,7 @@ function fresh(overrides = {}) {
   assert.equal(failure.kind, "incompatible");
 }
 
-// A real Biber input error never cascades into native or VM.
+// A real Biber input error never cascades into another backend.
 {
   const state = fresh();
   const { action, failure } = route.decide({ type: "local-biber-failed", message: "duplicate key" }, state);
@@ -161,18 +162,6 @@ for (const kind of ["init", "resources", "tex", "timeout"]) {
   assert.equal(reset.state.route, "browser");
 }
 
-// The VM cannot load, cannot run, or returns a real diagnostic: stop, no
-// further automatic cycling through the same failed backends.
-{
-  const state = fresh();
-  const unavailable = route.decide({ type: "vm-unavailable", message: "WebAssembly unsupported" }, state);
-  assert.equal(unavailable.action, "stop");
-  assert.equal(unavailable.failure.kind, "vm");
-  const failed = route.decide({ type: "vm-failed", message: "guest crashed" }, state);
-  assert.equal(failed.action, "stop");
-  assert.equal(failed.failure.kind, "vm");
-}
-
 // Cancellation is silent and spends no attempt budget.
 {
   const state = fresh();
@@ -182,18 +171,13 @@ for (const kind of ["init", "resources", "tex", "timeout"]) {
   assert.deepEqual(next.attempts, state.attempts);
 }
 
-// VM attempted at most once per bibliography identity, independent of
-// snapshot: a second `biber-needed` for the same identity from local-unknown
-// still tries local first (identity budget only matters once local has
-// already been ruled out for this decision).
+// Bibliography input failure is terminal and spends no native retry budget.
 {
-  let state = fresh({ localStatus: "unreachable" });
-  const first = route.decide({ type: "biber-needed", identity: "shared", validBcf: true }, state);
-  assert.equal(first.action, "try-vm");
-  state = first.state;
-  const second = route.decide({ type: "local-unreachable", identity: "shared", validBcf: true, onlyBibliography: true }, state);
-  assert.equal(second.action, "stop", "the VM identity budget for 'shared' is already spent");
-  assert.equal(second.failure.kind, "local-unavailable");
+  const state = fresh();
+  const failure = route.decide({ type: "local-biber-failed", message: "duplicate key" }, state);
+  assert.equal(failure.action, "stop");
+  assert.equal(failure.failure.kind, "bibliography");
+  assert.deepEqual(failure.state.attempts, state.attempts);
 }
 
 // Native attempted at most once per snapshot even across different failure

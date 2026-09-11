@@ -7,13 +7,7 @@ use serde_json::json;
 async fn account_examples_resume_after_admission_failure() {
     let mut config = Configuration::default();
     config.set_counts(Some(4), Some(30)).unwrap();
-    let server = test_server_with(
-        config,
-        Policy::parse("anyone"),
-        Policy::parse("anyone"),
-        true,
-    )
-    .await;
+    let server = test_server_with(config, Policy::parse("any"), Policy::parse("any"), true).await;
     let who = Identity::github("alice", "alice");
     get_json_as(&session_as("alice"), &server.url, "/api/me").await;
     assert!(server
@@ -142,7 +136,11 @@ async fn account_examples_are_private_owned_and_created_once() {
         )
         .await;
         assert_eq!(status, 200);
-        assert_eq!(text(&document, "role"), role);
+        assert_eq!(
+            text(&document, "role"),
+            if role == "editor" { "commenter" } else { role },
+            "an anonymous link cannot grant source editing"
+        );
         assert_eq!(
             get_json_keyed(
                 "",

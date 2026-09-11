@@ -968,7 +968,7 @@ impl Server {
                 .try_get(slug)
                 .await
                 .map_err(|e| Failure::new("unavailable", e.to_string()))?;
-            let address = client_address(peer, headers);
+            let address = client_address(peer, headers, &self.config.cost.trusted_proxies);
             return room
                 .apply_agent_annotations(
                     AnnotationBatch {

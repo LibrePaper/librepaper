@@ -843,65 +843,6 @@ impl Room {
                 false,
             );
         }
-        let _quarto_comment_writer = if matches!(
-            &command,
-            Command::Comment {
-                output_anchor: Some(_),
-                ..
-            }
-        ) {
-            Some(self.quarto_publication.lock().await)
-        } else {
-            None
-        };
-        if let Command::Comment {
-            output_anchor: Some(anchor),
-            region,
-            temp_id,
-            request_id,
-            ..
-        } = &command
-        {
-            if valid_quarto_output_anchor(Some(anchor)).is_none() {
-                return (
-                    json!({
-                        "type": "error",
-                        "message": "that Quarto output anchor is not valid",
-                        "temp_id": temp_id,
-                        "request_id": request_id,
-                    }),
-                    false,
-                );
-            }
-            match self
-                .quarto_output_anchor_exists(anchor, region.is_some())
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) => {
-                    return (
-                        json!({
-                            "type": "error",
-                            "message": "that Quarto output is no longer available",
-                            "temp_id": temp_id,
-                            "request_id": request_id,
-                        }),
-                        false,
-                    )
-                }
-                Err(error) => {
-                    return (
-                        json!({
-                            "type": "error",
-                            "message": format!("could not verify Quarto output: {error}"),
-                            "temp_id": temp_id,
-                            "request_id": request_id,
-                        }),
-                        false,
-                    )
-                }
-            }
-        }
         let mut state = self.state.lock().await;
         let config = self.config.clone();
 

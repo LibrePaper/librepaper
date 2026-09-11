@@ -124,7 +124,7 @@ async fn a_figure_goes_up_and_comes_back() {
 }
 
 #[tokio::test]
-async fn an_editor_link_reaches_final_asset_label_and_rendering_checks() {
+async fn an_authenticated_editor_can_update_inputs_but_cannot_upload_renderings() {
     let server = test_server_with(
         Configuration::default(),
         Policy::parse("anyone"),
@@ -178,7 +178,7 @@ async fn an_editor_link_reaches_final_asset_label_and_rendering_checks() {
         .send()
         .await
         .expect("rendering response");
-    assert_eq!(rendering.status(), 200);
+    assert_eq!(rendering.status(), 404);
 }
 
 #[tokio::test]

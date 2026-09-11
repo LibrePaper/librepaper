@@ -95,6 +95,12 @@ impl Server {
         let who = self
             .viewer(&entry, &headers, arrival, query.as_deref())
             .await;
+        if who.auth_failed {
+            return write_json(
+                401,
+                &json!({"error": "authentication expired or was revoked"}),
+            );
+        }
         if !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -138,7 +144,7 @@ impl Server {
                 {
                     return write_json(403, &json!({"error": "comment access changed"}));
                 }
-                let address = client_address(peer, &headers);
+                let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
                 let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
                     if who.at_least(Role::Editor) && !current_who.at_least(Role::Editor) {
                         return write_json(403, &json!({"error": "edit access changed"}));

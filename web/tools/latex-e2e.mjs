@@ -1,251 +1,232 @@
-// The routing table, driven end to end: a real `librepaper serve --latex`, a
-// real `librepaper local start` when asked for, headless Chromium opening a
-// published LaTeX project as its editor, and the stored rendering's
-// provenance saying which backend produced it.
+// End-to-end browser check for the no-retained-renderings contract.
 //
 //   node web/tools/latex-e2e.mjs <binary> <mode> <fixture> [seconds] [mirror]
 //
-//     mode     local   -- start the local app and pair the page with it
-//              vm      -- no local app: Biber must run in the browser VM
-//              browser -- neither: a plain browser compile
-//     fixture  a directory under latex/corpus/e2e (biber, native) or any
-//              directory holding a main.tex
-//
-// Releases shipping Biber use browser-biber before either fallback. Older
-// releases can exercise local or VM bibliography routing. Chromium is
-// required; the mirror defaults to the binary's own URL. This check uses
-// only its temporary server and data.
-//
-// Set localStorage `librepaper-latex-debug` (this script does) to see every
-// routing decision on the console, which is what the trace below prints.
+// `mode` is `browser` (the reader's browser compiler) or `local` (the same
+// reader check, with an optional local companion available for fallback). A
+// reader opens the published read link, so its only document authority is the
+// fragment key. Publishing itself uses a locally minted, signed GitHub test
+// session; no OAuth service is contacted.
+import { createHmac } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, statSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { browser, until } from "./browser-driver.mjs";
+import { ephemeralMirror } from "./ephemeral-mirror.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const BINARY = resolve(process.argv[2] || "dist/librepaper");
-const MODE = process.argv[3] || "local";
-const FIXTURE = resolve(process.argv[4] || join(ROOT, "latex", "corpus", "e2e", "biber"));
+const BINARY = resolve(process.argv[2] || "target/debug/librepaper");
+const MODE = process.argv[3] || "browser";
+const REQUESTED_FIXTURE = resolve(process.argv[4] || join(ROOT, "latex", "corpus", "e2e", "biber"));
 const WAIT = Number(process.argv[5] || 300);
-// A `-` mirror means exercise the binary's compiled-in default. This keeps
-// the e2e harness able to verify the deployed mirror without inventing a
-// local path for `--latex`.
-const MIRROR = process.argv[6] || "-";
-const OUT = mkdtempSync(join(tmpdir(), "librepaper-latex-e2e-"));
+const MIRROR_ARG = process.argv[6] || process.env.MIRROR || join(ROOT, "..", "wasm-latex", "mirror");
 const PORT = 8600 + Math.floor(Math.random() * 200);
-const LOCAL_PORT = 8763;
 const BASE = `http://localhost:${PORT}`;
-const DEBUG = 9500 + Math.floor(Math.random() * 200);
-const HEADERS = { "x-librepaper-client": "shell", "sec-fetch-site": "same-origin" };
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const data = mkdtempSync(join(tmpdir(), "librepaper-e2e-"));
-const config = mkdtempSync(join(tmpdir(), "librepaper-e2e-config-"));
-const profile = mkdtempSync(join(tmpdir(), "librepaper-e2e-profile-"));
-const serverArgs = ["serve", "--port", String(PORT), "--data", data, "--publishers", "anyone", "--commenters", "anyone"];
-if (MIRROR !== "-") serverArgs.push("--latex", MIRROR);
-const server = spawn(BINARY, serverArgs, { stdio: ["ignore", "ignore", "ignore"] });
+const scratch = mkdtempSync(join(tmpdir(), "librepaper-latex-e2e-"));
+const data = mkdtempSync(join(tmpdir(), "librepaper-latex-data-"));
+const config = mkdtempSync(join(tmpdir(), "librepaper-latex-config-"));
+let mirror = null;
+let server = null;
 let local = null;
-const localOut = [];
-if (!["local", "vm", "browser"].includes(MODE)) throw new Error(`unknown mode ${MODE}`);
-if (MODE === "local") {
-  local = spawn(BINARY, ["local", "start", "--port", String(LOCAL_PORT)], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: config, XDG_CACHE_HOME: join(config, "cache") } });
-  local.stdout.on("data", (c) => localOut.push(String(c)));
-  local.stderr.on("data", (c) => localOut.push(String(c)));
+
+const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+const shellHeaders = { "x-librepaper-client": "shell" };
+
+function sql(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
 }
-const chrome = spawn("chromium", ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", `--user-data-dir=${profile}`, `--remote-debugging-port=${DEBUG}`, "about:blank"], { stdio: "ignore" });
-const logs = [];
-try {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(`${BASE}/api/config`)).ok) break; } catch {} await wait(150); }
-  // Establish the same signed visitor identity a browser would receive. A
-  // cookie-less CLI publish is intentionally ownerless, so it cannot mint an
-  // editor link for the compile phase below.
-  const landing = await fetch(`${BASE}/`);
-  const visitor = landing.headers.getSetCookie()
-    .find(cookie => cookie.startsWith("librepaper_visitor="))?.split(";", 1)[0] || "";
-  if (!visitor) throw new Error("server did not issue a visitor cookie");
-  const uploadHeaders = { ...HEADERS, cookie: visitor };
-  let body;
-  if (statSync(FIXTURE).isDirectory()) {
-    body = new FormData();
-    body.set("title", "LaTeX smoke");
-    body.set("main", "main.tex");
-    function addFiles(directory, prefix = "") {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        if (entry.name === "logs" || entry.name.startsWith(".")) continue;
-        const path = prefix + entry.name;
-        if (entry.isSymbolicLink()) throw new Error("unexpected fixture symlink: " + path);
-        if (entry.isDirectory()) addFiles(join(directory, entry.name), path + "/");
-        else body.append("file", new Blob([readFileSync(join(directory, entry.name))]), path);
-      }
-    }
-    addFiles(FIXTURE);
-  } else {
-    uploadHeaders["content-type"] = "application/json";
-    body = JSON.stringify({ title: "LaTeX smoke", source: readFileSync(FIXTURE, "utf8"), source_format: "latex" });
-  }
-  const uploaded = await fetch(`${BASE}/api/documents`, {
-    method: "POST",
-    headers: uploadHeaders,
-    body,
+
+// This is the same v2 envelope as the OAuth callback writes. The catalogue
+// row is seeded below so the configured provider and session generation are
+// checked by the real binary before it accepts the publication.
+function signedGithubSession() {
+  const key = Buffer.from(readFileSync(join(data, "secrets", "session.key"), "utf8").trim(), "hex");
+  const generation = "latex-browser-test-generation";
+  const expires = Math.floor(Date.now() / 1000) + 3600;
+  const raw = `github|browser-test|github:browser-test|${generation}||Browser Test|${expires}`;
+  const payload = Buffer.from(raw).toString("base64url");
+  const signature = createHmac("sha256", key).update(`session-v2\0${payload}`).digest("base64url");
+  return { cookie: `librepaper_session=v2.${payload}.${signature}`, generation };
+}
+
+function seedAccount(generation) {
+  const db = join(data, "catalog.db");
+  const now = new Date().toISOString();
+  const statement = `INSERT INTO accounts
+    (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation, erasure_cursor)
+    VALUES (${sql("github:browser-test")}, ${sql("github")}, ${sql("browser-test")}, ${sql("Browser Test")}, '',
+      ${sql(now)}, ${sql(now)}, ${sql("test")}, 'active', ${sql(generation)}, NULL);`;
+  execFileSync("sqlite3", [db, statement], { stdio: "ignore" });
+}
+
+function fixtureTree(directory) {
+  const files = (dir, prefix = "") => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name.startsWith(".") || entry.name === "logs") return [];
+    const relative = prefix + entry.name;
+    if (entry.isSymbolicLink()) throw new Error(`fixture symlink: ${relative}`);
+    return entry.isDirectory() ? files(join(dir, entry.name), `${relative}/`) : [relative];
   });
-  const publication = await uploaded.json();
-  if (!uploaded.ok || typeof publication.share_url !== "string") {
-    throw new Error(`publish failed: ${JSON.stringify(publication)}`);
+  const form = new FormData();
+  form.set("title", "LaTeX browser smoke");
+  form.set("main", "main.tex");
+  for (const path of files(directory).sort()) {
+    form.append("file", new Blob([readFileSync(join(directory, path))]), path);
   }
-  const url = new URL(publication.share_url, BASE).href;
-  const publishedUrl = new URL(url);
-  const slug = publishedUrl.pathname.split("/").pop();
-  // `publish` returns a read link, whose key lives in the fragment so it is
-  // never sent during navigation. The browser keeps that key in memory and
-  // sends it as a header for document API requests. The smoke harness makes
-  // the same read-only API calls while polling, so it must carry the key too.
-  const key = new URLSearchParams(publishedUrl.hash.slice(1)).get("k") || "";
-  if (!key) throw new Error(`publish did not return a read link: ${url}`);
-  const READ_HEADERS = { ...HEADERS, "x-librepaper-key": key };
-  // Publishing an anonymous document returns its reader link. Mint a
-  // separate editor link for the compile phase; the final navigation below
-  // deliberately uses the published reader link, exercising the access-key
-  // boundary without granting readers edit rights.
-  const share = await fetch(`${BASE}/api/documents/${slug}/share`, {
-    method: "POST",
-    headers: { ...HEADERS, cookie: visitor, "content-type": "application/json" },
-    body: JSON.stringify({ link: { role: "editor", until: "" } }),
+  return form;
+}
+
+async function publish(cookie, fixture) {
+  const body = statSync(fixture).isDirectory()
+    ? fixtureTree(fixture)
+    : JSON.stringify({ title: "LaTeX browser smoke", source_format: "latex", source: readFileSync(fixture, "utf8") });
+  const headers = { ...shellHeaders, cookie };
+  if (typeof body === "string") headers["content-type"] = "application/json";
+  const response = await fetch(`${BASE}/api/documents`, { method: "POST", headers, body });
+  const value = await response.json();
+  if (!response.ok || typeof value.share_url !== "string") throw new Error(`publish failed (${response.status}): ${JSON.stringify(value)}`);
+  const link = new URL(value.share_url, BASE);
+  const key = new URLSearchParams(link.hash.slice(1)).get("k");
+  if (!key) throw new Error(`publish returned no reader key: ${link}`);
+  return { url: link.href, slug: link.pathname.split("/").filter(Boolean).pop(), key };
+}
+
+async function main() {
+  if (!(MODE === "browser" || MODE === "local")) throw new Error(`unknown mode ${MODE}; use browser or local`);
+  const fixture = existsSync(REQUESTED_FIXTURE)
+    ? REQUESTED_FIXTURE
+    : join(ROOT, "latex", "corpus", "e2e", "native");
+  if (!statSync(fixture)) throw new Error(`fixture does not exist: ${fixture}`);
+
+  const mirrorUrl = /^https:\/\//i.test(MIRROR_ARG)
+    ? MIRROR_ARG.replace(/\/?$/, "/")
+    : (mirror = await ephemeralMirror(MIRROR_ARG)).url;
+  const args = [
+    "serve", "--port", String(PORT), "--data", data,
+    "--publishers", "any", "--commenters", "anyone", "--latex-mirror", mirrorUrl,
+  ];
+  server = spawn(BINARY, args, {
+    stdio: ["ignore", "ignore", "pipe"],
+    env: { ...process.env, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" },
   });
-  const sharing = await share.json();
-  const editPath = sharing.links?.editor?.url;
-  if (!share.ok || typeof editPath !== "string") throw new Error(`share did not return an edit link (${share.status}): ${JSON.stringify(sharing)}`);
-  const editUrl = new URL(editPath, BASE).href;
-  console.log("published", slug, "mode", MODE);
-  let token = null;
+  let serverLog = "";
+  server.stderr.on("data", (bytes) => { serverLog += String(bytes); });
+  await until("serve startup", async () => {
+    if (server.exitCode !== null) throw new Error(serverLog);
+    return (await fetch(`${BASE}/api/config`)).ok;
+  }, 30000);
+  console.log("origin baseline " + JSON.stringify(await (await fetch(`${BASE}/api/status`)).json()));
+  const session = signedGithubSession();
+  seedAccount(session.generation);
+  const published = await publish(session.cookie, fixture);
+  console.log(`published ${published.slug}; reader key only; mirror ${mirrorUrl}`);
+
+  const targetUrl = published.url;
+  let localPairing = null;
   if (MODE === "local") {
+    local = spawn(BINARY, ["local", "start", "--port", "8763"], {
+      stdio: "ignore", env: { ...process.env, XDG_CONFIG_HOME: config, XDG_CACHE_HOME: join(config, "cache") },
+    });
     let code = null;
-    for (let i = 0; i < 60 && !code; i++) {
-      try { code = JSON.parse(readFileSync(join(config, "librepaper/local/service.json"), "utf8")).code; } catch {}
-      await wait(250);
-    }
-    if (!code) throw new Error(`no pairing code: ${localOut.join("")}`);
-    const health = await (await fetch(`http://127.0.0.1:${LOCAL_PORT}/librepaper/local/v1/health`)).json();
-    console.log("local health", JSON.stringify(health));
-    const connect = await fetch(`http://127.0.0.1:${LOCAL_PORT}/librepaper/local/v1/connect`, { method: "POST", headers: { "content-type": "application/json", origin: BASE }, body: JSON.stringify({ origin: BASE, project: slug, code }) });
-    const pairing = await connect.json();
-    console.log("connect", connect.status, JSON.stringify(pairing).slice(0, 80));
-    token = { token: pairing.token, expires: pairing.expires, instance: health.instance };
-  }
-  let endpoint;
-  for (let i = 0; i < 100; i++) { try { endpoint = (await (await fetch(`http://127.0.0.1:${DEBUG}/json/version`)).json()).webSocketDebuggerUrl; break; } catch {} await wait(150); }
-  const socket = new WebSocket(endpoint);
-  await new Promise((r, j) => { socket.onopen = r; socket.onerror = j; });
-  let id = 0; const pending = new Map(); const sessions = new Map();
-  const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => { const n = ++id; pending.set(n, { resolve, reject }); socket.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); });
-  socket.onmessage = ({ data: raw }) => {
-    const m = JSON.parse(raw);
-    if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.reject(new Error(JSON.stringify(m.error))) : p.resolve(m.result); return; }
-    if (m.method === "Target.attachedToTarget") {
-      const { sessionId, targetInfo } = m.params; sessions.set(sessionId, targetInfo);
-      for (const c of ["Runtime.enable", "Log.enable", "Network.enable"]) send(c, {}, sessionId).catch(() => {});
-      send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, sessionId).catch(() => {});
-      send("Runtime.runIfWaitingForDebugger", {}, sessionId).catch(() => {});
-      return;
-    }
-    const where = m.sessionId ? `${sessions.get(m.sessionId)?.type}:${(sessions.get(m.sessionId)?.url || "").slice(-30)}` : "root";
-    if (m.method === "Runtime.exceptionThrown") logs.push(`[${where}] EXCEPTION ${JSON.stringify(m.params.exceptionDetails).slice(0, 500)}`);
-    if (m.method === "Runtime.consoleAPICalled") logs.push(`[${where}] console.${m.params.type} ${m.params.args.map((a) => a.value ?? a.description ?? "").join(" ").slice(0, 500)}`);
-    if (m.method === "Log.entryAdded") logs.push(`[${where}] log.${m.params.entry.level} ${m.params.entry.text.slice(0, 300)} ${m.params.entry.url || ""}`);
-    if (m.method === "Network.responseReceived" && /8763|biber-vm|jobs|capabil|health|connect|renderings/.test(m.params.response.url)) logs.push(`[${where}] ${m.params.response.status} ${m.params.response.url.replace(BASE, "")}`);
-  };
-  const { targetId } = await send("Target.createTarget", { url: "about:blank" });
-  const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
-  sessions.set(sessionId, { type: "page", url: "" });
-  for (const c of ["Runtime.enable", "Log.enable", "Network.enable"]) await send(c, {}, sessionId);
-  await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, sessionId);
-  await send("Page.navigate", { url: `${BASE}/` }, sessionId);
-  await wait(1500);
-  await send("Runtime.evaluate", { expression: `localStorage.setItem("librepaper-latex-debug", "1")` }, sessionId);
-  if (token) {
-    await send("Runtime.evaluate", { expression: `localStorage.setItem("librepaper-local-pairings", JSON.stringify({ [location.origin + "|" + ${JSON.stringify(slug)}]: ${JSON.stringify(token)} }))` }, sessionId);
-  }
-  await send("Page.navigate", { url: editUrl }, sessionId);
-  const t0 = Date.now();
-  let latest = null; let stable = 0;
-  while (Date.now() - t0 < WAIT * 1000) {
-    await wait(5000);
-    latest = await (await fetch(`${BASE}/api/documents/${slug}/renderings/latest`, { headers: READ_HEADERS })).json();
-    if (latest.sha) break;
-    const status = await send("Runtime.evaluate", { expression: "document.body.innerText.replace(/\\s+/g,' ').slice(0,160)", returnByValue: true }, sessionId).catch(() => null);
-    const line = status?.result?.value || "";
-    stable = /Compilation failed/.test(line) ? stable + 1 : 0;
-    if (stable >= 4) { console.log(`  gave up at ${((Date.now() - t0) / 1000).toFixed(0)}s: ${line}`); break; }
-  }
-  console.log("latest:", JSON.stringify(latest).slice(0, 400), "after", ((Date.now() - t0) / 1000).toFixed(0), "s");
-  if (!latest?.sha) {
-    await send("Runtime.evaluate", { expression: `Array.from(document.querySelectorAll("button")).find(b => /diagnostics/i.test(b.textContent + b.getAttribute("aria-label") + b.title))?.click()` }, sessionId);
-    await wait(100);
-    const details = await send("Runtime.evaluate", { expression: "document.body.innerText", returnByValue: true }, sessionId);
-    throw new Error(`No PDF was produced within ${WAIT}s. ${details.result.value}`);
-  }
-  if (latest.sha) {
-    const pdf = await fetch(`${BASE}/api/documents/${slug}/renderings/${latest.sha}`, { headers: READ_HEADERS });
-    const bytes = Buffer.from(await pdf.arrayBuffer());
-    if (!pdf.ok || bytes.subarray(0, 5).toString() !== "%PDF-") throw new Error("Stored rendering is not a PDF");
-    if (MODE === "browser" && latest.provenance?.backend !== "browser") throw new Error("Expected a browser compile, not a local fallback");
-    writeFileSync(`${OUT}/rendering.pdf`, bytes);
-    let text = "";
-    try { text = execFileSync("pdftotext", [`${OUT}/rendering.pdf`, "-"], { encoding: "utf8" }); } catch {}
-    console.log("pdf bytes", bytes.length, "text:", text.replace(/\s+/g, " ").slice(0, 200));
-    console.log("provenance:", JSON.stringify(latest.provenance));
+    await until("local pairing code", async () => {
+      try { code = JSON.parse(readFileSync(join(config, "librepaper", "local", "service.json"), "utf8")).code; } catch {}
+      return Boolean(code);
+    }, 30000);
+    const health = await (await fetch("http://127.0.0.1:8763/librepaper/local/v1/health")).json();
+    const connected = await fetch("http://127.0.0.1:8763/librepaper/local/v1/connect", {
+      method: "POST", headers: { "content-type": "application/json", origin: BASE },
+      body: JSON.stringify({ origin: BASE, project: published.slug, code }),
+    });
+    const pairing = await connected.json();
+    if (!connected.ok || !pairing.token) throw new Error(`local pairing failed (${connected.status}): ${JSON.stringify(pairing)}`);
+    localPairing = { token: pairing.token, expires: pairing.expires, instance: health.instance };
+    // The local mode keeps the companion fallback reachable for the Biber
+    // fixture. Browser Biber remains preferred by the renderer; the local
+    // pairing is selected only after browser resource failure.
+
   }
 
-  // The document link is a reader link. Reopen it after the owner compile and
-  // require the app to remain read-only while displaying the stored PDF.
-  await send("Page.navigate", { url: "about:blank" }, sessionId);
-  await wait(200);
-  await send("Page.navigate", { url }, sessionId);
-  await wait(1500);
-  const access = await send("Runtime.evaluate", { expression: "document.body.innerText", returnByValue: true }, sessionId);
-  if (!/Read-only access\./.test(access.result.value)) throw new Error("published read link did not open read-only");
-  const compiler = await send("Runtime.evaluate", {
-    expression: 'performance.getEntriesByType("resource").some(e => new URL(e.name).pathname.startsWith("/latex/"))', returnByValue: true,
-  }, sessionId);
-  if (compiler.result.value) throw new Error("read-only page fetched a LaTeX compiler");
-
-  // A stored PDF alone does not prove that the deployed viewer can draw it.
-  // Inspect the real document frame, including a cross-origin iframe target.
-  let drawn = false;
-  const frameSessions = new Map();
-  for (let i = 0; i < 100 && !drawn; i++) {
-    const expression = '!!document.querySelector(".page canvas") && !!document.querySelector(".textLayer")?.textContent.trim()';
-    const { targetInfos } = await send("Target.getTargets");
-    const frame = targetInfos.find(t => t.type === "iframe" && t.url.includes(`/${slug}/`));
-    if (frame) {
-      if (!frameSessions.has(frame.targetId)) frameSessions.set(frame.targetId, (await send("Target.attachToTarget", { targetId: frame.targetId, flatten: true })).sessionId);
-      drawn = (await send("Runtime.evaluate", { expression, returnByValue: true }, frameSessions.get(frame.targetId))).result.value;
-    } else {
-      const { frameTree } = await send("Page.getFrameTree", {}, sessionId);
-      const frameId = frameTree.childFrames?.[0]?.frame.id;
-      if (frameId) {
-        const { executionContextId } = await send("Page.createIsolatedWorld", { frameId, worldName: "latex-smoke" }, sessionId);
-        drawn = (await send("Runtime.evaluate", { expression, contextId: executionContextId, returnByValue: true }, sessionId)).result.value;
-      }
+  process.env.LIBREPAPER_BROWSER_IGNORE_CERT_ERRORS = "1";
+  const tab = await browser(process.env.BROWSER || "chromium", join(scratch, "profile"), 9500 + Math.floor(Math.random() * 500));
+  try {
+    await tab.resize(1300, 900);
+    if (localPairing) {
+      await tab.navigate(BASE);
+      await tab.evaluate(`localStorage.setItem("librepaper-local-pairings", JSON.stringify({ [location.origin + "|" + ${JSON.stringify(published.slug)}]: ${JSON.stringify(localPairing)} }))`);
     }
-    if (!drawn) await wait(100);
+    await tab.navigate(targetUrl);
+    const started = Date.now();
+    await until("reader source compile", async () => {
+      const text = await tab.text().catch(() => "");
+      return /Knuth|LaTeX|browser|paragraph/i.test(text) && !/not yet rendered|rendering from source/i.test(text);
+    }, WAIT * 1000);
+    const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+    const frame = await until("PDF frame", async () => {
+      const url = await tab.evaluate("document.querySelector('iframe[title=Document]')?.src || ''");
+      return /\/pdf\//.test(url);
+    }, 30000).then(() => tab.evaluate("document.querySelector('iframe[title=Document]').src"));
+    const drawn = await until("PDF pages and text layer", async () => {
+      const value = await tab.frameEvaluate("({pages:document.querySelectorAll('.page canvas').length, text:document.querySelector('.textLayer')?.textContent || ''})").catch(() => null);
+      return value?.pages > 0 && value.text.trim().length > 0;
+    }, 30000).then(() => tab.frameEvaluate("({pages:document.querySelectorAll('.page canvas').length, text:document.querySelector('.textLayer')?.textContent || ''})"));
+    if (fixture.endsWith("/biber") || fixture.endsWith("\\biber")) {
+      if (!/Knuth/i.test(drawn.text)) throw new Error("Biber fixture rendered without its resolved Knuth citation");
+    }
+    console.log(`reader PDF drawn in ${elapsed}s: frame=${frame}, pages=${drawn.pages}`);
+
+    // Capture the download Blob created by the File -> Download PDF command.
+    // This proves the active tab still owns the transient bytes and exports
+    // them locally; it never asks the origin for a generated object.
+    await tab.evaluate(`(() => {
+      const original = URL.createObjectURL;
+      window.__librepaperExport = null;
+      URL.createObjectURL = (blob) => {
+        if (blob?.type === 'application/pdf') blob.arrayBuffer().then(buffer => {
+          const bytes = new Uint8Array(buffer);
+          window.__librepaperExport = { type: blob.type, size: bytes.length, header: String.fromCharCode(...bytes.slice(0, 5)) };
+        });
+        return original(blob);
+      };
+    })()`);
+    await tab.evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'File')?.click()");
+    await until("PDF export menu", () => tab.evaluate("Array.from(document.querySelectorAll('[role=menuitem]')).some(e => e.textContent.trim() === 'Download PDF')"), 10000);
+    await tab.evaluate(`(() => {
+      const item = Array.from(document.querySelectorAll('[role=menuitem]')).find(e => e.textContent.trim() === 'Download PDF' && e.getClientRects().length);
+      if (!item || item.getAttribute('aria-disabled') === 'true') throw new Error('PDF download is unavailable after rendering');
+      item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse', button: 0 }));
+      item.click();
+    })()`);
+    const exported = await until("transient PDF export", async () => tab.evaluate("window.__librepaperExport"), 10000).then(() => tab.evaluate("window.__librepaperExport"));
+    if (exported?.header !== "%PDF-" || !exported.size) throw new Error(`PDF export was not a real transient PDF: ${JSON.stringify(exported)}`);
+    console.log(`transient PDF export ${exported.size} bytes verified`);
+
+    const resources = await tab.evaluate("performance.getEntriesByType('resource').map(e => e.name)");
+    if (resources.some((url) => new URL(url).pathname.startsWith("/latex/"))) throw new Error("reader fetched compiler bytes through the origin /latex route");
+    if (!resources.some((url) => url.startsWith(mirrorUrl))) throw new Error(`reader did not fetch compiler assets directly from ${mirrorUrl}`);
+    console.log("cold reader used direct HTTPS mirror and no origin /latex route");
+
+    const readHeaders = { ...shellHeaders, "x-librepaper-key": published.key };
+    for (const path of [`/api/documents/${published.slug}/renderings/latest`, `/api/documents/${published.slug}/renderings/${"0".repeat(64)}`]) {
+      const response = await fetch(`${BASE}${path}`, { headers: readHeaders });
+      if (response.status !== 404) throw new Error(`rendered output route ${path} returned ${response.status}, expected 404`);
+    }
+    console.log("origin has no retained rendering route");
+    console.log("origin after cold compile " + JSON.stringify(await (await fetch(`${BASE}/api/status`)).json()));
+  } finally {
+    await tab.close();
   }
-  if (!drawn) throw new Error("PDF was compiled but the viewer did not draw its pages and selectable text");
-  console.log("viewer: PDF pages and selectable text rendered");
-  const text = await send("Runtime.evaluate", { expression: "document.body.innerText.replace(/\\s+/g,' ').slice(0,300)", returnByValue: true }, sessionId);
-  console.log("page:", text.result.value);
-  console.log("--- logs ---");
-  for (const line of logs.slice(0, 60)) console.log(line);
-  if (local) console.log("--- local ---\n" + localOut.join("").slice(0, 1500));
+}
+
+try {
+  await main();
 } catch (error) {
-  console.error("E2E FAILED:", error.message);
-  for (const line of logs.slice(0, 40)) console.log(line);
+  console.error(`E2E FAILED: ${error.message}`);
   process.exitCode = 1;
 } finally {
-  chrome.kill(); server.kill(); local?.kill("SIGINT");
-  await wait(500);
-  for (const dir of [data, config, profile, OUT]) rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  server?.kill();
+  local?.kill("SIGINT");
+  mirror?.server.close();
+  await wait(250);
+  for (const directory of [data, config, scratch, mirror?.tls].filter(Boolean)) rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
 }

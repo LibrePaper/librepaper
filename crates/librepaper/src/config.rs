@@ -6,6 +6,11 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+/// The public static compiler distribution used when an operator does not
+/// host a mirror copy. Browsers fetch it directly; the origin never proxies
+/// these bytes.
+pub const DEFAULT_LATEX_MIRROR: &str = "https://latex.librepaper.workers.dev/";
+
 /// Private disposable state used by the server process, and the fixed
 /// filesystem layout of a local deployment directory.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -171,6 +176,20 @@ pub struct Configuration {
     /// Sizes are bytes of stored HTML; every index entry records its own.
     pub storage: StorageLimit,
 
+    /// The deployment-wide cost envelope. Most of these are implementation
+    /// guardrails with documented defaults; the daily transfer allowance is
+    /// the one everyday cost control exposed by the CLI. Keeping this policy
+    /// beside the document and storage limits makes the effective policy a
+    /// single value for startup reporting and the server.
+    #[serde(skip)]
+    pub cost: CostPolicy,
+    #[serde(skip)]
+    pub sockets: crate::server::socket_budget::SocketPolicy,
+    /// Optional reporting metadata for operator-managed backups.
+    pub backup: BackupPolicy,
+    #[serde(skip)]
+    pub policy_origins: std::collections::BTreeMap<String, String>,
+
     /// Caps the serialized seed annotations a reserved example carries, in
     /// bytes.
     pub max_annotations: usize,
@@ -239,6 +258,300 @@ pub struct StorageLimit {
     pub per_owner: i64,
     pub documents_per_owner: usize,
     pub uploads_per_hour: usize,
+}
+
+/// Optional operator-declared backup policy.  LibrePaper currently creates
+/// complete local copies; these values describe the operator's intended
+/// destination and retention so status can report it without managing the
+/// destination.  `None` means the operator made no declaration.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupPolicy {
+    pub destination_class: Option<String>,
+    /// Declared backup frequency in seconds.
+    pub frequency: Option<u64>,
+    pub retained_count: Option<usize>,
+    pub encrypted: Option<bool>,
+    /// Warn after this many completed backups for the deployment.
+    pub warning_count: usize,
+}
+
+impl Default for BackupPolicy {
+    fn default() -> Self {
+        Self {
+            destination_class: None,
+            frequency: None,
+            retained_count: None,
+            encrypted: None,
+            warning_count: 10,
+        }
+    }
+}
+
+/// Optional values accepted from the advanced YAML file.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupPolicyOverrides {
+    pub destination_class: Option<String>,
+    pub frequency: Option<u64>,
+    pub retained_count: Option<usize>,
+    pub encrypted: Option<bool>,
+    pub warning_count: Option<usize>,
+}
+
+const MAX_BACKUP_POLICY_STRING: usize = 64;
+const MAX_BACKUP_POLICY_FREQUENCY_SECONDS: u64 = 10 * 365 * 24 * 60 * 60;
+const MAX_BACKUP_POLICY_COUNT: usize = 1_000_000;
+
+impl BackupPolicy {
+    pub fn apply(&mut self, overrides: BackupPolicyOverrides) -> Result<(), String> {
+        if let Some(value) = overrides.destination_class {
+            let value = value.trim().to_owned();
+            if value.is_empty()
+                || value.len() > MAX_BACKUP_POLICY_STRING
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._- /".contains(&byte))
+            {
+                return Err(
+                    "backup.destination_class must be 1-64 ASCII letters, digits, spaces, or ._- /"
+                        .into(),
+                );
+            }
+            self.destination_class = Some(value);
+        }
+        if let Some(value) = overrides.frequency {
+            if !(1..=MAX_BACKUP_POLICY_FREQUENCY_SECONDS).contains(&value) {
+                return Err("backup.frequency must be between 1 second and 10 years".into());
+            }
+            self.frequency = Some(value);
+        }
+        if let Some(value) = overrides.retained_count {
+            if value == 0 || value > MAX_BACKUP_POLICY_COUNT {
+                return Err("backup.retained_count must be between 1 and 1000000".into());
+            }
+            self.retained_count = Some(value);
+        }
+        if let Some(value) = overrides.encrypted {
+            self.encrypted = Some(value);
+        }
+        if let Some(value) = overrides.warning_count {
+            if value > MAX_BACKUP_POLICY_COUNT {
+                return Err("backup.warning_count must be at most 1000000".into());
+            }
+            self.warning_count = value;
+        }
+        Ok(())
+    }
+}
+
+/// Versioned deployment cost policy. Values are deliberately expressed in
+/// bytes, counts, and rolling windows rather than currency so the policy is
+/// portable between hosts and providers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CostPolicy {
+    /// Schema version for status output and future advanced configuration.
+    pub version: u32,
+    /// Origin response bytes allowed in a rolling 24-hour window. `None`
+    /// retains the historical unlimited behavior; `Some(0)` refuses ordinary
+    /// transfer while leaving the emergency allowance available.
+    pub transfer_bytes: Option<u64>,
+    /// Internal reserve for health, authentication, deletion, export-control,
+    /// quota-status, and durability acknowledgements.
+    pub emergency_bytes: u64,
+    /// Deployment request guardrails, each measured over one rolling minute.
+    pub requests_per_minute: usize,
+    pub requests_per_network_minute: usize,
+    pub requests_per_principal_minute: usize,
+    pub requests_per_document_minute: usize,
+    /// Maximum concurrent compiler/font/artifact transfers admitted by the
+    /// origin.
+    pub artifact_transfers: usize,
+    /// Concurrent HTTP handlers performing origin work.
+    pub work_concurrency: usize,
+    /// Deployment-wide request body parsing/decoded-payload memory ceiling.
+    pub request_body_memory_bytes: usize,
+    /// TCP peers whose X-Forwarded-For header may be used for client identity.
+    /// An empty list means the TCP peer address is authoritative.
+    pub trusted_proxies: Vec<String>,
+}
+
+pub const COST_POLICY_VERSION: u32 = 1;
+pub const DEFAULT_EMERGENCY_BYTES: u64 = 1 << 20;
+pub const DEFAULT_REQUESTS_PER_MINUTE: usize = 60_000;
+pub const DEFAULT_REQUESTS_PER_NETWORK_MINUTE: usize = 6_000;
+pub const DEFAULT_REQUESTS_PER_PRINCIPAL_MINUTE: usize = 6_000;
+pub const DEFAULT_REQUESTS_PER_DOCUMENT_MINUTE: usize = 12_000;
+pub const DEFAULT_ARTIFACT_TRANSFERS: usize = 64;
+/// Maximum decoded/request parsing memory reserved across concurrent HTTP
+/// handlers. Four times the incoming body estimate is admitted before reads.
+pub const DEFAULT_REQUEST_BODY_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+
+/// Optional advanced configuration-file values. Every member is optional so
+/// operators can override one guardrail without copying the policy defaults.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CostPolicyOverrides {
+    pub transfer_bytes: Option<u64>,
+    pub requests_per_minute: Option<usize>,
+    pub requests_per_network_minute: Option<usize>,
+    pub requests_per_principal_minute: Option<usize>,
+    pub requests_per_document_minute: Option<usize>,
+    pub artifact_transfers: Option<usize>,
+    pub work_concurrency: Option<usize>,
+    pub request_body_memory_bytes: Option<usize>,
+}
+
+impl Default for CostPolicy {
+    fn default() -> Self {
+        Self {
+            version: COST_POLICY_VERSION,
+            transfer_bytes: None,
+            emergency_bytes: DEFAULT_EMERGENCY_BYTES,
+            requests_per_minute: DEFAULT_REQUESTS_PER_MINUTE,
+            requests_per_network_minute: DEFAULT_REQUESTS_PER_NETWORK_MINUTE,
+            requests_per_principal_minute: DEFAULT_REQUESTS_PER_PRINCIPAL_MINUTE,
+            requests_per_document_minute: DEFAULT_REQUESTS_PER_DOCUMENT_MINUTE,
+            artifact_transfers: DEFAULT_ARTIFACT_TRANSFERS,
+            work_concurrency: 64,
+            request_body_memory_bytes: DEFAULT_REQUEST_BODY_MEMORY_BYTES,
+            trusted_proxies: Vec::new(),
+        }
+    }
+}
+
+impl CostPolicy {
+    /// The machine-readable policy used by operator status output. The
+    /// explicit field names keep an omitted advanced setting distinguishable
+    /// from an unlimited transfer budget.
+    pub fn effective_policy(&self) -> serde_json::Value {
+        serde_json::json!({
+            "version": self.version,
+            "transfer_bytes": self.transfer_bytes,
+            "emergency_bytes": self.emergency_bytes,
+            "requests_per_minute": self.requests_per_minute,
+            "requests_per_network_minute": self.requests_per_network_minute,
+            "requests_per_principal_minute": self.requests_per_principal_minute,
+            "requests_per_document_minute": self.requests_per_document_minute,
+            "artifact_transfers": self.artifact_transfers,
+            "work_concurrency": self.work_concurrency,
+            "request_body_memory_bytes": self.request_body_memory_bytes,
+            "trusted_proxies": self.trusted_proxies,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.work_concurrency == 0 {
+            return Err("cost.work_concurrency must be positive".into());
+        }
+        if self.request_body_memory_bytes == 0 || self.request_body_memory_bytes > u32::MAX as usize
+        {
+            return Err(
+                "cost.request_body_memory_bytes must be between 1 and 4294967295 bytes".into(),
+            );
+        }
+        if self.version != COST_POLICY_VERSION {
+            return Err(format!(
+                "unsupported cost policy version {}; this build supports {}",
+                self.version, COST_POLICY_VERSION
+            ));
+        }
+        if self.emergency_bytes == 0 {
+            return Err("the emergency transfer allowance must be positive".into());
+        }
+        if self.requests_per_minute == 0
+            || self.requests_per_network_minute == 0
+            || self.requests_per_principal_minute == 0
+            || self.requests_per_document_minute == 0
+            || self.artifact_transfers == 0
+        {
+            return Err("cost request and concurrency guardrails must be positive".into());
+        }
+        if self.trusted_proxies.len() > 128 {
+            return Err("trusted_proxies may contain at most 128 networks".into());
+        }
+        for network in &self.trusted_proxies {
+            validate_proxy_network(network)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_proxy_network(value: &str) -> Result<(), String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 64 {
+        return Err(format!(
+            "trusted_proxies entry {value:?} is empty or too long"
+        ));
+    }
+    let (address, prefix) = value.split_once('/').unwrap_or((value, ""));
+    let address = address
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| format!("trusted_proxies entry {value:?} is not an IP address or CIDR"))?;
+    let bits = match address {
+        std::net::IpAddr::V4(_) => 32,
+        std::net::IpAddr::V6(_) => 128,
+    };
+    if prefix.is_empty() {
+        return if value.contains('/') {
+            Err("trusted_proxies CIDR requires a prefix".into())
+        } else {
+            Ok(())
+        };
+    }
+    let prefix = prefix
+        .parse::<u8>()
+        .map_err(|_| format!("trusted_proxies entry {value:?} has an invalid prefix"))?;
+    if matches!(address, std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()) && prefix < 96 {
+        return Err("mapped IPv4 proxy CIDR requires a prefix between 96 and 128".into());
+    }
+    if prefix > bits {
+        return Err(format!(
+            "trusted_proxies entry {value:?} has prefix /{prefix}, but this address has {bits} bits"
+        ));
+    }
+    Ok(())
+}
+
+/// Parse a daily transfer allowance. Binary units avoid ambiguity when an
+/// operator is budgeting storage and network together. A bare integer is
+/// bytes, as required by the CLI contract.
+pub fn parse_budget_transfer(value: &str) -> Result<u64, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("--budget-transfer needs a byte count (for example 10GiB)".into());
+    }
+    if value.starts_with('-') {
+        return Err(format!("--budget-transfer {value:?} cannot be negative"));
+    }
+    let split = value
+        .bytes()
+        .position(|byte| !byte.is_ascii_digit())
+        .unwrap_or(value.len());
+    let (digits, unit) = value.split_at(split);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!(
+            "--budget-transfer {value:?} is not a byte count; use an integer with an optional B, KiB, MiB, GiB, or TiB suffix"
+        ));
+    }
+    let number = digits
+        .parse::<u64>()
+        .map_err(|_| format!("--budget-transfer {value:?} is too large"))?;
+    let multiplier = match unit.to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "kib" => 1 << 10,
+        "mib" => 1 << 20,
+        "gib" => 1 << 30,
+        "tib" => 1 << 40,
+        _ => {
+            return Err(format!(
+                "--budget-transfer {value:?} has an unknown unit; use B, KiB, MiB, GiB, or TiB"
+            ))
+        }
+    };
+    number
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("--budget-transfer {value:?} is too large"))
 }
 
 /// What the server-held document may cost: how often it is written, how big a
@@ -373,6 +686,10 @@ impl Default for Configuration {
                 documents_per_owner: 50,
                 uploads_per_hour: 30,
             },
+            cost: CostPolicy::default(),
+            sockets: crate::server::socket_budget::SocketPolicy::default(),
+            backup: BackupPolicy::default(),
+            policy_origins: std::collections::BTreeMap::new(),
             max_annotations: 256 * 1024,
             // What the upload form takes. Every one of these is a source
             // format `document_format` names and `storable_source` allows, so
@@ -428,6 +745,497 @@ impl Default for Configuration {
 }
 
 impl Configuration {
+    /// Return the complete effective operator policy for startup and the
+    /// loopback status surface. Callers should redact `trusted_proxies` when
+    /// exposing a public configuration response.
+    pub fn effective_policy(&self) -> serde_json::Value {
+        serde_json::json!({
+            "version": COST_POLICY_VERSION,
+            "cost": self.cost.effective_policy(),
+            "limits": self.policy_limits(),
+            "storage": self.storage,
+            "backup": self.backup,
+            "document": {
+                "max_source_bytes": self.max_document,
+                "max_input_assets_bytes": self.max_assets,
+                "max_asset_bytes": self.max_asset,
+            },
+            "session": self.session,
+        })
+    }
+
+    pub fn policy_limits(&self) -> Vec<serde_json::Value> {
+        use serde_json::json;
+        let mut limits = Vec::new();
+        let mut add = |name: &str,
+                       value: serde_json::Value,
+                       units: &str,
+                       scope: &str,
+                       window: Option<u64>| {
+            limits.push(json!({"name":name,"value":value,"units":units,"scope":scope,"window_seconds":window,"origin":self.policy_origins.get(name).map(String::as_str).unwrap_or("built-in default")}));
+        };
+        add(
+            "cost.transfer_bytes",
+            self.cost
+                .transfer_bytes
+                .map_or(json!("unlimited"), |n| json!(n)),
+            "bytes",
+            "deployment",
+            Some(86400),
+        );
+        add(
+            "cost.emergency_bytes",
+            json!(self.cost.emergency_bytes),
+            "bytes",
+            "deployment",
+            Some(86400),
+        );
+        for (name, value, scope) in [
+            (
+                "cost.requests_per_minute",
+                self.cost.requests_per_minute,
+                "deployment",
+            ),
+            (
+                "cost.requests_per_network_minute",
+                self.cost.requests_per_network_minute,
+                "network",
+            ),
+            (
+                "cost.requests_per_principal_minute",
+                self.cost.requests_per_principal_minute,
+                "principal",
+            ),
+            (
+                "cost.requests_per_document_minute",
+                self.cost.requests_per_document_minute,
+                "document",
+            ),
+        ] {
+            add(name, json!(value), "requests", scope, Some(60));
+        }
+        add(
+            "cost.work_concurrency",
+            json!(self.cost.work_concurrency),
+            "handlers",
+            "deployment",
+            None,
+        );
+        add(
+            "cost.request_body_memory_bytes",
+            json!(self.cost.request_body_memory_bytes),
+            "bytes",
+            "deployment",
+            None,
+        );
+        add(
+            "work.emergency_concurrency",
+            json!(16),
+            "handlers",
+            "deployment",
+            None,
+        );
+        add(
+            "cost.artifact_transfers",
+            json!(self.cost.artifact_transfers),
+            "concurrent transfers",
+            "deployment",
+            None,
+        );
+        add(
+            "storage.total",
+            json!(self.storage.total),
+            "bytes",
+            "deployment",
+            None,
+        );
+        add(
+            "storage.per_owner",
+            json!(self.storage.per_owner),
+            "bytes",
+            "owner",
+            None,
+        );
+        add(
+            "storage.documents_per_owner",
+            json!(self.storage.documents_per_owner),
+            "documents",
+            "owner",
+            None,
+        );
+        add(
+            "storage.uploads_per_hour",
+            json!(self.storage.uploads_per_hour),
+            "uploads",
+            "owner",
+            Some(3600),
+        );
+        add(
+            "max_document",
+            json!(self.max_document),
+            "bytes",
+            "document source",
+            None,
+        );
+        add(
+            "max_assets",
+            json!(self.max_assets),
+            "bytes",
+            "document inputs",
+            None,
+        );
+        add(
+            "max_asset",
+            json!(self.max_asset),
+            "bytes",
+            "input file",
+            None,
+        );
+        add(
+            "session.rooms_max",
+            json!(self.session.rooms_max),
+            "rooms",
+            "deployment",
+            None,
+        );
+        add(
+            "session.rooms_bytes_max",
+            json!(self.session.rooms_bytes_max),
+            "bytes",
+            "resident rooms",
+            None,
+        );
+        add(
+            "session.peer_queue",
+            json!(self.session.peer_queue),
+            "frames",
+            "peer",
+            None,
+        );
+        add(
+            "session.updates_per_minute",
+            json!(self.session.updates_per_minute),
+            "updates",
+            "peer",
+            Some(60),
+        );
+        add(
+            "session.checkpoint_owner_per_hour",
+            json!(self.session.checkpoint_owner_per_hour),
+            "checkpoints",
+            "owner",
+            Some(3600),
+        );
+        add(
+            "session.checkpoint_deployment_per_hour",
+            json!(self.session.checkpoint_deployment_per_hour),
+            "checkpoints",
+            "deployment",
+            Some(3600),
+        );
+        add(
+            "session.checkpoint_seconds",
+            json!(self.session.checkpoint_seconds),
+            "seconds",
+            "document quiet period",
+            None,
+        );
+        add(
+            "session.history_max",
+            if self.session.history_max == 0 {
+                json!("unlimited")
+            } else {
+                json!(self.session.history_max)
+            },
+            "checkpoints",
+            "document",
+            None,
+        );
+        add(
+            "persistence.max_encoded_snapshot_bytes",
+            json!(self.persistence.max_encoded_snapshot_bytes),
+            "bytes",
+            "snapshot",
+            None,
+        );
+        add(
+            "persistence.max_queued_payload_bytes",
+            json!(self.persistence.max_queued_payload_bytes),
+            "bytes",
+            "journal queue",
+            None,
+        );
+        add(
+            "persistence.max_staging_bytes",
+            json!(self.persistence.max_staging_bytes),
+            "bytes",
+            "persistence memory",
+            None,
+        );
+        add(
+            "catalog.max_executing",
+            json!(crate::storage::catalog::MAX_EXECUTING),
+            "workers",
+            "catalog",
+            None,
+        );
+        add(
+            "catalog.max_queued_bytes",
+            json!(crate::storage::catalog::MAX_QUEUED_BYTES),
+            "bytes",
+            "catalog queue",
+            None,
+        );
+        add(
+            "catalog.max_admitted_requests",
+            json!(crate::storage::catalog::MAX_ADMITTED_REQUESTS),
+            "jobs",
+            "catalog",
+            None,
+        );
+        add(
+            "catalog.max_request_bytes",
+            json!(crate::storage::catalog::MAX_REQUEST_BYTES),
+            "bytes",
+            "catalog job",
+            None,
+        );
+        add(
+            "catalog.max_waiting_producers",
+            json!(crate::storage::catalog::MAX_WAITING_PRODUCERS),
+            "producers",
+            "catalog",
+            None,
+        );
+        let deletion = crate::storage::maintenance::DeletionLimits::default();
+        add(
+            "maintenance.max_jobs",
+            json!(deletion.max_jobs),
+            "jobs",
+            "deletion pass",
+            None,
+        );
+        add(
+            "maintenance.max_object_requests",
+            json!(deletion.max_object_requests),
+            "requests",
+            "deletion pass",
+            None,
+        );
+        add(
+            "maintenance.max_read_bytes",
+            json!(deletion.max_read_bytes),
+            "bytes",
+            "deletion pass",
+            None,
+        );
+        add(
+            "encoding.max_recipe_chunks",
+            json!(crate::storage::encoding::MAX_RECIPE_CHUNKS),
+            "chunks",
+            "source recipe",
+            None,
+        );
+        add(
+            "encoding.max_recipe_bytes",
+            json!(crate::storage::encoding::MAX_RECIPE_BYTES),
+            "bytes",
+            "source recipe",
+            None,
+        );
+        add(
+            "encoding.max_source_bytes",
+            json!(crate::storage::encoding::MAX_SOURCE_BYTES),
+            "bytes",
+            "reconstruction",
+            None,
+        );
+        add(
+            "encoding.max_object_bytes",
+            json!(crate::storage::encoding::MAX_OBJECT_BYTES),
+            "bytes",
+            "source object",
+            None,
+        );
+        add(
+            "encoding.reconstruction_workers",
+            json!(2),
+            "workers",
+            "deployment",
+            None,
+        );
+        add("oauth.requests", json!(16), "requests", "deployment", None);
+        add(
+            "oauth.lookup_requests",
+            json!(8),
+            "requests",
+            "deployment",
+            None,
+        );
+        add(
+            "oauth.connect_timeout",
+            json!(5),
+            "seconds",
+            "provider request",
+            None,
+        );
+        add(
+            "oauth.total_timeout",
+            json!(15),
+            "seconds",
+            "provider request",
+            None,
+        );
+        add("fonts.files", json!(4096), "files", "font library", None);
+        add(
+            "requests.emergency",
+            json!(300),
+            "requests",
+            "deployment",
+            Some(60),
+        );
+        add(
+            "requests.emergency_network",
+            json!(60),
+            "requests",
+            "network",
+            Some(60),
+        );
+        add(
+            "requests.identity_keys",
+            json!(4096),
+            "identities",
+            "deployment",
+            Some(60),
+        );
+        add(
+            "proxy.header_bytes",
+            json!(2048),
+            "bytes",
+            "forwarding chain",
+            None,
+        );
+        add(
+            "proxy.hops",
+            json!(32),
+            "addresses",
+            "forwarding chain",
+            None,
+        );
+        for (name, value) in serde_json::to_value(self.sockets)
+            .unwrap()
+            .as_object()
+            .unwrap()
+        {
+            let units = if name.contains("bytes") {
+                "bytes"
+            } else if name.ends_with("seconds") {
+                "seconds"
+            } else {
+                "connections"
+            };
+            add(
+                &format!("sockets.{name}"),
+                value.clone(),
+                units,
+                "live collaboration",
+                name.starts_with("state_").then_some(3600),
+            );
+        }
+        add(
+            "backup.temporary_bytes",
+            json!(crate::storage::backup::BACKUP_TEMP_RESERVATION_BYTES),
+            "bytes",
+            "backup",
+            None,
+        );
+        add(
+            "backup.emergency_headroom_bytes",
+            json!(crate::storage::backup::BACKUP_EMERGENCY_HEADROOM_BYTES),
+            "bytes",
+            "primary volume",
+            None,
+        );
+        add(
+            "backup.warning_count",
+            json!(self.backup.warning_count),
+            "backups",
+            "deployment",
+            None,
+        );
+        if let Some(frequency) = self.backup.frequency {
+            add(
+                "backup.frequency",
+                json!(frequency),
+                "seconds",
+                "deployment",
+                None,
+            );
+        }
+        if let Some(retained_count) = self.backup.retained_count {
+            add(
+                "backup.retained_count",
+                json!(retained_count),
+                "backups",
+                "deployment",
+                None,
+            );
+        }
+        if let Some(destination_class) = &self.backup.destination_class {
+            add(
+                "backup.destination_class",
+                json!(destination_class),
+                "class",
+                "backup",
+                None,
+            );
+        }
+        if let Some(encrypted) = self.backup.encrypted {
+            add(
+                "backup.encrypted",
+                json!(encrypted),
+                "boolean",
+                "backup",
+                None,
+            );
+        }
+        // Include the remaining existing numeric guardrails without making
+        // operators copy defaults into their optional configuration file.
+        fn numeric_limits(
+            value: &serde_json::Value,
+            prefix: &str,
+            origins: &std::collections::BTreeMap<String, String>,
+            limits: &mut Vec<serde_json::Value>,
+        ) {
+            if let Some(fields) = value.as_object() {
+                for (name, value) in fields {
+                    let name = if prefix.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{prefix}.{name}")
+                    };
+                    numeric_limits(value, &name, origins, limits);
+                }
+            } else if value.is_number() && !limits.iter().any(|limit| limit["name"] == prefix) {
+                let units = if prefix.contains("bytes") {
+                    "bytes"
+                } else if prefix.ends_with("seconds") {
+                    "seconds"
+                } else {
+                    "count"
+                };
+                limits.push(serde_json::json!({"name":prefix,"value":value,"units":units,"scope":"deployment policy","window_seconds":null,"origin":origins.get(prefix).map(String::as_str).unwrap_or("built-in default")}));
+            }
+        }
+        numeric_limits(
+            &serde_json::to_value(self).unwrap_or_default(),
+            "",
+            &self.policy_origins,
+            &mut limits,
+        );
+        limits
+    }
+
     /// Keeps an unknown motivation out of storage, falling back to the default
     /// rather than rejecting the annotation.
     pub fn allowed_motivation(&self, value: &str) -> String {
@@ -489,17 +1297,81 @@ impl Configuration {
     /// where the bytes of a paper actually go, and while they count against
     /// `--quota` like everything else, this is what stops one document from
     /// spending a publisher's whole allowance on images.
-    pub fn set_max_assets(&mut self, megabytes: Option<usize>) -> Result<(), String> {
+    pub fn set_budget_document_assets(&mut self, megabytes: Option<usize>) -> Result<(), String> {
         let Some(megabytes) = megabytes else {
             return Ok(());
         };
         if !(1..=1024).contains(&megabytes) {
-            return Err("--max-assets must be between 1 and 1024 MB".into());
+            return Err("--budget-document-assets must be between 1 and 1024 MiB".into());
         }
         self.max_assets = (megabytes * 1024 * 1024) as i64;
         // One figure may never be more than all of them.
         self.max_asset = self.max_asset.min(self.max_assets);
         Ok(())
+    }
+
+    /// Parse and apply the one daily transfer budget exposed by the ordinary
+    /// command line. Bare integers are bytes; binary units are accepted for
+    /// readable operator values such as `10GiB`. Omission is represented by
+    /// `None` and remains unlimited, while an explicit zero is meaningful.
+    pub fn set_budget_transfer(&mut self, value: Option<&str>) -> Result<(), String> {
+        self.cost.transfer_bytes = value.map(parse_budget_transfer).transpose()?;
+        Ok(())
+    }
+
+    /// Apply advanced, file-backed policy overrides without requiring callers
+    /// to restate the complete policy. This is intentionally separate from the
+    /// everyday CLI flags.
+    pub fn apply_cost_overrides(&mut self, overrides: CostPolicyOverrides) {
+        if let Ok(serde_json::Value::Object(values)) = serde_json::to_value(&overrides) {
+            for (name, value) in values {
+                if !value.is_null() {
+                    self.policy_origins
+                        .insert(format!("cost.{name}"), "configuration file".into());
+                }
+            }
+        }
+        if let Some(value) = overrides.transfer_bytes {
+            self.cost.transfer_bytes = Some(value);
+        }
+        if let Some(value) = overrides.requests_per_minute {
+            self.cost.requests_per_minute = value;
+        }
+        if let Some(value) = overrides.requests_per_network_minute {
+            self.cost.requests_per_network_minute = value;
+        }
+        if let Some(value) = overrides.requests_per_principal_minute {
+            self.cost.requests_per_principal_minute = value;
+        }
+        if let Some(value) = overrides.requests_per_document_minute {
+            self.cost.requests_per_document_minute = value;
+        }
+        if let Some(value) = overrides.work_concurrency {
+            self.cost.work_concurrency = value;
+        }
+        if let Some(value) = overrides.artifact_transfers {
+            self.cost.artifact_transfers = value;
+        }
+        if let Some(value) = overrides.request_body_memory_bytes {
+            self.cost.request_body_memory_bytes = value;
+        }
+    }
+
+    /// Apply the optional operator-declared backup policy and record the
+    /// configuration origin for every declared member.
+    pub fn apply_backup_overrides(
+        &mut self,
+        overrides: BackupPolicyOverrides,
+    ) -> Result<(), String> {
+        if let Ok(serde_json::Value::Object(values)) = serde_json::to_value(&overrides) {
+            for (name, value) in values {
+                if !value.is_null() {
+                    self.policy_origins
+                        .insert(format!("backup.{name}"), "configuration file".into());
+                }
+            }
+        }
+        self.backup.apply(overrides)
     }
 
     /// Overrides the storage ceilings, in megabytes: how much one publisher may
@@ -807,5 +1679,52 @@ impl WriteRefusal {
 impl std::fmt::Display for WriteRefusal {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.message())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_body_memory_default_and_bounds_are_validated() {
+        let mut config = Configuration::default();
+        assert_eq!(
+            config.cost.request_body_memory_bytes,
+            DEFAULT_REQUEST_BODY_MEMORY_BYTES
+        );
+        assert!(config.cost.validate().is_ok());
+        config.cost.request_body_memory_bytes = 0;
+        assert!(config.cost.validate().is_err());
+        if let Ok(value) = usize::try_from(u64::from(u32::MAX) + 1) {
+            config.cost.request_body_memory_bytes = value;
+            assert!(config.cost.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn emergency_bytes_is_not_an_advanced_override() {
+        let parsed = serde_yaml::from_str::<CostPolicyOverrides>("emergency_bytes: 1");
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn backup_policy_overrides_are_bounded_and_reported() {
+        let overrides: BackupPolicyOverrides = serde_yaml::from_str(
+            "destination_class: object-store\nfrequency: 86400\nretained_count: 30\nencrypted: true\nwarning_count: 20\n",
+        )
+        .unwrap();
+        let mut config = Configuration::default();
+        config.apply_backup_overrides(overrides).unwrap();
+        assert_eq!(config.backup.warning_count, 20);
+        assert_eq!(
+            config.policy_origins["backup.warning_count"],
+            "configuration file"
+        );
+        assert!(config
+            .policy_limits()
+            .iter()
+            .any(|limit| limit["name"] == "backup.warning_count"
+                && limit["origin"] == "configuration file"));
     }
 }

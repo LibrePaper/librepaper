@@ -20,7 +20,7 @@
   import { checkPlacement, basename, inside } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
   import { createAnnotations } from "../lib/reader/annotations.js";
-  import { createReaderBoot } from "../lib/reader/boot.js";
+  import { clearLegacyRenderingCaches, createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
@@ -79,13 +79,10 @@
   import Files from "./Files.svelte";
   import Outline from "./Outline.svelte";
   import { extractOutline } from "../lib/outline.js";
-  import { renderedNoteText } from "../lib/latex/status-text.js";
   import { createPreviewApi } from "../lib/reader/preview-api.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
-  import { createRenderingStore } from "../lib/reader/rendering-store.js";
   import { createLocalPreview } from "../lib/reader/local-preview.js";
   import { HIGHLIGHT_COLORS } from "../lib/annotation-colors.js";
-  import { documentResultsIdentity } from "../lib/engines/identity.js";
   import DictationButton from "./DictationButton.svelte";
   import InsertMenu from "./InsertMenu.svelte";
 
@@ -195,9 +192,8 @@
   // document shows. Same shape of choice as Quarto's, remembered separately.
   const TYPST_PREVIEW_MODE_KEY = `librepaper-typst-preview:${SLUG}`;
   let typstPreviewMode = $state(read(TYPST_PREVIEW_MODE_KEY, "typst") === "calepin" ? "calepin" : "typst");
-  // Typst can paint either its ordinary stored PDF or the experimental HTML
-  // export. This is a browser preference for this document; publication and
-  // stored renderings continue to use the document's PDF output.
+  // Typst can paint either its ordinary transient PDF or the experimental HTML
+  // export. This is a browser preference for this document.
   const TYPST_OUTPUT_KEY = `librepaper-typst-output:${SLUG}`;
   let typstOutput = $state(read(TYPST_OUTPUT_KEY, "pdf") === "html" ? "html" : "pdf");
   const LATEX_OUTPUT_KEY = `librepaper-latex-output:${SLUG}`;
@@ -211,9 +207,7 @@
     navigationGeneration += 1;
     renderers.cancelPreview();
     latex.cancel();
-    renderingStore?.reset();
     framePreview?.clear();
-    renderedSha = null;
     deliveredKind = "";
     frameShowsCheckpoint = false;
     everPainted = false;
@@ -243,7 +237,6 @@
 
   async function setTypstPreviewMode(mode) {
     navigationGeneration += 1;
-    renderingStore?.invalidate();
     typstPreviewMode = mode === "calepin" ? "calepin" : "typst";
     write(TYPST_PREVIEW_MODE_KEY, typstPreviewMode);
     if (typstPreviewMode === "calepin") {
@@ -262,7 +255,6 @@
     // Invalidate every pending delivery before stopping Calepin. A PDF that
     // finishes after this gesture must never replace the HTML frame.
     navigationGeneration += 1;
-    renderingStore?.invalidate();
     if (typstOutput === "html") await calepinPreviewController.stop();
     void paintPreview();
   }
@@ -288,7 +280,6 @@
   // callbacks still update the small bits of component state used by the
   // template and annotation code.
   let framePreview;
-  let renderingStore;
 
   // The agent repaints the whole document on every "regions" or "highlight"
   // message, so a call that changes nothing is not free even though it looks
@@ -314,7 +305,7 @@
     if (!frameReady) return;
     const regions = JSON.stringify(
       comments
-        .filter((comment) => comment.region && !comment.output_anchor)
+        .filter((comment) => comment.region)
         .map((comment) => ({
           id: comment.id,
           point: Boolean(comment.point),
@@ -408,12 +399,6 @@
   // goes to the source rather than nowhere. A region has no source anchor and
   // is never in either state.
   function applyAnchorFlags(comment) {
-    if (comment.output_anchor) {
-      comment.orphaned = false;
-      comment.inSourceOnly = false;
-      comment.start = comment.end = comment.sourceStart = null;
-      return;
-    }
     const { orphaned, inSourceOnly } = orphanState({
       renderedFound: comment.start != null,
       sourceFound: comment.sourceStart != null,
@@ -431,9 +416,9 @@
   // whatever is given it since only a comment that already has a `source`
   // does anything there.
   function anchorComments(list) {
-    const renderAnchors = list.filter((comment) => !comment.region && !comment.output_anchor);
+    const renderAnchors = list.filter((comment) => !comment.region);
     anchorAll(docText || "", renderAnchors, docText === null ? null : docView);
-    anchorAllSources(treeNow(), list.filter((comment) => !comment.output_anchor));
+    anchorAllSources(treeNow(), list);
     for (const comment of list) applyAnchorFlags(comment);
   }
 
@@ -456,7 +441,7 @@
     const tree = treeNow();
     const open = session?.paths?.get(openFile) || "";
     for (const comment of comments) {
-      if (comment.source || comment.region || comment.point || comment.output_anchor || comment.pending || comment.temp_id) continue;
+      if (comment.source || comment.region || comment.point || comment.pending || comment.temp_id) continue;
       if (comment.start == null || triedBackfill.has(comment.id)) continue;
       triedBackfill.add(comment.id);
       const source = sync.sourceSelectorFor(
@@ -1357,9 +1342,7 @@
     const target = historyController.capturedCurrent;
     if (!target) return;
     const mine = ++navigationGeneration;
-    renderingStore?.invalidate();
     issued += 1;
-    dropHeldRendering();
     viewing = target;
     showMobileView("document");
     // The controller has already rendered this immutable target. Deliver
@@ -1431,9 +1414,7 @@
     const mine = ++navigationGeneration;
     checkpointNavigationPending = mine;
     historyController.invalidateChanges();
-    renderingStore?.invalidate();
     issued += 1;
-    dropHeldRendering();
     try {
       const point = await history.checkpoint(SLUG, sha, keyHeaders(KEY));
       if (mine !== navigationGeneration) return;
@@ -1454,9 +1435,7 @@
     const wasCheckpoint = Boolean(viewing) || frameShowsCheckpoint;
     navigationGeneration += 1;
     checkpointNavigationPending = 0;
-    renderingStore?.invalidate();
     issued += 1;
-    dropHeldRendering();
     if (!wasCheckpoint) return;
     viewing = null;
     frameShowsCheckpoint = false;
@@ -1482,9 +1461,6 @@
     // The bar over the document says what it is showing by name, so a rename
     // of the checkpoint on the screen has to reach it too.
     if (viewing?.sha === sha) viewing = { ...viewing, label: given };
-    // Naming a checkpoint is the editor saying "this one", so a rendering
-    // waiting for the text to stay quiet is stored now rather than later.
-    if (given) renderingStore?.flushHeld();
   }
 
   // The link to a moment: the document's own link with the checkpoint on it.
@@ -1534,7 +1510,7 @@
         const replacement = await passages.replacementAt(oldText, current, comment.source || comment);
         if (replacement !== null) nextReplacements[comment.id] = replacement;
       } catch {
-        // A missing checkpoint or rendering cannot establish a replacement.
+        // A missing checkpoint cannot establish a replacement.
         if (mine === passageTraceGeneration) lastPassageTrace = null;
       }
     }
@@ -1689,11 +1665,10 @@
           : "",
   );
 
-  // A reader is told nothing. They cannot fix it, the author is looking at the
-  // error at that moment, and a reader shown a red badge for a typo in
-  // somebody else's editing session learns to stop reading while a document is
-  // being worked on. What a reader gets instead is the last page that
-  // compiled, which is what `everPainted` below keeps on the screen.
+  // A reader is told nothing about live editor diagnostics. They cannot fix
+  // them, and a red badge for a typo in somebody else's editing session would
+  // only interrupt reading. The source and the current transient page remain
+  // available while the editor works.
   function paintDiagnostics(list) {
     if (!editing) return;
     renderDiagnostics = list;
@@ -1757,8 +1732,7 @@
   const displayedFormat = $derived(
     viewing ? renderers.formatOf(viewing.main) || sourceFormat : sourceFormat,
   );
-  // This browser-only choice affects the pane. Publication and stored
-  // renderings continue to use the Typst document's PDF output.
+  // This browser-only choice affects the pane and is never published.
   const previewFormat = $derived(
     viewing ? "html" : editing && ((displayedFormat === "typst" && typstOutput === "html") ||
       (displayedFormat === "latex" && latexOutput === "html")) ? "html" : displayedFormat,
@@ -1791,7 +1765,7 @@
   // when a settings change arrives from another collaborator, not only when
   // this browser writes one. Kept current by the `meta.observe` handler set
   // up by `configureLatex` when this project enters LaTeX mode.
-  let latexSettingsState = $state({ engine: "auto", release: null });
+  let latexSettingsState = $state({ engine: "auto" });
   let latexObservedSession = null;
   let latexSettingsObserver = null;
   let latexConfiguration = 0;
@@ -1819,30 +1793,18 @@
     latex.configure({
       project: SLUG,
       settings: latexSettingsState,
-      mayCompile: mayEdit && renderers.available("latex"),
+      mayCompile: renderers.available("latex"),
     });
     latexObservedSession = active;
     latexSettingsObserver = (event) => {
       if (configuration !== latexConfiguration || session !== active) return;
       const changed = [...event.changes.keys.keys()];
-      if (!changed.includes("latex.engine") && !changed.includes("latex.release")) return;
+      if (!changed.includes("latex.engine")) return;
       latexSettingsState = active.latexSettings();
       latex.setSettings(latexSettingsState);
       void paintPreview();
     };
     active.meta.observe(latexSettingsObserver);
-    // Only an editor pins the mirror's default into the shared project.
-    // A response from an earlier format or session must not change this one.
-    if (mayEdit && !latexSettingsState.release) {
-      latex.releases().then((info) => {
-        if (configuration === latexConfiguration && session === active && mayEdit
-            && info?.default && !active.latexSettings().release) {
-          active.setLatexSettings({ release: info.default });
-        }
-      }).catch(() => {
-        // A compile reports an unavailable mirror through its normal status.
-      });
-    }
   }
 
   // The most recent LaTeX compile result -- success or failure -- kept whole
@@ -1866,17 +1828,11 @@
   // and no "not ready yet" gate any more: an editor's browser initializes
   // the engine automatically the first time it is asked to compile (`paintPreview`
   // below), and the loading itself is what the Preview header reports.
-  // Everybody else -- a reader, or anyone on a deployment with no
-  // mirror -- is shown what the server kept.
-  const compilesHere = $derived(
-    editing && mayEdit && (
-      sourceFormat === "typst"
-        ? renderers.compilerAvailable("typst")
-      : sourceFormat === "latex" && renderers.compilerAvailable("latex")
-    ),
-  );
-  const unrendered = $derived(pdfOutput && (viewing || !compilesHere) && !everPaintedShown);
-  const failedBeforeRender = $derived((pdfOutput || latexHtmlPreview) && !viewing && compilesHere && pdfFailure && !everPaintedShown);
+  // Readers use the same source renderer as editors. A missing compiler is
+  // reported as a tool requirement instead of opening a retained result.
+  const compilesHere = $derived(renderers.compilerAvailable(sourceFormat));
+  const unrendered = $derived(pdfOutput && !everPaintedShown && !pdfFailure);
+  const failedBeforeRender = $derived(pdfFailure && !everPaintedShown);
 
   // A paged compile that is running says so, and says how long the last one
   // took once there has been one. Before the first, there is no honest number
@@ -1898,6 +1854,13 @@
   const quartoNeedsLocalApp = $derived(
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && mayEdit && !viewing &&
       localAppStatus.state !== "connected",
+  );
+  // A read-only visitor cannot authorize the companion to receive a
+  // workspace, but the browser's Markdown draft still leaves executable
+  // Quarto cells unrun. Say why the page is a draft instead of implying that
+  // the document has no complete preview available.
+  const quartoReaderNeedsLocalTool = $derived(
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !mayEdit && !viewing,
   );
 
   // The same two banner cases, for a Typst document with Calepin preview
@@ -1941,9 +1904,7 @@
     send: tell,
     onNavigate: () => {
       frameReady = false;
-      renderingStore?.invalidate();
       issued += 1;
-      renderedSha = null;
       deliveredKind = "";
       deliveredHistorySha = null;
       lastRegions = lastHighlight = null;
@@ -1952,7 +1913,6 @@
       deliveredHistorySha = payload.kind === "html" ? payload.sha || "" : null;
       historyMappingProblem = "";
       deliveredKind = payload.kind;
-      if (payload.kind === "pdf") renderedSha = payload.sha || null;
       frameShowsCheckpoint = Boolean(viewing);
       everPainted = true;
       everPaintedShown = true;
@@ -1976,31 +1936,8 @@
     framePreview.refresh(session.text.toString());
   }
 
-  // What a paged document's frame is showing: the checkpoint the stored
-  // rendering was compiled from, when that checkpoint was taken, and whether
-  // it is the text as it stands. Null until the server has been asked.
-  let rendering = $state(null);
-  // The SHA whose bytes are in the frame, so a poll that finds the same
-  // rendering costs one small request rather than a PDF.
-  let renderedSha = null;
-
-  // The line under the badge for a LaTeX document, and the whole of what makes
-  // storing a derived thing honest. A rendering is named by the digest of the
-  // source it was compiled from, so there are exactly three things to say: it
-  // is the text as it stands, it is older than the text and here is when
-  // (with what compiled it, when the server kept that), or nobody has
-  // rendered this yet. The wording for the last two comes from
-  // `renderedNoteText`, shared with checks/latex-reader.mjs.
-  const renderedNote = $derived(
-    !pdfOutput || (compilesHere && !viewing)
-      ? ""
-      : !rendering
-        ? "not yet rendered"
-        : renderedNoteText(rendering),
-  );
-
   const previewBusy = $derived(Boolean(
-    (sourceFormat === "latex" && !latexHtmlPreview && ["loading", "compiling", "checking-local", "local-biber", "vm-preparing", "vm-biber", "native"].includes(latexPhase))
+    (sourceFormat === "latex" && !latexHtmlPreview && ["loading", "compiling", "browser-biber", "checking-local", "local-biber", "native"].includes(latexPhase))
       || compileBadge || quartoPreviewStarting || quartoRendering || calepinRendering,
   ));
   const previewProblem = $derived(Boolean(
@@ -2010,8 +1947,7 @@
   const previewStatusLabel = $derived(
     previewProblem ? "Preview needs attention"
       : previewBusy ? (sourceFormat === "quarto" ? "Rendering Quarto" : sourceFormat === "typst" ? "Rendering Typst" : "Compiling")
-      : renderedNote ? (renderedNote === "not yet rendered" || renderedNote === "this version was never rendered" ? "Not rendered" : "Earlier rendering")
-      : "",
+      : !everPaintedShown && !pdfFailure ? "Rendering from source" : "",
   );
 
   let previousConnected = null;
@@ -2033,40 +1969,10 @@
     previousCalepinRendering = calepinRendering;
   });
 
-  renderingStore = createRenderingStore({
-    api: previewApi,
-    getViewing: () => viewing,
-    getSourceGeneration: () => sourceGeneration,
-    getNavigationGeneration: () => navigationGeneration,
-    getRenderedSha: () => renderedSha,
-    getPreview: () => framePreview.preview(),
-    deliver: (payload) => framePreview.publish(payload),
-    onRendering: (value) => (rendering = value),
-    onMissing: (value) => {
-      const hadPages = Boolean(framePreview.preview() || renderedSha || everPaintedShown);
-      rendering = value;
-      framePreview.clear();
-      renderedSha = null;
-      frameShowsCheckpoint = false;
-      everPainted = false;
-      everPaintedShown = false;
-      if (hadPages) navigateFrame(true);
-    },
-    schedulePreview: () => void paintPreview(),
-  });
-
-  // Stored PDFs belong to the shared main file. A locally selected file
-  // must neither display that PDF nor replace it for other readers.
-  const previewsSharedMain = () => Boolean(viewing) || !previewMain || previewMain === session?.mainPath();
-  const paintRendering = () => previewsSharedMain() ? renderingStore.paint() : Promise.resolve();
-  const holdRendering = (...args) => previewsSharedMain() && renderingStore.hold(...args);
-  const dropHeldRendering = () => renderingStore.dropHeld();
-
   async function paintPreview() {
     if (readerDisposed) return;
     clearTimeout(previewTimer);
     previewTimer = null;
-    renderingStore.cancelPoll();
     // The live preview owns the pane while it is running (or starting): the
     // frame shows Quarto's own page, kept current by `syncQuartoLive` and
     // the page poller, not by anything painted here.
@@ -2087,31 +1993,8 @@
         typeof calepinPreview !== "undefined" && (calepinPreview || calepinPreviewStarting)) {
       return;
     }
-    // Not live: nothing rendered is ever uploaded, so there is no shared
-    // bundle to fall back to -- a Quarto document not showing its own live
-    // preview shows this browser's Markdown draft, the same as every other
-    // draft format, painted below.
-    // A paged document is compiled in an editor's browser and nowhere else,
-    // so everybody else is shown the PDF the server kept from the last one
-    // who did.
-    const outputIsPdf = pdfOutput;
-    if (outputIsPdf && (Boolean(viewing) || !compilesHere)) {
-      await paintRendering();
-      return;
-    }
-    // An editor's first look at a document somebody has already rendered is
-    // that rendering, painted before the compile that will replace it: a
-    // compile takes seconds and its first attempt can fail, and a pane that
-    // says nothing until then is worse than the pages that already exist.
-    // Only while nothing has been painted; after that the last page that
-    // compiled stays up, as the spec says. The poll paintRendering leaves
-    // behind is for a browser that waits on somebody else's compile, and
-    // this one compiles for itself.
-    if (outputIsPdf && !everPainted && !viewing) {
-      await paintRendering();
-      if (readerDisposed) return;
-      renderingStore.cancelPoll();
-    }
+    // Every preview is compiled from the source in this tab. Results remain
+    // in the frame only for the active view or an explicit user export.
     if (!paintsTheFrame) {
       refreshFramedPage();
       return;
@@ -2158,14 +2041,9 @@
         compiling = true;
         if (!everPainted) pdfFailure = false;
       }
-      // What a rendering compiled now will be stored as. Asked before the
-      // compile rather than after, because a compile takes seconds and the
-      // text may move meanwhile: what comes out is of the text as it was, and
-      // a name the text has moved past is refused by the server.
-      // Checkpoint SHAs are already canonical server tree digests. For live
-      // text, hash this exact immutable tree, after asset bytes have arrived
-      // so asset sizes agree with the server's TreeEntry values.
-      const renderingName = snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}));
+      // Keep a transient source identity for diagnostics and race checks. It
+      // is never sent to the server as a rendering name or persisted result.
+      const snapshotIdentity = snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}));
       if (readerDisposed) return;
       // A manual compile is asked for once; the flag is read here, at the
       // one call site that reaches the compiler, and cleared immediately so
@@ -2196,7 +2074,7 @@
       if (readerDisposed) return;
       if (format === "latex" && !htmlPreview) lastLatexResult = rendered;
       const { html, pdf, synctex, diagnostics: said, seconds, log, provenance } = rendered;
-      const contextualDiagnostics = (said || []).map((item) => diagnosticContext(item, tree, renderingName));
+      const contextualDiagnostics = (said || []).map((item) => diagnosticContext(item, tree, snapshotIdentity));
       // An in-flight preview may finish after another keystroke: HTML and
       // Typst may show that intermediate progress while the queued render
       // catches up. Navigation and main-file changes still invalidate it;
@@ -2211,18 +2089,7 @@
         pdfFailure = false;
         pdfFailureReason = "";
         const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
-        const preview = { kind: "pdf", sha: renderingName, bytes: new Uint8Array(buffer.slice(0)) };
-        // Held for the readers, from a copy: the hand-over to the frame below
-        // empties this page's own.
-        if (renderingName && snapshotSource === sourceGeneration) {
-          holdRendering(
-            renderingName,
-            buffer.slice(0),
-            synctex,
-            !snapshotViewing && snapshotNavigation === navigationGeneration,
-            provenance || null,
-          );
-        }
+        const preview = { kind: "pdf", sha: snapshotIdentity, bytes: new Uint8Array(buffer.slice(0)) };
         framePreview.publish(preview);
         if (snapshotSource === sourceGeneration) {
           diagnosticPainter.rendered({ page: "", diagnostics: contextualDiagnostics });
@@ -2230,7 +2097,8 @@
         return;
       }
       if (typeof html === "string") {
-        if (format === "latex") { pdfFailure = false; pdfFailureReason = ""; }
+        pdfFailure = false;
+        pdfFailureReason = "";
         // The page is what the document says now, so every error said about an
         // earlier state of it is cleared at once. The warnings that came with
         // this page are painted on the same slow schedule the errors are, so
@@ -2242,25 +2110,22 @@
         }
         return;
       }
-      // No page: the last one that compiled stays up, and what is said is that
-      // it does not compile now, and where -- once the typing has stopped.
+      // No new page: an already painted page stays up transiently while the
+      // diagnostics for the current source settle.
       if (snapshotSource !== sourceGeneration) return;
       diagnosticPainter.rendered({ page: null, diagnostics: contextualDiagnostics });
-      if (paged || (format === "latex" && htmlPreview)) {
-        pdfFailure = true;
-        // A log the parser found nothing in is still the only account there
-        // is of what happened, and its last lines are where an engine says
-        // why it stopped.
-        pdfFailureReason = said?.length
-          ? ""
-          : rendered.failure?.message || (log || "").trim().split("\n").slice(-12).join("\n") ||
-            "the compiler produced no preview and no log";
-        if (pdfFailureReason) console.error("latex: could not render:", pdfFailureReason);
-      }
-      // Unless nothing was ever painted, which is what someone who opens the
-      // editor on a document that does not compile sees. Then the frame shows
-      // the engine's page saying so, with the list on it, styled like a
-      // document rather than like a crash.
+      pdfFailure = true;
+      // A log the parser found nothing in is still the only account there
+      // is of what happened, and its last lines are where an engine says
+      // why it stopped.
+      pdfFailureReason = said?.length
+        ? ""
+        : rendered.failure?.message || (log || "").trim().split("\n").slice(-12).join("\n") ||
+          "the compiler produced no preview and no log";
+      if (pdfFailureReason) console.error(`${format}: could not render:`, pdfFailureReason);
+      // Unless nothing was ever painted, the frame gets a transient failure
+      // page for flow formats; paged formats use the source and diagnostics
+      // pane below.
       if (!everPainted) {
         const page = await renderers
           .failurePage(await headingOf(tree), format)
@@ -2273,11 +2138,9 @@
       const currentSnapshot = snapshotNavigation === navigationGeneration &&
         (!(paged || slow) || snapshotSource === sourceGeneration);
       if (mine > painted && currentSnapshot && error.name !== "Superseded") {
-        if (paged || (format === "latex" && htmlPreview)) {
-          pdfFailure = true;
-          pdfFailureReason = error.message || "could not render";
-          console.error("latex: could not render:", error);
-        }
+        pdfFailure = true;
+        pdfFailureReason = error.message || "could not render";
+        console.error(`${format}: could not render:`, error);
         say(error.message || "could not render", true);
       }
     } finally {
@@ -2326,7 +2189,6 @@
         paintCombinedDiagnostics();
       });
     }
-    const outputIsPdf = pdfOutput;
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
     // Fast formats use a short bounded preview cadence. Only LaTeX owns its
@@ -2334,17 +2196,6 @@
     // keystroke would starve the preview indefinitely.
     if (editing && sourceFormat !== "latex" && previewTimer !== null) return;
     clearTimeout(previewTimer);
-    if (outputIsPdf && !compilesHere) {
-      // The text has moved, so what is in the frame is a rendering of an
-      // earlier version. That is known here rather than asked: the rendering
-      // is named by the digest of the source it was compiled from.
-      if (rendering?.current) rendering = { ...rendering, current: false };
-      renderingStore.schedulePoll();
-      return;
-    }
-    // A rendering waiting for the text to stay quiet is of a text that did
-    // not.
-    if (outputIsPdf) dropHeldRendering();
     // A LaTeX compile takes seconds, so it waits for the source to be quiet
     // for longer -- `latex.DEBOUNCE`, which is that module's number and not
     // one written twice. A reader watching somebody else type waits longer
@@ -2698,27 +2549,17 @@
   const downloads = $derived(availableDownloads({
     outputKind: renderers.outputKind(displayedFormat),
     deliveredKind,
-    rendering,
     displayedFormat,
   }));
 
-  // The rendering on screen, as a file. A PDF is the bytes the frame was
-  // handed, or the stored rendering the server holds when this browser has
-  // not been handed one yet. An HTML page is the one this browser painted,
-  // with its figures written in, or for an authored HTML document the text
-  // itself, which is the rendering.
+  // Exports read the transient result currently held by this tab. LibrePaper
+  // never fetches or uploads a generated result for an export.
   async function downloadRendering(kind) {
     try {
       if (kind === "pdf") {
         const preview = framePreview.preview();
         let bytes = preview?.kind === "pdf" ? preview.bytes : null;
-        if (!bytes) {
-          const found = rendering?.sha ? rendering : await previewApi.latest().then((r) => (r.ok ? r.json() : null)).catch(() => null);
-          if (!found?.sha) throw new Error("This document has not been rendered yet.");
-          const response = await previewApi.rendering(found.sha).catch(() => null);
-          if (!response?.ok) throw new Error("The rendering could not be fetched.");
-          bytes = new Uint8Array(await response.arrayBuffer());
-        }
+        if (!bytes) throw new Error("Render the document before exporting its PDF.");
         saveBlob(new Blob([bytes], { type: "application/pdf" }), `${SLUG}.pdf`);
         return;
       }
@@ -2730,7 +2571,7 @@
         const preview = framePreview.preview();
         html = preview?.kind === "html" ? await inlineBlobUrls(preview.html) : null;
       }
-      if (typeof html !== "string") throw new Error("This document has not been rendered yet.");
+      if (typeof html !== "string") throw new Error("Render the document before exporting its HTML.");
       saveBlob(new Blob([html], { type: "text/html" }), `${SLUG}.html`);
     } catch (error) {
       say(error.message || "Could not download the rendering.", true);
@@ -2780,7 +2621,10 @@
   // extension lists widens them here too.
   let rules = $state({});
   loadConfig()
-    .then((answer) => (rules = answer || {}))
+    .then((answer) => {
+      rules = answer || {};
+      if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
+    })
     .catch(() => {
       /* the server checks every path again; this only explains it sooner */
     });
@@ -2833,19 +2677,15 @@
     previewMain = path;
     sourceFormat = format;
     configureLatex(format);
-    if (mayEdit) renderers.warm(format);
+    renderers.warm(format);
     if (format === "quarto" || format === "typst") pairLocalQuarto();
     if (!previous || viewing || checkpointNavigationPending) return;
     // Invalidate both running compiles and replayed pages, even when the
     // two selected files use the same renderer or both produce PDFs.
     navigationGeneration += 1;
     const mine = navigationGeneration;
-    renderingStore?.reset();
     issued += 1;
-    dropHeldRendering();
     framePreview.clear();
-    rendering = null;
-    renderedSha = null;
     frameShowsCheckpoint = false;
     everPainted = false;
     everPaintedShown = false;
@@ -3160,28 +3000,14 @@
       : document_.can_edit === undefined
         ? document_.can_moderate
         : document_.can_edit;
-    // The backend's explicit engine/draft pair is authoritative when present.
-    // Legacy source_format=quarto documents infer Quarto through the adapter
-    // helper, while a bundle without an engine discriminator remains Quarto.
-    let resultsIdentity;
-    try {
-      resultsIdentity = documentResultsIdentity(document_);
-    } catch (error) {
-      say(error.message, true);
-      settled = true;
-      return;
-    }
-    const format = resultsIdentity.execution_engine === "quarto"
-      ? "quarto"
-      : document_.source_format
-        ? resultsIdentity.draft_format
-        : "html";
+    // Rendering follows the durable source format. Generated-result identity
+    // is deliberately absent: a reader compiles this source on demand.
+    const format = document_.source_format ||
+      (document_.execution_engine === "quarto" ? "quarto" : "html");
     sourceFormat = format;
     if (format === "quarto" || format === "typst") pairLocalQuarto();
-    // A document is shown by output kind. Paged documents use stored PDFs when
-    // this deployment has no browser compiler, so opening a Typst paper never
-    // depends on downloading Typst WASM. Compiler availability only controls
-    // whether an authorized editor compiles locally.
+    // Every reader compiles from source when the browser has the engine. A
+    // missing engine produces an actionable local-tool message below.
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
     renderers.offerLatex(list.includes("latex"));
     if (!renderers.outputKind(format)) {
@@ -3195,9 +3021,9 @@
     // browser's, and an editor coming back to their own document keeps it.
     if (panel && !tabs.some((tab) => tab.id === panel)) showPanel(home, false);
     settled = true;
-    // Typst is loaded automatically for editors. Readers use the stored PDF
-    // and must remain usable on a deployment with no Typst module at all.
-    if (mayEdit) renderers.warm(format);
+    // Load the browser renderer for readers as well as editors; this is all
+    // transient and does not create a server-side result.
+    renderers.warm(format);
     startCollaboration(document_);
     // No chooser and no saved distribution: `latex.configure` tells the
     // controller which project this is and what it is allowed to do, and the
@@ -3228,6 +3054,7 @@
   $effect(() => {
     markViewed(SLUG);
     const stopQuartoStatus = localQuarto.subscribe((status) => { localAppStatus = status; });
+    void clearLegacyRenderingCaches();
     pendingChat = createPendingChat({
       send: (message) => collaboration?.sendLive(message) || { ok: false },
     });
@@ -3281,7 +3108,6 @@
       void quartoPreviewController.stop();
       void calepinPreviewController.stop();
       framePreview.dispose();
-      renderingStore?.dispose();
       stopLatex();
       pendingChat?.dispose();
       collaboration?.close();
@@ -3355,7 +3181,7 @@
 <svelte:window bind:innerWidth={width} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
 
 {#snippet fileItems()}
-  {#if !viewing}
+  {#if mayEdit && !viewing}
     <Menu.Item value="new-file" class="menuitem">New file…</Menu.Item>
     <Menu.Item value="new-folder" class="menuitem">New folder…</Menu.Item>
     <Menu.Item value="upload" class="menuitem">Upload files…</Menu.Item>
@@ -3474,7 +3300,7 @@
     </div>
   {/snippet}
   {#snippet menus()}
-    {#if mayEdit}
+    {#if shown.document}
       <div class="desktop-workspace-menu">
         <Menu onSelect={(chosen) => void chooseFileCommand(chosen.value)}>
           <Menu.Trigger class="menubar-item">File</Menu.Trigger>
@@ -3501,12 +3327,12 @@
         </Menu>
       </div>
     {/if}
-    {#if editing || mayEdit}
+    {#if shown.document}
       <div class="compact-workspace-menu">
         <Menu onSelect={(chosen) => chooseCompactCommand(chosen.value)}>
           <Menu.Trigger class="menubar-item" aria-label="File, view and tools">Menu</Menu.Trigger>
           <ExplorerMenu>
-            {#if mayEdit}{@render fileItems()}<hr class="hr my-1" />{/if}
+            {@render fileItems()}<hr class="hr my-1" />
             {#if editing}{@render viewItems()}<hr class="hr my-1" />{/if}
             {#if mayEdit}{@render toolItems()}{/if}
           </ExplorerMenu>
@@ -3710,21 +3536,23 @@
        There is no compiler card any more: an editor's browser initializes
        the engine on its own, automatically, and the Preview header carries
        loading and failure states. Every paged format
-       still gets an explicit not-yet-rendered state until a stored PDF
-       arrives -- readers never load a compiler merely to read an existing
-       artifact. -->
+       renders from source on demand; generated output remains transient. -->
   {#if shown.document && failedBeforeRender}
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">Could not render</h2>
         {#if pdfFailureReason}
           <p class="text-surface-700-300 text-sm">
-            The compiler produced no {latexHtmlPreview ? "HTML preview" : "PDF"}, and Diagnostics has nothing to show for it. What it said:
+            The compiler produced no {pdfOutput ? (latexHtmlPreview ? "HTML preview" : "PDF") : "HTML preview"}, and Diagnostics has nothing to show for it. What it said:
           </p>
           <pre class="text-surface-700-300 text-xs">{pdfFailureReason}</pre>
         {:else}
           <p class="text-surface-700-300 text-sm">
-            Fix the errors in Diagnostics to produce a {latexHtmlPreview ? "HTML preview" : "PDF preview"}.
+            {#if !compilesHere}
+              This browser cannot render this {sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : "Markdown"} source. Install or configure the local companion or browser renderer to view it.
+            {:else}
+              Fix the errors in Diagnostics to produce a {latexHtmlPreview ? "HTML preview" : "PDF preview"}.
+            {/if}
           </p>
         {/if}
       </div>
@@ -3735,15 +3563,20 @@
         <h2 class="h4">{viewing ? "Historical preview unavailable" : "Not yet rendered"}</h2>
         <p class="text-surface-700-300 text-sm">
           {#if viewing}
-            This version has no stored PDF. You can read its source below or compare files in History.
+            This version is being rendered from its source. You can read its source below or compare files in History.
           {:else}
-            This {sourceFormat === "typst" ? "Typst" : "paged"} document has no stored PDF yet. When an editor compiles it, its pages appear here.
+            This {sourceFormat === "typst" ? "Typst" : "paged"} document is being rendered from source in this browser.
           {/if}
         </p>
         {#if viewing?.texts?.[viewing.main] !== undefined}
           <details>
             <summary>View source · {viewing.main}</summary>
             <pre>{viewing.texts[viewing.main]}</pre>
+          </details>
+        {:else if !compilesHere && session?.text}
+          <details open>
+            <summary>View source · {session.mainPath?.() || "document"}</summary>
+            <pre>{session.text.toString()}</pre>
           </details>
         {/if}
       </div>
@@ -3754,7 +3587,6 @@
        would reload the document and lose the reader's place in it. -->
   {#snippet previewStatusDetails()}
     <div class="preview-status-details">
-      {#if renderedNote}<p>{renderedNote}</p>{/if}
       {#if latexHtmlPreview}
         {#if compileBadge}<p>{compileBadge}</p>{/if}
         {#if pdfFailureReason}<p>{pdfFailureReason}</p>{/if}
@@ -3770,6 +3602,9 @@
         </button>
         {#if quartoNeedsLocalApp}<button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => openSettings("local")}>Install or configure companion</button>{/if}
       {/if}
+      {#if quartoReaderNeedsLocalTool}
+        <p>Showing the browser's Markdown draft. Full Quarto preview requires the local LibrePaper app with Quarto and its execution tools.</p>
+      {/if}
       {#if sourceFormat === "typst" && !typstHtmlPreview && (typstNeedsLocalApp || typstNeedsCalepinCommand || calepinPreviewError)}
         <p>{calepinPreviewError || localConnectionError || (typstNeedsCalepinCommand ? "Install the calepin command to use this preview." : "Connect the local LibrePaper app to use Calepin preview.")}</p>
       {/if}
@@ -3780,7 +3615,7 @@
   {/snippet}
   {#snippet previewStatusControl()}
     <PreviewStatus label={previewStatusLabel} busy={previewBusy}
-      tone={previewProblem ? "error" : renderedNote ? "warning" : "neutral"}>
+      tone={previewProblem ? "error" : "neutral"}>
       {#snippet details()}{@render previewStatusDetails()}{/snippet}
     </PreviewStatus>
   {/snippet}
@@ -3854,7 +3689,7 @@
   {#snippet children()}
     <form id="commentForm" class="flex flex-col gap-3" onsubmit={submitDialog}>
       <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3 text-sm">
-        {pending?.output_anchor ? `Saved result: ${pending.exact}${pending.region ? " (selected region)" : ""}` : pending?.point ? "Comment at this point" : pending?.region ? `Figure ${pending.region.image_index + 1}` : `“${pending?.exact ?? ""}”`}
+        {pending?.output_anchor ? `Current output: ${pending.exact}${pending.region ? " (selected region)" : ""}` : pending?.point ? "Comment at this point" : pending?.region ? `Figure ${pending.region.image_index + 1}` : `“${pending?.exact ?? ""}”`}
       </blockquote>
       {#if identity}
         <p class="text-surface-600-400 text-sm">

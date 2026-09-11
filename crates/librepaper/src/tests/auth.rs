@@ -385,11 +385,16 @@ async fn a_google_account_comments_under_its_name() {
 // and ownership follows the id rather than the handle.
 #[tokio::test]
 async fn a_google_account_owns_what_it_published() {
-    let server = test_server_with(
-        Configuration::default(),
+    let google = google_stand_in(
+        json!({"sub": "10769", "email": "anne@umontreal.ca", "email_verified": true, "hd": "umontreal.ca", "name": "Anne Grandchamp"}),
+        "unused",
+    )
+    .await;
+    let server = test_server_google(
         Policy::parse("@umontreal.ca"),
         Policy::parse("anyone"),
         true,
+        &google,
     )
     .await;
     let anne = google_session_as("10769", "anne@umontreal.ca", "Anne Grandchamp");
@@ -451,9 +456,12 @@ fn startup_checks_the_providers_against_the_policies() {
 
     // Nothing configured, and a policy that needs somebody signed in: the
     // message lists both ways to get a provider.
-    let fatal = advice(false, false, "vincent", "anyone")
-        .fatal
-        .expect("a server that can sign nobody in should not start");
+    let first = advice(false, false, "vincent", "anyone");
+    assert!(
+        first.fatal.is_none(),
+        "provider absence should remain a warning"
+    );
+    let fatal = first.warnings.join(" ");
     assert!(
         fatal.contains("GITHUB_CLIENT_ID") && fatal.contains("GOOGLE_CLIENT_ID"),
         "{fatal}"
@@ -930,11 +938,16 @@ async fn region_annotations() {
 // alone -- who typed it, and names it again to revoke.
 #[tokio::test]
 async fn a_google_owner_is_shown_by_name_and_never_by_email() {
-    let server = test_server_with(
-        Configuration::default(),
+    let google = google_stand_in(
+        json!({"sub": "10769", "email": "anne@umontreal.ca", "email_verified": true, "hd": "umontreal.ca", "name": "Anne Grandchamp"}),
+        "unused",
+    )
+    .await;
+    let server = test_server_google(
         Policy::parse("@umontreal.ca, vincent"),
         Policy::parse("anyone"),
         true,
+        &google,
     )
     .await;
     let anne = google_session_as("10769", "anne@umontreal.ca", "Anne Grandchamp");
@@ -1099,15 +1112,14 @@ async fn a_dead_session_cookie_is_cleared_and_the_listing_recovers() {
     assert!(!clears_session(&me), "a live session was cleared");
     assert_eq!(me.json::<Value>().await.unwrap()["handle"], "vincent");
 
-    // Without the cookie, which is what the browser sends next, the listing
-    // is the anonymous publisher's to read.
+    // Without the cookie, the owner listing remains an authenticated route.
     let listing = client()
         .post(format!("{}/api/list", server.url))
         .header("X-LibrePaper-Client", "shell")
         .send()
         .await
         .unwrap();
-    assert_eq!(listing.status(), 200);
+    assert_eq!(listing.status(), 401);
 }
 
 #[tokio::test]

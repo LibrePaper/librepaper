@@ -10,6 +10,7 @@ use std::time::Duration;
 use base64::Engine;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 mod device;
 mod github;
@@ -40,6 +41,16 @@ pub const SESSION_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 /// exactly how every cookie here is already set -- which is what keeps a
 /// same-site subdomain from planting one.
 pub const HOST_COOKIE_PREFIX: &str = "__Host-";
+
+/// All provider exchanges and profile lookups share one small admission pool.
+/// A provider outage must not turn a burst of sign-in callbacks or owner
+/// mutations into an unbounded set of waiting HTTP requests.
+const PROVIDER_REQUEST_CONCURRENCY: usize = 16;
+static PROVIDER_REQUESTS: Semaphore = Semaphore::const_new(PROVIDER_REQUEST_CONCURRENCY);
+
+pub(crate) fn try_provider_request() -> Option<SemaphorePermit<'static>> {
+    PROVIDER_REQUESTS.try_acquire().ok()
+}
 
 /// Who a caller is, once verified. `id` is what ownership, comment authorship
 /// and grants key on, and it is qualified with the provider --
@@ -204,7 +215,25 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// Reads the value of --publishers or --commenters:
+    /// Parse the deployment's publishing policy.  Anonymous publishing was a
+    /// legacy policy spelling and is rejected at configuration boundaries;
+    /// commenting continues to use `parse` because public comments remain a
+    /// supported read-side operation.
+    pub fn parse_publishers(value: &str) -> Result<Policy, String> {
+        if value.trim().eq_ignore_ascii_case("anyone")
+            || value.trim().eq_ignore_ascii_case("public")
+        {
+            return Err(
+                "--publishers anyone was removed; use --publishers any for any authenticated account"
+                    .into(),
+            );
+        }
+        Ok(Self::parse(value))
+    }
+
+    /// Reads the value of the commenter policy (and legacy generic policy
+    /// values). Publishing configuration uses `parse_publishers`, which
+    /// rejects anonymous spellings:
     ///
     /// ```text
     /// anyone                 no sign-in required at all

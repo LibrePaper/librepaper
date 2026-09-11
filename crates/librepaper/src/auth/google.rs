@@ -104,6 +104,8 @@ impl GoogleApp {
         redirect: &str,
         verifier: &str,
     ) -> Result<String, String> {
+        let _permit = crate::auth::try_provider_request()
+            .ok_or_else(|| "authentication service is busy; retry shortly".to_string())?;
         #[derive(Deserialize, Default)]
         struct Reply {
             #[serde(default)]
@@ -149,6 +151,8 @@ impl GoogleApp {
     /// Workspace `hd` claim to match the address domain, since this endpoint
     /// has no independent email verification flow.
     pub async fn identity_for(&self, token: &str) -> Result<Identity, String> {
+        let _permit = crate::auth::try_provider_request()
+            .ok_or_else(|| "authentication service is busy; retry shortly".to_string())?;
         let response = client()
             .get(&self.userinfo_url)
             .timeout(PROVIDER_HTTP_TIMEOUT)

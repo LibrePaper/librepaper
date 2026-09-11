@@ -2,8 +2,8 @@
 //
 // Nine call sites derived this independently -- `tree-digest.js`,
 // `latex/local.js`, `latex/bibliography.js`, `latex/jobs.js`,
-// `latex/resources.js`, `latex/worker.js`, `results-hash.js`,
-// `results-artifact.js` and `agent/agent.js` -- each re-writing the same
+// `latex/resources.js`, `latex/worker.js`, `results-hash.js` and
+// `agent/agent.js` -- each re-writing the same
 // `digest -> Uint8Array -> map to padded hex` reduction. They all agreed;
 // there was simply no reason for nine of them.
 //

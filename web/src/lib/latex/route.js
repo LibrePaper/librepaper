@@ -9,47 +9,23 @@
 // reach. `latex.js` is the only caller and the only place an action turns
 // into a job.
 //
-// Two counters carry the spec's "at most once" rules across the whole
-// session: `attempts.native` is keyed by snapshot ("full native is attempted
-// at most once automatically for that snapshot"), `attempts.vm` is keyed by
-// bibliography identity ("attempted at most once automatically for a
-// bibliography input identity"). Both survive across compiles of the same
-// project until a new snapshot or identity resets the count back to zero by
-// simply not having an entry yet -- there is nothing to "reset", a snapshot
-// that has not been tried has no key.
+// The native counter carries the spec's "at most once" rule across the whole
+// session and is keyed by snapshot. A snapshot that has not been tried has no
+// entry yet, so no explicit reset is needed.
 
 /// A fresh routing state for a session (a project, for one page load).
 /// `localStatus` mirrors `LocalStatus.state` from `latex/local.js`;
-/// `vmSupported` mirrors `latex/vm.js`'s `supported().ok`. Both may be
-/// `"unknown"`/`false` before either module has answered -- the first
-/// `biber-needed` decision is allowed to be optimistic about local (SPEC:
-/// "check the local app" happens concurrently with compilation, not before
-/// it) and is never optimistic about the VM, which is opt-in only once its
-/// eligibility is actually known.
-export function initialState({ snapshot = null, localStatus = "unknown", vmSupported = false } = {}) {
+export function initialState({ snapshot = null, localStatus = "unknown" } = {}) {
   return {
     snapshot,
     localStatus,
-    vmSupported,
     route: "browser",
-    attempts: { native: {}, vm: {} },
+    attempts: { native: {} },
   };
 }
 
 function reachableOrUnknown(localStatus) {
   return localStatus === "unknown" || localStatus === "reachable" || localStatus === "connected";
-}
-
-// `event.vmSupported`, when present, overrides `state.vmSupported`. The
-// controller only ever learns real VM eligibility (which requires importing
-// `latex/vm.js`, the thing the SPEC says must not happen for an ordinary
-// successful document) at the moment a decision might actually need it --
-// so it is supplied per event rather than pre-loaded into the session state
-// `initialState` starts everyone at (`false`, harmless: a state used with no
-// per-event override simply never routes to the VM, which is exactly right
-// for a check that never mentions Biber at all).
-function vmEligible(state, event, validBcf) {
-  return Boolean(validBcf) && Boolean(event.vmSupported ?? state.vmSupported);
 }
 
 function nativeAttempted(state, snapshot) {
@@ -63,36 +39,12 @@ function markNative(state, snapshot) {
   };
 }
 
-function vmAttempted(state, identity) {
-  return Boolean(state.attempts.vm[identity]);
-}
-
-function markVm(state, identity) {
-  return {
-    ...state,
-    attempts: { ...state.attempts, vm: { ...state.attempts.vm, [identity]: (state.attempts.vm[identity] || 0) + 1 } },
-  };
-}
-
-/// The one place the "may the VM take this?" policy is decided, so the four
-/// call sites below cannot drift apart: eligible (a valid BCF and VM support,
-/// per `vmEligible`) and not already attempted for this bibliography
-/// identity. Returns the `try-vm` result, with `state` updated to record the
-/// attempt, or `null` when the caller must fall through to whatever it does
-/// when the VM cannot be used.
-function vmStep(state, event) {
-  if (vmEligible(state, event, event.validBcf) && !vmAttempted(state, event.identity)) {
-    return { action: "try-vm", state: markVm(state, event.identity), failure: null };
-  }
-  return null;
-}
-
 const LOCAL_UNAVAILABLE = { kind: "local-unavailable", message: "Local LibrePaper is unavailable" };
 
 /// `event` is `{ type, ...context }`. `state` is whatever the previous
 /// `decide` returned (or `initialState` for the first call of a session).
 /// Returns `{ action, state, failure }`: `action` is one of
-/// `"try-local-biber" | "try-vm" | "try-native" | "stop" | "show-browser"`;
+/// `"try-local-biber" | "try-native" | "stop" | "show-browser"`;
 /// `failure` is `null | { kind, message }` in `Result.failure`'s vocabulary,
 /// set whenever the action is terminal (`stop`/`show-browser`) and the
 /// situation is not a clean success or a silent cancellation.
@@ -101,39 +53,27 @@ export function decide(event, state) {
 
   switch (event.type) {
     // "Biber is required" -> local first when it might be reachable at all;
-    // a definite non-local state skips straight to the VM eligibility check
-    // rather than paying for a probe already known to fail.
+    // a definite non-local state shows the browser result with a local hint.
     case "biber-needed": {
       if (reachableOrUnknown(state.localStatus)) {
         return { action: "try-local-biber", state, failure: null };
       }
-      const vm = vmStep(state, event);
-      if (vm) return vm;
       return { action: "show-browser", state, failure: LOCAL_UNAVAILABLE };
     }
 
     // The local app turned out to be unreachable or the connection was
     // denied, discovered only after `try-local-biber` actually tried it (the
-    // optimistic "unknown" case above resolves here). The VM can only stand
-    // in when browser TeX already succeeded and bibliography is the only
-    // remaining work -- it never substitutes for a failed browser TeX pass.
+    // optimistic "unknown" case above resolves here). The browser result is
+    // retained when only bibliography work remains.
     case "local-unreachable":
     case "local-denied": {
-      if (event.onlyBibliography) {
-        const vm = vmStep(state, event);
-        if (vm) return vm;
-      }
-      return { action: "stop", state, failure: LOCAL_UNAVAILABLE };
+      return { action: event.onlyBibliography ? "show-browser" : "stop", state, failure: LOCAL_UNAVAILABLE };
     }
 
     // The app answered but the required tool is missing on that machine.
     case "local-tool-missing": {
-      if (event.onlyBibliography) {
-        const vm = vmStep(state, event);
-        if (vm) return vm;
-      }
       return {
-        action: "stop",
+        action: event.onlyBibliography ? "show-browser" : "stop",
         state,
         failure: { kind: "tool-missing", message: event.message || "The required tool was not found on this machine" },
       };
@@ -141,18 +81,13 @@ export function decide(event, state) {
 
     // Local Biber exists but cannot read the browser release's control-file
     // version. A complete native build, using its own matching bibliography
-    // tool, is preferred over the VM here because it also re-typesets with
-    // packages known to match -- the VM only ever returns a BBL for browser TeX
-    // to consume, which is exactly the byte stream the incompatible local
-    // Biber could not produce.
+    // tool, is preferred when local TeX exists.
     case "local-incompatible": {
       if (event.localTexAvailable && !nativeAttempted(state, snapshot)) {
         return { action: "try-native", state: markNative(state, snapshot), failure: null };
       }
-      const vm = vmStep(state, event);
-      if (vm) return vm;
       return {
-        action: "stop",
+        action: event.onlyBibliography ? "show-browser" : "stop",
         state,
         failure: { kind: "incompatible", message: event.message || "Local Biber is incompatible with this release" },
       };
@@ -161,7 +96,7 @@ export function decide(event, state) {
     // An actual Biber run failed on real input -- a citation error, a
     // malformed database. SPEC: "a real Biber input error is a diagnostic,
     // not a reason to run identical invalid input through every backend."
-    // No native or VM retry: the same bad input would just fail there too.
+    // No native retry: the same bad input would just fail there too.
     case "local-biber-failed": {
       return { action: "stop", state, failure: { kind: "bibliography", message: event.message || "Biber failed" } };
     }
@@ -192,15 +127,6 @@ export function decide(event, state) {
     // native route for the current editing session."
     case "native-ok": {
       return { action: "stop", state: { ...state, route: "native" }, failure: null };
-    }
-
-    case "vm-unavailable":
-    case "vm-failed": {
-      return {
-        action: "stop",
-        state,
-        failure: { kind: "vm", message: event.message || "Browser bibliography support is unavailable" },
-      };
     }
 
     // "Cancellation is not a failure that triggers fallback." No attempt

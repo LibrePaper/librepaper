@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
@@ -27,6 +27,12 @@ pub const BACKUP_MANIFEST_NAME: &str = "manifest.json";
 pub const BACKUP_NAMESPACE: &str = "recovery/";
 pub const LOCAL_BACKUP_FORMAT: u16 = 1;
 pub const LOCAL_BACKUP_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
+/// A backup must leave room for SQLite/VACUUM scratch files and an interrupted
+/// operation on the primary volume. This is an internal guardrail, not a
+/// second operator-facing storage quota.
+pub const BACKUP_TEMP_RESERVATION_BYTES: u64 = 64 * 1024 * 1024;
+pub const BACKUP_EMERGENCY_HEADROOM_BYTES: u64 = 256 * 1024 * 1024;
+pub const BACKUP_WARNING_COUNT: usize = 10;
 
 #[derive(Debug)]
 pub enum BackupError {
@@ -78,6 +84,20 @@ pub struct LocalBackupManifest {
     pub objects: Vec<LocalFile>,
     pub secrets: Vec<LocalFile>,
     pub identity: LocalFile,
+    /// Sum of the bytes supplied to this backup (catalogue, retained objects,
+    /// secrets and deployment identity), before filesystem allocation.
+    #[serde(default)]
+    pub logical_input_bytes: u64,
+    /// Bytes written to the backup payload, including the completion manifest.
+    /// A local backup is currently a new full copy.
+    #[serde(default)]
+    pub bytes_written: u64,
+    #[serde(default = "default_full_copy")]
+    pub full_copy: bool,
+}
+
+fn default_full_copy() -> bool {
+    true
 }
 
 fn local_backup_id_valid(value: &str) -> bool {
@@ -112,6 +132,7 @@ fn local_manifest_valid(manifest: &LocalBackupManifest) -> BackupResult<()> {
         || manifest.restore_point.is_empty()
         || manifest.secret_versions.len() != 2
         || !manifest.complete
+        || !manifest.full_copy
         || manifest.objects.len() > MAX_BACKUP_OBJECTS
         || manifest.secrets.len() > 16
         || manifest.catalog.relative != "catalog.db"
@@ -120,6 +141,22 @@ fn local_manifest_valid(manifest: &LocalBackupManifest) -> BackupResult<()> {
         || !local_relative_valid(&manifest.identity.relative)
     {
         return Err(BackupError::Invalid("invalid local backup manifest".into()));
+    }
+    let calculated = std::iter::once(&manifest.catalog)
+        .chain(std::iter::once(&manifest.identity))
+        .chain(manifest.objects.iter())
+        .chain(manifest.secrets.iter())
+        .map(|file| file.length)
+        .sum::<u64>();
+    if manifest.logical_input_bytes != 0 && manifest.logical_input_bytes != calculated {
+        return Err(BackupError::Invalid(
+            "local backup logical byte count does not match its files".into(),
+        ));
+    }
+    if manifest.bytes_written != 0 && manifest.bytes_written < calculated {
+        return Err(BackupError::Invalid(
+            "local backup written byte count is smaller than its files".into(),
+        ));
     }
     let mut paths = HashSet::new();
     for file in std::iter::once(&manifest.catalog)
@@ -352,6 +389,301 @@ fn digest(body: &[u8]) -> String {
     hex::encode(Sha256::digest(body))
 }
 
+/// Namespaces used by renderers and result publication. They are deliberately
+/// kept separate from `content/<id>/assets/`, which is an input namespace and
+/// must survive a rendering migration.
+pub fn is_generated_output_key(key: &str) -> bool {
+    key.starts_with("quarto/")
+        || key.starts_with("documents/")
+        || key.starts_with("renderings/")
+        || (key.starts_with("content/") && key.split('/').nth(2) == Some("renderings"))
+}
+
+/// Remove references to old renderer products from a catalogue image. This is
+/// used for new backups and restores of old backups alike. Annotation rows
+/// and their source/output anchors remain durable; only renderer publication
+/// and selection rows are removed.
+fn catalog_input_object_keys(
+    connection: &Connection,
+    objects_path: Option<&Path>,
+) -> BackupResult<HashSet<String>> {
+    let mut protected = HashSet::new();
+    for sql in [
+        "SELECT object_key FROM checkpoint_asset_refs",
+        "SELECT object_key FROM source_history_objects",
+        // A lease is a live writer's protection claim even before its object
+        // is adopted by a committed history record.  Backups must retain the
+        // object and the lease so recovery cannot expose an in-flight write
+        // to the renderer retirement migration.
+        "SELECT object_key FROM source_history_write_leases",
+        "SELECT object_key FROM object_accounting
+         WHERE kind NOT IN ('rendering','rendering-provenance','quarto','result')
+           AND object_key NOT LIKE 'quarto/%'
+           AND object_key NOT LIKE 'documents/%'
+           AND object_key NOT LIKE 'renderings/%'
+           AND object_key NOT GLOB 'content/*/renderings/*'",
+    ] {
+        let mut statement = connection
+            .prepare(sql)
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        for row in rows {
+            protected.insert(row.map_err(|error| BackupError::Storage(error.to_string()))?);
+        }
+    }
+    // Old catalogues did not have checkpoint_asset_refs. Parse their retained
+    // trees as a conservative compatibility path so an input PDF or image
+    // under a legacy namespace is never collected with renderer products.
+    if let Some(objects_path) = objects_path {
+        let mut statement = connection
+            .prepare(
+                "SELECT d.storage_id,c.sha FROM checkpoints c
+                 JOIN documents d ON d.slug=c.slug WHERE c.tree_sha<>''",
+            )
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        for row in rows {
+            let (storage_id, sha) = row.map_err(|error| BackupError::Storage(error.to_string()))?;
+            let path = objects_path.join(crate::storage::blob::checkpoint_key(&storage_id, &sha));
+            let body = match fs::read(&path) {
+                Ok(body) => body,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(BackupError::Storage(error.to_string())),
+            };
+            let Ok(tree) = serde_json::from_slice::<crate::document::history::Tree>(&body) else {
+                continue;
+            };
+            for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
+                protected.insert(crate::storage::blob::asset_key(&storage_id, &entry.sha));
+            }
+        }
+    }
+    Ok(protected)
+}
+
+/// Check the input graph before any renderer namespace is filtered. A missing
+/// input must fail the backup/restore rather than silently turning a valid
+/// source tree into an incomplete recovery point.
+fn verify_input_graph(objects_path: &Path, keys: &HashSet<String>) -> BackupResult<()> {
+    for key in keys {
+        if !local_relative_valid(key) {
+            return Err(BackupError::Corrupt(format!(
+                "input graph references unsafe object key {key:?}"
+            )));
+        }
+        let path = objects_path.join(key);
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            BackupError::Corrupt(format!("input graph object {}: {error}", path.display()))
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(BackupError::Corrupt(format!(
+                "input graph object is not a regular file: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn strip_generated_output_references(
+    connection: &Connection,
+    protected_inputs: &HashSet<String>,
+) -> BackupResult<()> {
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             DELETE FROM renderings;
+             DELETE FROM quarto_selections;
+             DELETE FROM quarto_selection_epochs;
+             DELETE FROM quarto_selection_history;
+             COMMIT;",
+        )
+        .map_err(|error| BackupError::Storage(error.to_string()))?;
+    // SQL LIKE keeps this bounded to renderer namespaces; the input set is
+    // checked explicitly so shared legacy objects remain accounted.
+    connection
+        .execute(
+            "DELETE FROM object_accounting
+             WHERE (object_key LIKE 'quarto/%'
+                 OR object_key LIKE 'documents/%'
+                 OR object_key LIKE '%/renderings/%'
+                 OR object_key LIKE 'renderings/%')
+               AND object_key NOT IN (SELECT value FROM json_each(?1))",
+            [serde_json::to_string(protected_inputs)
+                .map_err(|error| BackupError::Json(error.to_string()))?],
+        )
+        .map_err(|error| BackupError::Storage(error.to_string()))?;
+    Ok(())
+}
+
+fn local_available_space(path: &Path) -> BackupResult<u64> {
+    fs2::available_space(path).map_err(|error| BackupError::Storage(error.to_string()))
+}
+
+/// Serialize backup-capacity admission within a destination directory. The
+/// free-space observation and reservation are held together for the complete
+/// operation, so two backup/restore workers cannot both spend the same
+/// temporary headroom between their checks.
+struct CapacityReservation {
+    _locks: Vec<(PathBuf, File)>,
+}
+
+impl CapacityReservation {
+    /// Release one directory's admission lock after its scratch work is
+    /// complete, while retaining the destination lock for the copy itself.
+    fn release_path(&mut self, path: &Path) {
+        let Ok(path) = path.canonicalize() else {
+            return;
+        };
+        self._locks.retain(|(held, _)| held != &path);
+    }
+}
+
+/// Take the live-volume lock only for one destination write.  A backup that
+/// shares a filesystem with its source checks the emergency margin immediately
+/// before each write, so concurrent accepted blob writes can proceed between
+/// payload files without allowing this copy to spend that margin unchecked.
+fn reserve_payload_write(path: &Path, bytes: u64, purpose: &str) -> BackupResult<File> {
+    let path = path
+        .canonicalize()
+        .map_err(|error| BackupError::Storage(error.to_string()))?;
+    let lock_path = path.join(".librepaper-capacity.lock");
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| BackupError::Storage(error.to_string()))?;
+    lock.lock_exclusive()
+        .map_err(|error| BackupError::Storage(error.to_string()))?;
+    let required = bytes
+        .saturating_add(BACKUP_TEMP_RESERVATION_BYTES)
+        .saturating_add(BACKUP_EMERGENCY_HEADROOM_BYTES);
+    let available = local_available_space(&path)?;
+    if available < required {
+        return Err(BackupError::Invalid(format!(
+            "{purpose} requires {required} bytes, but only {available} bytes are available"
+        )));
+    }
+    Ok(lock)
+}
+
+fn write_payload(destination: &Path, body: &[u8], live_root: Option<&Path>) -> BackupResult<()> {
+    let _live_lock = live_root
+        .map(|root| reserve_payload_write(root, body.len() as u64, "backup payload"))
+        .transpose()?;
+    durable_write(destination, body)
+}
+
+fn copy_record_with_capacity(
+    source_root: &Path,
+    destination_root: &Path,
+    record: &LocalFile,
+    live_root: Option<&Path>,
+) -> BackupResult<()> {
+    let source = source_root.join(&record.relative);
+    let destination = destination_root.join(&record.relative);
+    let body = fs::read(&source).map_err(|error| BackupError::Storage(error.to_string()))?;
+    if body.len() as u64 != record.length || digest(&body) != record.digest {
+        return Err(BackupError::Corrupt(format!(
+            "source file {} changed during backup",
+            source.display()
+        )));
+    }
+    write_payload(&destination, &body, live_root)
+}
+
+fn reserve_capacity(
+    path: &Path,
+    required: u64,
+    purpose: &str,
+) -> BackupResult<CapacityReservation> {
+    reserve_capacities(&[(path, required)], purpose)
+}
+
+/// Admit all directories touched by one staging operation while holding a
+/// lock for each. Requests on the same filesystem are summed before the free
+/// space check, so a backup whose source and destination share a volume cannot
+/// spend the same headroom twice. Lock paths are ordered to keep two
+/// operations from deadlocking when they name the directories in reverse.
+fn reserve_capacities(
+    requests: &[(&Path, u64)],
+    purpose: &str,
+) -> BackupResult<CapacityReservation> {
+    let mut locks = Vec::<(String, PathBuf)>::new();
+    let mut volume_paths = HashMap::<String, PathBuf>::new();
+    let mut volume_requirements = HashMap::<String, u64>::new();
+    for (path, required) in requests {
+        create_private_dir_all(path).map_err(|error| BackupError::Storage(error.to_string()))?;
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        let volume = capacity_volume_key(&canonical)?;
+        volume_paths
+            .entry(volume.clone())
+            .or_insert(canonical.clone());
+        let volume_requirement = volume_requirements.entry(volume).or_default();
+        *volume_requirement = volume_requirement.saturating_add(*required);
+        locks.push((
+            canonical.display().to_string(),
+            canonical.join(".librepaper-capacity.lock"),
+        ));
+    }
+    locks.sort_by(|left, right| left.0.cmp(&right.0));
+    locks.dedup_by(|left, right| left.0 == right.0);
+    let mut held = Vec::with_capacity(locks.len());
+    for (_, lock_path) in locks {
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        lock.try_lock_exclusive().map_err(|error| {
+            BackupError::Invalid(format!("{purpose} capacity reservation is held: {error}"))
+        })?;
+        let lock_root = lock_path
+            .parent()
+            .expect("capacity lock path has a parent")
+            .to_path_buf();
+        held.push((lock_root, lock));
+    }
+    for (volume, required) in volume_requirements {
+        let path = volume_paths
+            .get(&volume)
+            .expect("capacity volume path recorded with requirement");
+        let available = local_available_space(path)?;
+        if available < required {
+            return Err(BackupError::Invalid(format!(
+                "{purpose} requires {required} bytes, but only {available} bytes are available"
+            )));
+        }
+    }
+    Ok(CapacityReservation { _locks: held })
+}
+
+fn capacity_volume_key(path: &Path) -> BackupResult<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path)
+            .map(|metadata| metadata.dev().to_string())
+            .map_err(|error| BackupError::Storage(error.to_string()))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(path.display().to_string())
+    }
+}
+
 pub struct BackupRequest<'a> {
     pub backup_id: &'a str,
     pub deployment_id: &'a str,
@@ -409,6 +741,12 @@ pub async fn create_backup(
     let mut created_objects = Vec::with_capacity(source_keys.len());
     let copy_result = async {
         for source_key in source_keys {
+            // Remote recovery points follow the same no-retained-renderings
+            // rule as local ones. Input assets use the content/.../assets
+            // namespace and do not match this predicate.
+            if is_generated_output_key(source_key) {
+                continue;
+            }
             if !seen.insert(source_key) {
                 return Err(BackupError::Invalid("duplicate source object key".into()));
             }
@@ -503,6 +841,9 @@ pub async fn restore_backup(
 ) -> BackupResult<BackupManifest> {
     let manifest = verify_backup(blobs, backup_id).await?;
     for object in &manifest.objects {
+        if is_generated_output_key(&object.source_key) {
+            continue;
+        }
         let body = blobs.get(&object.backup_key).await?;
         blobs
             .put(&object.source_key, body, "application/octet-stream")
@@ -679,6 +1020,9 @@ fn walk_regular_files(root: &Path, relative: &Path, output: &mut Vec<String>) ->
         .map_err(|error| BackupError::Storage(format!("{}: {error}", directory.display())))?;
     for entry in entries {
         let entry = entry.map_err(|error| BackupError::Storage(error.to_string()))?;
+        if entry.file_name().to_str() == Some(".librepaper-capacity.lock") {
+            continue;
+        }
         let file_type = entry
             .file_type()
             .map_err(|error| BackupError::Storage(error.to_string()))?;
@@ -1089,46 +1433,6 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
     drop(rows);
     drop(statement);
 
-    let mut statement = connection
-        .prepare(
-            "SELECT d.storage_id, r.tree_sha, r.synctex
-             FROM renderings r JOIN documents d ON d.slug = r.slug",
-        )
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    let mut rows = statement
-        .query([])
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    while let Some(row) = rows
-        .next()
-        .map_err(|error| BackupError::Storage(error.to_string()))?
-    {
-        let storage_id: String = row
-            .get(0)
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        let tree_sha: String = row
-            .get(1)
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        let synctex: i64 = row
-            .get(2)
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        verify_object(
-            objects_path,
-            &crate::storage::blob::rendering_key(&storage_id, &tree_sha),
-            None,
-            None,
-        )?;
-        if synctex != 0 {
-            verify_object(
-                objects_path,
-                &crate::storage::blob::rendering_synctex_key(&storage_id, &tree_sha),
-                None,
-                None,
-            )?;
-        }
-    }
-    drop(rows);
-    drop(statement);
-
     // Journal rows carry the only catalog-side object digests and lengths.
     // Check all committed segments, bases and manifest shards, including
     // retired rows: until the retirement worker deletes them they remain part
@@ -1286,6 +1590,64 @@ pub fn create_local_backup(
 
     fs::create_dir_all(objects_path).map_err(|error| BackupError::Storage(error.to_string()))?;
     fs::create_dir_all(backup_root).map_err(|error| BackupError::Storage(error.to_string()))?;
+    let mut source_object_paths = Vec::new();
+    walk_regular_files(objects_path, Path::new(""), &mut source_object_paths)?;
+    let protected_inputs = catalog_input_object_keys(&connection, Some(objects_path))?;
+    verify_input_graph(objects_path, &protected_inputs)?;
+    source_object_paths.retain(|path| {
+        !path.starts_with("recovery/")
+            && path != "index.json"
+            && (!is_generated_output_key(path) || protected_inputs.contains(path))
+    });
+    let object_input_bytes = source_object_paths
+        .iter()
+        .map(|relative| {
+            fs::metadata(objects_path.join(relative))
+                .map(|metadata| metadata.len())
+                .map_err(|error| BackupError::Storage(error.to_string()))
+        })
+        .collect::<BackupResult<Vec<_>>>()?
+        .into_iter()
+        .sum::<u64>();
+    let fixed_input_bytes = fs::metadata(catalog_path)
+        .map_err(|error| BackupError::Storage(error.to_string()))?
+        .len()
+        .saturating_add(
+            fs::metadata(&paths.deployment_identity)
+                .map_err(|error| BackupError::Storage(error.to_string()))?
+                .len(),
+        );
+    let fixed_input_bytes = fixed_input_bytes.saturating_add(
+        ["session.key", "links.key"]
+            .into_iter()
+            .map(|name| {
+                fs::metadata(secrets_path.join(name))
+                    .map(|metadata| metadata.len())
+                    .map_err(|error| BackupError::Storage(error.to_string()))
+            })
+            .collect::<BackupResult<Vec<_>>>()?
+            .into_iter()
+            .sum::<u64>(),
+    );
+    let estimated_input_bytes = fixed_input_bytes.saturating_add(object_input_bytes);
+    // A backup destination may be on another volume, but the live deployment
+    // must retain its own emergency floor while VACUUM and encoding scratch
+    // files exist. Hold both locks through admission, then reacquire the live
+    // lock around each same-volume payload write so accepted blob writes can
+    // proceed between files.
+    let mut capacity = reserve_capacities(
+        &[
+            (
+                objects_path,
+                BACKUP_TEMP_RESERVATION_BYTES.saturating_add(BACKUP_EMERGENCY_HEADROOM_BYTES),
+            ),
+            (
+                backup_root,
+                estimated_input_bytes.saturating_add(BACKUP_TEMP_RESERVATION_BYTES),
+            ),
+        ],
+        "backup",
+    )?;
     let target = backup_root.join(backup_id);
     if target.exists() {
         return Err(BackupError::Invalid("backup id already exists".into()));
@@ -1296,6 +1658,19 @@ pub fn create_local_backup(
     }
     create_private_dir_all(&temporary).map_err(|error| BackupError::Storage(error.to_string()))?;
     protect_directory(&temporary)?;
+    let live_payload_lock = if capacity_volume_key(
+        &objects_path
+            .canonicalize()
+            .map_err(|error| BackupError::Storage(error.to_string()))?,
+    )? == capacity_volume_key(
+        &backup_root
+            .canonicalize()
+            .map_err(|error| BackupError::Storage(error.to_string()))?,
+    )? {
+        Some(objects_path.as_path())
+    } else {
+        None
+    };
     let result = (|| {
         let snapshot_path = temporary.join("catalog.db");
         let snapshot_sql = snapshot_path.to_string_lossy().to_string();
@@ -1305,19 +1680,32 @@ pub fn create_local_backup(
         File::open(&snapshot_path)
             .and_then(|file| file.sync_all())
             .map_err(|error| BackupError::Storage(error.to_string()))?;
-        let mut object_paths = Vec::new();
-        walk_regular_files(objects_path, Path::new(""), &mut object_paths)?;
-        object_paths.retain(|path| !path.starts_with("recovery/") && path != "index.json");
+        let snapshot_connection = Connection::open(&snapshot_path)
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        strip_generated_output_references(&snapshot_connection, &protected_inputs)?;
+        snapshot_connection
+            .execute_batch("PRAGMA wal_checkpoint(FULL);")
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
         // Check the live catalog against the same object tree that is about to
         // be copied. This catches a missing object before a complete marker
         // can be published, rather than producing a restore that fails later.
-        verify_catalog_references(&connection, objects_path)?;
-        let source_objects = object_paths
+        verify_catalog_references(&snapshot_connection, objects_path)?;
+        // VACUUM is the only live-volume allocation in this copy. Release its
+        // source lock before potentially long object reads so accepted blob
+        // writes can proceed; copy_record still verifies every source digest
+        // and fails closed if one races this backup.
+        capacity.release_path(objects_path);
+        let source_objects = source_object_paths
             .iter()
             .map(|relative| file_record(objects_path, relative))
             .collect::<BackupResult<Vec<_>>>()?;
         for record in &source_objects {
-            copy_record(objects_path, &temporary.join("objects"), record)?;
+            copy_record_with_capacity(
+                objects_path,
+                &temporary.join("objects"),
+                record,
+                live_payload_lock,
+            )?;
         }
         // Object records are rooted at the backup directory, while the source
         // records above are rooted at the live object store.
@@ -1335,7 +1723,7 @@ pub fn create_local_backup(
             let destination = temporary.join("secrets").join(name);
             let body = fs::read(secrets_path.join(name))
                 .map_err(|error| BackupError::Storage(error.to_string()))?;
-            durable_write(&destination, &body)?;
+            write_payload(&destination, &body, live_payload_lock)?;
             DeploymentPaths::protect_file(&destination).map_err(BackupError::Storage)?;
             secrets.push(LocalFile {
                 relative: format!("secrets/{name}"),
@@ -1349,7 +1737,11 @@ pub fn create_local_backup(
             digest: digest(&identity_body),
             length: identity_body.len() as u64,
         };
-        durable_write(&temporary.join(&identity.relative), &identity_body)?;
+        write_payload(
+            &temporary.join(&identity.relative),
+            &identity_body,
+            live_payload_lock,
+        )?;
         DeploymentPaths::protect_file(&temporary.join(&identity.relative))
             .map_err(BackupError::Storage)?;
         DeploymentPaths::local(&temporary)
@@ -1373,7 +1765,30 @@ pub fn create_local_backup(
             objects,
             secrets,
             identity,
+            logical_input_bytes: 0,
+            bytes_written: 0,
+            full_copy: true,
         };
+        let logical_input_bytes = std::iter::once(&manifest.catalog)
+            .chain(std::iter::once(&manifest.identity))
+            .chain(manifest.objects.iter())
+            .chain(manifest.secrets.iter())
+            .map(|file| file.length)
+            .sum::<u64>();
+        let mut manifest = manifest;
+        manifest.logical_input_bytes = logical_input_bytes;
+        // The completion manifest is itself part of the backup payload. Its
+        // byte count changes the JSON length, so settle the self-reference
+        // before publishing it.
+        for _ in 0..4 {
+            let manifest_bytes = serde_json::to_vec(&manifest)
+                .map_err(|error| BackupError::Json(error.to_string()))?;
+            let written = logical_input_bytes.saturating_add(manifest_bytes.len() as u64);
+            if manifest.bytes_written == written {
+                break;
+            }
+            manifest.bytes_written = written;
+        }
         local_manifest_valid(&manifest)?;
         for file in std::iter::once(&manifest.catalog)
             .chain(std::iter::once(&manifest.identity))
@@ -1384,7 +1799,16 @@ pub fn create_local_backup(
         }
         let body =
             serde_json::to_vec(&manifest).map_err(|error| BackupError::Json(error.to_string()))?;
-        durable_write(&temporary.join(BACKUP_MANIFEST_NAME), &body)?;
+        if manifest.bytes_written != logical_input_bytes.saturating_add(body.len() as u64) {
+            return Err(BackupError::Corrupt(
+                "backup manifest byte count changed while encoding".into(),
+            ));
+        }
+        write_payload(
+            &temporary.join(BACKUP_MANIFEST_NAME),
+            &body,
+            live_payload_lock,
+        )?;
         protect_tree_directories(&temporary)?;
         protect_directory(&temporary)?;
         fs::rename(&temporary, &target).map_err(|error| BackupError::Storage(error.to_string()))?;
@@ -1438,6 +1862,22 @@ pub fn catalog_snapshot_digest(catalog_path: &Path) -> BackupResult<String> {
 
 pub fn verify_local_backup(backup_dir: &Path) -> BackupResult<LocalBackupManifest> {
     let manifest = read_local_manifest(backup_dir)?;
+    if manifest.bytes_written != 0 {
+        let payload_bytes = std::iter::once(&manifest.catalog)
+            .chain(std::iter::once(&manifest.identity))
+            .chain(manifest.objects.iter())
+            .chain(manifest.secrets.iter())
+            .map(|file| file.length)
+            .sum::<u64>();
+        let manifest_length = fs::metadata(backup_dir.join(BACKUP_MANIFEST_NAME))
+            .map_err(|error| BackupError::Corrupt(error.to_string()))?
+            .len();
+        if manifest.bytes_written != payload_bytes.saturating_add(manifest_length) {
+            return Err(BackupError::Corrupt(
+                "local backup written byte count does not match its payload".into(),
+            ));
+        }
+    }
     for file in std::iter::once(&manifest.catalog)
         .chain(std::iter::once(&manifest.identity))
         .chain(manifest.objects.iter())
@@ -1459,6 +1899,35 @@ pub fn verify_local_backup(backup_dir: &Path) -> BackupResult<LocalBackupManifes
     Ok(manifest)
 }
 
+fn completed_backups_for_deployment(
+    backup_root: &Path,
+    deployment_id: &str,
+) -> BackupResult<usize> {
+    let entries = match fs::read_dir(backup_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(BackupError::Storage(error.to_string())),
+    };
+    let mut count = 0usize;
+    for entry in entries {
+        let entry = entry.map_err(|error| BackupError::Storage(error.to_string()))?;
+        if !entry
+            .file_type()
+            .map_err(|error| BackupError::Storage(error.to_string()))?
+            .is_dir()
+        {
+            continue;
+        }
+        let Ok(manifest) = read_local_manifest(&entry.path()) else {
+            continue;
+        };
+        if manifest.deployment_id == deployment_id {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
+}
+
 /// Restore into a new directory. Validation happens before any destination
 /// files are written; the populated temporary tree is renamed into place only
 /// after every digest and the SQLite integrity check succeeds.
@@ -1467,6 +1936,11 @@ pub fn restore_local_backup(
     destination: &Path,
 ) -> BackupResult<LocalBackupManifest> {
     let manifest = verify_local_backup(backup_dir)?;
+    let backup_catalog = Connection::open(backup_dir.join(&manifest.catalog.relative))
+        .map_err(|error| BackupError::Corrupt(error.to_string()))?;
+    let protected_inputs =
+        catalog_input_object_keys(&backup_catalog, Some(&backup_dir.join("objects")))?;
+    verify_input_graph(&backup_dir.join("objects"), &protected_inputs)?;
     if destination.exists() {
         return Err(BackupError::Invalid(
             "restore destination already exists".into(),
@@ -1476,6 +1950,24 @@ pub fn restore_local_backup(
         .parent()
         .ok_or_else(|| BackupError::Invalid("restore destination has no parent".into()))?;
     fs::create_dir_all(parent).map_err(|error| BackupError::Storage(error.to_string()))?;
+    let logical_input_bytes = if manifest.logical_input_bytes == 0 {
+        std::iter::once(&manifest.catalog)
+            .chain(std::iter::once(&manifest.identity))
+            .chain(manifest.objects.iter().filter(|file| {
+                let key = file.relative.strip_prefix("objects/").unwrap_or("");
+                !is_generated_output_key(key) || protected_inputs.contains(key)
+            }))
+            .chain(manifest.secrets.iter())
+            .map(|file| file.length)
+            .sum()
+    } else {
+        manifest.logical_input_bytes
+    };
+    let _capacity = reserve_capacity(
+        parent,
+        logical_input_bytes.saturating_add(BACKUP_TEMP_RESERVATION_BYTES),
+        "restore destination",
+    )?;
     let temporary = parent.join(format!(".librepaper-restore-{}", std::process::id()));
     if temporary.exists() {
         return Err(BackupError::Invalid(
@@ -1486,7 +1978,10 @@ pub fn restore_local_backup(
     let result = (|| {
         for file in std::iter::once(&manifest.catalog)
             .chain(std::iter::once(&manifest.identity))
-            .chain(manifest.objects.iter())
+            .chain(manifest.objects.iter().filter(|file| {
+                let key = file.relative.strip_prefix("objects/").unwrap_or("");
+                !is_generated_output_key(key) || protected_inputs.contains(key)
+            }))
             .chain(manifest.secrets.iter())
         {
             copy_record(backup_dir, &temporary, file)?;
@@ -1494,6 +1989,9 @@ pub fn restore_local_backup(
         }
         let restored_catalog = Connection::open(temporary.join(&manifest.catalog.relative))
             .map_err(|error| BackupError::Corrupt(error.to_string()))?;
+        // A legacy recovery point may still contain renderer rows even when
+        // its object files are omitted from the restored tree.
+        strip_generated_output_references(&restored_catalog, &protected_inputs)?;
         let integrity: String = restored_catalog
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .map_err(|error| BackupError::Corrupt(error.to_string()))?;
@@ -1528,7 +2026,12 @@ pub fn restore_local_backup(
     result
 }
 
-pub async fn backup_cli(storage: crate::storage::StorageOptions, output: String, id: String) {
+pub async fn backup_cli(
+    storage: crate::storage::StorageOptions,
+    output: String,
+    id: String,
+    policy: crate::config::BackupPolicy,
+) {
     let paths = storage
         .paths()
         .unwrap_or_else(|error| crate::util::die(error));
@@ -1539,9 +2042,40 @@ pub async fn backup_cli(storage: crate::storage::StorageOptions, output: String,
     };
     let manifest = create_local_backup(&paths, Path::new(&output), &backup_id, unix_now())
         .unwrap_or_else(|error| crate::util::die(format!("could not create backup: {error}")));
+    let backup_count =
+        completed_backups_for_deployment(Path::new(&output), &manifest.deployment_id).unwrap_or(0);
     println!(
-        "completed local backup {} at {}/{}",
-        manifest.backup_id, output, manifest.backup_id
+        "completed local backup {} at {}/{}; logical input bytes: {}; bytes written: {}; mode: new full copy",
+        manifest.backup_id,
+        output,
+        manifest.backup_id,
+        manifest.logical_input_bytes,
+        manifest.bytes_written,
+    );
+    if backup_count > policy.warning_count {
+        eprintln!(
+            "warning: backup destination contains {} uniquely named backups for this deployment (configured warning threshold: {})",
+            backup_count, policy.warning_count
+        );
+    }
+    // Keep the machine-readable completion event free of filesystem paths and
+    // secrets. Operators can correlate its safe counter with policy metadata.
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "backup_completed",
+            "backup_id": manifest.backup_id,
+            "deployment_id": manifest.deployment_id,
+            "counter": backup_count,
+            "completed_backups": backup_count,
+            "logical_input_bytes": manifest.logical_input_bytes,
+            "bytes_written": manifest.bytes_written,
+            "full_copy": manifest.full_copy,
+            "destination_class": policy.destination_class,
+            "frequency_seconds": policy.frequency,
+            "retained_count": policy.retained_count,
+            "encrypted": policy.encrypted,
+        })
     );
 }
 
@@ -1724,6 +2258,44 @@ mod tests {
         );
         drop(owner);
         BackupOwnership::acquire(&paths).expect("the released lock can be taken again");
+    }
+
+    #[test]
+    fn local_capacity_reservation_serializes_backup_and_restore_staging() {
+        let destination = TempDir::new().expect("capacity directory");
+        let held = reserve_capacity(destination.path(), 0, "test").expect("first reservation");
+        assert!(
+            reserve_capacity(destination.path(), 0, "test").is_err(),
+            "a second staging operation spent capacity while the first held it"
+        );
+        drop(held);
+        reserve_capacity(destination.path(), 0, "test")
+            .expect("capacity lock released after staging completed");
+    }
+
+    #[tokio::test]
+    async fn backup_scratch_lock_blocks_blob_admission_only_until_vacuum_finishes() {
+        let live = TempDir::new().expect("live capacity directory");
+        let destination = TempDir::new().expect("backup capacity directory");
+        let mut held = reserve_capacities(&[(live.path(), 0), (destination.path(), 0)], "test")
+            .expect("combined reservation");
+        let store = FsStore::new(live.path(), false);
+        let write = tokio::spawn(async move {
+            store
+                .put("content/source", b"accepted write".to_vec(), "")
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!write.is_finished(), "backup admission lock was bypassed");
+        held.release_path(live.path());
+        write
+            .await
+            .expect("blob worker join")
+            .expect("accepted write after scratch admission");
+        assert!(
+            reserve_capacity(destination.path(), 0, "test").is_err(),
+            "destination lock remains for the payload copy"
+        );
     }
 
     #[tokio::test]
@@ -1984,6 +2556,19 @@ mod tests {
         catalog
             .set_link_sealing_key(&link_key)
             .expect("sealing key");
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "CREATE TABLE cost_state (id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL)",
+                    [],
+                )?;
+                connection.execute(
+                    "INSERT INTO cost_state(id,state) VALUES(1,?1)",
+                    [r#"{"minutes":[{"expires":4102444800,"ordinary":37,"emergency":2}],"sent":[37,0,0,0,0,0,0,0],"policy":{"cost":{"transfer_bytes":1000}}}"#],
+                )?;
+                Ok(())
+            })
+            .expect("cost state");
         let objects = FsStore::new(&paths.objects, true);
         objects
             .put(
@@ -2085,8 +2670,25 @@ mod tests {
         assert_eq!(manifest.deployment_id, deployment_id);
         assert_eq!(
             manifest.catalog.digest,
-            catalog_snapshot_digest(catalog_path).expect("current catalog digest")
+            digest(
+                &fs::read(backup_root.path().join("point-1/catalog.db")).expect("snapshot catalog")
+            )
         );
+        assert_ne!(
+            manifest.catalog.digest,
+            catalog_snapshot_digest(catalog_path).expect("live catalog digest"),
+            "the backup catalog should record the sanctioned renderer-reference rewrite"
+        );
+        let payload_bytes = std::iter::once(&manifest.catalog)
+            .chain(std::iter::once(&manifest.identity))
+            .chain(manifest.objects.iter())
+            .chain(manifest.secrets.iter())
+            .map(|file| file.length)
+            .sum::<u64>();
+        let manifest_bytes = fs::metadata(backup_root.path().join("point-1/manifest.json"))
+            .expect("backup manifest")
+            .len();
+        assert_eq!(manifest.bytes_written, payload_bytes + manifest_bytes);
         let backup_dir = backup_root.path().join("point-1");
         verify_local_backup(&backup_dir).expect("verify local backup");
 
@@ -2125,14 +2727,10 @@ mod tests {
         );
         let restored_catalog =
             Catalog::open(restored.join("catalog.db")).expect("restored catalog");
-        assert_eq!(
-            restored_catalog
-                .quarto_selection("sid", "paper", "html")
-                .unwrap()
-                .unwrap()
-                .render_id,
-            "render"
-        );
+        assert!(restored_catalog
+            .quarto_selection("sid", "paper", "html")
+            .unwrap()
+            .is_none());
         assert!(restored_catalog
             .quarto_selection("sid", "paper", "pdf")
             .unwrap()
@@ -2141,12 +2739,22 @@ mod tests {
             restored_catalog
                 .quarto_selection_generation("sid", "paper", "pdf")
                 .unwrap(),
-            2
+            0
         );
+        let restored_cost_state: String = restored_catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT state FROM cost_state WHERE id=1", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("restored cost state");
+        assert!(restored_cost_state.contains("\"ordinary\":37"));
         for (key, content) in quarto_objects {
-            assert_eq!(
-                fs::read(restored.join("objects").join(key)).expect("restored Quarto object"),
-                content.as_bytes()
+            assert!(
+                fs::read(restored.join("objects").join(key)).is_err(),
+                "generated output survived restore: {key} ({content})"
             );
         }
     }

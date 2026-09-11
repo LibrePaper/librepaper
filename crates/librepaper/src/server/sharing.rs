@@ -187,6 +187,18 @@ impl Server {
         let who = self
             .viewer(&entry, &headers, arrival, query.as_deref())
             .await;
+        if who.auth_failed {
+            return write_json(
+                401,
+                &json!({"error": "authentication expired or was revoked"}),
+            );
+        }
+        if who.id.is_signed_in() && !self.provider_configured(&who.id) {
+            return write_json(
+                401,
+                &json!({"error": "authentication provider is not configured"}),
+            );
+        }
         // The share route is the owner's alone now: a named editor used to be
         // shown a read-only version of it, but a document names its coauthors
         // through a link these days, and a stranger -- named or not -- learns
@@ -405,7 +417,7 @@ impl Server {
             // Whether editing, and commenting, ask for a sign-in at all: a
             // link cannot carry a role the deployment itself would refuse an
             // anonymous caller.
-            "edit_needs_signin": !self.publishers.public,
+            "edit_needs_signin": true,
             "comment_needs_signin": !self.commenters.public,
         })
     }
@@ -430,7 +442,13 @@ impl Server {
             .authenticated_identity(request.headers(), arrival)
             .await
         {
-            Ok(_) => {}
+            Ok(identity) if self.provider_configured(&identity) => {}
+            Ok(_) => {
+                return write_json(
+                    401,
+                    &json!({"error": "authentication provider is not configured"}),
+                )
+            }
             Err(AuthenticationFailure::Invalid) => {
                 let mut response = write_json(
                     401,

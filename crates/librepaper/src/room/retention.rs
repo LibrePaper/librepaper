@@ -11,26 +11,6 @@ pub(super) struct RetainedReferences {
 }
 
 impl Room {
-    /// Retire superseded publication bundles for a maintenance pass. This
-    /// deliberately takes the manifest gate but does not checkpoint or save;
-    /// the existing rendering routine verifies latest-PDF availability and
-    /// publication grace before queuing anything.
-    pub(super) async fn prune_renderings_periodic(&self) -> bool {
-        if self.read_only() || self.agent_recovery_pending() {
-            return false;
-        }
-        let _manifest_writer = self.manifest_write.lock().await;
-        let points = match self.catalog.get() {
-            Some(catalog) => match load_catalog_history(catalog, &self.slug).await {
-                Ok(points) => points,
-                Err(_) => return false,
-            },
-            None => self.state.lock().await.manifest.checkpoints.clone(),
-        };
-        self.prune_renderings(&points).await;
-        true
-    }
-
     /// Refresh a resident timeline after the catalogue retention worker has
     /// removed one or more cold checkpoints. The manifest is a cache in
     /// catalogue mode; keeping it stale would let the next save resurrect a
@@ -52,7 +32,7 @@ impl Room {
     }
 
     /// Called after checkpoint publication while checkpoint_write is owned.
-    /// Lock order: checkpoint -> manifest -> rendering/assets -> state. Never
+    /// Lock order: checkpoint -> manifest -> assets -> state. Never
     /// reacquire manifest in a consumer, or keep state during graph reads.
     pub(super) async fn prune_retained(&self, written: &history::Tree) {
         let _manifest_writer = self.manifest_write.lock().await;
@@ -75,15 +55,6 @@ impl Room {
         } else if let Err(error) = &references {
             eprintln!("warning: could not resolve retention trees for {}; preserving referenced assets and text: {error}", self.slug);
         }
-        // Rendering retention depends only on event/content identities and
-        // labels, so an unreadable tree body does not invalidate its evidence.
-        self.prune_renderings(&points).await;
-        // Quarto bundles use the same retained checkpoint graph. This keeps a
-        // bundle associated with a named/retained source revision available
-        // while retiring unselected historical results under the deployment
-        // history bound, with object accounting released only after deletion
-        // is confirmed.
-        self.prune_quarto(&points).await;
         if self.checkpointing.load(Ordering::Relaxed) == 1 {
             if let Ok(references) = references {
                 self.prune_blobs(written, &references).await;
@@ -322,8 +293,8 @@ mod tests {
         room.prune_retained(&history::Tree::default()).await;
         assert_eq!(
             catalog.connection_operations.load(Ordering::Relaxed) - before,
-            5,
-            "one paged history traversal, one metadata batch and one publication lookup"
+            3,
+            "one paged history traversal and one metadata batch"
         );
         assert_eq!(
             blobs.reads.load(Ordering::Relaxed),

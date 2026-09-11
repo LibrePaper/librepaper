@@ -3,7 +3,7 @@
 //! The compiler embeds typst's own default fonts and nothing else, and a
 //! browser has no system fonts worth relying on -- and reading the reader's
 //! would make one document render two ways. So a document that names another
-//! family gets it from here: `--fonts DIR` is a directory of font files, read
+//! family gets it from here: `--typst-fonts DIR` is a directory of font files, read
 //! once at startup for the families each carries, and served by family. The
 //! editor's compile loop asks for a family the compiler warned about, and
 //! `publish` asks the same deployment for the same files, so the preview and
@@ -15,9 +15,10 @@
 use std::path::PathBuf;
 
 use axum::body::Body;
-use axum::http::Response;
+use axum::http::{HeaderMap, Response};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 /// The most files a library is read for. A directory with more than this is
 /// probably not a font library, and every file is opened at startup.
@@ -31,6 +32,7 @@ pub struct FontFile {
     pub sha: String,
     pub families: Vec<String>,
     pub len: u64,
+    modified: Option<std::time::SystemTime>,
 }
 
 #[derive(Clone, Debug)]
@@ -47,7 +49,7 @@ impl Library {
         let root = PathBuf::from(flag.trim());
         if flag.trim().is_empty() || !root.is_dir() {
             return Err(format!(
-                "--fonts {flag} is not a directory on this machine.\n\n  \
+                "--typst-fonts {flag} is not a directory on this machine.\n\n  \
                  Point it at a directory of .ttf, .otf, .ttc or .otc files; every family they\n  \
                  carry is served to typst documents that name it."
             ));
@@ -78,7 +80,7 @@ impl Library {
                 }
                 if files.len() >= MOST_FILES {
                     return Err(format!(
-                        "--fonts {flag} holds more than {MOST_FILES} font files, which is more than a library"
+                        "--typst-fonts {flag} holds more than {MOST_FILES} font files, which is more than a library"
                     ));
                 }
                 let Ok(bytes) = std::fs::read(&path) else {
@@ -87,7 +89,7 @@ impl Library {
                 let families = families_in(&bytes);
                 if families.is_empty() {
                     eprintln!(
-                        "warning: --fonts: no font could be read from {}",
+                        "warning: --typst-fonts: no font could be read from {}",
                         path.display()
                     );
                     continue;
@@ -104,11 +106,14 @@ impl Library {
                     sha: hex::encode(Sha256::digest(&bytes)),
                     families,
                     len: bytes.len() as u64,
+                    modified: std::fs::metadata(&path)
+                        .ok()
+                        .and_then(|m| m.modified().ok()),
                 });
             }
         }
         if files.is_empty() {
-            eprintln!("warning: --fonts {flag} holds no font files yet");
+            eprintln!("warning: --typst-fonts {flag} holds no font files yet");
         }
         Ok(Library { root, files })
     }
@@ -166,7 +171,13 @@ impl Library {
     }
 
     /// Answers `/api/fonts/<rest>`: the index, or one file.
-    pub async fn response(&self, rest: &str, head: bool) -> Response<Body> {
+    pub async fn response(
+        &self,
+        rest: &str,
+        head: bool,
+        headers: &HeaderMap,
+        meter: &Arc<super::cost::CostMeter>,
+    ) -> Response<Body> {
         if rest == "index.json" {
             let mut response = super::write_json(200, &self.index());
             // The library changes when the deployment restarts with another
@@ -187,17 +198,24 @@ impl Library {
         let Some(file) = self.file(sha, &name) else {
             return super::plain(404, "not found");
         };
-        let body = if head {
-            Body::empty()
-        } else {
-            match tokio::fs::read(self.path_of(file)).await {
-                Ok(bytes) if hex::encode(Sha256::digest(&bytes)) == file.sha => Body::from(bytes),
-                _ => return super::plain(404, "not found"),
+        // Startup verified the immutable font. Refuse changed files until the
+        // library is reopened; admission and range selection precede file reads.
+        let _metadata = match tokio::fs::metadata(self.path_of(file)).await {
+            Ok(metadata)
+                if metadata.len() == file.len && metadata.modified().ok() == file.modified =>
+            {
+                metadata
             }
+            _ => return super::plain(404, "font changed; restart to refresh the library"),
         };
-        let mut response = Response::new(body);
+        let blobs = Arc::new(crate::storage::blob::FsStore::new(&self.root, false));
+        let mut response =
+            super::cost::blob_response(meter, blobs, file.name.clone(), &file.sha, headers, head)
+                .await;
+        if !response.status().is_success() {
+            return response;
+        }
         super::set(&mut response, "content-type", content_type(&file.name));
-        super::set(&mut response, "content-length", &file.len.to_string());
         super::set(
             &mut response,
             "cache-control",

@@ -91,7 +91,6 @@ export function storageSnapshot(result) {
         { id: "live", label: "Live document state and source", bytes: use.liveBytes },
         { id: "history", label: "Source history", bytes: use.sourceHistoryBytes },
         { id: "assets", label: "Assets", bytes: use.assetBytes },
-        { id: "publication", label: "Latest published PDFs and companions", bytes: use.publicationBytes },
         { id: "metadata", label: "Other durable metadata", bytes: use.metadataBytes },
       ],
     },

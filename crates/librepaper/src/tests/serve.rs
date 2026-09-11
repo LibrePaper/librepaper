@@ -717,20 +717,15 @@ async fn browser_submission_retries_are_idempotent_and_author_scoped() {
 }
 
 #[test]
-fn latex_flag_defaults_to_the_project_mirror_when_absent() {
-    // LibrePaper always serves LaTeX: a blank --latex falls back to the
-    // project's own mirror rather than turning compilation off.
+fn latex_mirror_default_is_https_and_blank_overrides_are_rejected() {
     assert_eq!(
-        crate::server::serve::resolve_latex_flag(""),
-        crate::server::latex::DEFAULT_MIRROR
+        crate::server::serve::validate_latex_mirror(crate::config::DEFAULT_LATEX_MIRROR).unwrap(),
+        crate::config::DEFAULT_LATEX_MIRROR
     );
+    assert!(crate::server::serve::validate_latex_mirror("").is_err());
+    assert!(crate::server::serve::validate_latex_mirror("   ").is_err());
     assert_eq!(
-        crate::server::serve::resolve_latex_flag("   "),
-        crate::server::latex::DEFAULT_MIRROR
-    );
-    // An explicit flag or environment override still wins.
-    assert_eq!(
-        crate::server::serve::resolve_latex_flag("https://mirror.example.org/"),
+        crate::server::serve::validate_latex_mirror("https://mirror.example.org").unwrap(),
         "https://mirror.example.org/"
     );
 }

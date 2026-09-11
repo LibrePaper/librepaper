@@ -153,18 +153,16 @@ DATA       ?= librepaper-data
 # LIBREPAPER_PUBLISHERS (exported above). Account onboarding creates private
 # copies for each signed-in account automatically.
 comma := ,
-OWNER      ?= $(if $(filter any anyone,$(LIBREPAPER_PUBLISHERS)),,$(if $(findstring $(comma),$(LIBREPAPER_PUBLISHERS)),,$(LIBREPAPER_PUBLISHERS)))
-# Where LaTeX distributions come from: a mirror directory or an https bucket.
-# LibrePaper always serves LaTeX -- with no `LATEX=`, the binary's own
-# default applies (the project's own mirror, DEFAULT_MIRROR in
-# crates/librepaper/src/server/latex.rs). `LATEX=` names another for either
-# target.
-LATEX      ?=
-LATEX_FLAG ?= $(if $(LATEX),--latex $(LATEX))
+OWNER      ?= $(if $(filter any,$(LIBREPAPER_PUBLISHERS)),,$(if $(findstring $(comma),$(LIBREPAPER_PUBLISHERS)),,$(LIBREPAPER_PUBLISHERS)))
+# Browsers fetch LaTeX directly from an HTTPS static mirror. With no override,
+# the binary uses the project mirror. `LATEX_MIRROR=` selects an operator-hosted
+# copy for local runs.
+LATEX_MIRROR      ?=
+LATEX_MIRROR_FLAG ?= $(if $(LATEX_MIRROR),--latex-mirror $(LATEX_MIRROR))
 
-serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX=; everything else through .env)
+serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX_MIRROR=; everything else through .env)
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@$(BIN) serve --port $(PORT) --data $(DATA) $(LATEX_FLAG)
+	@$(BIN) serve --port $(PORT) --data $(DATA) $(LATEX_MIRROR_FLAG)
 
 # One tutorial project per source format LibrePaper accepts. Each project has
 # a source file and the same relative icon asset; no example is generated.
@@ -197,7 +195,7 @@ kill:  ## Stop a server started with make serve
 MIRROR ?= ../wasm-latex/mirror
 
 latex-check:
-	@node latex/tools/check-mirror.mjs $(LATEX)
+	@node latex/tools/check-mirror.mjs $(MIRROR)
 
 latex-smoke: $(BIN)  ## Compile and display the seeded LaTeX example in Chromium against MIRROR=
 	@node latex/tools/check-mirror.test.mjs

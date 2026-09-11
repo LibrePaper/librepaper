@@ -26,7 +26,6 @@
     // replaced. It is supplied by the page, which owns historical fetches.
     replacement = null,
     onreveal,
-    oninspectresult,
     onresolve,
     ondelete,
     onreply,
@@ -156,8 +155,7 @@
     <div class="flex flex-col gap-2">
       <Row gap={1} wrap>
         {#if comment.output_anchor}
-          <span class="badge preset-tonal-surface">Saved result · {comment.output_anchor.render_id}</span>
-          <button class="anchor text-sm" onclick={() => (oninspectresult ? oninspectresult(comment) : onreveal?.(comment))}>Inspect original result</button>
+          <span class="badge preset-tonal-surface">Current output anchor</span>
         {/if}
         {#if comment.orphaned}
           <!-- "Needs re-anchoring" said what the machine could not do. This

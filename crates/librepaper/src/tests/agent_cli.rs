@@ -5,16 +5,9 @@
 
 use serde_json::{json, Value};
 
-use super::*;
+use crate::auth::{sign_device, Identity};
 
-async fn peer(server: &TestServer, slug: &str, key: &str) -> crate::cli::peer::AutomationPeer {
-    let link =
-        crate::cli::peer::DocumentLink::parse(&format!("{}/docs/{slug}#k={key}", server.url), "")
-            .expect("a document link");
-    crate::cli::peer::AutomationPeer::open(link, None, None)
-        .await
-        .expect("the automation peer opens")
-}
+use super::*;
 
 async fn publish_markdown_at(origin: &str, source: &str) -> Value {
     let (status, payload) = post_as(
@@ -46,13 +39,11 @@ async fn mint_role_at(origin: &str, slug: &str, role: &str) -> String {
 
 #[tokio::test]
 async fn unicode_concurrent_peer_edits_survive_headless_restart() {
-    // Link-scoped automation carries no browser session cookie. An editor
-    // link can therefore edit only when the deployment's publisher ceiling
-    // admits an anonymous caller, which is the executable deployment shape
-    // covered by the integration tests as well.
+    // The link supplies the document role while the bearer supplies the
+    // configured account required for source writes.
     let server = test_server_with(
         crate::config::Configuration::default(),
-        crate::auth::Policy::parse("anyone"),
+        crate::auth::Policy::parse("any"),
         crate::auth::Policy::parse("anyone"),
         true,
     )
@@ -69,7 +60,21 @@ async fn unicode_concurrent_peer_edits_survive_headless_restart() {
     let document = publish_markdown("😀 intro\nmiddle survives\nend\n", &server.url).await;
     let slug = text(&document, "slug");
     let editor = mint_role_at(&server.url, &slug, "editor").await;
-    let headless = peer(&server, &slug, &editor).await;
+    let mut identity = Identity::github("agent", "agent");
+    identity.session_generation = "test-session-generation".into();
+    let token = sign_device(TEST_KEY, &identity, crate::auth::now_unix() + 3600);
+    // `agent` credentials are scoped to an explicitly selected origin. The
+    // in-process fixture must therefore provide that origin alongside the
+    // signed device token; a pasted link alone cannot select where a bearer
+    // is sent.
+    let link = crate::cli::peer::DocumentLink::parse(
+        &format!("{}/docs/{slug}#k={editor}", server.url),
+        &server.url,
+    )
+    .expect("a document link");
+    let headless = crate::cli::peer::AutomationPeer::open(link, Some(&server.url), Some(&token))
+        .await
+        .expect("the automation peer opens");
     assert!(
         headless.capabilities().can_edit,
         "editor link was not admitted"

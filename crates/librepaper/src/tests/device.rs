@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 
 use crate::auth::{Policy, DEVICE_TOKEN_PREFIX};
 use crate::tests::harness::{
-    client, get_json_as, github_stand_in, google_session_as, post_as, raw_post, session_as,
-    test_server_checking, TestServer, TEST_PUBLISHER,
+    client, get_json_as, github_stand_in, google_session_as, google_stand_in, post_as, raw_post,
+    session_as, test_server_checking, test_server_google, TestServer, TEST_PUBLISHER,
 };
 
 /// Starts a flow and returns (device_code, user_code).
@@ -99,11 +99,16 @@ async fn a_terminal_signs_in_through_the_deployment() {
 /// provider signed the approver in; this is the test that says so.
 #[tokio::test]
 async fn a_google_account_approves_a_terminal_too() {
-    let github = github_stand_in("nobody").await;
-    let server = test_server_checking(
+    let google = google_stand_in(
+        json!({"sub":"77", "email":"anne@example.org", "email_verified":true, "hd":"example.org", "name":"Anne Grandchamp"}),
+        "unused",
+    )
+    .await;
+    let server = test_server_google(
         Policy::parse("@example.org"),
         Policy::parse("anyone"),
-        &github,
+        true,
+        &google,
     )
     .await;
     let (device, user) = start(&server).await;
@@ -195,13 +200,11 @@ async fn the_approval_page_wants_a_session_first() {
         .await
         .expect("a response");
     assert_eq!(response.status().as_u16(), 200);
-    assert_eq!(
-        response
-            .headers()
-            .get("cache-control")
-            .and_then(|v| v.to_str().ok()),
-        Some("no-store")
-    );
+    assert!(response
+        .headers()
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| value.split(',').any(|part| part.trim() == "no-store")));
 }
 
 /// A link someone else sends you must not be able to put your identity on

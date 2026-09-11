@@ -254,9 +254,11 @@ pub(crate) fn looks_complete(kind: ArtifactKind, entrypoint: &str, bytes: &[u8])
 }
 
 /// Wait, bounded to ~3s, until `path`'s size and mtime have been identical
-/// across two reads 150ms apart, then read it -- a post-processing rewrite
+/// across two reads 500ms apart, then read it -- a post-processing rewrite
 /// is otherwise indistinguishable mid-write from a finished file of the
-/// same size. Falls back to whatever is on disk once the deadline passes,
+/// same size. This interval also spans Calepin's 250ms HTML postprocessing
+/// poll, so an intermediate Typst output is not published during that gap.
+/// Falls back to whatever is on disk once the deadline passes,
 /// since a reader still deserves the newest bytes available.
 async fn wait_stable_then_read(path: &std::path::Path) -> Option<Vec<u8>> {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -264,7 +266,7 @@ async fn wait_stable_then_read(path: &std::path::Path) -> Option<Vec<u8>> {
         let Ok(before) = std::fs::metadata(path) else {
             return None;
         };
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let after = std::fs::metadata(path).ok()?;
         let stable = before.len() == after.len()
             && before

@@ -1,8 +1,8 @@
 // Drives the real `latex.js` -- the actual queue, job identity, bibliography
 // caching and routing logic -- against a scripted worker and scripted
-// local/VM backends, so this check exercises the same code the browser runs
+// local backends, so this check exercises the same code the browser runs
 // with none of a browser, a real engine build, a real local app or a real
-// VM anywhere in reach. `latex.js`'s `_testing.inject` hook is what makes
+// fake backends anywhere in reach. `latex.js`'s `_testing.inject` hook is what makes
 // that possible; see its doc comment in `src/lib/latex.js`.
 import assert from "node:assert/strict";
 import { gzipSync } from "node:zlib";
@@ -102,22 +102,12 @@ const MANIFEST = {
   default_release: "r1",
   releases: { r1: { id: "r1", base: "engines/r1/", engines: {}, bundles: { index: "engines/r1/bundles/bundles.json" } } },
 };
-// `/api/config`'s `biberVm` field: the browser bibliography VM's own
-// descriptor URL and the sha256 to verify it against, no longer named by
-// `release.vm` (see `latex.js`'s `loadBiberVm`). The scenarios below that
-// reach the VM inject their own fake `vm` module and never actually read
-// this object's contents, but `latex.js` still fetches it before calling
-// `vm.prepare`, so it has to be there for those scenarios to reach the VM at
-// all rather than stopping at "no bibliography VM is configured".
-const DEPLOYMENT_CONFIG = { biberVm: { url: "https://vm.example/biber-vm/vm.json", sha256: "z".repeat(64) } };
-
 function jsonResponse(body) {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 }
 
 const fakeFetch = async (url) => {
   const key = typeof url === "string" ? url : url.toString();
-  if (key.endsWith("/api/config")) return jsonResponse(DEPLOYMENT_CONFIG);
   return jsonResponse(MANIFEST);
 };
 
@@ -163,7 +153,6 @@ function tree(main, text, assets = {}) {
 // doc comment in `src/lib/latex.js` for why `null` here differs from leaving
 // the field out.
 const noLocal = null;
-const noVm = null;
 
 let projectCounter = 0;
 function nextProject() {
@@ -182,7 +171,7 @@ function nextProject() {
   });
   let pass = 0;
 
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal, vm: noVm });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   const treeA = tree("main.tex", "A");
@@ -232,7 +221,7 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal, vm: noVm });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   const auxWithA = () => enc.encode("\\bibdata{refs}\n\\citation{a}\n");
@@ -297,7 +286,7 @@ function nextProject() {
       return { tools: {} };
     },
   };
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localReachable, vm: noVm });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localReachable });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   worker().texReplies = [
@@ -310,98 +299,6 @@ function nextProject() {
   assert.equal(result.provenance.bibliography, "local-biber");
   assert.equal(result.provenance.backend, "browser");
   assert.ok(result.attempts.some((a) => a.stage === "local-biber" && a.backend === "local" && a.ok));
-}
-
-// ============================================================================
-// 7. Biber -> local unreachable -> VM -> browser continuation.
-// ============================================================================
-{
-  const project = nextProject();
-  const bcf = () => enc.encode('<bcf:controlfile><bcf:datasource type="file">refs.bib</bcf:datasource></bcf:controlfile>');
-  const localUnreachable = {
-    async runBiber() {
-      const error = new Error("could not reach local LibrePaper");
-      error.name = "Unreachable";
-      throw error;
-    },
-    async capabilities() {
-      throw new Error("unreachable");
-    },
-  };
-  const vmModule = {
-    supported() {
-      return { ok: true };
-    },
-    async prepare() {
-      /* no image to fetch in this fake */
-    },
-    async runBiber(request) {
-      return { ok: true, bbl: enc.encode("BBL-vm"), blg: "biber ran in the VM", exit: 0, tool: { name: "biber", version: "2.21", backend: "vm" } };
-    },
-  };
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localUnreachable, vm: vmModule });
-  latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
-
-  worker().texReplies = [
-    { status: 0, pdf: PDF, synctex: null, log: "Package biblatex Warning: Please (re)run Biber on the file: main\n", outputs: { "main.aux": enc.encode("\\relax\n"), "main.bcf": bcf() } },
-    { status: 0, pdf: PDF, synctex: null, log: "", outputs: { "main.aux": enc.encode("\\relax\n") } },
-  ];
-
-  const result = await latex.compile(tree("main.tex", "\\cite{a}", { "refs.bib": enc.encode("@book{a,}") }));
-  assert.equal(result.ok, true);
-  assert.equal(result.provenance.bibliography, "vm-biber");
-  assert.equal(result.provenance.backend, "browser");
-  assert.ok(result.attempts.some((a) => a.stage === "vm-biber" && a.backend === "vm" && a.ok));
-}
-
-// ============================================================================
-// 7b. Biber -> local unreachable -> no bibliography VM configured
-// (`/api/config`'s `biberVm` is null, e.g. no `--biber-vm` flag): the VM
-// module is never asked to `prepare()` at all, and the compile stops with a
-// "vm" failure naming that nothing is configured.
-// ============================================================================
-{
-  const project = nextProject();
-  const bcf = () => enc.encode('<bcf:controlfile><bcf:datasource type="file">refs.bib</bcf:datasource></bcf:controlfile>');
-  const localUnreachable = {
-    async runBiber() {
-      const error = new Error("could not reach local LibrePaper");
-      error.name = "Unreachable";
-      throw error;
-    },
-    async capabilities() {
-      throw new Error("unreachable");
-    },
-  };
-  let prepareCalled = false;
-  const vmModule = {
-    supported() {
-      return { ok: true };
-    },
-    async prepare() {
-      prepareCalled = true;
-    },
-    async runBiber() {
-      throw new Error("must not be reached");
-    },
-  };
-  const noBiberVmFetch = async (url) => {
-    const key = typeof url === "string" ? url : url.toString();
-    if (key.endsWith("/api/config")) return new Response(JSON.stringify({ biberVm: null }), { status: 200 });
-    return new Response(JSON.stringify(MANIFEST), { status: 200 });
-  };
-  latex._testing.inject({ worker: FakeWorker, fetch: noBiberVmFetch, local: localUnreachable, vm: vmModule });
-  latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
-
-  worker().texReplies = [
-    { status: 0, pdf: PDF, synctex: null, log: "Package biblatex Warning: Please (re)run Biber on the file: main\n", outputs: { "main.aux": enc.encode("\\relax\n"), "main.bcf": bcf() } },
-  ];
-
-  const result = await latex.compile(tree("main.tex", "\\cite{a}", { "refs.bib": enc.encode("@book{a,}") }));
-  assert.equal(result.ok, false);
-  assert.equal(result.failure.kind, "vm");
-  assert.match(result.failure.message, /no bibliography VM is configured/);
-  assert.equal(prepareCalled, false, "vm.prepare() is never reached when no VM is configured");
 }
 
 // ============================================================================
@@ -420,7 +317,7 @@ function nextProject() {
       return { ok: false, error: "pdflatex exited 1", log: "! Emergency stop.\n", diagnostics: [] };
     },
   };
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localWithFailingNative, vm: noVm });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localWithFailingNative });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   const failing = tree("main.tex", "\\bogus");
@@ -464,7 +361,7 @@ function nextProject() {
       };
     },
   };
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localWithNative, vm: noVm });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localWithNative });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   worker().texReplies = [{ status: 1, pdf: null, synctex: null, log: "! Emergency stop.\n", outputs: {} }];
@@ -499,7 +396,7 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal, vm: noVm });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   let release;
@@ -536,7 +433,7 @@ function nextProject() {
   // pass -- reports the budget already spent.
   let calls = 0;
   const fakeNow = () => (calls++ < 2 ? 0 : latex.DEADLINE_MS + 1000);
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal, vm: noVm, now: fakeNow });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal, now: fakeNow });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   // Always asks for a rerun, so the loop's next-iteration deadline check --
@@ -564,7 +461,7 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal, vm: noVm });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   let releaseStale;
@@ -601,7 +498,7 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal, vm: noVm });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   const aux = enc.encode("\\bibdata{refs}\n\\citation{a}\n");
@@ -636,7 +533,7 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal, vm: noVm });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   // The project's release is unchanged from the previous scenario, so
@@ -667,7 +564,7 @@ function nextProject() {
 // A legacy mirror is an operator error, not a request for release "undefined".
 {
   latex.at("/legacy-mirror/");
-  latex._testing.inject({ worker: FakeWorker, fetch: async () => new Response(JSON.stringify({ version: 1, distributions: {} })), local: noLocal, vm: noVm });
+  latex._testing.inject({ worker: FakeWorker, fetch: async () => new Response(JSON.stringify({ version: 1, distributions: {} })), local: noLocal });
   latex.configure({ project: nextProject(), settings: { engine: "pdflatex", release: null } });
   const result = await latex.compile(tree("main.tex", "source"));
   assert.equal(result.ok, false);
@@ -701,21 +598,26 @@ function nextProject() {
 
   const BASE = "https://mirror.example/mirror/";
   const bundlesIndexBytes = enc.encode(JSON.stringify({ bundles: {}, files: {} }));
+  const workerBytes = enc.encode("var Module = self.Module = {}; ");
 
   const files = {
+    "bundles/bundles.json": { url: "engines/rel1/bundles/bundles.json", sha256: await sha256Hex(bundlesIndexBytes), size: bundlesIndexBytes.length },
     "xetex.fmt.gz": { url: "engines/rel1/xetex.fmt.gz", sha256: await sha256Hex(fmtGz), size: fmtGz.length },
     "icudt68l.dat.gz": { url: "engines/rel1/icudt68l.dat.gz", sha256: await sha256Hex(icuGz), size: icuGz.length },
   };
+  for (const name of ["xetex.worker.js", "dvipdfm.worker.js", "bibtex.worker.js", "pdftex.worker.js"]) {
+    files[name] = { url: `engines/rel1/${name}`, sha256: await sha256Hex(workerBytes), size: workerBytes.length };
+  }
   const release = {
     id: "rel1",
     digest: "c".repeat(64),
     base: "engines/rel1/",
-    bundles: { index: "engines/rel1/bundles/bundles.json" }, // no `sha256`: digest check is skipped, exercised elsewhere
+      bundles: { index: "engines/rel1/bundles/bundles.json", sha256: await sha256Hex(bundlesIndexBytes) },
     engines: {
-      xetex: { worker: "xetex.worker.js", format: "xetex.fmt.gz", icu: "icudt68l.dat.gz" },
-      dvipdfm: { worker: "dvipdfm.worker.js" },
-      bibtex: { worker: "bibtex.worker.js" },
-      pdftex: { worker: "pdftex.worker.js" },
+      xetex: { worker: "xetex.worker.js", files: ["xetex.worker.js"], format: "xetex.fmt.gz", icu: "icudt68l.dat.gz" },
+      dvipdfm: { worker: "dvipdfm.worker.js", files: ["dvipdfm.worker.js"] },
+      bibtex: { worker: "bibtex.worker.js", files: ["bibtex.worker.js"] },
+      pdftex: { worker: "pdftex.worker.js", files: ["pdftex.worker.js"] },
     },
     files,
   };
@@ -773,6 +675,8 @@ function nextProject() {
     if (key === new URL(release.bundles.index, BASE).href) return new Response(bundlesIndexBytes, { status: 200 });
     if (key === new URL(files["xetex.fmt.gz"].url, BASE).href) return new Response(fmtGz, { status: 200 });
     if (key === new URL(files["icudt68l.dat.gz"].url, BASE).href) return new Response(icuGz, { status: 200 });
+    const workerFile = Object.values(files).find((file) => file.url && new URL(file.url, BASE).href === key);
+    if (workerFile) return new Response(workerBytes, { status: 200 });
     return new Response(null, { status: 404 });
   };
 
@@ -800,8 +704,8 @@ function nextProject() {
     await send("configure", { base: BASE, release, format: 1 });
     await send("stage", { engine: "xelatex", tree: { main: "main.tex", texts: { "main.tex": "x" } }, generated: {} });
 
-    const xetexWorker = engineWorkers.find((w) => w.url === new URL("engines/rel1/xetex.worker.js", BASE).href);
-    const dvipdfmWorker = engineWorkers.find((w) => w.url === new URL("engines/rel1/dvipdfm.worker.js", BASE).href);
+    const xetexWorker = engineWorkers.find((w) => w.messages.some((m) => m.cmd === "loadicudata"));
+    const dvipdfmWorker = engineWorkers.find((w) => w.messages.some((m) => m.cmd === "loadbundleindex") && w !== xetexWorker);
     assert.ok(xetexWorker, "a fake xetex engine worker was created");
     assert.ok(dvipdfmWorker, "a fake dvipdfm engine worker was created");
 
@@ -822,8 +726,11 @@ function nextProject() {
     // BibTeX, through worker.js's own `bibtex` command: reads the primary
     // (xetex) engine's staged .aux, then lazily creates the bibtex engine.
     await send("bibtex", { stem: "main", eight: false });
-    const bibtexWorker = engineWorkers.find((w) => w.url === new URL("engines/rel1/bibtex.worker.js", BASE).href);
-    assert.ok(bibtexWorker, "a fake bibtex engine worker was created");
+    // Engine loaders are verified first and then assembled into opaque blob
+    // workers. The original mirror URL must never be handed to a nested
+    // executable worker after verification.
+    const bibtexWorker = engineWorkers.find((w) => w !== xetexWorker && w !== dvipdfmWorker && w.url.startsWith("blob:"));
+    assert.ok(bibtexWorker, "a fake bibtex engine worker was created from verified bytes");
     assert.ok(
       bibtexWorker.messages.map((m) => m.cmd).includes("loadbundleindex"),
       "the bundled bibtex worker received loadbundleindex",
@@ -917,7 +824,7 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
   latex._testing.reset();
 }
 
-// Releases that ship Biber use it without probing local LibrePaper or the VM.
+// Releases that ship Biber use it without probing local LibrePaper.
 {
   const browserManifest = structuredClone(MANIFEST);
   browserManifest.releases.r1.engines.biber = { worker: 'biber.worker.js' };
@@ -933,7 +840,7 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
   latex._testing.reset();
   latex._testing.inject({ worker: FakeWorker, fetch, biber: browserBiber,
     local: { runBiber() { throw new Error('must not invoke local'); } },
-    vm: { runBiber() { throw new Error('must not invoke VM'); } } });
+  });
   latex.configure({ project: nextProject(), settings: { engine: 'pdflatex', release: 'r1' } });
   const bcf = enc.encode('<bcf:controlfile version="3.11"><bcf:datasource>refs.bib</bcf:datasource></bcf:controlfile>');
   FakeWorker.nextTexReplies = [

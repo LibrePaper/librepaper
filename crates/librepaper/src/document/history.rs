@@ -110,22 +110,17 @@ pub struct TreeEntry {
     pub size: i64,
 }
 
-/// The compiler settings a checkpoint was taken under: what a change in
-/// engine or pinned release must be able to make a new tree identity, even
-/// when not one byte of source moved. Both fields empty is the same as no
-/// settings at all -- see `Tree::normalized` -- so a document that has never
-/// touched either serializes exactly as it did before this existed.
+/// The engine used for a checkpoint. Removed release pins are ignored when
+/// decoding old trees; archive integrity is checked against their raw bytes.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct CompileSettings {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub engine: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub release: String,
 }
 
 impl CompileSettings {
     fn is_empty(&self) -> bool {
-        self.engine.is_empty() && self.release.is_empty()
+        self.engine.is_empty()
     }
 }
 
@@ -137,12 +132,7 @@ impl CompileSettings {
 pub struct Tree {
     pub main: String,
     pub files: BTreeMap<String, TreeEntry>,
-    /// The engine and release this tree was (or would be) compiled under.
-    /// Placed after `files` so a tree with no settings serializes
-    /// byte-for-byte as it did before this field existed, and every old
-    /// checkpoint keeps its sha. `None` and `Some` of two empty strings are
-    /// the same tree; `normalized` is what keeps that true no matter how the
-    /// caller built it.
+    /// The engine this tree is compiled under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<CompileSettings>,
 }
@@ -150,7 +140,7 @@ pub struct Tree {
 impl Tree {
     /// Collapses a settings object with nothing in it to `None`, so that
     /// a caller which always sets `settings` from the live document's meta
-    /// (empty engine, empty release, meta never touched) still produces the
+    /// (empty engine, meta never touched) still produces the
     /// same tree, and the same digest, as one that never mentions settings.
     pub fn normalized(mut self) -> Tree {
         if self
@@ -453,7 +443,7 @@ pub async fn load_tree(
             point.sha
         )
     })?;
-    if !point.tree_sha.is_empty() && tree.digest() != point.tree_sha {
+    if !point.tree_sha.is_empty() && hex::encode(Sha256::digest(&raw)) != point.tree_sha {
         return Err(format!(
             "the checkpoint {} of {slug} has a tree digest that does not match its catalogue row",
             point.sha

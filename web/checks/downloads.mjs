@@ -118,15 +118,14 @@ assert(selectedProject["project/old-folder/"] instanceof Uint8Array);
   const paged = (extra) => availableDownloads({ outputKind: "pdf", ...extra });
   assert.deepEqual(paged({}), { pdf: false, html: false }, "a paged document with nothing rendered offers nothing");
   assert.deepEqual(paged({ deliveredKind: "pdf" }), { pdf: true, html: false }, "a PDF the frame was handed can be saved");
-  assert.deepEqual(paged({ rendering: { sha: "abc" } }), { pdf: true, html: false }, "a stored rendering can be fetched and saved");
-  assert.deepEqual(paged({ rendering: { sha: "abc", missing: true } }), { pdf: false, html: false }, "a missing checkpoint rendering is not offered");
+  assert.deepEqual(paged({ deliveredKind: "" }), { pdf: false, html: false }, "an unrendered document has no PDF fallback");
   assert.deepEqual(paged({ deliveredKind: "html" }), { pdf: false, html: false }, "a paged document never offers HTML");
 
   const flow = (extra) => availableDownloads({ outputKind: "html", ...extra });
   assert.deepEqual(flow({}), { pdf: false, html: false }, "a page not yet painted offers nothing");
   assert.deepEqual(flow({ deliveredKind: "html" }), { pdf: false, html: true }, "a painted page can be saved");
   assert.deepEqual(flow({ displayedFormat: "html" }), { pdf: false, html: true }, "an authored HTML document is its own rendering");
-  assert.deepEqual(flow({ rendering: { sha: "abc" } }), { pdf: false, html: false }, "a flow document never offers a PDF");
+  assert.deepEqual(flow({ deliveredKind: "" }), { pdf: false, html: false }, "a flow document has no generated-output fallback");
   assert.deepEqual(availableDownloads({ outputKind: "" }), { pdf: false, html: false });
 }
 
@@ -150,4 +149,4 @@ assert(selectedProject["project/old-folder/"] instanceof Uint8Array);
   assert.equal(await inlineBlobUrls("<p>no figures</p>", fetcher), "<p>no figures</p>");
 }
 
-console.log("downloads: file exports stay live while history rendering stays historical; rendering downloads follow the output kind");
+console.log("downloads: file exports follow transient output handed to the frame");

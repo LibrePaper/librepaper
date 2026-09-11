@@ -1,9 +1,10 @@
 // HTML previews have their own engine lifetime: switching the View menu must
-// not change the PDF compiler's settings, bibliography state or saved output.
+// not change the PDF compiler's settings or bibliography state.
 import { createEngine } from "./driver.js";
 import { fetchVerified } from "./resources.js";
 
 const DEADLINE_MS = 240_000;
+const DEFAULT_BASE = "https://latex.librepaper.workers.dev/";
 
 function superseded() {
   return Object.assign(new Error("Preview superseded"), { name: "Superseded" });
@@ -48,7 +49,7 @@ export function createHtmlCompiler({
   }
 
   async function configuration(base, settings = {}) {
-    base = new URL(base || "/latex/", globalThis.location?.href || "http://localhost/").href;
+    base = new URL(base || DEFAULT_BASE, globalThis.location?.href || "http://localhost/").href;
     if (!base.endsWith("/")) base += "/";
     if (manifestBase !== base || !manifest) {
       if (!manifestRequest || manifestRequest.base !== base) {
@@ -65,19 +66,18 @@ export function createHtmlCompiler({
       try { manifest = await captured.pending; manifestBase = base; }
       finally { if (manifestRequest === captured) manifestRequest = null; }
     }
-    // Existing documents pin the PDF toolchain. Older releases predate HTML
-    // preview, so use the current preview engine without changing that pin.
+    // HTML previews always use the mirror's current default release. Legacy
+    // per-document release values are deliberately ignored.
     const capturedSettings = { ...settings };
-    const pinned = capturedSettings.release;
-    const releaseId = manifest.releases?.[pinned]?.engines?.latexml
-      ? pinned : manifest.default_release;
+    delete capturedSettings.release;
+    const releaseId = manifest.default_release;
     const release = manifest.releases?.[releaseId];
     const spec = release?.engines?.latexml;
     if (!spec) throw new Error("This LaTeX release does not include the HTML preview renderer.");
     const capturedRelease = structuredClone(release);
     return {
       base, releaseId, release: capturedRelease, settings: capturedSettings,
-      fallback: Boolean(pinned && pinned !== releaseId),
+      fallback: false,
       identity: JSON.stringify({ base, releaseId, release: capturedRelease, settings: capturedSettings, metadataVersion: 1 }),
     };
   }
@@ -91,17 +91,32 @@ export function createHtmlCompiler({
     const key = resolved.identity;
     if (engine && engineKey === key) return engine;
     retire();
-    if (!release.bundles?.index || !release.bundles.sha256) throw new Error("Missing verified TeX bundle index");
+    const bundleFile = Object.values(release.files || {}).find((file) => file?.url === release.bundles?.index);
+    if (!bundleFile || !/^[a-f0-9]{64}$/.test(bundleFile.sha256) || !Number.isInteger(bundleFile.size) || bundleFile.size < 0 ||
+        bundleFile.sha256 !== release.bundles?.sha256) throw new Error("Missing verified TeX bundle index");
     const indexUrl = new URL(release.bundles.index, base);
     const index = new Uint8Array(await (await verified(
-      { ...release, digest: releaseId }, indexUrl.href, { sha256: release.bundles.sha256 },
+      { ...release, digest: releaseId }, indexUrl.href, { sha256: bundleFile.sha256, size: bundleFile.size },
     )).arrayBuffer());
     if (current !== epoch) throw superseded();
     const target = makeEngine({
       kind: "latexml",
       url: new URL(`${release.base}${spec.worker}`, base).href,
+      base,
       texliveUrl: new URL(".", indexUrl).href,
       release,
+      assets: Object.fromEntries((() => {
+        const names = [...new Set(spec.files || [spec.worker])];
+        if (!names.includes(spec.worker)) throw new Error(`Incomplete latexml asset inventory: ${spec.worker}`);
+        return names;
+      })().map((name) => {
+        const file = release.files?.[name];
+        if (!file || !/^[a-f0-9]{64}$/.test(file.sha256) || !Number.isInteger(file.size) || file.size < 0) {
+          throw new Error(`Missing or invalid manifest metadata for latexml asset ${name}`);
+        }
+        return [name, file];
+      })),
+      workerName: spec.worker,
     });
     engine = target;
     await target.init();
@@ -118,7 +133,7 @@ export function createHtmlCompiler({
     // A queued historical render carries the manifest identity resolved by
     // the caller. Its base is authoritative; consulting the live chooser
     // here could fetch a different release than the cache key names.
-    const base = new URL(options.configuration?.base || options.base || "/latex/", globalThis.location?.href || "http://localhost/").href;
+    const base = new URL(options.configuration?.base || options.base || DEFAULT_BASE, globalThis.location?.href || "http://localhost/").href;
     const target = await prepare(base.endsWith("/") ? base : `${base}/`, options.settings, current, options.configuration);
     if (current !== epoch) throw superseded();
     projectPath(tree.main);

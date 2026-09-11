@@ -16,6 +16,7 @@ pub fn client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(300))
             .build()
             .expect("a client with no special needs builds")
@@ -82,9 +83,9 @@ impl Credentials {
 
     /// The headers that say who is asking. An empty token sends no
     /// authorization header at all, which is what an unauthenticated call
-    /// means -- a deployment whose publishers policy is "anyone" takes
-    /// uploads with no bearer at all. Without a bearer, the server treats a
-    /// request as cookie-authenticated and applies the cross-site checks in
+    /// means. Upload and source-write routes still require the server's
+    /// authenticated publisher identity. Without a bearer, the server treats
+    /// a request as cookie-authenticated and applies the cross-site checks in
     /// rule A, so the CLI carries the same marker header the browser shell
     /// does; a bearer-carrying call skips those checks regardless.
     pub fn headers(&self) -> Vec<(&str, String)> {
@@ -183,56 +184,6 @@ pub async fn get_as(
 /// A plain GET, decoded when it is JSON.
 pub async fn get_json(target: &str, timeout: Duration) -> Result<(u16, Value), String> {
     let (status, raw) = send(reqwest::Method::GET, target, &[], None, timeout).await?;
-    Ok((status, decode(&raw)))
-}
-
-/// Uploads an already-rendered binary artifact. Renderings are deliberately
-/// kept out of the JSON publishing request: PDF bytes are binary, and the
-/// server applies the same digest, permission, quota, and retention rules to
-/// this request as it does to a browser rendering upload.
-/// Uploads a rendering while asking the server to accept it only when the
-/// named tree is still current and its canonical source-input digest matches
-/// `expected_inputs`.
-pub async fn put_current_bytes(
-    target: &str,
-    body: Vec<u8>,
-    token: &str,
-    content_type: &str,
-    expected_inputs: &str,
-    timeout: Duration,
-) -> Result<(u16, Value), String> {
-    put_bytes_with_headers(
-        target,
-        body,
-        token,
-        content_type,
-        &[
-            ("x-librepaper-current", "1"),
-            ("x-librepaper-inputs", expected_inputs),
-        ],
-        timeout,
-    )
-    .await
-}
-
-async fn put_bytes_with_headers(
-    target: &str,
-    body: Vec<u8>,
-    token: &str,
-    content_type: &str,
-    extra: &[(&str, &str)],
-    timeout: Duration,
-) -> Result<(u16, Value), String> {
-    let bearer = format!("Bearer {token}");
-    let mut headers = vec![
-        ("content-type", content_type),
-        ("x-librepaper-client", "cli"),
-    ];
-    headers.extend_from_slice(extra);
-    if !token.is_empty() {
-        headers.push(("authorization", bearer.as_str()));
-    }
-    let (status, raw) = send(reqwest::Method::PUT, target, &headers, Some(body), timeout).await?;
     Ok((status, decode(&raw)))
 }
 

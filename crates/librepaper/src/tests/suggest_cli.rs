@@ -4,6 +4,7 @@
 use serde_json::json;
 
 use crate::auth::Policy;
+use crate::auth::{sign_device, Identity};
 use crate::cli::{
     accept_suggestion, decide_suggestion, exit_code_for, locate_passage, reject_suggestion,
     suggest_passage, Decision,
@@ -14,19 +15,23 @@ use crate::tests::edit::publish_with_source;
 
 use super::*;
 
-/// A server whose `--publishers` policy is "anyone": an editor link only
-/// actually edits where the deployment would let an anonymous caller edit
-/// (see `Server::ceiling_for`, which asks the policy about an empty handle);
-/// `sharing.rs`'s own `open_server` uses "any" instead, which only opens
-/// editing to a signed-in caller of any provider, never to a bare link key.
+/// A server whose authenticated publisher policy is open to every configured
+/// provider. Commenting remains public, while deciding a suggestion requires
+/// the signed deployment token carried by the CLI credentials.
 async fn open_server() -> TestServer {
     test_server_with(
         Configuration::default(),
-        Policy::parse("anyone"),
+        Policy::parse("any"),
         Policy::parse("anyone"),
         true,
     )
     .await
+}
+
+fn auth_token() -> String {
+    let mut identity = Identity::github(TEST_PUBLISHER, TEST_PUBLISHER);
+    identity.session_generation = "test-session-generation".into();
+    sign_device(TEST_KEY, &identity, crate::auth::now_unix() + 3600)
 }
 
 /// Mints this document's editor link as `login`'s own document -- the same
@@ -171,7 +176,7 @@ async fn accept_applies_the_edit_and_prints_the_checkpoint() {
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
     let key = editor_key(&server.url, TEST_PUBLISHER, &slug).await;
-    let credentials = Credentials::new("", &key);
+    let credentials = Credentials::new(&auth_token(), &key);
 
     let (_, payload) = post(
         &server.url,
@@ -206,7 +211,7 @@ async fn accept_of_an_unknown_comment_is_refused() {
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
     let key = editor_key(&server.url, TEST_PUBLISHER, &slug).await;
-    let credentials = Credentials::new("", &key);
+    let credentials = Credentials::new(&auth_token(), &key);
 
     let decision = decide_suggestion(&server.url, &slug, &credentials, "nope", "accept")
         .await
@@ -221,7 +226,8 @@ async fn accept_of_an_unknown_comment_is_refused() {
 async fn accept_after_the_passage_changed_is_stale_and_would_exit_3() {
     let server = open_server().await;
     let source = "# Paper\n\nThe quick brown fox jumps.\n";
-    let (status, document) = post(
+    let (status, document) = post_as(
+        &session_as(TEST_PUBLISHER),
         &server.url,
         "/api/documents",
         json!({"title": "Paper", "html": crate::document::render::render_markdown_document(source, "Paper"), "source": source, "source_format": "markdown"}),
@@ -230,7 +236,7 @@ async fn accept_after_the_passage_changed_is_stale_and_would_exit_3() {
     assert_eq!(status, 201, "{document}");
     let slug = text(&document, "slug");
     let key = editor_key(&server.url, TEST_PUBLISHER, &slug).await;
-    let credentials = Credentials::new("", &key);
+    let credentials = Credentials::new(&auth_token(), &key);
 
     let (_, payload) = post(
         &server.url,
@@ -297,7 +303,7 @@ async fn reject_resolves_without_touching_the_document() {
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
     let key = editor_key(&server.url, TEST_PUBLISHER, &slug).await;
-    let credentials = Credentials::new("", &key);
+    let credentials = Credentials::new(&auth_token(), &key);
 
     let (_, payload) = post(
         &server.url,
@@ -357,7 +363,7 @@ async fn accept_suggestion_and_reject_suggestion_print_their_outcome() {
         &slug,
         &comment_id,
         Some(server.url.clone()),
-        None,
+        Some(auth_token()),
         key.clone(),
     )
     .await;
@@ -393,7 +399,14 @@ async fn accept_suggestion_and_reject_suggestion_print_their_outcome() {
         .find(|c| c["outcome"].is_null())
         .expect("the pending suggestion");
     let second_id = text(second, "id");
-    reject_suggestion(&slug, &second_id, Some(server.url.clone()), None, key).await;
+    reject_suggestion(
+        &slug,
+        &second_id,
+        Some(server.url.clone()),
+        Some(auth_token()),
+        key,
+    )
+    .await;
 
     let (_, listing) = get_json_as(
         &session_as(TEST_PUBLISHER),

@@ -903,19 +903,13 @@ impl Room {
             });
 
             // What the document costs: the live session, its history, its
-            // figures and its renderings. The quota counts each object once
+            // input figures. The quota counts each object once
             // -- a text blob and an asset are each charged where they are
             // stored, and the tree that names them is bookkeeping rather
             // than a third copy. Read straight off the locked state instead
-            // of through `assets_bytes`/`renderings_bytes`, which lock it
+            // of through `assets_bytes`, which lock it
             // themselves.
-            let (assets, renderings): (i64, i64) = {
-                let state = self.state.lock().await;
-                (
-                    state.session.asset_sizes.values().sum(),
-                    state.session.rendering_sizes.values().sum(),
-                )
-            };
+            let assets: i64 = self.state.lock().await.session.asset_sizes.values().sum();
             let staged_bytes = if let Some(catalog) = self.catalog.get() {
                 // `staged` is intentionally only the resident tail.  Charge
                 // the complete persisted history rather than silently
@@ -967,7 +961,7 @@ impl Room {
             // staged only after all referenced objects are durable.
             if self.catalog.get().is_none() {
                 self.record_size(
-                    session_size + staged_bytes + assets + renderings,
+                    session_size + staged_bytes + assets,
                     Some(&sha),
                     &format,
                     &tree.main,
@@ -1001,7 +995,7 @@ impl Room {
             // writes and publication.
             if self.catalog.get().is_some() {
                 self.record_size(
-                    session_size + staged_bytes + assets + renderings,
+                    session_size + staged_bytes + assets,
                     Some(&sha),
                     &format,
                     &tree.main,
@@ -2060,18 +2054,6 @@ impl Room {
         Ok(())
     }
 
-    /// Names a checkpoint, for the tests that ask what pruning keeps. The
-    /// route that does this for an author is the timeline's.
-    #[cfg(test)]
-    pub async fn label_checkpoint(&self, sha: &str, label: &str) {
-        let mut state = self.state.lock().await;
-        for point in &mut state.manifest.checkpoints {
-            if point.sha == sha {
-                point.label = label.to_string();
-            }
-        }
-    }
-
     /// Drops the text blobs under `history/<slug>/blobs/` that no surviving
     /// checkpoint and no live text still names. A checkpoint's tree is its
     /// bookkeeping; the bodies it names are separate objects, written once
@@ -2083,7 +2065,7 @@ impl Room {
     ///
     /// Run after the manifest naming what survives, and the tree/session/
     /// index of the checkpoint just taken, are all written -- the same
-    /// ordering `prune_assets` and `prune_renderings` keep, so a crash here
+    /// ordering `prune_assets` keep, so a crash here
     /// leaves an object nothing names rather than a name pointing at one
     /// that is gone.
     ///
@@ -2201,14 +2183,8 @@ impl Room {
             None => resident_history,
         };
         let assets = self.assets_bytes().await;
-        let renderings = self.renderings_bytes().await;
-        self.record_size(
-            session_size + history + assets + renderings,
-            sha,
-            format,
-            main,
-        )
-        .await;
+        self.record_size(session_size + history + assets, sha, format, main)
+            .await;
     }
 
     /// The manifest, for the timeline and for the tests.

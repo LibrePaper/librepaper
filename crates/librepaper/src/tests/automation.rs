@@ -274,16 +274,16 @@ async fn automation_checkpoint_is_explicit_and_durable_or_noop() {
 }
 
 #[tokio::test]
-async fn automation_never_elevates_an_unowned_or_example_document() {
+async fn automation_never_elevates_a_nonowner_or_example_document() {
     let server = test_server_with(
         crate::config::Configuration::default(),
-        crate::auth::Policy::parse("anyone"),
+        crate::auth::Policy::parse("any"),
         crate::auth::Policy::parse("anyone"),
         true,
     )
     .await;
     let (status, document) = post_as(
-        "",
+        &session_as(TEST_PUBLISHER),
         &server.url,
         "/api/documents",
         json!({"title": "Unowned", "html": "<p>unowned</p>"}),
@@ -303,7 +303,8 @@ async fn automation_never_elevates_an_unowned_or_example_document() {
     assert_eq!(snapshot["role"], "reader");
     assert_eq!(snapshot["capabilities"]["edit"], false);
 
-    // An example is public to read, but an automation request without an
+    // A non-owner is public to read through the explicit link, but an
+    // automation request without an
     // explicit editor link still cannot turn the public fallback into edit.
     server
         .instance

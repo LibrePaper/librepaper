@@ -467,6 +467,181 @@ fn source_history_writer_lease_rejects_an_object_already_queued_for_deletion() {
 }
 
 #[test]
+fn source_history_gc_on_a_fresh_catalog_with_no_objects_is_scoped_and_idempotent() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    let now = crate::util::now_unix();
+    assert_eq!(catalog.expire_source_history_leases(now, 32).unwrap(), 0);
+    assert!(catalog.due_deletes(now, 32).unwrap().is_empty());
+    // The startup sweep may run again before the first lease is created.  It
+    // must use its own durable cursor/state and remain harmless on an empty
+    // source-history graph.
+    assert_eq!(catalog.expire_source_history_leases(now, 32).unwrap(), 0);
+    assert!(catalog.due_deletes(now, 32).unwrap().is_empty());
+}
+
+#[test]
+fn source_history_gc_pages_live_objects_before_reaching_orphans() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .with_connection(|db| {
+            for index in 0..8 {
+                let digest = format!("digest-{index:02}");
+                let object_key = if index < 5 {
+                    format!("content/storage-1/chunks/live-{index:02}")
+                } else {
+                    format!("content/storage-1/chunks/orphan-{index:02}")
+                };
+                db.execute(
+                    "INSERT INTO source_history_encodings
+                     (storage_id,file_digest,recipe_key,recipe_digest,codec,
+                      uncompressed_bytes,recipe_bytes,created_at)
+                     VALUES(?1,?2,?3,?4,1,1,1,1)",
+                    rusqlite::params![
+                        "storage-1",
+                        digest,
+                        format!("content/storage-1/recipes/{index}"),
+                        format!("recipe-{index}")
+                    ],
+                )?;
+                let mut object_keys = vec![object_key];
+                if index == 5 {
+                    object_keys.extend(
+                        (0..5).map(|part| {
+                            format!("content/storage-1/chunks/orphan-05-part-{part:02}")
+                        }),
+                    );
+                }
+                for object_key in object_keys {
+                    db.execute(
+                        "INSERT INTO source_history_objects
+                         (storage_id,file_digest,object_key,kind,bytes)
+                         VALUES(?1,?2,?3,'source_chunk',7)",
+                        rusqlite::params!["storage-1", digest, object_key],
+                    )?;
+                }
+                if index < 5 {
+                    db.execute(
+                        "INSERT INTO source_history_checkpoint_files
+                         (storage_id,checkpoint_sha,file_digest)
+                         VALUES('storage-1',?1,?2)",
+                        rusqlite::params![format!("retained-{index}"), digest],
+                    )?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    let now = crate::util::now_unix();
+    assert_eq!(catalog.expire_source_history_leases(now, 2).unwrap(), 0);
+    assert!(catalog.due_deletes(now, 32).unwrap().is_empty());
+    for _ in 0..24 {
+        catalog.expire_source_history_leases(now, 2).unwrap();
+    }
+    let mut pending = catalog
+        .due_deletes(now, 32)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.object_key)
+        .collect::<Vec<_>>();
+    pending.sort();
+    assert_eq!(
+        pending,
+        vec![
+            "content/storage-1/chunks/orphan-05".to_string(),
+            "content/storage-1/chunks/orphan-05-part-00".to_string(),
+            "content/storage-1/chunks/orphan-05-part-01".to_string(),
+            "content/storage-1/chunks/orphan-05-part-02".to_string(),
+            "content/storage-1/chunks/orphan-05-part-03".to_string(),
+            "content/storage-1/chunks/orphan-05-part-04".to_string(),
+            "content/storage-1/chunks/orphan-06".to_string(),
+            "content/storage-1/chunks/orphan-07".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn source_history_gc_drains_a_large_orphan_encoding_across_pages() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .with_connection(|db| {
+            db.execute(
+                "INSERT INTO source_history_encodings
+                 (storage_id,file_digest,recipe_key,recipe_digest,codec,
+                  uncompressed_bytes,recipe_bytes,created_at)
+                 VALUES('storage-1','large-digest',
+                        'content/storage-1/recipes/large','recipe',1,1,1,1)",
+                [],
+            )?;
+            for index in 0..5 {
+                db.execute(
+                    "INSERT INTO source_history_objects
+                     (storage_id,file_digest,object_key,kind,bytes)
+                     VALUES('storage-1','large-digest',?1,'source_chunk',7)",
+                    [format!("content/storage-1/chunks/large-{index:02}")],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    let now = crate::util::now_unix();
+    catalog.expire_source_history_leases(now, 2).unwrap();
+    let (pending, objects): (i64, i64) = catalog
+        .with_connection(|db| {
+            Ok((
+                db.query_row("SELECT COUNT(*) FROM pending_deletes", [], |row| row.get(0))?,
+                db.query_row("SELECT COUNT(*) FROM source_history_objects", [], |row| {
+                    row.get(0)
+                })?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(pending, 2, "the first bounded page was not queued");
+    assert_eq!(objects, 3, "cleanup cascaded beyond the visited page");
+
+    let mut completed_keys = catalog
+        .due_deletes(now, 32)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.object_key)
+        .collect::<Vec<_>>();
+    for key in &completed_keys {
+        assert!(catalog.complete_delete_object("doc", key).unwrap());
+    }
+    // Let the physical deletion worker acknowledge each bounded queue page;
+    // graph cleanup must still make progress after those rows disappear.
+    for _ in 0..6 {
+        catalog.expire_source_history_leases(now, 2).unwrap();
+        for entry in catalog.due_deletes(now, 32).unwrap() {
+            completed_keys.push(entry.object_key.clone());
+            assert!(catalog
+                .complete_delete_object("doc", &entry.object_key)
+                .unwrap());
+        }
+    }
+    completed_keys.sort();
+    assert_eq!(completed_keys.len(), 5);
+    assert!(completed_keys
+        .iter()
+        .all(|key| key.starts_with("content/storage-1/chunks/large-")));
+    assert!(
+        catalog
+            .with_connection(|db| Ok(db.query_row(
+                "SELECT COUNT(*) FROM source_history_encodings",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?))
+            .unwrap()
+            == 0
+    );
+}
+
+#[test]
 fn measurement_keeps_maintenance_borrow_releasable() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();

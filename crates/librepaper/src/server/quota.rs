@@ -139,7 +139,6 @@ fn usage_json(usage: &AccountStorageUsage) -> Value {
         "liveBytes": usage.live_bytes,
         "sourceHistoryBytes": usage.history_bytes,
         "assetBytes": usage.asset_bytes,
-        "publicationBytes": usage.publication_bytes,
         "metadataBytes": usage.metadata_bytes,
         "documentCount": usage.document_count,
         "checkpointCount": usage.checkpoint_count,
@@ -181,7 +180,9 @@ impl Server {
             return Err(write_json(403, &cross_site_refusal()));
         }
         let identity = match self.authenticated_identity(headers, arrival).await {
-            Ok(identity) if identity.is_signed_in() => identity,
+            Ok(identity) if identity.is_signed_in() && self.provider_configured(&identity) => {
+                identity
+            }
             Ok(_) | Err(AuthenticationFailure::Invalid) => {
                 return Err(write_json(
                     401,

@@ -27,11 +27,10 @@
 //     `readFile()` below normalise across that so callers do not have to
 //     know which underlying binary they are talking to.
 //
-// The nested worker is created from a URL under the mirror -- never from a
-// blob -- because Emscripten's glue finds its `.wasm` beside its own `.js`
-// (relative to the script's own URL), and the controller's own
-// `importScripts('<kind>-resolver-evidence.js')` resolves relative to
-// that same URL too. A blob URL has no "beside it" for either to find.
+// The nested worker starts from a blob made from verified loader bytes. Its
+// imports and locateFile requests are mapped to blobs made from the same
+// verified manifest inventory, so a later mirror mutation cannot change the
+// executable or Wasm bytes after they have been checked.
 
 import { fetchVerified } from "./resources.js";
 
@@ -63,17 +62,57 @@ const FMT_FILENAME = { xetex: "xetex.fmt", luatex: "luatex.fmt" };
 /// but LuaTeX today). Kept in sync with `worker.js`'s own `BUNDLE_CAPABLE`.
 const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex", "latexml"]);
 
-export function createEngine({ kind, url, texliveUrl, format, release, onProgress, onDownload }) {
-  return new EngineDriver(kind, url, texliveUrl, format, release, onProgress, onDownload);
+/// The bundle resolver is supplied by the engine distribution rather than
+/// this repository. Older mirror releases checked a fetched bundle's digest
+/// but forgot the manifest size before unpacking it or writing it to Cache
+/// Storage. Keep the browser's trust boundary fail-closed by hardening the
+/// verified bundle-mode source before it is put in the engine worker blob.
+/// Newer runtimes that already contain all three checks pass through unchanged;
+/// a runtime with an unrecognised resolver is refused rather than silently
+/// running without the size check.
+export function hardenBundleModeSource(source) {
+  if (typeof source !== "string") throw new Error("bundle-mode.js is not text");
+  let hardened = source;
+  const replacements = [
+    [
+      '            if (sha256Hex(bytes) !== meta.sha256) return "digest-mismatch";',
+      '            if (!Number.isSafeInteger(meta.size) || meta.size < 0 || bytes.length !== meta.size) return "size-mismatch";\n            if (sha256Hex(bytes) !== meta.sha256) return "digest-mismatch";',
+    ],
+    [
+      '                                if (!meta || sha256Hex(bytes) !== meta.sha256) {',
+      '                                if (!meta || !Number.isSafeInteger(meta.size) || meta.size < 0 || bytes.length !== meta.size || sha256Hex(bytes) !== meta.sha256) {',
+    ],
+    [
+      '            if (sha256Hex(u8) !== meta.sha256) return "digest-mismatch";',
+      '            if (!Number.isSafeInteger(meta.size) || meta.size < 0 || u8.length !== meta.size) return "size-mismatch";\n            if (sha256Hex(u8) !== meta.sha256) return "digest-mismatch";',
+    ],
+  ];
+  for (const [oldText, newText] of replacements) {
+    if (hardened.includes(newText)) continue;
+    const occurrences = hardened.split(oldText).length - 1;
+    if (occurrences !== 1) throw new Error("Unrecognised bundle-mode.js verification runtime");
+    hardened = hardened.replace(oldText, newText);
+  }
+  if (!hardened.includes("bytes.length !== meta.size") || !hardened.includes("u8.length !== meta.size")) {
+    throw new Error("bundle-mode.js has no fail-closed size verification");
+  }
+  return hardened;
+}
+
+export function createEngine({ kind, url, base, texliveUrl, format, release, assets, workerName, onProgress, onDownload }) {
+  return new EngineDriver(kind, url, base, texliveUrl, format, release, assets, workerName, onProgress, onDownload);
 }
 
 class EngineDriver {
-  constructor(kind, url, texliveUrl, format, release, onProgress, onDownload) {
+  constructor(kind, url, base, texliveUrl, format, release, assets, workerName, onProgress, onDownload) {
     this.kind = kind;
     this.url = url;
+    this.base = base || new URL("../../", url).href;
     this.texliveUrl = texliveUrl;
     this.format = format ?? null;
     this.release = release ?? null;
+    this.assets = assets ?? null;
+    this.workerName = workerName ?? null;
     this.onProgress = onProgress;
     this.onDownload = onDownload;
     this.worker = null;
@@ -91,6 +130,7 @@ class EngineDriver {
     // failure this pass actually produced is what gets reported, not a
     // scrap left over from an earlier pass that happened to recover.
     this.mirrorAbsent = [];
+    this.blobUrls = [];
   }
 
   /// Every command below waits on this queue, so a caller awaiting `run()`
@@ -142,8 +182,62 @@ class EngineDriver {
 
   async init() {
     if (this.worker) return;
+    let workerUrl = this.url;
+    if (this.assets && this.workerName) {
+      const verified = {};
+      await Promise.all(Object.entries(this.assets).map(async ([name, file]) => {
+        if (!file || !/^[a-f0-9]{64}$/.test(file.sha256) || !Number.isInteger(file.size) || file.size < 0) {
+          throw new Error(`Invalid manifest metadata for LaTeX asset ${name}`);
+        }
+        const response = await fetchVerified(this.release, new URL(file.url, this.base).href, file);
+        verified[name] = new Uint8Array(await response.arrayBuffer());
+      }));
+      const dependencyUrls = {};
+      const assetUrls = {};
+      for (const [name, bytes] of Object.entries(verified)) {
+        const type = /\.js$/i.test(name) ? "text/javascript" : "application/octet-stream";
+        const body = name === "bundle-mode.js"
+          ? hardenBundleModeSource(new TextDecoder().decode(bytes))
+          : bytes;
+        const blob = URL.createObjectURL(new Blob([body], { type }));
+        assetUrls[name] = blob;
+        this.blobUrls.push(blob);
+        if (/\.js$/i.test(name) && name !== this.workerName) dependencyUrls[name] = blob;
+      }
+      // The LaTeXML Emscripten stem is `latexml_wasm`, while the published
+      // payload is intentionally named `latexml.wasm`.
+      if (assetUrls["latexml.wasm"]) assetUrls["latexml_wasm.wasm"] = assetUrls["latexml.wasm"];
+      const bootstrap = `
+const __librepaperImports = ${JSON.stringify(dependencyUrls)};
+const __librepaperAssets = ${JSON.stringify(assetUrls)};
+const __librepaperNativeImportScripts = self.importScripts.bind(self);
+self.importScripts = (...urls) => __librepaperNativeImportScripts(...urls.map((value) => {
+  const key = String(value).split("/").pop();
+  const resolved = __librepaperImports[value] || __librepaperImports[key];
+  if (!resolved) throw new Error("Unverified LaTeX engine import: " + value);
+  return resolved;
+}));
+self.__librepaperLocateFile = (name) => {
+  const key = String(name).split("/").pop();
+  const resolved = __librepaperAssets[name] || __librepaperAssets[key];
+  if (!resolved) throw new Error("Unverified LaTeX engine asset: " + name);
+  return resolved;
+};
+self.Module = { ...(self.Module || {}), locateFile: self.__librepaperLocateFile };
+`;
+      const source = new TextDecoder().decode(verified[this.workerName]);
+      const withLocateFile = source.replace(
+        /var Module = self\.Module = \{\}/g,
+        "var Module = self.Module = { locateFile: self.__librepaperLocateFile };",
+      ).replace(
+        /return new URL\(path, self\.location\.href\)\.href;/g,
+        "return self.__librepaperLocateFile(path);",
+      );
+      workerUrl = URL.createObjectURL(new Blob([bootstrap, withLocateFile], { type: "text/javascript" }));
+      this.blobUrls.push(workerUrl);
+    }
     await new Promise((resolve, reject) => {
-      const worker = new Worker(this.url);
+      const worker = new Worker(workerUrl);
       worker.onmessage = (event) => this._onmessage(event.data, resolve, reject);
       worker.onerror = (event) => {
         const error = new Error(`${this.kind} engine worker error: ${event.message || event}`);
@@ -357,6 +451,7 @@ class EngineDriver {
   terminate() {
     this.worker?.terminate();
     this.worker = null;
+    for (const url of this.blobUrls.splice(0)) URL.revokeObjectURL(url);
     this._rejectAll(new Error(`${this.kind} engine terminated`));
   }
 }

@@ -174,7 +174,7 @@ impl RoomState {
         // Comments (with their replies) and the retained manifest are the two
         // components whose measurement is proportional to how much a busy
         // document holds, so they are the two that are cached across scans.
-        // Assets and renderings are counted from map cardinality, which costs
+        // Input assets are counted from map cardinality, which costs
         // nothing to recompute and so cannot go stale.
         let comments = self.comments.bytes();
         let manifest = self.manifest.bytes();
@@ -182,9 +182,6 @@ impl RoomState {
             .saturating_add(comments)
             .saturating_add(manifest)
             .saturating_add(self.session.asset_sizes.len() * std::mem::size_of::<(String, i64)>())
-            .saturating_add(
-                self.session.rendering_sizes.len() * std::mem::size_of::<(String, i64)>(),
-            )
     }
 }
 
@@ -240,7 +237,6 @@ mod tests {
             .saturating_add(serde_json::to_vec(&*state.comments).unwrap().len())
             .saturating_add(serde_json::to_vec(&*state.manifest).unwrap().len())
             .saturating_add(state.session.asset_sizes.len() * entry)
-            .saturating_add(state.session.rendering_sizes.len() * entry)
     }
 
     /// Assert that a mutation was noticed: the next estimate re-measures, and
@@ -524,10 +520,10 @@ mod tests {
         assert!(pruned > 0);
     }
 
-    /// Assets and renderings are counted from map cardinality rather than
+    /// Input assets are counted from map cardinality rather than
     /// cached, so an upload has to move the estimate on the very next call.
     #[tokio::test]
-    async fn asset_and_rendering_writes_move_the_estimate() {
+    async fn asset_writes_move_the_estimate() {
         let (_directory, _store, _rooms, room) = fixture(Configuration::default()).await;
         let entry = std::mem::size_of::<(String, i64)>();
         let before = assert_invalidated(&room, "a room with no figures").await;
@@ -544,16 +540,6 @@ mod tests {
             "naming an asset edits the document, so the source component is measured again"
         );
         assert_eq!(named, recomputed(&room).await);
-
-        let checkpoint = room.state.lock().await.session.last_checkpoint.clone();
-        room.put_rendering(&checkpoint, false, b"a rendering".to_vec())
-            .await
-            .unwrap();
-        assert_eq!(
-            room.resident_bytes().await,
-            recomputed(&room).await,
-            "a published rendering must be counted"
-        );
     }
 
     /// A document edit changes the CRDT generation, which is what the source

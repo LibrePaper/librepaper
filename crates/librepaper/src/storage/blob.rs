@@ -24,13 +24,13 @@
 //!
 //! There is one interface, and two implementations of it.
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use fs2::available_space;
+use fs2::{available_space, total_space, FileExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
@@ -133,6 +133,19 @@ impl DeleteOutcome {
 #[async_trait]
 pub trait BlobStore: Send + Sync {
     async fn get(&self, key: &str) -> BlobResult<Vec<u8>>;
+    /// Metadata-only on production storage, so admission precedes file opening.
+    async fn length(&self, key: &str) -> BlobResult<u64> {
+        Ok(self.get(key).await?.len() as u64)
+    }
+    /// Return only the requested byte interval. The default supports in-memory
+    /// test backends; filesystem storage overrides it with a bounded seek/read.
+    async fn get_range(&self, key: &str, range: std::ops::Range<u64>) -> BlobResult<Vec<u8>> {
+        let bytes = self.get(key).await?;
+        if range.start > range.end || range.end > bytes.len() as u64 {
+            return Err(BlobError::Other("invalid object byte range".into()));
+        }
+        Ok(bytes[range.start as usize..range.end as usize].to_vec())
+    }
     /// Check availability without downloading the body when supported by the
     /// backend. Missing objects are ordinary false results; transient failures
     /// remain errors. The fallback keeps embedded/test stores compatible.
@@ -207,6 +220,12 @@ pub trait BlobStore: Send + Sync {
     fn is_local(&self) -> bool {
         false
     }
+
+    /// Report physical filesystem capacity when the backend can observe it.
+    /// Remote and in-memory stores have no meaningful local-volume answer.
+    async fn capacity_snapshot(&self) -> Option<serde_json::Value> {
+        None
+    }
 }
 
 /// How a store with no versions of its own supplies one: the digest of the
@@ -243,7 +262,7 @@ pub struct FsStore {
     /// Bytes reserved by writes submitted through this store but not yet
     /// renamed into place.  It is shared by all cloned handles, so concurrent
     /// blocking workers cannot each spend the same free-space margin.
-    reserved_space: Arc<Mutex<u64>>,
+    reserved_space: Arc<Mutex<FsSpaceState>>,
 }
 
 const FS_BLOCKING_CONCURRENCY: usize = 8;
@@ -258,7 +277,7 @@ impl FsStore {
             durable,
             swapping: Arc::new(Mutex::new(())),
             blocking: Arc::new(Semaphore::new(FS_BLOCKING_CONCURRENCY)),
-            reserved_space: Arc::new(Mutex::new(0)),
+            reserved_space: Arc::new(Mutex::new(FsSpaceState::default())),
         }
     }
 
@@ -282,6 +301,9 @@ impl FsStore {
         }
         if cleaned.as_os_str().is_empty() {
             return Err(BlobError::Other("empty key".into()));
+        }
+        if cleaned.file_name().is_some_and(is_capacity_lock_name) {
+            return Err(BlobError::Other("reserved internal key".into()));
         }
         if cleaned.file_name().is_some_and(is_atomic_temporary_name) {
             return Err(BlobError::Other("reserved temporary object key".into()));
@@ -341,15 +363,26 @@ impl FsStore {
 /// writer) completes.  The guard is deliberately moved into `spawn_blocking`
 /// so no asynchronous task can release the reservation while the temp file is
 /// still consuming it.
+#[derive(Default)]
+struct FsSpaceState {
+    bytes: u64,
+    lock: Option<File>,
+}
+
 struct FsSpaceReservation {
-    shared: Arc<Mutex<u64>>,
+    shared: Arc<Mutex<FsSpaceState>>,
     bytes: u64,
 }
 
 impl Drop for FsSpaceReservation {
     fn drop(&mut self) {
         if let Ok(mut reserved) = self.shared.lock() {
-            *reserved = reserved.saturating_sub(self.bytes);
+            reserved.bytes = reserved.bytes.saturating_sub(self.bytes);
+            if reserved.bytes == 0 {
+                // Releasing the process-local final reservation also releases
+                // the inter-process lock shared with backup staging.
+                reserved.lock.take();
+            }
         }
     }
 }
@@ -383,30 +416,57 @@ fn nearest_existing_ancestor(path: &Path) -> std::io::Result<PathBuf> {
 
 fn reserve_fs_space(
     path: &Path,
-    shared: &Arc<Mutex<u64>>,
+    capacity_root: &Path,
+    shared: &Arc<Mutex<FsSpaceState>>,
     body_len: usize,
 ) -> BlobResult<FsSpaceReservation> {
     let budget = rounded_write_budget(body_len)?;
     let ancestor = nearest_existing_ancestor(path).map_err(BlobError::from)?;
+    // Backup staging takes this same lock for the live object directory.  A
+    // separate FsStore handle (or another process) therefore cannot spend
+    // the free-space margin while a backup has admitted its scratch files.
+    std::fs::create_dir_all(capacity_root).map_err(BlobError::from)?;
+    let capacity_root = capacity_root.canonicalize().map_err(BlobError::from)?;
     // Serialize measurement with reservation release: a completed writer
     // must not free its reservation against an older free-space snapshot.
     let mut reserved = shared
         .lock()
         .map_err(|_| BlobError::Other("filesystem space reservation lock poisoned".into()))?;
-    let available = available_space(&ancestor).map_err(|error| {
-        BlobError::Other(format!(
-            "cannot determine available filesystem space: {error}"
-        ))
-    })?;
+    if reserved.bytes == 0 {
+        let lock_path = capacity_root.join(".librepaper-capacity.lock");
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .map_err(BlobError::from)?;
+        lock.lock_exclusive().map_err(BlobError::from)?;
+        reserved.lock = Some(lock);
+    }
+    let available = match available_space(&ancestor) {
+        Ok(available) => available,
+        Err(error) => {
+            if reserved.bytes == 0 {
+                reserved.lock.take();
+            }
+            return Err(BlobError::Other(format!(
+                "cannot determine available filesystem space: {error}"
+            )));
+        }
+    };
     if available < FS_MAINTENANCE_FLOOR
-        || available - FS_MAINTENANCE_FLOOR < reserved.saturating_add(budget)
+        || available - FS_MAINTENANCE_FLOOR < reserved.bytes.saturating_add(budget)
     {
+        if reserved.bytes == 0 {
+            reserved.lock.take();
+        }
         return Err(BlobError::Other(format!(
             "insufficient filesystem space for atomic blob write (need {} bytes plus {}-byte maintenance floor; {} available)",
             budget, FS_MAINTENANCE_FLOOR, available
         )));
     }
-    *reserved = reserved.saturating_add(budget);
+    reserved.bytes = reserved.bytes.saturating_add(budget);
     Ok(FsSpaceReservation {
         shared: Arc::clone(shared),
         bytes: budget,
@@ -415,6 +475,39 @@ fn reserve_fs_space(
 
 #[async_trait]
 impl BlobStore for FsStore {
+    async fn length(&self, key: &str) -> BlobResult<u64> {
+        let path = self.path_for(key)?;
+        self.blocking(move || {
+            let metadata = std::fs::metadata(path)?;
+            if !metadata.is_file() {
+                return Err(BlobError::Other("object is not a regular file".into()));
+            }
+            Ok(metadata.len())
+        })
+        .await
+    }
+
+    async fn get_range(&self, key: &str, range: std::ops::Range<u64>) -> BlobResult<Vec<u8>> {
+        let path = self.path_for(key)?;
+        if range.start > range.end || range.end - range.start > 64 * 1024 {
+            return Err(BlobError::Other(
+                "object range exceeds the 64 KiB read bound".into(),
+            ));
+        }
+        self.blocking(move || {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut file = std::fs::File::open(path)?;
+            if range.end > file.metadata()?.len() {
+                return Err(BlobError::Other("object range exceeds file length".into()));
+            }
+            file.seek(SeekFrom::Start(range.start))?;
+            let mut bytes = vec![0; (range.end - range.start) as usize];
+            file.read_exact(&mut bytes)?;
+            Ok(bytes)
+        })
+        .await
+    }
+
     async fn exists(&self, key: &str) -> BlobResult<bool> {
         let path = self.path_for(key)?;
         self.blocking(move || match std::fs::metadata(path) {
@@ -442,9 +535,10 @@ impl BlobStore for FsStore {
     async fn put(&self, key: &str, body: Vec<u8>, _content_type: &str) -> BlobResult<()> {
         let path = self.path_for(key)?;
         let durable = self.durable;
+        let capacity_root = self.dir.clone();
         let reserved_space = Arc::clone(&self.reserved_space);
         self.blocking(move || {
-            let _space = reserve_fs_space(&path, &reserved_space, body.len())?;
+            let _space = reserve_fs_space(&path, &capacity_root, &reserved_space, body.len())?;
             write_file_atomically(&path, &body, durable)?;
             Ok(())
         })
@@ -521,12 +615,13 @@ impl BlobStore for FsStore {
         let swapping = self.swapping.clone();
         let expect = expect.to_string();
         let durable = self.durable;
+        let capacity_root = self.dir.clone();
         let reserved_space = Arc::clone(&self.reserved_space);
         self.blocking(move || {
             let _guard = swapping
                 .lock()
                 .map_err(|_| BlobError::Other("swap lock poisoned".into()))?;
-            let _space = reserve_fs_space(&path, &reserved_space, body.len())?;
+            let _space = reserve_fs_space(&path, &capacity_root, &reserved_space, body.len())?;
             let current = match read_versioned_path(&path) {
                 Ok((_, version)) => version,
                 Err(BlobError::NotFound) => String::new(),
@@ -547,6 +642,30 @@ impl BlobStore for FsStore {
 
     fn is_local(&self) -> bool {
         true
+    }
+
+    async fn capacity_snapshot(&self) -> Option<serde_json::Value> {
+        let root = self.dir.clone();
+        let reserved = Arc::clone(&self.reserved_space);
+        self.blocking(move || {
+            let snapshot = (|| {
+                let total = total_space(&root).ok()?;
+                let available = available_space(&root).ok()?;
+                let reserved = reserved.lock().ok()?.bytes;
+                Some(serde_json::json!({
+                    "kind": "filesystem",
+                    "total_bytes": total,
+                    "available_bytes": available,
+                    "allocated_bytes": total.saturating_sub(available),
+                    "reserved_bytes": reserved,
+                    "is_primary": true,
+                }))
+            })();
+            Ok(snapshot)
+        })
+        .await
+        .ok()
+        .flatten()
     }
 }
 
@@ -659,6 +778,9 @@ fn walk(root: &Path, dir: &Path, prefix: &str, found: &mut Vec<BlobInfo>) -> Blo
     for entry in entries {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
+        if entry.file_name().to_str() == Some(".librepaper-capacity.lock") {
+            continue;
+        }
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
@@ -726,6 +848,9 @@ fn walk_bounded(
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        if entry.file_name().to_str() == Some(".librepaper-capacity.lock") {
+            continue;
+        }
         let Ok(kind) = entry.file_type() else {
             continue;
         };
@@ -798,6 +923,10 @@ fn is_atomic_temporary_name(name: &std::ffi::OsStr) -> bool {
         && !serial.is_empty()
         && pid.bytes().all(|byte| byte.is_ascii_digit())
         && serial.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_capacity_lock_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str() == Some(".librepaper-capacity.lock")
 }
 
 /// `sync_all` on an open file, unless durability is relaxed.
@@ -940,10 +1069,6 @@ pub fn content_recipe_prefix(storage_id: &str) -> String {
 pub fn content_asset_key(storage_id: &str, sha: &str) -> String {
     format!("content/{storage_id}/assets/{sha}")
 }
-pub fn content_rendering_key(storage_id: &str, tree_sha: &str, suffix: &str) -> String {
-    let suffix = suffix.trim_start_matches('/');
-    format!("content/{storage_id}/renderings/{tree_sha}/{suffix}")
-}
 pub fn document_key(storage_id: &str, digest: &str) -> String {
     tree_key(storage_id, digest)
 }
@@ -1007,32 +1132,6 @@ pub fn asset_prefix(slug: &str) -> String {
 }
 pub fn history_prefix(slug: &str) -> String {
     format!("content/{slug}/trees/")
-}
-
-/// The PDF an editor's browser compiled from a checkpoint, named by that
-/// checkpoint's SHA. The one derived thing librepaper stores, and what makes
-/// it storable at all: a rendering keyed by the digest of its source cannot
-/// disagree with that source silently -- either the live text has that SHA, or
-/// the reader is told it does not.
-pub fn rendering_key(slug: &str, sha: &str) -> String {
-    content_rendering_key(slug, sha, "pdf")
-}
-/// The SyncTeX file that rode along with it, gzipped as the compiler wrote it.
-/// Beside the PDF rather than inside it, so a reader who wants only the pages
-/// fetches only the pages.
-pub fn rendering_synctex_key(slug: &str, sha: &str) -> String {
-    content_rendering_key(slug, sha, "synctex")
-}
-/// The provenance object a browser or the local app sent beside the PDF:
-/// which backend produced it, the engine, the release, and the tools used.
-/// Stored as its own object rather than folded into the PDF's headers so a
-/// reader can ask for it without downloading the PDF, and so pruning a
-/// rendering prunes its provenance in the same sweep.
-pub fn rendering_provenance_key(slug: &str, sha: &str) -> String {
-    content_rendering_key(slug, sha, "provenance.json")
-}
-pub fn rendering_prefix(slug: &str) -> String {
-    format!("content/{slug}/renderings/")
 }
 
 /// Shared edit-journal objects have their own ownership and retirement
@@ -1324,19 +1423,25 @@ mod tests {
     #[test]
     fn fs_space_reservation_is_shared_and_raii() {
         let directory = tempfile::tempdir().unwrap();
-        let shared = Arc::new(Mutex::new(0));
+        let shared = Arc::new(Mutex::new(FsSpaceState::default()));
         let path = directory.path().join("nested/object");
-        let first = reserve_fs_space(&path, &shared, 1).unwrap();
-        assert_eq!(*shared.lock().unwrap(), rounded_write_budget(1).unwrap());
-        let second = reserve_fs_space(&path, &shared, 1).unwrap();
+        let first = reserve_fs_space(&path, directory.path(), &shared, 1).unwrap();
         assert_eq!(
-            *shared.lock().unwrap(),
+            shared.lock().unwrap().bytes,
+            rounded_write_budget(1).unwrap()
+        );
+        let second = reserve_fs_space(&path, directory.path(), &shared, 1).unwrap();
+        assert_eq!(
+            shared.lock().unwrap().bytes,
             2 * rounded_write_budget(1).unwrap()
         );
         drop(first);
-        assert_eq!(*shared.lock().unwrap(), rounded_write_budget(1).unwrap());
+        assert_eq!(
+            shared.lock().unwrap().bytes,
+            rounded_write_budget(1).unwrap()
+        );
         drop(second);
-        assert_eq!(*shared.lock().unwrap(), 0);
+        assert_eq!(shared.lock().unwrap().bytes, 0);
     }
 
     #[tokio::test]

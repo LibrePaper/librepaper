@@ -3,7 +3,6 @@
 //! Immutable result contracts are defined in crate::results. This module
 //! keeps the QMD parser and re-exports the old paths for compatibility.
 
-pub(crate) use crate::results::parameters_sha256;
 pub use crate::results::*;
 
 use serde::{Deserialize, Serialize};

@@ -6,6 +6,7 @@
 //! module therefore caches only raw tree/body objects. Callers still authorize
 //! the request and check manifest membership before using the cache.
 
+use sha2::Digest;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
@@ -253,7 +254,9 @@ impl CheckpointCache {
                     point.sha
                 )
             })?;
-            if !point.tree_sha.is_empty() && tree.digest() != point.tree_sha {
+            if !point.tree_sha.is_empty()
+                && hex::encode(sha2::Sha256::digest(raw.as_slice())) != point.tree_sha
+            {
                 return Err(format!(
                     "the checkpoint {} of {slug} has a tree digest that does not match its catalogue row",
                     point.sha
@@ -339,7 +342,6 @@ impl CheckpointCache {
     }
 
     /// Number of bytes currently retained.
-    #[cfg(test)]
     pub async fn bytes(&self) -> usize {
         self.state.lock().expect("checkpoint cache poisoned").bytes
     }

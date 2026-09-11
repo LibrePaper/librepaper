@@ -4,23 +4,21 @@
 // A document renders to one kind of output: LaTeX and Typst to a paged PDF,
 // Markdown, Quarto and authored HTML to flow HTML (`renderers.outputKind`).
 // The File menu offers the download for that kind and no other, and offers
-// it only once there is something to download -- a PDF this browser has
-// been handed or the server is known to hold, an HTML page this browser has
-// painted or is itself the source of. Nothing here touches the DOM; the
-// Reader supplies what it knows and this decides.
+// it only once there is something to download -- a PDF or HTML payload this
+// browser has been handed, or authored HTML that is itself the source.
+// Nothing here touches the DOM; the Reader supplies what it knows and this
+// decides.
 
 /// Which rendering downloads the File menu can honour right now.
 ///
 /// - `outputKind`: "pdf" or "html", from `renderers.outputKind`.
 /// - `deliveredKind`: the kind of the payload the frame was last handed, or
 ///   "" since the last navigation.
-/// - `rendering`: what `/renderings/latest` answered -- `{ sha, missing? }`
-///   -- or null. A stored PDF can be fetched even before the frame has it.
 /// - `displayedFormat`: the source format on screen; authored HTML is its
 ///   own rendering, so it is always downloadable.
-export function availableDownloads({ outputKind, deliveredKind = "", rendering = null, displayedFormat = "" }) {
+export function availableDownloads({ outputKind, deliveredKind = "", displayedFormat = "" }) {
   if (outputKind === "pdf") {
-    return { pdf: deliveredKind === "pdf" || Boolean(rendering && rendering.sha && !rendering.missing), html: false };
+    return { pdf: deliveredKind === "pdf", html: false };
   }
   if (outputKind === "html") {
     return { pdf: false, html: deliveredKind === "html" || displayedFormat === "html" };

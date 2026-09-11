@@ -2012,6 +2012,188 @@ struct HostedTracked {
     files: Vec<String>,
 }
 
+fn read_hosted_input(path: &Path) -> Option<Vec<u8>> {
+    let expected = std::fs::symlink_metadata(path).ok()?;
+    if !expected.is_file() {
+        return None;
+    }
+    let mut file = std::fs::OpenOptions::new().read(true).open(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let actual = file.metadata().ok()?;
+        if actual.dev() != expected.dev() || actual.ino() != expected.ino() {
+            return None;
+        }
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// Hosted inputs are uploaded by a remote caller. Refuse a symlink in any
+/// parent directory before creating or opening a path, since `create_dir_all`
+/// would otherwise follow it outside the binding root. The binding root is
+/// canonicalized when it is minted; requiring that invariant here also makes
+/// the check fail closed if a local operator replaces the root afterwards.
+fn ensure_hosted_parent(root: &Path, relative: &str) -> Result<(), String> {
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|error| format!("inspect hosted workspace root: {error}"))?;
+    if canonical_root != root {
+        return Err("hosted workspace root changed".into());
+    }
+    let parent = Path::new(relative)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let mut current = root.to_path_buf();
+    for component in parent.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err("hosted workspace path has an invalid parent".into());
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "hosted workspace parent is a symlink: {}",
+                    current.display()
+                ));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(format!(
+                    "hosted workspace parent is not a directory: {}",
+                    current.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current)
+                    .map_err(|error| format!("prepare hosted workspace: {error}"))?;
+                let metadata = std::fs::symlink_metadata(&current)
+                    .map_err(|error| format!("inspect hosted workspace parent: {error}"))?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(format!(
+                        "hosted workspace parent is not a directory: {}",
+                        current.display()
+                    ));
+                }
+            }
+            Err(error) => return Err(format!("inspect hosted workspace parent: {error}")),
+        }
+    }
+    Ok(())
+}
+
+fn read_hosted_tracking(path: &Path) -> Result<HostedTracked, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err("hosted workspace tracking file is a symlink".into())
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            Err("hosted workspace tracking file is not a regular file".into())
+        }
+        Ok(_) => std::fs::read(path)
+            .map_err(|error| format!("read hosted workspace tracking: {error}"))
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("parse hosted workspace tracking: {error}"))
+            }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HostedTracked::default()),
+        Err(error) => Err(format!("inspect hosted workspace tracking: {error}")),
+    }
+}
+
+fn write_hosted_tracking(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "hosted workspace tracking has no parent".to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("stage hosted workspace tracking: {error}"))?;
+    temporary
+        .write_all(bytes)
+        .and_then(|()| temporary.as_file().sync_data())
+        .map_err(|error| format!("write hosted workspace tracking: {error}"))?;
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| format!("record hosted workspace: {}", error.error))
+}
+
+fn write_hosted_new_input(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "hosted workspace input has no parent".to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("stage hosted workspace input: {error}"))?;
+    temporary
+        .write_all(bytes)
+        .and_then(|()| temporary.as_file().sync_data())
+        .map_err(|error| format!("write hosted workspace input: {error}"))?;
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| format!("write hosted workspace input: {}", error.error))
+}
+
+/// Calepin's preprocess fingerprint describes executable/configuration state,
+/// not the prose body. For an HTML theme, a cache hit can therefore leave the
+/// generated wrapper carrying the previous inline body even though the source
+/// watcher has rebuilt. Hosted uploads are the source of truth, so discard the
+/// small per-document cache markers whenever an input changes and let the next
+/// watcher pass regenerate the wrapper and its results.
+fn invalidate_hosted_preprocess_cache(root: &Path) -> Result<(), String> {
+    let cache_root = root.join(".calepin");
+    match std::fs::symlink_metadata(&cache_root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("hosted Calepin cache directory is a symlink".into());
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err("hosted Calepin cache path is not a directory".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect hosted Calepin cache: {error}")),
+    };
+    for entry in std::fs::read_dir(&cache_root)
+        .map_err(|error| format!("read hosted Calepin cache: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("read hosted Calepin cache entry: {error}"))?;
+        let path = entry.path();
+        let entry_metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| format!("inspect hosted Calepin cache entry: {error}"))?;
+        if entry_metadata.file_type().is_symlink() || !entry_metadata.is_dir() {
+            continue;
+        }
+        for marker in ["fingerprint.xxh3", "expansion.json"] {
+            let marker_path = path.join(marker);
+            match std::fs::symlink_metadata(&marker_path) {
+                Ok(marker_metadata) if marker_metadata.file_type().is_symlink() => {
+                    return Err(format!(
+                        "hosted Calepin cache marker is a symlink: {}",
+                        marker_path.display()
+                    ));
+                }
+                Ok(marker_metadata) if marker_metadata.is_file() => {
+                    std::fs::remove_file(&marker_path).map_err(|error| {
+                        format!(
+                            "invalidate hosted Calepin cache {}: {error}",
+                            marker_path.display()
+                        )
+                    })?;
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "inspect hosted Calepin cache marker {}: {error}",
+                        marker_path.display()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Write the staged uploads into the hosted workspace and drop what the
 /// previous sync wrote that is no longer in the inventory. Unchanged files
 /// are left untouched so their timestamps, and Quarto's caches keyed on
@@ -2022,11 +2204,9 @@ pub(crate) fn sync_hosted_workspace(
     manifest: &[protocol::ManifestEntry],
 ) -> Result<(), String> {
     let tracked_path = root.join(HOSTED_TRACKED);
-    let previous: HostedTracked = std::fs::read(&tracked_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
-    let mut written = Vec::with_capacity(manifest.len());
+    let previous = read_hosted_tracking(&tracked_path)?;
+    let mut uploads = Vec::with_capacity(manifest.len());
+    let mut changed = false;
     for entry in manifest {
         if !protocol::safe_relative_path(&entry.path) {
             return Err("quarto input inventory contains an unsafe path".into());
@@ -2034,35 +2214,45 @@ pub(crate) fn sync_hosted_workspace(
         let bytes = std::fs::read(staged.join(&entry.path))
             .map_err(|_| format!("hosted workspace is missing upload: {}", entry.path))?;
         let target = root.join(&entry.path);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("prepare hosted workspace: {error}"))?;
+        let current = read_hosted_input(&target);
+        let same = current.as_deref().is_some_and(|current| current == bytes);
+        changed |= !same;
+        uploads.push((entry.path.clone(), bytes, same));
+    }
+    for stale in previous.files.iter().filter(|path| {
+        !manifest
+            .iter()
+            .any(|entry| entry.path.as_str() == path.as_str())
+    }) {
+        if protocol::safe_relative_path(stale) {
+            changed |= std::fs::symlink_metadata(root.join(stale)).is_ok();
         }
-        let same = std::fs::symlink_metadata(&target)
-            .ok()
-            .filter(|meta| meta.is_file())
-            .and_then(|_| std::fs::read(&target).ok())
-            .is_some_and(|current| current == bytes);
+    }
+    if changed {
+        invalidate_hosted_preprocess_cache(root)?;
+    }
+    let mut written = Vec::with_capacity(manifest.len());
+    for (path, bytes, same) in uploads {
+        ensure_hosted_parent(root, &path)?;
         if !same {
-            if std::fs::symlink_metadata(&target).is_ok() {
-                let _ = std::fs::remove_file(&target);
-            }
-            let temporary = root.join(format!("{}.librepaper-tmp", entry.path));
-            std::fs::write(&temporary, &bytes)
-                .and_then(|()| std::fs::rename(&temporary, &target))
-                .map_err(|error| format!("write hosted workspace {}: {error}", entry.path))?;
+            // Atomic replacement keeps readers from seeing a truncated
+            // source while a watcher or renderer is consuming the workspace.
+            write_hosted_new_input(&root.join(&path), &bytes)
+                .map_err(|error| format!("write hosted workspace {}: {error}", path))?;
         }
-        written.push(entry.path.clone());
+        written.push(path);
     }
     for stale in previous.files.iter().filter(|path| !written.contains(path)) {
         if protocol::safe_relative_path(stale) {
+            ensure_hosted_parent(root, stale)?;
             let _ = std::fs::remove_file(root.join(stale));
         }
     }
     let record = serde_json::to_vec_pretty(&HostedTracked { files: written })
         .map_err(|error| format!("record hosted workspace: {error}"))?;
-    std::fs::write(&tracked_path, record)
-        .map_err(|error| format!("record hosted workspace: {error}"))?;
+    if read_hosted_input(&tracked_path).as_deref() != Some(record.as_slice()) {
+        write_hosted_tracking(&tracked_path, &record)?;
+    }
     Ok(())
 }
 

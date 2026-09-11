@@ -146,10 +146,9 @@ const sourceComment = (revision) => ({
   check("historical Typst passage lookup never consumes PDF artifacts", pdfRead === 0);
 }
 
-// A missing rendering is unknown only for that attempt. Once the artifact is
-// uploaded, the same history lookup must retry it rather than serving a
-// permanently cached null; separate documents with the same checkpoint SHA
-// also have independent rendering caches.
+// A failed historical page lookup is unknown only for that attempt. A later
+// request retries it, and separate documents with the same checkpoint SHA
+// do not share generated output.
 {
   let available = false;
   let fetches = 0;
@@ -207,10 +206,11 @@ const sourceComment = (revision) => ({
   }
 }
 
-// Successful rendered and source entries are bounded. The first entry falls
-// out after enough distinct documents have been visited and is fetched again.
+// Historical page output is transient. Each completed request releases its
+// generated HTML, so revisiting a checkpoint performs a fresh render.
 {
   let renderedFetches = 0;
+  let renders = 0;
   const services = {
     history: {
       checkpoint: async () => {
@@ -218,14 +218,14 @@ const sourceComment = (revision) => ({
         return { main: "main.typ", texts: { "main.typ": "#page" }, files: {} };
       },
     },
-    renderers: { render: async () => ({ html: "page" }) },
+    renderers: { render: async () => { renders += 1; return { html: "page" }; } },
     figures: { gather: async () => ({ assets: {}, urls: {} }) },
   };
   for (let at = 0; at < 65; at += 1) {
     await htmlAt(`bounded-${at}`, "same-sha", {}, services);
   }
   await htmlAt("bounded-0", "same-sha", {}, services);
-  check("rendered checkpoint cache is bounded", renderedFetches === 66);
+  check("historical page output is not retained", renderedFetches === 66 && renders === 66);
 }
 
 // Renderer configuration is part of the historical render identity. A
@@ -250,10 +250,10 @@ const sourceComment = (revision) => ({
   const first = await htmlAt("config-doc", "config-sha", {}, services);
   identity = "renderer-b";
   const second = await htmlAt("config-doc", "config-sha", {}, services);
-  const cached = await renderTree("config-doc", { sha: "config-sha", main: "main.md", texts: { "main.md": "source" }, files: {} }, {}, services);
+  const repeated = await renderTree("config-doc", { sha: "config-sha", main: "main.md", texts: { "main.md": "source" }, files: {} }, {}, services);
   check("renderer configuration snapshots are used by the render", first === "<p>renderer-a</p>" && second === "<p>renderer-b</p>");
-  check("renderer configuration identity partitions the cache", renders === 2 && cached.rendererIdentity === "renderer-b");
-  check("cache entries retain the configuration they name", seen[0]?.modules.markdown === "renderer-a" && seen[1]?.modules.markdown === "renderer-b");
+  check("renderer configuration is applied to each transient render", renders === 3 && repeated.rendererIdentity === "renderer-b");
+  check("transient renders retain the configuration they name", seen[0]?.modules.markdown === "renderer-a" && seen[1]?.modules.markdown === "renderer-b" && seen[2]?.modules.markdown === "renderer-b");
 }
 
 // Only captured, integrity-checked asset bytes become projection evidence.

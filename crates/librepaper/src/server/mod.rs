@@ -20,7 +20,6 @@ use http_body_util::Limited;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
 
 use crate::auth::pseudonym::pseudonym_for;
 use crate::auth::{
@@ -49,15 +48,15 @@ use crate::util::clean;
 
 mod assistant;
 mod chat;
+pub mod cost;
 mod documents;
 mod figures;
 pub mod fonts;
 mod history;
-pub mod latex;
+mod host_metrics;
 mod mcp;
 mod onboarding;
 pub mod origins;
-mod quarto;
 mod quarto_checkpoint;
 mod quota;
 mod reply;
@@ -67,6 +66,7 @@ mod sharing;
 pub mod shell;
 mod signin;
 mod socket;
+pub mod socket_budget;
 
 pub use reply::*;
 pub use routes::*;
@@ -108,17 +108,13 @@ pub struct Server {
     /// without one still stores and shows `.tex` documents; what it does not
     /// do is offer a browser anywhere to fetch a compiler from, which is why
     /// `/api/config` reports whether it is set and `renderers` counts it.
-    pub latex: Option<crate::server::latex::Mirror>,
+    pub latex: Option<String>,
     /// The fonts this deployment serves to typst documents that name a
     /// family the compiler does not embed, or nothing. See
     /// `crate::server::fonts`.
     pub fonts: Option<crate::server::fonts::Library>,
-    /// The browser bibliography VM's descriptor, or nothing. The VM is
-    /// LibrePaper's own artefact, hosted separately from the LaTeX mirror --
-    /// `/api/config` reports it as `biberVm` so `vm.js` knows where to fetch
-    /// `vm.json` from and what to verify it against. See
-    /// `crate::server::latex::BiberVm`.
-    pub biber_vm: Option<crate::server::latex::BiberVm>,
+    pub cost: Arc<cost::CostMeter>,
+    pub socket_budget: Arc<socket_budget::SocketBudget>,
     sockets: AtomicU64,
     /// How many figures each owner has uploaded this hour, and which hour that
     /// is. Uploading a figure is an upload and counts against
@@ -323,6 +319,8 @@ impl Server {
         let store = Arc::new(store);
         rooms.attach_store(store.clone());
         let accounts = Arc::new(GithubAccounts::new(&app));
+        let cost = Arc::new(cost::CostMeter::new(&config, store.catalog.clone()));
+        let socket_budget = socket_budget::SocketBudget::new(config.sockets);
         Server {
             store,
             rooms,
@@ -342,7 +340,8 @@ impl Server {
             mcp_capacity: mcp::Capacity::default(),
             latex: None,
             fonts: None,
-            biber_vm: None,
+            cost,
+            socket_budget,
             sockets: AtomicU64::new(1),
             asset_uploads: tokio::sync::Mutex::new(HashMap::new()),
             connections: tokio::sync::Mutex::new(HashMap::new()),
@@ -356,7 +355,7 @@ impl Server {
         // for a deployment that never overrides it) must not additionally cut
         // a legitimate upload off before that ceiling is even consulted.
         Router::new()
-            .fallback(handle)
+            .fallback(cost::handle)
             .layer(DefaultBodyLimit::disable())
             .with_state(self)
     }
@@ -578,9 +577,28 @@ impl Server {
     /// anyone publish" fall out of the same switch a named caller is asked
     /// against, rather than out of a rule of its own.
     pub fn ceiling_for(&self, id: &Identity) -> Ceiling {
+        // A policy's historical `public` spelling is still useful for the
+        // commenter switch, but it must never turn an anonymous reader or a
+        // share link into a publisher.  Source and input writes always need a
+        // provider-backed identity, and a session from a provider that is no
+        // longer configured is not an authorization bypass.
+        let edit =
+            id.is_signed_in() && self.provider_configured(id) && self.publishers.allows(&id.handle);
         Ceiling {
             comment: self.commenters.allows(&id.handle),
-            edit: self.publishers.allows(&id.handle),
+            edit,
+        }
+    }
+
+    /// Whether this identity belongs to a provider currently configured on
+    /// this deployment.  Credentials remain cryptographically valid after an
+    /// operator removes an OAuth app, but they cannot authorize new writes in
+    /// that state.
+    pub fn provider_configured(&self, id: &Identity) -> bool {
+        match id.provider.as_str() {
+            PROVIDER_GITHUB => self.app.configured(),
+            PROVIDER_GOOGLE => self.google.configured(),
+            _ => false,
         }
     }
 
@@ -634,23 +652,34 @@ impl Server {
         };
         let presented_link = self.link_hash(headers, query);
         let now = crate::util::now_unix();
-        let role = if automation {
+        let ceiling = self.ceiling_for(&id);
+        let mut role = if automation {
             // In automation mode only the supplied live link contributes a
             // role. Do not call role_of with empty owner/caller fields: an
             // unowned entry treats an empty caller as its owner. Examples
             // likewise remain read-only without an explicit edit link.
             match entry.link_role(&presented_link, now) {
-                Some(Role::Editor) if self.ceiling_for(&id).edit => Role::Editor,
-                Some(Role::Editor | Role::Commenter) if self.ceiling_for(&id).comment => {
-                    Role::Commenter
-                }
+                Some(Role::Editor) if ceiling.edit => Role::Editor,
+                Some(Role::Editor | Role::Commenter) if ceiling.comment => Role::Commenter,
                 Some(Role::Editor | Role::Commenter | Role::Reader) => Role::Reader,
                 None => Role::Reader,
                 Some(Role::Owner) => Role::Reader,
             }
         } else {
-            entry.role_of(&key, &id.id, &presented_link, self.ceiling_for(&id), now)
+            entry.role_of(&key, &id.id, &presented_link, ceiling, now)
         };
+        // Legacy rows can carry an owner key from before provider identities
+        // existed.  The visitor credential that happens to match that key is
+        // useful for attribution, but it is not proof of OAuth ownership and
+        // must never yield the owner/editor rung.  Recompute the anonymous
+        // role without the owner key so a real comment/read link still works.
+        // Owner is a write-capable role.  If the deployment no longer has the
+        // identity provider or publisher policy needed for a write, retain
+        // ordinary read/comment access but remove the owner rung.  This also
+        // prevents an old owner cookie from mutating a legacy row.
+        if role == Role::Owner && !ceiling.edit {
+            role = entry.role_of("", "", &presented_link, ceiling, now);
+        }
         // Only a live row supplies rate metadata or a `via` attribution. A
         // signed-in caller cannot attach an invented key merely to obtain a
         // fresh rate bucket.
@@ -718,7 +747,8 @@ impl Server {
                 ));
             }
         };
-        if self.publishers.allows(&id.handle) {
+        if id.is_signed_in() && self.provider_configured(&id) && self.publishers.allows(&id.handle)
+        {
             return Ok(Caller {
                 key: self.owner(headers, arrival, &id),
                 id: id.id,
@@ -728,7 +758,7 @@ impl Server {
                 name: id.name,
             });
         }
-        if !id.is_signed_in() {
+        if !id.is_signed_in() || !self.provider_configured(&id) {
             let message = if self.auth_credential_supplied(headers, arrival) {
                 "authentication expired or was revoked"
             } else {

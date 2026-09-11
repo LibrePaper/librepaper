@@ -35,9 +35,10 @@ function protocol(socket) {
 
 export async function browser(name, directory, port) {
   mkdirSync(directory, { recursive: true });
-  const child = spawn(name, name === "firefox"
+  const browserArgs = name === "firefox"
     ? ["--headless", "--no-remote", "--profile", directory, "--remote-debugging-port", String(port)]
-    : ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-features=BackForwardCache", `--user-data-dir=${directory}`, `--remote-debugging-port=${port}`, "about:blank"],
+    : ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-features=BackForwardCache", ...(process.env.LIBREPAPER_BROWSER_IGNORE_CERT_ERRORS === "1" ? ["--ignore-certificate-errors"] : []), `--user-data-dir=${directory}`, `--remote-debugging-port=${port}`, "about:blank"];
+  const child = spawn(name, browserArgs,
   { stdio: "ignore" });
   let spawnError;
   child.on("error", (error) => { spawnError = error; });

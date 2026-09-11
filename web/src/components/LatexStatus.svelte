@@ -1,7 +1,7 @@
 <script>
   // The detailed compile status shown from the Preview header. It
-  // distinguishes browser and local output and identifies VM-backed
-  // bibliography work when used.
+  // distinguishes browser and local output and identifies browser bibliography
+  // work when used.
   //
   // Everything here comes from `latex.subscribe`; nothing is stateful on its
   // own. The wording and the action list are pure functions in
@@ -29,7 +29,7 @@
   const hint = $derived(status.phase === "failed" ? failureHint(status.lastResult?.failure) : "");
   const explanation = $derived(status.phase === "ready" ? fallbackExplanation(status.lastResult?.attempts) : "");
   const busy = $derived(
-    ["loading", "compiling", "checking-local", "local-biber", "vm-preparing", "vm-biber", "native"].includes(
+    ["loading", "compiling", "browser-biber", "checking-local", "local-biber", "native"].includes(
       status.phase,
     ),
   );

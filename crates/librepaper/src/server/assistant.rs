@@ -116,7 +116,7 @@ impl Server {
                 room.slug
             );
         }
-        let address = client_address(peer, &headers);
+        let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
         match room
             .apply_suggestion_batch(
                 &parsed.revision,

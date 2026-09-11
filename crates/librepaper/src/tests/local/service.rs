@@ -588,6 +588,10 @@ fn syncing_a_hosted_workspace_tracks_its_own_files() {
     };
     // Quarto's own cache is already there and is not the sync's business.
     write(root.path(), "_freeze/main/execute-results/html.json", b"{}");
+    // Calepin's per-document markers are invalidated when source content is
+    // replaced, because an HTML wrapper may otherwise retain an old body.
+    write(root.path(), ".calepin/doc/fingerprint.xxh3", b"stale");
+    write(root.path(), ".calepin/doc/expansion.json", b"stale");
 
     write(staged.path(), "main.qmd", b"# one");
     write(staged.path(), "data/a.csv", b"1,2");
@@ -605,7 +609,8 @@ fn syncing_a_hosted_workspace_tracks_its_own_files() {
         std::fs::read(root.path().join("data/a.csv")).unwrap(),
         b"1,2"
     );
-
+    assert!(!root.path().join(".calepin/doc/fingerprint.xxh3").exists());
+    assert!(!root.path().join(".calepin/doc/expansion.json").exists());
     // Second sync: one file changed, one gone, the cache untouched.
     let staged2 = tempfile::tempdir().expect("staged2");
     write(staged2.path(), "main.qmd", b"# two");
@@ -632,6 +637,39 @@ fn syncing_a_hosted_workspace_tracks_its_own_files() {
     assert!(
         sync_hosted_workspace(staged2.path(), root.path(), &[entry("../escape.qmd", b"")]).is_err()
     );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let outside = tempfile::tempdir().expect("outside");
+        symlink(outside.path(), root.path().join("escape")).expect("parent symlink");
+        let staged3 = tempfile::tempdir().expect("staged3");
+        write(staged3.path(), "escape/pwned.qmd", b"must stay inside");
+        assert!(
+            sync_hosted_workspace(
+                staged3.path(),
+                root.path(),
+                &[entry("escape/pwned.qmd", b"must stay inside")]
+            )
+            .is_err(),
+            "hosted input must reject a symlinked parent"
+        );
+        assert!(!outside.path().join("pwned.qmd").exists());
+
+        std::fs::remove_file(root.path().join(".librepaper-hosted.json"))
+            .expect("remove tracking file");
+        symlink(
+            outside.path().join("tracking.json"),
+            root.path().join(".librepaper-hosted.json"),
+        )
+        .expect("tracking symlink");
+        assert!(
+            sync_hosted_workspace(staged2.path(), root.path(), &[entry("main.qmd", b"# two")])
+                .is_err(),
+            "hosted tracking must reject a symlink"
+        );
+        assert!(!outside.path().join("tracking.json").exists());
+    }
 }
 
 #[tokio::test]
@@ -1575,7 +1613,7 @@ async fn calepin_html_preview_starts_serves_and_updates() {
         eprintln!("skipping calepin_html_preview_starts_serves_and_updates: calepin not on PATH");
         return;
     }
-    let (test, _workspaces) = start_hosted_test_service(Arc::new(FakeRunner::default())).await;
+    let (test, workspaces) = start_hosted_test_service(Arc::new(FakeRunner::default())).await;
     set_code(&test, "434343");
     let token = connected_token(&test, ORIGIN, "typst-paper", "434343").await;
 
@@ -1716,10 +1754,48 @@ async fn calepin_html_preview_starts_serves_and_updates() {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    assert!(
-        updated,
-        "calepin preview did not pick up the workspace update within 30s"
-    );
+    if !updated {
+        let diagnostic = match test
+            .client
+            .get(&endpoint)
+            .header("Origin", ORIGIN)
+            .bearer_auth(&token)
+            .send()
+            .await
+        {
+            Ok(response) => match response.json::<Value>().await {
+                Ok(body) => body["log_tail"].as_str().unwrap_or_default().to_string(),
+                Err(_) => String::new(),
+            },
+            Err(_) => String::new(),
+        };
+        let workspace = BindingStore::new(test.state_home.path())
+            .with_hosted_workspaces(workspaces.path().to_path_buf())
+            .get_scoped(crate::local::quarto::HOSTED_BINDING, ORIGIN, "typst-paper")
+            .map(|binding| {
+                let source = std::fs::read_to_string(binding.root.join("doc.typ"))
+                    .unwrap_or_else(|error| format!("<source read failed: {error}>"));
+                let wrapper = std::fs::read_to_string(
+                    binding.root.join(".calepin-entry.doc.wrapper.typ"),
+                )
+                .unwrap_or_else(|error| format!("<wrapper read failed: {error}>"));
+                let output = std::fs::read_to_string(binding.root.join("doc.html"))
+                    .unwrap_or_else(|error| format!("<output read failed: {error}>"));
+                format!(
+                    "source={source:?}; wrapper_len={}; wrapper_has_v1={}; wrapper_has_v2={}; output_len={}; output_has_v1={}; output_has_v2={}",
+                    wrapper.len(),
+                    wrapper.contains("Version one paragraph text"),
+                    wrapper.contains("Version two paragraph text"),
+                    output.len(),
+                    output.contains("Version one paragraph text"),
+                    output.contains("Version two paragraph text")
+                )
+            })
+            .unwrap_or_else(|| "<workspace unavailable>".to_string());
+        panic!(
+            "calepin preview did not pick up the workspace update within 30s; log_tail: {diagnostic}; {workspace}"
+        );
+    }
 
     let stop = test
         .client

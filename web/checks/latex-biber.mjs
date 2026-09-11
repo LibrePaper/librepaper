@@ -56,7 +56,7 @@ try{
 
   globalThis.fetch = async () => new Response("corrupt");
   const corrupt = await import("../src/lib/latex/biber.js?corruption");
-  await assert.rejects(corrupt.runBiber(request, { base: "https://mirror.test/", release }), /sha256/);
+  await assert.rejects(corrupt.runBiber(request, { base: "https://mirror.test/", release }), /(?:sha256|size)/);
   assert.equal(made, 1, "corrupt runtime must not create a worker");
 
   globalThis.fetch = async url => new Response(contents[String(url).split("/").at(-1)]);

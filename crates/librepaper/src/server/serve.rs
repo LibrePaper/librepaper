@@ -39,17 +39,12 @@ pub struct ServeOptions {
     pub no_listing: bool,
     pub expire_after: Option<String>,
     pub expire_from: Option<String>,
-    /// Where this deployment reads LaTeX distributions from: an https bucket
-    /// or a directory on this machine. Blank falls back to the project's
-    /// own default mirror: LibrePaper always serves LaTeX. See
-    /// `crate::server::latex`.
-    pub latex: String,
+    /// HTTPS static mirror URL published to browsers. Distribution bytes are
+    /// fetched directly by the browser and never pass through this process.
+    pub latex_mirror: String,
     /// A directory of font files served to typst documents, or nothing. See
     /// `crate::server::fonts`.
-    pub fonts: Option<String>,
-    /// The browser bibliography VM's descriptor, as `<url>#<sha256>`, or
-    /// nothing for a deployment that offers none. See `crate::server::latex::BiberVm`.
-    pub biber_vm: Option<String>,
+    pub typst_fonts: Option<String>,
     /// Do not run the local app for this machine. Without it, `serve` also
     /// starts the loopback service that renders Quarto documents for an
     /// editor whose browser is on this host; see `crate::local::embedded`.
@@ -57,14 +52,27 @@ pub struct ServeOptions {
     pub config: Configuration,
 }
 
-/// The LaTeX mirror flag LibrePaper actually uses. LibrePaper always serves
-/// LaTeX, so a blank `--latex` falls back to the project's own mirror: there
-/// is no "LaTeX off" mode.
-pub(crate) fn resolve_latex_flag(flag: &str) -> &str {
-    match flag.trim() {
-        "" => crate::server::latex::DEFAULT_MIRROR,
-        flag => flag,
+/// Validate the only supported mirror shape before opening storage or binding
+/// a port. A local directory and plain HTTP would make browser failures look
+/// like missing compiler assets, so operators get an actionable startup error.
+pub(crate) fn validate_latex_mirror(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let mut parsed = url::Url::parse(value).map_err(|_| {
+        format!(
+            "--latex-mirror must be an https: URL for a static mirror; see the mirror documentation (got {value:?})"
+        )
+    })?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("--latex-mirror must be an https: URL without credentials, a query, or a fragment; see https://github.com/LibrePaper/wasm-latex/blob/main/docs/mirror.md".to_string());
     }
+    parsed.set_path(&format!("{}/", parsed.path().trim_end_matches('/')));
+    Ok(parsed.to_string())
 }
 
 /// The GitHub and Google OAuth app client secrets. Secrets never travel as
@@ -108,18 +116,17 @@ async fn listen(bind: std::net::IpAddr, port: u16) -> TcpListener {
     ))
 }
 
-/// What startup has to say about signing in: at most one reason not to start,
-/// and any number of warnings that it will. Worked out here rather than inline
-/// so the answer can be asserted without starting a server.
+/// What startup has to say about signing in, worked out here rather than inline
+/// so the answer can be inspected without starting a server.
 #[derive(Debug, Default)]
 pub struct SignInAdvice {
     pub fatal: Option<String>,
     pub warnings: Vec<String>,
 }
 
-/// A provider is only needed when something here asks for an account; a wholly
-/// public server runs without any. Either one will do, so the refusal lists
-/// both ways to get one.
+/// A provider is needed for publishing and source writes. The server can still
+/// start for reading/commenting when no provider is configured, and reports
+/// that publishing is unavailable.
 ///
 /// The two warnings are not deaths: a deployment may be mid-migration, and a
 /// list naming somebody no configured provider can produce is worth saying out
@@ -149,48 +156,33 @@ pub fn sign_in_advice(
                 .to_string(),
         );
     }
-    let needs_sign_in = !(publishers.public && commenters.public);
-    if !github && !google && needs_sign_in {
-        advice.fatal = Some(format!(
-            "this needs a way to sign people in: a GitHub OAuth app, a Google client, or both.\n\n  \
-             GitHub, at https://github.com/settings/developers (New OAuth App):\n\n    \
-             Homepage URL          http://localhost{address}\n    \
-             Authorization callback  http://localhost{address}/auth/callback\n\n  \
-             Then generate a client secret and:\n\n    \
-             export LIBREPAPER_GITHUB_CLIENT_ID=...\n    export LIBREPAPER_GITHUB_CLIENT_SECRET=...\n\n  \
-             Google, at https://console.cloud.google.com (Credentials, Web application):\n\n    \
-             Authorised redirect URI  http://localhost{address}/auth/callback/google\n\n    \
-             export LIBREPAPER_GOOGLE_CLIENT_ID=...\n    export LIBREPAPER_GOOGLE_CLIENT_SECRET=...\n\n  \
-             Either callback has to match the port, so pass --port {port} to keep it fixed."
+    if !github && !google {
+        advice.warnings.push(format!(
+            "warning: neither Google nor GitHub sign-in is configured; publishing and source writes are unavailable. Set LIBREPAPER_GITHUB_CLIENT_ID and LIBREPAPER_GITHUB_CLIENT_SECRET, or LIBREPAPER_GOOGLE_CLIENT_ID and LIBREPAPER_GOOGLE_CLIENT_SECRET (callbacks use http://localhost{address}, or pass --port {port})."
         ));
     }
     advice
 }
 
 pub async fn serve(options: ServeOptions) {
+    options
+        .config
+        .cost
+        .validate()
+        .unwrap_or_else(|error| die(format!("invalid cost policy: {error}")));
     let storage = options.storage.clone();
     let durable = storage.fsync;
     let deployment_paths = storage.paths().unwrap_or_else(|err| die(err));
     let retention = parse_retention(options.expire_after.as_deref().unwrap_or(""))
         .unwrap_or_else(|err| die(format!("{err}; use a duration such as 24h or 30d")));
-    // Read before anything is opened or a port is claimed: a mirror flag that
-    // cannot work is a typo the operator is still standing in front of, and a
-    // plain HTTP one would fail invisibly in every browser rather than here.
-    // LibrePaper always serves LaTeX: an absent --latex falls back to the
-    // project's own mirror, so there is no "LaTeX off" mode.
-    let latex_flag = resolve_latex_flag(&options.latex);
-    let latex = Some(crate::server::latex::Mirror::open(latex_flag).unwrap_or_else(|err| die(err)));
+    // Read before anything is opened or a port is claimed: a mirror value
+    // which cannot work is a typo the operator is still standing in front of.
+    let latex = validate_latex_mirror(&options.latex_mirror).unwrap_or_else(|err| die(err));
     // The font library likewise: a directory that is not there is a typo,
     // and every file in one that is gets read now, for the families it holds.
-    let fonts = match options.fonts.as_deref().unwrap_or("").trim() {
+    let fonts = match options.typst_fonts.as_deref().unwrap_or("").trim() {
         "" => None,
         flag => Some(crate::server::fonts::Library::open(flag).unwrap_or_else(|err| die(err))),
-    };
-    // Same startup-time refusal as --latex/--fonts: a malformed flag is a
-    // typo the operator is still standing in front of.
-    let biber_vm = match options.biber_vm.as_deref().unwrap_or("").trim() {
-        "" => None,
-        flag => Some(crate::server::latex::BiberVm::parse(flag).unwrap_or_else(|err| die(err))),
     };
     let expire_from = parse_expire_from(options.expire_from.as_deref().unwrap_or(""))
         .unwrap_or_else(|err| die(err));
@@ -224,13 +216,13 @@ pub async fn serve(options: ServeOptions) {
         client_secret: oauth_secrets.google_client_secret,
         ..GoogleApp::default()
     };
-    let publishers = Policy::parse(options.publishers.as_deref().unwrap_or(""));
+    let publishers = Policy::parse_publishers(options.publishers.as_deref().unwrap_or(""))
+        .unwrap_or_else(|error| die(error));
     if !publishers.is_configured() {
         die("say who may publish, with --publishers.\n\n    \
              --publishers your-github-login      only you\n    \
              --publishers alice,bob              those accounts\n    \
-             --publishers any                    any GitHub account\n    \
-             --publishers anyone                 no sign-in at all");
+             --publishers any                    any authenticated Google or GitHub account");
     }
     let commenters = Policy::parse(options.commenters.as_deref().unwrap_or("anyone"));
 
@@ -301,6 +293,26 @@ pub async fn serve(options: ServeOptions) {
         journal
             .require_recovered()
             .unwrap_or_else(|err| die(format!("local journal recovery is required: {err}")));
+        // Renderer products from pre no-retention deployments are collected
+        // before any room can serve them. Source trees, input assets and
+        // annotations remain in the catalogue; only derived namespaces are
+        // eligible for this bounded migration.
+        let generated =
+            crate::storage::maintenance::collect_legacy_generated_outputs(catalog, &blobs, 10_000)
+                .await
+                .unwrap_or_else(|err| die(format!("legacy rendering cleanup failed: {err}")));
+        if generated.objects_deleted != 0 || generated.references_removed != 0 {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "event": "legacy_generated_outputs_collected",
+                    "references_removed": generated.references_removed,
+                    "objects_deleted": generated.objects_deleted,
+                    "objects_deferred": generated.objects_deferred,
+                    "bytes_reclaimed": generated.bytes_reclaimed,
+                })
+            );
+        }
         let worker = Arc::new(
             DeletionWorker::new(catalog.clone(), blobs.clone(), DeletionLimits::default())
                 .unwrap_or_else(|err| die(format!("could not initialize deletion worker: {err}"))),
@@ -350,9 +362,8 @@ pub async fn serve(options: ServeOptions) {
     // An operator who wants no public front page at all: the examples stop
     // being listed to people who hold nothing on them.
     instance.listing = !options.no_listing;
-    instance.latex = latex;
+    instance.latex = Some(latex);
     instance.fonts = fonts;
-    instance.biber_vm = biber_vm;
     // The local app for this machine: only a browser on this host can reach
     // it, and it lives under the deployment's private state so it shares
     // nothing with a standalone `librepaper local start`. Failing to start it
@@ -377,21 +388,73 @@ pub async fn serve(options: ServeOptions) {
     println!("  data in {}", blobs.describe());
     println!("  publishing: {}", publishers.describe());
     println!("  commenting: {}", commenters.describe());
-    // A mirror that answers nothing is a card that spins, and the only place
-    // anyone will connect the two is here. Unreachable is a warning, never a
-    // death: a deployment that serves markdown has no business refusing to
-    // start because a bucket is still filling.
+    super::host_metrics::warn(&config, &deployment_paths.deployment);
+    println!("  cost policy: v{}", config.cost.version);
+    println!(
+        "{}",
+        serde_json::json!({"event":"cost_policy", "policy":config.effective_policy()})
+    );
+    println!(
+        "    storage: {} total bytes; {} bytes per owner",
+        config.storage.total, config.storage.per_owner
+    );
+    println!(
+        "    document source: {} bytes; input assets: {} bytes per document",
+        config.max_document, config.max_assets
+    );
+    println!(
+        "    documents: {} per owner; uploads: {} per owner per rolling hour",
+        config.storage.documents_per_owner, config.storage.uploads_per_hour
+    );
+    println!(
+        "    rooms: {} / {} bytes; peer queue: {} frames; updates: {} per peer per rolling minute",
+        config.session.rooms_max,
+        config.session.rooms_bytes_max,
+        config.session.peer_queue,
+        config.session.updates_per_minute
+    );
+    println!(
+        "    transfer: {} per rolling 24 hours (origin response bytes)",
+        config
+            .cost
+            .transfer_bytes
+            .map(|bytes| bytes.to_string())
+            .unwrap_or_else(|| "unlimited".to_string())
+    );
+    println!(
+        "    requests: {} deployment / {} network / {} principal / {} document per rolling minute",
+        config.cost.requests_per_minute,
+        config.cost.requests_per_network_minute,
+        config.cost.requests_per_principal_minute,
+        config.cost.requests_per_document_minute
+    );
+    println!(
+        "    artifact transfers: {} concurrent",
+        config.cost.artifact_transfers
+    );
+    println!(
+        "    emergency allowance: {} bytes",
+        config.cost.emergency_bytes
+    );
+    println!("    trusted proxies: {}", config.cost.trusted_proxies.len());
+    if config.session.history_max == 0 {
+        eprintln!(
+            "warning: unlimited checkpoint history is enabled; set --history to a finite count"
+        );
+    }
+    if config.cost.transfer_bytes.is_none() {
+        eprintln!(
+            "warning: no daily origin transfer budget is configured; use --budget-transfer BYTES"
+        );
+    }
     if let Some(library) = &instance.fonts {
         println!("  fonts: {}", library.describe());
     }
     if let Some(mirror) = &instance.latex {
-        println!("  latex: {}", mirror.describe());
-        if let Some(warning) = mirror.probe().await {
-            eprintln!("{warning}");
+        println!("  latex mirror: {mirror}");
+        if mirror == crate::config::DEFAULT_LATEX_MIRROR {
+            println!("  the project mirror promises only releases carried by this build");
         }
-    }
-    if let Some(vm) = &instance.biber_vm {
-        println!("  biber vm: {}", vm.url);
     }
     if let Some(local) = &local {
         println!(
@@ -452,6 +515,7 @@ pub async fn serve(options: ServeOptions) {
 
     if let Some(worker) = deletion_worker.clone() {
         let erasure_catalog = instance.store.catalog.clone();
+        let generated_blobs = instance.store.blobs.clone();
         let retention_server = instance.clone();
         let journal_worker = journal_retirement_worker.clone();
         let retention_hard_quota = instance.config.storage.per_owner;
@@ -471,10 +535,37 @@ pub async fn serve(options: ServeOptions) {
                     }
                 }
                 if let Some(catalog) = &erasure_catalog {
-                    // Derived publication bundles are the first pressure
-                    // tier. This bounded cold-room pass uses the room's
-                    // manifest/rendering gates and never forces a checkpoint.
-                    retention_server.rooms.prune_cold_renderings(8).await;
+                    // Continue the resumable legacy-rendering migration after
+                    // startup. A single startup tick is intentionally bounded
+                    // and must not leave a large deployment half-migrated.
+                    match crate::storage::maintenance::collect_legacy_generated_outputs(
+                        catalog,
+                        &generated_blobs,
+                        1_000,
+                    )
+                    .await
+                    {
+                        Ok(report)
+                            if report.references_removed != 0
+                                || report.objects_deleted != 0
+                                || report.objects_deferred != 0 =>
+                        {
+                            eprintln!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "legacy_generated_outputs_collected",
+                                    "references_removed": report.references_removed,
+                                    "objects_deleted": report.objects_deleted,
+                                    "objects_deferred": report.objects_deferred,
+                                    "bytes_reclaimed": report.bytes_reclaimed,
+                                })
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!("warning: legacy rendering cleanup deferred: {error}");
+                        }
+                    }
                     let retention_result = catalog
                         .execute_catalog(1024, {
                             move |catalog| {
@@ -553,6 +644,22 @@ pub async fn serve(options: ServeOptions) {
         }
     };
 
+    let reporting = Arc::downgrade(&instance);
+    let reporting_task = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let Some(server) = reporting.upgrade() else {
+                break;
+            };
+            if let Err(error) = server.cost.checkpoint().await {
+                eprintln!("warning: transfer checkpoint failed: {error}");
+            }
+            println!("{}", server.cost_snapshot().await);
+        }
+    });
+    let closing_cost = instance.cost.clone();
     let closing_catalog = instance.store.catalog.clone();
     let router = instance.router();
     let serve_result = axum::serve(
@@ -561,6 +668,11 @@ pub async fn serve(options: ServeOptions) {
     )
     .with_graceful_shutdown(shutdown)
     .await;
+    reporting_task.abort();
+    let _ = reporting_task.await;
+    if let Err(error) = closing_cost.checkpoint().await {
+        eprintln!("warning: final transfer checkpoint failed: {error}");
+    }
     // Only now: the graceful shutdown above stops accepting and then drains
     // the requests already in flight, and those requests still submit
     // catalogue jobs. Closing admission any earlier would fail a request that

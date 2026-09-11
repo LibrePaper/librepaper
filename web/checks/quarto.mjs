@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { cellFingerprint, composeDraft, contextId, contextFingerprint, mapQuartoDiagnostics, outputMarkup, parseQuarto, safeFragment, virtualTree } from "../src/lib/engines/quarto.js";
+import { cellFingerprint, composeDraft, contextId, contextFingerprint, escapeHtml, mapQuartoDiagnostics, parseQuarto, virtualTree } from "../src/lib/engines/quarto.js";
 import { formatOf, outputKind } from "../src/lib/renderers.js";
 import { quartoRequest } from "../src/lib/latex/local.js";
 
@@ -77,15 +77,17 @@ const cycleDraft = composeDraft("{{< include a.qmd >}}", {
 });
 assert.match(cycleDraft.markdown, /Include cycle or depth limit/);
 assert.ok(cycleDraft.diagnostics.some((diagnostic) => diagnostic.generated && diagnostic.line === 0));
-// Both #plot cells are ambiguous (duplicate label), so neither maps to the
-// saved output; the draft falls back to showing each cell verbatim.
-assert.match(composeDraft(source, { bundle: { cells: [{ id: "paper.qmd#plot", coverage: "captured", outputs: [{ kind: "text", text: "result" }] }] } }).markdown, /```\{r #plot\}\nplot\(2\)\n```/);
+// A previous computation bundle never changes the source draft. Ambiguous
+// cells and all other executable cells remain visible as source.
+const staleBundleDraft = composeDraft(source, { bundle: { cells: [{ id: "paper.qmd#plot", outputs: [{ kind: "text", text: "stale result" }] }] } }).markdown;
+assert.match(staleBundleDraft, /```\{r #plot\}\nplot\(2\)\n```/);
+assert.doesNotMatch(staleBundleDraft, /stale result/);
 const dialect = [
   "---", "title: Draft title", "authors:", "  - name: Ada Lovelace", "date: 1843", "abstract: A short abstract", "---", "",
   "::: {.callout-note #intro}", "See @fig-trend.", ":::", "",
   "```{r #fig-trend}", "#| fig-cap: Trend", "plot(1)", "```",
 ].join("\n");
-const dialectDraft = composeDraft(dialect, { bundle: { cells: [{ id: "main.qmd#fig-trend", outputs: [{ kind: "image", url: "/trend.png" }] }] } }).markdown;
+const dialectDraft = composeDraft(dialect).markdown;
 assert.match(dialectDraft, /quarto-title-block/);
 // Fenced divs are never interpreted: the `:::` lines carry through verbatim,
 // with no callout class or wrapper markup.
@@ -93,7 +95,10 @@ assert.match(dialectDraft, /^::: \{\.callout-note #intro\}$/m);
 assert.match(dialectDraft, /^:::$/m);
 assert.doesNotMatch(dialectDraft, /quarto-callout/);
 assert.match(dialectDraft, /href="#fig-trend"/);
-assert.match(dialectDraft, /id="fig-trend"/);
+// The browser draft preserves executable cells as source text. Figure
+// anchors are supplied by Quarto's authoritative companion render.
+assert.match(dialectDraft, /plot\(1\)/);
+assert.doesNotMatch(dialectDraft, /quarto-cached-output/);
 assert.doesNotMatch(dialectDraft, /\n---\n/);
 const nestedDialect = [
   "::: {.callout-note #note}", "Outer", "::: {.callout-warning #inner}", "Inner", ":::", ":::", "",
@@ -137,21 +142,11 @@ const multiInline = parseQuarto("`r 1 + 1`\n`r 2 + 2`", { path: "paper.qmd" }).i
 assert.deepEqual(multiInline.map((item) => item.id), ["paper.qmd#inline-1-0", "paper.qmd#inline-2-0"]);
 const duplicateInlineSource = "Values: `r 1 + 1`, `r 1 + 1`.";
 const duplicateInline = parseQuarto(duplicateInlineSource, { path: "paper.qmd" }).inlineRecords;
-const duplicateDraft = composeDraft(duplicateInlineSource, {
-  path: "paper.qmd", currentContext: "context-1",
-  inlineValues: duplicateInline.map((item) => ({ ...item, context_sha256: "context-1", value: "2" })),
+const inlineDraft = composeDraft(inlineSource, {
+  path: "paper.qmd", inlineValues: duplicateInline.map((item) => ({ ...item, value: "2" })),
 });
-assert.equal((duplicateDraft.markdown.match(/quarto-inline-value/g) || []).length, 2);
-const capturedInline = composeDraft(inlineSource, {
-  path: "paper.qmd", currentContext: "context-1",
-  inlineValues: { [inline.id]: { id: inline.id, expression: inline.expression, line: inline.line, context_sha256: "context-1", value: "2" } },
-});
-assert.match(capturedInline.markdown, /quarto-inline-value[^>]*>2</);
-const staleInline = composeDraft(inlineSource, {
-  path: "paper.qmd", currentContext: "context-2",
-  inlineValues: { [inline.id]: { id: inline.id, expression: inline.expression, line: inline.line, context_sha256: "context-1", value: "2" } },
-});
-assert.match(staleInline.markdown, /`r 1 \+ 1`/);
+assert.match(inlineDraft.markdown, /`r 1 \+ 1`/);
+assert.doesNotMatch(inlineDraft.markdown, /quarto-inline-value/);
 const mappedTree = await virtualTree({ main: "main.qmd", texts: { "main.qmd": "---\ntitle: Map\n---\n\nProse line\n\n```{r}\nplot(1)\n```\n" } });
 const mappedDiagnostics = mapQuartoDiagnostics([
   { severity: "error", message: "prose", file: "main.md", line: 3, column: 1 },
@@ -164,10 +159,7 @@ assert.equal(mappedDiagnostics[1].generated, true);
 const incomplete = "---\ntitle: Still editing\n\n# Intro\n\nText";
 assert.match(composeDraft(incomplete).markdown, /Still editing/);
 assert.equal(parseQuarto(incomplete).diagnostics[0].severity, "warning");
-// Node has no inert HTML parser: snippets must remain escaped literal text.
-assert.doesNotMatch(safeFragment('<img src="x" onerror=alert(1)>'), /<img\b/);
-assert.doesNotMatch(safeFragment('<a href="javascript:alert(1)">x</a>'), /<a\b/);
-assert.doesNotMatch(safeFragment('<img src="//tracker.invalid/x.png">'), /<img\b/);
+assert.equal(escapeHtml('<img src="x">'), '&lt;img src=&quot;x&quot;&gt;');
 assert.equal(await contextId({ format: "html", profiles: ["default"], parameters: { seed: 1 } }), await contextId({ format: "html", profiles: ["default"], parameters: { seed: 1 } }));
 assert.notEqual(await contextId({ format: "html", parameters: { seed: 1 } }), await contextId({ format: "html", parameters: { seed: "1" } }), "parameter scalar types remain part of the selection identity");
 assert.notEqual(await contextId({ format: "html" }), await contextId({ format: "pdf" }));
@@ -178,28 +170,11 @@ assert.equal(request.quarto.binding_id, "binding-1");
 assert.throws(() => quartoRequest({ job: { binding: "x" }, entrypoint: "../paper.qmd" }));
 
 const original = "```{r}\nplot(x)\n```\n";
-const originalCell = parseQuarto(original).cells[0];
-const saved = { cells: [{ id:originalCell.id, source_path:"main.qmd", source_sha256:await cellFingerprint(originalCell), coverage:"captured", outputs:[{ kind:"text", text:"original result" }] }] };
 const inserted = "```{r}\nother()\n```\n" + original;
-const movedDraft = await virtualTree({ main:"main.qmd", texts:{"main.qmd":inserted,"main.md":"Companion source"} }, { bundle:saved });
+const movedDraft = await virtualTree({ main:"main.qmd", texts:{"main.qmd":inserted,"main.md":"Companion source"} });
 assert.equal(movedDraft.texts["main.md"], "Companion source");
-assert.match(movedDraft.quarto.markdown, /original result/);
-// The inserted cell has no matching saved output, so it renders verbatim
-// (fence lines included) ahead of the matched cell's saved output.
+// Every executable cell stays in the transient source draft.
 assert.match(movedDraft.quarto.markdown, /```\{r\}\nother\(\)\n```/);
-assert.ok(movedDraft.quarto.markdown.indexOf("other()") < movedDraft.quarto.markdown.indexOf("original result"));
-const duplicatedDraft = await virtualTree({ main:"main.qmd", texts:{"main.qmd":original+original} }, { bundle:saved });
-assert.doesNotMatch(duplicatedDraft.quarto.markdown, /original result/);
-const multiOutput = outputMarkup({ outputs: [
-  { kind:"image", url:"/a.png", caption:"Panel A" },
-  { kind:"image", url:"/b.png", caption:"Panel B" },
-] }, {}, { label:"fig-panels", options:{ "fig-cap":"Combined caption" } });
-assert.equal((multiOutput.match(/id="fig-panels"/g) || []).length, 1);
-assert.match(multiOutput, /Panel A/);
-assert.match(multiOutput, /Panel B/);
-assert.doesNotMatch(multiOutput, /Combined caption/);
-const editedCaption = outputMarkup({ outputs:[{ kind:"table", html:"<table></table>", caption:"Old caption" }] }, {}, { label:"tbl-summary", options:{ "tbl-cap":"Current caption" } });
-assert.match(editedCaption, /Current caption/);
-assert.doesNotMatch(editedCaption, /Old caption/);
-console.log("quarto: parser, draft, identity, protocol, and sanitizer scenarios passed");
+assert.match(movedDraft.quarto.markdown, /plot\(x\)/);
+console.log("quarto: parser, source-only draft, identity, and protocol scenarios passed");
 assert.doesNotMatch(composeDraft("{{< include hidden.qmd >}}", {expandIncludes:{"hidden.qmd":"```{r}\n#| include: false\nsecret_hidden_code()\n```\nVisible prose"}}).markdown, /secret_hidden_code/);

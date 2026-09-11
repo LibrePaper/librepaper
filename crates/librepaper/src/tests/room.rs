@@ -754,28 +754,21 @@ fn latex_main_path_is_tex_not_txt() {
 /// rendering bytes from the quota until the next checkpoint happens to
 /// recompute it.
 #[tokio::test]
-async fn persist_forgets_asset_and_rendering_charges() {
+async fn persist_keeps_input_asset_charges() {
     let (_dir, store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     room.put_asset(vec![1; 100000], (200000, 200000))
         .await
         .unwrap();
-    let sha = room.tree().await.digest();
-    room.put_rendering(&sha, false, vec![2; 100000])
-        .await
-        .unwrap();
-    assert!(store.get("probe").await.unwrap().size >= 200000);
+    assert!(store.get("probe").await.unwrap().size >= 100000);
     room.set_source("A changed", "markdown").await.unwrap();
     room.persist().await.unwrap();
     let charge = store.get("probe").await.unwrap().size;
     assert!(
-        charge >= 200000,
-        "persist must not drop stored asset/rendering bytes from the quota; recorded {charge}"
+        charge >= 100000,
+        "persist must not drop stored input asset bytes from the quota; recorded {charge}"
     );
-    assert_eq!(
-        room.assets_bytes().await + room.renderings_bytes().await,
-        200000
-    );
+    assert_eq!(room.assets_bytes().await, 100000);
     println!("persist keeps the full physical charge: recorded {charge}");
 }
 

@@ -220,7 +220,7 @@ async fn replacing_keeps_one_document_and_nothing_derived() {
         .instance
         .store
         .blobs
-        .list(&crate::storage::blob::rendering_prefix(&slug))
+        .list(&format!("content/{slug}/renderings/"))
         .await
         .unwrap();
     assert!(found.is_empty(), "a rendered version was kept: {found:?}");

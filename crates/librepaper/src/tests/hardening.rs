@@ -58,16 +58,24 @@ fn local_path_refuses_to_leave_the_site() {
 // The rate limiter counts against an address, so a header a direct client
 // can write must not be able to supply it.
 #[test]
-fn forwarded_for_is_only_believed_from_a_local_peer() {
+fn forwarded_for_is_only_believed_from_configured_proxies() {
     let mut headers = axum::http::HeaderMap::new();
     headers.insert("x-forwarded-for", "198.51.100.1".parse().unwrap());
     let remote = SocketAddr::new("203.0.113.7".parse::<IpAddr>().unwrap(), 5000);
-    assert_eq!(client_address(remote, &headers), "203.0.113.7");
+    assert_eq!(client_address(remote, &headers, &[]), "203.0.113.7");
 
     let mut headers = axum::http::HeaderMap::new();
     headers.insert("x-forwarded-for", "198.51.100.1, 10.0.0.3".parse().unwrap());
     let local = SocketAddr::new("127.0.0.1".parse::<IpAddr>().unwrap(), 5000);
-    assert_eq!(client_address(local, &headers), "198.51.100.1");
+    assert_eq!(client_address(local, &headers, &[]), "127.0.0.1");
+    assert_eq!(
+        client_address(
+            local,
+            &headers,
+            &["127.0.0.1/32".into(), "10.0.0.3/32".into()]
+        ),
+        "198.51.100.1"
+    );
 }
 
 // An index that exists but cannot be parsed is not an empty store: starting

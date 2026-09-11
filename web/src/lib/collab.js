@@ -353,41 +353,30 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
         digests[path] = sha;
         entries[path] = { kind: "asset", sha };
       }
-      // Compile settings ride in `meta` beside `main`, so they travel with
-      // the project rather than with this browser. Only written when an
-      // editor's browser has actually pinned one: a tree with neither key
-      // set omits `settings` entirely, which is what lets
+      // The selected engine rides in `meta` beside `main`, so it travels with
+      // the project rather than with this browser. A tree with no engine
+      // setting omits `settings` entirely, which is what lets
       // `tree-digest.js`/`history.rs` keep every existing checkpoint's sha.
       const engine = meta.get("latex.engine") || "";
-      const release = meta.get("latex.release") || "";
-      const settings = engine || release ? { engine, release } : undefined;
+      const settings = engine ? { engine } : undefined;
       return { main: this.mainPath(), texts, digests, files: entries, ...(settings ? { settings } : {}) };
     },
 
-    /// This project's LaTeX compile settings: the engine an editor picked
-    /// (or "auto", the default), and the browser release pinned for it, or
-    /// null before any editor's browser has compiled it. Shared with every
-    /// collaborator through `meta`, the same map `main` lives in.
+    /// This project's LaTeX compile setting: the engine an editor picked (or
+    /// "auto", the default). Shared with every collaborator through `meta`.
     latexSettings() {
       return {
         engine: meta.get("latex.engine") || "auto",
-        release: meta.get("latex.release") || null,
       };
     },
 
-    /// Changes the project's engine and/or pinned release. Only the keys
-    /// that actually change are written, so an editor picking the same
-    /// engine again does not touch `release`'s history. A reader never calls
-    /// this -- `mayEdit` refuses it the way every other write here does.
+    /// Changes the project's engine. A reader never calls this -- `mayEdit`
+    /// refuses it the way every other write here does.
     setLatexSettings(next) {
       if (!mayEdit) throw new Error("This project is read-only.");
       const current = this.latexSettings();
       if (next.engine !== undefined && next.engine !== current.engine) {
         meta.set("latex.engine", next.engine);
-      }
-      if (next.release !== undefined && next.release !== current.release) {
-        if (next.release) meta.set("latex.release", next.release);
-        else meta.delete("latex.release");
       }
     },
 

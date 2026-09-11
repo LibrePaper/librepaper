@@ -146,24 +146,26 @@ async fn listing_shows_only_your_own_uploads() {
     );
 }
 
-// Publishing without any sign-in still belongs to the browser that did it, so
-// one visitor's uploads are not listed to the next.
+// Publishing is an owner mutation and requires a provider-backed account;
+// visitor credentials never authorize an upload.
 #[tokio::test]
-async fn anonymous_visitors_do_not_see_each_other() {
+async fn anonymous_visitors_cannot_publish() {
     let server = test_server_with(
         Configuration::default(),
-        Policy::parse("anyone"),
+        Policy::parse("any"),
         Policy::parse("anyone"),
         true,
     )
     .await;
-    let mine = publish_with(&server.url, &visitor_as("alpha"), "First Paper", None).await;
-    let theirs = publish_with(&server.url, &visitor_as("beta"), "Second Paper", None).await;
-    let visible = slugs_visible_with(&server.url, &visitor_as("alpha")).await;
-    assert!(
-        visible.contains(&mine) && !visible.contains(&theirs),
-        "{visible:?}"
-    );
+    let (status, payload) = post_as(
+        &visitor_as("alpha"),
+        &server.url,
+        "/api/documents",
+        json!({"title": "First Paper", "html": "<p>first</p>"}),
+    )
+    .await;
+    assert_eq!(status, 401, "visitor publishing was accepted: {payload}");
+    assert_eq!(text(&payload, "error"), "sign in to publish");
 }
 
 // The shell is what hands a browser its name, so the first page load carries
@@ -197,12 +199,12 @@ async fn the_shell_names_a_new_browser() {
 async fn anonymous_visitor_cannot_delete_anothers_document() {
     let server = test_server_with(
         Configuration::default(),
-        Policy::parse("anyone"),
+        Policy::parse("any"),
         Policy::parse("anyone"),
         true,
     )
     .await;
-    let theirs = publish_with(&server.url, &visitor_as("beta"), "Second Paper", None).await;
+    let theirs = publish_as(&server.url, "beta", "Second Paper", None).await;
     let (status, payload) = post_as(
         &visitor_as("alpha"),
         &server.url,
@@ -210,10 +212,7 @@ async fn anonymous_visitor_cannot_delete_anothers_document() {
         json!(null),
     )
     .await;
-    assert_eq!(
-        status, 404,
-        "deleting another browser's document returned {status}: {payload}"
-    );
+    assert_eq!(status, 401, "visitor deletion returned {status}: {payload}");
     assert!(
         server.instance.store.get(&theirs).await.is_some(),
         "another browser's document was deleted"
@@ -223,31 +222,26 @@ async fn anonymous_visitor_cannot_delete_anothers_document() {
 // The CLI publishing to a deployment open to everyone carries no cookie and
 // no token, so its uploads belong to nobody and stay shared.
 #[tokio::test]
-async fn uploads_with_no_identity_stay_shared() {
+async fn anonymous_upload_requires_authentication() {
     let server = test_server_with(
         Configuration::default(),
-        Policy::parse("anyone"),
+        Policy::parse("any"),
         Policy::parse("anyone"),
         true,
     )
     .await;
-    let slug = publish_with(&server.url, "", "Command Line Paper", None).await;
-    let entry = server
-        .instance
-        .store
-        .get(&slug)
-        .await
-        .expect("the document");
-    assert!(
-        entry.publisher.is_empty(),
-        "an unidentified upload should own nothing: {entry:?}"
+    let (status, payload) = post_as(
+        "",
+        &server.url,
+        "/api/documents",
+        json!({"title": "Command Line Paper", "html": "<p>command line</p>"}),
+    )
+    .await;
+    assert_eq!(
+        status, 401,
+        "an unidentified upload was accepted: {payload}"
     );
-    assert!(
-        slugs_visible_with(&server.url, &visitor_as("alpha"))
-            .await
-            .contains(&slug),
-        "unowned documents stay shared"
-    );
+    assert_eq!(text(&payload, "error"), "sign in to publish");
 }
 
 #[tokio::test]

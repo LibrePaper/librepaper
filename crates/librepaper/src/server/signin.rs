@@ -217,7 +217,7 @@ impl Server {
                     // everyone and was started without any OAuth app.
                     [] => Some(plain(
                         404,
-                        "this deployment has no sign-in: everyone may read, comment and publish",
+                        "this deployment has no sign-in: reading and commenting remain available, but publishing requires Google or GitHub sign-in",
                     )),
                     // One provider is not a choice, so it is not offered as
                     // one.
@@ -398,7 +398,7 @@ impl Server {
                                 "handle": "",
                                 "name": "",
                                 "picture": "",
-                                "can_publish": self.publishers.allows(""),
+                                "can_publish": false,
                                 "can_comment": self.commenters.allows(""),
                                 "comments_need_login": !self.commenters.public,
                                 "providers": self.providers(),
@@ -424,7 +424,9 @@ impl Server {
                         // from: the provider's URL, loaded by a page that
                         // sends no referrer, and told to nobody else.
                         "picture": id.picture_url(),
-                        "can_publish": self.publishers.allows(&id.handle),
+                        "can_publish": id.is_signed_in()
+                            && self.provider_configured(&id)
+                            && self.publishers.allows(&id.handle),
                         "can_comment": self.commenters.allows(&id.handle),
                         "comments_need_login": !self.commenters.public,
                         // A wholly public deployment has no OAuth app at all,
@@ -454,27 +456,8 @@ impl Server {
                     // the compiler warned about. The index itself is at
                     // `/api/fonts/index.json`.
                     fields.insert("fonts".to_string(), json!(self.fonts.is_some()));
-                    // Whether this deployment serves LaTeX distributions at
-                    // all, which is what tells the reader to offer the card
-                    // rather than "not yet rendered". Only whether, never
-                    // where: the mirror may be a bucket whose URL is the
-                    // operator's business, and the browser has no use for it --
-                    // it fetches `/latex/`, on this origin, and nothing else.
                     fields.insert("latex".to_string(), json!(self.latex.is_some()));
-                    // Where the browser bibliography VM's descriptor lives,
-                    // or null when this deployment offers none: the VM is
-                    // LibrePaper's own artefact and is no longer named by the
-                    // LaTeX mirror's release entries, so this is the only
-                    // way `vm.js` learns where to fetch `vm.json` from and
-                    // what to verify it against (see
-                    // `crate::server::latex::BiberVm`).
-                    fields.insert(
-                        "biberVm".to_string(),
-                        match &self.biber_vm {
-                            Some(vm) => json!({"url": vm.url, "sha256": vm.sha256}),
-                            None => Value::Null,
-                        },
-                    );
+                    fields.insert("latexMirror".to_string(), json!(self.latex));
                     // Where the local bridge listens, so the browser knows
                     // what to probe without guessing a port. The address is
                     // fixed; the local app's own pairing decides whether this

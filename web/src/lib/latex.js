@@ -1,11 +1,10 @@
-// LaTeX, compiled in this browser, with local and Biber-VM fallbacks.
+// LaTeX, compiled in this browser, with the local companion as fallback.
 //
 // This controller owns exactly
 // one module worker running the browser engine, speaks the worker message protocol to it,
 // and decides -- through `latex/route.js`'s pure state machine -- when a
 // Biber request or a browser failure should instead go to the author's local
-// LibrePaper app or, failing that, to a Biber-only virtual machine in the
-// browser. `latex/jobs.js` gives every compile its identity, `latex/
+// LibrePaper app. `latex/jobs.js` gives every compile its identity, `latex/
 // bibliography.js` reads the real aux/bcf/log a pass produced rather than
 // guessing from source text, and `latex/status.js` is the store the reader's
 // badge subscribes to.
@@ -19,13 +18,11 @@
 //     generation is older than the newest one already resolved must never
 //     become `status().lastResult` -- an edit made and then undone within a
 //     debounce window must not flicker the preview backwards.
-//   - The VM is a last resort for bibliography work only. It is imported
-//     with a dynamic `import()` inside the one function that can reach it,
-//     so that a document that never needs Biber never causes so much as a
-//     module fetch for it, let alone a download of its guest image.
+//   - A browser Biber infrastructure failure may use the local companion,
+//     while an input error is reported immediately and is never retried.
 //
-// `latex/local.js`, `latex/vm.js` and `latex/worker.js` belong to the
-// packages building the engine adapter and the local/VM bridge clients
+// `latex/local.js` and `latex/worker.js` belong to the
+// packages building the engine adapter and local bridge client
 // alongside this one. Every reference to the first two goes through a
 // dynamic `import()`, and the worker through a constructor tests can
 // replace, precisely so this file loaded and its own checks ran even before
@@ -46,7 +43,7 @@ const route = {
   ...routeMod,
   decide(event, state) {
     const decision = routeMod.decide(event, state);
-    trace("route", event.type, "->", decision.action, decision.failure ? decision.failure.kind : "", event.message ? JSON.stringify(String(event.message).slice(0, 200)) : "", event.vmSupported === undefined ? "" : `vm=${event.vmSupported}`, event.validBcf === undefined ? "" : `bcf=${event.validBcf}`);
+    trace("route", event.type, "->", decision.action, decision.failure ? decision.failure.kind : "", event.message ? JSON.stringify(String(event.message).slice(0, 200)) : "", event.validBcf === undefined ? "" : `bcf=${event.validBcf}`);
     return decision;
   },
 };
@@ -58,7 +55,7 @@ import { maybeBytes as toBytes } from "./bytes.js";
 import { named } from "./latex/errors.js";
 
 export const DEBOUNCE = 1500;
-export const DEFAULT_BASE = "/latex/";
+export const DEFAULT_BASE = "https://latex.librepaper.workers.dev/";
 
 /// The whole job's time budget and the bounded pass count SPEC "Browser
 /// compilation controller" asks for. Both are exceeded as a reported
@@ -72,10 +69,9 @@ let base = DEFAULT_BASE;
 // Swappable seams. Production leaves every one of these at its default; only
 // `_testing.inject` (used by `latex-controller.mjs`) ever changes them, which
 // is what lets this file's own logic run under Node with no worker, no
-// network and no real local app or VM anywhere in reach.
+// network and no real local app anywhere in reach.
 let WorkerClass = typeof Worker !== "undefined" ? Worker : null;
 let localOverride; // undefined = try the real module; anything else, including null, is used as-is
-let vmOverride;
 let biberOverride;
 let biberModule;
 let resourcesOverride;
@@ -86,7 +82,7 @@ let manifest = null;
 let manifestPromise = null;
 
 let currentProject = null;
-let currentSettings = { engine: "auto", release: null };
+let currentSettings = { engine: "auto" };
 
 // The live worker and its RPC bookkeeping. `configuredRelease` is the
 // release id the worker last accepted a `configure` for; a different release
@@ -111,8 +107,7 @@ let newestResolvedGeneration = -1;
 
 // Routing and bibliography state persist for the whole session (SPEC:
 // "keep that project on the native route for the current editing session";
-// "Reuse a warm VM and valid bibliography results so prose edits incur no
-// [re]execution"). `bibCache` is keyed by `bibliography.identity()`'s hash,
+// `bibCache` is keyed by `bibliography.identity()`'s hash,
 // so a citation, database or style change simply misses it rather than
 // needing an explicit invalidation path.
 let routeState = route.initialState({});
@@ -147,8 +142,7 @@ function supersededError() {
   return named("Superseded", "Superseded");
 }
 
-/// Points this module at a mirror. Called once, by whatever knows the
-/// deployment's `--latex`; the tests call it with a local one.
+/// Points this module at the direct HTTPS mirror advertised by `/api/config`.
 export function at(url) {
   if (url && url !== base) {
     base = url.endsWith("/") ? url : url + "/";
@@ -191,41 +185,14 @@ async function loadManifest() {
   }
 }
 
-let deploymentConfig = null;
-let deploymentConfigPromise = null;
-
-/// `/api/config`'s `biberVm` field: the browser bibliography VM's own
-/// descriptor URL and the sha256 `vm.js` verifies it against, or `null` when
-/// this deployment offers none (`--biber-vm` was not passed). The VM is
-/// LibrePaper's own artefact, hosted separately from the LaTeX mirror, so it
-/// is no longer named by `release.vm` -- fetched at most once per page load,
-/// and only from the one path that ever reaches for it (`runBibliography`'s
-/// "try-vm" branch), so a document that never needs Biber never causes this
-/// request either.
-async function loadBiberVm() {
-  if (deploymentConfig) return deploymentConfig.biberVm ?? null;
-  if (!deploymentConfigPromise) {
-    deploymentConfigPromise = fetchImpl("/api/config").then(async (response) => {
-      if (!response.ok) throw new Error(`/api/config fetch failed: ${response.status}`);
-      deploymentConfig = await response.json();
-      return deploymentConfig;
-    });
-  }
-  try {
-    const config = await deploymentConfigPromise;
-    return config.biberVm ?? null;
-  } finally {
-    if (!deploymentConfig) deploymentConfigPromise = null;
-  }
-}
-
 /// Called by the reader when a document opens. Resets the queue, the
 /// session route and every per-project cache when the project itself
 /// changes; a settings-only reconfigure of the same project is `setSettings`.
 export function configure({ project, settings: nextSettings, mayCompile = true } = {}) {
   const changedProject = project !== currentProject;
   currentProject = project;
-  currentSettings = { engine: "auto", release: null, ...(nextSettings || {}) };
+  currentSettings = { engine: "auto", ...(nextSettings || {}) };
+  delete currentSettings.release;
   if (changedProject) {
     cancel();
     jobGeneration = 0;
@@ -237,7 +204,7 @@ export function configure({ project, settings: nextSettings, mayCompile = true }
   statusStore.set({
     phase: "idle",
     engine: currentSettings.engine === "auto" ? null : currentSettings.engine,
-    release: currentSettings.release,
+    release: null,
     route: routeState.route,
   });
   // The local bridge scopes its pairing to (origin, project), so it learns
@@ -253,12 +220,11 @@ export function settings() {
   return currentSettings;
 }
 
-/// An engine/release change. SPEC: a compile settings change must not let an
-/// artifact identified only by unchanged source text be reused across it, so
-/// this clears the bibliography cache and starts a fresh routing session
-/// (native/VM attempt budgets included) rather than trying to reconcile them.
+/// An engine change clears the bibliography cache and starts a fresh routing
+/// session rather than trying to reconcile artifacts across toolchains.
 export function setSettings(next) {
   currentSettings = { ...currentSettings, ...next };
+  delete currentSettings.release;
   routeState = route.initialState({});
   bibCache.clear();
   lastStaged = null;
@@ -267,7 +233,7 @@ export function setSettings(next) {
   statusStore.set({
     route: "browser",
     engine: currentSettings.engine === "auto" ? null : currentSettings.engine,
-    release: currentSettings.release,
+    release: null,
   });
 }
 
@@ -275,7 +241,7 @@ export async function releases() {
   const data = await loadManifest();
   return {
     default: data.default_release,
-    current: currentSettings.release || data.default_release,
+    current: data.default_release,
     available: Object.entries(data.releases || {}).map(([id, entry]) => ({
       id,
       texlive: entry.texlive,
@@ -290,7 +256,7 @@ export async function releases() {
 // Section 2.3's algorithm now lives in `latex/engine.js` (package B1); this
 // is a one-line delegation. `engine.js` is a pure, dependency-free module
 // (no imports of its own), so importing it statically here carries none of
-// the "must load before the file exists" risk the worker/local/vm/resources
+// the "must load before the file exists" risk the worker/local/resources
 // modules do -- it is safe to load unconditionally.
 export function resolveEngine(tree, settingsArg = currentSettings) {
   return engineMod.resolveEngine(tree, settingsArg);
@@ -402,8 +368,8 @@ async function ensureWorker(releaseEntry, manifestFormat) {
   attachHandlers(target);
   worker = target;
   // The worker resolves every engine and package URL against this, and a
-  // worker has no page to resolve a relative "/latex/" from: it gets the
-  // absolute form, as the mirror check hands it one.
+  // The worker receives the configured absolute mirror URL, so all manifest
+  // paths resolve against the direct mirror rather than an app route.
   await call(target, "configure", { base: absoluteBase(), release: releaseEntry, format: manifestFormat });
   configuredRelease = releaseEntry.id;
   return target;
@@ -415,7 +381,7 @@ function classifyWorkerError(error, fallbackKind) {
   return error?.name === "WorkerDied" ? "init" : fallbackKind;
 }
 
-// --- Backend seams (local LibrePaper, the Biber VM)
+// --- Backend seams (local LibrePaper, browser Biber)
 // ----------------------------
 
 async function getLocal() {
@@ -423,16 +389,6 @@ async function getLocal() {
   try {
     return await import("./latex/local.js");
   } catch {
-    return null;
-  }
-}
-
-async function getVm() {
-  if (vmOverride !== undefined) return vmOverride;
-  try {
-    return await import("./latex/vm.js");
-  } catch (error) {
-    trace("vm import failed", String(error?.message || error));
     return null;
   }
 }
@@ -513,31 +469,6 @@ function buildResult({ job, attempts, startedAt, ok, pdf = null, synctex = null,
 /// Drives `route.js`'s state machine for one bibliography requirement, from
 /// the initial `biber-needed` decision through every follow-up event a real
 /// attempt's outcome produces, until it either has a `BiberResult` or a
-/// terminal `stop`/`show-browser` failure. This is the one place `latex/
-/// local.js` and `latex/vm.js` are ever reached from a Biber-needed path.
-async function vmEligibility() {
-  // Importing `latex/vm.js` at all is deferred to exactly this call, and
-  // this call happens only from inside `runBibliography` -- itself reached
-  // only once a browser pass has already produced a usable bcf/aux and
-  // something (local unreachable, tool missing, incompatible) has made the
-  // VM a candidate. An ordinary successful browser-only document never runs
-  // this function at all, let alone this line (SPEC: "a successful
-  // browser-only document must never download or start it").
-  const vm = await getVm();
-  if (!vm) {
-    trace("vm module unavailable");
-    return false;
-  }
-  try {
-    const answer = vm.supported?.();
-    trace("vm supported", JSON.stringify(answer));
-    return Boolean(answer?.ok);
-  } catch (error) {
-    trace("vm supported threw", String(error?.message || error));
-    return false;
-  }
-}
-
 async function runBibliography({ request, attempts, engine, release, token }) {
   if (release?.engines?.biber) {
     statusStore.set({ phase: "browser-biber", message: "Updating bibliography in browser", backend: "browser" });
@@ -561,7 +492,7 @@ async function runBibliography({ request, attempts, engine, release, token }) {
   }
   routeState = { ...routeState, snapshot: request.job.snapshot };
   let decision = route.decide(
-    { type: "biber-needed", identity: request.identity, validBcf: Boolean(request.bcf), vmSupported: await vmEligibility() },
+    { type: "biber-needed", identity: request.identity, validBcf: Boolean(request.bcf) },
     routeState,
   );
   routeState = decision.state;
@@ -577,7 +508,6 @@ async function runBibliography({ request, attempts, engine, release, token }) {
             identity: request.identity,
             validBcf: Boolean(request.bcf),
             onlyBibliography: true,
-            vmSupported: await vmEligibility(),
           },
           routeState,
         );
@@ -596,7 +526,6 @@ async function runBibliography({ request, attempts, engine, release, token }) {
             validBcf: Boolean(request.bcf),
             onlyBibliography: true,
             message: error?.message,
-            vmSupported: await vmEligibility(),
           },
           routeState,
         );
@@ -618,7 +547,6 @@ async function runBibliography({ request, attempts, engine, release, token }) {
             validBcf: Boolean(request.bcf),
             localTexAvailable,
             message: outcome.error,
-            vmSupported: await vmEligibility(),
           },
           routeState,
         );
@@ -631,43 +559,6 @@ async function runBibliography({ request, attempts, engine, release, token }) {
         continue;
       }
       attempts.push({ stage: "local-biber", backend: "local", ok: true, log: outcome.blg || "", tool: outcome.tool?.version });
-      return { ok: true, result: outcome };
-    }
-
-    if (decision.action === "try-vm") {
-      statusStore.set({ phase: "vm-preparing", message: "Preparing browser bibliography support", backend: "vm", progress: null });
-      const vm = await getVm();
-      if (!vm) {
-        decision = route.decide({ type: "vm-unavailable", message: "Browser bibliography support is unavailable" }, routeState);
-        routeState = decision.state;
-        continue;
-      }
-      let outcome;
-      try {
-        // The VM is LibrePaper's own artefact, hosted separately from the
-        // LaTeX mirror -- `release.vm` no longer names it -- so where it is
-        // comes from this deployment's own `/api/config` rather than the
-        // manifest.
-        const biberVm = await loadBiberVm();
-        if (!biberVm) {
-          decision = route.decide({ type: "vm-unavailable", message: "no bibliography VM is configured" }, routeState);
-          routeState = decision.state;
-          continue;
-        }
-        await vm.prepare(biberVm, (progress) => statusStore.set({ progress }));
-        statusStore.set({ phase: "vm-biber", message: "Updating bibliography in browser", backend: "vm", progress: null });
-        outcome = await vm.runBiber(request, {});
-      } catch (error) {
-        decision = route.decide({ type: "vm-unavailable", message: String(error?.message || error) }, routeState);
-        routeState = decision.state;
-        continue;
-      }
-      if (!outcome.ok) {
-        decision = route.decide({ type: "vm-failed", message: outcome.error || "Biber failed" }, routeState);
-        routeState = decision.state;
-        continue;
-      }
-      attempts.push({ stage: "vm-biber", backend: "vm", ok: true, log: outcome.blg || "", tool: outcome.tool?.version });
       return { ok: true, result: outcome };
     }
 
@@ -819,7 +710,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       tree,
       inputs,
       engine,
-      release: currentSettings.release || "unknown",
+      release: manifestData?.default_release || "unknown",
     });
     return buildResult({
       job,
@@ -827,12 +718,12 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       startedAt,
       ok: false,
       failure: { kind: "resources", message: String(error?.message || error), stage: "browser" },
-      provenance: baseProvenance(engine, currentSettings.release || null),
+      provenance: baseProvenance(engine, null),
     });
   }
   checkpoint();
 
-  const releaseId = currentSettings.release || manifestData.default_release;
+  const releaseId = manifestData.default_release;
   const inputs = await snapshotDigest(tree);
   const job = await jobsMod.makeJob({ project: currentProject, generation: generationAtStart, tree, inputs, engine, release: releaseId });
   checkpoint();
@@ -842,7 +733,6 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
   const releaseEntry = manifestData.releases?.[releaseId];
   if (!releaseEntry) {
-    const retained = Object.keys(manifestData.releases || {}).join(", ") || "none retained";
     return buildResult({
       job,
       attempts,
@@ -851,8 +741,8 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       failure: {
         kind: "resources",
         message: releaseId
-          ? `LaTeX release "${releaseId}" is not available in this deployment's mirror. Retained releases: ${retained}.`
-          : "This deployment's LaTeX mirror has no default engine release. The operator must build and deploy the mirror from the wasm-latex repository (make mirror, then make push there), or point --latex at a working one.",
+          ? `LaTeX release "${releaseId}" is not available in this deployment's mirror.`
+          : "This deployment's LaTeX mirror has no default engine release. The operator must build and deploy the mirror from the wasm-latex repository (make mirror, then make push there), or configure a working --latex-mirror.",
         stage: "browser",
       },
       provenance: baseProvenance(engine, releaseId),
@@ -1004,7 +894,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
       let bibResult = bibCache.get(identity) || null;
       if (bibResult) {
-        bibliographyProvenance = kind === "biber" ? (bibResult.tool?.backend === "browser" ? "browser-biber" : bibResult.tool?.backend === "vm" ? "vm-biber" : "local-biber") : "bibtex";
+        bibliographyProvenance = kind === "biber" ? (bibResult.tool?.backend === "browser" ? "browser-biber" : "local-biber") : "bibtex";
         if (bibResult.tool?.version) bibliographyTools = { ...bibliographyTools, biber: bibResult.tool.version };
       } else if (useBiber) {
         const request = { job, stem, main: tree.main, bcf: controlBytes, files, identity };
@@ -1030,7 +920,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         }
         bibResult = routed.result;
         bibCache.set(identity, bibResult);
-        bibliographyProvenance = bibResult.tool?.backend === "browser" ? "browser-biber" : bibResult.tool?.backend === "vm" ? "vm-biber" : "local-biber";
+        bibliographyProvenance = bibResult.tool?.backend === "browser" ? "browser-biber" : "local-biber";
         if (bibResult.tool?.version) bibliographyTools = { ...bibliographyTools, biber: bibResult.tool.version };
       } else {
         let reply2;
@@ -1253,34 +1143,29 @@ export const resources = {
 };
 
 /// Test-only injection. Every field is optional; passing `null` for `local`
-/// or `vm` explicitly simulates "checked and unavailable" rather than
+/// explicitly simulates "checked and unavailable" rather than
 /// "not yet checked", which the real dynamic import cannot distinguish from
 /// outside. Not part of the public contract -- `latex-controller.mjs` is the
 /// only caller.
 export const _testing = {
-  inject({ worker: WorkerOverride, local: localModule, vm: vmModule, biber: browserBiberModule, resources: resourcesModule, fetch: fetchOverride, now } = {}) {
+  inject({ worker: WorkerOverride, local: localModule, biber: browserBiberModule, resources: resourcesModule, fetch: fetchOverride, now } = {}) {
     if (WorkerOverride !== undefined) WorkerClass = WorkerOverride;
     if (localModule !== undefined) localOverride = localModule;
-    if (vmModule !== undefined) vmOverride = vmModule;
     if (browserBiberModule !== undefined) biberOverride = browserBiberModule;
     if (resourcesModule !== undefined) resourcesOverride = resourcesModule;
     if (fetchOverride !== undefined) {
       fetchImpl = fetchOverride;
       // A new fetch means a check is simulating a different deployment;
-      // `manifest.json` and `/api/config` are cached for the module's whole
-      // lifetime otherwise (SPEC: fetched at most once per page load), which
-      // would leak one scenario's manifest or `biberVm` into the next.
+      // `manifest.json` is cached for the module's whole lifetime otherwise,
+      // which would leak one scenario's manifest into the next.
       manifest = null;
       manifestPromise = null;
-      deploymentConfig = null;
-      deploymentConfigPromise = null;
     }
     if (now !== undefined) nowImpl = now;
   },
   reset() {
     WorkerClass = typeof Worker !== "undefined" ? Worker : null;
     localOverride = undefined;
-    vmOverride = undefined;
     biberOverride = undefined;
     biberModule?.cancel();
     biberModule = undefined;
@@ -1289,7 +1174,5 @@ export const _testing = {
     nowImpl = () => Date.now();
     manifest = null;
     manifestPromise = null;
-    deploymentConfig = null;
-    deploymentConfigPromise = null;
   },
 };

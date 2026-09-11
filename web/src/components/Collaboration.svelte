@@ -6,12 +6,12 @@
     messages = [], connected = false, canPost = false, onsend,
     comments = [], figureAt = [], identity = "", commentingAs = "Anonymous",
     canModerate = false, canComment = true, tool = "commenting", hasFigures = false,
-    went = {}, replacements = {}, ontool, onreveal, oninspectresult, onresolve, ondelete,
+    went = {}, replacements = {}, ontool, onreveal, onresolve, ondelete,
     ondeletemany, onreply, onaccept, onreject, onrejectconfirmed, pending,
     unreadChat = false, selected = "", tab = $bindable("comments"),
   } = $props();
   const common = () => ({ figureAt, identity, commentingAs, canModerate, canComment, tool,
-    hasFigures, went, replacements, ontool, onreveal, oninspectresult, onresolve, ondelete, ondeletemany,
+    hasFigures, went, replacements, ontool, onreveal, onresolve, ondelete, ondeletemany,
     onreply, onaccept, onreject, onrejectconfirmed, pending, selected });
 </script>
 

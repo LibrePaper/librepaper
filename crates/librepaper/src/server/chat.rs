@@ -12,12 +12,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
-use tokio::sync::{mpsc, oneshot, Mutex};
+#[cfg(test)]
+use tokio::sync::mpsc;
+use tokio::sync::{oneshot, Mutex};
 
 const CHANNEL_SECONDS: i64 = 60 * 60;
 const MAX_CONTEXT: usize = 16 * 1024;
 const MAX_EVENT_TEXT: usize = 32 * 1024;
 const MAX_ID: usize = 128;
+
+async fn send_chat_error(server: &Server, socket: &mut WebSocket, value: Value) -> bool {
+    let text = value.to_string();
+    if !server
+        .cost
+        .socket_bytes(text.len().saturating_add(2), false)
+    {
+        return false;
+    }
+    socket.send(WsMessage::Text(text.into())).await.is_ok()
+}
 
 // Lease issuance is asynchronous while Hub::attach holds only its channel
 // lock. Serialize the short attach-plus-issue critical section so concurrent
@@ -33,6 +46,7 @@ impl Server {
     pub(super) async fn handle_chat_socket(
         self: Arc<Self>,
         request: Request<Body>,
+        peer: SocketAddr,
         arrival: &Arrival,
         slug: &str,
         id: &str,
@@ -56,8 +70,11 @@ impl Server {
         if !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
+        let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
         let connection = Connection {
             slug: slug.into(),
+            network: client_network(&address),
+            principal: who.id.id.clone(),
             headers,
             arrival: arrival.clone(),
             query,
@@ -66,7 +83,7 @@ impl Server {
             link: who.link,
             comment_budget: who.comment_budget,
             chat: Some(id.into()),
-            tx: mpsc::channel(1).0,
+            tx: Sender::channel(1, 64 * 1024, None, None).0,
         };
         let (mut parts, _) = request.into_parts();
         let upgrade = match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
@@ -91,19 +108,37 @@ impl Server {
             || join.token.is_empty()
             || !matches!(join.role.as_str(), "user" | "agent")
         {
-            let _ = socket
-                .send(WsMessage::Text(
-                    json!({"type":"error","status":400,"message":"invalid join"})
-                        .to_string()
-                        .into(),
-                ))
-                .await;
+            let _ = send_chat_error(
+                self,
+                &mut socket,
+                json!({"type":"error","status":400,"message":"invalid join"}),
+            )
+            .await;
             return;
         }
         let id = connection.chat.clone().unwrap_or_default();
         let slug = connection.slug.clone();
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
-        let (tx, mut rx) = mpsc::channel(128);
+        let _socket_permit = match self.socket_budget.admit(
+            socket_id,
+            crate::server::socket_budget::SocketIdentity {
+                network: connection.network.clone(),
+                principal: connection.principal.clone(),
+                document: slug.clone(),
+            },
+        ) {
+            Ok(permit) => permit,
+            Err(reason) => {
+                let _ = send_chat_error(self, &mut socket, json!({"type":"error","status":429,"message":format!("live socket limit reached ({})", reason.scope())})).await;
+                return;
+            }
+        };
+        let (tx, mut rx) = Sender::channel(
+            self.config.session.peer_queue,
+            self.config.session.peer_queue.saturating_mul(64 * 1024),
+            Some(self.queue_metric()),
+            Some(self.queue_admission()),
+        );
         connection.tx = tx.clone();
         self.connections.lock().await.insert(socket_id, connection);
         let lease_admission = if join.role == "agent" {
@@ -119,13 +154,12 @@ impl Server {
             Ok(ready) => ready,
             Err((status, message)) => {
                 self.connections.lock().await.remove(&socket_id);
-                let _ = socket
-                    .send(WsMessage::Text(
-                        json!({"type":"error","status":status,"message":message})
-                            .to_string()
-                            .into(),
-                    ))
-                    .await;
+                let _ = send_chat_error(
+                    self,
+                    &mut socket,
+                    json!({"type":"error","status":status,"message":message}),
+                )
+                .await;
                 return;
             }
         };
@@ -174,6 +208,7 @@ impl Server {
                     let raw = match frame { Some(Ok(WsMessage::Text(text))) => text, Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break, _ => continue };
                     let Ok(value) = serde_json::from_str::<Value>(&raw) else { continue; };
                     if !self.reauthorize_connection(&slug, socket_id).await || !self.chat.attached(&id, socket_id).await { break; }
+                    last_frame = tokio::time::Instant::now();
                     if let Some(recipient) = self.chat.recipient_socket(&id, &join.role).await {
                         let _ = self.reauthorize_connection(&slug, recipient).await;
                     }
@@ -184,11 +219,16 @@ impl Server {
                 }
                 outgoing = rx.recv() => {
                     if !self.chat.attached(&id, socket_id).await { break; }
-                    let (frame, close) = match outgoing { Some(Outgoing::Text(text)) => (WsMessage::Text(text.into()), false), Some(Outgoing::Close(reason)) => (WsMessage::Close(Some(axum::extract::ws::CloseFrame { code: 1000, reason: reason.into() })), true), None => break };
-                    if !matches!(tokio::time::timeout(Duration::from_secs(5), socket.send(frame)).await, Ok(Ok(()))) || close { break; }
+                    let Some(queued) = outgoing else { break; };
+                    let durability = queued.durability();
+                    let (outgoing, _queue_reservation) = queued.into_parts();
+                    if !self.cost.socket_bytes(outgoing.bytes(), durability) { break; }
+                    let (frame, close) = match outgoing { Outgoing::Text(text) => (WsMessage::Text(text.into()), false), Outgoing::Close(reason) => (WsMessage::Close(Some(axum::extract::ws::CloseFrame { code: 1000, reason: reason.into() })), true) };
+                    let sent = matches!(tokio::time::timeout(Duration::from_secs(5), socket.send(frame)).await, Ok(Ok(())));
+                    if !sent || close { break; }
                 }
                 _ = housekeeping.tick() => {
-                    if !self.chat.attached(&id, socket_id).await || last_frame.elapsed() > Duration::from_secs(30) { break; }
+                    if !self.chat.attached(&id, socket_id).await || last_frame.elapsed() > Duration::from_secs(self.socket_budget.policy.idle_seconds) { break; }
                     if let Some(epoch) = &execution_epoch {
                         if let Some(catalog) = &self.store.catalog {
                             let slug_for_lease = slug.clone();
@@ -231,12 +271,15 @@ impl Server {
     pub(super) async fn handle_chat(
         self: Arc<Self>,
         request: Request<Body>,
+        peer: SocketAddr,
         arrival: &Arrival,
         slug: &str,
         tail: &[&str],
     ) -> Reply {
         if let [id, "socket"] = tail {
-            return self.handle_chat_socket(request, arrival, slug, id).await;
+            return self
+                .handle_chat_socket(request, peer, arrival, slug, id)
+                .await;
         }
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error":"bad slug"}));
@@ -421,7 +464,7 @@ struct Channel {
 }
 struct Peer {
     socket: u64,
-    tx: mpsc::Sender<Outgoing>,
+    tx: Sender,
 }
 pub type Error = (u16, &'static str);
 
@@ -476,15 +519,16 @@ impl Hub {
         );
         Ok(json!({"id":id,"token":token,"ephemeral":true}))
     }
-    pub async fn attach(
+    pub async fn attach<T: Into<Sender>>(
         &self,
         slug: &str,
         id: &str,
         token: &str,
         role: &str,
         socket: u64,
-        tx: mpsc::Sender<Outgoing>,
+        tx: T,
     ) -> Result<Value, Error> {
+        let tx = tx.into();
         let mut channels = self.channels.lock().await;
         let channel = channels
             .get_mut(id)
@@ -945,14 +989,8 @@ impl Hub {
             _ => None,
         }
         .ok_or((409, "recipient is not connected"))?;
-        let recipient_slot = recipient
-            .tx
-            .try_reserve()
-            .map_err(|_| (409, "recipient cannot receive events"))?;
-        let sender_slot = sender
-            .tx
-            .try_reserve()
-            .map_err(|_| (409, "sender cannot receive events"))?;
+        let recipient_tx = recipient.tx.clone();
+        let sender_tx = sender.tx.clone();
         if frame["type"].as_str() == Some("task") {
             if let Some(sequence) = frame.get("seq").and_then(Value::as_u64) {
                 let task_id = frame["task_id"].as_str().unwrap_or_default();
@@ -979,8 +1017,12 @@ impl Hub {
             }
         }
         let text = frame.to_string();
-        recipient_slot.send(Outgoing::Text(text.clone()));
-        sender_slot.send(Outgoing::Text(text));
+        if recipient_tx.try_send(Outgoing::Text(text.clone())).is_err() {
+            return Err((409, "recipient cannot receive events"));
+        }
+        if sender_tx.try_send(Outgoing::Text(text)).is_err() {
+            return Err((409, "sender cannot receive events"));
+        }
         channel.requests.push_back((key, digest));
         channel.events.push_back(current);
         if channel.requests.len() > 256 {

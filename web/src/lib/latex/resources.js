@@ -38,6 +38,16 @@ export function namespace(release) {
   return `${PREFIX}${digest.slice(0, 16)}`;
 }
 
+function requiredMetadata({ sha256, size } = {}) {
+  if (typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) {
+    throw new Error("manifest metadata must include a valid sha256 digest");
+  }
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new Error("manifest metadata must include a non-negative size");
+  }
+  return { sha256, size };
+}
+
 async function openStore(release) {
   if (!globalThis.caches?.open) return null;
   return caches.open(namespace(release)).catch(() => null);
@@ -51,13 +61,14 @@ async function openStore(release) {
 /// non-2xx response throws and is never written to the cache: a transient
 /// failure must not become a permanent "this file does not exist" entry.
 export async function fetchVerified(release, url, { sha256, size, signal } = {}) {
+  ({ sha256, size } = requiredMetadata({ sha256, size }));
   const store = await openStore(release);
   if (store) {
     const hit = await store.match(url).catch(() => null);
     if (hit) {
       const bytes = new Uint8Array(await hit.clone().arrayBuffer());
-      const sizeOk = !(typeof size === "number" && size > 0) || bytes.length === size;
-      const shaOk = !sha256 || (await sha256Hex(bytes)) === sha256;
+      const sizeOk = bytes.length === size;
+      const shaOk = (await sha256Hex(bytes)) === sha256;
       if (sizeOk && shaOk) return hit;
       // Corrupt or stale: discard and fall through to a real fetch.
       await store.delete(url).catch(() => {});
@@ -68,11 +79,12 @@ export async function fetchVerified(release, url, { sha256, size, signal } = {})
     throw new Error(`fetch ${url} failed: ${response.status}`);
   }
   const bytes = new Uint8Array(await response.clone().arrayBuffer());
-  if (sha256) {
-    const actual = await sha256Hex(bytes);
-    if (actual !== sha256) {
-      throw new Error(`fetch ${url} failed sha256 verification (expected ${sha256}, got ${actual})`);
-    }
+  if (bytes.length !== size) {
+    throw new Error(`fetch ${url} failed size verification (expected ${size}, got ${bytes.length})`);
+  }
+  const actual = await sha256Hex(bytes);
+  if (actual !== sha256) {
+    throw new Error(`fetch ${url} failed sha256 verification (expected ${sha256}, got ${actual})`);
   }
   const stored = new Response(bytes, { headers: { "content-length": String(bytes.length) } });
   if (store) {
@@ -136,9 +148,7 @@ export async function size() {
   return total;
 }
 
-/// Deletes every `librepaper-latex-*` cache -- which includes the biber VM's
-/// static resources, namespaced under the same prefix by convention (see
-/// `vm.js`) -- and never touches anything else: a project's rendered pages
+/// Deletes every `librepaper-latex-*` cache and never touches anything else: a project's rendered pages
 /// live in the plain `librepaper` cache from `cache.js`, a different name
 /// entirely, so clearing compiler resources can never delete source
 /// documents.

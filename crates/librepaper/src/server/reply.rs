@@ -34,26 +34,177 @@ pub fn local_path(next: &str) -> String {
     target
 }
 
-/// What the rate limiter counts against. Behind a reverse proxy the peer is
-/// the proxy, so the first X-Forwarded-For entry is the client -- but only a
-/// peer that could be that proxy is believed. A header from a direct client
-/// is its own invention, and honouring it would let one address claim a fresh
-/// identity for every comment and never be limited.
-pub fn client_address(peer: SocketAddr, headers: &HeaderMap) -> String {
-    let host = peer.ip();
-    if let Some(forwarded) = header_of(headers, "x-forwarded-for") {
-        if local_peer(host) {
-            if let Some(first) = forwarded
-                .split(',')
-                .next()
-                .map(str::trim)
-                .filter(|f| !f.is_empty())
-            {
-                return first.to_string();
+/// Resolve only a bounded, valid forwarding chain from an explicitly trusted peer.
+pub fn client_address(peer: SocketAddr, headers: &HeaderMap, trusted: &[String]) -> String {
+    let peer = normalized_ip(peer.ip());
+    let fallback = peer.to_string();
+    if !trusted
+        .iter()
+        .any(|network| network_contains(network, peer))
+    {
+        return fallback;
+    }
+    let values: Vec<_> = headers.get_all("x-forwarded-for").iter().collect();
+    if values.len() != 1 {
+        return fallback;
+    }
+    let Ok(value) = values[0].to_str() else {
+        return fallback;
+    };
+    if value.len() > 2048 {
+        return fallback;
+    }
+    let entries: Vec<_> = value.split(',').collect();
+    if entries.len() > 32 {
+        return fallback;
+    }
+    let chain: Result<Vec<IpAddr>, _> = entries
+        .iter()
+        .map(|entry| entry.trim().parse::<IpAddr>().map(normalized_ip))
+        .collect();
+    let Ok(chain) = chain else {
+        return fallback;
+    };
+    chain
+        .into_iter()
+        .rev()
+        .find(|ip| !trusted.iter().any(|network| network_contains(network, *ip)))
+        .map(|ip| ip.to_string())
+        .unwrap_or(fallback)
+}
+
+pub fn normalized_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(ip)),
+        ip => ip,
+    }
+}
+
+pub fn network_contains(network: &str, ip: IpAddr) -> bool {
+    let network = network.trim();
+    let (address, prefix) = network
+        .split_once('/')
+        .map_or((network, None), |(ip, prefix)| (ip, Some(prefix)));
+    let Ok(address) = address.parse::<IpAddr>() else {
+        return false;
+    };
+    let mapped = matches!(address, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some());
+    let original_bits = if address.is_ipv4() { 32 } else { 128 };
+    let address = normalized_ip(address);
+    let bits = if address.is_ipv4() { 32 } else { 128 };
+    let prefix = match prefix {
+        Some(prefix) => match prefix.parse::<u32>() {
+            Ok(prefix) if mapped && (96..=128).contains(&prefix) => prefix - 96,
+            Ok(prefix) if !mapped && prefix <= original_bits => prefix,
+            _ => return false,
+        },
+        None => bits,
+    };
+    match (address, normalized_ip(ip)) {
+        (IpAddr::V4(network), IpAddr::V4(ip)) => {
+            prefix == 0 || (u32::from(network) >> (32 - prefix)) == (u32::from(ip) >> (32 - prefix))
+        }
+        (IpAddr::V6(network), IpAddr::V6(ip)) => {
+            prefix == 0
+                || (u128::from(network) >> (128 - prefix)) == (u128::from(ip) >> (128 - prefix))
+        }
+        _ => false,
+    }
+}
+
+/// IPv4 hosts share a /32 bucket and IPv6 privacy addresses share a /64.
+pub fn client_network(address: &str) -> String {
+    match address.parse::<IpAddr>().map(normalized_ip) {
+        Ok(IpAddr::V6(ip)) => format!(
+            "{}/64",
+            std::net::Ipv6Addr::from(u128::from(ip) & (u128::MAX << 64))
+        ),
+        Ok(ip) => ip.to_string(),
+        Err(_) => "invalid".into(),
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    #[test]
+    fn forwarding_walks_only_the_trusted_suffix() {
+        let peer = "127.0.0.1:8080".parse().unwrap();
+        let trusted = vec!["127.0.0.1/32".into(), "10.0.0.0/24".into()];
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.9, 198.51.100.23".parse().unwrap(),
+        );
+        assert_eq!(client_address(peer, &headers, &[]), "127.0.0.1");
+        assert_eq!(client_address(peer, &headers, &trusted), "198.51.100.23");
+        assert_eq!(
+            client_address("192.168.1.2:99".parse().unwrap(), &headers, &trusted),
+            "192.168.1.2"
+        );
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.9, 198.51.100.23, 10.0.0.2".parse().unwrap(),
+        );
+        assert_eq!(client_address(peer, &headers, &trusted), "198.51.100.23");
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.9, 192.168.1.1, 10.0.0.2".parse().unwrap(),
+        );
+        assert_eq!(client_address(peer, &headers, &trusted), "192.168.1.1");
+    }
+
+    #[test]
+    fn malformed_missing_oversized_and_all_trusted_use_tcp_peer() {
+        let peer = "127.0.0.1:8080".parse().unwrap();
+        let trusted = vec!["127.0.0.1".into()];
+        for value in [
+            None,
+            Some("".to_string()),
+            Some("127.0.0.1".into()),
+            Some("198.51.100.1, unknown".into()),
+            Some(
+                std::iter::repeat_n("198.51.100.1", 33)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+            Some("1".repeat(2049)),
+        ] {
+            let mut headers = HeaderMap::new();
+            if let Some(value) = value {
+                headers.insert("x-forwarded-for", value.parse().unwrap());
             }
+            assert_eq!(client_address(peer, &headers, &trusted), "127.0.0.1");
         }
     }
-    host.to_string()
+
+    #[test]
+    fn mapped_addresses_and_ipv6_prefixes_are_normalized() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "::ffff:198.51.100.23".parse().unwrap());
+        assert_eq!(
+            client_address(
+                "[::ffff:127.0.0.1]:8".parse().unwrap(),
+                &headers,
+                &["127.0.0.1/32".into()]
+            ),
+            "198.51.100.23"
+        );
+        assert!(network_contains(
+            " ::ffff:127.0.0.1/128 ",
+            "127.0.0.1".parse().unwrap()
+        ));
+        assert!(network_contains(
+            "2001:db8::/32",
+            "2001:db8:1::1".parse().unwrap()
+        ));
+        assert!(!network_contains("::/0", "127.0.0.1".parse().unwrap()));
+        assert_eq!(client_network("2001:db8:1:2:3:4:5:6"), "2001:db8:1:2::/64");
+    }
 }
 
 /// True for the addresses a reverse proxy in front of this process connects
@@ -77,7 +228,32 @@ pub(super) fn set(response: &mut Reply, name: &'static str, value: &str) {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct RefusalReason(pub String);
+
 pub fn write_json(status: u16, payload: &Value) -> Reply {
+    let mut payload = payload.clone();
+    if status >= 400 {
+        if let Some(fields) = payload.as_object_mut() {
+            fields.entry("reason").or_insert_with(|| {
+                json!(match status {
+                    401 => "authentication_required",
+                    403 => "permission_denied",
+                    404 => "not_found",
+                    409 => "conflict",
+                    413 => "size_limit",
+                    429 => "request_budget",
+                    507 => "storage_budget",
+                    500..=599 => "service_unavailable",
+                    _ => "invalid_request",
+                })
+            });
+            fields.entry("scope").or_insert_with(|| json!("request"));
+            fields
+                .entry("retryable")
+                .or_insert_with(|| json!(matches!(status, 429 | 500 | 502 | 503 | 504)));
+        }
+    }
     let mut response = Response::new(Body::from(payload.to_string()));
     *response.status_mut() =
         StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -86,6 +262,14 @@ pub fn write_json(status: u16, payload: &Value) -> Reply {
         "content-type",
         "application/json; charset=utf-8",
     );
+    if status >= 400 {
+        set(&mut response, "cache-control", "no-store");
+        if let Some(reason) = payload.get("reason").and_then(Value::as_str) {
+            response
+                .extensions_mut()
+                .insert(RefusalReason(reason.to_owned()));
+        }
+    }
     response
 }
 
@@ -109,6 +293,9 @@ pub(super) fn upload_limit_exceeded(err: &MultipartError, ceiling: usize) -> Rep
 }
 
 pub(super) fn plain(status: u16, text: &str) -> Reply {
+    if status >= 400 {
+        return write_json(status, &json!({"error":text}));
+    }
     let mut response = Response::new(Body::from(format!("{text}\n")));
     *response.status_mut() =
         StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);

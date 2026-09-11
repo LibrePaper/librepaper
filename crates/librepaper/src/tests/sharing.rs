@@ -236,10 +236,14 @@ async fn a_revoked_owner_cannot_transfer_after_recipient_lookup() {
         store,
         crate::room::RoomSet::new(blobs, config.clone()),
         std::collections::HashMap::new(),
-        crate::auth::GithubApp::default(),
+        crate::auth::GithubApp {
+            client_id: "test-client".into(),
+            client_secret: "test-secret".into(),
+            ..crate::auth::GithubApp::default()
+        },
         TEST_KEY.to_vec(),
         config,
-        Policy::parse("anyone"),
+        Policy::parse("any"),
         Policy::parse("anyone"),
     );
     let started = Arc::new(tokio::sync::Notify::new());
@@ -429,42 +433,39 @@ async fn an_editor_link_edits_for_an_allowed_publisher_and_caps_an_anonymous_cal
     assert_eq!(role_of(&closed.url, "", &key2, &slug2).await, "reader");
 }
 
-// Where a deployment lets anyone publish, a link may carry the editor rung
-// for an anonymous caller too, because that is what such a deployment already
-// allows without a link at all.
+// Editor links still require provider-backed authentication. A link grants a
+// ceiling within the document; it never turns an anonymous caller into an
+// editor.
 #[tokio::test]
-async fn an_editor_link_edits_anonymously_where_anyone_may_publish() {
+async fn an_editor_link_does_not_elevate_an_anonymous_caller() {
     let server = test_server_with(
         Configuration::default(),
-        Policy::parse("anyone"),
+        Policy::parse("any"),
         Policy::parse("anyone"),
         true,
     )
     .await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
     let key = mint(&server.url, "alice", &slug, "editor", "").await;
-    assert_eq!(role_of(&server.url, "", &key, &slug).await, "editor");
+    assert_eq!(role_of(&server.url, "", &key, &slug).await, "commenter");
 }
 
 // Minting a role's link again is a rotation: the old key stops meaning
 // anything the instant the new one is made, and `sharing_json` shows the new
-// key and its url from then on, since the key is stored rather than shown
-// once. An editor link is what makes the difference visible: with
-// `--publishers anyone` an anonymous caller who holds a live one is an
-// editor, and with none at all -- the old key, after rotation -- cannot open
-// the document, since the bare URL is not a link.
+// key and its url from then on. An anonymous holder receives the commenter
+// ceiling even for an editor link.
 #[tokio::test]
 async fn minting_again_rotates_the_link() {
     let server = test_server_with(
         Configuration::default(),
-        Policy::parse("anyone"),
+        Policy::parse("any"),
         Policy::parse("anyone"),
         true,
     )
     .await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
     let old_key = mint(&server.url, "alice", &slug, "editor", "").await;
-    assert_eq!(role_of(&server.url, "", &old_key, &slug).await, "editor");
+    assert_eq!(role_of(&server.url, "", &old_key, &slug).await, "commenter");
 
     let (status, payload) = share(
         &server.url,
@@ -482,7 +483,7 @@ async fn minting_again_rotates_the_link() {
         404,
         "the old key is still live after a rotation"
     );
-    assert_eq!(role_of(&server.url, "", &new_key, &slug).await, "editor");
+    assert_eq!(role_of(&server.url, "", &new_key, &slug).await, "commenter");
 
     assert_eq!(
         text(&payload["links"]["editor"], "key"),
@@ -510,14 +511,14 @@ async fn minting_again_rotates_the_link() {
 async fn a_link_is_revoked_by_its_role_word() {
     let server = test_server_with(
         Configuration::default(),
-        Policy::parse("anyone"),
+        Policy::parse("any"),
         Policy::parse("anyone"),
         true,
     )
     .await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
     let key = mint(&server.url, "alice", &slug, "editor", "").await;
-    assert_eq!(role_of(&server.url, "", &key, &slug).await, "editor");
+    assert_eq!(role_of(&server.url, "", &key, &slug).await, "commenter");
 
     let (status, payload) = share(&server.url, "alice", &slug, json!({"revoke": "editor"})).await;
     assert_eq!(status, 200, "{payload}");
@@ -538,14 +539,14 @@ async fn a_link_is_revoked_by_its_role_word() {
 async fn an_expired_link_reads_as_no_link() {
     let server = test_server_with(
         Configuration::default(),
-        Policy::parse("anyone"),
+        Policy::parse("any"),
         Policy::parse("anyone"),
         true,
     )
     .await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
     let key = mint(&server.url, "alice", &slug, "editor", "30d").await;
-    assert_eq!(role_of(&server.url, "", &key, &slug).await, "editor");
+    assert_eq!(role_of(&server.url, "", &key, &slug).await, "commenter");
 
     server
         .instance
@@ -571,7 +572,9 @@ async fn an_expired_link_reads_as_no_link() {
         })
         .await
         .expect("the link is renewed");
-    assert_eq!(role_of(&server.url, "", &key, &slug).await, "editor");
+    // The deployment lets signed-in accounts edit, while an anonymous link
+    // caller is capped at the commenter ceiling even after expiry passes.
+    assert_eq!(role_of(&server.url, "", &key, &slug).await, "commenter");
 }
 
 // A comment made under a link records which link it came in on, so an owner
@@ -1052,14 +1055,13 @@ async fn a_link_budget_is_shared_between_addresses_and_resets_each_hour() {
 
 /* ------------------------------------------------------ visitor adoption */
 
-// A browser that publishes without signing in owns what it uploaded; when it
-// signs in, the account takes those documents over, and the quota with them.
-// This is the answer to "I cleared my cookies and my documents are gone".
+// A visitor credential identifies a browser for read-side behavior, but it
+// cannot authorize publishing or an owner adoption through an HTTP write.
 #[tokio::test]
-async fn signing_in_adopts_what_the_visitor_published() {
+async fn anonymous_publishing_is_rejected_before_adoption() {
     let server = test_server_with(
         Configuration::default(),
-        Policy::parse("anyone"),
+        Policy::parse("any"),
         Policy::parse("anyone"),
         true,
     )
@@ -1071,56 +1073,9 @@ async fn signing_in_adopts_what_the_visitor_published() {
         json!({"title": "Anonymous Paper", "html": "<p>anonymous</p>"}),
     )
     .await;
-    assert_eq!(status, 201, "{document}");
-    let slug = text(&document, "slug");
-    // A document with no publisher at all is nobody's, and must not be swept
-    // up by somebody else's sign-in.
-    let (status, unowned) = post_as(
-        "",
-        &server.url,
-        "/api/documents",
-        json!({"title": "Nobody's Paper", "html": "<p>nobody</p>"}),
-    )
-    .await;
-    assert_eq!(status, 201, "{unowned}");
-    let orphan = text(&unowned, "slug");
-
-    let moved = server
-        .instance
-        .store
-        .adopt(
-            &format!("{}alpha", crate::server::VISITOR_PREFIX),
-            "alice",
-            "alice",
-            "alice",
-        )
-        .await
-        .expect("the documents are adopted");
-    assert_eq!(moved, 1, "the wrong number of documents moved");
-
-    let entry = server
-        .instance
-        .store
-        .get(&slug)
-        .await
-        .expect("the document");
-    assert_eq!(entry.publisher, "alice");
-    assert_eq!(entry.publisher_id, "alice");
-    assert_eq!(
-        role_of(&server.url, &session_as("alice"), "", &slug).await,
-        "owner"
-    );
-    assert!(
-        server
-            .instance
-            .store
-            .get(&orphan)
-            .await
-            .expect("the unowned document")
-            .publisher
-            .is_empty(),
-        "an unowned document was adopted"
-    );
+    assert_eq!(status, 401, "visitor publishing was accepted: {document}");
+    assert_eq!(text(&document, "error"), "sign in to publish");
+    assert!(server.instance.store.list().await.is_empty());
 }
 
 /* ------------------------------------------------------------ who may read */

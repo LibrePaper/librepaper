@@ -23,6 +23,7 @@ use axum::routing::get;
 use serde_json::{json, Value};
 
 use super::*;
+use crate::auth::{sign_device, Identity};
 use crate::cli::sync::{parse_interval, Client};
 use crate::document::session;
 use crate::tests::edit::publish_with_source;
@@ -137,7 +138,7 @@ async fn a_yrs_peer_writes_the_document_the_server_holds() {
 async fn a_peer_joins_on_a_link_key_and_writes_as_the_link_allows() {
     let server = test_server_with(
         crate::config::Configuration::default(),
-        crate::auth::Policy::parse("anyone"),
+        crate::auth::Policy::parse("any"),
         crate::auth::Policy::parse("anyone"),
         true,
     )
@@ -156,8 +157,21 @@ async fn a_peer_joins_on_a_link_key_and_writes_as_the_link_allows() {
     assert_eq!(status, 200, "{minted}");
     let edit_key = text(&minted, "key");
 
-    // No cookie, no bearer: the key is the whole of who this peer is.
-    let mut socket = dial_websocket_keyed(&server.url, &slug, &edit_key).await;
+    // The link names the document, while the signed deployment token proves
+    // the provider-backed identity allowed to edit it.
+    let mut identity = Identity::github(TEST_PUBLISHER, TEST_PUBLISHER);
+    identity.session_generation = "test-session-generation".into();
+    let token = sign_device(TEST_KEY, &identity, crate::auth::now_unix() + 3600);
+    let mut socket = dial_websocket_with(
+        &server.url,
+        &slug,
+        &format!(
+            "{}: {edit_key}\r\nauthorization: Bearer {token}\r\n",
+            crate::server::LINK_HEADER
+        ),
+    )
+    .await
+    .expect("the authenticated edit socket opens");
     assert_eq!(socket.read().await["type"], "hello");
     socket.write(json!({"type": "y-open", "vector": ""})).await;
     let state = socket.read().await;
@@ -948,7 +962,7 @@ async fn a_pending_disk_save_blocks_session_file_replacement() {
 async fn sync_sends_a_large_first_join_as_multipart_over_a_real_socket() {
     let server = test_server_with(
         crate::config::Configuration::default(),
-        crate::auth::Policy::parse("anyone"),
+        crate::auth::Policy::parse("any"),
         crate::auth::Policy::parse("anyone"),
         true,
     )
@@ -968,13 +982,11 @@ async fn sync_sends_a_large_first_join_as_multipart_over_a_real_socket() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("main.md");
     std::fs::write(&path, &large).unwrap();
-    let mut client = Client::new(
-        path,
-        Duration::from_millis(50),
-        server.url.clone(),
-        String::new(),
-    )
-    .with_key(&key);
+    let mut identity = Identity::github(TEST_PUBLISHER, TEST_PUBLISHER);
+    identity.session_generation = "test-session-generation".into();
+    let token = sign_device(TEST_KEY, &identity, crate::auth::now_unix() + 3600);
+    let mut client =
+        Client::new(path, Duration::from_millis(50), server.url.clone(), token).with_key(&key);
     let (_events_tx, mut events_rx) = tokio::sync::mpsc::channel(8);
     let task = tokio::spawn(async move { client.run(&slug, &mut events_rx).await });
     let published_slug = text(&published, "slug");

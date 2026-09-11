@@ -72,8 +72,8 @@ says which.
 
 ## Quarto
 
-Source, live preview through the paired local app, result bundles, capture,
-binding, sync, and isolation all shipped. What did not:
+Source preview through the paired local app, capture, binding, sync, and
+isolation all shipped. What did not:
 
 - The draft passes `:::` divs through verbatim. Callouts, columns, tabsets,
   margin content, conditional content (`when-format`, profiles), and
@@ -85,28 +85,13 @@ binding, sync, and isolation all shipped. What did not:
 - Quarto preview is HTML only. `QuartoWatch::kind()` in
   `crates/librepaper/src/local/preview/quarto.rs` is hard-wired to HTML;
   a `--to pdf` preview would use the existing PDF reader, as Calepin's does.
-- Interactive widgets in a live surface. `web/src/lib/results-interactive.js`
-  isolates them, but its only consumer,
-  `web/src/components/ResultsArtifactBrowser.svelte`, is no longer mounted
-  anywhere. It is dead code until a surface wants it.
 - Website and book projects are collected and tested on the capture side
   but the live preview accepts document scope only.
-- Render settings. The profile and parameters in
-  `web/src/components/settings/RenderingSettings.svelte` still feed the
-  preview request; the intended product has no render settings to
-  configure.
-- Navigation from a generated table cell or inline value to its source.
-  The draft marks generated markup with `data-librepaper-generated` and
-  nothing consumes it.
-- Unlabelled cells are matched by a unique source digest and lose their
-  results when duplicated or moved. A sidecar identity anchored to source
-  ranges in the CRDT would survive that; nothing decides whether it
-  survives a sync rewrite.
 - `librepaper local doctor` reports Quarto but never the Calepin tool.
 - No declared Quarto version support matrix, and the real-toolchain R and
   Python tests are all `#[ignore]`d with no job that runs them. The
   end-to-end gate (pair, live repaint, disconnect, reconnect, R then Python)
-  has no automated run; `web/tools/quarto-e2e.mjs` is HTTP-only.
+  has no automated run.
 - `web/tools/quarto-benchmark.mjs` prints draft timings but asserts no
   budget and has no large fixture.
 - Confinement (`bwrap`, `sandbox-exec`, none) is detected and reported, but

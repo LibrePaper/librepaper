@@ -1,11 +1,10 @@
 import { needsBibliography } from "./bibliography-engine.js";
 // The renderers, loaded into the editor.
 //
-// The modules come from the same pinned renderer releases the native command
-// line links, so the preview is the document a save would
-// store, byte for byte, and an edit made here renders exactly as one made from
-// the terminal. The deployment renders nothing: it stores what this browser
-// produced.
+// The modules come from the same pinned renderer releases as the native
+// command line tools, so the preview follows the document source. Rendering
+// stays in this browser or a configured local companion and is never stored by
+// the deployment.
 //
 // They are plain WebAssembly with a handful of exports rather than
 // wasm-bindgen, so this is the whole of the glue: reserve memory in the
@@ -22,7 +21,7 @@ import { rendererRequest } from "./renderer-client.js";
 
 /// Whether this deployment serves LaTeX distributions, which is the one
 /// renderer that is a property of the deployment rather than of the build:
-/// the compiler is not in the binary, it is behind `--latex`, and a
+/// the compiler is not in the binary, it is behind `--latex-mirror`, and a
 /// deployment without a mirror has nowhere to send a browser for one. Set
 /// from what `/api/documents/<slug>` reports, which is the same flag
 /// `/api/config` answers with.
@@ -64,9 +63,9 @@ export function cancelPreview() {
   latexHtml.cancel();
 }
 
-// Whether this browser can compile a source document. Stored artifacts remain
-// readable when this is false; in particular a reader does not need Typst WASM
-// merely to open a PDF another editor already produced.
+// Whether this browser can compile a source document. Readers without a
+// compiler are shown the source and a tool requirement instead of a retained
+// result.
 export function compilerAvailable(format) {
   return format === "latex" ? latexOffered : available(format);
 }
@@ -168,7 +167,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
       // The log travels too, for the one case the list is empty and the log
       // is the only account of why there is no PDF.
       log: log || "",
-      // `latex.js` may have fallen back to a local or VM backend; the reader
+      // `latex.js` may have fallen back to a local backend; the reader
       // shows that provenance and both attempts' logs (SPEC "Failure
       // presentation") rather than the browser-only shape this used to be.
       attempts,
@@ -181,7 +180,6 @@ export async function render(tree, title, { manual = false, format: requestedFor
   // Checkpoints may be Svelte proxies, which cannot cross a worker boundary.
   // Send only the compiler inputs, copied into ordinary maps.
   const quartoTree = format === "quarto" ? await quarto.virtualTree(tree, {
-    bundle: tree.quartoBundle || tree.bundle || null,
     expandIncludes: tree.texts || {},
   }) : tree;
   const module = (format === "markdown" || format === "quarto") && needsBibliography({ source }) ? "citations" : format === "quarto" ? "markdown" : format;
@@ -249,14 +247,11 @@ export async function htmlConfiguration(tree) {
   };
 }
 
-/// The page to show where a document would be when there is nothing else to
-/// show it: what the last compile said, dressed as a document rather than as a
-/// crash. The engine builds it, so the command line and a reader can show the
-/// same one. Only meaningful straight after a render that produced no page.
+/// The page to show where a flow document would be when compilation fails.
+/// Paged formats leave the frame empty so the Reader can show source and
+/// diagnostics without falling back to an older result.
 export async function failurePage(title, format) {
-  // No TeX makes a page out of a log. A LaTeX document that will not compile
-  // keeps the last one that did, and shows nothing before there was one --
-  // which is what the badge and the pane are for.
+  // No TeX makes a page out of a log.
   if (producesPdf(format)) return null;
   return request(format === "quarto" ? "markdown" : format, "failure", { title });
 }

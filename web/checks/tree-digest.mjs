@@ -89,8 +89,9 @@ session.leave();
 
 // Compile settings, mirroring Rust's `Tree.settings: Option<CompileSettings>`.
 // Absent, empty and unset must all serialize identically -- a checkpoint
-// taken before settings existed must keep its sha -- and only a non-empty
-// field is written, engine before release.
+// taken before settings existed must keep its sha -- and only the engine
+// field is written. Compiler releases are selected from the mirror default
+// and never participate in a document snapshot.
 const noSettings = await snapshotDigest(tree);
 const emptySettings = await snapshotDigest({ ...tree, settings: { engine: "", release: "" } });
 check("an empty settings object changes nothing", emptySettings === noSettings);
@@ -107,12 +108,12 @@ const both = await snapshotDigest({
   ...tree,
   settings: { engine: "xelatex", release: "2026-8b7946970153c52e+2026-ba38749b8714505a" },
 });
-const bothCanonical = `{"main":"main.tex","files":{"é.tex":${JSON.stringify({ kind: "text", id: "text-id", sha: textSha, size: Buffer.byteLength(text) })},"图.png":${JSON.stringify({ kind: "asset", sha: imageSha, size: image.byteLength })}},"settings":{"engine":"xelatex","release":"2026-8b7946970153c52e+2026-ba38749b8714505a"}}`;
+const bothCanonical = `{"main":"main.tex","files":{"é.tex":${JSON.stringify({ kind: "text", id: "text-id", sha: textSha, size: Buffer.byteLength(text) })},"图.png":${JSON.stringify({ kind: "asset", sha: imageSha, size: image.byteLength })}},"settings":{"engine":"xelatex"}}`;
 check(
-  "engine and release are written in that order",
+  "the release pin is ignored in the snapshot",
   both === sha(Buffer.from(bothCanonical)),
   both,
 );
-check("settings participate in the digest", both !== noSettings && engineOnly !== noSettings);
+check("engine participates in the digest", both !== noSettings && engineOnly !== noSettings);
 
 if (!process.exitCode) console.log("tree-digest: all checks passed");

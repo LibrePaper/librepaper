@@ -1,7 +1,7 @@
 // Job identity.
 //
 // A `Job` is the immutable identity a compile receives before anything is
-// staged and that every result -- browser, local Biber, VM Biber, native --
+// staged and that every result -- browser, local Biber, native --
 // echoes back unchanged (SPEC "Project configuration and identity"). It says
 // exactly what was asked for (project, source, engine, release) and exactly
 // when (a monotonically increasing generation), so a late result from a
@@ -9,7 +9,7 @@
 // rather than by trusting arrival order.
 //
 // `snapshot` is the identity the rest of this package keys everything on:
-// staged "generated" reuse, the session route's native/VM attempt budgets,
+// staged "generated" reuse and the session route's native attempt budget,
 // and bibliography cache invalidation on a settings change all compare
 // snapshots, never trees. It intentionally excludes the project id and the
 // generation -- two jobs for the same source, engine and release must share

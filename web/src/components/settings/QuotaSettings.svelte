@@ -163,7 +163,7 @@
       <input class="input setting-input" type="text" bind:value={timezone} oninput={changed} aria-label="Display timezone" placeholder="America/Toronto" {disabled} />
     </SettingRow>
 
-    <SettingRow id="quota-milestones" title="Preferentially retain" stacked description="These source versions survive ahead of routine history, subject to hard storage and count limits. Naming a version does not preserve an older PDF. Only the latest published PDF is retained.">
+    <SettingRow id="quota-milestones" title="Preferentially retain" stacked description="These source versions survive ahead of routine history, subject to hard storage and count limits. Generated outputs are transient and are not retained.">
       <fieldset class="flex flex-col gap-2" {disabled}>
         <legend class="sr-only">Milestone protection preferences</legend>
         {#each MILESTONES as [key, label]}

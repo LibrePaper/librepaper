@@ -678,6 +678,16 @@ impl Catalog {
             ));
         }
         self.immediate(|tx| {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS source_history_gc_encoding_state (
+                     id INTEGER PRIMARY KEY CHECK(id=1),
+                     storage_cursor TEXT,
+                     file_cursor TEXT,
+                     updated_at INTEGER NOT NULL
+                 );
+                 INSERT OR IGNORE INTO source_history_gc_encoding_state
+                     (id,updated_at) VALUES (1,0);",
+            )?;
             // Capture the lease targets before removing the rows.  A failed
             // upload has no source_history_objects row yet, so scanning only
             // that graph after DELETE leaks its physical object forever.
@@ -766,45 +776,144 @@ impl Catalog {
                 }
             }
 
-            // Also catch abandoned objects for which a graph row did exist
-            // (for example a lease renewed around a failed publication).
-            tx.execute(
-                "INSERT INTO pending_deletes(slug,object_key,bytes,queued_at,delete_after)
-                 SELECT d.slug,o.object_key,o.bytes,?1,?1
-                 FROM source_history_objects o
-                 JOIN documents d ON d.storage_id=o.storage_id
-                 WHERE NOT EXISTS (
-                     SELECT 1
-                     FROM source_history_objects o2
-                     JOIN source_history_checkpoint_files r
-                       ON r.storage_id=o2.storage_id AND r.file_digest=o2.file_digest
-                     WHERE o2.storage_id=o.storage_id AND o2.object_key=o.object_key
-                 )
-                   AND NOT EXISTS (
-                     SELECT 1 FROM source_history_write_leases l
-                     WHERE l.storage_id=o.storage_id AND l.object_key=o.object_key
-                 )
-                 ON CONFLICT(slug,object_key) DO UPDATE SET
-                   bytes=excluded.bytes,
-                   delete_after=MIN(pending_deletes.delete_after,excluded.delete_after)",
-                [now],
+            let batch_limit = i64::from(limit.min(10_000));
+            // Encoding rows own their physical object rows with ON DELETE
+            // CASCADE. Delete only a bounded page of encodings, and drain
+            // their object rows individually. A row is removed only when its
+            // physical key is queued for deletion or another encoding still
+            // owns that key; an unvisited physical object is never erased by
+            // a cascading delete.
+            let (encoding_storage_cursor, encoding_file_cursor): (Option<String>, Option<String>) =
+                tx.query_row(
+                    "SELECT storage_cursor,file_cursor
+                     FROM source_history_gc_encoding_state WHERE id=1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+            let encoding_storage_cursor = encoding_storage_cursor.as_deref().unwrap_or("");
+            let encoding_file_cursor = encoding_file_cursor.as_deref().unwrap_or("");
+            let mut statement = tx.prepare(
+                "SELECT storage_id,file_digest
+                 FROM source_history_encodings
+                 WHERE (storage_id,file_digest) > (?1,?2)
+                 ORDER BY storage_id,file_digest LIMIT 1",
             )?;
+            let encoding_page = statement
+                .query_map(
+                    params![encoding_storage_cursor, encoding_file_cursor],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(statement);
+            for (storage_id, file_digest) in &encoding_page {
+                let retained: bool = tx.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM source_history_checkpoint_files
+                         WHERE storage_id=?1 AND file_digest=?2)",
+                    params![storage_id, file_digest],
+                    |row| row.get(0),
+                )?;
+                let leased: bool = tx.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1
+                         FROM source_history_objects o
+                         JOIN source_history_write_leases l
+                           ON l.storage_id=o.storage_id AND l.object_key=o.object_key
+                         WHERE o.storage_id=?1 AND o.file_digest=?2)",
+                    params![storage_id, file_digest],
+                    |row| row.get(0),
+                )?;
+                if retained || leased {
+                    continue;
+                }
+                let object_limit = batch_limit;
+                let slug: String = tx.query_row(
+                    "SELECT slug FROM documents WHERE storage_id=?1",
+                    [storage_id],
+                    |row| row.get(0),
+                )?;
+                let mut objects = tx.prepare(
+                    "SELECT object_key,bytes FROM source_history_objects
+                     WHERE storage_id=?1 AND file_digest=?2
+                     ORDER BY object_key LIMIT ?3",
+                )?;
+                let object_keys = objects
+                    .query_map(params![storage_id, file_digest, object_limit], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                drop(objects);
+                for (object_key, bytes) in &object_keys {
+                    let leased: bool = tx.query_row(
+                        "SELECT EXISTS(
+                             SELECT 1 FROM source_history_write_leases
+                             WHERE storage_id=?1 AND object_key=?2)",
+                        params![storage_id, object_key],
+                        |row| row.get(0),
+                    )?;
+                    let shared: bool = tx.query_row(
+                        "SELECT EXISTS(
+                             SELECT 1 FROM source_history_objects
+                             WHERE storage_id=?1 AND object_key=?2
+                               AND file_digest<>?3)",
+                        params![storage_id, object_key, file_digest],
+                        |row| row.get(0),
+                    )?;
+                    if leased {
+                        continue;
+                    }
+                    if !shared {
+                        // This cleanup pass also discovers orphan keys. Queue
+                        // each selected key before removing its graph row so
+                        // the physical delete cursor cannot miss it.
+                        tx.execute(
+                            "INSERT INTO pending_deletes
+                             (slug,object_key,bytes,queued_at,delete_after)
+                             VALUES(?1,?2,?3,?4,?4)
+                             ON CONFLICT(slug,object_key) DO UPDATE SET
+                               bytes=excluded.bytes,
+                               delete_after=MIN(pending_deletes.delete_after,excluded.delete_after)",
+                            params![slug, object_key, bytes, now],
+                        )?;
+                    }
+                    // Remove only rows whose physical key is covered by the
+                    // delete queue or another encoding. This lets a very
+                    // large encoding drain over several bounded passes
+                    // without relying on a cascading delete to do unbounded
+                    // work.
+                    tx.execute(
+                        "DELETE FROM source_history_objects
+                         WHERE storage_id=?1 AND file_digest=?2 AND object_key=?3",
+                        params![storage_id, file_digest, object_key],
+                    )?;
+                }
+                let has_objects: bool = tx.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM source_history_objects
+                         WHERE storage_id=?1 AND file_digest=?2)",
+                    params![storage_id, file_digest],
+                    |row| row.get(0),
+                )?;
+                if !has_objects {
+                    tx.execute(
+                        "DELETE FROM source_history_encodings
+                         WHERE storage_id=?1 AND file_digest=?2",
+                        params![storage_id, file_digest],
+                    )?;
+                }
+            }
+            let (next_encoding_storage, next_encoding_file) = if encoding_page.is_empty() {
+                (None, None)
+            } else {
+                encoding_page
+                    .last()
+                    .map(|(storage, file)| (Some(storage.clone()), Some(file.clone())))
+                    .unwrap_or((None, None))
+            };
             tx.execute(
-                "DELETE FROM source_history_encodings
-                 WHERE NOT EXISTS (
-                     SELECT 1 FROM source_history_checkpoint_files r
-                     WHERE r.storage_id=source_history_encodings.storage_id
-                       AND r.file_digest=source_history_encodings.file_digest
-                 )
-                   AND NOT EXISTS (
-                     SELECT 1
-                     FROM source_history_objects o
-                     JOIN source_history_write_leases l
-                       ON l.storage_id=o.storage_id AND l.object_key=o.object_key
-                     WHERE o.storage_id=source_history_encodings.storage_id
-                       AND o.file_digest=source_history_encodings.file_digest
-                 )",
-                [],
+                "UPDATE source_history_gc_encoding_state
+                 SET storage_cursor=?1,file_cursor=?2,updated_at=?3 WHERE id=1",
+                params![next_encoding_storage, next_encoding_file, now],
             )?;
             Ok(removed)
         })

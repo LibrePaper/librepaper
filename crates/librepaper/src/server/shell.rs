@@ -57,7 +57,7 @@ pub fn content_type(name: &str) -> &'static str {
 #[derive(Clone, Debug)]
 pub struct ShellFile {
     pub kind: &'static str,
-    pub body: Vec<u8>,
+    pub body: axum::body::Bytes,
     /// A file whose bytes never change under this name, so it can be cached
     /// for a year rather than five minutes. Everything the bundler names for
     /// its own contents is one, and so are the renderers.
@@ -142,7 +142,7 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
             route,
             ShellFile {
                 kind: "application/wasm",
-                body: body.to_vec(),
+                body: axum::body::Bytes::from_static(body),
                 immutable: true,
             },
         );
@@ -172,8 +172,9 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
                 .replace("__README__", &prose)
                 .replace("__MODULES__", &modules)
                 .into_bytes()
+                .into()
         } else {
-            entry.contents().to_vec()
+            axum::body::Bytes::from_static(entry.contents())
         };
         shell.insert(
             route,

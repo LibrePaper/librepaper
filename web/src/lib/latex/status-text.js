@@ -12,13 +12,10 @@
 // `status.message` strings, which this file never invents) or adds context: why a
 // fallback happened, and what a given failure kind needs from the reader.
 
-/// The chip beside the status message: which backend is producing pages, or
-/// naming the VM-bibliography case the spec calls out on its own ("browser +
-/// VM bibliography" is not just "browser" -- a reader who sees only "browser"
-/// has no way to know Biber ran outside it).
+/// The chip beside the status message: which backend is producing pages.
 export function backendChip(status) {
   if (!status) return "";
-  if (status.phase === "vm-biber" || status.phase === "vm-preparing") return "browser + VM bibliography";
+  if (status.phase === "browser-biber") return "browser Biber";
   if (status.backend === "local") return "local";
   if (status.backend === "browser") return "browser";
   return "";
@@ -52,8 +49,6 @@ function actionsForFailure(failure) {
       return ["doctor"];
     case "incompatible":
       return ["connect"];
-    case "vm":
-      return ["retry", "connect"];
     case "native":
       return ["diagnostics"];
     default:
@@ -75,8 +70,6 @@ export function failureHint(failure) {
       return `${failure.message || "A required tool is missing"}. Run \`librepaper local doctor\` for setup help.`;
     case "incompatible":
       return `${failure.message || "The local and browser versions are incompatible"}.`;
-    case "vm":
-      return `${failure.message || "The browser bibliography VM could not finish this"}. Retry, or connect local LibrePaper.`;
     case "native":
       return "The local build failed too; see Diagnostics.";
     default:
@@ -106,7 +99,7 @@ function engineName(engine) {
 const BIBLIOGRAPHY_NAMES = {
   bibtex: "BibTeX",
   "local-biber": "local Biber",
-  "vm-biber": "browser Biber (VM)",
+  "browser-biber": "browser Biber",
   native: "native Biber",
 };
 
@@ -134,29 +127,4 @@ export function provenanceSentence(provenance) {
     ? `; bibliography via ${bibliographyName(provenance.bibliography)}`
     : "";
   return `${where}${engine ? ` with ${engine}` : ""}${detail}${bibliography}.`;
-}
-
-/// Where a rendering came from, in the parenthetical `renderedNoteText` adds
-/// to its date: "(locally, pdfLaTeX)" or "(in the browser, XeLaTeX)".
-function provenanceDetail(provenance) {
-  if (!provenance) return "";
-  const where = provenance.backend === "local" ? "locally" : "in the browser";
-  const engine = engineName(provenance.engine);
-  return [where, engine].filter(Boolean).join(", ");
-}
-
-/// The note a reader sees under the toolbar for a stored rendering that is
-/// not the current text: SPEC's own example is "rendered from an earlier
-/// version, 2026-09-07 (locally, pdfLaTeX)". `rendering` is what
-/// `/renderings/latest` (or a checkpoint) answered -- `{ sha, at, current,
-/// missing?, provenance? }`. Callers still say "not yet rendered" themselves
-/// when there is no rendering at all; this only covers the three states a
-/// rendering object itself can be in.
-export function renderedNoteText(rendering) {
-  if (!rendering) return "";
-  if (rendering.missing) return "this version was never rendered";
-  if (rendering.current) return "";
-  const date = (rendering.at || "").slice(0, 10);
-  const detail = provenanceDetail(rendering.provenance);
-  return `rendered from an earlier version, ${date}${detail ? ` (${detail})` : ""}`;
 }

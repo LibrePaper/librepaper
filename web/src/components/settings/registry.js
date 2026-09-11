@@ -41,7 +41,6 @@ export const CATEGORIES = [
     note: "Shared with everyone who edits this document.",
     entries: [
       { id: "compiler-engine", says: "PDF compiler", terms: "engine pdflatex xelatex lualatex automatic" },
-      { id: "compiler-release", says: "Browser compiler version", terms: "release update pin undo" },
     ],
   },
   {

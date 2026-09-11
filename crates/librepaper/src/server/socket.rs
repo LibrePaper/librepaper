@@ -2,21 +2,40 @@
 //! sends and receives, and the reauthorisation that runs while it is open.
 
 use super::*;
+use crate::room::outgoing::OutgoingSink;
 
 /// Bound both queue and transport writes so a slow peer cannot pin the reader
 /// or prevent housekeeping from tearing the connection down.
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl Server {
+    pub(super) fn queue_metric(&self) -> std::sync::Arc<dyn Fn(isize, usize) + Send + Sync> {
+        let budget = self.socket_budget.clone();
+        std::sync::Arc::new(move |frames, bytes| {
+            if frames >= 0 {
+                budget.queue_add(frames as usize, bytes);
+            } else {
+                budget.queue_remove((-frames) as usize, bytes);
+            }
+        })
+    }
+
+    pub(super) fn queue_admission(&self) -> std::sync::Arc<dyn Fn(usize) -> bool + Send + Sync> {
+        let budget = self.socket_budget.clone();
+        std::sync::Arc::new(move |bytes| budget.queue_admit(bytes))
+    }
+}
 
 async fn send_outgoing(tx: &Sender, outgoing: Outgoing) -> Result<(), ()> {
     send_outgoing_with_timeout(tx, outgoing, SOCKET_WRITE_TIMEOUT).await
 }
 
 async fn send_outgoing_with_timeout(
-    tx: &Sender,
+    tx: &impl OutgoingSink,
     outgoing: Outgoing,
     timeout: Duration,
 ) -> Result<(), ()> {
-    tokio::time::timeout(timeout, tx.send(outgoing))
+    tokio::time::timeout(timeout, tx.send_boxed(outgoing))
         .await
         .map_err(|_| ())?
         .map_err(|_| ())
@@ -90,6 +109,8 @@ impl UpdateAssembly {
 #[derive(Clone)]
 pub(super) struct Connection {
     pub(super) slug: String,
+    pub(super) network: String,
+    pub(super) principal: String,
     pub(super) headers: HeaderMap,
     pub(super) arrival: Arrival,
     pub(super) query: Option<String>,
@@ -161,7 +182,19 @@ impl Server {
         // What this caller may do here, asked once: the `y-*` gate and the
         // moderation of anyone else's comment are both the editor rung.
         let may_edit = who.at_least(Role::Editor);
-        let address = client_address(peer, &headers);
+        let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
+        let identity = crate::server::socket_budget::SocketIdentity {
+            network: client_network(&address),
+            principal: who.id.id.clone(),
+            document: slug.to_string(),
+        };
+        let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
+        let socket_permit = match self.socket_budget.admit(socket_id, identity) {
+            Ok(permit) => permit,
+            Err(reason) => {
+                return cost::refusal("socket_budget", reason.scope());
+            }
+        };
 
         let (mut parts, _body) = request.into_parts();
         let upgrade = match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
@@ -170,6 +203,9 @@ impl Server {
         };
         let room = match self.rooms.try_get(slug).await {
             Ok(room) => room,
+            Err(crate::room::RoomAdmissionError::AtCapacity { .. }) => {
+                return cost::refusal("room_memory", "deployment")
+            }
             Err(error) => return plain(503, &error.to_string()),
         };
         let server = self.clone();
@@ -179,7 +215,16 @@ impl Server {
             .on_upgrade(move |socket| async move {
                 server
                     .run_socket(
-                        socket, room, address, who, author, may_edit, headers, arrival, query,
+                        socket,
+                        room,
+                        address,
+                        who,
+                        author,
+                        may_edit,
+                        headers,
+                        arrival,
+                        query,
+                        socket_permit,
                     )
                     .await;
             })
@@ -198,19 +243,27 @@ impl Server {
         headers: HeaderMap,
         arrival: Arrival,
         query: Option<String>,
+        _socket_permit: crate::server::socket_budget::SocketPermit,
     ) {
+        let socket_id = _socket_permit.id();
         let (mut sink, mut stream) = socket.split();
         // Bounded: a reader whose connection cannot take another frame is
         // disconnected rather than queued for, so one slow peer cannot make
         // the server hold a session's worth of updates on its behalf. It
         // reconnects and asks for what it missed by state vector.
-        let (tx, mut rx) = mpsc::channel::<Outgoing>(self.config.session.peer_queue);
-        let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
+        let (tx, mut rx) = Sender::channel(
+            self.config.session.peer_queue,
+            self.config.session.peer_queue.saturating_mul(64 * 1024),
+            Some(self.queue_metric()),
+            Some(self.queue_admission()),
+        );
         room.attach(socket_id, tx.clone(), may_edit).await;
         self.connections.lock().await.insert(
             socket_id,
             Connection {
                 slug: room.slug.clone(),
+                network: client_network(&address),
+                principal: who.id.id.clone(),
                 headers: headers.clone(),
                 arrival,
                 query,
@@ -225,8 +278,17 @@ impl Server {
 
         // One task writes, so a broadcast from another connection never
         // interleaves with a reply to this one.
+        let meter = self.cost.clone();
         let mut writer = tokio::spawn(async move {
-            while let Some(outgoing) = rx.recv().await {
+            while let Some(queued) = rx.recv().await {
+                let durability = queued.durability();
+                let (outgoing, _queue_reservation) = queued.into_parts();
+                // Charge at the transport boundary, after queue admission and
+                // immediately before the bytes leave the origin. A dropped
+                // or cancelled queued item therefore consumes no transfer.
+                if !meter.socket_bytes(outgoing.bytes(), durability) {
+                    break;
+                }
                 let result = match outgoing {
                     Outgoing::Text(text) => tokio::time::timeout(
                         SOCKET_WRITE_TIMEOUT,
@@ -240,7 +302,7 @@ impl Server {
                             SOCKET_WRITE_TIMEOUT,
                             sink.send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
                                 code: 1000,
-                                reason: reason.into(),
+                                reason: reason.clone().into(),
                             }))),
                         )
                         .await;
@@ -296,6 +358,7 @@ impl Server {
         let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
         housekeeping.tick().await; // the first tick fires immediately; skip it
         let mut writer_done = false;
+        let mut last_activity = tokio::time::Instant::now();
         'reader: loop {
             tokio::select! {
                 frame = stream.next() => {
@@ -308,6 +371,7 @@ impl Server {
                     let Ok(mut incoming) = serde_json::from_str::<RoomMessage>(&raw) else {
                         continue 'reader;
                     };
+                    last_activity = tokio::time::Instant::now();
 
                     // Every mutation frame is authorized against the current
                     // catalogue/session generation. A revoked account, an
@@ -408,6 +472,11 @@ impl Server {
                         match incoming.kind.as_str() {
                             // What the socket already has, or nothing on a cold join.
                             "y-open" | "y-sync" => {
+                                if !self.socket_budget.state_available(&client_network(&address)) {
+                                    self.cost.pressure(4);
+                                    let _ = send_outgoing(&tx, Outgoing::Close("state_sync_budget: retry after 60 seconds".into())).await;
+                                    break 'reader;
+                                }
                                 let vector =
                                     decode_update(&incoming.vector).filter(|raw| !raw.is_empty());
                                 let (update, count, server_vector) =
@@ -436,7 +505,13 @@ impl Server {
                                         "count": count,
                                     })
                                 };
-                                if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
+                                let payload_text = payload.to_string();
+                                if !self.socket_budget.charge_state(&client_network(&address), payload_text.len()) {
+                                    self.cost.pressure(4);
+                                    let _ = send_outgoing(&tx, Outgoing::Close("state_sync_budget: retry after 60 seconds".into())).await;
+                                    break 'reader;
+                                }
+                                if send_outgoing(&tx, Outgoing::Text(payload_text)).await.is_err() {
                                     break 'reader;
                                 }
                                 room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
@@ -609,6 +684,9 @@ impl Server {
                     break 'reader;
                 }
                 _ = housekeeping.tick() => {
+                    if last_activity.elapsed() > Duration::from_secs(self.socket_budget.policy.idle_seconds) {
+                        break 'reader;
+                    }
                     if !room.state.lock().await.sockets.contains_key(&socket_id) {
                         // The room already gave up on this peer as too slow
                         // to keep up. Its channel may already be full of

@@ -4,7 +4,7 @@
 // from the wasm-latex repository (`make mirror`, `make push`; layout and
 // manifest in wasm-latex/docs/mirror.md, format 1, bundled releases only, no
 // per-file TeX Live snapshot). This check is the
-// consumer side: it verifies whatever `--latex <url>` or `MIRROR=` names is
+// consumer side: it verifies whatever `--latex-mirror <url>` or `MIRROR=` names is
 // actually a complete format-1 mirror before LibrePaper is pointed at it.
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -93,6 +93,6 @@ try {
 } catch (error) {
   console.error(`LaTeX mirror unavailable at ${base}: ${error.message}\n` +
     "The mirror is built and pushed from the wasm-latex repository: `make mirror` there, then `make push`.\n" +
-    "Point LibrePaper at it with `make deploy LATEX=<mirror path or URL>` or `librepaper serve --latex <url>`.");
+    "Point LibrePaper at it with `make deploy LATEX_MIRROR=<mirror URL>` or `librepaper serve --latex-mirror <url>`.");
   process.exitCode = 1;
 }

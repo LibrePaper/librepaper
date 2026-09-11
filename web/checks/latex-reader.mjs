@@ -9,7 +9,6 @@ import {
   fallbackExplanation,
   failureHint,
   provenanceSentence,
-  renderedNoteText,
 } from "../src/lib/latex/status-text.js";
 
 const idle = { phase: "idle", backend: null, route: "browser", local: {} };
@@ -20,8 +19,7 @@ assert.equal(backendChip(null), "");
 assert.equal(backendChip(idle), "");
 assert.equal(backendChip({ ...idle, phase: "compiling", backend: "browser" }), "browser");
 assert.equal(backendChip({ ...idle, phase: "compiling", backend: "local" }), "local");
-assert.equal(backendChip({ ...idle, phase: "vm-biber", backend: "browser" }), "browser + VM bibliography");
-assert.equal(backendChip({ ...idle, phase: "vm-preparing", backend: null }), "browser + VM bibliography");
+assert.equal(backendChip({ ...idle, phase: "browser-biber", backend: "browser" }), "browser Biber");
 
 // actionsFor: local connection states
 
@@ -53,10 +51,6 @@ assert.deepEqual(
   ["connect"],
 );
 assert.deepEqual(
-  actionsFor({ ...idle, phase: "failed", lastResult: { failure: { kind: "vm" } } }),
-  ["retry", "connect"],
-);
-assert.deepEqual(
   actionsFor({ ...idle, phase: "failed", lastResult: { failure: { kind: "native" } } }),
   ["diagnostics"],
 );
@@ -81,7 +75,6 @@ assert.equal(
 assert.match(failureHint({ kind: "tool-missing", message: "biber was not found" }), /biber was not found/);
 assert.match(failureHint({ kind: "tool-missing", message: "biber was not found" }), /librepaper local doctor/);
 assert.match(failureHint({ kind: "incompatible", message: "biblatex 3.21 needs Biber 2.21" }), /biblatex 3\.21/);
-assert.match(failureHint({ kind: "vm" }), /Retry, or connect local LibrePaper/);
 assert.equal(failureHint({ kind: "native" }), "The local build failed too; see Diagnostics.");
 assert.equal(failureHint({ kind: "tex", message: "Undefined control sequence" }), "Undefined control sequence");
 
@@ -104,10 +97,9 @@ assert.equal(
 assert.equal(
   fallbackExplanation([
     { backend: "browser", ok: false, reason: "the format failed to load" },
-    { backend: "local", ok: false, reason: "no compatible local Biber" },
-    { backend: "vm", ok: true },
+    { backend: "local", ok: true },
   ]),
-  "Used vm because the format failed to load; no compatible local Biber.",
+  "Used local because the format failed to load.",
 );
 
 // provenanceSentence
@@ -125,33 +117,8 @@ assert.equal(
   "Compiled locally with pdfLaTeX, pdfTeX 1.40.27 (TeX Live 2025); bibliography via local Biber.",
 );
 assert.equal(
-  provenanceSentence({ backend: "browser", engine: "xelatex", release: "2026-abc", bibliography: "vm-biber", tools: {} }),
-  "Compiled in the browser with XeLaTeX (release 2026-abc); bibliography via browser Biber (VM).",
-);
-
-// renderedNoteText
-
-assert.equal(renderedNoteText(null), "");
-assert.equal(renderedNoteText({ current: true }), "");
-assert.equal(renderedNoteText({ current: false, missing: true }), "this version was never rendered");
-assert.equal(renderedNoteText({ current: true, missing: true }), "this version was never rendered");
-assert.equal(
-  renderedNoteText({ current: false, at: "2026-09-07T12:00:00Z" }),
-  "rendered from an earlier version, 2026-09-07",
-);
-assert.equal(
-  renderedNoteText({
-    current: false, at: "2026-09-07T12:00:00Z",
-    provenance: { backend: "local", engine: "pdflatex" },
-  }),
-  "rendered from an earlier version, 2026-09-07 (locally, pdfLaTeX)",
-);
-assert.equal(
-  renderedNoteText({
-    current: false, at: "2026-09-07T12:00:00Z",
-    provenance: { backend: "browser", engine: "xelatex" },
-  }),
-  "rendered from an earlier version, 2026-09-07 (in the browser, XeLaTeX)",
+  provenanceSentence({ backend: "browser", engine: "xelatex", release: "2026-abc", bibliography: "browser-biber", tools: {} }),
+  "Compiled in the browser with XeLaTeX (release 2026-abc); bibliography via browser Biber.",
 );
 
 console.log("latex-reader: all checks passed");

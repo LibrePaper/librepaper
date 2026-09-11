@@ -304,7 +304,7 @@ impl Server {
             "comment_id": if comment_id.is_empty() { upserts.first().map(|comment| comment.id.clone()).unwrap_or_default() } else { comment_id.to_string() },
             "source_revision": view.as_ref().map(|v| v.snapshot.source_revision.clone()),
         });
-        let address = client_address(peer, headers);
+        let address = client_address(peer, headers, &self.config.cost.trusted_proxies);
         let batch = crate::room::agent_comments::AnnotationBatch {
             request_id,
             digest: digest.to_string(),

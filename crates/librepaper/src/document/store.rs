@@ -62,7 +62,7 @@ async fn validate_staged_source_graph(
         Ok(tree) => tree,
         Err(_) => return false,
     };
-    if tree.digest() != tree_sha {
+    if hex::encode(Sha256::digest(tree_bytes)) != tree_sha {
         return false;
     }
     if tree.files.values().any(|entry| {
@@ -969,7 +969,9 @@ impl Store {
                             match serde_json::from_slice::<crate::document::history::Tree>(
                                 &tree_bytes,
                             ) {
-                                Ok(tree) => tree.digest() == staged_tree_sha,
+                                Ok(_) => {
+                                    hex::encode(Sha256::digest(&tree_bytes)) == staged_tree_sha
+                                }
                                 Err(_) => true,
                             }
                         } else {

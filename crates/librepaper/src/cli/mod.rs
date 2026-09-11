@@ -9,17 +9,71 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
-use crate::config::Configuration;
+use crate::config::{parse_budget_transfer, Configuration};
 use crate::document::render::{
-    counted, is_html, is_markdown, is_typst, pdf_of, report, title_from_html, title_from_markdown,
+    counted, is_html, is_markdown, is_typst, report, title_from_html, title_from_markdown,
     title_from_typst,
 };
 use crate::http::{
-    detail_of, get_as, get_json, get_with_token, post_directory, post_json, post_json_as,
-    put_current_bytes, text, Credentials,
+    detail_of, get_as, get_json, get_with_token, post_directory, post_json, post_json_as, text,
+    Credentials,
 };
 use crate::storage::StorageFlags;
 use crate::util::{die, is_terminal_stdin, is_terminal_stdout, new_id, read_line};
+
+/// Removed deployment settings must fail loudly even when they arrive through
+/// the process environment. Clap can reject removed arguments, but it cannot
+/// distinguish an explicitly set legacy environment variable from an absent
+/// one, so this check runs before parsing any command.
+fn reject_removed_settings() {
+    let removed = [
+        (
+            "LIBREPAPER_MAX_ASSETS",
+            "--budget-document-assets / LIBREPAPER_BUDGET_DOCUMENT_ASSETS",
+        ),
+        (
+            "LIBREPAPER_LATEX",
+            "--latex-mirror / LIBREPAPER_LATEX_MIRROR",
+        ),
+        ("LIBREPAPER_FONTS", "--typst-fonts / LIBREPAPER_TYPST_FONTS"),
+        (
+            "LIBREPAPER_BIBER_VM",
+            "Biber WASM from the configured LaTeX mirror",
+        ),
+    ];
+    for (name, replacement) in removed {
+        if std::env::var_os(name).is_some() {
+            die(format!("{name} was removed; use {replacement} instead"));
+        }
+    }
+    for argument in std::env::args_os().skip(1) {
+        let Some(argument) = argument.to_str() else {
+            continue;
+        };
+        let (name, replacement) = if argument == "--latex" || argument.starts_with("--latex=") {
+            ("--latex", "--latex-mirror")
+        } else if argument == "--fonts" || argument.starts_with("--fonts=") {
+            ("--fonts", "--typst-fonts")
+        } else if argument == "--max-assets" || argument.starts_with("--max-assets=") {
+            ("--max-assets", "--budget-document-assets")
+        } else if argument == "--biber-vm" || argument.starts_with("--biber-vm=") {
+            ("--biber-vm", "Biber WASM from the configured LaTeX mirror")
+        } else {
+            continue;
+        };
+        die(format!("{name} was removed; use {replacement} instead"));
+    }
+}
+
+fn parse_publishers(value: &str) -> Result<String, String> {
+    if value.trim().eq_ignore_ascii_case("anyone") {
+        return Err(
+            "--publishers anyone was removed; use --publishers any for any authenticated account"
+                .into(),
+        );
+    }
+    Ok(value.to_string())
+}
 
 pub(crate) mod assistant_tools;
 mod documents;
@@ -90,8 +144,8 @@ pub(crate) struct ServiceFlags {
     /// Google OAuth client id
     #[arg(long, env = "LIBREPAPER_GOOGLE_CLIENT_ID", value_name = "ID")]
     google_client_id: Option<String>,
-    /// Who may publish: a GitHub login, a comma-separated list, 'any', or 'anyone'
-    #[arg(long, env = "LIBREPAPER_PUBLISHERS", value_name = "WHO")]
+    /// Who may publish: a GitHub login, a comma-separated list, or 'any'
+    #[arg(long, env = "LIBREPAPER_PUBLISHERS", value_name = "WHO", value_parser = parse_publishers)]
     publishers: Option<String>,
     /// Who may comment: 'anyone' (default), 'any' signed-in account, or a list of accounts
     #[arg(long, env = "LIBREPAPER_COMMENTERS", value_name = "WHO")]
@@ -102,9 +156,9 @@ pub(crate) struct ServiceFlags {
     /// Largest document accepted, in megabytes (default 4, maximum 8)
     #[arg(long, env = "LIBREPAPER_MAX_SIZE", value_name = "MB")]
     max_size: Option<usize>,
-    /// Most the figures of one document may come to, in megabytes (default 32)
-    #[arg(long, env = "LIBREPAPER_MAX_ASSETS", value_name = "MB")]
-    max_assets: Option<usize>,
+    /// Combined input assets one document may hold, in MiB (default 32).
+    #[arg(long, env = "LIBREPAPER_BUDGET_DOCUMENT_ASSETS", value_name = "MIB")]
+    budget_document_assets: Option<usize>,
     /// Most one publisher may store across their documents, in megabytes (default 100)
     #[arg(long, env = "LIBREPAPER_QUOTA", value_name = "MB")]
     quota: Option<usize>,
@@ -117,10 +171,10 @@ pub(crate) struct ServiceFlags {
     /// Most uploads one publisher may make in an hour (default 30)
     #[arg(long, env = "LIBREPAPER_UPLOADS_PER_HOUR", value_name = "N")]
     uploads_per_hour: Option<usize>,
-    /// Minutes of quiet before a document is checkpointed (default 5)
+    /// Minutes of quiet before a document is checkpointed (default: 30 seconds)
     #[arg(long, env = "LIBREPAPER_CHECKPOINT", value_name = "MINUTES")]
     checkpoint: Option<usize>,
-    /// Most checkpoints one document keeps; 0 keeps only the current text
+    /// Most checkpoints one document keeps (default unlimited); 0 keeps only the current text
     #[arg(long, env = "LIBREPAPER_HISTORY", value_name = "N")]
     history: Option<usize>,
     /// Delete documents after this duration, for example 24h or 30d (default never)
@@ -129,43 +183,134 @@ pub(crate) struct ServiceFlags {
     /// Start expiry at 'updated' (default; last publication) or 'created'
     #[arg(long, env = "LIBREPAPER_EXPIRE_FROM", value_name = "FROM")]
     expire_from: Option<String>,
-    /// Serve LaTeX distributions from this https bucket or directory.
-    /// LibrePaper always serves LaTeX: without this, it uses the project's
-    /// own mirror.
+    /// HTTPS static mirror from which browsers fetch LaTeX distributions.
     #[arg(
         long,
-        env = "LIBREPAPER_LATEX",
-        value_name = "URL-OR-DIR",
-        default_value = crate::server::latex::DEFAULT_MIRROR
+        env = "LIBREPAPER_LATEX_MIRROR",
+        value_name = "URL",
+        default_value = crate::config::DEFAULT_LATEX_MIRROR
     )]
-    latex: String,
+    latex_mirror: String,
     /// Serve the font files in this directory to typst documents that name a
     /// family the compiler does not embed; `publish` fetches the same fonts.
     /// Without it, such a document is set in the compiler's default faces.
-    #[arg(long, env = "LIBREPAPER_FONTS", value_name = "DIR")]
-    fonts: Option<String>,
-    /// The browser bibliography VM's descriptor (vm.json), as
-    /// <url>#<sha256-of-vm.json>: the LaTeX mirror carries no VM image of its
-    /// own any more, so this is the only way a deployment offers one. The
-    /// sha256 is required, since it is what `vm.js` verifies vm.json against
-    /// before trusting anything it names, and is checked to be 64 hex
-    /// characters at startup. Without this flag, a document that needs Biber
-    /// and has no local LibrePaper reachable simply stops with "no
-    /// bibliography VM is configured" once browser TeX itself has run.
-    #[arg(long, env = "LIBREPAPER_BIBER_VM", value_name = "URL#SHA256")]
-    biber_vm: Option<String>,
+    #[arg(long, env = "LIBREPAPER_TYPST_FONTS", value_name = "DIR")]
+    typst_fonts: Option<String>,
+    /// Daily origin response allowance. Bare integers mean bytes; binary
+    /// suffixes such as 10GiB are accepted. Omit for unlimited transfer.
+    #[arg(long, value_parser = parse_budget_transfer, env = "LIBREPAPER_BUDGET_TRANSFER", value_name = "BYTES")]
+    budget_transfer: Option<u64>,
     /// Do not run the local app for this machine. By default `serve` also
     /// starts the loopback service that lets an editor whose browser is on
     /// this host render Quarto documents with the tools installed here, with
     /// no pairing code and no project grant.
     #[arg(long, env = "LIBREPAPER_NO_LOCAL")]
     no_local: bool,
+    /// Optional advanced configuration file. This is intentionally hidden from
+    /// the daily flag surface; use it only for guardrail overrides such as
+    /// `trusted_proxies`.
+    #[arg(
+        long = "config",
+        env = "LIBREPAPER_CONFIG",
+        value_name = "PATH",
+        hide = true
+    )]
+    advanced_config: Option<PathBuf>,
 }
 
 impl ServiceFlags {
     fn configuration(&self) -> Configuration {
         let mut config = Configuration::default();
-        if let Err(err) = config.set_max_assets(self.max_assets) {
+        if let Some(path) = &self.advanced_config {
+            let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+                die(format!(
+                    "could not read advanced configuration {}: {error}",
+                    path.display()
+                ))
+            });
+            let file: AdvancedConfigFile = serde_yaml::from_str(&text).unwrap_or_else(|error| {
+                die(format!(
+                    "could not parse advanced configuration {}: {error}",
+                    path.display()
+                ))
+            });
+            config.apply_cost_overrides(file.cost);
+            if let Err(error) = config.apply_backup_overrides(file.backup) {
+                die(format!("invalid advanced backup policy: {error}"));
+            }
+            if let Some(proxies) = file.trusted_proxies {
+                config.cost.trusted_proxies = proxies;
+                config
+                    .policy_origins
+                    .insert("cost.trusted_proxies".into(), "configuration file".into());
+            }
+            for (name, value) in file.session {
+                let signed = i64::try_from(value)
+                    .unwrap_or_else(|_| die(format!("session.{name} is too large")));
+                match name.as_str() {
+                    "rooms_max" => config.session.rooms_max = value,
+                    "rooms_bytes_max" => config.session.rooms_bytes_max = value,
+                    "peer_queue" if value > 0 => config.session.peer_queue = value,
+                    "inline_state_max" => config.session.inline_state_max = value,
+                    "updates_per_minute" if value > 0 => config.session.updates_per_minute = signed,
+                    "checkpoint_owner_per_hour" => {
+                        config.session.checkpoint_owner_per_hour = signed
+                    }
+                    "checkpoint_deployment_per_hour" => {
+                        config.session.checkpoint_deployment_per_hour = signed
+                    }
+                    "history_max" => config.session.history_max = value,
+                    "checkpoint_seconds" => config.session.checkpoint_seconds = signed,
+                    "write_after_seconds" if value > 0 => {
+                        config.session.write_after_seconds = signed
+                    }
+                    "history_interval_seconds" if value > 0 => {
+                        config.session.history_interval_seconds = signed
+                    }
+                    _ => die(format!("unknown or invalid advanced session limit: {name}")),
+                }
+                config
+                    .policy_origins
+                    .insert(format!("session.{name}"), "configuration file".into());
+            }
+            for (name, value) in file.sockets {
+                if value == 0 {
+                    die(format!("sockets.{name} must be positive"));
+                }
+                let count = usize::try_from(value)
+                    .unwrap_or_else(|_| die(format!("sockets.{name} is too large")));
+                match name.as_str() {
+                    "deployment_max" => config.sockets.deployment_max = count,
+                    "network_max" => config.sockets.network_max = count,
+                    "principal_max" => config.sockets.principal_max = count,
+                    "document_max" => config.sockets.document_max = count,
+                    "queue_bytes_max" => config.sockets.queue_bytes_max = count,
+                    "state_network_bytes" => config.sockets.state_network_bytes = value,
+                    "state_deployment_bytes" => config.sockets.state_deployment_bytes = value,
+                    "idle_seconds" => config.sockets.idle_seconds = value,
+                    _ => die(format!("unknown advanced socket limit: {name}")),
+                }
+                config
+                    .policy_origins
+                    .insert(format!("sockets.{name}"), "configuration file".into());
+            }
+            for (name, value) in file.persistence {
+                match name.as_str() {
+                    "max_encoded_snapshot_bytes" => {
+                        config.persistence.max_encoded_snapshot_bytes = value
+                    }
+                    "max_queued_payload_bytes" => {
+                        config.persistence.max_queued_payload_bytes = value
+                    }
+                    "max_staging_bytes" => config.persistence.max_staging_bytes = value,
+                    _ => die(format!("unknown advanced persistence limit: {name}")),
+                }
+                config
+                    .policy_origins
+                    .insert(format!("persistence.{name}"), "configuration file".into());
+            }
+        }
+        if let Err(err) = config.set_budget_document_assets(self.budget_document_assets) {
             die(err);
         }
         if let Err(err) = config.set_max_document(self.max_size) {
@@ -180,14 +325,131 @@ impl ServiceFlags {
         if let Err(err) = config.set_history(self.checkpoint, self.history) {
             die(err);
         }
+        if let Some(transfer) = self.budget_transfer {
+            config.cost.transfer_bytes = Some(transfer);
+        }
+        if let Err(err) = config.cost.validate() {
+            die(err);
+        }
         // The one place a deployment learns that its ceilings cannot be
         // durably saved: before anything opens a socket, not at the first
         // oversized document.
         if let Err(err) = config.persistence().validate() {
             die(err);
         }
+        for (key, flag, environment, present) in [
+            (
+                "cost.transfer_bytes",
+                "budget-transfer",
+                "LIBREPAPER_BUDGET_TRANSFER",
+                self.budget_transfer.is_some(),
+            ),
+            (
+                "max_assets",
+                "budget-document-assets",
+                "LIBREPAPER_BUDGET_DOCUMENT_ASSETS",
+                self.budget_document_assets.is_some(),
+            ),
+            (
+                "max_document",
+                "max-size",
+                "LIBREPAPER_MAX_SIZE",
+                self.max_size.is_some(),
+            ),
+            (
+                "storage.total",
+                "storage",
+                "LIBREPAPER_STORAGE",
+                self.storage.is_some(),
+            ),
+            (
+                "storage.per_owner",
+                "quota",
+                "LIBREPAPER_QUOTA",
+                self.quota.is_some(),
+            ),
+            (
+                "storage.documents_per_owner",
+                "max-documents",
+                "LIBREPAPER_MAX_DOCUMENTS",
+                self.max_documents.is_some(),
+            ),
+            (
+                "storage.uploads_per_hour",
+                "uploads-per-hour",
+                "LIBREPAPER_UPLOADS_PER_HOUR",
+                self.uploads_per_hour.is_some(),
+            ),
+            (
+                "session.history_max",
+                "history",
+                "LIBREPAPER_HISTORY",
+                self.history.is_some(),
+            ),
+            (
+                "session.checkpoint_seconds",
+                "checkpoint",
+                "LIBREPAPER_CHECKPOINT",
+                self.checkpoint.is_some(),
+            ),
+        ] {
+            if present {
+                let spelling = format!("--{flag}");
+                let cli = std::env::args()
+                    .take_while(|arg| arg != "--")
+                    .any(|arg| arg == spelling || arg.starts_with(&format!("{spelling}=")));
+                let source = if cli {
+                    "CLI"
+                } else if std::env::var_os(environment).is_some() {
+                    "environment"
+                } else {
+                    "CLI"
+                };
+                config.policy_origins.insert(key.into(), source.into());
+            }
+        }
         config
     }
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AdvancedConfigFile {
+    #[serde(default)]
+    cost: crate::config::CostPolicyOverrides,
+    /// The explicit peer trust boundary.
+    trusted_proxies: Option<Vec<String>>,
+    #[serde(default)]
+    session: std::collections::BTreeMap<String, usize>,
+    #[serde(default)]
+    persistence: std::collections::BTreeMap<String, usize>,
+    #[serde(default)]
+    sockets: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    backup: crate::config::BackupPolicyOverrides,
+}
+
+fn backup_policy_from_config(path: Option<&std::path::Path>) -> crate::config::BackupPolicy {
+    let Some(path) = path else {
+        return crate::config::BackupPolicy::default();
+    };
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
+        die(format!(
+            "could not read advanced configuration {}: {error}",
+            path.display()
+        ))
+    });
+    let file: AdvancedConfigFile = serde_yaml::from_str(&text).unwrap_or_else(|error| {
+        die(format!(
+            "could not parse advanced configuration {}: {error}",
+            path.display()
+        ))
+    });
+    let mut config = crate::config::Configuration::default();
+    config
+        .apply_backup_overrides(file.backup)
+        .unwrap_or_else(|error| die(format!("invalid advanced backup policy: {error}")));
+    config.backup
 }
 
 // `Serve` is a deployment's whole configuration and is much the largest
@@ -244,6 +506,17 @@ pub(crate) enum Command {
         service: ServiceFlags,
         #[command(flatten)]
         storage: StorageFlags,
+    },
+    /// Print the operator status surface from the local server.
+    Status {
+        #[command(flatten)]
+        storage: StorageFlags,
+        /// Loopback status endpoint; defaults to http://127.0.0.1:8080.
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+        /// Port used when no endpoint is supplied.
+        #[arg(long, default_value_t = 8080, value_name = "PORT")]
+        port: u16,
     },
     /// Rotate the local deployment's sealed-link key, retaining the old key
     /// until every catalogue envelope has been resealed.
@@ -449,6 +722,15 @@ pub(crate) enum Command {
     Backup {
         #[command(flatten)]
         storage: StorageFlags,
+        /// Optional advanced YAML policy declaration; hidden from everyday
+        /// controls because it only describes operator-managed backups.
+        #[arg(
+            long = "config",
+            env = "LIBREPAPER_CONFIG",
+            value_name = "PATH",
+            hide = true
+        )]
+        advanced_config: Option<PathBuf>,
         /// Directory in which the named backup directory is created.
         #[arg(long, value_name = "DIRECTORY")]
         output: String,
@@ -618,6 +900,7 @@ pub struct LocalArgs {
 
 #[tokio::main]
 pub async fn main() {
+    reject_removed_settings();
     let cli = Cli::parse();
     let server = cli.server;
     let token = cli.token;
@@ -663,13 +946,54 @@ pub async fn main() {
                 no_listing: service.no_listing,
                 expire_after: service.expire_after,
                 expire_from: service.expire_from,
-                latex: service.latex,
-                fonts: service.fonts,
-                biber_vm: service.biber_vm,
+                latex_mirror: service.latex_mirror,
+                typst_fonts: service.typst_fonts,
                 no_local: service.no_local,
                 config,
             })
             .await
+        }
+        Command::Status {
+            endpoint,
+            port,
+            storage,
+        } => {
+            let endpoint = endpoint
+                .or(server)
+                .unwrap_or_else(|| format!("http://127.0.0.1:{port}"));
+            let url = format!("{}/api/status", endpoint.trim_end_matches('/'));
+            let parsed = url::Url::parse(&url)
+                .unwrap_or_else(|error| die(format!("invalid status URL: {error}")));
+            let loopback = match parsed.host() {
+                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                Some(url::Host::Domain("localhost")) => true,
+                _ => false,
+            };
+            if !loopback {
+                die("operator status requires a loopback endpoint");
+            }
+            let (status, payload) = match get_json(&url, Duration::from_secs(10)).await {
+                Ok(response) => response,
+                Err(error) => {
+                    let paths = storage.options().paths().unwrap_or_else(|error| die(error));
+                    let payload = crate::server::cost::offline_status(&paths.catalog)
+                        .unwrap_or_else(|offline| die(format!("could not query operator status: {error}; could not read durable counters: {offline}")));
+                    (200, payload)
+                }
+            };
+            if status != 200 {
+                die(format!(
+                    "operator status returned {status}: {}",
+                    detail_of(&payload)
+                ));
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).unwrap_or_else(|error| die(format!(
+                    "could not format operator status: {error}"
+                )))
+            );
         }
         Command::RotateLinkKey { dir } => {
             let root = std::path::PathBuf::from(dir);
@@ -899,9 +1223,16 @@ pub async fn main() {
             storage,
             output,
             id,
+            advanced_config,
         } => {
-            crate::storage::backup::backup_cli(storage.options(), output, id.unwrap_or_default())
-                .await
+            let backup_policy = backup_policy_from_config(advanced_config.as_deref());
+            crate::storage::backup::backup_cli(
+                storage.options(),
+                output,
+                id.unwrap_or_default(),
+                backup_policy,
+            )
+            .await
         }
         Command::RestoreBackup { backup, directory } => {
             crate::storage::backup::restore_cli(backup, directory).await

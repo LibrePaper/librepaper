@@ -3,8 +3,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 
 use base64::Engine;
 use serde::Deserialize;
@@ -22,6 +23,7 @@ const PROVIDER_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 const GITHUB_ACCOUNT_CACHE_CAP: usize = 256;
 const GITHUB_ACCOUNT_POSITIVE_TTL: Duration = Duration::from_secs(60);
 const GITHUB_ACCOUNT_NEGATIVE_TTL: Duration = Duration::from_secs(15);
+const GITHUB_ACCOUNT_LOOKUP_CONCURRENCY: usize = 8;
 
 #[derive(Clone)]
 pub struct GithubApp {
@@ -86,6 +88,8 @@ impl GithubApp {
 
     /// Turns the code GitHub redirected back with into an access token.
     pub async fn exchange(&self, code: &str, redirect: &str) -> Result<String, String> {
+        let _permit = crate::auth::try_provider_request()
+            .ok_or_else(|| "authentication service is busy; retry shortly".to_string())?;
         #[derive(Deserialize, Default)]
         struct Reply {
             #[serde(default)]
@@ -126,6 +130,7 @@ impl GithubApp {
     /// it answers only for tokens issued to the client id being asked about,
     /// and 404s for anything else, including a token that is simply invalid.
     pub async fn check_token(&self, token: &str) -> Result<Option<Identity>, ProviderError> {
+        let _permit = crate::auth::try_provider_request().ok_or(ProviderError::Busy)?;
         if self.client_id.is_empty() || self.client_secret.is_empty() {
             return Err(ProviderError::NotConfigured);
         }
@@ -250,6 +255,8 @@ impl std::error::Error for ProviderError {}
 /// /user endpoint is enough here. It reads the numeric id as well as the
 /// login, since both go into the session cookie.
 pub async fn login_for(token: &str) -> Result<Identity, String> {
+    let _permit = crate::auth::try_provider_request()
+        .ok_or_else(|| "authentication service is busy; retry shortly".to_string())?;
     let response = client()
         .get(GITHUB_USER)
         .timeout(PROVIDER_HTTP_TIMEOUT)
@@ -290,6 +297,7 @@ pub struct GithubAccounts {
     client_secret: String,
     users_url: String,
     cache: Mutex<HashMap<String, CachedAccount>>,
+    lookup_slots: Arc<Semaphore>,
 }
 
 struct CachedAccount {
@@ -304,6 +312,7 @@ impl GithubAccounts {
             client_secret: app.client_secret.clone(),
             users_url: app.users_url.clone(),
             cache: Mutex::new(HashMap::new()),
+            lookup_slots: Arc::new(Semaphore::new(GITHUB_ACCOUNT_LOOKUP_CONCURRENCY)),
         }
     }
 
@@ -363,6 +372,11 @@ impl Accounts for GithubAccounts {
         if let Some(identity) = self.cache_lookup(&login) {
             return identity;
         }
+        // Bound account resolution as well as token checks: transfer/share
+        // requests must fail fast when the provider is saturated instead of
+        // retaining an unbounded queue of lookup futures.
+        let _permit = self.lookup_slots.try_acquire().ok()?;
+        let _provider_permit = crate::auth::try_provider_request()?;
         let target = format!("{}/{}", self.users_url.trim_end_matches('/'), login);
         let mut request = client()
             .get(target)

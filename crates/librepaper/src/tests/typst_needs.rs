@@ -249,7 +249,7 @@ async fn resolve_gives_up_on_a_registry_that_has_no_such_package() {
 fn a_library_is_a_directory_that_exists() {
     let missing = tempfile::tempdir().unwrap().path().join("nowhere");
     let error = Library::open(&missing.display().to_string()).expect_err("a missing directory");
-    assert!(error.contains("--fonts"), "{error}");
+    assert!(error.contains("--typst-fonts"), "{error}");
     let empty = tempfile::tempdir().unwrap();
     let library = Library::open(&empty.path().display().to_string()).expect("an empty directory");
     assert_eq!(library.index()["families"], serde_json::json!({}));

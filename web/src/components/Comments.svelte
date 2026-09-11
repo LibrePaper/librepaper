@@ -28,7 +28,6 @@
     replacements = {},
     ontool,
     onreveal,
-    oninspectresult,
     onresolve,
     ondelete,
     // Several at once, behind one confirmation: the page owns that dialog.
@@ -212,7 +211,6 @@
         went={went[comment.id] || null}
         replacement={replacements[comment.id] ?? null}
         {onreveal}
-        {oninspectresult}
         {onresolve}
         {ondelete}
         {onreply}

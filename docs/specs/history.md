@@ -25,12 +25,11 @@ a later checkpoint.
 This is deferred until there is demand for keeping a shared draft fixed
 while editing its successor.
 
-## The latest checkpoint that compiles
+## No retained rendering fallback
 
-For formats rendered by readers, fall back to the latest checkpoint that
-compiles when the live document fails to compile. Find it through the
-history manifest and checkpoint fetches, and identify the displayed version
-as older than the live source.
-
-Typst and LaTeX use stored PDFs; this proposal must preserve their artifact
-lifecycle and must not introduce compilation on the server.
+The cost-minimization policy supersedes the earlier proposal to fall back to a
+stored rendering when the live source fails. Readers compile the source on
+demand in the browser or through their local companion; a failure leaves the
+source and diagnostics available instead of serving an older generated result.
+Historical comparisons render captured source transiently in the browser and
+never use or retain stored PDFs or HTML.

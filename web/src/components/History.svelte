@@ -222,9 +222,8 @@
     label: "named",
     recovered: "recovered",
     accept: "accepted a suggestion",
-    render: "rendered",
   };
-  const QUIET = new Set(["quiet", "left", "render", "automatic", "sync"]);
+  const QUIET = new Set(["quiet", "left", "automatic", "sync"]);
   const reason = (why) => WHY[why] || why;
   const said = (point) => (QUIET.has(point.why) ? "" : reason(point.why));
 

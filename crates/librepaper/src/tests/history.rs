@@ -1638,67 +1638,23 @@ fn tree_without_settings_serializes_as_before() {
     assert_eq!(normalized.digest(), old_digest);
 }
 
-/// Changing either the engine or the release changes both the tree digest
-/// and the source-only `input_digest`: a compile setting is as much a part
-/// of what produced a rendering as the source bytes are, so a settings
-/// change must not silently reuse an artifact identified only by source.
+/// Only the supported engine affects current compilation identity.
 #[test]
-fn compile_settings_change_the_tree_digest() {
-    use crate::document::history::{CompileSettings, Tree, TreeEntry};
-
-    let mut files = std::collections::BTreeMap::new();
-    files.insert(
-        "main.md".to_string(),
-        TreeEntry {
-            kind: "text".to_string(),
-            id: "file-1".to_string(),
-            sha: "abc123".to_string(),
-            size: 12,
-        },
-    );
-    let bare = Tree {
-        main: "main.md".to_string(),
-        files: files.clone(),
-        settings: None,
-    };
-    let with_engine = Tree {
-        settings: Some(CompileSettings {
-            engine: "xelatex".to_string(),
-            release: String::new(),
-        }),
-        ..bare.clone()
-    };
-    let with_release = Tree {
-        settings: Some(CompileSettings {
-            engine: String::new(),
-            release: "2026-8b7946970153c52e".to_string(),
-        }),
-        ..bare.clone()
-    };
-    let with_both = Tree {
-        settings: Some(CompileSettings {
-            engine: "xelatex".to_string(),
-            release: "2026-8b7946970153c52e".to_string(),
-        }),
-        ..bare.clone()
-    };
-
-    assert_ne!(bare.digest(), with_engine.digest());
-    assert_ne!(bare.digest(), with_release.digest());
-    assert_ne!(bare.digest(), with_both.digest());
-    assert_ne!(with_engine.digest(), with_release.digest());
-    assert_ne!(with_engine.digest(), with_both.digest());
-    assert_ne!(with_release.digest(), with_both.digest());
-
-    assert_ne!(bare.input_digest(), with_engine.digest());
-    assert_ne!(bare.input_digest(), with_engine.input_digest());
-    assert_ne!(bare.input_digest(), with_release.input_digest());
-    assert_ne!(with_engine.input_digest(), with_release.input_digest());
-
-    // `input_digest` still clears Yjs item ids, settings or not.
-    let mut retitled = with_engine.clone();
-    for entry in retitled.files.values_mut() {
-        entry.id = "a-different-yjs-id".to_string();
-    }
-    assert_eq!(with_engine.input_digest(), retitled.input_digest());
+fn compile_settings_ignore_legacy_release() {
+    use crate::document::history::Tree;
+    let bare: Tree =
+        serde_json::from_value(serde_json::json!({"main":"main.tex","files":{}})).unwrap();
+    let legacy: Tree = serde_json::from_value(
+        serde_json::json!({"main":"main.tex","files":{},"settings":{"release":"old-pin"}}),
+    )
+    .unwrap();
+    assert_eq!(bare.digest(), legacy.normalized().digest());
+    let engine: Tree = serde_json::from_value(
+        serde_json::json!({"main":"main.tex","files":{},"settings":{"engine":"xelatex"}}),
+    )
+    .unwrap();
+    let pinned: Tree = serde_json::from_value(serde_json::json!({"main":"main.tex","files":{},"settings":{"engine":"xelatex","release":"old-pin"}})).unwrap();
+    assert_ne!(bare.digest(), engine.digest());
+    assert_eq!(engine.digest(), pinned.digest());
+    assert_eq!(engine.input_digest(), pinned.input_digest());
 }

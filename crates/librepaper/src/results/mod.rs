@@ -1,19 +1,15 @@
-//! Shared immutable result bundles and storage contracts.
+//! Shared immutable result bundles and companion payload contracts.
 //!
-//! Engine adapters produce bundles; this module stores and validates them
+//! Engine adapters produce bundles; this module validates their payloads
 //! without parsing source or executing computations. Quarto is the only
-//! supported engine today. Bundles are content addressed and published
-//! through [`ResultsStore`] using the deployment's existing [`BlobStore`].
+//! supported engine today. Generated results are transient.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fmt::Write as _;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-use crate::storage::blob::{BlobError, BlobStore};
 
 pub const BUNDLE_SCHEMA: &str = "librepaper-quarto-bundle/v1";
 pub const FINGERPRINT_VERSION: u32 = 1;
@@ -589,17 +585,16 @@ fn add_expected_blob(
 
 impl BundleManifest {
     /// Validate the schema and its complete referential closure. This does
-    /// not read blobs; [`ResultsStore::publish`] performs that part atomically.
+    /// not read blobs; the local companion owns result generation.
     pub fn validate(&self) -> Result<(), BundleError> {
         if self.schema != BUNDLE_SCHEMA {
             return Err(BundleError::Invalid(
                 "unsupported Quarto bundle schema".into(),
             ));
         }
-        // This module currently stores Quarto result bundles.  A future
-        // engine must introduce its own bundle contract before it can share
-        // this publication path; treating `none` as Quarto would allow a
-        // cross-engine result to become the selected output.
+        // A future engine must introduce its own bundle contract before it can
+        // share this validation path; treating `none` as Quarto would accept
+        // a cross-engine result as a Quarto payload.
         if !self.engine.is_quarto() {
             return Err(BundleError::Invalid(
                 "result bundle execution engine is not supported".into(),
@@ -670,7 +665,8 @@ impl BundleManifest {
         for asset in &self.assets {
             if asset.role == AssetRole::DraftDependency {
                 return Err(BundleError::Invalid(
-                    "draft dependency assets are reserved and cannot be published by Quarto".into(),
+                    "draft dependency assets are reserved and cannot be used in a Quarto payload"
+                        .into(),
                 ));
             }
             if !safe_path(&asset.path)
@@ -818,370 +814,10 @@ impl BundleManifest {
     }
 }
 
-/// Durable object store for immutable result bundles.
-#[derive(Clone)]
-pub struct ResultsStore {
-    blobs: Arc<dyn BlobStore>,
-    scope: String,
-}
-
-/// Compatibility name retained for existing Quarto callers.
-pub type QuartoStore = ResultsStore;
-
 /// Normalize legacy document metadata for API consumers that do not have a
 /// catalogue handle. The catalogue migration stores the same pair durably.
 pub fn document_metadata(source_format: &str) -> DocumentMetadata {
     DocumentMetadata::from_source_format(source_format)
-}
-
-pub fn blob_key(digest: &str) -> String {
-    format!("quarto/blobs/{digest}")
-}
-pub fn scoped_blob_key(scope: &str, digest: &str) -> String {
-    if scope.is_empty() {
-        blob_key(digest)
-    } else {
-        format!("quarto/blobs/{scope}/{digest}")
-    }
-}
-pub fn manifest_key(document: &str, render: &str) -> String {
-    format!("quarto/bundles/{document}/{render}/manifest.json")
-}
-pub fn scoped_manifest_key(scope: &str, document: &str, render: &str) -> String {
-    if scope.is_empty() {
-        manifest_key(document, render)
-    } else {
-        format!("quarto/bundles/{scope}/{document}/{render}/manifest.json")
-    }
-}
-pub fn selection_key(document: &str, context: &str) -> String {
-    format!("quarto/selections/{document}/{context}.json")
-}
-pub fn scoped_selection_key(scope: &str, document: &str, context: &str) -> String {
-    if scope.is_empty() {
-        selection_key(document, context)
-    } else {
-        format!("quarto/selections/{scope}/{document}/{context}.json")
-    }
-}
-
-impl ResultsStore {
-    pub fn new(blobs: Arc<dyn BlobStore>) -> Self {
-        Self {
-            blobs,
-            scope: String::new(),
-        }
-    }
-
-    /// Scope physical objects to the document's immutable storage identity.
-    /// This keeps deduplication from making one document's deletion remove a
-    /// blob another document references while retaining digest-addressed paths.
-    pub fn new_scoped(blobs: Arc<dyn BlobStore>, scope: impl Into<String>) -> Self {
-        Self {
-            blobs,
-            scope: scope.into(),
-        }
-    }
-
-    fn blob_key(&self, digest: &str) -> String {
-        scoped_blob_key(&self.scope, digest)
-    }
-
-    fn manifest_key(&self, document: &str, render: &str) -> String {
-        scoped_manifest_key(&self.scope, document, render)
-    }
-
-    fn selection_key(&self, document: &str, context: &str) -> String {
-        scoped_selection_key(&self.scope, document, context)
-    }
-
-    pub async fn publish(&self, request: PublishRequest) -> Result<PublishedBundle, BundleError> {
-        let decoded = decode_uploads(&request.manifest, &request.blobs)?;
-        let total: usize = request.manifest.encoded()?.len()
-            + decoded.iter().map(|blob| blob.data.len()).sum::<usize>();
-        if total > MAX_BUNDLE_BYTES {
-            return Err(BundleError::TooLarge("bundle exceeds size limit".into()));
-        }
-        for blob in decoded {
-            self.blobs
-                .put(&self.blob_key(&blob.sha256), blob.data, &blob.mime)
-                .await
-                .map_err(storage_error)?;
-        }
-        self.publish_manifest(request).await
-    }
-
-    /// Publishes after a managed room has written and accounted for all
-    /// dependency blobs. This is also used by the HTTP route to keep Quarto
-    /// objects in the normal room/catalogue accounting path.
-    pub async fn publish_manifest(
-        &self,
-        request: PublishRequest,
-    ) -> Result<PublishedBundle, BundleError> {
-        request.manifest.validate()?;
-        self.validate_references(&request).await?;
-        let manifest_bytes = request.manifest.encoded()?;
-        let key = self.manifest_key(&request.manifest.document_id, &request.manifest.render_id);
-        match self.blobs.swap(&key, manifest_bytes, "").await {
-            Ok(_) => {}
-            Err(BlobError::Conflict) => {
-                let current = self.blobs.get(&key).await.map_err(storage_error)?;
-                if serde_json::from_slice::<BundleManifest>(&current)
-                    .ok()
-                    .as_ref()
-                    != Some(&request.manifest)
-                {
-                    return Err(BundleError::Conflict(
-                        "render id already belongs to another bundle".into(),
-                    ));
-                }
-            }
-            Err(error) => return Err(storage_error(error)),
-        }
-        let selection = if request.select {
-            Some(
-                self.select(&request.manifest, request.expected_generation)
-                    .await?,
-            )
-        } else {
-            None
-        };
-        Ok(PublishedBundle {
-            manifest: request.manifest,
-            selected: selection.is_some(),
-            selection,
-        })
-    }
-
-    /// Checks every manifest dependency before a managed caller exposes its
-    /// manifest. The HTTP path performs this before its accounted manifest
-    /// CAS, so malformed or incomplete uploads can never become visible.
-    pub async fn validate_references(&self, request: &PublishRequest) -> Result<(), BundleError> {
-        request.manifest.validate()?;
-        let _ = request.manifest.encoded()?;
-        let mut expected = BTreeMap::<String, (u64, String)>::new();
-        if let Some(artifact) = &request.manifest.artifact {
-            add_expected_blob(
-                &mut expected,
-                &artifact.sha256,
-                artifact.size,
-                &artifact.mime,
-            )?;
-        }
-        for asset in &request.manifest.assets {
-            add_expected_blob(&mut expected, &asset.sha256, asset.size, &asset.mime)?;
-        }
-        // Retries may send only blobs that were not confirmed by the previous
-        // response. Every dependency is checked in the store before the
-        // manifest becomes visible; a request payload alone is never evidence
-        // that a blob was durably written.
-        for (digest, (size, _mime)) in &expected {
-            let body = self
-                .blobs
-                .get(&self.blob_key(digest))
-                .await
-                .map_err(storage_error)?;
-            if body.len() as u64 != *size || sha256(&body) != *digest {
-                return Err(BundleError::Invalid(
-                    "existing blob size or digest mismatch".into(),
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn get_manifest(
-        &self,
-        document: &str,
-        render: &str,
-    ) -> Result<BundleManifest, BundleError> {
-        let key = self.manifest_key(&valid_component(document)?, &valid_component(render)?);
-        let bytes = self.blobs.get(&key).await.map_err(storage_error)?;
-        if bytes.len() > MAX_MANIFEST_BYTES {
-            return Err(BundleError::TooLarge("manifest is too large".into()));
-        }
-        let manifest: BundleManifest = serde_json::from_slice(&bytes)
-            .map_err(|e| BundleError::Invalid(format!("invalid stored manifest: {e}")))?;
-        manifest.validate()?;
-        if manifest.document_id != document || manifest.render_id != render {
-            return Err(BundleError::Invalid("manifest identity mismatch".into()));
-        }
-        Ok(manifest)
-    }
-
-    pub async fn selected(
-        &self,
-        document: &str,
-        context: &str,
-    ) -> Result<Option<Selection>, BundleError> {
-        let key = self.selection_key(&valid_component(document)?, &valid_component(context)?);
-        match self.blobs.get(&key).await {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|e| BundleError::Invalid(format!("invalid selection: {e}"))),
-            Err(BlobError::NotFound) => Ok(None),
-            Err(error) => Err(storage_error(error)),
-        }
-    }
-
-    /// Read the current selection and return the next generation plus the
-    /// object version that a managed writer must compare-and-swap.
-    pub async fn selection_candidate(
-        &self,
-        manifest: &BundleManifest,
-        expected_generation: Option<u64>,
-    ) -> Result<(Selection, String), BundleError> {
-        let key = self.selection_key(
-            &valid_component(&manifest.document_id)?,
-            &valid_component(&manifest.context.id)?,
-        );
-        let current = match self.blobs.get_versioned(&key).await {
-            Ok((bytes, version)) => (
-                Some(
-                    serde_json::from_slice::<Selection>(&bytes)
-                        .map_err(|e| BundleError::Invalid(e.to_string()))?,
-                ),
-                version,
-            ),
-            Err(BlobError::NotFound) => (None, String::new()),
-            Err(error) => return Err(storage_error(error)),
-        };
-        self.selection_candidate_from(manifest, expected_generation, current.0, current.1)
-            .await
-    }
-
-    /// Compute a selection candidate from the catalogue-confirmed pointer.
-    /// The HTTP path supplies this durable value so a stale mutable blob can
-    /// never become the generation base after a restart or failed CAS.
-    pub async fn selection_candidate_from(
-        &self,
-        manifest: &BundleManifest,
-        expected_generation: Option<u64>,
-        current: Option<Selection>,
-        version: String,
-    ) -> Result<(Selection, String), BundleError> {
-        self.selection_candidate_from_generation(manifest, expected_generation, current, version, 0)
-            .await
-    }
-
-    /// As [`Self::selection_candidate_from`], with a durable tombstone epoch
-    /// supplied when the current selection was cleared during restore.
-    pub async fn selection_candidate_from_generation(
-        &self,
-        manifest: &BundleManifest,
-        expected_generation: Option<u64>,
-        current: Option<Selection>,
-        version: String,
-        durable_generation: u64,
-    ) -> Result<(Selection, String), BundleError> {
-        let generation =
-            durable_generation.max(current.as_ref().map_or(0, |selection| selection.generation));
-        // A transport retry for the same immutable render is idempotent. Keep
-        // the existing generation instead of demanding that callers invent a
-        // new selection generation for a request already committed.
-        if let Some(selection) = current.as_ref() {
-            if selection.render_id == manifest.render_id {
-                return Ok((selection.clone(), version));
-            }
-        }
-        if expected_generation.is_some_and(|wanted| wanted != generation) {
-            return Err(BundleError::Conflict("selection generation changed".into()));
-        }
-        Ok((
-            Selection {
-                document_id: manifest.document_id.clone(),
-                context_id: manifest.context.id.clone(),
-                generation: generation + 1,
-                render_id: manifest.render_id.clone(),
-                source_revision: manifest.source.revision.clone(),
-            },
-            version,
-        ))
-    }
-
-    pub fn selection_object_key(&self, document: &str, context: &str) -> String {
-        self.selection_key(document, context)
-    }
-
-    pub fn manifest_object_key(&self, document: &str, render: &str) -> String {
-        self.manifest_key(document, render)
-    }
-
-    pub async fn read_asset(
-        &self,
-        manifest: &BundleManifest,
-        path: &str,
-    ) -> Result<Vec<u8>, BundleError> {
-        let Some(asset) = manifest.assets.iter().find(|asset| asset.path == path) else {
-            return Err(BundleError::NotFound);
-        };
-        let body = self
-            .blobs
-            .get(&self.blob_key(&asset.sha256))
-            .await
-            .map_err(storage_error)?;
-        if body.len() as u64 != asset.size || sha256(&body) != asset.sha256 {
-            return Err(BundleError::Invalid("stored asset digest mismatch".into()));
-        }
-        Ok(body)
-    }
-
-    pub async fn read_artifact(&self, manifest: &BundleManifest) -> Result<Vec<u8>, BundleError> {
-        let Some(artifact) = &manifest.artifact else {
-            return Err(BundleError::NotFound);
-        };
-        let body = self
-            .blobs
-            .get(&self.blob_key(&artifact.sha256))
-            .await
-            .map_err(storage_error)?;
-        if body.len() as u64 != artifact.size || sha256(&body) != artifact.sha256 {
-            return Err(BundleError::Invalid(
-                "stored artifact digest mismatch".into(),
-            ));
-        }
-        Ok(body)
-    }
-
-    async fn select(
-        &self,
-        manifest: &BundleManifest,
-        expected_generation: Option<u64>,
-    ) -> Result<Selection, BundleError> {
-        let key = self.selection_key(&manifest.document_id, &manifest.context.id);
-        let current = match self.blobs.get_versioned(&key).await {
-            Ok((bytes, version)) => (
-                Some(
-                    serde_json::from_slice::<Selection>(&bytes)
-                        .map_err(|e| BundleError::Invalid(e.to_string()))?,
-                ),
-                version,
-            ),
-            Err(BlobError::NotFound) => (None, String::new()),
-            Err(error) => return Err(storage_error(error)),
-        };
-        let generation = current.0.as_ref().map_or(0, |s| s.generation);
-        if expected_generation.is_some_and(|wanted| wanted != generation) {
-            return Err(BundleError::Conflict("selection generation changed".into()));
-        }
-        let selection = Selection {
-            document_id: manifest.document_id.clone(),
-            context_id: manifest.context.id.clone(),
-            generation: generation + 1,
-            render_id: manifest.render_id.clone(),
-            source_revision: manifest.source.revision.clone(),
-        };
-        let bytes =
-            serde_json::to_vec(&selection).map_err(|e| BundleError::Invalid(e.to_string()))?;
-        self.blobs
-            .swap(&key, bytes, &current.1)
-            .await
-            .map_err(|error| match error {
-                BlobError::Conflict => BundleError::Conflict("selection generation changed".into()),
-                other => storage_error(other),
-            })?;
-        Ok(selection)
-    }
 }
 
 /// Decode and verify upload bytes before handing them to a managed room.
@@ -1248,22 +884,6 @@ pub fn decode_uploads(
         return Err(BundleError::TooLarge("bundle exceeds size limit".into()));
     }
     Ok(decoded)
-}
-
-fn valid_component(value: &str) -> Result<String, BundleError> {
-    if safe_component(value) {
-        Ok(value.to_owned())
-    } else {
-        Err(BundleError::Invalid("invalid bundle identity".into()))
-    }
-}
-
-fn storage_error(error: BlobError) -> BundleError {
-    match error {
-        BlobError::NotFound => BundleError::NotFound,
-        BlobError::Conflict => BundleError::Conflict("storage conflict".into()),
-        BlobError::Other(message) => BundleError::Storage(message),
-    }
 }
 
 #[cfg(test)]

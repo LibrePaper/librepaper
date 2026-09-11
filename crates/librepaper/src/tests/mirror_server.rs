@@ -1,49 +1,10 @@
-//! The compiler work package's server-side surface: rendering provenance,
-//! `/api/config`'s `latex_local` entry, and checkpoint trees that carry
-//! compile settings.
-//!
-//! Provenance and settings share one property with every other thing this
-//! server stores: neither may be silently wrong. A rendering's provenance
-//! rides in with the PDF that made it true, so a bad header must refuse the
-//! whole request rather than half-store something; a checkpoint's settings
-//! come only from the Yjs `meta` a browser writes, so a value that could not
-//! have come from the settings panel is dropped rather than trusted.
-
-use serde_json::{json, Value};
-use yrs::{Map, Transact};
-
+//! Compiler settings and direct mirror configuration.
 use super::*;
-use crate::auth::Policy;
-use crate::config::Configuration;
 use crate::document::session;
 use crate::room::Room;
+use serde_json::Value;
+use yrs::{Map, Transact};
 
-async fn server_with(config: Configuration) -> TestServer {
-    test_server_with(
-        config,
-        Policy::parse(TEST_PUBLISHER),
-        Policy::parse("anyone"),
-        true,
-    )
-    .await
-}
-
-fn pdf(seed: u8) -> Vec<u8> {
-    let mut bytes = b"%PDF-1.7\n% mirror test rendering\n".to_vec();
-    bytes.push(seed);
-    bytes
-}
-
-async fn live_sha(server: &TestServer, slug: &str) -> String {
-    server.instance.rooms.get(slug).await.tree().await.digest()
-}
-
-/// The harness has no route from the browser's collab protocol to writing a
-/// `meta` key directly -- only a real Yjs peer edits text that way, and
-/// `latex.engine`/`latex.release` are settings, not keystrokes. This writes
-/// them the same way `session::set_main` does: straight into the room's Yjs
-/// doc, under the room's own lock, exactly as an editor's `setLatexSettings`
-/// call would arrive over the socket.
 async fn set_latex_meta(room: &Room, engine: &str, release: &str) {
     let state = room.state.lock().await;
     let meta = state.session.doc.get_or_insert_map(session::META);
@@ -52,240 +13,10 @@ async fn set_latex_meta(room: &Room, engine: &str, release: &str) {
         meta.insert(&mut txn, session::LATEX_ENGINE, engine.to_string());
     }
     if !release.is_empty() {
-        meta.insert(&mut txn, session::LATEX_RELEASE, release.to_string());
+        meta.insert(&mut txn, "latex.release", release.to_string());
     }
 }
 
-async fn put_rendering_with(
-    cookie: &str,
-    base: &str,
-    slug: &str,
-    name: &str,
-    provenance: Option<&str>,
-    body: Vec<u8>,
-) -> (u16, Value) {
-    let mut request = client()
-        .put(format!("{base}/api/documents/{slug}/renderings/{name}"))
-        .header("x-librepaper-client", "1")
-        .header("cookie", cookie);
-    if let Some(raw) = provenance {
-        request = request.header("x-librepaper-provenance", raw);
-    }
-    let response = request.body(body).send().await.expect("a response");
-    let status = response.status().as_u16();
-    let raw = response.bytes().await.unwrap_or_default();
-    (status, serde_json::from_slice(&raw).unwrap_or(Value::Null))
-}
-
-async fn get_latest(cookie: &str, base: &str, slug: &str) -> (u16, Value) {
-    let response = client()
-        .get(format!("{base}/api/documents/{slug}/renderings/latest"))
-        .header("x-librepaper-client", "1")
-        .header("cookie", cookie)
-        .send()
-        .await
-        .expect("a response");
-    let status = response.status().as_u16();
-    let raw = response.bytes().await.unwrap_or_default();
-    (status, serde_json::from_slice(&raw).unwrap_or(Value::Null))
-}
-
-async fn get_rendering(cookie: &str, base: &str, slug: &str, name: &str) -> u16 {
-    client()
-        .get(format!("{base}/api/documents/{slug}/renderings/{name}"))
-        .header("x-librepaper-client", "1")
-        .header("cookie", cookie)
-        .send()
-        .await
-        .expect("a response")
-        .status()
-        .as_u16()
-}
-
-/* -------------------------------------------------------------- provenance */
-
-/// Provenance sent beside a PDF is stored, and a reader asking for the latest
-/// rendering is told it. The exact `Provenance` shape round-trips unchanged.
-#[tokio::test]
-async fn provenance_round_trips_through_upload_and_latest() {
-    let server = new_test_server().await;
-    let document = crate::tests::edit::publish_with_source(&server.url).await;
-    let slug = text(&document, "slug");
-    let cookie = session_as(TEST_PUBLISHER);
-    let sha = live_sha(&server, &slug).await;
-
-    let provenance = json!({
-        "backend": "browser",
-        "bibliography": "bibtex",
-        "engine": "pdflatex",
-        "release": "2026-8b7946970153c52e+2026-ba38749b8714505a",
-        "tools": {"tex": "pdfTeX 1.40.27"}
-    });
-
-    let (status, answer) = put_rendering_with(
-        &cookie,
-        &server.url,
-        &slug,
-        &sha,
-        Some(&provenance.to_string()),
-        pdf(1),
-    )
-    .await;
-    assert_eq!(status, 200, "{answer}");
-
-    let (status, answer) = get_latest(&cookie, &server.url, &slug).await;
-    assert_eq!(status, 200, "{answer}");
-    assert_eq!(text(&answer, "sha"), sha);
-    assert_eq!(
-        answer["provenance"], provenance,
-        "the stored provenance did not come back unchanged: {answer}"
-    );
-}
-
-/// A rendering with no provenance header answers with none: the field is
-/// absent from `latest`'s payload, not present and empty or null.
-#[tokio::test]
-async fn a_rendering_with_no_provenance_answers_with_none() {
-    let server = new_test_server().await;
-    let document = crate::tests::edit::publish_with_source(&server.url).await;
-    let slug = text(&document, "slug");
-    let cookie = session_as(TEST_PUBLISHER);
-    let sha = live_sha(&server, &slug).await;
-
-    let (status, answer) =
-        put_rendering_with(&cookie, &server.url, &slug, &sha, None, pdf(1)).await;
-    assert_eq!(status, 200, "{answer}");
-
-    let (status, answer) = get_latest(&cookie, &server.url, &slug).await;
-    assert_eq!(status, 200, "{answer}");
-    assert!(
-        answer.get("provenance").is_none(),
-        "a rendering with no header grew a provenance field: {answer}"
-    );
-}
-
-/// A header over 2048 bytes is refused before a byte of the PDF is read, and
-/// nothing about the request -- PDF or provenance -- is stored.
-#[tokio::test]
-async fn an_oversized_provenance_header_is_refused_and_nothing_is_stored() {
-    let server = new_test_server().await;
-    let document = crate::tests::edit::publish_with_source(&server.url).await;
-    let slug = text(&document, "slug");
-    let cookie = session_as(TEST_PUBLISHER);
-    let sha = live_sha(&server, &slug).await;
-
-    let huge = format!(
-        r#"{{"backend":"browser","padding":"{}"}}"#,
-        "x".repeat(2100)
-    );
-    assert!(huge.len() > 2048);
-    let (status, answer) =
-        put_rendering_with(&cookie, &server.url, &slug, &sha, Some(&huge), pdf(1)).await;
-    assert_eq!(status, 400, "{answer}");
-
-    let room = server.instance.rooms.get(&slug).await;
-    assert!(
-        !room.has_rendering(&sha, false).await,
-        "the PDF was stored despite the bad header"
-    );
-    let status = get_rendering(&cookie, &server.url, &slug, &sha).await;
-    assert_eq!(status, 404, "a PDF landed despite the refused header");
-}
-
-/// A header that parses as JSON but is not an object -- an array, a string, a
-/// number -- is refused the same way a header that does not parse at all is.
-#[tokio::test]
-async fn a_non_object_provenance_header_is_refused() {
-    let server = new_test_server().await;
-    let document = crate::tests::edit::publish_with_source(&server.url).await;
-    let slug = text(&document, "slug");
-    let cookie = session_as(TEST_PUBLISHER);
-    let sha = live_sha(&server, &slug).await;
-
-    for bad in ["[1,2,3]", "\"a string\"", "42", "not json at all"] {
-        let (status, answer) =
-            put_rendering_with(&cookie, &server.url, &slug, &sha, Some(bad), pdf(1)).await;
-        assert_eq!(status, 400, "{bad} should have been refused: {answer}");
-    }
-    let room = server.instance.rooms.get(&slug).await;
-    assert!(
-        !room.has_rendering(&sha, false).await,
-        "a PDF was stored behind a non-object header"
-    );
-}
-
-/// Provenance is pruned with the rendering it describes: the same pass that
-/// drops an old PDF drops the provenance beside it, and the quota it counted
-/// against is released too.
-#[tokio::test]
-async fn provenance_is_pruned_with_its_rendering() {
-    let server = server_with(Configuration {
-        asset_grace: 0,
-        ..Configuration::default()
-    })
-    .await;
-    let document = crate::tests::edit::publish_with_source(&server.url).await;
-    let slug = text(&document, "slug");
-    let cookie = session_as(TEST_PUBLISHER);
-    let room = server.instance.rooms.get(&slug).await;
-
-    room.set_source("# My Paper\n\nfirst\n", "markdown")
-        .await
-        .unwrap();
-    let old_sha = live_sha(&server, &slug).await;
-    let (status, answer) = put_rendering_with(
-        &cookie,
-        &server.url,
-        &slug,
-        &old_sha,
-        Some(r#"{"backend":"browser"}"#),
-        pdf(1),
-    )
-    .await;
-    assert_eq!(status, 200, "{answer}");
-
-    room.set_source("# My Paper\n\nsecond\n", "markdown")
-        .await
-        .unwrap();
-    let new_sha = live_sha(&server, &slug).await;
-    let (status, answer) = put_rendering_with(
-        &cookie,
-        &server.url,
-        &slug,
-        &new_sha,
-        Some(r#"{"backend":"browser"}"#),
-        pdf(2),
-    )
-    .await;
-    assert_eq!(status, 200, "{answer}");
-
-    // A further checkpoint is when pruning runs; the old moment is neither
-    // the newest nor labelled, so it and its provenance both go.
-    room.set_source("# My Paper\n\nthird\n", "markdown")
-        .await
-        .unwrap();
-    room.checkpoint("quiet", TEST_PUBLISHER)
-        .await
-        .expect("a checkpoint");
-
-    assert!(
-        room.read_rendering_provenance(&old_sha).await.is_none(),
-        "the old rendering's provenance survived pruning"
-    );
-    assert!(
-        room.read_rendering_provenance(&new_sha).await.is_some(),
-        "the newest rendering's provenance was pruned"
-    );
-    let (status, answer) = get_latest(&cookie, &server.url, &slug).await;
-    assert_eq!(status, 200, "{answer}");
-    assert_eq!(text(&answer, "sha"), new_sha);
-    assert!(answer.get("provenance").is_some());
-}
-
-/* --------------------------------------------------------------- /api/config */
-
-/// The local bridge's address and protocol are always in `/api/config`, so
-/// the browser never has to guess a port.
 #[tokio::test]
 async fn api_config_carries_latex_local() {
     let server = new_test_server().await;
@@ -330,7 +61,6 @@ async fn engine_setting_changes_the_checkpoint_tree_and_its_sha() {
         with_engine.settings,
         Some(crate::document::history::CompileSettings {
             engine: "xelatex".to_string(),
-            release: String::new(),
         })
     );
     let engine_sha = with_engine.digest();
@@ -416,4 +146,15 @@ async fn an_invalid_engine_value_is_dropped_not_stored() {
         "an invalid release id was recorded: {tree:?}"
     );
     assert_eq!(tree.digest(), bare_sha);
+}
+
+#[tokio::test]
+async fn valid_legacy_release_pin_has_no_effect() {
+    let server = new_test_server().await;
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let room = server.instance.rooms.get(&text(&document, "slug")).await;
+    let before = room.tree().await.digest();
+    set_latex_meta(&room, "", "2026-old-build").await;
+    assert_eq!(room.tree().await.digest(), before);
+    assert!(room.tree().await.settings.is_none());
 }
