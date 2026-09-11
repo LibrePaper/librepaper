@@ -8,6 +8,8 @@
 //! sessions/<slug>              the live document, as one Yjs update
 //! history/<slug>/index.json    the manifest of its checkpoints
 //! history/<slug>/<sha>         one checkpoint: the source bytes
+//! content/<storage>/chunks/<sha>  compressed source-history chunks
+//! content/<storage>/recipes/<sha> complete-file chunk recipes
 //! rooms/<slug>.json
 //! rooms/<slug>.lock
 //! ```
@@ -28,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use fs2::available_space;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
@@ -237,9 +240,16 @@ pub struct FsStore {
     /// rooms: `spawn_blocking` otherwise creates an unbounded queue of work
     /// that can consume every blocking worker at once.
     blocking: Arc<Semaphore>,
+    /// Bytes reserved by writes submitted through this store but not yet
+    /// renamed into place.  It is shared by all cloned handles, so concurrent
+    /// blocking workers cannot each spend the same free-space margin.
+    reserved_space: Arc<Mutex<u64>>,
 }
 
 const FS_BLOCKING_CONCURRENCY: usize = 8;
+const FS_MAINTENANCE_FLOOR: u64 = 64 * 1024 * 1024;
+const FS_WRITE_QUANTUM: u64 = 4096;
+const FS_DIRECTORY_METADATA_HEADROOM: u64 = 4096;
 
 impl FsStore {
     pub fn new(dir: impl Into<PathBuf>, durable: bool) -> FsStore {
@@ -248,6 +258,7 @@ impl FsStore {
             durable,
             swapping: Arc::new(Mutex::new(())),
             blocking: Arc::new(Semaphore::new(FS_BLOCKING_CONCURRENCY)),
+            reserved_space: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -326,6 +337,82 @@ impl FsStore {
     }
 }
 
+/// An in-process reservation held until the atomic rename (or a failed/cancelled
+/// writer) completes.  The guard is deliberately moved into `spawn_blocking`
+/// so no asynchronous task can release the reservation while the temp file is
+/// still consuming it.
+struct FsSpaceReservation {
+    shared: Arc<Mutex<u64>>,
+    bytes: u64,
+}
+
+impl Drop for FsSpaceReservation {
+    fn drop(&mut self) {
+        if let Ok(mut reserved) = self.shared.lock() {
+            *reserved = reserved.saturating_sub(self.bytes);
+        }
+    }
+}
+
+fn rounded_write_budget(body_len: usize) -> BlobResult<u64> {
+    let bytes =
+        u64::try_from(body_len).map_err(|_| BlobError::Other("blob body is too large".into()))?;
+    let rounded = bytes
+        .checked_add(FS_WRITE_QUANTUM - 1)
+        .and_then(|bytes| bytes.checked_div(FS_WRITE_QUANTUM))
+        .and_then(|units| units.checked_mul(FS_WRITE_QUANTUM))
+        .ok_or_else(|| BlobError::Other("blob write budget overflow".into()))?;
+    Ok(rounded.saturating_add(FS_DIRECTORY_METADATA_HEADROOM))
+}
+
+fn nearest_existing_ancestor(path: &Path) -> std::io::Result<PathBuf> {
+    let mut ancestor = path.parent().unwrap_or(path);
+    loop {
+        if ancestor.as_os_str().is_empty() {
+            ancestor = Path::new(".");
+        }
+        match std::fs::metadata(ancestor) {
+            Ok(_) => return Ok(ancestor.to_path_buf()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = ancestor.parent().ok_or(error)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn reserve_fs_space(
+    path: &Path,
+    shared: &Arc<Mutex<u64>>,
+    body_len: usize,
+) -> BlobResult<FsSpaceReservation> {
+    let budget = rounded_write_budget(body_len)?;
+    let ancestor = nearest_existing_ancestor(path).map_err(BlobError::from)?;
+    // Serialize measurement with reservation release: a completed writer
+    // must not free its reservation against an older free-space snapshot.
+    let mut reserved = shared
+        .lock()
+        .map_err(|_| BlobError::Other("filesystem space reservation lock poisoned".into()))?;
+    let available = available_space(&ancestor).map_err(|error| {
+        BlobError::Other(format!(
+            "cannot determine available filesystem space: {error}"
+        ))
+    })?;
+    if available < FS_MAINTENANCE_FLOOR
+        || available - FS_MAINTENANCE_FLOOR < reserved.saturating_add(budget)
+    {
+        return Err(BlobError::Other(format!(
+            "insufficient filesystem space for atomic blob write (need {} bytes plus {}-byte maintenance floor; {} available)",
+            budget, FS_MAINTENANCE_FLOOR, available
+        )));
+    }
+    *reserved = reserved.saturating_add(budget);
+    Ok(FsSpaceReservation {
+        shared: Arc::clone(shared),
+        bytes: budget,
+    })
+}
+
 #[async_trait]
 impl BlobStore for FsStore {
     async fn exists(&self, key: &str) -> BlobResult<bool> {
@@ -355,7 +442,9 @@ impl BlobStore for FsStore {
     async fn put(&self, key: &str, body: Vec<u8>, _content_type: &str) -> BlobResult<()> {
         let path = self.path_for(key)?;
         let durable = self.durable;
+        let reserved_space = Arc::clone(&self.reserved_space);
         self.blocking(move || {
+            let _space = reserve_fs_space(&path, &reserved_space, body.len())?;
             write_file_atomically(&path, &body, durable)?;
             Ok(())
         })
@@ -432,10 +521,12 @@ impl BlobStore for FsStore {
         let swapping = self.swapping.clone();
         let expect = expect.to_string();
         let durable = self.durable;
+        let reserved_space = Arc::clone(&self.reserved_space);
         self.blocking(move || {
             let _guard = swapping
                 .lock()
                 .map_err(|_| BlobError::Other("swap lock poisoned".into()))?;
+            let _space = reserve_fs_space(&path, &reserved_space, body.len())?;
             let current = match read_versioned_path(&path) {
                 Ok((_, version)) => version,
                 Err(BlobError::NotFound) => String::new(),
@@ -827,6 +918,25 @@ pub fn tree_key(storage_id: &str, tree_sha: &str) -> String {
 pub fn content_blob_key(storage_id: &str, sha: &str) -> String {
     format!("content/{storage_id}/blobs/{sha}")
 }
+/// A compressed source-history object. The digest is of the uncompressed
+/// chunk bytes, while the complete file identity remains the digest recorded
+/// in its recipe. Keeping chunks in a distinct namespace lets GC follow
+/// recipes without confusing them with legacy whole-file blobs.
+pub fn content_chunk_key(storage_id: &str, encoded_digest: &str) -> String {
+    format!("content/{storage_id}/chunks/{encoded_digest}")
+}
+pub fn content_chunk_prefix(storage_id: &str) -> String {
+    format!("content/{storage_id}/chunks/")
+}
+/// The compact recipe for one complete source file, addressed by the logical
+/// uncompressed file digest. A recipe is itself immutable and independently
+/// readable.
+pub fn content_recipe_key(storage_id: &str, file_digest: &str) -> String {
+    format!("content/{storage_id}/recipes/{file_digest}")
+}
+pub fn content_recipe_prefix(storage_id: &str) -> String {
+    format!("content/{storage_id}/recipes/")
+}
 pub fn content_asset_key(storage_id: &str, sha: &str) -> String {
     format!("content/{storage_id}/assets/{sha}")
 }
@@ -1195,6 +1305,51 @@ pub async fn take_room_lease(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disk_guard_resolves_a_new_relative_store_to_current_directory() {
+        assert_eq!(
+            nearest_existing_ancestor(Path::new(
+                ".librepaper-nonexistent-guard-fixture/nested/object"
+            ))
+            .unwrap(),
+            PathBuf::from("."),
+        );
+    }
+
+    #[test]
+    fn fs_write_budget_rounds_payload_and_directory_headroom() {
+        assert_eq!(
+            rounded_write_budget(0).unwrap(),
+            FS_DIRECTORY_METADATA_HEADROOM
+        );
+        assert_eq!(
+            rounded_write_budget(1).unwrap(),
+            FS_WRITE_QUANTUM + FS_DIRECTORY_METADATA_HEADROOM
+        );
+        assert_eq!(
+            rounded_write_budget(FS_WRITE_QUANTUM as usize).unwrap(),
+            FS_WRITE_QUANTUM + FS_DIRECTORY_METADATA_HEADROOM
+        );
+    }
+
+    #[test]
+    fn fs_space_reservation_is_shared_and_raii() {
+        let directory = tempfile::tempdir().unwrap();
+        let shared = Arc::new(Mutex::new(0));
+        let path = directory.path().join("nested/object");
+        let first = reserve_fs_space(&path, &shared, 1).unwrap();
+        assert_eq!(*shared.lock().unwrap(), rounded_write_budget(1).unwrap());
+        let second = reserve_fs_space(&path, &shared, 1).unwrap();
+        assert_eq!(
+            *shared.lock().unwrap(),
+            2 * rounded_write_budget(1).unwrap()
+        );
+        drop(first);
+        assert_eq!(*shared.lock().unwrap(), rounded_write_budget(1).unwrap());
+        drop(second);
+        assert_eq!(*shared.lock().unwrap(), 0);
+    }
 
     #[tokio::test]
     async fn existence_distinguishes_missing_objects_from_invalid_reads() {

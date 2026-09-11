@@ -27,6 +27,7 @@ export function createHtmlCompiler({
   let engineKey = null;
   let manifest = null;
   let manifestBase = null;
+  let manifestRequest = null;
   let queued = null;
   let running = false;
   let cancelActive = null;
@@ -46,25 +47,48 @@ export function createHtmlCompiler({
     queued = null;
   }
 
-  async function prepare(base, settings, current) {
+  async function configuration(base, settings = {}) {
+    base = new URL(base || "/latex/", globalThis.location?.href || "http://localhost/").href;
+    if (!base.endsWith("/")) base += "/";
     if (manifestBase !== base || !manifest) {
-      const response = await request(new URL("manifest.json", base));
-      if (!response.ok) throw new Error(`LaTeX mirror unavailable (${response.status})`);
-      const data = await response.json();
-      if (current !== epoch) throw superseded();
-      if (data.format !== 1) throw new Error("Unsupported LaTeX mirror format");
-      manifest = data;
-      manifestBase = base;
+      if (!manifestRequest || manifestRequest.base !== base) {
+        const pending = (async () => {
+          const response = await request(new URL("manifest.json", base));
+          if (!response.ok) throw new Error(`LaTeX mirror unavailable (${response.status})`);
+          const data = await response.json();
+          if (data.format !== 1) throw new Error("Unsupported LaTeX mirror format");
+          return data;
+        })();
+        manifestRequest = { base, pending };
+      }
+      const captured = manifestRequest;
+      try { manifest = await captured.pending; manifestBase = base; }
+      finally { if (manifestRequest === captured) manifestRequest = null; }
     }
     // Existing documents pin the PDF toolchain. Older releases predate HTML
     // preview, so use the current preview engine without changing that pin.
-    const pinned = settings?.release;
+    const capturedSettings = { ...settings };
+    const pinned = capturedSettings.release;
     const releaseId = manifest.releases?.[pinned]?.engines?.latexml
       ? pinned : manifest.default_release;
     const release = manifest.releases?.[releaseId];
     const spec = release?.engines?.latexml;
     if (!spec) throw new Error("This LaTeX release does not include the HTML preview renderer.");
-    const key = `${base}\n${releaseId}`;
+    const capturedRelease = structuredClone(release);
+    return {
+      base, releaseId, release: capturedRelease, settings: capturedSettings,
+      fallback: Boolean(pinned && pinned !== releaseId),
+      identity: JSON.stringify({ base, releaseId, release: capturedRelease, settings: capturedSettings, metadataVersion: 1 }),
+    };
+  }
+
+  async function prepare(base, settings, current, captured) {
+    const resolved = captured || await configuration(base, settings);
+    if (current !== epoch) throw superseded();
+    const { releaseId, release } = resolved;
+    base = resolved.base;
+    const spec = release.engines.latexml;
+    const key = resolved.identity;
     if (engine && engineKey === key) return engine;
     retire();
     if (!release.bundles?.index || !release.bundles.sha256) throw new Error("Missing verified TeX bundle index");
@@ -91,8 +115,11 @@ export function createHtmlCompiler({
 
   async function run({ tree, options }, current) {
     const started = Date.now();
-    const base = new URL(options.base || "/latex/", globalThis.location?.href || "http://localhost/").href;
-    const target = await prepare(base.endsWith("/") ? base : `${base}/`, options.settings, current);
+    // A queued historical render carries the manifest identity resolved by
+    // the caller. Its base is authoritative; consulting the live chooser
+    // here could fetch a different release than the cache key names.
+    const base = new URL(options.configuration?.base || options.base || "/latex/", globalThis.location?.href || "http://localhost/").href;
+    const target = await prepare(base.endsWith("/") ? base : `${base}/`, options.settings, current, options.configuration);
     if (current !== epoch) throw superseded();
     projectPath(tree.main);
     await target.flushCache();
@@ -157,6 +184,8 @@ export function createHtmlCompiler({
 
   function compile(tree, options = {}) {
     // Snapshot before waiting: a later edit must never mutate a queued job.
+    const capturedConfiguration = options.configuration == null
+      ? null : structuredClone(options.configuration);
     const snapshot = {
       main: tree.main,
       texts: { ...tree.texts },
@@ -164,14 +193,24 @@ export function createHtmlCompiler({
     };
     return new Promise((resolve, reject) => {
       if (queued) queued.reject(superseded());
-      queued = { tree: snapshot, options: { ...options, settings: { ...options.settings } }, resolve, reject };
+      queued = {
+        tree: snapshot,
+        options: {
+          ...options,
+          settings: { ...options.settings },
+          configuration: capturedConfiguration,
+        },
+        resolve,
+        reject,
+      };
       void drain();
     });
   }
 
-  return { compile, cancel };
+  return { compile, cancel, configuration };
 }
 
 const compiler = createHtmlCompiler();
 export const compile = compiler.compile;
 export const cancel = compiler.cancel;
+export const configuration = compiler.configuration;

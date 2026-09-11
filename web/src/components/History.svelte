@@ -1,5 +1,7 @@
 <script>
-  import { untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
+  import { loadQuotaPreferences, validateTimezone } from "../lib/quota-preferences.js";
+  import { day as dayOf } from "../lib/dates.js";
   // The timeline, as a column beside the document.
   //
   // A history is read backwards -- what happened, then what happened before
@@ -20,7 +22,7 @@
   // rather than at the head of the panel. They sat at the head for a while
   // and took half its height, so the column read as three things at once:
   // versions in time, the edits inside one of them, and the files those edits
-  // touched. The timeline answers when and by whom; the document answers
+  // touched. The timeline answers when and which event actor recorded it; the document answers
   // what. The list of changes as prose is still there, folded away.
   //
   // Nothing here fetches. The panel is given the checkpoints and reports what
@@ -33,6 +35,7 @@
 
   let {
     checkpoints = [],
+    durability = null,
     viewing = null,
     canEdit = false,
     baseline = null,
@@ -66,6 +69,17 @@
   let opened = $state(new Set());
   let namedOnly = $state(false);
   let lastRevealed = $state("");
+  let timezone = $state("UTC");
+  onMount(() => {
+    let active = true;
+    const refresh = () => loadQuotaPreferences().then((snapshot) => {
+      const chosen = snapshot.preferences?.displayTimezone;
+      if (active && validateTimezone(chosen)) timezone = chosen;
+    }).catch(() => {});
+    void refresh();
+    window.addEventListener("librepaper-quota-preferences", refresh);
+    return () => { active = false; window.removeEventListener("librepaper-quota-preferences", refresh); };
+  });
 
   // The checkpoint being named, and what it is being named. One at a time,
   // because naming two moments at once is not a thing anybody does.
@@ -80,7 +94,7 @@
     const selected = checkpoints.find((point) => point.sha === viewing);
     return checkpoints.filter((point) => point.label || point.sha === viewing);
   });
-  const days = $derived(timeline(timelinePoints));
+  const days = $derived(timeline(timelinePoints, timezone));
   const namedCount = $derived(checkpoints.filter((point) => point.label).length);
 
   // Where each checkpoint stands in the manifest, oldest first, so that the
@@ -152,7 +166,7 @@
     const when = new Date(at);
     return Number.isNaN(when.getTime())
       ? ""
-      : when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      : when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: timezone });
   }
 
   function stamp(at) {
@@ -160,26 +174,37 @@
     return Number.isNaN(when.getTime()) ? "" : when.toLocaleString([], {
       dateStyle: "medium",
       timeStyle: "short",
+      timeZone: timezone,
     });
   }
 
   function dayLabel(day) {
     if (!day) return "Unknown date";
     const today = new Date();
-    const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
-    const yesterdayKey = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+    const todayKey = dayOf(today, timezone);
+    // Shift the target-timezone calendar date in UTC at noon. Mutating a
+    // browser-local Date crosses the wrong DST boundary when the reader's
+    // timezone differs from the browser's, and a 24-hour subtraction is not
+    // a calendar-day operation on DST transitions.
+    const shiftCalendarDay = (value, offset) => {
+      const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+      if (!match) return "";
+      const shifted = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + offset, 12));
+      return Number.isNaN(shifted.getTime()) ? "" : dayOf(shifted, "UTC");
+    };
+    const yesterdayKey = shiftCalendarDay(todayKey, -1);
     if (day === todayKey) return "Today";
     if (day === yesterdayKey) return "Yesterday";
-    const date = new Date(`${day}T12:00:00`);
-    return Number.isNaN(date.getTime()) ? day : date.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+    const date = new Date(`${day}T12:00:00Z`);
+    return Number.isNaN(date.getTime()) ? day : date.toLocaleDateString([], {
+      year: "numeric", month: "short", day: "numeric", timeZone: timezone,
+    });
   }
 
   function sessionSummary(row) {
     const count = row.hidden.length + 2;
     const range = `${clock(row.last.at)}–${clock(row.first.at)}`;
-    return `${range} · ${row.first.by || "somebody"} · ${count} versions`;
+    return `${range} · event by ${row.first.by || "the system"} · ${count} versions`;
   }
 
   // What a checkpoint was taken for, in words rather than in the manifest's
@@ -289,7 +314,7 @@
       : undefined}
   >
     {#if problem}
-      <p class="text-error-500">{problem}</p>
+      <p class="text-error-500" role="status">{problem}</p>
     {:else if checkpoints.length === 0}
       <p class="panel-muted">
         Nothing yet. A version is saved when the typing stops, when the last
@@ -297,6 +322,13 @@
       </p>
     {/if}
   </PanelHeader>
+  {#if durability?.live_save === "pending"}
+    <p class="panel-muted px-2 py-1 text-xs" role="status">Live edits are still being saved.</p>
+  {/if}
+  {#if durability?.history_checkpoint === "pending"}
+    <p class="panel-muted px-2 py-1 text-xs" role="status">Historical checkpoint pending; live-save status is separate.</p>
+  {/if}
+  <p class="panel-muted px-2 py-1 text-xs">Edits are saved promptly. History keeps selected recovery points; older routine versions become sparser. Name important versions to request milestone protection, subject to storage limits. Times shown in {timezone}.</p>
 
   {#if checkpoints.length > 0}
     <label class="history-switch label px-2 py-1">
@@ -406,14 +438,14 @@
         class:timeline-named={Boolean(point.label)}
         class:timeline-here={viewing === point.sha}
         aria-current={viewing === point.sha ? "true" : undefined}
-        title="Show version from {stamp(point.at) || shortSha(point.sha)} ({point.by || "somebody"} {reason(point.why)})"
+        title="Show version from {stamp(point.at) || shortSha(point.sha)} (event by {point.by || "the system"}; {reason(point.why)})"
         onclick={() => onview?.(point.sha)}
       >
         <span class="timeline-dot {swatch(point.by)}"></span>
         <span class="timeline-when panel-meta">{clock(point.at)}</span>
         <span class="timeline-what">
           {#if point.label}<strong>{point.label}</strong>{/if}
-          <span class="timeline-who">{point.by || "somebody"}</span>
+          <span class="timeline-who">Event by {point.by || "the system"}</span>
           {#if said(point)}<span class="timeline-why panel-meta">{said(point)}</span>{/if}
         </span>
       </button>
@@ -479,9 +511,9 @@
         {:else if changes === null}
           <span class="panel-muted text-sm" role="status">Loading changes…</span>
         {:else if !groups.length}
-          <span class="panel-muted text-sm">{!comparingCurrent && viewing === checkpoints[0]?.sha ? "First version." : "No text changed."}</span>
+          <span class="panel-muted text-sm" role="status">{!comparingCurrent && viewing === checkpoints[0]?.sha ? "First retained version." : "No changes."}</span>
         {:else}
-          <span class="history-count text-sm">{count}</span>
+          <span class="history-count text-sm" role="status">{count}</span>
           <span class="history-steps">
             <IconButton icon="chevron-up" tone="plain" size="btn-icon-sm" label="Previous change ([)" onclick={() => goTo(step < 0 ? groups.length - 1 : step - 1)} />
             <IconButton icon="chevron-down" tone="plain" size="btn-icon-sm" label="Next change (])" onclick={() => goTo(step + 1)} />
@@ -517,11 +549,11 @@
           </ol>
         </details>
       {/if}
-      {#if paths.length > 1}
-        <!-- One file is the document itself, and naming it on every version
-             says nothing. More than one is worth listing. -->
+      {#if paths.length > 0}
+        <!-- Source comparison remains available even for a single file,
+             including when rendered passage mapping is unavailable. -->
         <details class="history-files">
-          <summary class="panel-meta">{paths.length} files changed</summary>
+          <summary class="panel-meta">{paths.length} {paths.length === 1 ? "file" : "files"} changed</summary>
           <div class="history-paths">
             {#each paths as path (path)}
               <button type="button" class="btn btn-sm preset-outlined-surface-300-700 justify-start" onclick={() => onfilediff?.(path)}>{path}</button>

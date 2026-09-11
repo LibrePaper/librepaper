@@ -7,6 +7,7 @@
 //! the request and check manifest membership before using the cache.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 
 use futures_util::future::join_all;
@@ -146,6 +147,18 @@ impl CheckpointCache {
     /// callers and retaining successful results subject to the bounds.
     /// Errors are never cached, so a transient storage failure can be retried.
     pub async fn get(&self, blobs: &dyn BlobStore, key: &str) -> BlobResult<Arc<Vec<u8>>> {
+        self.get_loaded(key, || async move { blobs.get(key).await })
+            .await
+    }
+
+    /// Resolve and cache a derived immutable object under a private key.
+    /// Source-history files use this path so recipe/chunk reconstruction is
+    /// request-coalesced and byte bounded like legacy bodies.
+    async fn get_loaded<F, Fut>(&self, key: &str, loader: F) -> BlobResult<Arc<Vec<u8>>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = BlobResult<Vec<u8>>>,
+    {
         let (waiter, owner) = {
             let mut state = self.state.lock().expect("checkpoint cache poisoned");
             state.clock = state.clock.wrapping_add(1);
@@ -194,7 +207,7 @@ impl CheckpointCache {
                 .acquire()
                 .await
                 .map_err(|_| BlobError::Other("checkpoint read limiter closed".into()))?;
-            blobs.get(key).await
+            loader().await
         }
         .await
         .map(Arc::new);
@@ -218,17 +231,41 @@ impl CheckpointCache {
         path: &str,
         id: &str,
     ) -> Result<(Tree, HashMap<String, String>), String> {
+        self.load_checkpoint_with_native_digests(blobs, slug, point, path, id, &HashSet::new())
+            .await
+    }
+
+    /// As [`load_checkpoint`], but require the native recipe path for text
+    /// digests known to have a committed source-history graph. This prevents
+    /// a missing native recipe from silently falling back to an old legacy
+    /// blob with the same digest.
+    pub async fn load_checkpoint_with_native_digests(
+        &self,
+        blobs: &dyn BlobStore,
+        slug: &str,
+        point: &Checkpoint,
+        path: &str,
+        id: &str,
+        native_digests: &HashSet<String>,
+    ) -> Result<(Tree, HashMap<String, String>), String> {
         let raw = self
             .get(blobs, &checkpoint_key(slug, &point.sha))
             .await
             .map_err(|err| err.to_string())?;
         let tree = if point.tree {
-            serde_json::from_slice(raw.as_slice()).map_err(|err| {
+            let tree: Tree = serde_json::from_slice(raw.as_slice()).map_err(|err| {
                 format!(
                     "the checkpoint {} of {slug} is not readable ({err})",
                     point.sha
                 )
-            })?
+            })?;
+            if !point.tree_sha.is_empty() && tree.digest() != point.tree_sha {
+                return Err(format!(
+                    "the checkpoint {} of {slug} has a tree digest that does not match its catalogue row",
+                    point.sha
+                ));
+            }
+            tree
         } else {
             Tree::of_one_file(path, id, &point.sha, raw.len() as i64)
         };
@@ -244,19 +281,35 @@ impl CheckpointCache {
 
         if !point.tree {
             let mut bodies = HashMap::new();
-            bodies.insert(
-                point.sha.clone(),
-                String::from_utf8_lossy(raw.as_slice()).to_string(),
-            );
+            bodies.insert(point.sha.clone(), decode_text(raw.as_slice())?);
             return Ok((tree, bodies));
         }
 
         let reads = digests.into_iter().map(|sha| async move {
-            let raw = self
-                .get(blobs, &blob_key(slug, &sha))
+            let raw = if sha.len() == 64 && hex::decode(&sha).is_ok() {
+                let cache_key = format!("source:{slug}:{sha}");
+                let native = native_digests.contains(&sha);
+                let cache_key = format!("{cache_key}:{}", if native { "native" } else { "legacy" });
+                self.get_loaded(&cache_key, || async {
+                    let read = if native {
+                        crate::storage::encoding::read_file_native(blobs, slug, &sha).await
+                    } else {
+                        crate::storage::encoding::read_file(blobs, slug, &sha).await
+                    };
+                    read.map_err(|error| BlobError::Other(error.to_string()))
+                })
                 .await
-                .map_err(|err| err.to_string())?;
-            Ok::<_, String>((sha, String::from_utf8_lossy(raw.as_slice()).to_string()))
+                .map_err(|error| error.to_string())?
+                .as_ref()
+                .clone()
+            } else {
+                self.get(blobs, &blob_key(slug, &sha))
+                    .await
+                    .map_err(|err| err.to_string())?
+                    .as_ref()
+                    .clone()
+            };
+            Ok::<_, String>((sha, decode_text(raw.as_slice())?))
         });
         let mut bodies = HashMap::new();
         for result in join_all(reads).await {
@@ -332,6 +385,11 @@ impl CheckpointCache {
             .values
             .insert(key.to_string(), CachedValue { body, used });
     }
+}
+
+fn decode_text(bytes: &[u8]) -> Result<String, String> {
+    String::from_utf8(bytes.to_vec())
+        .map_err(|error| format!("checkpoint text is not UTF-8: {error}"))
 }
 
 fn cancel_inflight(state: &mut CacheState, mut matches: impl FnMut(&str) -> bool) {
@@ -705,8 +763,8 @@ mod tests {
         assert_eq!(first.1.len(), 2);
         assert_eq!(
             store.gets.load(Ordering::Relaxed),
-            3,
-            "one tree plus two distinct texts"
+            5,
+            "one tree plus a recipe probe and legacy body for each distinct text"
         );
         let second = cache
             .load_checkpoint(&store, "doc", &point, "", "")
@@ -715,7 +773,7 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(
             store.gets.load(Ordering::Relaxed),
-            3,
+            5,
             "a warm read needs no storage requests"
         );
     }

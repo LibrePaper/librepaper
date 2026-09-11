@@ -326,6 +326,78 @@ async fn catalog_publication_receipt_retries_and_commits_after_reopen() {
     assert_eq!(operation.status, "committed");
 }
 
+/// A native source receipt is not safe to roll forward when one of its
+/// encoded chunks disappeared. Startup must leave the receipt pending so a
+/// later repair/retry can decide its fate; it must never fall back to a
+/// legacy whole-file object with the same digest.
+#[tokio::test]
+async fn catalog_reopen_keeps_native_publication_pending_when_chunk_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Arc::new(Configuration::default());
+    let (blobs, catalog) = local_catalog_store(&dir);
+    let store = Arc::new(
+        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+            .await
+            .unwrap(),
+    );
+    store
+        .put(store::Publication {
+            slug: "native-missing".into(),
+            source: "initial".into(),
+            owner: "alice".into(),
+            peak_bytes: Some(1 << 20),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    store
+        .prepare_publication("native-missing", &"a".repeat(64), "publish", None)
+        .await
+        .unwrap();
+    let source = "native source history\n".repeat(4096);
+    let staged_sha = stage_room_publication(
+        store.clone(),
+        blobs.clone(),
+        config.clone(),
+        "native-missing",
+        &source,
+    )
+    .await;
+    let document = catalog.document("native-missing").unwrap().unwrap();
+    let request_id = document.pending_publication.unwrap();
+    let operation = catalog
+        .operation(&document.storage_id, &request_id)
+        .unwrap()
+        .unwrap();
+    let intent: serde_json::Value = serde_json::from_str(&operation.intent).unwrap();
+    let missing_chunk = intent["source_history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|record| record["objects"].as_array().unwrap())
+        .find(|object| object["kind"] == "source_chunk")
+        .and_then(|object| object["object_key"].as_str())
+        .unwrap()
+        .to_owned();
+    blobs.delete(&[missing_chunk]).await.unwrap();
+    drop(store);
+    drop(catalog);
+
+    let reopened_catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let reopened = store::Store::open_with_catalog(blobs, config, reopened_catalog.clone())
+        .await
+        .unwrap();
+    assert!(reopened
+        .pending_publication("native-missing")
+        .await
+        .is_some());
+    assert!(reopened_catalog
+        .checkpoint("native-missing", &staged_sha)
+        .unwrap()
+        .is_none());
+}
+
 /// Replacement publication uses the same pending slot, so the previous head
 /// remains the only visible value until the new checkpoint commits.
 #[tokio::test]

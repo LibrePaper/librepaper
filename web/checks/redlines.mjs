@@ -21,20 +21,20 @@ function check(what, condition) {
     { sha: "d", by: "sam" },
   ];
   check(
-    "disagreement across the whole span since the baseline is several people",
-    attribution(checkpoints, "a", null) === "several people", // b:vincent, c:sam, d:sam differ
+    "an uncaptured live target cannot establish authorship",
+    attribution(checkpoints, "a", null) === "",
   );
   check(
-    "agreement through a single later checkpoint is named",
-    attribution(checkpoints, "a", "b") === "vincent",
+    "a checkpoint actor is not proof of authorship",
+    attribution(checkpoints, "a", "b") === "",
   );
   check(
-    "disagreement among the checkpoints since the baseline is several people",
-    attribution(checkpoints, "a", "c") === "several people",
+    "legacy mixed actors remain unknown",
+    attribution(checkpoints, "a", "c") === "",
   );
   check(
-    "agreement among several checkpoints since the baseline is that name",
-    attribution(checkpoints, "b", "c") === "sam",
+    "legacy interval authorship remains unknown",
+    attribution(checkpoints, "b", "c") === "",
   );
   check(
     "the baseline itself contributes nothing -- only what came after it",
@@ -42,6 +42,15 @@ function check(what, condition) {
   );
   check("an unknown baseline attributes nothing", attribution(checkpoints, "nope", null) === "");
   check("a checkpoint with no `by` is not counted", attribution([{ sha: "a", by: "" }, { sha: "b", by: "" }], "a", null) === "");
+}
+
+{
+  const checkpoints = [{ sha: "a" },
+    { sha: "b", original_parent: "a", ancestry_gap: false, authorship: { kind: "single", name: "Sam" } },
+    { sha: "c", original_parent: "b", ancestry_gap: false, authorship: { kind: "single", name: "Sam" } }];
+  check("contiguous explicit evidence names the author", attribution(checkpoints, "a", "c") === "Sam");
+  checkpoints[2].ancestry_gap = true;
+  check("an ancestry gap invalidates range authorship", attribution(checkpoints, "a", "c") === "");
 }
 
 /* -------------------------------------------------------------- itemsFor */
@@ -105,8 +114,8 @@ function check(what, condition) {
   // Two authors editing different sentences: each hunk keeps its own
   // author, since neither step's insertion overlaps the other's.
   const steps = [
-    { by: "vincent", hunks: [{ at: 5, delete: 0, insert: "AAA", old: "" }] },
-    { by: "sam", hunks: [{ at: 30, delete: 0, insert: "BBB", old: "" }] },
+    { by: "publisher", authorship: { kind: "single", name: "vincent" }, hunks: [{ at: 5, delete: 0, insert: "AAA", old: "" }] },
+    { by: "publisher", authorship: { kind: "single", name: "sam" }, hunks: [{ at: 30, delete: 0, insert: "BBB", old: "" }] },
   ];
   const hunks = [
     { position: 5, kind: "insert", insert: "AAA", old: "" },
@@ -123,8 +132,8 @@ function check(what, condition) {
   // superseded and the surviving text is attributed to sam -- the latest
   // author wins.
   const steps = [
-    { by: "vincent", hunks: [{ at: 10, delete: 0, insert: "hello", old: "" }] },
-    { by: "sam", hunks: [{ at: 10, delete: 5, insert: "world", old: "hello" }] },
+    { by: "publisher", authorship: { kind: "single", name: "vincent" }, hunks: [{ at: 10, delete: 0, insert: "hello", old: "" }] },
+    { by: "publisher", authorship: { kind: "single", name: "sam" }, hunks: [{ at: 10, delete: 5, insert: "world", old: "hello" }] },
   ];
   const hunks = [{ position: 10, kind: "insert", insert: "world", old: "" }];
   const attributed = attributeChain(steps, hunks, "several people");
@@ -134,7 +143,7 @@ function check(what, condition) {
 {
   // A step's own deletion is matched to a range-level delete hunk by final
   // offset and text.
-  const steps = [{ by: "sam", hunks: [{ at: 4, delete: 4, insert: "", old: "gone" }] }];
+  const steps = [{ by: "publisher", authorship: { kind: "single", name: "sam" }, hunks: [{ at: 4, delete: 4, insert: "", old: "gone" }] }];
   const hunks = [{ position: 4, kind: "delete", insert: "", old: "gone" }];
   const attributed = attributeChain(steps, hunks, "several people");
   check("a matched deletion is attributed to the author who deleted it", attributed[0].who === "sam");
@@ -147,12 +156,27 @@ function check(what, condition) {
   const hunks = [{ position: 0, kind: "insert", insert: "new words", old: "" }];
   check("no steps falls back to the range-level name", attributeChain([], hunks, "several people")[0].who === "several people");
 
-  const mismatched = [{ by: "sam", hunks: [{ at: 4, delete: 3, insert: "", old: "old" }] }];
+  const mismatched = [{ by: "publisher", authorship: { kind: "single", name: "sam" }, hunks: [{ at: 4, delete: 3, insert: "", old: "old" }] }];
   const deleteHunks = [{ position: 4, kind: "delete", insert: "", old: "different" }];
   check(
     "an unmatched deletion falls back to the range-level name",
     attributeChain(mismatched, deleteHunks, "several people")[0].who === "several people",
   );
+}
+
+{
+  const actorOnly = [{ by: "alice", hunks: [{ at: 0, delete: 0, insert: "claimed", old: "" }] }];
+  const result = attributeChain(actorOnly, [{ position: 0, kind: "insert", insert: "claimed", old: "" }], "");
+  check("event actors cannot become content authors", result[0].who === "");
+}
+
+{
+  const partial = [{ position: 0, kind: "insert", insert: "abcdefghijk", old: "" }];
+  const result = attributeChain([{
+    authorship: { kind: "single", name: "alice" },
+    hunks: [{ at: 0, delete: 0, insert: "abcdefghij", old: "" }],
+  }], partial, "");
+  check("an unmapped tail does not use largest-overlap attribution", result[0].who === "");
 }
 
 {

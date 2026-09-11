@@ -46,6 +46,7 @@ rand = "0.9"
 regex = "1"
 # Timestamps in the index and the room, RFC 3339 like the Worker wrote them.
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+chrono-tz = "0.10"
 # The shell, compiled in: real .html, .css and .js files under web/dist.
 include_dir = "0.7"
 # The command line.
@@ -58,6 +59,10 @@ percent-encoding = "2"
 html-escape = "0.2"
 yrs = "0.27"
 unicode-normalization = "0.1.25"
+# Native source-history encoding. These versions are pinned because changing
+# FastCDC's boundary implementation would change the writer profile.
+fastcdc = "=5.0.0"
+zstd = "0.13"
 # `sync` is a WebSocket client, and axum's socket type is the server half of
 # the same library. This is the tungstenite axum already builds, over the
 # rustls reqwest already builds, so what it adds to the binary is the client

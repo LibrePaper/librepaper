@@ -108,6 +108,12 @@ async fn writer_paths_record_the_account_they_authenticated() {
         .await
         .unwrap()
         .unwrap();
+    // Observe the writer's attribution before a later routine checkpoint
+    // replaces this same-bucket event. No open annotation protects it here.
+    assert_eq!(
+        attribution_of(&catalog, "attributed", &anonymous),
+        ("Reviewer two".to_string(), None)
+    );
     room.set_source("system", "markdown").await.unwrap();
     let system = room
         .checkpoint_now("automatic", Attribution::system())
@@ -118,10 +124,6 @@ async fn writer_paths_record_the_account_they_authenticated() {
     assert_eq!(
         attribution_of(&catalog, "attributed", &signed),
         ("alice".to_string(), Some("acct-1".to_string()))
-    );
-    assert_eq!(
-        attribution_of(&catalog, "attributed", &anonymous),
-        ("Reviewer two".to_string(), None)
     );
     assert_eq!(
         attribution_of(&catalog, "attributed", &system),

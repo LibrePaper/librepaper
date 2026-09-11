@@ -114,14 +114,31 @@ async fn a_document_is_charged_for_its_source_and_its_history() {
     )
     .await;
     assert_eq!(checkpoint, TEST_MARKDOWN);
-    // Size is the live document plus the checkpoint. It is more than the
-    // source alone, because the session state carries the CRDT's bookkeeping,
-    // and far less than a rendered page would have added.
-    assert!(
-        entry.size >= TEST_MARKDOWN.len() as i64,
-        "entry size {} does not cover the source",
-        entry.size
-    );
+    // The catalogue's entry size is a measured physical/resident charge, not
+    // the source's uncompressed length.  Compression may make it smaller than
+    // the source while the encoded object ledger remains the lower bound.
+    if let Some(catalog) = server.instance.store.catalog.as_ref() {
+        let ledger_bytes: i64 =
+            catalog
+                .with_connection(|connection| {
+                    connection.query_row(
+                    "SELECT COALESCE(SUM(bytes),0) FROM object_accounting WHERE storage_id=?1",
+                    [&entry.storage_id],
+                    |row| row.get(0),
+                ).map_err(crate::storage::catalog::CatalogError::from)
+                })
+                .unwrap();
+        assert!(
+            ledger_bytes > 0,
+            "published source has no physical ledger rows"
+        );
+        assert!(
+            entry.size >= ledger_bytes,
+            "entry size {} is below measured object bytes {}",
+            entry.size,
+            ledger_bytes
+        );
+    }
     // Nothing derived is stored: no page, and no second copy of the source.
     for prefix in [
         crate::storage::blob::document_prefix(&slug),
@@ -329,17 +346,41 @@ async fn an_html_document_is_stored_once() {
     // The checkpoint is the directory; the page is the one file in it.
     let tree: crate::document::history::Tree =
         serde_json::from_slice(&checkpoint).expect("the checkpoint is a tree");
-    let stored = server
+    let source_digest = &tree.files[&tree.main].sha;
+    let catalog = server
         .instance
         .store
-        .blobs
-        .get(&crate::storage::blob::blob_key(
-            &entry.storage_id,
-            &tree.files[&tree.main].sha,
-        ))
-        .await
-        .expect("the page it names");
-    assert_eq!(String::from_utf8_lossy(&stored), page);
+        .catalog
+        .as_ref()
+        .expect("catalogue-backed test server");
+    let source = catalog
+        .source_history_record(&entry.storage_id, source_digest)
+        .unwrap()
+        .expect("the source's encoded history record");
+    assert_eq!(source.uncompressed_bytes, page.len() as i64);
+    for object in &source.objects {
+        let encoded = server
+            .instance
+            .store
+            .blobs
+            .get(&object.object_key)
+            .await
+            .expect("the encoded source object");
+        assert_eq!(encoded.len() as i64, object.bytes);
+    }
+    assert!(
+        server
+            .instance
+            .store
+            .blobs
+            .get(&crate::storage::blob::blob_key(
+                &entry.storage_id,
+                source_digest
+            ))
+            .await
+            .is_err(),
+        "the legacy whole-file blob must not duplicate the encoded source"
+    );
     let found = server
         .instance
         .store

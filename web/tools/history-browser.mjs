@@ -72,11 +72,20 @@ for (const name of browsers) {
     await pageRequest(owner, `${historyPath}/${first.sha}`, "PATCH", { label: "Original draft" });
     await owner.navigate(`${base}/docs/${slug}`);
     await until("editor", () => owner.evaluate('!!document.querySelector(".cm-content")'));
+    await until("initial source synchronized", () => owner.evaluate('document.querySelector(".cm-content")?.textContent.includes("red fox")'));
+    await until("initial preview", async () => (await owner.text()).includes("red fox"));
     await owner.insert(revised, true);
     await until("revised preview", async () => (await owner.text()).includes("blue fox"));
+    await until("edited source reached the server", async () => {
+      const snapshot = await pageRequest(owner, `/api/documents/${slug}/snapshot`);
+      return snapshot.texts?.[snapshot.main] === revised || snapshot.source === revised;
+    }, 15000);
+    console.log(`${name}: revised source synchronized`);
     await pageRequest(owner, `/api/documents/${slug}/comments`, "POST", {
       type: "comment", exact: "blue fox", body: "Review the revision.",
     });
+    await until("edited source checkpoint", async () =>
+      (await pageRequest(owner, historyPath)).checkpoints.some(point => point.sha !== first.sha), 15000);
     const revisions = (await pageRequest(owner, historyPath)).checkpoints;
     const second = revisions.at(-1);
     assert.notEqual(second.sha, first.sha, "comment checkpoints the edited source");
@@ -97,6 +106,7 @@ for (const name of browsers) {
     assert.equal(await reader.evaluate('!!document.querySelector(".cm-content")'), false);
     await reader.evaluate('document.querySelector("button[aria-label=History]")?.click()');
     await until("reader history", () => reader.evaluate('document.body.innerText.includes("Original draft")'));
+    await reader.evaluate('window.historyFrameMessages = []; addEventListener("message", event => { if (event.data?.type?.startsWith("semantic-redlines-")) historyFrameMessages.push(event.data); });');
     await reader.evaluate(`(() => {
       const button = document.querySelector('li[data-sha=${JSON.stringify(first.sha)}] button[aria-label="Compare since this version"]');
       if (!button) throw new Error('missing compare control');
@@ -106,6 +116,11 @@ for (const name of browsers) {
       const text = document.querySelector('.history-hunks')?.textContent || '';
       return text.includes('red') && text.includes('blue') && text.includes('river');
     })()`));
+    await until("rendered change mapping", async () => {
+      const messages = JSON.parse(await reader.evaluate('JSON.stringify(window.historyFrameMessages)'));
+      assert.ok(!messages.some(message => message.type === "semantic-redlines-rejected"), JSON.stringify(messages));
+      return messages.some(message => message.type === "semantic-redlines-painted");
+    });
     assert.equal(await reader.evaluate('!!document.querySelector("button[aria-label^=Restore]")'), false,
       "reader has no restore control");
     await reader.evaluate(`(() => {
@@ -137,6 +152,7 @@ for (const name of browsers) {
     assert.equal(copied.hash, historical.hash, "copied checkpoint retains share key");
 
     // Comparing from an old preview must capture the actual current tree.
+    await until("current comparison control", () => reader.evaluate(`([...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Compare with current'))`));
     await reader.evaluate(`(() => {
       const button = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Compare with current');
       if (!button) throw new Error('missing current comparison');
@@ -157,6 +173,7 @@ for (const name of browsers) {
     // The editor restores through the same route that the CLI uses.
     await owner.navigate(`${base}/docs/${slug}?at=${first.sha}`);
     await until("historical owner preview", async () => (await owner.text()).includes("red fox"));
+    await until("restore control", () => owner.evaluate(`([...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Restore this version'))`));
     await owner.evaluate(`(() => {
       const button = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Restore this version');
       if (!button) throw new Error('missing restore control');
@@ -175,9 +192,14 @@ for (const name of browsers) {
       "--server", base, "--key", `${base}${shareUrl}`], { env: environment });
     assert.match(response, /\*\*Now(?: \(source\))?:\*\*.*red fox/, "response export quotes the replacement passage");
     await owner.navigate(`${base}/docs/${slug}`);
+    await until("restored source loaded", () => owner.evaluate('document.querySelector(".cm-content")?.textContent.includes("red fox")'));
+    // A fresh editor visit can remember the source-only pane. Explicitly
+    // reveal the document before asserting its visible preview text.
+    await owner.evaluate('document.querySelector(\'nav[aria-label="Workspace view"] button[aria-label="Document"]\')?.click()');
     await until("restored live preview", async () => (await owner.text()).includes("red fox"));
     console.log(`${name}: history links, reader access, revision capture, and live restore passed`);
   } catch (error) {
+    if (owner) console.error(name, "owner frame:", await owner.text().catch(() => "frame unavailable"));
     if (owner) console.error(name, "owner:", await owner.evaluate("document.body.innerText.slice(-4000)").catch(() => "page unavailable"));
     if (reader) console.error(name, "reader:", await reader.evaluate("location.href + '\\n' + document.body.innerText.slice(-4000)").catch(() => "page unavailable"));
     throw error;

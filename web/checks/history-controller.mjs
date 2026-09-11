@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { projectText } from "../src/lib/diff-display.js";
 
 // Exercise Svelte's actual state proxies: an identity stub for $state misses
 // reactive identity and update bugs in the controller's async guards.
@@ -53,6 +54,29 @@ const hunks = (_old, _new, edits) => edits.map((edit) => ({
   currentBefore: "",
   currentAfter: "",
 }));
+
+// The metadata-bearing adapter reaches the controller without changing the
+// list-only shape accepted by older history integrations.
+{
+  const controller = createHistoryController({
+    slug: "doc",
+    history: {
+      loadWithStatus: async () => ({
+        checkpoints: [point("A", "saved")],
+        durability: { live_save: "saved", history_checkpoint: "pending" },
+      }),
+      checkpoint: async (_slug, sha) => point(sha, "saved"),
+      hunks,
+    },
+    passages: { textAt: async () => "saved" },
+    live: () => ({ session: liveSession("saved"), text: "saved" }),
+  });
+  await controller.load();
+  assert.deepEqual(controller.durability, {
+    live_save: "saved",
+    history_checkpoint: "pending",
+  });
+}
 
 // A late baseline response cannot overwrite a newer selection.
 {
@@ -116,8 +140,7 @@ const hunks = (_old, _new, edits) => edits.map((edit) => ({
     load: async () => [point("A", "old")],
     wordDiff: async () => {
       calls += 1;
-      if (calls === 1) return [];
-      return calls === 2 ? first.promise : second.promise;
+      return calls === 1 ? first.promise : second.promise;
     },
     hunks,
   };
@@ -278,49 +301,151 @@ for (const outcome of ["current", "closed", "revoked", "disposed", "baseline"]) 
   assert.equal(controller.redlines, true, "the changes are painted from the start");
 }
 
-// Chained attribution: two checkpoints in the range, each by a different
-// author, editing different offsets -- the range-level hunks end up with a
-// `who` each, matching the author of the step that made them, not just the
-// single range-level name `attribution()` would give both.
+// Rendered comparisons ask for exactly the selected endpoints. The target is
+// requested first so a clean selected preview is not held behind the baseline
+// on a single-slot HTML renderer.
 {
-  // vincent inserts "AAA" at base-text offset 10; sam separately inserts
-  // "BBB" at offset 20 of the text vincent's edit produced ("one"), which is
-  // offset 17 of the original base text once vincent's 3 inserted
-  // characters before it are accounted for -- exactly what the combined
-  // base-to-"two" diff below says.
-  const texts = { base: "TEXT_BASE", one: "TEXT_ONE", two: "TEXT_TWO" };
-  const wordDiffOf = {
-    "base|one": [{ at: 10, delete: 0, insert: "AAA" }],
-    "one|two": [{ at: 20, delete: 0, insert: "BBB" }],
-    "base|two": [{ at: 10, delete: 0, insert: "AAA" }, { at: 17, delete: 0, insert: "BBB" }],
-  };
+  const target = deferred();
+  const baseline = deferred();
+  const calls = [];
   const api = {
-    load: async () => [
-      { sha: "base", by: "nobody" },
-      { sha: "one", by: "vincent" },
-      { sha: "two", by: "sam" },
-    ],
-    checkpoint: async (_slug, sha) => point(sha, texts[sha]),
-    wordDiff: async (oldText, newText) => {
-      const key = `${Object.keys(texts).find((k) => texts[k] === oldText)}|${Object.keys(texts).find((k) => texts[k] === newText)}`;
-      return wordDiffOf[key] || [];
-    },
+    load: async () => [point("base", "base"), point("target", "target")],
+    checkpoint: async (_slug, sha) => point(sha, sha),
     hunks,
   };
-  const session = liveSession(texts.two);
+  const session = liveSession("target");
   const controller = createHistoryController({
     slug: "doc",
     history: api,
-    passages: { textAt: async (_slug, sha) => texts[sha] },
-    live: () => ({ session, text: texts.two }),
+    passages: {
+      projectionAt: async (_slug, sha) => {
+        calls.push(sha);
+        return sha === "target" ? target.promise : baseline.promise;
+      },
+    },
+    live: () => ({ session, text: "target" }),
     readBaseline: () => "base",
     rememberBaseline: () => {},
   });
   await controller.load();
-  await controller.chooseTarget("two");
-  assert.equal(controller.changes.length, 2);
-  assert.equal(controller.changes[0].who, "vincent");
-  assert.equal(controller.changes[1].who, "sam");
+  const selecting = controller.chooseTarget("target");
+  await Promise.resolve();
+  assert.deepEqual(calls, ["target"]);
+  target.resolve(projectText("target"));
+  for (let tick = 0; tick < 10 && calls.length < 2; tick++) await Promise.resolve();
+  assert.deepEqual(calls, ["target", "base"]);
+  baseline.resolve(projectText("base"));
+  await selecting;
+  assert.equal(controller.changes.length, 1);
+}
+
+// An identical background refresh must not replace a pending user compare
+// with the panel's non-computing default baseline selection.
+{
+  const initial = deferred(), explicit = deferred();
+  let reads = 0;
+  const session = liveSession("current");
+  const controller = createHistoryController({
+    slug: "doc", readBaseline: () => "base", rememberBaseline: () => {},
+    history: {
+      load: async () => [{ sha: "base" }],
+      checkpoint: () => (++reads === 1 ? initial.promise : explicit.promise), hunks,
+    },
+    passages: { projectionTree: async () => projectText("current"), projectionAt: async () => projectText("old") },
+    live: () => ({ session, text: "current", tree: point("live", "current") }),
+  });
+  const loading = controller.load();
+  await Promise.resolve();
+  const comparing = controller.chooseBaseline("base");
+  await controller.load();
+  assert.equal(reads, 2, "refresh does not start a third default selection");
+  initial.resolve(point("base", "old"));
+  explicit.resolve(point("base", "old"));
+  await Promise.all([loading, comparing]);
+  assert.equal(controller.capturedCurrent.texts["main.md"], "current");
+  assert.ok(controller.changes.length > 0);
+  controller.dispose();
+}
+
+// A captured-current target notifies Reader before the baseline projection;
+// the clean target can therefore be painted while the comparison continues.
+{
+  const calls = [];
+  const session = liveSession("current");
+  const controller = createHistoryController({
+    slug: "doc",
+    history: {
+      load: async () => [point("base", "base")],
+      checkpoint: async () => point("base", "base"),
+      hunks,
+    },
+    passages: {
+      projectionTree: async () => { calls.push("target"); return projectText("current"); },
+      projectionAt: async () => { calls.push("baseline"); return projectText("base"); },
+    },
+    live: () => ({ session, text: "current", tree: point("live", "current") }),
+    readBaseline: () => "base",
+    onTargetReady: () => calls.push("ready"),
+  });
+  await controller.load();
+  await controller.compareWithCurrent("base");
+  assert.ok(calls.indexOf("ready") >= 0);
+  assert.ok(calls.indexOf("ready") < calls.indexOf("baseline"));
+}
+
+// Historical HTML can finish before the initial live Yjs synchronization.
+// Comparison must capture the joined state, never the temporary empty tree.
+{
+  let text = "";
+  const session = { joined: false, tree: () => point("live", text) };
+  const controller = createHistoryController({
+    slug: "doc",
+    history: { load: async () => [point("base", "old")], checkpoint: async () => point("base", "old"), hunks },
+    passages: { projectionTree: async (tree) => projectText(tree.texts[tree.main]), projectionAt: async () => projectText("old") },
+    live: () => ({ session, text, tree: session.tree() }),
+    readBaseline: () => "base",
+    rememberBaseline: () => {},
+  });
+  await controller.load();
+  const comparing = controller.compareWithCurrent("base");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(controller.capturedCurrent, null);
+  text = "synchronized current";
+  session.joined = true;
+  await comparing;
+  assert.equal(controller.capturedCurrent.texts["main.md"], text);
+  controller.dispose();
+}
+
+// A slower endpoint from an older selection cannot commit after a newer
+// selection advances the comparison generation.
+{
+  const oldTarget = deferred();
+  const newTarget = deferred();
+  const api = {
+    load: async () => [point("A", "base"), point("B", "old"), point("C", "new")],
+    checkpoint: async (_slug, sha) => point(sha),
+    hunks,
+  };
+  const controller = createHistoryController({
+    slug: "doc",
+    history: api,
+    passages: {
+      projectionAt: async (_slug, sha) => sha === "B" ? oldTarget.promise
+        : sha === "C" ? newTarget.promise : projectText("base"),
+    },
+    live: () => ({ session: liveSession("new"), text: "new" }),
+  });
+  await controller.load();
+  const oldSelection = controller.chooseTarget("B");
+  await Promise.resolve();
+  const newSelection = controller.chooseTarget("C");
+  await Promise.resolve();
+  newTarget.resolve(projectText("new"));
+  await newSelection;
+  oldTarget.resolve(projectText("old"));
+  await oldSelection;
+  assert.equal(controller.target.sha, "C");
 }
 
 // Explicit current comparisons capture both the target tree and its text.
@@ -329,7 +454,14 @@ for (const outcome of ["current", "closed", "revoked", "disposed", "baseline"]) 
 // predecessor rule.
 {
   let currentText = "live one";
-  const session = { tree: () => point("live", currentText), idOf: () => "main", textOf: () => currentText, awareness: {} };
+  const asset = Uint8Array.of(1, 2, 3);
+  const tree = {
+    ...point("live", currentText),
+    settings: { release: "r1", engine: "auto" },
+    digests: { "figure.png": "digest-r1" },
+    assets: { "figure.png": asset },
+  };
+  const session = { tree: () => tree, idOf: () => "main", textOf: () => currentText, awareness: {} };
   const controller = createHistoryController({
     slug: "doc",
     history: {
@@ -337,8 +469,18 @@ for (const outcome of ["current", "closed", "revoked", "disposed", "baseline"]) 
       wordDiff: async () => [],
       hunks,
     },
-    passages: { textAt: async (_slug, sha) => ({ A: "old", B: "middle", C: "new" }[sha]) },
+    passages: {
+      textAt: async (_slug, sha) => ({ A: "old", B: "middle", C: "new" }[sha]),
+      captureTree: async (_slug, value) => ({
+        ...value,
+        settings: { ...value.settings },
+        digests: { ...value.digests },
+        assets: Object.fromEntries(Object.entries(value.assets || {}).map(([path, bytes]) => [path, bytes.slice()])),
+        urls: { "figure.png": "blob:figure" },
+      }),
+    },
     live: () => ({ session, text: currentText }),
+    snapshotDigest: async () => "captured-current",
     readBaseline: () => "A",
     rememberBaseline: () => {},
   });
@@ -347,14 +489,23 @@ for (const outcome of ["current", "closed", "revoked", "disposed", "baseline"]) 
   const captured = controller.capturedCurrent;
   assert.equal(controller.comparingCurrent, true);
   assert.equal(captured.texts["main.md"], "live one");
+  assert.equal(captured.settings.release, "r1");
+  assert.notEqual(captured.assets["figure.png"], asset);
+  assert.equal(captured.assets["figure.png"][0], 1);
   assert.deepEqual(controller.changedPaths, ["main.md"], "file/source paths remain available when rendered text is unavailable");
   assert.equal(controller.newerEdits, false);
   currentText = "live two";
+  tree.texts["main.md"] = currentText;
+  tree.settings.release = "r2";
+  tree.digests["figure.png"] = "digest-r2";
+  asset[0] = 9;
   controller.noteLiveChange();
   assert.equal(controller.newerEdits, true);
   await controller.refreshCurrent();
   assert.equal(controller.newerEdits, false);
   assert.equal(controller.capturedCurrent.texts["main.md"], "live two");
+  assert.equal(controller.capturedCurrent.settings.release, "r2");
+  assert.equal(controller.capturedCurrent.assets["figure.png"][0], 9);
   await controller.compareTo("C");
   assert.equal(controller.comparingCurrent, false);
   assert.equal(controller.baseline.sha, "B");

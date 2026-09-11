@@ -8,6 +8,21 @@ use super::*;
 /// is a list of names rather than of paragraphs.
 pub(super) const MAX_LABEL: usize = 120;
 
+/// Content authorship is separate from the checkpoint event actor. Current
+/// session writes do not carry a durable contributor interval proof, so the
+/// browser receives an explicit unknown value rather than mistaking `by` for
+/// the editor. A future evidence-bearing writer can replace this field at the
+/// capture boundary without changing the history API shape.
+fn checkpoint_wire(point: &crate::document::history::Checkpoint) -> serde_json::Value {
+    let mut value = serde_json::to_value(point).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object
+            .entry("authorship")
+            .or_insert_with(|| json!({"kind": "unknown"}));
+    }
+    value
+}
+
 impl Server {
     /// The document's manifest: every checkpoint, oldest first, with the paths
     /// each of them changed.
@@ -67,10 +82,32 @@ impl Server {
         } else {
             (room.manifest().await.checkpoints, None)
         };
+        let checkpoints: Vec<_> = checkpoints.iter().map(checkpoint_wire).collect();
+        let durability = room.history_durability().await;
         let mut body = json!({
             "slug": entry.slug,
             "main": entry.main,
             "checkpoints": checkpoints,
+            // Live session persistence and historical checkpoint admission
+            // are separate.  Keep the states explicit so the panel cannot
+            // turn a delayed checkpoint into a false unsaved-edit claim (or
+            // the reverse).
+            "durability": {
+                "live_save": if !durability.known {
+                    "unknown"
+                } else if durability.live_save_pending {
+                    "pending"
+                } else {
+                    "saved"
+                },
+                "history_checkpoint": if !durability.known {
+                    "unknown"
+                } else if durability.checkpoint_pending {
+                    "pending"
+                } else {
+                    "current"
+                },
+            },
         });
         if let Some(next) = next_cursor {
             body["next_cursor"] = json!(next);
@@ -147,13 +184,19 @@ impl Server {
             200,
             &json!({
                 "sha": point.sha,
+                "tree_sha": point.content_sha(),
+                "storage_id": entry.storage_id,
                 "at": point.at,
                 "by": point.by,
+                "authorship": {"kind": "unknown"},
+                "original_parent": point.original_parent,
+                "ancestry_gap": point.ancestry_gap,
                 "why": point.why,
                 "label": point.label,
                 "source_format": point.source_format,
                 "main": tree.main,
                 "files": tree.files,
+                "settings": tree.settings,
                 "texts": texts,
             }),
         );

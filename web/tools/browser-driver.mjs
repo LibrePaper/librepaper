@@ -25,9 +25,9 @@ function protocol(socket) {
     message.error || message.type === "error"
       ? job.reject(new Error(JSON.stringify(message))) : job.resolve(message.result);
   });
-  return (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+  return (method, params = {}, sessionId, timeoutMs = 60000) => new Promise((resolve, reject) => {
     const id = ++serial;
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`${method} timed out`)); }, 60000);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`${method} timed out`)); }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
     socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
   });
@@ -37,7 +37,7 @@ export async function browser(name, directory, port) {
   mkdirSync(directory, { recursive: true });
   const child = spawn(name, name === "firefox"
     ? ["--headless", "--no-remote", "--profile", directory, "--remote-debugging-port", String(port)]
-    : ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", `--user-data-dir=${directory}`, `--remote-debugging-port=${port}`, "about:blank"],
+    : ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-features=BackForwardCache", `--user-data-dir=${directory}`, `--remote-debugging-port=${port}`, "about:blank"],
   { stdio: "ignore" });
   let spawnError;
   child.on("error", (error) => { spawnError = error; });
@@ -109,11 +109,17 @@ export async function browser(name, directory, port) {
       close, evaluate, command,
       setCookie: (name, value, url) => command("Network.setCookie", { name, value, url }),
       frameEvaluate: async (expression) => {
+        const { frameTree } = await command("Page.getFrameTree");
+        const frameId = frameTree.childFrames?.[0]?.frame.id;
+        const currentUrl = await evaluate('document.querySelector("iframe[title=Document]")?.src');
         const { targetInfos } = await send("Target.getTargets");
-        const target = targetInfos.find((one) => one.type === "iframe");
+        const target = targetInfos.find((one) => one.type === "iframe" && one.targetId === frameId)
+          || targetInfos.find((one) => one.type === "iframe" && one.url === currentUrl);
         if (!target) return null;
         if (!frames.has(target.targetId)) frames.set(target.targetId, (await send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId);
-        const result = await send("Runtime.evaluate", { expression, returnByValue: true }, frames.get(target.targetId));
+        let result;
+        try { result = await send("Runtime.evaluate", { expression, returnByValue: true }, frames.get(target.targetId), 5000); }
+        catch (error) { frames.delete(target.targetId); throw error; }
         if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
         return result.result.value;
       },
@@ -136,18 +142,39 @@ export async function browser(name, directory, port) {
         return result.result.value;
       },
       resize: (width, height) => command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }),
-      navigate: (url) => command("Page.navigate", { url }),
+      navigate: async (url) => {
+        const navigation = await command("Page.navigate", { url });
+        if (navigation.errorText) throw new Error(navigation.errorText);
+        if (navigation.loaderId) await until("navigation complete", async () => {
+          const { frameTree } = await command("Page.getFrameTree");
+          return frameTree.frame.loaderId === navigation.loaderId
+            && await evaluate('document.readyState === "complete"');
+        });
+        return navigation;
+      },
       text: async () => {
-        const slug = await evaluate('location.pathname.split("/").pop()');
-        const { targetInfos } = await send("Target.getTargets");
-        const target = targetInfos.find((one) => one.type === "iframe" && one.url.includes(`/${slug}/`));
-        if (target) {
-          if (!frames.has(target.targetId)) frames.set(target.targetId, (await send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId);
-          const result = await send("Runtime.evaluate", { expression: "document.body.innerText", returnByValue: true }, frames.get(target.targetId));
-          return result.result.value || "";
-        }
+        // Chromium may keep an earlier navigation's iframe target alive in
+        // its back/forward cache. Match the full active URL (including its
+        // fresh capability token), not merely the document slug.
+        const currentUrl = await evaluate('document.querySelector("iframe[title=Document]")?.src');
         const { frameTree } = await command("Page.getFrameTree");
         const frameId = frameTree.childFrames?.[0]?.frame.id;
+        const { targetInfos } = await send("Target.getTargets");
+        const target = targetInfos.find((one) => one.type === "iframe" && one.targetId === frameId)
+          || targetInfos.find((one) => one.type === "iframe" && one.url === currentUrl);
+        if (target) {
+          if (!frames.has(target.targetId)) frames.set(target.targetId, (await send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId);
+          // A navigation may retire this target between lookup and reading.
+          // Let the caller retry rather than consuming its entire deadline.
+          let result;
+          try { result = await send("Runtime.evaluate", { expression: "document.body.innerText", returnByValue: true }, frames.get(target.targetId), 5000); }
+          catch (error) { frames.delete(target.targetId); throw error; }
+          if (result.exceptionDetails) {
+            frames.delete(target.targetId);
+            throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+          }
+          return result.result.value || "";
+        }
         if (!frameId) return "";
         const { executionContextId } = await command("Page.createIsolatedWorld", { frameId, worldName: "typst-check" });
         return evaluate("document.body.innerText", executionContextId);

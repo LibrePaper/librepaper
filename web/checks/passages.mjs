@@ -8,7 +8,7 @@
 // renders rather than one per checkpoint -- which is the whole reason it is a
 // bisection and not a walk.
 
-import { replacementAt, sourceTextAt, textAt, wentAt } from "../src/lib/passages.js";
+import { replacementAt, sourceTextAt, htmlAt, renderTree, wentAt } from "../src/lib/passages.js";
 import { hunks } from "../src/lib/history.js";
 
 let failures = 0;
@@ -120,14 +120,12 @@ const sourceComment = (revision) => ({
   check("hunks expose the replacement kind", displayed[0].kind === "replace");
 }
 
-// Historical Typst checkpoints already have a stored PDF. Passage lookup
-// must read that artifact directly, just like LaTeX, without trying to warm a
-// browser compiler or falling through to the HTML renderer.
+// Every historical format uses contemporary HTML, never its stored PDF.
 {
   let compiled = 0;
   let gathered = 0;
   let pdfRead = 0;
-  const text = await textAt(
+  const text = await htmlAt(
     "slug",
     "typst-checkpoint",
     {},
@@ -136,16 +134,16 @@ const sourceComment = (revision) => ({
       renderers: {
         formatOf: () => "typst",
         producesPdf: () => true,
-        render: async () => { compiled++; return { html: "<p>wrong path</p>" }; },
+        render: async (_tree, _title, options) => { check("history explicitly requests HTML", options.format === "html"); compiled++; return { html: "<p>contemporary page</p>" }; },
       },
       figures: { gather: async () => { gathered++; return { assets: {}, urls: {} }; } },
       fetch: async () => ({ ok: true, arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer }),
       pdfText: async (bytes) => { pdfRead += bytes.byteLength; return "stored Typst page"; },
     },
   );
-  check("historical Typst passages read stored PDF text", text === "stored Typst page");
-  check("historical Typst passage lookup does not compile or gather figures", compiled === 0 && gathered === 0);
-  check("historical Typst passage lookup consumed the PDF artifact", pdfRead === 3);
+  check("historical Typst passages use contemporary HTML", text === "<p>contemporary page</p>");
+  check("historical Typst passage lookup compiles the captured tree", compiled === 1 && gathered === 1);
+  check("historical Typst passage lookup never consumes PDF artifacts", pdfRead === 0);
 }
 
 // A missing rendering is unknown only for that attempt. Once the artifact is
@@ -157,21 +155,20 @@ const sourceComment = (revision) => ({
   let fetches = 0;
   const services = {
     history: { checkpoint: async (slug) => ({ main: "main.typ", texts: { "main.typ": slug }, files: {} }) },
-    renderers: { formatOf: () => "typst", producesPdf: () => true },
-    fetch: async () => {
+    figures: { gather: async () => ({ assets: {}, urls: {} }) },
+    renderers: { render: async () => {
       fetches++;
-      return available
-        ? { ok: true, arrayBuffer: async () => Uint8Array.of(9).buffer }
-        : { ok: false };
-    },
-    pdfText: async () => "recovered PDF text",
+      if (!available) throw new Error("HTML unavailable");
+      return { html: "recovered HTML" };
+    } },
   };
-  const missing = await textAt("retry-doc", "same-sha", {}, services);
+  let missing = false;
+  try { await htmlAt("retry-doc", "same-sha", {}, services); } catch { missing = true; }
   available = true;
-  const recovered = await textAt("retry-doc", "same-sha", {}, services);
-  const otherDocument = await textAt("other-doc", "same-sha", {}, services);
-  check("a missing historical PDF is retried after it appears", missing === null && recovered === "recovered PDF text");
-  check("historical PDF cache keys include the document", otherDocument === "recovered PDF text" && fetches === 3);
+  const recovered = await htmlAt("retry-doc", "same-sha", {}, services);
+  const otherDocument = await htmlAt("other-doc", "same-sha", {}, services);
+  check("a failed historical HTML render is retried", missing && recovered === "recovered HTML");
+  check("historical HTML cache keys include the document", otherDocument === "recovered HTML" && fetches === 3);
 }
 
 // Source checkpoint responses are scoped by document and failed requests are
@@ -204,7 +201,7 @@ const sourceComment = (revision) => ({
     const otherKey = await sourceTextAt("doc-a", sha, "main.md", { "X-LibrePaper-Key": "two" });
     check("failed source checkpoint fetches are retried", failed && a === "A");
     check("source checkpoint cache keys include the document", b === "B" && documentFetches === 3);
-    check("source checkpoint cache keys include link context", keyed === "A" && keyedAgain === "A" && otherKey === "A" && fetches === 5);
+    check("source checkpoint requests revalidate each link context", keyed === "A" && keyedAgain === "A" && otherKey === "A" && fetches === 6);
   } finally {
     globalThis.fetch = oldFetch;
   }
@@ -221,15 +218,57 @@ const sourceComment = (revision) => ({
         return { main: "main.typ", texts: { "main.typ": "#page" }, files: {} };
       },
     },
-    renderers: { formatOf: () => "typst", producesPdf: () => true },
-    fetch: async () => ({ ok: true, arrayBuffer: async () => Uint8Array.of(1).buffer }),
-    pdfText: async () => "page",
+    renderers: { render: async () => ({ html: "page" }) },
+    figures: { gather: async () => ({ assets: {}, urls: {} }) },
   };
   for (let at = 0; at < 65; at += 1) {
-    await textAt(`bounded-${at}`, "same-sha", {}, services);
+    await htmlAt(`bounded-${at}`, "same-sha", {}, services);
   }
-  await textAt("bounded-0", "same-sha", {}, services);
+  await htmlAt("bounded-0", "same-sha", {}, services);
   check("rendered checkpoint cache is bounded", renderedFetches === 66);
+}
+
+// Renderer configuration is part of the historical render identity. A
+// release/module change must not reuse the old page, and each page must carry
+// the exact snapshot whose identity was used for its cache entry.
+{
+  let identity = "renderer-a";
+  let renders = 0;
+  const seen = [];
+  const services = {
+    history: { checkpoint: async () => ({ sha: "config-sha", main: "main.md", texts: { "main.md": "source" }, files: {} }) },
+    figures: { gather: async () => ({ assets: {}, urls: {} }) },
+    renderers: {
+      htmlConfiguration: async () => ({ identity, modules: { markdown: identity } }),
+      render: async (_tree, _title, options) => {
+        renders += 1;
+        seen.push(options.configuration);
+        return { html: `<p>${options.configuration.modules.markdown}</p>` };
+      },
+    },
+  };
+  const first = await htmlAt("config-doc", "config-sha", {}, services);
+  identity = "renderer-b";
+  const second = await htmlAt("config-doc", "config-sha", {}, services);
+  const cached = await renderTree("config-doc", { sha: "config-sha", main: "main.md", texts: { "main.md": "source" }, files: {} }, {}, services);
+  check("renderer configuration snapshots are used by the render", first === "<p>renderer-a</p>" && second === "<p>renderer-b</p>");
+  check("renderer configuration identity partitions the cache", renders === 2 && cached.rendererIdentity === "renderer-b");
+  check("cache entries retain the configuration they name", seen[0]?.modules.markdown === "renderer-a" && seen[1]?.modules.markdown === "renderer-b");
+}
+
+// Only captured, integrity-checked asset bytes become projection evidence.
+// The result carries path/digest/URL metadata without exposing the bytes.
+{
+  const digest = "c".repeat(64);
+  const result = await renderTree("asset-doc", {
+    sha: "asset-sha", main: "main.md", texts: { "main.md": "![figure](fig.png)" },
+    digests: { "fig.png": digest }, files: { "fig.png": { kind: "asset", sha: digest } },
+  }, {}, {
+    figures: { gather: async () => ({ assets: { "fig.png": Uint8Array.of(4) }, urls: { "fig.png": "blob:captured#librepaper-asset=" + digest } }) },
+    renderers: { render: async () => ({ html: "<p>figure</p>" }) },
+  });
+  check("render results carry captured asset evidence", result.assetEvidence?.paths?.["fig.png"]?.digest === digest);
+  check("asset evidence does not carry bytes", !Object.prototype.hasOwnProperty.call(result.assetEvidence.paths["fig.png"], "bytes"));
 }
 
 {

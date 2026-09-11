@@ -566,14 +566,15 @@ async fn a_manifest_missing_its_newest_entry_is_repaired() {
         blobs.get(&checkpoint_key(&slug, &lost_sha)).await.is_ok(),
         "the checkpoint object was never written"
     );
-    assert!(
-        blobs
-            .get(&crate::storage::blob::blob_key(
-                &slug,
-                &crate::document::store::digest_of(lost)
-            ))
-            .await
-            .is_ok(),
+    assert_eq!(
+        crate::storage::encoding::read_file(
+            blobs.as_ref(),
+            &slug,
+            &crate::document::store::digest_of(lost),
+        )
+        .await
+        .unwrap(),
+        lost.as_bytes(),
         "the text the checkpoint names was never written"
     );
     assert!(
@@ -1002,16 +1003,14 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
     .expect("the checkpoint is a tree");
     assert_eq!(tree.main, "main.md");
     assert_eq!(
-        instance
-            .store
-            .blobs
-            .get(&crate::storage::blob::blob_key(
-                slug,
-                &tree.files[&tree.main].sha
-            ))
-            .await
-            .map(|raw| String::from_utf8_lossy(&raw).to_string())
-            .unwrap(),
+        crate::storage::encoding::read_file(
+            instance.store.blobs.as_ref(),
+            slug,
+            &tree.files[&tree.main].sha,
+        )
+        .await
+        .map(|raw| String::from_utf8_lossy(&raw).to_string())
+        .unwrap(),
         TEST_MARKDOWN
     );
     assert!(
@@ -1019,18 +1018,15 @@ async fn a_document_stored_the_old_way_survives_the_migration() {
         "the live document was not written"
     );
     // The migrated source and checkpoint body now share the same immutable
-    // content-addressed object.  It must remain reachable under the
-    // catalogue/legacy storage identity; only the old unversioned source
-    // object is disposable.
-    assert!(instance
-        .store
-        .blobs
-        .get(&crate::storage::blob::blob_key(
-            slug,
-            &tree.files[&tree.main].sha
-        ))
-        .await
-        .is_ok());
+    // content-addressed representation. The recipe reader is the contract;
+    // its physical chunks need not be a legacy whole-file blob.
+    assert!(crate::storage::encoding::read_file(
+        instance.store.blobs.as_ref(),
+        slug,
+        &tree.files[&tree.main].sha,
+    )
+    .await
+    .is_ok());
 }
 
 /// The oldest layout of all kept one unversioned source per document, at

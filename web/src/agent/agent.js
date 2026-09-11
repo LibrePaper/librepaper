@@ -12,6 +12,13 @@
 
 import { createMathTypesetter } from "../lib/math.js";
 import { sha256HexOfText } from "../lib/digest.js";
+import {
+  SEMANTIC_REDLINE_VERSION,
+  displayOffset,
+  reprojectTarget,
+  targetSemanticItems,
+  validateSemanticRedlinePayload,
+} from "./semantic-redlines.js";
 
 (() => {
   const READER = new URL(document.currentScript.src).searchParams.get("reader") || "*";
@@ -154,6 +161,49 @@ import { sha256HexOfText } from "../lib/digest.js";
       text-decoration: line-through;
     }
     ${authorRules}
+    mark.librepaper-semantic-ins {
+      background: hsl(145 45% 88%);
+      color: inherit;
+      text-decoration: underline;
+      text-decoration-thickness: 2px;
+      text-decoration-color: hsl(145 45% 32%);
+      cursor: pointer;
+    }
+    mark.librepaper-semantic-del {
+      background: hsl(0 45% 93%);
+      color: hsl(0 55% 40%);
+      text-decoration: line-through;
+      cursor: pointer;
+    }
+    mark.librepaper-semantic-del::before {
+      content: attr(data-deleted);
+    }
+    .librepaper-semantic-synthetic::before {
+      content: attr(data-semantic-label);
+      text-decoration: underline;
+    }
+    mark.librepaper-suggestion-del {
+      background: hsl(0 45% 93%);
+      color: hsl(0 55% 40%);
+      text-decoration: line-through;
+    }
+    .librepaper-suggestion-synthetic {
+      background: hsl(0 35% 93%);
+      color: hsl(0 55% 40%);
+      text-decoration: underline;
+      text-decoration-style: dotted;
+    }
+    [data-librepaper-semantic-in] {
+      outline: 2px solid hsl(145 45% 38% / .45);
+      outline-offset: 1px;
+      text-decoration: underline;
+    }
+    [data-librepaper-semantic-selected] {
+      outline: 2px solid hsl(220 85% 50%);
+      outline-offset: 2px;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
   `;
   document.head.appendChild(redlineStyle);
   function adoptStyles(parsed, presentation) {
@@ -229,6 +279,7 @@ import { sha256HexOfText } from "../lib/digest.js";
       if (node.nodeType === Node.TEXT_NODE) {
         const parent = node.parentElement;
         if (parent && ["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) continue;
+        if (parent?.closest("[data-librepaper-synthetic], [data-librepaper-deletion]")) continue;
         index.set(node, nodes.length);
         starts.push(total);
         nodes.push(node);
@@ -355,6 +406,7 @@ import { sha256HexOfText } from "../lib/digest.js";
   function highlight(ranges) {
     lastRanges = ranges;
     quietly(() => {
+      document.querySelectorAll(".librepaper-suggestion-synthetic").forEach((node) => node.remove());
       document
         .querySelectorAll("mark[data-librepaper]")
         .forEach((mark) => mark.replaceWith(...mark.childNodes));
@@ -366,6 +418,12 @@ import { sha256HexOfText } from "../lib/digest.js";
 
     const points = ranges.filter((item) => item.point === true && Number.isInteger(item.start) && item.start >= 0);
     const painted = ranges.filter((item) => item.end > item.start && item.point !== true);
+    const pendingSuggestions = painted.filter((item) => item.motivation === "editing" && !item.resolved);
+    const overlapping = new Set();
+    for (const one of pendingSuggestions) for (const other of pendingSuggestions) {
+      if (one !== other && one.start < other.end && other.start < one.end) overlapping.add(one.id);
+    }
+    for (const id of overlapping) post({ type: "suggestion-review", id, reason: "overlap" });
     const edges = [...new Set(painted.flatMap((item) => [item.start, item.end]))].sort(
       (a, b) => a - b,
     );
@@ -416,16 +474,22 @@ import { sha256HexOfText } from "../lib/digest.js";
         // segment whose own end lands on the suggestion's end offset. A
         // decided suggestion falls out of `resolved` and is painted like any
         // other resolved comment, above.
-        const suggestion = live.find((item) => item.motivation === "editing");
+        const suggestion = live.find((item) => item.motivation === "editing" && !overlapping.has(item.id));
         if (suggestion) {
           mark.style.textDecoration = "line-through";
           mark.style.textDecorationColor = edge(tintOf("editing"));
-          if (piece.end === suggestion.end) {
-            mark.dataset.proposed = suggestion.proposed || "";
-            mark.style.setProperty("--librepaper-proposed-color", edge(tintOf("editing")));
-          }
         }
         range.surroundContents(mark);
+        if (suggestion && piece.end === suggestion.end && suggestion.proposed) {
+          const inserted = document.createElement("span");
+          inserted.className = "librepaper-suggestion-synthetic";
+          inserted.dataset.librepaperSynthetic = "1";
+          inserted.dataset.librepaperSuggestion = String(suggestion.id);
+          inserted.setAttribute("aria-label", `Suggested insertion: ${suggestion.proposed}`);
+          inserted.appendChild(document.createTextNode(suggestion.proposed));
+          inserted.onclick = () => { select(suggestion.id); post({ type: "focus", id: suggestion.id }); };
+          mark.after(inserted);
+        }
         // The same innermost annotation the colour came from is the one a click
         // on this stretch means.
         mark.onclick = () => { select(inner.id); post({ type: "focus", id: inner.id }); };
@@ -459,6 +523,264 @@ import { sha256HexOfText } from "../lib/digest.js";
   // is: a document rebuild (a "preview" replacing the body, a fresh "ready")
   // needs to put them back without waiting on a round trip to the sidebar.
   let lastRedlineItems = [];
+
+  // Semantic redlines are deliberately a separate annotation class. They are
+  // keyed by token ranges, then rebound to this target DOM after validating a
+  // fresh projection. The old flat-offset painter remains for source-only
+  // comparisons and older callers; neither painter clears the other's marks.
+  let lastSemanticPayload = null;
+  let activeFrameGeneration = null;
+  let selectedSemanticId = "";
+
+  function clearSemanticMarks() {
+    quietly(() => {
+      document.querySelectorAll("mark.librepaper-semantic-ins").forEach((mark) => mark.replaceWith(...mark.childNodes));
+      document.querySelectorAll("mark.librepaper-semantic-del").forEach((mark) => mark.remove());
+      document.querySelectorAll("[data-librepaper-semantic-in], [data-librepaper-semantic-selected]")
+        .forEach((node) => {
+          delete node.dataset.librepaperSemanticIn;
+          delete node.dataset.librepaperSemanticSelected;
+        });
+      document.body.normalize();
+    });
+  }
+
+  function semanticPath(path) {
+    if (!Array.isArray(path) || !path.every((index) => Number.isInteger(index) && index >= 0)) return null;
+    let node = document.body;
+    for (const index of path) {
+      node = node?.childNodes?.[index];
+      if (!node) return null;
+    }
+    return node;
+  }
+
+  function semanticElement(location) {
+    if (!location) return null;
+    const key = typeof location.element === "string" ? location.element : "";
+    if (key) {
+      const escaped = CSS.escape(key);
+      const found = document.querySelector(
+        `[data-librepaper-element="${escaped}"], [data-source-key="${escaped}"], [data-structural-key="${escaped}"]`,
+      );
+      if (found) return found;
+    }
+    const node = semanticPath(location.path);
+    return node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  }
+
+  function semanticTokenLocation(projection, tokenIndex, rawCursor = 0) {
+    const token = projection?.tokens?.[tokenIndex];
+    const location = projection?.locations?.find((entry) => entry.token === tokenIndex);
+    if (!token || !location) return null;
+    if (!token.offset) return { token, location, element: semanticElement(location), pieces: [], next: rawCursor };
+    const pieces = [];
+    for (const part of location.parts || []) {
+      const node = semanticPath(part.path);
+      if (node?.nodeType !== Node.TEXT_NODE || part.sourceStart < 0 || part.sourceEnd > node.data.length
+        || part.sourceStart > part.sourceEnd) return { invalid: true };
+      pieces.push({ node, from: part.sourceStart, to: part.sourceEnd });
+    }
+    const element = semanticElement(location);
+    return { token, location, element, pieces, next: rawCursor, invalid: !pieces.length && !element };
+  }
+
+  function semanticSelected() {
+    document.querySelectorAll("[data-librepaper-semantic-selected]")
+      .forEach((node) => delete node.dataset.librepaperSemanticSelected);
+    if (!selectedSemanticId) return;
+    const id = CSS.escape(selectedSemanticId);
+    document.querySelectorAll(`mark[data-librepaper-semantic="${id}"], [data-librepaper-semantic-in="${id}"]`)
+      .forEach((node) => (node.dataset.librepaperSemanticSelected = ""));
+  }
+
+  function semanticMark(piece, item, deletion = false) {
+    const range = document.createRange();
+    range.setStart(piece.node, piece.from);
+    range.setEnd(piece.node, piece.to);
+    const mark = document.createElement("mark");
+    mark.className = deletion ? "librepaper-semantic-del" : "librepaper-semantic-ins";
+    mark.dataset.librepaperSemantic = item.id;
+    mark.setAttribute("aria-label", `${deletion ? "Deleted" : "Inserted"}: ${deletion ? item.text : piece.node.data.slice(piece.from, piece.to)}`);
+    if (item.author !== undefined && item.author !== null) mark.dataset.author = String(item.author);
+    if (item.who) mark.title = item.who;
+    mark.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      selectedSemanticId = item.id;
+      quietly(semanticSelected);
+      post({ type: "focus", id: item.id });
+    };
+    range.surroundContents(mark);
+  }
+
+  function semanticDeletion(item) {
+    if (item.at < 0 || item.at > text().length) return false;
+    if (!table.nodes.length) {
+      const mark = document.createElement("mark");
+      mark.className = "librepaper-semantic-del";
+      mark.dataset.librepaperSemantic = item.id;
+      mark.dataset.librepaperDeletion = "1";
+      mark.dataset.deleted = item.text || "Deleted content";
+      mark.setAttribute("aria-label", `Deleted: ${item.text || "content"}`);
+      document.body.appendChild(mark);
+      return true;
+    }
+    const at = item.at === text().length ? item.at : item.at;
+    const index = nodeAt(Math.max(0, Math.min(at, text().length - 1)));
+    const node = table.nodes[index];
+    if (!node) return false;
+    const range = document.createRange();
+    range.setStart(node, Math.max(0, Math.min(node.data.length, at - table.starts[index])));
+    range.collapse(true);
+    const mark = document.createElement("mark");
+    mark.className = "librepaper-semantic-del";
+    mark.dataset.librepaperSemantic = item.id;
+    mark.dataset.librepaperDeletion = "1";
+    mark.dataset.deleted = item.text || "Deleted content";
+    mark.setAttribute("aria-label", `Deleted: ${item.text || "content"}`);
+    if (item.author !== undefined && item.author !== null) mark.dataset.author = String(item.author);
+    if (item.who) mark.title = item.who;
+    mark.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      selectedSemanticId = item.id;
+      quietly(semanticSelected);
+      post({ type: "focus", id: item.id });
+    };
+    range.insertNode(mark);
+    return true;
+  }
+
+  function paintSemantic(payload) {
+    clearSemanticMarks();
+    const projection = payload.targetProjection || payload.projection;
+    const actual = reprojectTarget(document, projection);
+    if (!actual) return false;
+    const items = targetSemanticItems(payload);
+    if (!items) return false;
+    scan();
+    const inserts = [];
+    const deletes = [];
+    // Resolve every DOM path before making any mutation. Text pieces are then
+    // wrapped from right to left; deletion seams use live DOM Ranges, which
+    // track those splits without guessing at flattened text offsets.
+    for (const item of items) {
+      if (item.kind === "insert") {
+        for (let index = item.fromB; index < item.toB; index++) {
+          const mapped = semanticTokenLocation(actual, index);
+          if (!mapped || mapped.invalid) return false;
+          inserts.push({ item, mapped });
+        }
+      } else {
+        const range = document.createRange();
+        const mapped = item.fromB < actual.tokens.length ? semanticTokenLocation(actual, item.fromB) : null;
+        const piece = mapped?.pieces?.[0];
+        if (piece) range.setStart(piece.node, piece.from);
+        else if (mapped?.element && mapped.element !== document.body) range.setStartBefore(mapped.element);
+        else { range.selectNodeContents(document.body); range.collapse(false); }
+        range.collapse(true);
+        deletes.push({ item, range });
+      }
+    }
+    quietly(() => {
+      for (const { item, mapped } of inserts.reverse()) {
+        if (mapped.pieces.length) for (const piece of [...mapped.pieces].reverse()) semanticMark(piece, item);
+        else if (mapped.element) mapped.element.dataset.librepaperSemanticIn = item.id;
+      }
+      for (const { item, range } of deletes.reverse()) {
+        const mark = document.createElement("mark");
+        mark.className = "librepaper-semantic-del";
+        mark.dataset.librepaperSemantic = item.id;
+        mark.dataset.librepaperDeletion = "1";
+        mark.dataset.deleted = item.text || "Deleted content";
+        mark.setAttribute("aria-label", `Deleted: ${item.text || "content"}`);
+        if (item.who) mark.title = item.who;
+        mark.onclick = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          selectedSemanticId = item.id;
+          quietly(semanticSelected);
+          post({ type: "focus", id: item.id });
+        };
+        range.insertNode(mark);
+      }
+    });
+    scan();
+    quietly(semanticSelected);
+    return true;
+  }
+
+  function paintSyntheticSuggestions(suggestions = []) {
+    if (!Array.isArray(suggestions)) return false;
+    for (const suggestion of suggestions) {
+      const id = String(suggestion.id || "");
+      const start = Number.isInteger(suggestion.targetStart) ? suggestion.targetStart : suggestion.start;
+      const end = Number.isInteger(suggestion.targetEnd) ? suggestion.targetEnd : suggestion.end;
+      const proposed = typeof suggestion.proposed === "string" ? suggestion.proposed : "";
+      if (!id || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start
+        || end > text().length || proposed.length > 100_000 || suggestion.overlap || suggestion.unlocatable) {
+        post({ type: "suggestion-review", id, reason: suggestion.overlap ? "overlap" : "unlocatable" });
+        continue;
+      }
+      const pieces = piecesFor(start, end);
+      if ((end > start && !pieces.length) || !table.nodes.length) {
+        post({ type: "suggestion-review", id, reason: "target-mapping" });
+        continue;
+      }
+      for (const piece of [...pieces].reverse()) {
+        const range = document.createRange();
+        range.setStart(piece.node, piece.from);
+        range.setEnd(piece.node, piece.to);
+        const mark = document.createElement("mark");
+        mark.className = "librepaper-suggestion-del";
+        mark.dataset.librepaperSuggestion = id;
+        mark.setAttribute("aria-label", `Suggested replacement, removed: ${piece.node.data.slice(piece.from, piece.to)}`);
+        range.surroundContents(mark);
+      }
+      if (!proposed) continue;
+      scan();
+      const at = end;
+      const index = nodeAt(Math.max(0, Math.min(at, text().length - 1)));
+      const node = table.nodes[index];
+      if (!node) { post({ type: "suggestion-review", id, reason: "target-mapping" }); continue; }
+      const range = document.createRange();
+      range.setStart(node, Math.max(0, Math.min(node.data.length, at - table.starts[index])));
+      range.collapse(true);
+      const synthetic = document.createElement("span");
+      synthetic.className = "librepaper-suggestion-synthetic";
+      synthetic.dataset.librepaperSuggestion = id;
+      synthetic.dataset.librepaperSynthetic = "1";
+      synthetic.setAttribute("aria-label", `Suggested insertion: ${proposed}`);
+      synthetic.appendChild(document.createTextNode(proposed));
+      range.insertNode(synthetic);
+    }
+    return true;
+  }
+
+  function semanticRedlines(payload) {
+    if (!validateSemanticRedlinePayload(payload)) {
+      lastSemanticPayload = null;
+      clearSemanticMarks();
+      post({ type: "semantic-redlines-rejected", generation: payload?.generation, reason: "invalid-payload" });
+      return;
+    }
+    if (activeFrameGeneration !== null && payload.frameGeneration !== activeFrameGeneration) {
+      lastSemanticPayload = null;
+      clearSemanticMarks();
+      post({ type: "semantic-redlines-rejected", generation: payload.generation, reason: "stale-generation" });
+      return;
+    }
+    if (!paintSemantic(payload)) {
+      lastSemanticPayload = null;
+      clearSemanticMarks();
+      post({ type: "semantic-redlines-rejected", generation: payload.generation, reason: "target-mapping" });
+      return;
+    }
+    paintSyntheticSuggestions(payload.suggestions || []);
+    lastSemanticPayload = payload;
+    post({ type: "semantic-redlines-painted", generation: payload.generation });
+  }
 
   // Marks from a previous `redlines()` call, cleared without disturbing
   // `highlight()`'s marks -- a different class, so the two coexist and
@@ -499,11 +821,22 @@ import { sha256HexOfText } from "../lib/digest.js";
   // the same segment machinery `highlight` paints with, so a passage that
   // crosses element boundaries is still covered piece by piece.
   function redlines(items) {
-    lastRedlineItems = items;
+    // Messages cross a hostile document boundary. Reject malformed payloads
+    // before they can influence Range offsets or create an unbounded
+    // attribute. Historical deletion text is always inserted as an attribute
+    // value, never as HTML.
+    const safeItems = (Array.isArray(items) ? items : []).filter((item) => {
+      if (!item || (item.kind !== "insert" && item.kind !== "delete")) return false;
+      if (item.kind === "delete") return Number.isInteger(item.at) && item.at >= 0
+        && typeof item.text === "string" && item.text.length <= 100_000;
+      return Number.isInteger(item.start) && Number.isInteger(item.end)
+        && item.start >= 0 && item.end >= item.start && item.end - item.start <= 100_000;
+    }).slice(0, 2_000);
+    lastRedlineItems = safeItems;
     clearRedlineMarks();
     scan();
 
-    const deletes = [...items.filter((item) => item.kind === "delete")].sort((a, b) => b.at - a.at);
+    const deletes = [...safeItems.filter((item) => item.kind === "delete")].sort((a, b) => b.at - a.at);
     quietly(() => {
       for (const item of deletes) {
         const at = Number(item.at) || 0;
@@ -517,6 +850,7 @@ import { sha256HexOfText } from "../lib/digest.js";
         const mark = document.createElement("mark");
         mark.className = "librepaper-del";
         mark.dataset.deleted = item.text || "";
+        mark.setAttribute("aria-label", `Deleted: ${item.text || "content"}`);
         if (item.author !== undefined && item.author !== null) mark.dataset.author = String(item.author);
         mark.title = [item.who, item.text].filter(Boolean).join(": ");
         range.insertNode(mark);
@@ -526,7 +860,7 @@ import { sha256HexOfText } from "../lib/digest.js";
     // has to catch up before piecesFor, below, can trust it.
     scan();
 
-    const inserts = items.filter((item) => item.kind === "insert" && item.end > item.start);
+    const inserts = safeItems.filter((item) => item.kind === "insert" && item.end > item.start);
     quietly(() => {
       for (const item of [...inserts].reverse()) {
         for (const piece of piecesFor(item.start, item.end)) {
@@ -535,6 +869,7 @@ import { sha256HexOfText } from "../lib/digest.js";
           range.setEnd(piece.node, piece.to);
           const mark = document.createElement("mark");
           mark.className = "librepaper-ins";
+          mark.setAttribute("aria-label", `Inserted: ${piece.node.data.slice(piece.from, piece.to)}`);
           if (item.who) mark.title = item.who;
           if (item.author !== undefined && item.author !== null) mark.dataset.author = String(item.author);
           range.surroundContents(mark);
@@ -842,7 +1177,11 @@ import { sha256HexOfText } from "../lib/digest.js";
     if (!message || message.librepaper !== true) return;
     if (message.type === "highlight") highlight(message.ranges || []);
     if (message.type === "regions") paintRegions(message.regions || []);
-    if (message.type === "redlines") redlines(message.items || []);
+    if (message.type === "redlines") {
+      if (message.version === SEMANTIC_REDLINE_VERSION || message.targetProjection || message.projection) semanticRedlines(message);
+      else { lastSemanticPayload = null; clearSemanticMarks(); redlines(message.items || []); }
+    }
+    if (message.type === "semantic-redlines") semanticRedlines(message.payload || message);
     // The tool the sidebar is on: only "region" makes figures draggable, and
     // it also stops text selection fighting the drag.
     if (message.type === "tool") {
@@ -864,6 +1203,7 @@ import { sha256HexOfText } from "../lib/digest.js";
     //
     // innerHTML does not run scripts, so a preview never executes anything.
     if (message.type === "preview") {
+      if (Number.isInteger(message.frameGeneration)) activeFrameGeneration = message.frameGeneration;
       // A LaTeX document arrives as PDF bytes rather than as HTML, and the
       // page it arrives on -- the PDF viewer -- draws
       // it itself into a text layer of ordinary spans. Nothing below applies
@@ -900,6 +1240,12 @@ import { sha256HexOfText } from "../lib/digest.js";
       // the sidebar's own answer arrives and corrects them.
       if (lastRanges.length) highlight(shiftRanges(lastRanges));
       if (lastRedlineItems.length) redlines(shiftRedlineItems(lastRedlineItems));
+      if (lastSemanticPayload) {
+        // A preview replaces the target DOM. Reprojection is mandatory here;
+        // semantic locations from the previous generation are never reused.
+        if (lastSemanticPayload.frameGeneration === activeFrameGeneration) paintSemantic(lastSemanticPayload);
+        else lastSemanticPayload = null;
+      }
       // Directly, not through the observer: the observer waits a quarter of a
       // second before republishing, and a preview should keep up with typing.
       publish(true);
@@ -909,6 +1255,15 @@ import { sha256HexOfText } from "../lib/digest.js";
     // text this frame published, which is the only thing both sides agree on:
     // the editor works out which offset a caret in the source corresponds to,
     // and this end knows which node holds it.
+    if (message.type === "semantic-locate") {
+      if (message.frameGeneration !== activeFrameGeneration || !lastSemanticPayload) return;
+      selectedSemanticId = String(message.id || "");
+      quietly(semanticSelected);
+      const id = CSS.escape(selectedSemanticId);
+      const node = document.querySelector(`mark[data-librepaper-semantic="${id}"], [data-librepaper-semantic-in="${id}"]`);
+      if (node) scrollTo({ top: scrollY + node.getBoundingClientRect().top - innerHeight / 3, behavior: "smooth" });
+      return;
+    }
     if (message.type === "locate") {
       const start = Number(message.start) || 0;
       const [piece] = piecesFor(start, start + Math.max(1, Number(message.length) || 1));

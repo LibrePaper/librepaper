@@ -22,6 +22,8 @@ export function createFramePreview({
   let source = null;
   let framedSource = null;
   let latest = null;
+  let contentGeneration = 0;
+  let deliveredGeneration = 0;
   let disposed = false;
 
   function navigate(force = false) {
@@ -34,6 +36,7 @@ export function createFramePreview({
     kind = nextKind;
     epoch += 1;
     readyEpoch = -1;
+    deliveredGeneration = 0;
     served = false;
     onNavigate({ epoch, kind });
     const base = `${docsOrigin}/${kind}/${slug}/?v=${++generation}`;
@@ -51,6 +54,11 @@ export function createFramePreview({
         if (disposed || mine !== requestId) return;
         served = Boolean(pass?.token);
         source = served ? `${base}&until=${pass.until}&token=${pass.token}` : base;
+        // The previous iframe can report ready while the signed URL is
+        // pending. That acknowledgement belongs to the old DOM, not the
+        // replacement that setSource is about to mount.
+        readyEpoch = -1;
+        deliveredGeneration = 0;
         setSource(source);
       });
     return true;
@@ -67,6 +75,7 @@ export function createFramePreview({
     if (!payload || (payload.kind !== "pdf" && payload.kind !== "html")) return null;
     if (payload.kind === "html") return {
       kind: "html", html: payload.html,
+      ...(payload.sha ? { sha: payload.sha } : {}),
       ...(payload.presentation === "document" ? { presentation: "document" } : {}),
     };
     const bytes = payload.bytes instanceof Uint8Array ? payload.bytes : new Uint8Array(payload.bytes);
@@ -78,12 +87,14 @@ export function createFramePreview({
     if (disposed || !payload || readyEpoch !== epoch || payloadKind !== kind) return false;
     if (payload.kind === "pdf") {
       const buffer = payload.bytes.slice().buffer;
-      send({ type: "preview", pdf: buffer }, [buffer]);
+      send({ type: "preview", pdf: buffer, frameGeneration: payload.generation }, [buffer]);
     } else {
       send({ type: "preview", html: payload.html,
+        frameGeneration: payload.generation,
         ...(payload.presentation === "document" ? { presentation: "document" } : {}),
       });
     }
+    deliveredGeneration = payload.generation;
     onDelivered(payload);
     return true;
   }
@@ -92,6 +103,7 @@ export function createFramePreview({
     if (disposed) return false;
     const normalized = normalize(payload);
     if (!normalized) return false;
+    normalized.generation = ++contentGeneration;
     latest = normalized;
     return deliver(normalized);
   }
@@ -136,6 +148,8 @@ export function createFramePreview({
     dispose,
     preview: () => latest,
     get epoch() { return epoch; },
+    get contentGeneration() { return contentGeneration; },
+    get deliveredGeneration() { return deliveredGeneration; },
     get kind() { return kind; },
     get source() { return source; },
     get ready() { return readyEpoch === epoch; },

@@ -4,6 +4,8 @@
   import Logo from "./Logo.svelte";
   import IconButton from "./IconButton.svelte";
   import Avatar from "./Avatar.svelte";
+  import Modal from "./Modal.svelte";
+  import QuotaSettings from "./settings/QuotaSettings.svelte";
   import { signInHref, signOut } from "../lib/api.js";
 
   // The bar every page wears: the logo, whatever the page puts in the middle,
@@ -17,6 +19,7 @@
   // Reader's connection and presence indicator. Pane-specific state stays
   // with the pane it describes.
   let { me = {}, children, menus, tools, documentation = true } = $props();
+  let storageOpen = $state(false);
 </script>
 
 <nav class="flex items-center justify-between gap-4">
@@ -52,12 +55,13 @@
          is its handle and is shown to nobody, here least of all. -->
     {#if me.name}
       {@const shown = me.provider === "github" ? `@${me.name}` : me.name}
-      <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(); }}>
+      <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(); if (chosen.value === "storage") storageOpen = true; }}>
         <Menu.Trigger class="account icon-control" aria-label={`Account menu, signed in as ${shown}`} title={shown}>
           <Avatar name={me.name} key={me.handle || me.name} src={me.picture || ""} size={7} title="" />
         </Menu.Trigger>
         <ExplorerMenu>
           <div class="account-who" aria-hidden="true">{shown}</div>
+          <Menu.Item value="storage" class="menuitem">Storage and history</Menu.Item>
           <Menu.Item value="signout" class="menuitem">Sign out</Menu.Item>
         </ExplorerMenu>
       </Menu>
@@ -66,6 +70,10 @@
     {/if}
   </div>
 </nav>
+
+<Modal bind:open={storageOpen} title="Storage and history" wide>
+  {#if storageOpen}<QuotaSettings />{/if}
+</Modal>
 
 <style>
   /* The button is the circle: no box of its own, a ring on hover so it reads

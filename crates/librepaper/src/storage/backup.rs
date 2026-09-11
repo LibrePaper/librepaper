@@ -6,13 +6,13 @@
 //! copies ordinary private garbage that can be cleaned up, rather than a
 //! recovery point that may silently lose acknowledged work.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Component, Path};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -802,6 +802,128 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
         Ok(())
     }
 
+    fn verify_encoded_source(
+        connection: &Connection,
+        objects_path: &Path,
+        storage_id: &str,
+        file_digest: &str,
+        expected_length: i64,
+    ) -> BackupResult<()> {
+        let (recipe_key, recipe_digest, recipe_bytes): (String, String, i64) = connection
+            .query_row(
+                "SELECT recipe_key,recipe_digest,recipe_bytes
+                 FROM source_history_encodings
+                 WHERE storage_id=?1 AND file_digest=?2",
+                rusqlite::params![storage_id, file_digest],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|error| BackupError::Corrupt(error.to_string()))?;
+        let expected_file: [u8; 32] = hex::decode(file_digest)
+            .map_err(|_| BackupError::Corrupt("encoded source digest is not hexadecimal".into()))?
+            .try_into()
+            .map_err(|_| BackupError::Corrupt("encoded source digest is not SHA-256".into()))?;
+        if recipe_key != crate::storage::blob::content_recipe_key(storage_id, file_digest)
+            || recipe_bytes < 0
+        {
+            return Err(BackupError::Corrupt(format!(
+                "invalid source-history recipe metadata: {file_digest}"
+            )));
+        }
+        let recipe_path = objects_path.join(&recipe_key);
+        verify_object(
+            objects_path,
+            &recipe_key,
+            Some(&recipe_digest),
+            Some(recipe_bytes),
+        )?;
+        let recipe_body = fs::read(&recipe_path)
+            .map_err(|error| BackupError::Corrupt(format!("{}: {error}", recipe_path.display())))?;
+        let recipe =
+            crate::storage::encoding::Recipe::from_bytes(&recipe_body).map_err(|error| {
+                BackupError::Corrupt(format!("invalid source recipe {file_digest}: {error}"))
+            })?;
+        if recipe.file_digest != expected_file
+            || recipe.uncompressed_len != u64::try_from(expected_length).unwrap_or(u64::MAX)
+        {
+            return Err(BackupError::Corrupt(format!(
+                "source recipe digest/length mismatch: {file_digest}"
+            )));
+        }
+
+        let mut statement = connection
+            .prepare(
+                "SELECT object_key,kind,bytes FROM source_history_objects
+                 WHERE storage_id=?1 AND file_digest=?2",
+            )
+            .map_err(|error| BackupError::Storage(error.to_string()))?;
+        let rows = statement
+            .query_map(rusqlite::params![storage_id, file_digest], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|error| BackupError::Storage(error.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| BackupError::Corrupt(error.to_string()))?;
+        let mut objects = HashMap::new();
+        for (object_key, kind, bytes) in rows {
+            if bytes < 0 {
+                return Err(BackupError::Corrupt(format!(
+                    "negative source-history object length: {object_key}"
+                )));
+            }
+            verify_object(objects_path, &object_key, None, Some(bytes))?;
+            if objects.insert(object_key.clone(), (kind, bytes)).is_some() {
+                return Err(BackupError::Corrupt(format!(
+                    "duplicate source-history object: {object_key}"
+                )));
+            }
+        }
+        if objects
+            .get(&recipe_key)
+            .is_none_or(|(kind, bytes)| kind != "source_recipe" || *bytes != recipe_bytes)
+        {
+            return Err(BackupError::Corrupt(format!(
+                "source-history recipe edge is missing: {file_digest}"
+            )));
+        }
+        let mut chunks = HashMap::with_capacity(recipe.chunks.len());
+        for reference in &recipe.chunks {
+            let chunk_key =
+                crate::storage::blob::content_chunk_key(storage_id, &hex::encode(reference.digest));
+            let Some((kind, bytes)) = objects.get(&chunk_key) else {
+                return Err(BackupError::Corrupt(format!(
+                    "source-history chunk edge is missing: {chunk_key}"
+                )));
+            };
+            if kind != "source_chunk" || *bytes <= 0 {
+                return Err(BackupError::Corrupt(format!(
+                    "invalid source-history chunk edge: {chunk_key}"
+                )));
+            }
+            let path = objects_path.join(&chunk_key);
+            let body = fs::read(&path)
+                .map_err(|error| BackupError::Corrupt(format!("{}: {error}", path.display())))?;
+            chunks.insert(reference.digest, body);
+        }
+        let reconstructed = crate::storage::encoding::reconstruct(&recipe, |digest| {
+            chunks.get(digest).cloned().ok_or_else(|| {
+                crate::storage::encoding::EncodingError::Integrity(
+                    "source-history chunk is missing".into(),
+                )
+            })
+        })
+        .map_err(|error| BackupError::Corrupt(format!("source reconstruction failed: {error}")))?;
+        if reconstructed.len() as i64 != expected_length {
+            return Err(BackupError::Corrupt(format!(
+                "source reconstruction length mismatch: {file_digest}"
+            )));
+        }
+        Ok(())
+    }
+
     fn verify_manifest_object(
         root: &Path,
         key: &str,
@@ -874,32 +996,28 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
         let checkpoint_size: i64 = row
             .get(3)
             .map_err(|error| BackupError::Storage(error.to_string()))?;
-        let content_sha = if tree_sha.is_empty() {
-            sha.as_str()
-        } else {
-            tree_sha.as_str()
-        };
+        // The physical tree is event-addressed. `tree_sha` is the content
+        // digest used to validate its JSON, but force/event checkpoints have
+        // a distinct `sha` and are stored under that event id.
         verify_object(
             objects_path,
-            &crate::storage::blob::checkpoint_key(&storage_id, content_sha),
+            &crate::storage::blob::checkpoint_key(&storage_id, &sha),
             None,
             None,
         )?;
         if !tree_sha.is_empty() {
-            let tree_path = objects_path.join(crate::storage::blob::checkpoint_key(
-                &storage_id,
-                content_sha,
-            ));
+            let tree_path =
+                objects_path.join(crate::storage::blob::checkpoint_key(&storage_id, &sha));
             let tree_body = fs::read(&tree_path).map_err(|error| {
                 BackupError::Corrupt(format!("{}: {error}", tree_path.display()))
             })?;
             let tree: crate::document::history::Tree =
                 serde_json::from_slice(&tree_body).map_err(|error| {
-                    BackupError::Corrupt(format!("invalid checkpoint tree {content_sha}: {error}"))
+                    BackupError::Corrupt(format!("invalid checkpoint tree {sha}: {error}"))
                 })?;
-            if tree.digest() != content_sha || checkpoint_size < 0 {
+            if tree.digest() != tree_sha || checkpoint_size < 0 {
                 return Err(BackupError::Corrupt(format!(
-                    "checkpoint tree digest/size mismatch: {content_sha}"
+                    "checkpoint tree digest/size mismatch: {tree_sha}"
                 )));
             }
             for entry in tree.files.values() {
@@ -910,14 +1028,37 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
                 }
                 let key = match entry.kind.as_str() {
                     "text" => crate::storage::blob::blob_key(&storage_id, &entry.sha),
-                    "asset" => crate::storage::blob::asset_key(&storage_id, &entry.sha),
                     other => {
+                        if other == "asset" {
+                            let key = crate::storage::blob::asset_key(&storage_id, &entry.sha);
+                            verify_object(objects_path, &key, Some(&entry.sha), Some(entry.size))?;
+                            continue;
+                        }
                         return Err(BackupError::Corrupt(format!(
                             "checkpoint contains unknown file kind {other}"
-                        )))
+                        )));
                     }
                 };
-                verify_object(objects_path, &key, Some(&entry.sha), Some(entry.size))?;
+                let has_encoding: Option<i64> = connection
+                    .query_row(
+                        "SELECT 1 FROM source_history_encodings
+                         WHERE storage_id=?1 AND file_digest=?2",
+                        rusqlite::params![storage_id, entry.sha],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| BackupError::Storage(error.to_string()))?;
+                if has_encoding.is_some() {
+                    verify_encoded_source(
+                        connection,
+                        objects_path,
+                        &storage_id,
+                        &entry.sha,
+                        entry.size,
+                    )?;
+                } else {
+                    verify_object(objects_path, &key, Some(&entry.sha), Some(entry.size))?;
+                }
             }
         }
     }
@@ -2008,6 +2149,167 @@ mod tests {
                 content.as_bytes()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn local_backup_round_trips_encoded_source_and_force_event_tree() {
+        let live = TempDir::new().expect("live tempdir");
+        let backup_root = TempDir::new().expect("backup tempdir");
+        let paths = DeploymentPaths::local(live.path());
+        paths.prepare_state().expect("state");
+        paths.ensure_deployment_identity(false).expect("identity");
+        link_sealing_key_file(&paths.secrets.join("links.key"), false).expect("links");
+        session_key_file(&paths.secrets.join("session.key"), false).expect("session");
+        let catalog = Catalog::open(&paths.catalog).expect("catalog");
+        catalog
+            .create_document(&crate::storage::catalog::NewDocument {
+                slug: "encoded".into(),
+                storage_id: "encoded-storage".into(),
+                title: "Encoded".into(),
+                sha: String::new(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                published_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                example: false,
+                owner_key: "backup-owner".into(),
+                owner_id: None,
+                status: "active".into(),
+                size: 0,
+                counted_size: 0,
+                maintenance_reserved: 0,
+                last_auto_checkpoint_at: 0,
+                source_format: "markdown".into(),
+                main: "main.md".into(),
+            })
+            .expect("document");
+
+        let source: Vec<u8> = (0usize..65_536)
+            .map(|position| (position.wrapping_mul(17) % 251) as u8)
+            .collect();
+        let encoded = crate::storage::encoding::encode_source(&source).expect("encode source");
+        let record =
+            crate::storage::catalog::SourceHistoryRecord::from_encoded("encoded-storage", &encoded)
+                .expect("source record");
+        let mut files = std::collections::BTreeMap::new();
+        files.insert(
+            "main.md".into(),
+            crate::document::history::TreeEntry {
+                kind: "text".into(),
+                id: String::new(),
+                sha: record.file_digest.clone(),
+                size: source.len() as i64,
+            },
+        );
+        let tree = crate::document::history::Tree {
+            main: "main.md".into(),
+            files,
+            settings: None,
+        };
+        let event_sha = "force-event-1";
+        let tree_sha = tree.digest();
+        let objects = FsStore::new(&paths.objects, true);
+        objects
+            .put(
+                &crate::storage::blob::checkpoint_key("encoded-storage", event_sha),
+                tree.to_bytes(),
+                "application/json",
+            )
+            .await
+            .expect("tree");
+        for object in &record.objects {
+            let body = if object.kind == "source_recipe" {
+                encoded.recipe_bytes.clone()
+            } else {
+                encoded
+                    .objects
+                    .iter()
+                    .find(|candidate| {
+                        crate::storage::blob::content_chunk_key(
+                            "encoded-storage",
+                            &hex::encode(candidate.digest),
+                        ) == object.object_key
+                    })
+                    .expect("encoded chunk")
+                    .encoded
+                    .clone()
+            };
+            objects
+                .put(&object.object_key, body.clone(), "application/octet-stream")
+                .await
+                .expect("source object");
+            let key = object.object_key.clone();
+            let kind = object.kind.clone();
+            let bytes = body.len() as i64;
+            catalog
+                .with_connection(|connection| {
+                    connection.execute(
+                        "INSERT INTO object_accounting
+                         (storage_id,object_key,kind,bytes,version)
+                         VALUES(?1,?2,?3,?4,'backup-test')",
+                        rusqlite::params!["encoded-storage", key, kind, bytes],
+                    )?;
+                    Ok(())
+                })
+                .expect("source accounting");
+        }
+        let tree_key = crate::storage::blob::checkpoint_key("encoded-storage", event_sha);
+        let tree_bytes = tree.to_bytes();
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO object_accounting
+                     (storage_id,object_key,kind,bytes,version)
+                     VALUES(?1,?2,'tree',?3,'backup-test')",
+                    rusqlite::params!["encoded-storage", tree_key, tree_bytes.len() as i64],
+                )?;
+                Ok(())
+            })
+            .expect("tree accounting");
+        catalog
+            .insert_checkpoints_atomic_with_sources(
+                &[crate::storage::catalog::Checkpoint {
+                    slug: "encoded".into(),
+                    sha: event_sha.into(),
+                    seq: -1,
+                    durable_seq: 0,
+                    tree_sha: tree_sha.clone(),
+                    parent: String::new(),
+                    at: "2026-01-01T00:00:00Z".into(),
+                    by: String::new(),
+                    why: "restore".into(),
+                    source_format: "markdown".into(),
+                    size: source.len() as i64,
+                    label: String::new(),
+                    git_commit: String::new(),
+                    dirty: false,
+                    changed: None,
+                    by_account: None,
+                }],
+                None,
+                std::slice::from_ref(&record),
+            )
+            .expect("checkpoint graph");
+
+        let manifest = create_local_backup(&paths, backup_root.path(), "encoded-point", 10)
+            .expect("encoded backup");
+        verify_local_backup(&backup_root.path().join(&manifest.backup_id))
+            .expect("verify encoded backup");
+        let restored = live.path().join("restored-encoded");
+        restore_local_backup(&backup_root.path().join(&manifest.backup_id), &restored)
+            .expect("restore encoded backup");
+        let restored_objects = FsStore::new(restored.join("objects"), true);
+        let restored_source = crate::storage::encoding::read_file(
+            &restored_objects,
+            "encoded-storage",
+            &record.file_digest,
+        )
+        .await
+        .expect("decode restored source");
+        assert_eq!(restored_source, source);
+        assert!(manifest
+            .objects
+            .iter()
+            .any(|object| { object.relative == format!("objects/{}", tree_key) }));
     }
 
     #[tokio::test]

@@ -837,11 +837,11 @@ See the [assistant protocol](docs/protocol/chat.md) and [document operations](do
 
 ### History
 
-A document is never lost, and its past is never rewritten. The server takes a
-checkpoint when the typing stops, when the last editor leaves, whenever
-somebody comments, and whenever the document is published to; each one records
-the whole directory at that moment, so a chapter and the file that includes it
-can never come back out of step.
+Live saving and retained history are separate. The server takes checkpoints
+after editing pauses and at explicit milestones; each retained checkpoint
+records the whole directory, so a chapter and the file that includes it can
+never come back out of step. Routine recovery points become less dense as
+they age. Retention does not delay ordinary live saving.
 
 ```sh
 librepaper history c9k
@@ -855,8 +855,8 @@ c07e1aa  2026-09-05 16:40:03   annegrandchamp      comment
 d1e0f42  2026-09-05 17:02:19   vincentarelbundock  left     *
 ```
 
-Name a moment so it stands out, and so it is the last thing shed if a quota
-ever bites:
+Name a moment so it stands out and is preferentially retained. Names do not
+guarantee permanent storage: deployment count and storage limits still apply.
 
 ```sh
 librepaper label c9k 4f2a91c "sent to the journal"
@@ -872,6 +872,20 @@ action makes that checkpoint the baseline, and a bracket down the timeline
 shows the range. "Back to now" returns to the live document. Copying a
 checkpoint's link preserves the share key that gave you access. Editors can
 name checkpoints and restore earlier versions.
+
+Historical comparisons render captured source as HTML, including for documents
+normally viewed as PDFs. They never compile a historical PDF. When rendering
+or an exact target mapping is unavailable, the interface offers a source
+comparison instead. A checkpoint's actor identifies who recorded the event,
+not necessarily who authored every changed passage; uncertain authorship is
+shown as unknown.
+
+Signed-in owners can choose a soft history budget, retention density, warning
+thresholds, and display timezone in Storage settings. Retention buckets always
+use UTC. Material reductions require a preview and confirmation, with a grace
+period before routine thinning. Existing histories keep their legacy policy
+until the owner applies preferences. These preferences cannot raise the
+deployment's hard quota.
 
 The changes are also listed as prose, folded away under the count, and the
 files that changed open source comparisons; editors can compare two
@@ -1061,8 +1075,10 @@ A document is a directory, so `--max-size` bounds the sum of its texts and
 an upload and counts against `--uploads-per-hour` like any other. A Typst or
 LaTeX document also keeps the PDF a client compiled, so that a reader
 never has to compile one: `--max-size` bounds that PDF too, it counts against
-the quota and the hourly uploads like a figure, and only the newest one plus
-the named checkpoints' are kept. On a
+the quota and the hourly uploads like a figure. The latest successfully
+published PDF bundle is retained independently of its source checkpoint;
+names do not archive older PDFs. Superseded bundles are eligible for cleanup
+after the upload grace period. On a
 deployment anybody may publish to, `--max-assets` is the one worth lowering:
 figures are where a paper's bytes actually are, and it is what stops a single
 document spending a publisher's whole allowance on images.

@@ -61,6 +61,55 @@ function timerHarness() {
   assert.equal(frame.navigate(true), false);
 }
 
+// Published content is not a delivered frame generation until readiness.
+{
+  const delivered = [];
+  const frame = createFramePreview({
+    slug: "doc", getDocsOrigin: () => "https://docs.test", framePath: () => "raw",
+    api: { frame: async () => ({ ok: false }) }, setSource: () => {}, send: () => {},
+    onDelivered: (payload) => delivered.push(payload),
+  });
+  frame.navigate();
+  frame.publish({ kind: "html", html: "<p>captured</p>", sha: "captured-tree" });
+  assert.equal(frame.contentGeneration, 1);
+  assert.equal(frame.deliveredGeneration, 0);
+  frame.markReady();
+  frame.replay();
+  assert.equal(frame.deliveredGeneration, 1);
+  assert.equal(delivered[0].sha, "captured-tree");
+  frame.navigate(true);
+  assert.equal(frame.deliveredGeneration, 0);
+  frame.dispose();
+}
+
+// An old frame's ready message during a signed-URL request cannot consume
+// the replacement iframe's first-ready replay.
+{
+  const first = deferred(), second = deferred();
+  const passes = [first, second];
+  const sent = [];
+  const frame = createFramePreview({
+    slug: "doc", getDocsOrigin: () => "https://docs.test", framePath: () => "raw",
+    api: { frame: () => passes.shift().promise }, setSource: () => {}, send: (message) => sent.push(message),
+  });
+  frame.navigate();
+  first.resolve({ ok: true, json: async () => ({ token: "first", until: 1 }) });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  frame.markReady();
+  frame.publish({ kind: "html", html: "<p>first</p>" });
+  frame.navigate(true);
+  frame.markReady(); // A late message from the old iframe.
+  frame.publish({ kind: "html", html: "<p>replacement</p>" });
+  second.resolve({ ok: true, json: async () => ({ token: "second", until: 2 }) });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(frame.ready, false);
+  assert.equal(frame.deliveredGeneration, 0);
+  assert.equal(frame.markReady(), true, "the replacement owns a fresh acknowledgement");
+  frame.replay();
+  assert.equal(sent.at(-1).html, "<p>replacement</p>");
+  frame.dispose();
+}
+
 // A late rendering fetch cannot overwrite a newer request, and disposal
 // prevents a quiet timer from publishing bytes after the component leaves.
 {

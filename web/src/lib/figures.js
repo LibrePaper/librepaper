@@ -12,29 +12,44 @@
 // the bytes came from, which on a private document carries a credential and
 // would put it inside a rendered page.
 
-import { cached } from "./cache.js";
-
 const bytes = new Map(); // digest -> Uint8Array
 const urls = new Map(); // digest -> blob: URL
 const inFlight = new Map(); // digest -> Promise
+const scopes = new Map();
+let generation = 0;
+let nextScope = 0;
+function scopedKey(slug, sha, headers) {
+  const entries = headers instanceof Headers ? [...headers.entries()] : Object.entries(headers || {});
+  const fingerprint = JSON.stringify([slug, entries.sort(([a], [b]) => a.localeCompare(b))]);
+  if (!scopes.has(fingerprint)) scopes.set(fingerprint, ++nextScope);
+  return `${scopes.get(fingerprint)}:${sha}`;
+}
 
 /// The bytes of a figure, fetched once per browser and kept.
 async function fetchOne(slug, sha, headers) {
-  if (bytes.has(sha)) return bytes.get(sha);
-  if (inFlight.has(sha)) return inFlight.get(sha);
+  const key = scopedKey(slug, sha, headers);
+  const captured = generation;
+  if (bytes.has(key)) return bytes.get(key);
+  if (inFlight.has(key)) return inFlight.get(key);
   const url = `/api/documents/${slug}/assets/${sha}`;
   const wanted = (async () => {
-    const response = await cached(url, { credentials: "same-origin", headers });
+    const response = await fetch(url, { credentials: "same-origin", headers, cache: "no-store" });
     if (!response.ok) throw new Error(`could not fetch a figure (${response.status})`);
     const body = new Uint8Array(await response.arrayBuffer());
-    bytes.set(sha, body);
+    if (generation !== captured) throw new Error("Asset authorization changed");
+    if (/^[0-9a-f]{64}$/.test(sha)) {
+      const actual = [...new Uint8Array(await crypto.subtle.digest("SHA-256", body))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      if (actual !== sha) throw new Error("Captured asset failed its integrity check");
+    }
+    if (generation !== captured) throw new Error("Asset authorization changed");
+    bytes.set(key, body);
     return body;
   })();
-  inFlight.set(sha, wanted);
+  inFlight.set(key, wanted);
   try {
     return await wanted;
   } finally {
-    inFlight.delete(sha);
+    if (inFlight.get(key) === wanted) inFlight.delete(key);
   }
 }
 
@@ -63,15 +78,18 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
   const got = await Promise.all(
     wanted.map(async ([path, sha]) => {
       try {
+        const key = scopedKey(slug, sha, headers);
+        const captured = generation;
         const body = await fetchOne(slug, sha, headers);
-        if (!urls.has(sha)) {
+        if (generation !== captured) throw new Error("Asset authorization changed");
+        if (!urls.has(key)) {
           const objectUrl = URL.createObjectURL(new Blob([body], { type: typeOf(path) }));
           // Blob URLs are recreated on every page load. Keep the immutable
           // store identity in the fragment, which is ignored by the resource
           // fetch but available to the injected document agent.
-          urls.set(sha, `${objectUrl}#librepaper-asset=${encodeURIComponent(sha)}`);
+          urls.set(key, `${objectUrl}#librepaper-asset=${encodeURIComponent(sha)}`);
         }
-        return [path, body, urls.get(sha)];
+        return [path, body, urls.get(key)];
       } catch {
         return null;
       }
@@ -101,15 +119,17 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
 /// render can go ahead without waiting. A render that went ahead without them
 /// would produce a page with holes in it and then be replaced a moment later,
 /// which reads as a flicker.
-export function ready(digests) {
-  return Object.values(digests || {}).every((sha) => bytes.has(sha));
+export function ready(digests, slug = "", headers = {}) {
+  return Object.values(digests || {}).every((sha) => bytes.has(scopedKey(slug, sha, headers)));
 }
 
 /// Forgets everything, for a page leaving a document. The blob URLs are
 /// revoked: each one holds its bytes alive in the browser until it is.
 export function release() {
+  generation++;
   for (const url of urls.values()) URL.revokeObjectURL(url.split("#", 1)[0]);
   urls.clear();
   bytes.clear();
   inFlight.clear();
+  scopes.clear();
 }

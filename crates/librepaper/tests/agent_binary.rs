@@ -528,10 +528,14 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
         }
     }
     assert!(saw_runner, "runner never joined");
+    let captured = agent(&["read", &link]).await;
+    assert_eq!(captured.status, 0, "capture selection: {captured:?}");
+    let captured = json_stdout(&captured);
+    let revision = text(&captured, "sha");
     browser.send(TungsteniteMessage::Text(json!({
         "type":"message", "id":"request-success", "text":"Tighten this paragraph",
         "task":{"kind":"tighten","scope":"selection"},
-        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","prefix":"","suffix":"","position":13},"revision":"source"}
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","prefix":"","suffix":"","position":10},"revision":revision}
     }).to_string().into())).await.expect("send task");
     let mut saw_working = false;
     let mut saw_reply = false;
@@ -566,7 +570,7 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
     browser.send(TungsteniteMessage::Text(json!({
         "type":"message", "id":"request-success", "text":"Tighten this paragraph",
         "task":{"kind":"tighten","scope":"selection"},
-        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","prefix":"","suffix":"","position":13},"revision":"source"}
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","prefix":"","suffix":"","position":10},"revision":revision}
     }).to_string().into())).await.expect("retry duplicate");
     let duplicate = next_frame(&mut browser).await;
     assert_eq!(duplicate["type"], "ack");
@@ -581,7 +585,7 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
     browser.send(TungsteniteMessage::Text(json!({
         "type":"message", "id":"request-second", "text":"Rewrite this paragraph",
         "task":{"kind":"rewrite","scope":"selection"},
-        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph."},"revision":"source"}
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","position":10},"revision":revision}
     }).to_string().into())).await.expect("send second task");
     let mut second_working = false;
     for _ in 0..16 {
@@ -598,7 +602,7 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
     browser.send(TungsteniteMessage::Text(json!({
         "type":"message", "id":"request-third", "text":"Explain this paragraph",
         "task":{"kind":"explain","scope":"selection"},
-        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph."},"revision":"source"}
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","position":10},"revision":revision}
     }).to_string().into())).await.expect("send queued task");
     browser
         .send(TungsteniteMessage::Text(
@@ -645,7 +649,7 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
     browser.send(TungsteniteMessage::Text(json!({
         "type":"message", "id":"request-input", "text":"Need your input before continuing",
         "task":{"kind":"explain","scope":"selection"},
-        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph."},"revision":"source"}
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","position":10},"revision":revision}
     }).to_string().into())).await.expect("send input task");
     let mut input_answered = false;
     let mut input_completed = false;
@@ -784,7 +788,7 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
     browser.send(TungsteniteMessage::Text(json!({
         "type":"message", "id":"request-active-cancel", "text":"Cancel this turn",
         "task":{"kind":"rewrite","scope":"selection"},
-        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph."},"revision":"source"}
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","position":10},"revision":revision}
     }).to_string().into())).await.expect("send active cancellation task");
     let mut active_working = false;
     for _ in 0..20 {
@@ -830,9 +834,20 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
     browser.send(TungsteniteMessage::Text(json!({
         "type":"message", "id":"request-reconnect", "text":"Tighten this paragraph again",
         "task":{"kind":"tighten","scope":"selection"},
-        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph."},"revision":"source"}
+        "context":{"file":"main.md","selection":{"path":"main.md","exact":"A paragraph.","position":10},"revision":revision}
     }).to_string().into())).await.expect("send reconnect task");
     browser.close(None).await.expect("close browser socket");
+    // Wait for the peer's closing handshake before reusing its single-user
+    // conversation slot. Sending Close alone does not await server detach.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(frame) = browser.next().await {
+            if matches!(frame, Ok(TungsteniteMessage::Close(_)) | Err(_)) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("browser close handshake");
     let mut reconnected = browser_socket(&server, &slug, &key, &conversation, &token).await;
     let mut reconnect_completed = false;
     for _ in 0..40 {

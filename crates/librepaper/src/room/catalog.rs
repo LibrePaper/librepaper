@@ -17,6 +17,131 @@ use crate::storage::catalog::{Catalog, CatalogExecError, MutationAuthority, Room
 /// which is what keeps an ordinary edit from failing under a burst.
 pub(super) const DESCRIPTOR_BYTES: usize = 128;
 
+const SOURCE_HISTORY_LEASE_SECONDS: i64 = 3_600;
+const SOURCE_HISTORY_LEASE_HEARTBEAT_SECONDS: u64 = 300;
+
+/// An in-flight source publication/read lease with a bounded heartbeat.  The
+/// task only extends rows that still exist and have not expired; if the
+/// catalogue becomes unavailable it exits and the final publication
+/// transaction will fail closed on its lease check.
+pub(super) struct SourceHistoryLeaseGuard {
+    catalog: Arc<Catalog>,
+    storage_id: String,
+    operation_id: String,
+    heartbeat: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl SourceHistoryLeaseGuard {
+    fn new(catalog: Arc<Catalog>, storage_id: String, operation_id: String) -> Self {
+        let heartbeat_catalog = catalog.clone();
+        let heartbeat_storage = storage_id.clone();
+        let heartbeat_operation = operation_id.clone();
+        let heartbeat = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                SOURCE_HISTORY_LEASE_HEARTBEAT_SECONDS,
+            ));
+            // `interval` ticks immediately; the initial lease already covers
+            // the operation, so the first renewal is deliberately delayed.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let now = crate::util::now_unix();
+                let expires_at = now.saturating_add(SOURCE_HISTORY_LEASE_SECONDS);
+                let storage_id = heartbeat_storage.clone();
+                let operation_id = heartbeat_operation.clone();
+                let result = heartbeat_catalog
+                    .execute_catalog(
+                        storage_id.len() + operation_id.len() + DESCRIPTOR_BYTES,
+                        move |catalog| {
+                            catalog.renew_source_history_lease(
+                                &storage_id,
+                                &operation_id,
+                                now,
+                                expires_at,
+                            )
+                        },
+                    )
+                    .await;
+                if result.is_err() {
+                    // A missing/expired lease is terminal for this guard. Do
+                    // not retry in a way that could recreate protection after
+                    // maintenance has made the operation an orphan.
+                    break;
+                }
+            }
+        });
+        Self {
+            catalog,
+            storage_id,
+            operation_id,
+            heartbeat: Some(heartbeat),
+        }
+    }
+
+    /// Add objects discovered from an immutable checkpoint tree to the same
+    /// operation lease. The tree lease is installed before the first tree
+    /// read; extending it after the tree is known keeps the source plan
+    /// bounded without opening a second heartbeat/finish lifetime.
+    pub(super) async fn extend(
+        &self,
+        objects: Vec<crate::storage::catalog::SourceHistoryObject>,
+        created_at: i64,
+        expires_at: i64,
+    ) -> Result<(), WriteError> {
+        let input_bytes = self.storage_id.len()
+            + self.operation_id.len()
+            + DESCRIPTOR_BYTES
+            + objects
+                .iter()
+                .map(|object| object.object_key.len() + object.kind.len() + 16)
+                .sum::<usize>();
+        let storage_id = self.storage_id.clone();
+        let operation_id = self.operation_id.clone();
+        self.catalog
+            .execute_catalog(
+                input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+                move |catalog| {
+                    catalog.begin_source_history_lease(
+                        &storage_id,
+                        &operation_id,
+                        &objects,
+                        created_at,
+                        expires_at,
+                    )
+                },
+            )
+            .await
+            .map_err(WriteError::from)
+    }
+
+    pub(super) async fn finish(mut self) -> Result<(), WriteError> {
+        if let Some(heartbeat) = self.heartbeat.take() {
+            heartbeat.abort();
+        }
+        let catalog = self.catalog.clone();
+        // This type implements `Drop`, so move-out is not allowed. Cloning
+        // these tiny identifiers also keeps the guard's fields intact until
+        // the destructor runs if the finish request fails.
+        let storage_id = self.storage_id.clone();
+        let operation_id = self.operation_id.clone();
+        catalog
+            .execute_catalog(
+                storage_id.len() + operation_id.len() + DESCRIPTOR_BYTES,
+                move |catalog| catalog.finish_source_history_lease(&storage_id, &operation_id),
+            )
+            .await
+            .map_err(WriteError::from)
+    }
+}
+
+impl Drop for SourceHistoryLeaseGuard {
+    fn drop(&mut self) {
+        if let Some(heartbeat) = self.heartbeat.take() {
+            heartbeat.abort();
+        }
+    }
+}
+
 /// A `MutationAuthority` a job can own.
 ///
 /// The borrowed form cannot cross the boundary — a job takes owned inputs —
@@ -696,6 +821,124 @@ pub(super) async fn read_catalog_document(
         .await
 }
 
+/// Register the complete encoded-object plan before the checkpoint writer
+/// starts object I/O.  The lease is intentionally separate from accounting:
+/// `put_accounted` still owns the normal reservation/commit path, while this
+/// row protects slow or ambiguous source writes from graph GC.
+pub(super) async fn begin_source_history_lease(
+    catalog: &Arc<Catalog>,
+    storage_id: &str,
+    operation_id: &str,
+    objects: Vec<crate::storage::catalog::SourceHistoryObject>,
+    created_at: i64,
+    expires_at: i64,
+) -> Result<SourceHistoryLeaseGuard, WriteError> {
+    let input_bytes = storage_id.len()
+        + operation_id.len()
+        + DESCRIPTOR_BYTES
+        + objects
+            .iter()
+            .map(|object| object.object_key.len() + object.kind.len() + 16)
+            .sum::<usize>();
+    let storage_id = storage_id.to_string();
+    let operation_id = operation_id.to_string();
+    let lease_storage_id = storage_id.clone();
+    let lease_operation_id = operation_id.clone();
+    catalog
+        .execute_catalog(
+            input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+            move |catalog| {
+                catalog.begin_source_history_lease(
+                    &lease_storage_id,
+                    &lease_operation_id,
+                    &objects,
+                    created_at,
+                    expires_at,
+                )
+            },
+        )
+        .await
+        .map_err(WriteError::from)?;
+    Ok(SourceHistoryLeaseGuard::new(
+        catalog.clone(),
+        storage_id,
+        operation_id,
+    ))
+}
+
+/// Queue a catalogue-owned object for the normal guarded deletion worker.
+/// Active source-history leases are checked again by that worker, so callers
+/// never have to make a racy lease lookup beside physical deletion.
+pub(super) async fn queue_object_delete(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+    object_key: &str,
+    bytes: i64,
+    now: i64,
+) -> Result<(), WriteError> {
+    let slug = slug.to_string();
+    let object_key = object_key.to_string();
+    catalog
+        .execute_catalog(
+            slug.len() + object_key.len() + DESCRIPTOR_BYTES,
+            move |catalog| {
+                catalog.queue_delete(&crate::storage::catalog::PendingDelete {
+                    slug,
+                    object_key,
+                    bytes,
+                    queued_at: now,
+                    delete_after: now,
+                })
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(WriteError::from)
+}
+
+pub(super) async fn read_source_history_record(
+    catalog: &Arc<Catalog>,
+    storage_id: &str,
+    file_digest: &str,
+) -> Result<Option<crate::storage::catalog::SourceHistoryRecord>, WriteError> {
+    let storage_id = storage_id.to_string();
+    let file_digest = file_digest.to_string();
+    catalog
+        .execute_catalog(
+            storage_id.len() + file_digest.len() + DESCRIPTOR_BYTES,
+            move |catalog| catalog.source_history_record(&storage_id, &file_digest),
+        )
+        .await
+        .map_err(WriteError::from)
+}
+
+pub(super) async fn read_source_object_sizes(
+    catalog: &Arc<Catalog>,
+    storage_id: &str,
+    object_keys: &[String],
+) -> Result<std::collections::HashMap<String, i64>, WriteError> {
+    // SQLite's variable limit is finite, and a large room can have more
+    // chunks than fit in one IN clause. Keep each catalogue request bounded
+    // while querying only keys named by this checkpoint's source plans.
+    const LOOKUP_BATCH: usize = 256;
+    let mut sizes = std::collections::HashMap::new();
+    for batch in object_keys.chunks(LOOKUP_BATCH) {
+        let storage_id = storage_id.to_string();
+        let keys = batch.to_vec();
+        let input_bytes =
+            storage_id.len() + DESCRIPTOR_BYTES + keys.iter().map(String::len).sum::<usize>();
+        let found = catalog
+            .execute_catalog(
+                input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+                move |catalog| catalog.source_history_object_sizes(&storage_id, &keys),
+            )
+            .await
+            .map_err(WriteError::from)?;
+        sizes.extend(found);
+    }
+    Ok(sizes)
+}
+
 /// The checkpoint that already records this content, if there is one.
 pub(super) async fn read_checkpoint_by_content_sha(
     catalog: &Arc<Catalog>,
@@ -810,17 +1053,16 @@ pub(super) async fn delete_checkpoints(
         .execute_catalog(
             input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
             move |catalog| {
-                let mut removed = Vec::new();
-                for sha in &shas {
-                    match catalog.delete_checkpoint(&slug_owned, sha) {
-                        Ok(_) => removed.push(sha.clone()),
-                        Err(error) => eprintln!(
-                            "warning: could not remove shed checkpoint {sha} for \
-                             {slug_owned}: {error}"
-                        ),
-                    }
-                }
-                Ok(removed)
+                // Source-history edges and their pending deletion handoff
+                // move with the checkpoint row in one SQLite transaction.
+                // The existing object worker keeps accounting until the
+                // physical delete is confirmed.
+                catalog.delete_checkpoints_with_source_history(
+                    &slug_owned,
+                    &shas,
+                    crate::util::now_unix(),
+                    crate::util::now_unix(),
+                )
             },
         )
         .await;
@@ -856,11 +1098,24 @@ pub(super) async fn read_checkpoints_page(
     slug: &str,
     after_seq: Option<i64>,
     limit: u32,
-) -> Result<Vec<crate::storage::catalog::Checkpoint>, String> {
+) -> Result<Vec<crate::document::history::Checkpoint>, String> {
     let slug = slug.to_string();
     catalog
         .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            catalog.checkpoints(&slug, after_seq, limit)
+            let rows = catalog.checkpoints(&slug, after_seq, limit)?;
+            let mut points = Manifest::from_catalog_rows(rows)
+                .map_err(crate::storage::catalog::CatalogError::Invalid)?
+                .checkpoints;
+            let first = points.iter().map(|point| point.seq).min().unwrap_or(0);
+            let last = points.iter().map(|point| point.seq).max().unwrap_or(0);
+            let metadata = catalog.retention_metadata_range(&slug, first, last)?;
+            for point in &mut points {
+                if let Some((parent, gap)) = metadata.get(&point.sha) {
+                    point.original_parent = parent.clone();
+                    point.ancestry_gap = *gap;
+                }
+            }
+            Ok(points)
         })
         .await
         .map_err(|error| error.to_string())
@@ -926,6 +1181,18 @@ pub(super) async fn read_catalog_rendering(
         .await
         .ok()
         .flatten()
+}
+
+pub(super) async fn read_catalog_renderings(
+    catalog: &Arc<Catalog>,
+    slug: &str,
+) -> Result<Vec<crate::storage::catalog::Rendering>, CatalogExecError> {
+    let slug = slug.to_string();
+    catalog
+        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+            catalog.renderings(&slug)
+        })
+        .await
 }
 
 /// One checkpoint row, read through the boundary.
@@ -1059,18 +1326,17 @@ pub(super) async fn quarto_object_committed(
 }
 
 /// The newest rendering this document could show, read through the boundary.
-pub(super) async fn read_newest_rendering_candidate(
+pub(super) async fn read_rendering_candidates(
     catalog: &Arc<Catalog>,
     slug: &str,
-) -> Option<crate::storage::catalog::RenderingCandidate> {
+) -> Option<Vec<crate::storage::catalog::RenderingCandidate>> {
     let slug = slug.to_string();
     catalog
         .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            catalog.newest_rendering_candidate(&slug)
+            catalog.rendering_candidates(&slug)
         })
         .await
         .ok()
-        .flatten()
 }
 
 /// Release the object accounting for a blob that has been deleted.
@@ -1805,8 +2071,28 @@ pub(super) async fn load_catalog_manifest(
     catalog
         .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
             let rows = catalog.checkpoints_tail(&slug, RESIDENT_CATALOG_HISTORY)?;
-            Manifest::from_catalog_rows(rows)
-                .map_err(crate::storage::catalog::CatalogError::Invalid)
+            let mut manifest = Manifest::from_catalog_rows(rows)
+                .map_err(crate::storage::catalog::CatalogError::Invalid)?;
+            let first = manifest
+                .checkpoints
+                .iter()
+                .map(|point| point.seq)
+                .min()
+                .unwrap_or(0);
+            let last = manifest
+                .checkpoints
+                .iter()
+                .map(|point| point.seq)
+                .max()
+                .unwrap_or(0);
+            let metadata = catalog.retention_metadata_range(&slug, first, last)?;
+            for point in &mut manifest.checkpoints {
+                if let Some((original_parent, gap)) = metadata.get(&point.sha) {
+                    point.original_parent = original_parent.clone();
+                    point.ancestry_gap = *gap;
+                }
+            }
+            Ok(manifest)
         })
         .await
 }
@@ -1825,9 +2111,28 @@ pub(super) async fn load_catalog_history(
     catalog
         .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
             let rows = load_catalog_checkpoint_rows(catalog, &slug)?;
-            Manifest::from_catalog_rows(rows)
-                .map(|manifest| manifest.checkpoints)
-                .map_err(crate::storage::catalog::CatalogError::Invalid)
+            let mut manifest = Manifest::from_catalog_rows(rows)
+                .map_err(crate::storage::catalog::CatalogError::Invalid)?;
+            let first = manifest
+                .checkpoints
+                .iter()
+                .map(|point| point.seq)
+                .min()
+                .unwrap_or(0);
+            let last = manifest
+                .checkpoints
+                .iter()
+                .map(|point| point.seq)
+                .max()
+                .unwrap_or(0);
+            let metadata = catalog.retention_metadata_range(&slug, first, last)?;
+            for point in &mut manifest.checkpoints {
+                if let Some((original_parent, gap)) = metadata.get(&point.sha) {
+                    point.original_parent = original_parent.clone();
+                    point.ancestry_gap = *gap;
+                }
+            }
+            Ok(manifest.checkpoints)
         })
         .await
 }
@@ -1856,13 +2161,19 @@ fn load_catalog_checkpoint_rows(
     Ok(rows)
 }
 
-pub(super) async fn save_catalog_manifest(
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn save_catalog_manifest_with_assets(
     catalog: &Arc<Catalog>,
     slug: &str,
     previous: &Manifest,
     manifest: &Manifest,
     durable_seq: i64,
     actor: Option<OwnedAuthority>,
+    sources: &[crate::storage::catalog::SourceHistoryRecord],
+    assets: &[crate::storage::catalog::CheckpointAssetRef],
+    lease_operation: Option<&str>,
+    owner_limit: i64,
+    total_limit: i64,
 ) -> Result<(), WriteError> {
     let rows = manifest_rows_to_write(slug, previous, manifest, durable_seq)?;
     // Reserved from the rows that will actually be written, before they are
@@ -1872,8 +2183,29 @@ pub(super) async fn save_catalog_manifest(
         + rows
             .iter()
             .map(|row| DESCRIPTOR_BYTES + row.sha.len() + row.label.len() + row.by.len())
-            .sum::<usize>();
+            .sum::<usize>()
+        + sources
+            .iter()
+            .map(|source| {
+                source.file_digest.len()
+                    + source.recipe_key.len()
+                    + source.recipe_digest.len()
+                    + source
+                        .objects
+                        .iter()
+                        .map(|object| object.object_key.len() + object.kind.len() + 16)
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+        + assets
+            .iter()
+            .map(|asset| asset.object_key.len() + 16)
+            .sum::<usize>()
+        + lease_operation.map_or(0, str::len);
     let slug_owned = slug.to_string();
+    let sources = sources.to_vec();
+    let assets = assets.to_vec();
+    let lease_operation = lease_operation.map(str::to_owned);
     catalog
         .execute_catalog(
             input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
@@ -1896,16 +2228,26 @@ pub(super) async fn save_catalog_manifest(
                         ));
                     }
                     if let Some(row) = rows.last() {
-                        catalog.stage_publication_checkpoint_with_authority(
+                        catalog.stage_publication_checkpoint_with_sources_assets_and_quota(
                             &slug_owned,
                             row,
                             actor.as_ref().map(OwnedAuthority::borrow),
+                            &sources,
+                            &assets,
+                            lease_operation.as_deref(),
+                            owner_limit,
+                            total_limit,
                         )?;
                     }
                 } else {
-                    catalog.insert_checkpoints_atomic_with_authority(
+                    catalog.insert_checkpoints_atomic_with_sources_assets_and_quota(
                         &rows,
                         actor.as_ref().map(OwnedAuthority::borrow),
+                        &sources,
+                        &assets,
+                        lease_operation.as_deref(),
+                        owner_limit,
+                        total_limit,
                     )?;
                 }
                 Ok(())

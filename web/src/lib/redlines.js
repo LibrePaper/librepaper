@@ -1,4 +1,4 @@
-// Redlines: turning the history panel's word-diff hunks into paint
+// Redlines: turning the history panel's semantic hunks into paint
 // instructions for the frame, and working out whose name -- and whose
 // colour -- belongs on them.
 //
@@ -7,25 +7,34 @@
 // `computeHistoryChanges`, which stamps a rendered-text `position` onto each
 // one), and the checkpoint shape is the manifest's `{sha, at, by, why,
 // label}`, oldest first.
+import { normalizeAuthorship } from "./provenance.js";
 
-// Who made the change: the author of every checkpoint strictly after the
-// baseline, up to and including the compare point when the reader picked
-// one (through the live document otherwise). One name when they all agree,
-// "several people" when they do not, and "" when there is nothing to
-// attribute -- the baseline is not on the list, or nothing followed it.
+// Who made the change: explicit content-authorship evidence on every
+// checkpoint strictly after the baseline, up to and including the compare
+// point. Event actors (`by`) and uncaptured live edits do not qualify. One
+// name when they all agree, "several people" when they do not, and "" when
+// an interval is unknown or has a pruned ancestry edge.
 export function attribution(checkpoints = [], baselineSha, targetSha = null) {
+  // The uncaptured live interval has no provenance proof.
+  if (!targetSha) return "";
   const baselineIndex = checkpoints.findIndex((point) => point.sha === baselineSha);
   if (baselineIndex < 0) return "";
   const endIndex = targetSha
     ? checkpoints.findIndex((point) => point.sha === targetSha)
     : checkpoints.length - 1;
   if (endIndex < baselineIndex) return "";
-  const authors = new Set(
-    checkpoints
-      .slice(baselineIndex + 1, endIndex + 1)
-      .map((point) => point.by)
-      .filter(Boolean),
-  );
+  const interval = checkpoints.slice(baselineIndex + 1, endIndex + 1);
+  const authors = new Set();
+  let previous = baselineSha;
+  for (const point of interval) {
+    if (point.ancestry_gap !== false || point.original_parent !== previous) return "";
+    const evidence = normalizeAuthorship(point.authorship);
+    if (evidence.kind === "unknown") return "";
+    if (evidence.kind === "multiple") authors.add("several people");
+    else authors.add(evidence.name);
+    previous = point.sha;
+  }
+  if (authors.has("several people")) return "several people";
   if (authors.size === 0) return "";
   if (authors.size === 1) return [...authors][0];
   return "several people";
@@ -132,22 +141,31 @@ function stepOffset(hunks, hunk) {
   return offset;
 }
 
-// Which author's span overlaps `[start, end)` the most, in characters. Ties
-// go to whichever span this function meets first -- callers only rely on a
-// clear winner, and word-diff spans from different authors do not
-// ordinarily land on the very same characters.
-function bestOverlap(spans, start, end) {
-  const totals = new Map();
-  for (const span of spans) {
-    const overlap = Math.min(end, span.end) - Math.max(start, span.start);
-    if (overlap > 0) totals.set(span.by, (totals.get(span.by) || 0) + overlap);
+// Return an author only when the whole span is covered by explicit evidence.
+// A largest-overlap winner is not an authorship proof.
+function strictCoverage(spans, start, end) {
+  if (end <= start) return null;
+  const boundaries = new Set([start, end]);
+  const relevant = spans.filter((span) => {
+    if (span.end <= start || span.start >= end) return false;
+    boundaries.add(Math.max(start, span.start));
+    boundaries.add(Math.min(end, span.end));
+    return true;
+  });
+  if (!relevant.length) return null;
+  const authors = new Set();
+  const sorted = [...boundaries].sort((a, b) => a - b);
+  for (let index = 0; index < sorted.length - 1; index += 1) {
+    const left = sorted[index];
+    const right = sorted[index + 1];
+    if (right <= left) continue;
+    const active = relevant.filter((span) => span.start <= left && span.end >= right);
+    if (!active.length) return null;
+    for (const span of active) authors.add(span.by);
   }
-  let best = null;
-  let bestLength = 0;
-  for (const [by, length] of totals) {
-    if (length > bestLength) { best = by; bestLength = length; }
-  }
-  return best;
+  if (!authors.size) return null;
+  if (authors.has("several people") || authors.size > 1) return "several people";
+  return [...authors][0];
 }
 
 // Attributes the range-level `hunks` (baseline text against the compare
@@ -155,11 +173,11 @@ function bestOverlap(spans, start, end) {
 // already stamped) to individual authors, given the chain of diffs between
 // each pair of consecutive checkpoints inside the range.
 //
-// `steps` runs oldest to newest: `[{by, hunks}, ...]`, where each entry's
-// `hunks` is `history.hunks(oldText, newText, edits)` for that one step --
-// the shape already carries `at` (old-text offset), `delete`, `insert` and
-// `old` (the removed text), which is everything this function needs to walk
-// forward. Insertions are tracked as spans, carried forward through every
+// `steps` runs oldest to newest: `[{authorship, hunks}, ...]`, where each
+// entry's `hunks` is `history.hunks(oldText, newText, edits)` for that one
+// step. The shape already carries `at` (old-text offset), `delete`, `insert`
+// and `old` (the removed text), which is everything this function needs to
+// walk forward. Insertions are tracked as spans, carried forward through every
 // later step -- a span a later step edits is clipped to what survives, and
 // the later step's own author claims the new words that replace it, so the
 // latest author to touch a passage is the one credited for what is there
@@ -175,7 +193,11 @@ export function attributeChain(steps = [], hunks = [], fallback = "") {
   let insertSpans = [];
   let deleteMarks = [];
   for (const step of steps) {
-    const by = step?.by || "";
+    // `step.by` is the checkpoint/event actor and is not content evidence.
+    const evidence = normalizeAuthorship(step?.authorship || step?.contentAuthorship);
+    const by = evidence.kind === "single"
+      ? evidence.name
+      : evidence.kind === "multiple" ? "several people" : "";
     const stepHunks = Array.isArray(step?.hunks) ? step.hunks : [];
     insertSpans = insertSpans.flatMap((span) =>
       mapSpanForward(span, stepHunks).map((piece) => ({ ...piece, by: span.by })));
@@ -203,7 +225,7 @@ export function attributeChain(steps = [], hunks = [], fallback = "") {
       return { ...hunk, who: match ? match.by : fallback };
     }
     const insert = hunk.insert || "";
-    const who = bestOverlap(insertSpans, start, start + insert.length);
+    const who = strictCoverage(insertSpans, start, start + insert.length);
     return { ...hunk, who: who ?? fallback };
   });
 }

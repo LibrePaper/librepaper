@@ -72,7 +72,117 @@ impl Catalog {
         checkpoints: &[Checkpoint],
         actor: Option<MutationAuthority<'_>>,
     ) -> CatalogResult<()> {
+        self.insert_checkpoints_atomic_with_sources(checkpoints, actor, &[])
+    }
+
+    /// Apply checkpoint rows and their encoded source-reference graph in one
+    /// transaction.  The graph is deliberately committed with the immutable
+    /// checkpoint edge: pruning can therefore never observe a checkpoint
+    /// without the recipe/chunk references that make its files readable.
+    pub fn insert_checkpoints_atomic_with_sources(
+        &self,
+        checkpoints: &[Checkpoint],
+        actor: Option<MutationAuthority<'_>>,
+        sources: &[SourceHistoryRecord],
+    ) -> CatalogResult<()> {
+        self.insert_checkpoints_atomic_with_sources_and_lease(checkpoints, actor, sources, None)
+    }
+
+    /// Apply checkpoint rows and source-history edges while requiring the
+    /// writer lease to still be alive in this same transaction.  The optional
+    /// lease preserves the low-level catalogue API used by legacy callers and
+    /// tests that insert already-accounted graph fixtures directly.
+    pub fn insert_checkpoints_atomic_with_sources_and_lease(
+        &self,
+        checkpoints: &[Checkpoint],
+        actor: Option<MutationAuthority<'_>>,
+        sources: &[SourceHistoryRecord],
+        lease_operation: Option<&str>,
+    ) -> CatalogResult<()> {
+        self.insert_checkpoints_atomic_with_sources_and_lease_and_quota(
+            checkpoints,
+            actor,
+            sources,
+            &[],
+            lease_operation,
+            None,
+        )
+    }
+
+    /// Variant used by room writes whose configured limits must cover the
+    /// complete post-write source-history graph.  The check is performed
+    /// after graph insertion and before `BEGIN IMMEDIATE` commits, so reused
+    /// encoded objects cannot evade quota through a metadata-only delta.
+    pub fn insert_checkpoints_atomic_with_sources_and_quota(
+        &self,
+        checkpoints: &[Checkpoint],
+        actor: Option<MutationAuthority<'_>>,
+        sources: &[SourceHistoryRecord],
+        lease_operation: Option<&str>,
+        owner_limit: i64,
+        total_limit: i64,
+    ) -> CatalogResult<()> {
+        self.insert_checkpoints_atomic_with_sources_assets_and_quota(
+            checkpoints,
+            actor,
+            sources,
+            &[],
+            lease_operation,
+            owner_limit,
+            total_limit,
+        )
+    }
+
+    /// Insert a checkpoint, source graph, and captured asset references as one
+    /// atomic catalogue unit. The asset set is supplied by the room's
+    /// captured tree; this layer never infers physical assets from logical
+    /// checkpoint size.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_checkpoints_atomic_with_sources_assets_and_quota(
+        &self,
+        checkpoints: &[Checkpoint],
+        actor: Option<MutationAuthority<'_>>,
+        sources: &[SourceHistoryRecord],
+        assets: &[CheckpointAssetRef],
+        lease_operation: Option<&str>,
+        owner_limit: i64,
+        total_limit: i64,
+    ) -> CatalogResult<()> {
+        self.insert_checkpoints_atomic_with_sources_and_lease_and_quota(
+            checkpoints,
+            actor,
+            sources,
+            assets,
+            lease_operation,
+            Some((owner_limit, total_limit)),
+        )
+    }
+
+    fn insert_checkpoints_atomic_with_sources_and_lease_and_quota(
+        &self,
+        checkpoints: &[Checkpoint],
+        actor: Option<MutationAuthority<'_>>,
+        sources: &[SourceHistoryRecord],
+        assets: &[CheckpointAssetRef],
+        lease_operation: Option<&str>,
+        quota: Option<(i64, i64)>,
+    ) -> CatalogResult<()> {
         self.immediate(|tx| {
+            if let Some(operation_id) = lease_operation {
+                let checkpoint = checkpoints.first().ok_or_else(|| {
+                    CatalogError::Invalid("source history has no checkpoint".into())
+                })?;
+                let storage_id: String = tx.query_row(
+                    "SELECT storage_id FROM documents WHERE slug=?1",
+                    [&checkpoint.slug],
+                    |row| row.get(0),
+                )?;
+                Self::require_active_source_history_lease_tx(
+                    tx,
+                    &storage_id,
+                    operation_id,
+                )?;
+            }
             let agent = actor.and_then(|actor| actor.agent_checkpoint);
             if let Some(agent) = agent {
                 let checkpoint = checkpoints.iter().find(|point| point.tree_sha == agent.source_revision || point.sha == agent.source_revision)
@@ -99,6 +209,7 @@ impl Catalog {
                     ));
                 }
             }
+            let mut graph_changed = false;
             for checkpoint in checkpoints {
                 if checkpoint.slug.is_empty()
                     || checkpoint.sha.is_empty()
@@ -158,6 +269,7 @@ impl Catalog {
                     ],
                 )
                 .map_err(CatalogError::from)?;
+                graph_changed = true;
             }
             if let Some(agent) = agent {
                 let checkpoint = checkpoints.iter().find(|point| point.tree_sha == agent.source_revision || point.sha == agent.source_revision)
@@ -167,6 +279,51 @@ impl Catalog {
                 tx.execute("INSERT INTO catalog_operations(storage_id,request_id,kind,request_digest,status,intent,result,created_at)
                     SELECT storage_id,?2,'agent_annotations',?3,'committed','{}',?4,?5 FROM documents WHERE slug=?1 AND status='active'",
                     params![checkpoint.slug,agent.request_id,agent.digest,receipt,crate::auth::now_unix()])?;
+            }
+            if !sources.is_empty() {
+                let checkpoint = checkpoints
+                    .last()
+                    .ok_or_else(|| CatalogError::Invalid("source history has no checkpoint".into()))?;
+                let storage_id: String = tx.query_row(
+                    "SELECT storage_id FROM documents WHERE slug=?1",
+                    [&checkpoint.slug],
+                    |row| row.get(0),
+                )?;
+                Self::insert_source_history_tx(tx, &storage_id, &checkpoint.sha, sources)?;
+                graph_changed = true;
+            }
+            if !assets.is_empty() || !checkpoints.is_empty() && quota.is_some() {
+                let checkpoint = checkpoints.last().ok_or_else(|| {
+                    CatalogError::Invalid("asset history has no checkpoint".into())
+                })?;
+                let storage_id: String = tx.query_row(
+                    "SELECT storage_id FROM documents WHERE slug=?1",
+                    [&checkpoint.slug],
+                    |row| row.get(0),
+                )?;
+                Self::insert_checkpoint_asset_refs_tx(
+                    tx,
+                    &storage_id,
+                    &checkpoint.sha,
+                    assets,
+                )?;
+                graph_changed = true;
+            }
+            if graph_changed {
+                if let Some((owner_limit, total_limit)) = quota {
+                    let mut slugs = std::collections::BTreeSet::new();
+                    for checkpoint in checkpoints {
+                        slugs.insert(checkpoint.slug.as_str());
+                    }
+                    for slug in slugs {
+                        Self::enforce_physical_quota_on(
+                            tx,
+                            slug,
+                            owner_limit,
+                            total_limit,
+                        )?;
+                    }
+                }
             }
             Ok(())
         })
@@ -368,15 +525,59 @@ impl Catalog {
         })
     }
 
-    /// Return the aggregate history accounting without materializing rows.
+    /// Return the aggregate retained source accounting without materializing
+    /// rows.  `checkpoints.size` is the uncompressed logical tree size and is
+    /// deliberately not a quota value; physical history is the unique bytes
+    /// in the source/tree object ledger and the source-history graph.
     pub fn checkpoint_stats(&self, slug: &str) -> CatalogResult<(u64, i64)> {
         self.with_connection(|c| {
-            c.query_row(
-                "SELECT COUNT(*), COALESCE(SUM(size),0) FROM checkpoints WHERE slug=?1",
-                [slug],
-                |r| Ok((r.get::<_, u64>(0)?, r.get::<_, i64>(1)?)),
-            )
-            .map_err(CatalogError::from)
+            let (count, storage_id): (u64, String) = c
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM checkpoints WHERE slug=?1),storage_id
+                     FROM documents WHERE slug=?1",
+                    [slug],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(CatalogError::from)?;
+            let mut objects = std::collections::BTreeMap::<String, i64>::new();
+            let mut statement = c.prepare(
+                "SELECT object_key,bytes FROM object_accounting
+                 WHERE storage_id=?1
+                   AND (kind IN ('source_chunk','source_recipe','text','tree')
+                        OR object_key LIKE 'content/'||?1||'/chunks/%'
+                        OR object_key LIKE 'content/'||?1||'/recipes/%'
+                        OR object_key LIKE 'content/'||?1||'/blobs/%'
+                        OR object_key LIKE 'content/'||?1||'/trees/%')
+                 UNION ALL
+                 SELECT object_key,bytes FROM source_history_objects
+                 WHERE storage_id=?1
+                 UNION ALL
+                 SELECT object_key,bytes FROM source_history_write_leases
+                 WHERE storage_id=?1
+                 UNION ALL
+                 SELECT object_key,bytes FROM pending_deletes p
+                  JOIN documents d ON d.slug=p.slug
+                 WHERE d.storage_id=?1
+                   AND (p.object_key LIKE 'content/'||?1||'/chunks/%'
+                        OR p.object_key LIKE 'content/'||?1||'/recipes/%'
+                        OR p.object_key LIKE 'content/'||?1||'/blobs/%'
+                        OR p.object_key LIKE 'content/'||?1||'/trees/%')",
+            )?;
+            let rows = statement.query_map([&storage_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (key, bytes) = row?;
+                objects
+                    .entry(key)
+                    .and_modify(|old| *old = (*old).max(bytes))
+                    .or_insert(bytes);
+            }
+            let bytes = objects
+                .values()
+                .map(|bytes| (*bytes).max(0))
+                .fold(0i64, i64::saturating_add);
+            Ok((count, bytes))
         })
     }
 
@@ -646,15 +847,13 @@ impl Catalog {
     }
 
     pub fn delete_checkpoint(&self, slug: &str, sha: &str) -> CatalogResult<bool> {
-        self.immediate(|tx| {
-            let changed = tx
-                .execute(
-                    "DELETE FROM checkpoints WHERE slug=?1 AND sha=?2",
-                    params![slug, sha],
-                )
-                .map_err(CatalogError::from)?;
-            Ok(changed == 1)
-        })
+        let removed = self.delete_checkpoints_with_source_history(
+            slug,
+            &[sha.to_string()],
+            crate::util::now_unix(),
+            crate::util::now_unix(),
+        )?;
+        Ok(!removed.is_empty())
     }
 
     pub fn prune_checkpoints(&self, slug: &str, before_seq: i64, keep: u32) -> CatalogResult<u32> {
@@ -710,7 +909,75 @@ impl Catalog {
         if rendering.tree_sha.is_empty() || rendering.bytes < 0 || rendering.synctex_bytes < 0 {
             return Err(CatalogError::Invalid("invalid rendering".into()));
         }
-        self.immediate(|tx| { Self::require_rendering_publication(tx, &rendering.slug, &rendering.tree_sha)?; tx.execute("INSERT INTO renderings(slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(slug,tree_sha) DO UPDATE SET at=excluded.at,backend=excluded.backend,engine=excluded.engine,release=excluded.release,tools=excluded.tools,bytes=excluded.bytes,synctex=excluded.synctex,synctex_bytes=excluded.synctex_bytes",params![rendering.slug,rendering.tree_sha,rendering.at,rendering.backend,rendering.engine,rendering.release,rendering.tools,rendering.bytes,rendering.synctex as i64,rendering.synctex_bytes]).map_err(CatalogError::from)?; Ok(rendering.clone()) })
+        self.immediate(|tx| {
+            Self::require_rendering_publication(tx, &rendering.slug, &rendering.tree_sha)?;
+            let published_seq = Self::rendering_publication_seq(
+                tx,
+                &rendering.slug,
+                &rendering.tree_sha,
+                rendering.bytes,
+            )?;
+            tx.execute(
+                "INSERT INTO renderings
+                 (slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes,published_seq)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+                 ON CONFLICT(slug,tree_sha) DO UPDATE SET
+                   at=excluded.at,backend=excluded.backend,engine=excluded.engine,
+                   release=excluded.release,tools=excluded.tools,bytes=excluded.bytes,
+                   synctex=excluded.synctex,synctex_bytes=excluded.synctex_bytes,
+                   published_seq=CASE WHEN renderings.bytes > 0
+                                      THEN renderings.published_seq
+                                      ELSE excluded.published_seq END",
+                params![
+                    rendering.slug,
+                    rendering.tree_sha,
+                    rendering.at,
+                    rendering.backend,
+                    rendering.engine,
+                    rendering.release,
+                    rendering.tools,
+                    rendering.bytes,
+                    rendering.synctex as i64,
+                    rendering.synctex_bytes,
+                    published_seq,
+                ],
+            )
+            .map_err(CatalogError::from)?;
+            Ok(rendering.clone())
+        })
+    }
+
+    /// Allocate a monotonic publication ordinal only for the first PDF row.
+    /// SyncTeX can arrive before or after the PDF and must never move a row in
+    /// the latest-publication ordering.  A zero ordinal is the durable marker
+    /// for a SyncTeX-only placeholder awaiting its PDF.
+    fn rendering_publication_seq(
+        tx: &Transaction<'_>,
+        slug: &str,
+        tree_sha: &str,
+        bytes: i64,
+    ) -> CatalogResult<i64> {
+        let existing: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT bytes,published_seq FROM renderings WHERE slug=?1 AND tree_sha=?2",
+                params![slug, tree_sha],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(CatalogError::from)?;
+        if let Some((existing_bytes, published_seq)) = existing {
+            if existing_bytes > 0 || bytes <= 0 {
+                return Ok(published_seq);
+            }
+        } else if bytes <= 0 {
+            return Ok(0);
+        }
+        tx.query_row(
+            "SELECT COALESCE(MAX(published_seq),0)+1 FROM renderings WHERE slug=?1",
+            [slug],
+            |row| row.get(0),
+        )
+        .map_err(CatalogError::from)
     }
 
     fn require_rendering_publication(
@@ -785,13 +1052,76 @@ impl Catalog {
                     "actor rights or session generation changed".into(),
                 ));
             }
-            tx.execute("INSERT INTO renderings(slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(slug,tree_sha) DO UPDATE SET at=excluded.at,backend=excluded.backend,engine=excluded.engine,release=excluded.release,tools=excluded.tools,bytes=excluded.bytes,synctex=excluded.synctex,synctex_bytes=excluded.synctex_bytes",params![rendering.slug,rendering.tree_sha,rendering.at,rendering.backend,rendering.engine,rendering.release,rendering.tools,rendering.bytes,rendering.synctex as i64,rendering.synctex_bytes]).map_err(CatalogError::from)?;
+            let published_seq = Self::rendering_publication_seq(
+                tx,
+                &rendering.slug,
+                &rendering.tree_sha,
+                rendering.bytes,
+            )?;
+            tx.execute(
+                "INSERT INTO renderings
+                 (slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes,published_seq)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+                 ON CONFLICT(slug,tree_sha) DO UPDATE SET
+                   at=excluded.at,backend=excluded.backend,engine=excluded.engine,
+                   release=excluded.release,tools=excluded.tools,bytes=excluded.bytes,
+                   synctex=excluded.synctex,synctex_bytes=excluded.synctex_bytes,
+                   published_seq=CASE WHEN renderings.bytes > 0
+                                      THEN renderings.published_seq
+                                      ELSE excluded.published_seq END",
+                params![
+                    rendering.slug,
+                    rendering.tree_sha,
+                    rendering.at,
+                    rendering.backend,
+                    rendering.engine,
+                    rendering.release,
+                    rendering.tools,
+                    rendering.bytes,
+                    rendering.synctex as i64,
+                    rendering.synctex_bytes,
+                    published_seq,
+                ],
+            )
+            .map_err(CatalogError::from)?;
             Ok(rendering.clone())
         })
     }
 
     pub fn rendering(&self, slug: &str, tree_sha: &str) -> CatalogResult<Option<Rendering>> {
         self.with_connection(|c| c.query_row("SELECT slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes FROM renderings WHERE slug=?1 AND tree_sha=?2",params![slug,tree_sha],|r|Ok(Rendering{slug:r.get(0)?,tree_sha:r.get(1)?,at:r.get(2)?,backend:r.get(3)?,engine:r.get(4)?,release:r.get(5)?,tools:r.get(6)?,bytes:r.get(7)?,synctex:r.get::<_,i64>(8)?!=0,synctex_bytes:r.get(9)?})).optional().map_err(CatalogError::from))
+    }
+
+    /// All registered rendering bundles, newest publication first. This is
+    /// independent of checkpoint rows because the latest PDF must survive
+    /// pruning the event that originally produced it.
+    pub fn renderings(&self, slug: &str) -> CatalogResult<Vec<Rendering>> {
+        self.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes
+                 FROM renderings
+                 WHERE slug=?1
+                 ORDER BY published_seq DESC,at DESC,tree_sha DESC",
+            )?;
+            let rows = statement
+                .query_map([slug], |row| {
+                    Ok(Rendering {
+                        slug: row.get(0)?,
+                        tree_sha: row.get(1)?,
+                        at: row.get(2)?,
+                        backend: row.get(3)?,
+                        engine: row.get(4)?,
+                        release: row.get(5)?,
+                        tools: row.get(6)?,
+                        bytes: row.get(7)?,
+                        synctex: row.get::<_, i64>(8)? != 0,
+                        synctex_bytes: row.get(9)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(CatalogError::from);
+            rows
+        })
     }
 
     /// Resolve in SQL rather than reading the full history and issuing one
@@ -801,24 +1131,28 @@ impl Catalog {
         &self,
         slug: &str,
     ) -> CatalogResult<Option<RenderingCandidate>> {
+        Ok(self.rendering_candidates(slug)?.into_iter().next())
+    }
+
+    pub fn rendering_candidates(&self, slug: &str) -> CatalogResult<Vec<RenderingCandidate>> {
         self.with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT c.sha, COALESCE(NULLIF(c.tree_sha,''),c.sha), c.at, r.synctex
-                 FROM checkpoints c JOIN renderings r
-                 ON r.slug=c.slug AND r.tree_sha=COALESCE(NULLIF(c.tree_sha,''),c.sha)
-                 WHERE c.slug=?1 ORDER BY c.seq DESC LIMIT 1",
-                    [slug],
-                    |row| {
-                        Ok(RenderingCandidate {
-                            event_sha: row.get(0)?,
-                            tree_sha: row.get(1)?,
-                            at: row.get(2)?,
-                            synctex: row.get::<_, i64>(3)? != 0,
-                        })
-                    },
-                )
-                .optional()
+            let mut statement = connection.prepare(
+                "SELECT COALESCE(c.sha,r.tree_sha),r.tree_sha,COALESCE(c.at,r.at),r.synctex
+                 FROM renderings r LEFT JOIN checkpoints c ON c.slug=r.slug
+                 AND c.seq=(SELECT MAX(p.seq) FROM checkpoints p WHERE p.slug=r.slug
+                     AND COALESCE(NULLIF(p.tree_sha,''),p.sha)=r.tree_sha)
+                 WHERE r.slug=?1
+                 ORDER BY r.published_seq DESC,r.at DESC,r.tree_sha DESC",
+            )?;
+            let rows = statement.query_map([slug], |row| {
+                Ok(RenderingCandidate {
+                    event_sha: row.get(0)?,
+                    tree_sha: row.get(1)?,
+                    at: row.get(2)?,
+                    synctex: row.get::<_, i64>(3)? != 0,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<_>>()
                 .map_err(CatalogError::from)
         })
     }

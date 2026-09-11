@@ -61,7 +61,10 @@ function sourceOf(file) {
 
 function renderInputOf(source, format) {
   return format === "typst"
-    ? { main: "librepaper.typ", texts: { "librepaper.typ": source }, assets: { "librepaper-icon.png": readFileSync(new URL("../../examples/tutorial-typst/librepaper-icon.png", import.meta.url)) } }
+    ? { main: "librepaper.typ", texts: {
+      "librepaper.typ": source,
+      "sections/rendering.typ": readFileSync(new URL("../../examples/tutorial-typst/sections/rendering.typ", import.meta.url), "utf8"),
+    }, assets: { "librepaper-icon.png": readFileSync(new URL("../../examples/tutorial-typst/librepaper-icon.png", import.meta.url)) } }
     : source;
 }
 

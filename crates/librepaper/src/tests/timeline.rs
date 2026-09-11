@@ -77,8 +77,7 @@ async fn history_of(cookie: &str, base: &str, slug: &str) -> Vec<Value> {
     history_of_keyed(cookie, "", base, slug).await
 }
 
-/// The same, carrying a link key too.
-async fn history_of_keyed(cookie: &str, key: &str, base: &str, slug: &str) -> Vec<Value> {
+async fn history_payload_keyed(cookie: &str, key: &str, base: &str, slug: &str) -> Value {
     let mut request = client()
         .get(format!("{base}/api/documents/{slug}/history"))
         .header("x-librepaper-client", "1");
@@ -90,12 +89,46 @@ async fn history_of_keyed(cookie: &str, key: &str, base: &str, slug: &str) -> Ve
     }
     let response = request.send().await.expect("a response");
     let raw = response.bytes().await.unwrap_or_default();
-    let payload: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+    serde_json::from_slice(&raw).unwrap_or(Value::Null)
+}
+
+/// The same, carrying a link key too.
+async fn history_of_keyed(cookie: &str, key: &str, base: &str, slug: &str) -> Vec<Value> {
+    let payload = history_payload_keyed(cookie, key, base, slug).await;
     payload
         .get("checkpoints")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
+}
+
+/// Live session persistence and historical checkpoint admission are separate
+/// boundaries. A durable session write must not make the history row claim
+/// that its recovery point is current.
+#[tokio::test]
+async fn history_reports_live_save_and_checkpoint_status_separately() {
+    let server = new_test_server().await;
+    let document = publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    let room = server.instance.rooms.get(&slug).await;
+
+    room.set_source("# New live text\n", "markdown")
+        .await
+        .expect("the live edit");
+    let pending = history_payload_keyed("", &key, &server.url, &slug).await;
+    assert_eq!(pending["durability"]["live_save"], "pending");
+    assert_eq!(pending["durability"]["history_checkpoint"], "pending");
+
+    room.persist().await.expect("the live session save");
+    let saved = history_payload_keyed("", &key, &server.url, &slug).await;
+    assert_eq!(saved["durability"]["live_save"], "saved");
+    assert_eq!(saved["durability"]["history_checkpoint"], "pending");
+    assert_eq!(
+        pending["checkpoints"].as_array().map(Vec::len),
+        saved["checkpoints"].as_array().map(Vec::len),
+        "status metadata must not change the list-only history contract"
+    );
 }
 
 /* -------------------------------------------------------- viewing a moment */
@@ -574,18 +607,16 @@ async fn cached_checkpoint_rechecks_labels_access_and_manifest_membership() {
             .0,
         404
     );
-    // Simulate a pruned manifest while bytes remain in both storage and cache.
+    // Retire authoritative catalogue membership while storage and the
+    // resident manifest/source caches still contain this checkpoint.
     server
         .instance
-        .rooms
-        .get(&slug)
-        .await
-        .state
-        .lock()
-        .await
-        .manifest
-        .checkpoints
-        .clear();
+        .store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .delete_checkpoint(&slug, &sha)
+        .unwrap();
     assert_eq!(
         get_checkpoint(&owner, &server.url, &slug, &sha).await.0,
         404

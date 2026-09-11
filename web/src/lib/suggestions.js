@@ -111,3 +111,48 @@ export function clearDeciding(comment) {
   delete comment.deciding;
   return comment;
 }
+
+// Build the frame-facing part of a pending suggestion after its source anchor
+// has been resolved and its passage has been projected. This intentionally
+// returns data, not HTML: the frame paints the deletion and creates an inert
+// text-node insertion. An overlap or an unlocatable anchor is a review-card
+// state, never an approximate inline placement.
+export function suggestionDisplay(suggestion, anchor = null, {
+  deleted = [],
+  inserted = [],
+  overlap = false,
+} = {}) {
+  const id = suggestion?.id == null ? "" : String(suggestion.id);
+  const source = suggestion?.source || null;
+  const exact = source?.exact || suggestion?.exact || "";
+  const proposed = typeof suggestion?.proposed === "string" ? suggestion.proposed : "";
+  if (!id || !anchor || !Number.isInteger(anchor.start) || !Number.isInteger(anchor.end)
+    || anchor.start < 0 || anchor.end < anchor.start || overlap || suggestion?.overlap || suggestion?.unlocatable) {
+    return {
+      status: "review",
+      id,
+      exact,
+      proposed,
+      reason: overlap || suggestion?.overlap ? "overlap" : "unlocatable",
+    };
+  }
+  const deletedTokens = Array.isArray(deleted) ? deleted : [];
+  const insertedTokens = Array.isArray(inserted) ? inserted : [];
+  const kind = deletedTokens.length && insertedTokens.length ? "replace"
+    : deletedTokens.length ? "delete" : "insert";
+  return {
+    status: "inline",
+    id,
+    start: anchor.start,
+    end: anchor.end,
+    kind,
+    deleted: deletedTokens,
+    inserted: insertedTokens,
+    proposed,
+    // Explicitly tells the painter that inserted text is synthetic and must
+    // not be treated as a target-DOM span.
+    syntheticInsertion: true,
+  };
+}
+
+export const suggestionRedline = suggestionDisplay;

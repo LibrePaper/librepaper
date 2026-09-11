@@ -28,6 +28,7 @@ import { anchorOne, flatten } from "./anchor.js";
 import * as figures from "./figures.js";
 import * as history from "./history.js";
 import * as renderers from "./renderers.js";
+import { projectHtml, validateProjection, PROJECTION_VERSION } from "./diff-display.js";
 
 // Passage lookups can outlive a single comment card in a long-lived reader.
 // Keep enough history for the usual review, while making navigation across
@@ -38,14 +39,22 @@ const CACHE_LIMIT = 64;
 // link key. Partition entries by the supplied authentication context. The
 // value is kept only in this private in-memory key and is never sent or
 // logged; the server still checks authorization on every miss.
+const scopes = new Map();
+let nextScope = 1;
+let cacheGeneration = 0;
 function authScope(headers) {
   const entries = typeof Headers !== "undefined" && headers instanceof Headers
     ? Array.from(headers.entries())
     : Object.entries(headers || {});
-  return JSON.stringify(entries
+  const fingerprint = JSON.stringify(entries
     .filter(([name]) => name.toLowerCase() !== "x-librepaper-client")
     .map(([name, value]) => `${name.toLowerCase()}:${String(value)}`)
     .sort());
+  // Cache keys contain an opaque process-local scope, never bearer tokens or
+  // link keys. Clearing the passage cache retires these scopes on sign-out or
+  // document-link changes.
+  if (!scopes.has(fingerprint)) scopes.set(fingerprint, `scope-${nextScope++}`);
+  return scopes.get(fingerprint);
 }
 
 const cacheKey = (slug, sha, headers) => `${slug}\u0000${sha}\u0000${authScope(headers)}`;
@@ -62,64 +71,136 @@ function remember(cache, key, value) {
 // One rendering per document/checkpoint, whatever asks for it. A document
 // under review has a handful of comments on one or two moments, so this is
 // nearly always one entry deep.
-const rendered = new Map();
+const htmlRendered = new Map();
+const projections = new Map();
+const projectionSizes = new Map();
+const htmlSizes = new Map();
+const HTML_CACHE_ENTRIES = 32;
+const HTML_CACHE_BYTES = 12 * 1024 * 1024;
 
-/// The visible text of a checkpoint, the way the agent takes it from the
-/// frame: the document rendered, and the words in it with the markup gone.
+function assetEvidence(tree, gathered) {
+  const paths = {};
+  for (const [path, digest] of Object.entries(tree.digests || {})) {
+    if (path.length > 4_096) continue;
+    if (!Object.prototype.hasOwnProperty.call(gathered?.assets || {}, path)) continue;
+    const value = String(digest || "");
+    if (!/^[0-9a-f]{64}$/.test(value)) continue;
+    const url = gathered?.urls?.[path];
+    paths[path] = {
+      digest: value,
+      ...(typeof url === "string" && url && url.length <= 1_024 ? { url } : {}),
+    };
+  }
+  return { paths };
+}
+
+function rememberHtml(key, value) {
+  htmlRendered.set(key, value);
+  while (htmlRendered.size > HTML_CACHE_ENTRIES) {
+    const oldest = htmlRendered.keys().next().value;
+    if (oldest === undefined) break;
+    htmlRendered.delete(oldest);
+    htmlSizes.delete(oldest);
+  }
+}
+
+function accountHtml(key, html) {
+  htmlSizes.set(key, typeof html === "string" ? html.length * 2 : 0);
+  let total = [...htmlSizes.values()].reduce((sum, bytes) => sum + bytes, 0);
+  while (total > HTML_CACHE_BYTES && htmlRendered.size) {
+    const oldest = htmlRendered.keys().next().value;
+    if (oldest === undefined) break;
+    htmlRendered.delete(oldest);
+    total -= htmlSizes.get(oldest) || 0;
+    htmlSizes.delete(oldest);
+  }
+}
+
+/// The visible text of a checkpoint, derived from its contemporary HTML
+/// render. Historical PDFs are intentionally not used for passage lookup.
 ///
 /// It is not the agent's own walk -- that runs in another origin, over a live
 /// DOM -- so the two can differ at a whitespace boundary. That is what
 /// `anchorOne`'s flattened second pass is for, and it is why this is used to
 /// answer "is the passage here" rather than to place anything.
-export async function textAt(slug, sha, headers = {}, services = {}) {
-  const key = cacheKey(slug, sha, headers);
-  if (rendered.has(key)) return rendered.get(key);
+export async function htmlAt(slug, sha, headers = {}, services = {}) {
+  const generation = cacheGeneration;
+  const pointApi = services.history || history;
+  const point = await pointApi.checkpoint(slug, sha, headers);
+  if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
+  return (await renderTree(slug, point, headers, services)).html;
+}
+
+// Both the reader's clean target and the comparison use this exact render.
+// Captured current trees use this entry point directly, without pretending
+// their digest is a retained checkpoint that can be fetched from the server.
+export async function renderTree(slug, point, headers = {}, services = {}) {
+  const generation = cacheGeneration;
+  const scope = authScope(headers);
+  const rendererApi = services.renderers || renderers;
+  const figureApi = services.figures || figures;
+  const configuration = services.configuration || (rendererApi.htmlConfiguration
+    ? await rendererApi.htmlConfiguration(point) : { identity: services.identity || JSON.stringify(point.settings || {}) });
+  if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
+  if (!configuration || typeof configuration.identity !== "string" || !configuration.identity) {
+    throw new Error("Historical renderer configuration is unavailable");
+  }
+  const key = JSON.stringify([point.storage_id || slug, point.tree_sha || point.sha,
+    scope, configuration.identity, PROJECTION_VERSION]);
+  if (htmlRendered.has(key)) return htmlRendered.get(key);
   const pending = (async () => {
-    const historyApi = services.history || history;
-    const rendererApi = services.renderers || renderers;
-    const figureApi = services.figures || figures;
-    const fetcher = services.fetch || fetch;
-    const point = await historyApi.checkpoint(slug, sha, headers);
-    const tree = { main: point.main, texts: point.texts || {}, digests: {} };
+    const tree = {
+      main: point.main,
+      texts: point.texts || {},
+      settings: point.settings || {},
+      digests: { ...point.digests },
+      files: point.files || {},
+    };
     for (const [path, file] of Object.entries(point.files || {})) {
       if (file.kind !== "text") tree.digests[path] = file.sha;
     }
-
-    // Readers must never compile a historical paged document: its PDF is
-    // already the rendering of that exact checkpoint, and asking for a
-    // browser compiler would make passage lookup depend on local capability.
-    if (rendererApi.producesPdf(rendererApi.formatOf(tree.main))) {
-      const response = await fetcher(`/api/documents/${slug}/renderings/${sha}`, { headers });
-      if (!response.ok) return null; // unavailable is unknown, not empty text
-      const pdfText = services.pdfText || (await import("./pdf/render.js")).text;
-      return pdfText(await response.arrayBuffer());
+    // Historical comparisons always use the current HTML-capable renderer.
+    // In particular, never extract text from a saved PDF: a PDF is an
+    // ordinary latest-publication artifact, not the history display source.
+    const gathered = point.assets && Object.keys(tree.digests).every((path) => point.assets[path])
+      ? { assets: point.assets, urls: point.urls || {} }
+      : await figureApi.gather(slug, tree.digests, headers, { strict: true });
+    const capturedAssets = gathered?.assets;
+    if (!capturedAssets || !Object.keys(tree.digests).every((path) =>
+      Object.prototype.hasOwnProperty.call(capturedAssets, path))) {
+      throw new Error("Captured comparison assets are unavailable");
     }
-
-    // A checkpoint is a whole directory. Rehydrate every referenced figure
-    // before rendering so an image-dependent Typst source is evaluated in the
-    // same tree that was stored, rather than silently compiling with holes.
-    const gathered = await figureApi.gather(slug, tree.digests, headers);
-    if (Object.keys(gathered.assets).length !== Object.keys(tree.digests).length) return null;
-    const { html } = await rendererApi.render(
+    if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
+    const result = await rendererApi.render(
       { ...tree, assets: gathered.assets, urls: gathered.urls },
       point.label || "Document",
+      { format: "html", configuration },
     );
-    return typeof html === "string" ? visibleText(html) : null;
+    if (typeof result?.html !== "string") throw new Error("This endpoint could not be rendered as HTML. Use source comparison.");
+    if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
+    return {
+      ...result,
+      cacheKey: key,
+      rendererIdentity: configuration.identity,
+      // Projection must be able to distinguish verified captured assets from
+      // arbitrary renderer markup. Keep only path/digest/URL evidence; bytes
+      // never cross into the projection or frame payload.
+      assetEvidence: assetEvidence(tree, gathered),
+    };
   })();
-  remember(rendered, key, pending);
-  // A rendering may be uploaded after the first lookup (for example while a
-  // reader opens history during an editor's compile). Do not remember a
-  // missing artifact or a transient fetch failure forever. The identity check
-  // keeps a late result from evicting a newer retry.
+  rememberHtml(key, pending);
   pending.then(
     (value) => {
-      if (value === null && rendered.get(key) === pending) rendered.delete(key);
+      if (htmlRendered.get(key) === pending) accountHtml(key, value.html);
     },
-    () => {
-      if (rendered.get(key) === pending) rendered.delete(key);
-    },
+    () => { if (htmlRendered.get(key) === pending) htmlRendered.delete(key); },
   );
   return pending;
+}
+
+export async function textAt(slug, sha, headers = {}, services = {}) {
+  const html = await htmlAt(slug, sha, headers, services);
+  return typeof html === "string" ? visibleText(html) : null;
 }
 
 // One checkpoint fetch per document/sha, whatever asks for it -- the same
@@ -132,8 +213,54 @@ const points = new Map();
 /// In-flight calls may finish, but their identity checks cannot repopulate a
 /// map entry that has since been replaced.
 export function clearPassageCache() {
-  rendered.clear();
+  cacheGeneration++;
+  htmlRendered.clear();
+  htmlSizes.clear();
+  projections.clear();
+  projectionSizes.clear();
   points.clear();
+  scopes.clear();
+}
+
+/** Render and project a captured tree without putting it in history caches. */
+export async function projectionTree(tree, title = "Document", services = {}) {
+  const result = await renderTree(services.slug || tree.storage_id || "", { ...tree, label: title }, services.headers || {}, services);
+  const projection = projectHtml(result.html, { ...(services.projection || {}), assetEvidence: result.assetEvidence });
+  return validateProjection(projection) ? projection : { ...projection, complete: false, incomplete: "invalid-projection" };
+}
+
+export async function captureTree(slug, tree, headers = {}) {
+  const generation = cacheGeneration;
+  const digests = { ...tree.digests };
+  for (const [path, file] of Object.entries(tree.files || {})) if (file.kind !== "text") digests[path] = file.sha;
+  const gathered = await figures.gather(slug, digests, headers, { strict: true });
+  if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
+  return { ...tree, digests, assets: Object.fromEntries(Object.entries(gathered.assets).map(([path, bytes]) => [path, bytes.slice()])), urls: { ...gathered.urls } };
+}
+
+/** Historical endpoint projection, keyed by checkpoint and authorization scope. */
+export async function projectionAt(slug, sha, headers = {}, services = {}) {
+  const generation = cacheGeneration;
+  // Revalidate retained membership and authorization before a private cache hit.
+  const point = await (services.history || history).checkpoint(slug, sha, headers);
+  if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
+  const result = await renderTree(slug, point, headers, services);
+  if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
+  const key = result.cacheKey;
+  if (projections.has(key)) return projections.get(key);
+  const projection = projectHtml(result.html, { ...(services.projection || {}), assetEvidence: result.assetEvidence });
+  const value = validateProjection(projection) ? projection : { ...projection, complete: false, incomplete: "invalid-projection" };
+  remember(projections, key, value);
+  projectionSizes.set(key, JSON.stringify(value).length * 2);
+  for (const old of projectionSizes.keys()) if (!projections.has(old)) projectionSizes.delete(old);
+  let total = [...projectionSizes.values()].reduce((sum, bytes) => sum + bytes, 0);
+  while (total > HTML_CACHE_BYTES && projections.size) {
+    const old = projections.keys().next().value;
+    projections.delete(old);
+    total -= projectionSizes.get(old) || 0;
+    projectionSizes.delete(old);
+  }
+  return value;
 }
 
 /// The text of one file of a checkpoint, as it was written. Unlike `textAt`
@@ -153,17 +280,126 @@ export async function sourceTextAt(slug, sha, path, headers = {}) {
       if (points.get(key) === pending) points.delete(key);
     });
   }
-  const point = await points.get(key);
-  const texts = point.texts || {};
-  return Object.prototype.hasOwnProperty.call(texts, path) ? texts[path] : null;
+  const pending = points.get(key);
+  const generation = cacheGeneration;
+  try {
+    const point = await pending;
+    if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
+    const texts = point.texts || {};
+    return Object.prototype.hasOwnProperty.call(texts, path) ? texts[path] : null;
+  } finally {
+    // Coalesce simultaneous lookups, but revalidate authorization and
+    // retained membership before every later use of a private source tree.
+    if (points.get(key) === pending) points.delete(key);
+  }
+}
+
+// Source-only provenance support. This deliberately uses checkpoint source
+// bytes and the existing bounded source diff; it never calls renderTree,
+// htmlAt, or any compiler for an intermediate checkpoint.
+function mapSourceSpan(span, edits) {
+  let shift = 0;
+  let start = span.start;
+  const end = span.end;
+  const pieces = [];
+  for (const edit of edits) {
+    const at = Number(edit.at) || 0;
+    const removed = Number(edit.delete) || 0;
+    const editEnd = at + removed;
+    const delta = (edit.insert || "").length - removed;
+    if (editEnd <= start) { shift += delta; continue; }
+    if (at >= end) break;
+    if (at > start) pieces.push({ ...span, start: start + shift, end: at + shift });
+    shift += delta;
+    start = Math.max(start, editEnd);
+  }
+  if (start < end) pieces.push({ ...span, start: start + shift, end: end + shift });
+  return pieces;
+}
+
+/**
+ * Build bounded source provenance for a retained checkpoint chain. The
+ * returned ranges are in final-target source coordinates and are marked
+ * validated only because they come from exact source diffs, never quotation
+ * matching. Pure deletions intentionally produce no target span and remain
+ * unlabelled by the refinement layer.
+ */
+export async function sourceProvenance({
+  slug, baseline, checkpoints = [], target, headers = {}, history: historyApi = history,
+  changedPaths = [], maxIntervals = 12,
+} = {}) {
+  if (!baseline || !target || target._current || !Array.isArray(checkpoints)
+    || checkpoints.length === 0 || checkpoints.length > maxIntervals) return null;
+  const points = [baseline, ...checkpoints];
+  const paths = new Set(changedPaths);
+  for (const point of points) for (const path of Object.keys(point?.texts || {})) paths.add(path);
+  const source = new Map();
+  const read = async (point, path) => {
+    const key = `${point.sha}\u0000${path}`;
+    if (source.has(key)) return source.get(key);
+    let value;
+    if (point.texts && Object.prototype.hasOwnProperty.call(point.texts, path)) {
+      value = point.texts[path];
+    } else if (historyApi.checkpoint) {
+      const fetched = await historyApi.checkpoint(slug, point.sha, headers);
+      value = fetched?.texts?.[path];
+    } else {
+      value = await sourceTextAt(slug, point.sha, path, headers);
+    }
+    source.set(key, typeof value === "string" ? value : "");
+    return source.get(key);
+  };
+  const editsByStep = [];
+  const rangesByStep = checkpoints.map(() => []);
+  const sourceBytesByStep = checkpoints.map(() => 0);
+  const diffWorkByStep = checkpoints.map(() => 0);
+  for (let step = 0; step < checkpoints.length; step += 1) {
+    const oldPoint = points[step];
+    const newPoint = points[step + 1];
+    const allEdits = new Map();
+    for (const path of paths) {
+      const oldText = await read(oldPoint, path);
+      const newText = await read(newPoint, path);
+      if (oldText === newText) continue;
+      sourceBytesByStep[step] += oldText.length + newText.length;
+      const edits = await historyApi.wordDiff(oldText, newText);
+      diffWorkByStep[step] += edits.length;
+      allEdits.set(path, edits);
+      for (const hunk of historyApi.hunks(oldText, newText, edits)) {
+        const insert = hunk.insert || "";
+        if (!insert) continue;
+        rangesByStep[step].push({
+          path, start: Number(hunk.position) || 0,
+          end: (Number(hunk.position) || 0) + insert.length,
+          validated: true,
+        });
+      }
+    }
+    editsByStep.push(allEdits);
+  }
+  // Move each interval's inserted source spans through every later source
+  // edit so they can be compared with final-target projection ranges.
+  for (let step = 0; step < rangesByStep.length; step += 1) {
+    let carried = rangesByStep[step];
+    for (let later = step + 1; later < editsByStep.length; later += 1) {
+      carried = carried.flatMap((span) => mapSourceSpan(span, editsByStep[later].get(span.path) || []));
+    }
+    rangesByStep[step] = carried;
+  }
+  return checkpoints.map((point, index) => ({
+    sha: point.sha,
+    original_parent: point.original_parent,
+    authorship: point.authorship,
+    sourceRanges: rangesByStep[index],
+    sourceBytes: sourceBytesByStep[index],
+    diffWork: diffWorkByStep[index],
+  }));
 }
 
 /// The words of a page, with the markup and the things that are not words
 /// taken out.
 export function visibleText(html) {
-  const parsed = new DOMParser().parseFromString(html, "text/html");
-  for (const gone of parsed.querySelectorAll("script, style, template")) gone.remove();
-  return parsed.body?.textContent || "";
+  return projectHtml(html).text;
 }
 
 /// Whether a quotation is in a text, by the same match that anchors it in the

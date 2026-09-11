@@ -100,16 +100,32 @@ impl Catalog {
             // The caller holds the session writer gate. A leftover writing
             // reservation can only belong to a failed/canceled predecessor.
             let replaced = old.saturating_add(if writing { old_writing } else { 0 });
-            let owner_bytes: i64 = if let Some(owner) = owner_id {
-                tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1", [owner], |row| row.get(0))?
+            let (physical_owner, owner_known) =
+                Self::owner_admission_bytes_on(tx, owner_id.as_deref(), &owner_key)?;
+            let (physical_total, total_known) = Self::deployment_admission_bytes_on(tx)?;
+            let (owner_bytes, total) = if owner_known && total_known {
+                // The current room's reservation is already included in the
+                // physical evaluator. Replace it atomically instead of
+                // charging the pending snapshot twice.
+                (
+                    physical_owner.saturating_sub(replaced),
+                    physical_total.saturating_sub(replaced),
+                )
             } else {
-                tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id IS NULL AND owner_key=?1", [owner_key], |row| row.get(0))?
+                // Legacy/unmeasured rows keep the established admission
+                // ledger as the conservative authority.
+                let owner_bytes: i64 = if let Some(owner) = owner_id.as_deref() {
+                    tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1", [owner], |row| row.get(0))?
+                } else {
+                    tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id IS NULL AND owner_key=?1", [&owner_key], |row| row.get(0))?
+                };
+                let total: i64 = tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents", [], |row| row.get(0))?;
+                (owner_bytes.saturating_sub(replaced), total.saturating_sub(replaced))
             };
-            let total: i64 = tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents", [], |row| row.get(0))?;
-            if owner_limit >= 0 && owner_bytes.saturating_sub(replaced).saturating_add(bytes) > owner_limit {
+            if owner_limit >= 0 && owner_bytes.saturating_add(bytes) > owner_limit {
                 return Err(CatalogError::Conflict("owner byte quota exceeded".into()));
             }
-            if total_limit >= 0 && total.saturating_sub(replaced).saturating_add(bytes) > total_limit {
+            if total_limit >= 0 && total.saturating_add(bytes) > total_limit {
                 return Err(CatalogError::Conflict("deployment byte quota exceeded".into()));
             }
             let generation = old_generation.saturating_add(1);

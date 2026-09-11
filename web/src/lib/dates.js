@@ -15,9 +15,16 @@
 /// `at` -- an ISO string, a Date, or a number -- as YYYY-MM-DD in the
 /// reader's timezone. An unparseable value is the empty string, which is what
 /// every caller here wants to render as nothing.
-export function day(at) {
+export function day(at, timeZone) {
   const when = at instanceof Date ? at : new Date(at);
   if (Number.isNaN(when.getTime())) return "";
+  if (timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(when);
+      const part = (name) => parts.find((value) => value.type === name)?.value;
+      return `${part("year")}-${part("month")}-${part("day")}`;
+    } catch { return day(at, "UTC"); }
+  }
   const pad = (part) => String(part).padStart(2, "0");
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
 }

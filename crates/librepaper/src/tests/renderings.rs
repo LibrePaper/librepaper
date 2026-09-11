@@ -527,10 +527,9 @@ async fn latest_says_which_rendering_and_whether_it_is_current() {
 }
 
 /// A rendering is derived, so unlike a checkpoint it may go. What is kept is
-/// the newest one, because that is what a reader is shown, and every labelled
-/// checkpoint's, because a label is somebody saying this moment matters.
+/// the newest published PDF; naming a source checkpoint does not pin its PDF.
 #[tokio::test]
-async fn pruning_keeps_the_newest_rendering_and_the_labelled_ones() {
+async fn pruning_keeps_only_the_newest_rendering_even_when_older_sources_are_named() {
     let server = server_with(Configuration {
         // Nothing here should be kept by the grace period, which exists for
         // the seconds between a PUT and the checkpoint that follows it.
@@ -572,11 +571,67 @@ async fn pruning_keeps_the_newest_rendering_and_the_labelled_ones() {
         .expect("a checkpoint");
 
     let (status, _) = get_rendering_keyed("", &key, &server.url, &slug, &shas[0]).await;
-    assert_eq!(status, 200, "the labelled moment's rendering was pruned");
+    assert_eq!(status, 404, "a named source must not pin its older PDF");
     let (status, _) = get_rendering_keyed("", &key, &server.url, &slug, &shas[1]).await;
     assert_eq!(status, 404, "an unlabelled older rendering was kept");
     let (status, _) = get_rendering_keyed("", &key, &server.url, &slug, &shas[2]).await;
     assert_eq!(status, 200, "the newest rendering was pruned");
+}
+
+#[tokio::test]
+async fn latest_pdf_survives_retirement_of_its_source_event() {
+    let server = new_test_server().await;
+    let document = crate::tests::edit::publish_with_source(&server.url).await;
+    let slug = text(&document, "slug");
+    let key = read_key_of(&document);
+    let sha = live_sha(&server, &slug).await;
+    let (status, answer) = put_rendering(
+        &session_as(TEST_PUBLISHER),
+        &server.url,
+        &slug,
+        &sha,
+        pdf(8),
+    )
+    .await;
+    assert_eq!(status, 200, "{answer}");
+    let history_path = format!("/api/documents/{slug}/history/{sha}");
+    let history_status = || async {
+        client()
+            .get(format!("{}{history_path}", server.url))
+            .header("x-librepaper-client", "1")
+            .header("cookie", session_as(TEST_PUBLISHER))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    let status = history_status().await;
+    assert_eq!(
+        status, 200,
+        "warm the historical source cache before retirement"
+    );
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute("DELETE FROM checkpoints WHERE slug=?1", [&slug])?;
+            Ok(())
+        })
+        .unwrap();
+    let status = history_status().await;
+    assert_eq!(
+        status, 404,
+        "a warm cache must not grant access to a retired source event"
+    );
+    let (status, answer) = get_latest_keyed("", &key, &server.url, &slug).await;
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(
+        text(&answer, "sha"),
+        sha,
+        "PDF lookup must not depend on a retained source event"
+    );
+    let (status, _) = get_rendering_keyed("", &key, &server.url, &slug, &sha).await;
+    assert_eq!(status, 200, "the latest published PDF remains downloadable");
 }
 
 /// What a rendering weighs is charged to the owner, like every other byte the
@@ -586,7 +641,9 @@ async fn pruning_keeps_the_newest_rendering_and_the_labelled_ones() {
 async fn a_rendering_costs_the_owner_their_quota() {
     let server = server_with(Configuration {
         storage: crate::config::StorageLimit {
-            per_owner: 4096,
+            // Leave room for the measured catalogue and compressed-source
+            // metadata, but not for two independently retained PDFs.
+            per_owner: 32_768,
             ..Configuration::default().storage
         },
         ..Configuration::default()
@@ -600,10 +657,11 @@ async fn a_rendering_costs_the_owner_their_quota() {
     let cookie = session_as(TEST_PUBLISHER);
     let sha = live_sha(&server, &slug).await;
 
-    let (status, answer) = put_rendering(&cookie, &server.url, &slug, &sha, vec![b'x'; 3000]).await;
+    let (status, answer) =
+        put_rendering(&cookie, &server.url, &slug, &sha, vec![b'x'; 20_000]).await;
     assert_eq!(status, 200, "{answer}");
     assert!(
-        room.renderings_bytes().await >= 3000,
+        room.renderings_bytes().await >= 20_000,
         "the rendering was not counted"
     );
 
@@ -612,7 +670,7 @@ async fn a_rendering_costs_the_owner_their_quota() {
         .unwrap();
     let next = live_sha(&server, &slug).await;
     let (status, answer) =
-        put_rendering(&cookie, &server.url, &slug, &next, vec![b'x'; 3000]).await;
+        put_rendering(&cookie, &server.url, &slug, &next, vec![b'x'; 20_000]).await;
     assert_eq!(status, 507, "{answer}");
 }
 

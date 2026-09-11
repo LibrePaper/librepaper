@@ -15,8 +15,10 @@ import * as renderers from "./renderers.js";
 
 const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
 
-/// Every checkpoint of a document, oldest first, as the manifest holds them.
-export async function load(slug, headers = {}) {
+/// The history manifest and the independently reported durability boundaries.
+/// The endpoint keeps this metadata beside `checkpoints` so old consumers can
+/// continue treating the response as a list through `load` below.
+export async function loadWithStatus(slug, headers = {}) {
   const response = await fetch(`/api/documents/${slug}/history`, {
     headers: asked(headers),
     // History is private and labels can change. Never let the browser answer
@@ -25,7 +27,19 @@ export async function load(slug, headers = {}) {
   });
   if (!response.ok) throw new Error("this document's history is not readable");
   const payload = await response.json();
-  return Array.isArray(payload.checkpoints) ? payload.checkpoints : [];
+  return {
+    checkpoints: Array.isArray(payload.checkpoints) ? payload.checkpoints : [],
+    durability: payload.durability && typeof payload.durability === "object"
+      ? payload.durability
+      : null,
+  };
+}
+
+/// Every checkpoint of a document, oldest first, as the manifest holds them.
+/// Kept as a list-returning adapter for callers that predate durability
+/// metadata and for small integrations that only need the timeline rows.
+export async function load(slug, headers = {}) {
+  return (await loadWithStatus(slug, headers)).checkpoints;
 }
 
 /// What the document said at one checkpoint: which file was the document, the
@@ -248,11 +262,11 @@ export function isMilestone(point) {
 /// Returns `[{ day, rows }]`, where a row is either `{ kind: "point", point }`
 /// or `{ kind: "folded", first, last, hidden }` -- `hidden` being the
 /// checkpoints between them, which the panel offers to open.
-export function timeline(checkpoints) {
+export function timeline(checkpoints, timeZone) {
   const newest = [...(checkpoints || [])].reverse();
   const days = [];
   for (const point of newest) {
-    const day = dayOf(point.at);
+    const day = dayOf(point.at, timeZone);
     const last = days[days.length - 1];
     if (last && last.day === day) last.points.push(point);
     else days.push({ day, points: [point] });

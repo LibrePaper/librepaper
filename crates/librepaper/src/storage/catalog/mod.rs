@@ -25,13 +25,17 @@ mod agent_cancel;
 mod agent_lease;
 mod agent_objects;
 mod agent_source;
+mod asset_history;
 mod checkpoints;
 mod comments;
 mod documents;
 mod execution;
 mod journal;
 mod operations;
+mod pressure;
+mod retention;
 mod room_edits;
+mod source_history;
 
 pub use agent_annotations::AgentAnnotationAuthority;
 pub use execution::{
@@ -39,7 +43,17 @@ pub use execution::{
     CatalogReservation, CatalogServiceCompletion, MAX_ADMITTED_REQUESTS, MAX_EXECUTING,
     MAX_QUEUED_BYTES, MAX_REQUEST_BYTES, MAX_WAITING_PRODUCERS, SMALL_REQUEST_BYTES,
 };
+pub use pressure::HardPressurePlan;
+pub use retention::{RetentionJob, RetentionPass};
 pub use room_edits::RoomEditReservation;
+pub use source_history::{SourceHistoryLease, SourceHistoryObject, SourceHistoryRecord};
+
+/// One durable physical asset reference carried by a checkpoint.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CheckpointAssetRef {
+    pub object_key: String,
+    pub bytes: i64,
+}
 
 const LATEST_SCHEMA: i64 = MIGRATIONS[MIGRATIONS.len() - 1].0;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
@@ -134,6 +148,22 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         24,
         include_str!("../../../migrations/0024_agent_execution_leases.sql"),
+    ),
+    (
+        25,
+        include_str!("../../../migrations/0025_quota_preferences.sql"),
+    ),
+    (
+        26,
+        include_str!("../../../migrations/0026_source_history.sql"),
+    ),
+    (
+        27,
+        include_str!("../../../migrations/0027_retention_jobs.sql"),
+    ),
+    (
+        28,
+        include_str!("../../../migrations/0028_checkpoint_assets.sql"),
     ),
 ];
 
@@ -293,6 +323,32 @@ pub struct Account {
     pub status: String,
     pub session_generation: String,
     pub erasure_cursor: Option<String>,
+}
+
+/// The versioned, opaque account preference payload.  The policy module owns
+/// interpretation; the catalogue only provides optimistic persistence and
+/// keeps unknown fields intact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuotaPreferencesRecord {
+    pub account_id: String,
+    pub revision: i64,
+    pub payload: String,
+    pub policy_generation: String,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AccountStorageUsage {
+    pub charged_bytes: i64,
+    pub live_bytes: i64,
+    pub history_bytes: i64,
+    pub asset_bytes: i64,
+    pub publication_bytes: i64,
+    pub metadata_bytes: i64,
+    pub document_count: i64,
+    pub checkpoint_count: i64,
+    /// False until a physical retained-object catalogue is authoritative.
+    pub physical_accounting: bool,
 }
 
 /// The catalogue representation of a document.
@@ -793,6 +849,9 @@ impl DerefMut for ConnectionGuard<'_> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod physical_admission_tests;
 
 #[cfg(test)]
 mod refusal_tests {

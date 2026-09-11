@@ -46,56 +46,37 @@ impl Catalog {
                 .optional()
                 .map_err(CatalogError::from)?
                 .ok_or(CatalogError::NotFound)?;
-            let owner_bytes: i64 = if let Some(id) = owner_id {
-                tx.query_row(
-                    "SELECT COALESCE(SUM(admission_bytes),0)
-                     FROM admission_documents WHERE owner_id = ?1",
-                    [id],
-                    |row| row.get(0),
-                )
-            } else {
-                tx.query_row(
-                    "SELECT COALESCE(SUM(admission_bytes),0)
-                     FROM admission_documents WHERE owner_id IS NULL AND owner_key = ?1",
-                    [owner_key],
-                    |row| row.get(0),
-                )
-            }
-            .map_err(CatalogError::from)?;
-            let total_bytes: i64 = tx
-                .query_row(
-                    "SELECT COALESCE(SUM(admission_bytes),0)
-                     FROM admission_documents",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if owner_bytes.saturating_add(added_bytes) > owner_limit {
+            let (owner_bytes, owner_known) =
+                Self::owner_admission_bytes_on(tx, owner_id.as_deref(), &owner_key)?;
+            let (total_bytes, total_known) = Self::deployment_admission_bytes_on(tx)?;
+            let metadata_headroom = if owner_known && total_known { 64 } else { 0 };
+            let charge = added_bytes.saturating_add(metadata_headroom);
+            if owner_bytes.saturating_add(charge) > owner_limit {
                 return Err(CatalogError::Conflict(
                     "owner storage quota exceeded".into(),
                 ));
             }
-            if total_bytes.saturating_add(added_bytes) > total_limit {
+            if total_bytes.saturating_add(charge) > total_limit {
                 return Err(CatalogError::Conflict(
                     "deployment storage quota exceeded".into(),
                 ));
             }
             tx.execute(
                 "UPDATE documents SET counted_size = counted_size + ?2 WHERE slug = ?1",
-                params![slug, added_bytes],
+                params![slug, charge],
             )
             .map_err(CatalogError::from)?;
             tx.execute(
                 "UPDATE totals SET bytes = bytes + ?1 WHERE id = 1",
-                [added_bytes],
+                [charge],
             )
             .map_err(CatalogError::from)?;
             Ok(Admission {
                 slug: slug.to_owned(),
                 added_bytes,
-                owner_bytes: owner_bytes + added_bytes,
-                total_bytes: total_bytes + added_bytes,
-                counted_size: counted + added_bytes,
+                owner_bytes: owner_bytes + charge,
+                total_bytes: total_bytes + charge,
+                counted_size: counted + charge,
             })
         })
     }
@@ -436,6 +417,94 @@ impl Catalog {
         checkpoint: &Checkpoint,
         actor: Option<MutationAuthority<'_>>,
     ) -> CatalogResult<()> {
+        self.stage_publication_checkpoint_with_sources(slug, checkpoint, actor, &[], None)
+    }
+
+    /// Stage a publication checkpoint and the complete source-history
+    /// encoding descriptors in the prepared intent.  The descriptors are not
+    /// committed as graph edges until `commit_operation` atomically inserts
+    /// the checkpoint row and clears the publication slot.
+    pub fn stage_publication_checkpoint_with_sources(
+        &self,
+        slug: &str,
+        checkpoint: &Checkpoint,
+        actor: Option<MutationAuthority<'_>>,
+        sources: &[SourceHistoryRecord],
+        lease_operation: Option<&str>,
+    ) -> CatalogResult<()> {
+        self.stage_publication_checkpoint_with_sources_and_quota_option(
+            slug,
+            checkpoint,
+            actor,
+            sources,
+            &[],
+            lease_operation,
+            None,
+        )
+    }
+
+    /// Stage a publication and carry its configured limits into the durable
+    /// receipt.  Reconciliation can then enforce the same limits even after
+    /// the original room task has gone away.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stage_publication_checkpoint_with_sources_and_quota(
+        &self,
+        slug: &str,
+        checkpoint: &Checkpoint,
+        actor: Option<MutationAuthority<'_>>,
+        sources: &[SourceHistoryRecord],
+        lease_operation: Option<&str>,
+        owner_limit: i64,
+        total_limit: i64,
+    ) -> CatalogResult<()> {
+        self.stage_publication_checkpoint_with_sources_and_quota_option(
+            slug,
+            checkpoint,
+            actor,
+            sources,
+            &[],
+            lease_operation,
+            Some((owner_limit, total_limit)),
+        )
+    }
+
+    /// Stage a publication with the asset roots captured from its immutable
+    /// tree. They are committed with the checkpoint at receipt commit, never
+    /// reconstructed later from a mutable live room.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stage_publication_checkpoint_with_sources_assets_and_quota(
+        &self,
+        slug: &str,
+        checkpoint: &Checkpoint,
+        actor: Option<MutationAuthority<'_>>,
+        sources: &[SourceHistoryRecord],
+        assets: &[CheckpointAssetRef],
+        lease_operation: Option<&str>,
+        owner_limit: i64,
+        total_limit: i64,
+    ) -> CatalogResult<()> {
+        self.stage_publication_checkpoint_with_sources_and_quota_option(
+            slug,
+            checkpoint,
+            actor,
+            sources,
+            assets,
+            lease_operation,
+            Some((owner_limit, total_limit)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_publication_checkpoint_with_sources_and_quota_option(
+        &self,
+        slug: &str,
+        checkpoint: &Checkpoint,
+        actor: Option<MutationAuthority<'_>>,
+        sources: &[SourceHistoryRecord],
+        assets: &[CheckpointAssetRef],
+        lease_operation: Option<&str>,
+        quota: Option<(i64, i64)>,
+    ) -> CatalogResult<()> {
         self.immediate(|tx| {
             if let Some(actor) = actor {
                 if !Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {
@@ -489,6 +558,28 @@ impl Catalog {
                 "durable_seq": checkpoint.durable_seq,
                 "checkpoint_sha": checkpoint.sha,
             });
+            if !sources.is_empty() {
+                value["source_history"] = serde_json::to_value(sources).map_err(|error| {
+                    CatalogError::Invalid(format!("invalid source-history descriptors: {error}"))
+                })?;
+            }
+            value["checkpoint_assets"] = serde_json::to_value(assets).map_err(|error| {
+                CatalogError::Invalid(format!("invalid checkpoint asset descriptors: {error}"))
+            })?;
+            if let Some(operation_id) = lease_operation {
+                if operation_id.is_empty() {
+                    return Err(CatalogError::Invalid(
+                        "source-history lease id is empty".into(),
+                    ));
+                }
+                value["source_history_lease"] = serde_json::json!(operation_id);
+            }
+            if let Some((owner_limit, total_limit)) = quota {
+                value["physical_quota"] = serde_json::json!({
+                    "owner": owner_limit,
+                    "deployment": total_limit,
+                });
+            }
             tx.execute(
                 "UPDATE catalog_operations SET intent=?3
                  WHERE storage_id=?1 AND request_id=?2 AND status='prepared'",
@@ -784,14 +875,40 @@ impl Catalog {
                 return Ok(new_bytes.saturating_sub(old_bytes));
             }
             let delta = new_bytes.saturating_sub(old_bytes);
-            let owner_bytes: i64 = if let Some(id)=owner_id { tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1",[id],|r|r.get(0)) } else { tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id IS NULL AND owner_key=?1",[owner_key],|r|r.get(0)) }.map_err(CatalogError::from)?;
-            let total:i64=tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents",[],|r|r.get(0)).map_err(CatalogError::from)?;
+            let (physical_owner, owner_known) = Self::owner_admission_bytes_on(
+                tx, owner_id.as_deref(), &owner_key,
+            )?;
+            let (physical_total, total_known) = Self::deployment_admission_bytes_on(tx)?;
+            let (owner_bytes, total) = if owner_known && total_known {
+                (physical_owner, physical_total)
+            } else {
+                let owner_bytes: i64 = if let Some(id)=owner_id.as_deref() {
+                    tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1",[id],|r|r.get(0))
+                } else {
+                    tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id IS NULL AND owner_key=?1",[owner_key],|r|r.get(0))
+                }.map_err(CatalogError::from)?;
+                let total: i64 = tx.query_row(
+                    "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents",
+                    [], |r| r.get(0),
+                ).map_err(CatalogError::from)?;
+                (owner_bytes, total)
+            };
             // Session/journal publication spends the quota already held for
             // this snapshot. Other object writes still include that reservation.
             let credit: i64 = if kind.starts_with("journal_") || (kind == "mutable" && object_key.starts_with("sessions/")) {
                 tx.query_row("SELECT writing_bytes FROM room_edit_reservations WHERE storage_id=?1", [&storage_id], |row| row.get(0)).optional()?.unwrap_or(0)
             } else { 0 };
-            let charge_delta = if pending_publication.is_none() { delta.max(0) } else { 0 };
+            // Reserve a bounded catalogue-record headroom for a newly
+            // measured object.  The final checkpoint measurement reconciles
+            // the exact graph/metadata rows; this preflight prevents a
+            // physical object from crossing the quota before that commit.
+            let metadata_headroom = if owner_known && old_bytes == 0 {
+                storage_id.len().saturating_add(object_key.len())
+                    .saturating_add(kind.len()).saturating_add(64) as i64
+            } else { 0 };
+            let charge_delta = if pending_publication.is_none() {
+                delta.max(0).saturating_add(metadata_headroom)
+            } else { 0 };
             let owner_bytes = owner_bytes.saturating_sub(credit);
             let total = total.saturating_sub(credit);
             if owner_limit>=0 && owner_bytes.saturating_add(charge_delta)>owner_limit { return Err(CatalogError::Conflict("owner byte quota exceeded".into())); }
@@ -801,7 +918,11 @@ impl Catalog {
             // peak.  Its object ledger entries consume that reservation; do
             // not charge each staged object a second time.  Ordinary edits
             // remain incremental and grow the reservation exactly once.
-            if pending_publication.is_none() && delta>0 { tx.execute("UPDATE documents SET counted_size=counted_size+?2 WHERE slug=?1",params![slug,delta]).map_err(CatalogError::from)?; tx.execute("UPDATE totals SET bytes=bytes+?1 WHERE id=1",[delta]).map_err(CatalogError::from)?; }
+            if pending_publication.is_none() && (delta > 0 || metadata_headroom > 0) {
+                let accounted = delta.max(0).saturating_add(metadata_headroom);
+                tx.execute("UPDATE documents SET counted_size=counted_size+?2 WHERE slug=?1",params![slug,accounted]).map_err(CatalogError::from)?;
+                tx.execute("UPDATE totals SET bytes=bytes+?1 WHERE id=1",[accounted]).map_err(CatalogError::from)?;
+            }
             Ok(delta)
         })
     }
@@ -1321,6 +1442,21 @@ impl Catalog {
         result: &str,
         last_publication_id: &str,
     ) -> CatalogResult<Operation> {
+        self.commit_operation_with_quota(storage_id, request_id, result, last_publication_id, None)
+    }
+
+    /// Commit a publication while checking the complete prospective graph in
+    /// the same transaction.  This catches metadata-only growth when every
+    /// encoded object is already shared and therefore no object reservation
+    /// grew during the write.
+    pub fn commit_operation_with_quota(
+        &self,
+        storage_id: &str,
+        request_id: &str,
+        result: &str,
+        last_publication_id: &str,
+        quota: Option<(i64, i64)>,
+    ) -> CatalogResult<Operation> {
         if result.len() > 65_536 {
             return Err(CatalogError::Invalid(
                 "operation result is too large".into(),
@@ -1409,6 +1545,13 @@ impl Catalog {
                 serde_json::from_str(&operation.intent).map_err(|error| {
                     CatalogError::Invalid(format!("invalid publication intent: {error}"))
                 })?;
+            let quota = quota.or_else(|| {
+                let limits = staged.get("physical_quota")?;
+                Some((
+                    limits.get("owner")?.as_i64()?,
+                    limits.get("deployment")?.as_i64()?,
+                ))
+            });
             if let Some(expected_head) =
                 staged.get("expected_head").and_then(|value| value.as_str())
             {
@@ -1451,6 +1594,39 @@ impl Catalog {
                         .map(str::to_string),
                 })
             });
+            let staged_sources: Vec<SourceHistoryRecord> = staged
+                .get("source_history")
+                .map(|value| {
+                    serde_json::from_value(value.clone()).map_err(|error| {
+                        CatalogError::Invalid(format!(
+                            "invalid staged source-history descriptors: {error}"
+                        ))
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let staged_assets_present = staged.get("checkpoint_assets").is_some();
+            let staged_assets: Vec<CheckpointAssetRef> = staged
+                .get("checkpoint_assets")
+                .map(|value| {
+                    serde_json::from_value(value.clone()).map_err(|error| {
+                        CatalogError::Invalid(format!("invalid staged checkpoint assets: {error}"))
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let staged_lease = staged
+                .get("source_history_lease")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty());
+            if !staged_sources.is_empty() && staged_lease.is_none() {
+                return Err(CatalogError::Conflict(
+                    "staged source history has no writer lease".into(),
+                ));
+            }
+            if let Some(lease_operation) = staged_lease {
+                Self::require_active_source_history_lease_tx(tx, storage_id, lease_operation)?;
+            }
             if staged
                 .get("staged_required")
                 .and_then(|value| value.as_bool())
@@ -1497,6 +1673,7 @@ impl Catalog {
                     "publication has no durable staged checkpoint".into(),
                 ));
             }
+            let has_staged_checkpoint = staged_checkpoint.is_some();
             if let Some(checkpoint) = staged_checkpoint {
                 if checkpoint.slug != slug || checkpoint.sha != result {
                     return Err(CatalogError::Conflict(
@@ -1553,6 +1730,35 @@ impl Catalog {
                         ],
                     )
                     .map_err(CatalogError::from)?;
+                }
+                if !staged_sources.is_empty() {
+                    Self::insert_source_history_tx(
+                        tx,
+                        storage_id,
+                        &checkpoint.sha,
+                        &staged_sources,
+                    )?;
+                }
+                if staged_assets_present {
+                    Self::insert_checkpoint_asset_refs_tx(
+                        tx,
+                        storage_id,
+                        &checkpoint.sha,
+                        &staged_assets,
+                    )?;
+                }
+                if let Some(lease_operation) = staged_lease {
+                    tx.execute(
+                        "DELETE FROM source_history_write_leases
+                         WHERE storage_id=?1 AND operation_id=?2",
+                        params![storage_id, lease_operation],
+                    )
+                    .map_err(CatalogError::from)?;
+                }
+            }
+            if has_staged_checkpoint {
+                if let Some((owner_limit, total_limit)) = quota {
+                    Self::enforce_physical_quota_on(tx, &slug, owner_limit, total_limit)?;
                 }
             }
             tx.execute(
@@ -1798,7 +2004,83 @@ impl Catalog {
 
     pub fn due_deletes(&self, now: i64, limit: u32) -> CatalogResult<Vec<PendingDelete>> {
         let limit = i64::from(limit.clamp(1, 1000));
-        self.with_connection(|c| { let mut s=c.prepare("SELECT slug,object_key,bytes,queued_at,delete_after FROM pending_deletes WHERE delete_after<=?1 ORDER BY delete_after,slug,object_key LIMIT ?2").map_err(CatalogError::from)?; let mut rows=s.query(params![now,limit]).map_err(CatalogError::from)?; let mut out=Vec::new(); while let Some(r)=rows.next().map_err(CatalogError::from)? { out.push(PendingDelete{slug:r.get(0).map_err(CatalogError::from)?,object_key:r.get(1).map_err(CatalogError::from)?,bytes:r.get(2).map_err(CatalogError::from)?,queued_at:r.get(3).map_err(CatalogError::from)?,delete_after:r.get(4).map_err(CatalogError::from)?}); } Ok(out) })
+        self.with_connection(|c| {
+            let mut s = c
+                .prepare(
+                    "SELECT p.slug,p.object_key,p.bytes,p.queued_at,p.delete_after
+                 FROM pending_deletes p
+                 JOIN documents d ON d.slug=p.slug
+                 WHERE p.delete_after<=?1
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM source_history_objects o
+                     JOIN source_history_checkpoint_files r
+                       ON r.storage_id=o.storage_id AND r.file_digest=o.file_digest
+                     WHERE d.status='active'
+                       AND o.storage_id=d.storage_id AND o.object_key=p.object_key
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM source_history_write_leases l
+                     WHERE d.status='active'
+                       AND l.storage_id=d.storage_id AND l.object_key=p.object_key
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM documents ad
+                     WHERE ad.slug=p.slug AND ad.status='active'
+                       AND p.object_key LIKE 'content/' || ad.storage_id || '/assets/%'
+                       AND (
+                           EXISTS (
+                             SELECT 1 FROM checkpoint_asset_refs ar
+                              WHERE ar.storage_id=ad.storage_id
+                                AND ar.object_key=p.object_key
+                           )
+                           OR EXISTS (
+                             SELECT 1 FROM checkpoints cp
+                              WHERE cp.slug=ad.slug
+                                AND NOT EXISTS (
+                                  SELECT 1 FROM checkpoint_asset_sets aset
+                                   WHERE aset.storage_id=ad.storage_id
+                                     AND aset.checkpoint_sha=cp.sha
+                                )
+                           )
+                           OR COALESCE((
+                             SELECT MAX(c.last_sequence)
+                               FROM journal_segment_coverage c
+                              WHERE (c.storage_id=ad.storage_id OR c.storage_id='')
+                           ),0) > COALESCE((
+                             SELECT MAX(cp.durable_seq)
+                               FROM checkpoints cp
+                              WHERE cp.slug=ad.slug
+                           ),0)
+                           OR COALESCE((
+                             SELECT MAX(b.sequence)
+                               FROM journal_bases b
+                              WHERE (b.storage_id=ad.storage_id OR b.storage_id='')
+                           ),0) > COALESCE((
+                             SELECT MAX(cp.durable_seq)
+                               FROM checkpoints cp
+                              WHERE cp.slug=ad.slug
+                           ),0)
+                       )
+                   )
+                 ORDER BY p.delete_after,p.slug,p.object_key LIMIT ?2",
+                )
+                .map_err(CatalogError::from)?;
+            let mut rows = s.query(params![now, limit]).map_err(CatalogError::from)?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next().map_err(CatalogError::from)? {
+                out.push(PendingDelete {
+                    slug: r.get(0).map_err(CatalogError::from)?,
+                    object_key: r.get(1).map_err(CatalogError::from)?,
+                    bytes: r.get(2).map_err(CatalogError::from)?,
+                    queued_at: r.get(3).map_err(CatalogError::from)?,
+                    delete_after: r.get(4).map_err(CatalogError::from)?,
+                });
+            }
+            Ok(out)
+        })
     }
 
     pub fn complete_delete_object(&self, slug: &str, object_key: &str) -> CatalogResult<bool> {
@@ -1814,6 +2096,71 @@ impl Catalog {
             let Some(bytes) = pending else {
                 return Ok(false);
             };
+            let protected: bool = tx.query_row(
+                "SELECT EXISTS(
+                     SELECT 1
+                     FROM documents d
+                     JOIN source_history_objects o ON o.storage_id=d.storage_id
+                     JOIN source_history_checkpoint_files r
+                       ON r.storage_id=o.storage_id AND r.file_digest=o.file_digest
+                     WHERE d.slug=?1 AND d.status='active' AND o.object_key=?2
+                 ) OR EXISTS(
+                     SELECT 1
+                     FROM documents d
+                     JOIN source_history_write_leases l ON l.storage_id=d.storage_id
+                     WHERE d.slug=?1 AND d.status='active' AND l.object_key=?2
+                 ) OR EXISTS(
+                     SELECT 1
+                     FROM documents d
+                     WHERE d.slug=?1 AND d.status='active'
+                       AND ?2 LIKE 'content/' || d.storage_id || '/assets/%'
+                       AND (EXISTS(
+                           SELECT 1 FROM checkpoint_asset_refs ar
+                            WHERE ar.storage_id=d.storage_id
+                              AND ar.object_key=?2
+                       ) OR EXISTS(
+                           SELECT 1 FROM checkpoints cp
+                            WHERE cp.slug=d.slug
+                              AND NOT EXISTS (
+                                SELECT 1 FROM checkpoint_asset_sets aset
+                                 WHERE aset.storage_id=d.storage_id
+                                   AND aset.checkpoint_sha=cp.sha
+                              )
+                       ))
+                 ) OR EXISTS(
+                     SELECT 1
+                     FROM documents d
+                     WHERE d.slug=?1 AND d.status='active'
+                       AND ?2 LIKE 'content/' || d.storage_id || '/assets/%'
+                       AND (
+                           COALESCE((
+                             SELECT MAX(c.last_sequence)
+                               FROM journal_segment_coverage c
+                              WHERE (c.storage_id=d.storage_id OR c.storage_id='')
+                           ),0) > COALESCE((
+                             SELECT MAX(cp.durable_seq)
+                               FROM checkpoints cp
+                              WHERE cp.slug=d.slug
+                           ),0)
+                           OR COALESCE((
+                             SELECT MAX(b.sequence)
+                               FROM journal_bases b
+                              WHERE (b.storage_id=d.storage_id OR b.storage_id='')
+                           ),0) > COALESCE((
+                             SELECT MAX(cp.durable_seq)
+                               FROM checkpoints cp
+                              WHERE cp.slug=d.slug
+                           ),0)
+                       )
+                 )",
+                params![slug, object_key],
+                |row| row.get(0),
+            )?;
+            if protected {
+                return Err(CatalogError::Conflict(
+                    "pending object became referenced before deletion".into(),
+                ));
+            }
             tx.execute(
                 "DELETE FROM pending_deletes WHERE slug=?1 AND object_key=?2",
                 params![slug, object_key],

@@ -121,7 +121,7 @@ pub fn seed_documents() -> Vec<SeedDocument> {
                 ),
                 note(
                     "highlighting",
-                    "Readers receive the saved result",
+                    "Readers receive the stored PDF",
                     "",
                     "LibrePaper",
                 ),

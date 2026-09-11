@@ -419,7 +419,9 @@ impl BlobStore for PublicationGate {
         self.inner.get_versioned(key).await
     }
     async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
-        if key.contains("/blobs/") && self.armed.swap(false, Ordering::SeqCst) {
+        // Native source history publishes a recipe after its chunks; the
+        // legacy whole-file /blobs/ namespace is no longer written.
+        if key.contains("/recipes/") && self.armed.swap(false, Ordering::SeqCst) {
             self.started.notify_one();
             self.resume.notified().await;
             return Err(BlobError::Other("injected publication failure".into()));

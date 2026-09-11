@@ -11,6 +11,46 @@ pub(super) struct RetainedReferences {
 }
 
 impl Room {
+    /// Retire superseded publication bundles for a maintenance pass. This
+    /// deliberately takes the manifest gate but does not checkpoint or save;
+    /// the existing rendering routine verifies latest-PDF availability and
+    /// publication grace before queuing anything.
+    pub(super) async fn prune_renderings_periodic(&self) -> bool {
+        if self.read_only() || self.agent_recovery_pending() {
+            return false;
+        }
+        let _manifest_writer = self.manifest_write.lock().await;
+        let points = match self.catalog.get() {
+            Some(catalog) => match load_catalog_history(catalog, &self.slug).await {
+                Ok(points) => points,
+                Err(_) => return false,
+            },
+            None => self.state.lock().await.manifest.checkpoints.clone(),
+        };
+        self.prune_renderings(&points).await;
+        true
+    }
+
+    /// Refresh a resident timeline after the catalogue retention worker has
+    /// removed one or more cold checkpoints. The manifest is a cache in
+    /// catalogue mode; keeping it stale would let the next save resurrect a
+    /// deliberately thinned event.
+    pub(super) async fn refresh_retained_manifest(&self) {
+        let Some(catalog) = self.catalog.get() else {
+            return;
+        };
+        let _writer = self.manifest_write.lock().await;
+        match load_catalog_manifest(catalog, &self.slug).await {
+            Ok(manifest) => {
+                *self.state.lock().await.manifest = manifest;
+            }
+            Err(error) => eprintln!(
+                "warning: could not refresh retained history for {}: {error}",
+                self.slug
+            ),
+        }
+    }
+
     /// Called after checkpoint publication while checkpoint_write is owned.
     /// Lock order: checkpoint -> manifest -> rendering/assets -> state. Never
     /// reacquire manifest in a consumer, or keep state during graph reads.
@@ -111,7 +151,7 @@ impl Room {
 mod tests {
     use super::*;
     use crate::storage::blob::{BlobInfo, BlobResult, FsStore};
-    use crate::storage::catalog::{Catalog, NewDocument};
+    use crate::storage::catalog::{Catalog, CheckpointAssetRef, NewDocument};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     struct CountedStore {
@@ -248,7 +288,18 @@ mod tests {
                 .await
                 .unwrap();
             catalog
-                .insert_checkpoint(&Manifest::catalog_row("doc", &point, seq, 0).unwrap())
+                .insert_checkpoints_atomic_with_sources_assets_and_quota(
+                    &[Manifest::catalog_row("doc", &point, seq, 0).unwrap()],
+                    None,
+                    &[],
+                    &[CheckpointAssetRef {
+                        object_key: asset_key.clone(),
+                        bytes: 14,
+                    }],
+                    None,
+                    -1,
+                    -1,
+                )
                 .unwrap();
         }
         let config = Configuration {
@@ -286,8 +337,8 @@ mod tests {
         room.prune_retained(&history::Tree::default()).await;
         assert_eq!(
             catalog.connection_operations.load(Ordering::Relaxed) - before,
-            3,
-            "one history traversal, two pages, shared by all pruning consumers"
+            5,
+            "one paged history traversal, one metadata batch and one publication lookup"
         );
         assert_eq!(
             blobs.reads.load(Ordering::Relaxed),
@@ -301,6 +352,28 @@ mod tests {
         );
         assert!(blobs.exists(&text_key).await.unwrap());
         assert!(blobs.exists(&asset_key).await.unwrap());
+        // Catalogue pruning is a durable handoff. The room leaves both
+        // objects charged until the deletion worker confirms their physical
+        // removal; this pass only proves that the queue was populated.
+        assert!(blobs.exists(&unused_text).await.unwrap());
+        assert!(blobs.exists(&unused_asset).await.unwrap());
+        assert!(catalog
+            .due_deletes(crate::util::now_unix(), 100)
+            .unwrap()
+            .iter()
+            .any(|pending| pending.object_key == unused_text));
+        assert!(catalog
+            .due_deletes(crate::util::now_unix(), 100)
+            .unwrap()
+            .iter()
+            .any(|pending| pending.object_key == unused_asset));
+        let worker = crate::storage::maintenance::DeletionWorker::new(
+            catalog.clone(),
+            blobs.clone(),
+            crate::storage::maintenance::DeletionLimits::default(),
+        )
+        .unwrap();
+        worker.run_once(crate::util::now_unix()).await.unwrap();
         assert!(!blobs.exists(&unused_text).await.unwrap());
         assert!(!blobs.exists(&unused_asset).await.unwrap());
 

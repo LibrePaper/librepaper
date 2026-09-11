@@ -924,9 +924,19 @@ pub async fn checkpoint_text(
         return String::from_utf8_lossy(&raw).to_string();
     };
     let entry = tree.files.get(&tree.main).expect("the main file");
-    let body = blobs
-        .get(&crate::storage::blob::blob_key(storage_id, &entry.sha))
-        .await
-        .expect("the text the tree names");
+    // New checkpoints store each text through a recipe and compressed source
+    // objects. Keep the legacy fallback for trees written before native source
+    // encoding existed, but read current content through the verified reader
+    // rather than assuming a whole-file `blobs/<digest>` object.
+    let body = if entry.sha.len() == 64 && hex::decode(&entry.sha).is_ok() {
+        crate::storage::encoding::read_file(blobs, storage_id, &entry.sha)
+            .await
+            .expect("the text the tree names")
+    } else {
+        blobs
+            .get(&crate::storage::blob::blob_key(storage_id, &entry.sha))
+            .await
+            .expect("the text the tree names")
+    };
     String::from_utf8_lossy(&body).to_string()
 }

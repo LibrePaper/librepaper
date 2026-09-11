@@ -387,20 +387,122 @@ impl DeletionWorker {
                          FROM pending_deletes p
                          JOIN documents d ON d.slug = p.slug
                          WHERE p.delete_after <= ?1
+                           -- Source-history objects can be shared by many
+                           -- file digests. Recheck the durable graph and
+                           -- writer leases in the same catalogue read that
+                           -- admits this deletion batch.
+                           AND NOT EXISTS (
+                             SELECT 1
+                             FROM source_history_objects so
+                             JOIN source_history_checkpoint_files sr
+                               ON sr.storage_id=so.storage_id
+                              AND sr.file_digest=so.file_digest
+                             WHERE d.status='active'
+                               AND so.storage_id=d.storage_id
+                               AND so.object_key=p.object_key
+                           )
+                           AND NOT EXISTS (
+                             SELECT 1
+                             FROM source_history_write_leases sw
+                             WHERE d.status='active'
+                               AND sw.storage_id=d.storage_id
+                               AND sw.object_key=p.object_key
+                           )
                            AND (d.status = 'deleting'
                                 OR (d.status = 'active'
-                                    AND p.object_key LIKE
-                                      'content/' || d.storage_id || '/renderings/%'
-                                    AND NOT EXISTS (
-                                      SELECT 1 FROM object_reservations o
-                                      WHERE o.object_key = p.object_key
-                                    )
-                                    AND NOT EXISTS (
-                                      SELECT 1 FROM renderings r
-                                      WHERE r.slug = p.slug
-                                        AND p.object_key LIKE
-                                          'content/' || d.storage_id ||
-                                          '/renderings/' || r.tree_sha || '/%'
+                                    AND (
+                                      -- Rendering retirement has extra
+                                      -- publication/reservation guards: a
+                                      -- newly registered bundle may race this
+                                      -- pass. Source/history objects have the
+                                      -- graph/lease guards above instead and
+                                      -- must also be collectable while their
+                                      -- document remains active.
+                                      (p.object_key LIKE
+                                         'content/' || d.storage_id || '/renderings/%'
+                                       AND NOT EXISTS (
+                                         SELECT 1 FROM object_reservations o
+                                         WHERE o.object_key = p.object_key
+                                       )
+                                       AND NOT EXISTS (
+                                         SELECT 1 FROM renderings r
+                                         WHERE r.slug = p.slug
+                                           AND p.object_key LIKE
+                                             'content/' || d.storage_id ||
+                                             '/renderings/' || r.tree_sha || '/%'
+                                       ))
+                                      OR (p.object_key LIKE
+                                         'content/' || d.storage_id || '/trees/%'
+                                          AND NOT EXISTS (
+                                            SELECT 1 FROM checkpoints c
+                                            WHERE c.slug = p.slug
+                                              AND p.object_key =
+                                                'content/' || d.storage_id ||
+                                                '/trees/' || c.sha
+                                          )
+                                          AND NOT EXISTS (
+                                            SELECT 1 FROM object_reservations o
+                                            WHERE o.object_key = p.object_key
+                                          ))
+                                      OR p.object_key LIKE
+                                         'content/' || d.storage_id || '/chunks/%'
+                                      OR p.object_key LIKE
+                                         'content/' || d.storage_id || '/recipes/%'
+                                      -- Legacy whole-file source objects have
+                                      -- no native graph edge.  Their queue is
+                                      -- admitted only after the room's
+                                      -- retention scan has resolved retained
+                                      -- trees; the lease/graph predicates
+                                      -- above still close an active read or a
+                                      -- concurrent native publication.
+                                      OR p.object_key LIKE
+                                         'content/' || d.storage_id || '/blobs/%'
+                                      OR (p.object_key LIKE
+                                         'content/' || d.storage_id || '/assets/%'
+                                          AND NOT EXISTS (
+                                            SELECT 1 FROM checkpoint_asset_refs ar
+                                            WHERE ar.storage_id=d.storage_id
+                                              AND ar.object_key=p.object_key
+                                          )
+                                          -- A checkpoint without an asset-set
+                                          -- marker predates durable asset
+                                          -- capture.  Its tree may still
+                                          -- reference this object, so retain
+                                          -- every asset until all checkpoints
+                                          -- have explicit membership.
+                                          AND NOT EXISTS (
+                                            SELECT 1 FROM checkpoints cp
+                                            WHERE cp.slug=p.slug
+                                              AND NOT EXISTS (
+                                                SELECT 1 FROM checkpoint_asset_sets aset
+                                                WHERE aset.storage_id=d.storage_id
+                                                  AND aset.checkpoint_sha=cp.sha
+                                              )
+                                          )
+                                          -- A live session may contain an asset
+                                          -- not covered by its newest checkpoint.
+                                          -- Keep the pending row charged until
+                                          -- the journal is covered by a durable
+                                          -- checkpoint; no age grace can prove
+                                          -- that an asset is safe to delete.
+                                          AND COALESCE((
+                                            SELECT MAX(c.last_sequence)
+                                              FROM journal_segment_coverage c
+                                             WHERE (c.storage_id=d.storage_id OR c.storage_id='')
+                                          ),0) <= COALESCE((
+                                            SELECT MAX(cp.durable_seq)
+                                              FROM checkpoints cp
+                                             WHERE cp.slug=p.slug
+                                          ),0)
+                                          AND COALESCE((
+                                            SELECT MAX(b.sequence)
+                                              FROM journal_bases b
+                                             WHERE (b.storage_id=d.storage_id OR b.storage_id='')
+                                          ),0) <= COALESCE((
+                                            SELECT MAX(cp.durable_seq)
+                                              FROM checkpoints cp
+                                             WHERE cp.slug=p.slug
+                                          ),0))
                                     )))
                          ORDER BY p.delete_after, p.slug, p.object_key
                          LIMIT ?2",
@@ -433,6 +535,16 @@ impl DeletionWorker {
                 "negative maintenance time".into(),
             ));
         }
+        // Expired source writers are an explicit GC boundary.  The catalogue
+        // transaction removes their leases and queues only objects that have
+        // no retained source-history edge, before this pass reads due work.
+        let lease_limit = self.limits.max_jobs.min(u32::MAX as usize) as u32;
+        self.catalog
+            .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
+                catalog.expire_source_history_leases(now, lease_limit)
+            })
+            .await
+            .map_err(MaintenanceError::from)?;
         // Lifecycle transitions only mark rows. Discover their stable-id
         // object namespace here so account erasure and ordinary deletion use
         // the same restartable queue. Discovery has its own SQL cursor, so a

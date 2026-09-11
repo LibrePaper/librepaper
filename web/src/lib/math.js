@@ -26,6 +26,7 @@ export function untypeset(root) {
 /// differently from how it looks.
 export function typeset(katex, spans) {
   for (const span of spans) {
+    span.setAttribute?.("data-equation-source", span.textContent);
     katex.render(span.textContent, span, {
       displayMode: span.dataset.mathStyle === "display",
       throwOnError: false,

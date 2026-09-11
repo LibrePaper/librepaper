@@ -348,6 +348,24 @@ async fn engine_setting_changes_the_checkpoint_tree_and_its_sha() {
         latest.sha, engine_sha,
         "the checkpoint taken under the engine setting was named something else"
     );
+
+    // A historical HTML render must receive the captured compiler settings,
+    // even after the live editor selects a different engine.
+    set_latex_meta(&room, "lualatex", "").await;
+    let response = client()
+        .get(format!(
+            "{}/api/documents/{slug}/history/{engine_sha}",
+            server.url
+        ))
+        .header("cookie", session_as(TEST_PUBLISHER))
+        .header("x-librepaper-client", "1")
+        .send()
+        .await
+        .expect("historical endpoint response");
+    assert_eq!(response.status(), 200);
+    let historical: Value = response.json().await.expect("historical endpoint JSON");
+    assert_eq!(historical["settings"]["engine"], "xelatex");
+    assert_eq!(historical["tree_sha"], engine_sha);
 }
 
 /// `"auto"` is the browser's own default for "no explicit engine"; recording

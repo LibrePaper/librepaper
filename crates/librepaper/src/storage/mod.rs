@@ -7,6 +7,7 @@
 pub mod backup;
 pub mod blob;
 pub mod catalog;
+pub mod encoding;
 pub mod journal;
 pub mod maintenance;
 

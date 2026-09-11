@@ -458,7 +458,11 @@ pub async fn serve(options: ServeOptions) {
 
     if let Some(worker) = deletion_worker.clone() {
         let erasure_catalog = instance.store.catalog.clone();
+        let retention_server = instance.clone();
         let journal_worker = journal_retirement_worker.clone();
+        let retention_hard_quota = instance.config.storage.per_owner;
+        let retention_hard_count = (instance.config.session.history_max > 0)
+            .then(|| instance.config.session.history_max as u32);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
             ticker.tick().await;
@@ -473,6 +477,46 @@ pub async fn serve(options: ServeOptions) {
                     }
                 }
                 if let Some(catalog) = &erasure_catalog {
+                    // Derived publication bundles are the first pressure
+                    // tier. This bounded cold-room pass uses the room's
+                    // manifest/rendering gates and never forces a checkpoint.
+                    retention_server.rooms.prune_cold_renderings(8).await;
+                    let retention_result = catalog
+                        .execute_catalog(1024, {
+                            move |catalog| {
+                                catalog.run_retention_pass_with_limits(
+                                    crate::util::now_unix(),
+                                    500,
+                                    Some(retention_hard_quota),
+                                    retention_hard_count,
+                                )
+                            }
+                        })
+                        .await;
+                    match retention_result {
+                        Ok(pass) => {
+                            if !pass.generation.is_empty() {
+                                eprintln!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "event": "history_retention_pass",
+                                        "generation": pass.generation,
+                                        "removed": pass.removed.len(),
+                                        "blocked": pass.blocked,
+                                    })
+                                );
+                            }
+                            if !pass.removed.is_empty() {
+                                retention_server.rooms.refresh_retention().await;
+                            }
+                        }
+                        Err(_) => eprintln!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "history_retention_pass_failed",
+                            })
+                        ),
+                    }
                     let _ = catalog
                         .execute_catalog(512, |catalog| {
                             catalog.prune_checkpoint_budgets(crate::util::now_unix(), 1_000)

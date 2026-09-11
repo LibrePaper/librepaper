@@ -272,6 +272,26 @@ pub(super) async fn handle(
         }
         return write_json(202, &json!({"status": "erasing"}));
     }
+    if path == "/api/account/storage" && method == Method::GET {
+        return server.handle_quota_storage(request, &arrival).await;
+    }
+    if path == "/api/account/storage/preview" && method == Method::POST {
+        return server.handle_quota_preview(request, &arrival).await;
+    }
+    if path == "/api/account/storage/apply" && method == Method::POST {
+        return server.handle_quota_apply(request, &arrival).await;
+    }
+    // Explicit quota names are aliases for clients that do not use the
+    // account-settings/storage wording.
+    if path == "/api/account/quota-status" && method == Method::GET {
+        return server.handle_quota_storage(request, &arrival).await;
+    }
+    if path == "/api/account/quota-preview" && method == Method::POST {
+        return server.handle_quota_preview(request, &arrival).await;
+    }
+    if path == "/api/account/quota-apply" && method == Method::POST {
+        return server.handle_quota_apply(request, &arrival).await;
+    }
     if path == "/api/documents" && method == Method::POST {
         return server.handle_upload(request, &arrival).await;
     }

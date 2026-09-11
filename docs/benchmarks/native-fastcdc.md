@@ -17,6 +17,43 @@ Only the 50-revision README history is a real editing trace; the other histories
 are deterministic, stylized modifications of real source files. Inputs are
 roughly 2–84 KB, not multi-megabyte documents or full projects.
 
+The application also contains a small ignored harness,
+`storage::encoding::tests::measure_source_history_profiles`, for a quick
+profile comparison on the current toolchain. It uses deterministic body-change,
+many-tiny-file, punctuation/structural, and large-boilerplate histories; tries
+whole-file zstd, FastCDC with 1 KiB targets, and FastCDC with 4 KiB targets; and
+prints reused references, unique physical objects, recipe bytes, physical bytes,
+and encode/reconstruction elapsed time. Every checkpoint is reconstructed and
+compared with its original bytes. Run it only when measuring locally:
+
+```sh
+cargo test -p librepaper measure_source_history_profiles -- --ignored --nocapture
+```
+
+Its timings are diagnostic and should not be mixed with the frozen results
+below, which use a larger corpus and a separate standalone harness.
+
+### Integrated writer profile check (2026-09-11)
+
+The ignored harness was run against the integrated encoding implementation in
+a debug build. All reconstructions matched their original bytes. Retained
+payload plus compact-recipe bytes were:
+
+| Fixture | Whole zstd | CDC 1 KiB | CDC 4 KiB |
+| --- | ---: | ---: | ---: |
+| Body changes, 12 revisions | 5,859 | 7,600 | 5,630 |
+| Many tiny files, 10 revisions | 8,702 | 8,702 | 8,702 |
+| Punctuation/structure, 10 revisions | 2,211 | 6,412 | 3,302 |
+| Repetitive boilerplate, 9 revisions | 25,767 | 77,027 | 54,289 |
+
+This small, highly compressible fixture set does not demonstrate a universal
+win over whole-file zstd. The 4 KiB profile used less space than the 1 KiB
+profile here and retains the whole-file fallback for inputs at most 4 KiB.
+Its aggregate encoding times were 2.9–90.2 ms per fixture history and verified
+reconstruction times were 2.6–62.4 ms. These debug-build timings exclude blob
+I/O, catalogue transactions, filesystem allocation, and concurrent load; they
+are a regression diagnostic, not an end-to-end production latency claim.
+
 ## Measurement environment
 
 - AMD Ryzen AI 7 PRO 450, eight physical cores / sixteen hardware threads.

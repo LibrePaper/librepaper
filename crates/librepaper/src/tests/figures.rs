@@ -350,11 +350,12 @@ async fn a_documents_figures_may_come_to_only_so_much() {
 #[tokio::test]
 async fn figures_count_against_the_owners_quota() {
     let mut config = Configuration {
-        max_asset: 8192,
-        max_assets: 8192,
+        max_asset: 32_768,
+        max_assets: 32_768,
         ..Configuration::default()
     };
-    config.storage.per_owner = 4096;
+    // The source publication now includes charged recipe/catalogue metadata.
+    config.storage.per_owner = 16_384;
     let server = test_server_with(
         config,
         Policy::parse(TEST_PUBLISHER),
@@ -365,7 +366,7 @@ async fn figures_count_against_the_owners_quota() {
     let slug = text(&publish_test_document(&server.url).await, "slug");
     let cookie = session_as(TEST_PUBLISHER);
 
-    let (status, said) = put_asset(&cookie, &server.url, &slug, vec![3u8; 8000]).await;
+    let (status, said) = put_asset(&cookie, &server.url, &slug, vec![3u8; 24_000]).await;
     assert_eq!(status, 507, "{said}");
     assert!(text(&said, "error").contains("quota"), "{said}");
 }
@@ -428,6 +429,27 @@ async fn a_figure_nothing_refers_to_is_pruned_once_its_grace_has_passed() {
         .await
         .expect("a checkpoint")
         .expect("not deferred");
+
+    // Catalogue pruning queues physical deletion. Run the bounded collector
+    // explicitly so this test checks both halves of the contract rather than
+    // observing the object store before durable reclamation has happened.
+    let catalog = server
+        .instance
+        .store
+        .catalog
+        .as_ref()
+        .expect("catalogue")
+        .clone();
+    let worker = crate::storage::maintenance::DeletionWorker::new(
+        catalog,
+        server.instance.store.blobs.clone(),
+        crate::storage::maintenance::DeletionLimits::default(),
+    )
+    .expect("deletion worker");
+    worker
+        .run_once(crate::util::now_unix())
+        .await
+        .expect("deletion pass");
 
     assert!(
         room.read_asset(&kept).await.is_some(),

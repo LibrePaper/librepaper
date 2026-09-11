@@ -202,7 +202,7 @@ async fn failed_accept_compensates_without_losing_a_concurrent_keystroke() {
     let id = add_suggestion(&room, "B").await;
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
-        blob::blob_key("probe", &store::digest_of("B")),
+        blob::content_recipe_key("probe", &store::digest_of("B")),
     ));
     *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
 
@@ -445,7 +445,7 @@ async fn staged_accept_replays_unsaved_preaccept_state_after_reload() {
     // the checkpoint can persist the session.
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
-        blob::blob_key(&storage_id, &store::digest_of("AA!")),
+        blob::content_recipe_key(&storage_id, &store::digest_of("AA!")),
     ));
     *hooked.fail.lock().unwrap() = Some(blob::history_index_key("accept-crash"));
     let request_comment = id.clone();
@@ -500,7 +500,7 @@ async fn failed_accept_broadcasts_a_sequence_a_peer_can_replay() {
     room.attach(99, tx, false).await;
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
-        blob::blob_key("probe", &store::digest_of("B")),
+        blob::content_recipe_key("probe", &store::digest_of("B")),
     ));
     *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
     let task = tokio::spawn({
@@ -645,7 +645,7 @@ async fn failed_deletion_follows_a_concurrent_insert_before_the_anchor() {
     let id = payload["comment"]["id"].as_str().unwrap().to_string();
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
-        blob::blob_key("probe", &store::digest_of("A ")),
+        blob::content_recipe_key("probe", &store::digest_of("A ")),
     ));
     *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
     let task = tokio::spawn({
@@ -707,7 +707,7 @@ async fn failed_deletion_rollback_converges_for_a_peer() {
     room.attach(99, tx, false).await;
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
-        blob::blob_key("probe", &store::digest_of("A ")),
+        blob::content_recipe_key("probe", &store::digest_of("A ")),
     ));
     *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
     let task = tokio::spawn({

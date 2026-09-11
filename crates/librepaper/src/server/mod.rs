@@ -59,6 +59,7 @@ mod onboarding;
 pub mod origins;
 mod quarto;
 mod quarto_checkpoint;
+mod quota;
 mod reply;
 mod routes;
 pub mod serve;

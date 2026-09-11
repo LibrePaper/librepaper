@@ -469,6 +469,13 @@ impl Catalog {
             ],
         )
         .map_err(CatalogError::from)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO document_retention_policy
+             (slug,mode,policy_version,enrolled_at,last_scheduled_at)
+             VALUES(?1,'balanced',1,?2,0)",
+            params![document.slug, crate::util::now_unix()],
+        )
+        .map_err(CatalogError::from)?;
         Ok(())
     }
 

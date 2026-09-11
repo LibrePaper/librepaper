@@ -375,18 +375,17 @@
   // show -- every other state means an empty list, which is what clears
   // whatever was painted before. `who` is computed once for the whole
   // comparison (the checkpoints between the baseline and the compare point,
-  // or the baseline and the live document when there is no compare point),
-  // since redlines describe one span, not one hunk at a time.
+  // or the baseline and the live document when there is no compare point).
   function applyRedlines() {
     if (!frameReady) return;
     const showable = historyRedlines && panel === "history" && !redlinesDisabledReason &&
       historyBaseline && Array.isArray(historyChanges) &&
-      (viewing?.sha || "") === (historyComparePoint?.sha || "");
-    // Each hunk already carries its own author in `who` when the history
-    // controller's chained attribution ran (`hunk.who`, read by `itemsFor`
-    // in preference to the range-level fallback below); `author` turns that
-    // name into the colour index the frame paints with, the same index
-    // `History.svelte`'s timeline dot uses for the same author.
+      (viewing?.sha || "") === (historyComparePoint?.sha || "") &&
+      deliveredHistorySha === (historyComparePoint?.sha || "") && framePreview.deliveredGeneration > 0;
+    // A hunk carries its own `who` only when source-only refinement proved a
+    // complete mapping; otherwise `itemsFor` uses the conservative explicit
+    // interval fallback below. `author` turns that name into the colour index
+    // the frame paints with, the same index History's event-actor dot uses.
     const items = showable
       ? (() => {
           const fallback = attribution(checkpoints, historyBaseline.sha, historyComparePoint?.sha || null);
@@ -397,10 +396,18 @@
           }));
         })()
       : [];
-    const payload = JSON.stringify(items);
+    const semantic = showable && historyController.projection && !historyController.projection.sourceOnly;
+    const message = semantic ? {
+      type: "redlines", version: 1,
+      generation: framePreview.deliveredGeneration,
+      frameGeneration: framePreview.deliveredGeneration,
+      targetProjection: historyController.projection,
+      hunks: historyChanges,
+    } : { type: "redlines", items };
+    const payload = JSON.stringify(message);
     if (payload !== lastRedlines) {
       lastRedlines = payload;
-      tell({ type: "redlines", items: JSON.parse(payload) });
+      tell(JSON.parse(payload));
     }
   }
 
@@ -509,6 +516,12 @@
 
   function fromFrame(message) {
     switch (message.type) {
+      case "semantic-redlines-rejected":
+        if (message.generation === framePreview.deliveredGeneration) historyMappingProblem = "The rendered changes could not be located reliably. Use file-level source comparison.";
+        break;
+      case "semantic-redlines-painted":
+        if (message.generation === framePreview.deliveredGeneration) historyMappingProblem = "";
+        break;
       case "ready":
         docText = typeof message.text === "string" ? message.text : "";
         docView = flatten(docText);
@@ -524,6 +537,7 @@
         // loop.
         const first = framePreview.markReady();
         frameReady = true;
+        if (first) replayPreview();
         tell({ type: "tool", tool });
         // Whatever was painted before is gone with the rebuilt DOM.
         lastRegions = lastHighlight = lastRedlines = lastSelected = null;
@@ -536,9 +550,11 @@
         // hunks themselves are stale, but the common case is the same hunks
         // painted onto a freshly built DOM.
         applyRedlines();
-        if (panel === "history" && historyBaseline && (!viewing || historyComparePoint)) void computeHistoryChanges();
+        // Initial checkpoint navigation owns the pane. A frame readiness
+        // message must not start a current capture that overtakes that URL.
+        if (panel === "history" && historyBaseline && !historyComparePoint && !viewing &&
+            !ARRIVED_AT && !checkpointNavigationPending) void computeHistoryChanges();
         if (first) {
-          replayPreview();
           void paintPreview();
         }
         break;
@@ -1219,6 +1235,9 @@
     mayEdit: () => mayEdit,
     editing: () => editing,
     onRedlines: () => applyRedlines(),
+    onTargetReady: async (target) => {
+      if (target?._current && viewing?.sha !== target.sha && historyController.capturedCurrent?.sha === target.sha) await showCapturedCurrent();
+    },
     onMerge: async (target, current) => {
       if (!target) {
         mergeTarget = null;
@@ -1231,8 +1250,10 @@
     },
   });
   let checkpoints = $derived(historyController.checkpoints);
+  let historyDurability = $derived(historyController.durability);
   let historyNavigationProblem = $state("");
-  let historyProblem = $derived(historyNavigationProblem || historyController.problem);
+  let historyMappingProblem = $state("");
+  let historyProblem = $derived(historyNavigationProblem || historyMappingProblem || historyController.problem);
   let historyBaseline = $derived(historyController.baseline);
   let historyComparePoint = $derived(historyController.target);
   let historyChanges = $derived(historyController.changes);
@@ -1284,6 +1305,13 @@
     const pending = pendingHistoryReveal;
     if (!pending || docText === null || (viewing?.sha || "") !== pending.sha) return;
     pendingHistoryReveal = null;
+    if (historyController.projection && !pending.hunk.sourceOnly) {
+      const index = historyChanges.indexOf(pending.hunk);
+      if (index >= 0) {
+        tell({ type: "semantic-locate", id: String(pending.hunk.id ?? `semantic-hunk-${index}`), frameGeneration: framePreview.deliveredGeneration });
+        return;
+      }
+    }
     tell({ type: "locate", start: pending.hunk.position, length: pending.hunk.length || (pending.hunk.insert || "").length });
   }
 
@@ -1328,23 +1356,37 @@
     const mine = ++navigationGeneration;
     await historyController.compareWithCurrent(sha);
     if (mine !== navigationGeneration || !historyController.capturedCurrent) return;
-    await showCapturedCurrent();
+    if (viewing?.sha !== historyController.capturedCurrent.sha) await showCapturedCurrent();
   }
 
   async function refreshHistoryCurrent() {
     const mine = ++navigationGeneration;
     await historyController.refreshCurrent();
     if (mine !== navigationGeneration || !historyController.capturedCurrent) return;
-    await showCapturedCurrent();
+    if (viewing?.sha !== historyController.capturedCurrent.sha) await showCapturedCurrent();
   }
 
   async function showCapturedCurrent() {
+    const target = historyController.capturedCurrent;
+    if (!target) return;
+    const mine = ++navigationGeneration;
     renderingStore?.invalidate();
     issued += 1;
     dropHeldRendering();
-    viewing = historyController.capturedCurrent;
+    viewing = target;
     showMobileView("document");
-    await paintPreview();
+    // The controller has already rendered this immutable target. Deliver
+    // that same cached HTML directly: a busy live-preview queue is not an
+    // acknowledgement that a selected history target has reached the frame.
+    let rendered;
+    try { rendered = await passages.renderTree(SLUG, target, keyHeaders(KEY)); }
+    catch (error) {
+      if (!readerDisposed && mine === navigationGeneration) historyNavigationProblem = error.message || "The captured preview is unavailable. Use source comparison.";
+      return;
+    }
+    if (readerDisposed || mine !== navigationGeneration || viewing?.sha !== target.sha) return;
+    historyNavigationProblem = "";
+    framePreview.publish({ kind: "html", html: rendered.html, sha: target.sha });
   }
 
   let restoring = $state(false);
@@ -1588,7 +1630,7 @@
     return (
       mine <= painted ||
       snapshotNavigation !== navigationGeneration ||
-      ((slow || format === "quarto") && snapshotSource !== sourceGeneration) ||
+      (!viewing && (slow || format === "quarto") && snapshotSource !== sourceGeneration) ||
       tree.main !== treeNow().main
     );
   }
@@ -1731,11 +1773,11 @@
   // This browser-only choice affects the pane. Publication and stored
   // renderings continue to use the Typst document's PDF output.
   const previewFormat = $derived(
-    editing && ((displayedFormat === "typst" && typstOutput === "html") ||
+    viewing ? "html" : editing && ((displayedFormat === "typst" && typstOutput === "html") ||
       (displayedFormat === "latex" && latexOutput === "html")) ? "html" : displayedFormat,
   );
-  const typstHtmlPreview = $derived(editing && displayedFormat === "typst" && typstOutput === "html");
-  const latexHtmlPreview = $derived(editing && displayedFormat === "latex" && latexOutput === "html");
+  const typstHtmlPreview = $derived(displayedFormat === "typst" && (Boolean(viewing) || editing && typstOutput === "html"));
+  const latexHtmlPreview = $derived(displayedFormat === "latex" && (Boolean(viewing) || editing && latexOutput === "html"));
   const paintsTheFrame = $derived(Boolean(viewing) || editing || displayedFormat !== "html");
 
   /* -------------------------------------------------------------- LaTeX */
@@ -1902,6 +1944,7 @@
   // "" since the last navigation. `framePreview.preview()` knows the same,
   // but not reactively, and the File menu's download items follow this.
   let deliveredKind = $state("");
+  let deliveredHistorySha = null;
   framePreview = createFramePreview({
     slug: SLUG,
     getDocsOrigin: () => docsOrigin,
@@ -1915,9 +1958,12 @@
       issued += 1;
       renderedSha = null;
       deliveredKind = "";
+      deliveredHistorySha = null;
       lastRegions = lastHighlight = null;
     },
     onDelivered: (payload) => {
+      deliveredHistorySha = payload.kind === "html" ? payload.sha || "" : null;
+      historyMappingProblem = "";
       deliveredKind = payload.kind;
       if (payload.kind === "pdf") renderedSha = payload.sha || null;
       frameShowsCheckpoint = Boolean(viewing);
@@ -2089,7 +2135,7 @@
     const snapshotNavigation = navigationGeneration;
     const snapshotSource = sourceGeneration;
     const format = renderers.formatOf(tree.main);
-    const htmlPreview = editing && ((format === "typst" && typstOutput === "html") || (format === "latex" && latexOutput === "html"));
+    const htmlPreview = Boolean(snapshotViewing) || editing && ((format === "typst" && typstOutput === "html") || (format === "latex" && latexOutput === "html"));
     const paged = renderers.producesPdf(format) && !htmlPreview;
     const slow = format === "latex";
     if (previewPaintBusy) {
@@ -2106,7 +2152,7 @@
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
         if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
-        if (paged || (format === "latex" && htmlPreview)) {
+        if (snapshotViewing || paged || (format === "latex" && htmlPreview)) {
           if (missing.length) {
             throw new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
           }
@@ -2152,7 +2198,9 @@
         if (readerDisposed) return;
         const renderOptions = { ...(manual ? { manual: true } : {}) };
         if (htmlPreview) renderOptions.format = "html";
-        rendered = await renderers.render(tree, title, Object.keys(renderOptions).length ? renderOptions : undefined);
+        rendered = snapshotViewing
+          ? await passages.renderTree(SLUG, { ...tree, label: title }, keyHeaders(KEY))
+          : await renderers.render(tree, title, Object.keys(renderOptions).length ? renderOptions : undefined);
       } finally {
         // Only the newest compile owns the badge. An older one finishing
         // afterwards must not turn the spinner off under a newer one.
@@ -2201,7 +2249,7 @@
         // this page are painted on the same slow schedule the errors are, so
         // that a font name half typed does not flash a badge on every
         // keystroke.
-        framePreview.publish({ kind: "html", html });
+        framePreview.publish({ kind: "html", html, sha: snapshotViewing?.sha });
         if (snapshotSource === sourceGeneration) {
           diagnosticPainter.rendered({ page: html, diagnostics: contextualDiagnostics });
         }
@@ -3585,6 +3633,7 @@
                      provenance={lastLatexResult?.provenance || null} attempts={lastLatexResult?.attempts || []} />
       {:else if tab.id === "history"}
         <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
+                 durability={historyDurability}
                  comparingCurrent={historyController.comparingCurrent} newerEdits={historyController.newerEdits}
                  oncomparecurrent={compareWithCurrent} onrefreshcurrent={refreshHistoryCurrent}
                  problem={historyProblem}

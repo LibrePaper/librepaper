@@ -71,8 +71,8 @@ export function compilerAvailable(format) {
   return format === "latex" ? latexOffered : available(format);
 }
 
-function request(format, operation, args = {}) {
-  const url = urls()[format];
+function request(format, operation, args = {}, moduleUrls = urls()) {
+  const url = moduleUrls?.[format];
   if (!url) return Promise.reject(new Error(`no renderer for ${format}`));
   return rendererRequest(new URL(url, globalThis.location.href).href, operation, args);
 }
@@ -119,9 +119,14 @@ export function formatOf(path) {
 /// A render carries `html` or `pdf`, never both, and the caller posts
 /// whichever it has: flow documents are painted into the shell and paged
 /// documents into the PDF frame, and that is the whole difference here.
-export async function render(tree, title, { manual = false, format: requestedFormat = "pdf" } = {}) {
+export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = formatOf(tree.main);
+  // A historical render receives a configuration snapshot resolved before
+  // its cache lookup. Use its module URLs, not mutable shell globals, so the
+  // cache identity names the renderer that actually runs.
+  const capturedModules = configuration && Object.prototype.hasOwnProperty.call(configuration, "modules")
+    ? configuration.modules : urls();
   // HTML's renderer is the identity, so there is nothing to fetch and nothing
   // that can fail: the source is the page. A directory whose main file is
   // HTML is allowed, and nothing in it is rewritten -- an HTML document is
@@ -138,7 +143,17 @@ export async function render(tree, title, { manual = false, format: requestedFor
   // needs a credential, and a credential does not belong in a page.
   if (format === "latex") {
     if (requestedFormat === "html") {
-      return latexHtml.compile(tree, { base: latex.at(), settings: latex.settings() });
+      // Historical endpoints carry the settings captured with their tree.
+      // Falling back to the live chooser is only for the ordinary preview
+      // path, never for a checkpoint comparison.
+      const settings = configuration?.latex && Object.prototype.hasOwnProperty.call(configuration.latex, "settings")
+        ? configuration.latex.settings
+        : Object.prototype.hasOwnProperty.call(tree, "settings") ? tree.settings || {} : latex.settings();
+      return latexHtml.compile(tree, {
+        base: configuration?.latex?.base || latex.at(),
+        settings,
+        configuration: configuration?.latex,
+      });
     }
     const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok } = await latex.compile(tree, { manual });
     // Keep the output channels explicit. In particular, a failed LaTeX
@@ -170,13 +185,24 @@ export async function render(tree, title, { manual = false, format: requestedFor
     expandIncludes: tree.texts || {},
   }) : tree;
   const module = (format === "markdown" || format === "quarto") && needsBibliography({ source }) ? "citations" : format === "quarto" ? "markdown" : format;
+  const capturedSettings = configuration && Object.prototype.hasOwnProperty.call(configuration, "settings")
+    ? configuration.settings : quartoTree.settings;
   return request(module, "render", {
-    tree: { main: quartoTree.main, texts: { ...quartoTree.texts }, assets: { ...quartoTree.assets }, urls: { ...quartoTree.urls } },
+    tree: {
+      main: quartoTree.main,
+      texts: { ...quartoTree.texts },
+      assets: { ...quartoTree.assets },
+      urls: { ...quartoTree.urls },
+      // Captured settings travel with historical trees. Current WASM modules
+      // may ignore this field, while release-aware adapters can resolve it
+      // without changing the worker ABI.
+      settings: capturedSettings ? { ...capturedSettings } : {},
+    },
     title,
     // Typst has two compiler entry points. Keep the requested output explicit
     // all the way through the worker so dependency retries use the same one.
     format: format === "typst" ? requestedFormat : undefined,
-  }).then((result) => {
+  }, capturedModules).then((result) => {
     if (format === "quarto" && result) {
       return { ...result, diagnostics: quarto.mapQuartoDiagnostics(result.diagnostics || [], quartoTree) };
     }
@@ -202,6 +228,25 @@ export async function render(tree, title, { manual = false, format: requestedFor
     }
     return result;
   });
+}
+
+// Resolve actual HTML compiler inputs before a cache lookup. Module URLs are
+// digest-pinned by the shell; LaTeX resolves a requested pin to its effective
+// HTML-capable release and captures its complete dependency manifest.
+export async function htmlConfiguration(tree) {
+  const format = formatOf(tree.main);
+  const modules = { ...urls() };
+  // A tree can be a live editor proxy. Resolve the renderer identity from a
+  // plain snapshot so settings changed while a manifest is loading cannot be
+  // paired with the old identity (or vice versa).
+  const settings = { ...(tree.settings || {}) };
+  const latexConfig = format === "latex" ? await latexHtml.configuration(latex.at(), settings) : null;
+  return {
+    modules,
+    settings,
+    identity: JSON.stringify({ format, modules, settings, latex: latexConfig?.identity || null, metadataVersion: 1 }),
+    latex: latexConfig,
+  };
 }
 
 /// The page to show where a document would be when there is nothing else to

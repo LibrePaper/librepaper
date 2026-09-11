@@ -36,13 +36,167 @@ use crate::storage::blob::{
     document_key, document_prefix, examples_key, legacy_source_key, room_key, room_lock_key,
     source_key, source_prefix, BlobError, BlobStore, BlobVersion, INDEX_KEY,
 };
-use crate::storage::catalog::{Account, Catalog, CatalogError, OperationActor, OperationRequest};
+use crate::storage::catalog::{
+    Account, Catalog, CatalogError, CheckpointAssetRef, OperationActor, OperationRequest,
+    SourceHistoryRecord,
+};
 use crate::util::new_id;
 use crate::util::{now_unix, parse_timestamp, timestamp};
 
 const MAX_GRANTS_PER_RESULT: i64 = 256;
 const MAX_LINKS_PER_RESULT: i64 = 16;
 const MAX_GUESTS_PER_RESULT: i64 = 256;
+
+/// Validate a native source-history receipt before startup rolls it forward.
+/// Unlike the normal read API this deliberately never falls back to a legacy
+/// whole-file object: a receipt that names the new recipe/chunk graph must
+/// prove that graph is complete, or remain pending for later reconciliation.
+async fn validate_staged_source_graph(
+    blobs: &dyn BlobStore,
+    storage_id: &str,
+    tree_bytes: &[u8],
+    tree_sha: &str,
+    sources: &[SourceHistoryRecord],
+    assets: Option<&[CheckpointAssetRef]>,
+) -> bool {
+    let tree: crate::document::history::Tree = match serde_json::from_slice(tree_bytes) {
+        Ok(tree) => tree,
+        Err(_) => return false,
+    };
+    if tree.digest() != tree_sha {
+        return false;
+    }
+    if tree.files.values().any(|entry| {
+        entry.kind == "text"
+            && !sources.iter().any(|source| {
+                source.file_digest == entry.sha && source.uncompressed_bytes == entry.size
+            })
+    }) {
+        return false;
+    }
+    let has_tree_assets = tree.files.values().any(|entry| entry.kind == "asset");
+    let tree_assets = tree.files.values().filter(|entry| entry.kind == "asset");
+    let staged_assets = match assets {
+        Some(assets) => assets,
+        // A native staged graph with asset entries must carry the immutable
+        // asset root set. Treat an absent property as incomplete rather than
+        // allowing startup to commit a checkpoint that GC cannot protect.
+        None if has_tree_assets => return false,
+        None => &[],
+    };
+    for entry in tree_assets {
+        if entry.sha.is_empty() || entry.size < 0 {
+            return false;
+        }
+        let key = crate::storage::blob::asset_key(storage_id, &entry.sha);
+        let Some(asset) = staged_assets.iter().find(|asset| asset.object_key == key) else {
+            return false;
+        };
+        if asset.bytes != entry.size {
+            return false;
+        }
+        let bytes = match blobs.get(&key).await {
+            Ok(bytes) => bytes,
+            Err(_) => return false,
+        };
+        if bytes.len() as i64 != asset.bytes {
+            return false;
+        }
+        let expected = entry.sha.clone();
+        if !tokio::task::spawn_blocking(move || hex::encode(Sha256::digest(&bytes)) == expected)
+            .await
+            .unwrap_or(false)
+        {
+            return false;
+        }
+    }
+    if staged_assets.iter().any(|asset| {
+        !tree.files.values().any(|entry| {
+            entry.kind == "asset"
+                && entry.sha
+                    == asset
+                        .object_key
+                        .strip_prefix(&crate::storage::blob::asset_prefix(storage_id))
+                        .unwrap_or_default()
+                && entry.size == asset.bytes
+        })
+    }) {
+        return false;
+    }
+    for source in sources {
+        let expected_file_digest = match hex::decode(&source.file_digest) {
+            Ok(bytes) if bytes.len() == 32 => bytes,
+            _ => return false,
+        };
+        if source.recipe_key
+            != crate::storage::blob::content_recipe_key(storage_id, &source.file_digest)
+            || source.recipe_digest.is_empty()
+        {
+            return false;
+        }
+        if !tree
+            .files
+            .values()
+            .any(|entry| entry.sha == source.file_digest)
+        {
+            return false;
+        }
+        let recipe_bytes = match blobs.get(&source.recipe_key).await {
+            Ok(bytes) => bytes,
+            Err(_) => return false,
+        };
+        let recipe = match crate::storage::encoding::Recipe::from_bytes(&recipe_bytes) {
+            Ok(recipe) => recipe,
+            Err(_) => return false,
+        };
+        if recipe.file_digest.as_slice() != expected_file_digest.as_slice()
+            || hex::encode(recipe.digest()) != source.recipe_digest
+            || recipe_bytes.len() as i64 != source.recipe_bytes
+            || recipe.uncompressed_len != source.uncompressed_bytes as u64
+            || recipe.codec as i64 != source.codec
+        {
+            return false;
+        }
+        let mut objects = HashMap::with_capacity(recipe.chunks.len());
+        for reference in &recipe.chunks {
+            let key =
+                crate::storage::blob::content_chunk_key(storage_id, &hex::encode(reference.digest));
+            let bytes = match blobs.get(&key).await {
+                Ok(bytes) => bytes,
+                Err(_) => return false,
+            };
+            objects.insert(reference.digest, bytes);
+        }
+        // Check every descriptor too, including reused chunks, so a partial
+        // graph cannot be rescued by an unrelated legacy source object.
+        for object in &source.objects {
+            let bytes = match blobs.get(&object.object_key).await {
+                Ok(bytes) => bytes,
+                Err(_) => return false,
+            };
+            if object.bytes > 0 && bytes.len() as i64 != object.bytes {
+                return false;
+            }
+        }
+        // Reconstruction verifies both chunk and complete-file digests. Keep
+        // recovery decompression off the asynchronous runtime as well.
+        let verified = tokio::task::spawn_blocking(move || {
+            crate::storage::encoding::reconstruct(&recipe, |digest| {
+                objects.get(digest).cloned().ok_or_else(|| {
+                    crate::storage::encoding::EncodingError::Integrity(
+                        "recipe object is missing".into(),
+                    )
+                })
+            })
+            .map(|_| ())
+        })
+        .await;
+        if !matches!(verified, Ok(Ok(()))) {
+            return false;
+        }
+    }
+    true
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct IndexEntry {
@@ -622,9 +776,11 @@ impl Store {
         let actor = actor.cloned();
         let per_owner = self.config.storage.per_owner;
         let total = self.config.storage.total;
+        let hard_count =
+            (self.config.session.history_max > 0).then(|| self.config.session.history_max as u32);
         catalog
             .execute_catalog(STORE_JOB_BYTES + slug.len(), move |catalog| {
-                catalog.reserve_document_bytes_with_authority(
+                let result = catalog.reserve_document_bytes_with_authority(
                     &slug,
                     bytes,
                     per_owner,
@@ -642,7 +798,26 @@ impl Store {
                             execution_epoch: "",
                             agent_checkpoint: None,
                         }),
-                )
+                );
+                // A failed reservation is not permission to evict history
+                // synchronously. When the owner is already over its hard
+                // quota, enqueue a bounded pressure plan so a retry can make
+                // progress after successful GC. A refusal caused only by
+                // this prospective write is a no-op while current usage fits.
+                if matches!(
+                    &result,
+                    Err(crate::storage::catalog::CatalogError::Conflict(message))
+                        if message.contains("quota")
+                ) {
+                    let _ = catalog.schedule_hard_pressure_for_slug_for_growth_with_limits(
+                        &slug,
+                        per_owner,
+                        bytes,
+                        hard_count,
+                        crate::util::now_unix(),
+                    );
+                }
+                result
             })
             .await
             .map_err(crate::storage::catalog::CatalogError::from)
@@ -789,6 +964,50 @@ impl Store {
                             .map(str::to_owned)
                     })
             });
+            let (
+                staged_tree_sha,
+                staged_sources,
+                staged_assets,
+                staged_assets_valid,
+                native_source_graph,
+            ): (
+                String,
+                Option<Vec<SourceHistoryRecord>>,
+                Option<Vec<CheckpointAssetRef>>,
+                bool,
+                bool,
+            ) = operation
+                .as_ref()
+                .and_then(|operation| {
+                    let intent =
+                        serde_json::from_str::<serde_json::Value>(&operation.intent).ok()?;
+                    let tree_sha = intent
+                        .get("checkpoint")
+                        .and_then(|checkpoint| checkpoint.get("tree_sha"))
+                        .and_then(|sha| sha.as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let asset_property = intent.get("checkpoint_assets");
+                    let assets_valid = asset_property.is_none_or(|value| {
+                        serde_json::from_value::<Vec<CheckpointAssetRef>>(value.clone()).is_ok()
+                    });
+                    let assets =
+                        asset_property.and_then(|value| serde_json::from_value(value.clone()).ok());
+                    let sources = if let Some(value) = intent.get("source_history") {
+                        serde_json::from_value(value.clone()).ok()
+                    } else if intent.get("checkpoint_assets").is_some() {
+                        // Asset-only trees have no source-history records, but
+                        // the presence of the asset property still opts the
+                        // receipt into strict native graph validation.
+                        Some(Vec::new())
+                    } else {
+                        None
+                    };
+                    let native = intent.get("source_history").is_some()
+                        || intent.get("checkpoint_assets").is_some();
+                    Some((tree_sha, sources, assets, assets_valid, native))
+                })
+                .unwrap_or_default();
             // Agent source operations are coupled to a Yjs marker in the
             // durable session, rather than a staged checkpoint object. The
             // room recovery path must inspect that marker; treating this row
@@ -800,7 +1019,8 @@ impl Store {
             {
                 continue;
             }
-            let staged = if let Some(sha) = staged_sha.as_deref().filter(|sha| !sha.is_empty()) {
+            let mut staged = if let Some(sha) = staged_sha.as_deref().filter(|sha| !sha.is_empty())
+            {
                 match blobs
                     .get(&crate::storage::blob::checkpoint_key(
                         &pending.storage_id,
@@ -808,7 +1028,25 @@ impl Store {
                     ))
                     .await
                 {
-                    Ok(_) => true,
+                    Ok(tree_bytes) => {
+                        if native_source_graph {
+                            staged_sources.as_deref().is_some_and(|sources| {
+                                // This async validation is performed below;
+                                // keep the tree read here so legacy receipts
+                                // retain their original recovery behavior.
+                                !sources.is_empty()
+                            })
+                        } else if !staged_tree_sha.is_empty() {
+                            match serde_json::from_slice::<crate::document::history::Tree>(
+                                &tree_bytes,
+                            ) {
+                                Ok(tree) => tree.digest() == staged_tree_sha,
+                                Err(_) => true,
+                            }
+                        } else {
+                            true
+                        }
+                    }
                     Err(BlobError::NotFound) => false,
                     Err(error) => {
                         // A transient storage error -- a timeout, a hiccup --
@@ -828,6 +1066,40 @@ impl Store {
             } else {
                 false
             };
+            if native_source_graph {
+                if !staged_assets_valid {
+                    continue;
+                }
+                let Some(sha) = staged_sha.as_deref().filter(|sha| !sha.is_empty()) else {
+                    continue;
+                };
+                let tree_bytes = match blobs
+                    .get(&crate::storage::blob::checkpoint_key(
+                        &pending.storage_id,
+                        sha,
+                    ))
+                    .await
+                {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                };
+                let Some(sources) = staged_sources.as_deref() else {
+                    continue;
+                };
+                if !validate_staged_source_graph(
+                    blobs.as_ref(),
+                    &pending.storage_id,
+                    &tree_bytes,
+                    &staged_tree_sha,
+                    sources,
+                    staged_assets.as_deref(),
+                )
+                .await
+                {
+                    continue;
+                }
+                staged = true;
+            }
             let storage_id = pending.storage_id.clone();
             let request_id = pending.request_id.clone();
             if staged {
@@ -835,9 +1107,17 @@ impl Store {
                     .as_deref()
                     .expect("staged publication SHA")
                     .to_string();
+                let owner_limit = config.storage.per_owner;
+                let total_limit = config.storage.total;
                 catalog
                     .execute_catalog(STORE_JOB_BYTES, move |catalog| {
-                        catalog.commit_operation(&storage_id, &request_id, &sha, &sha)
+                        catalog.commit_operation_with_quota(
+                            &storage_id,
+                            &request_id,
+                            &sha,
+                            &sha,
+                            Some((owner_limit, total_limit)),
+                        )
                     })
                     .await
                     .map_err(|error| error.to_string())?;
@@ -1404,24 +1684,41 @@ impl Store {
     }
 
     pub async fn commit_publication(&self, slug: &str, result: &str) -> Result<(), String> {
+        self.commit_publication_checked(slug, result)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Preserve the catalogue refusal type through final publication admission.
+    pub async fn commit_publication_checked(
+        &self,
+        slug: &str,
+        result: &str,
+    ) -> Result<(), crate::storage::catalog::CatalogExecError> {
         let Some(catalog) = &self.catalog else {
             return Ok(());
         };
         let document = document_row(catalog, slug)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "document not found".to_string())?;
+            .await?
+            .ok_or(CatalogError::NotFound)?;
         let Some(request_id) = document.pending_publication else {
             return Ok(());
         };
         let storage_id = document.storage_id.clone();
         let result = result.to_string();
+        let owner_limit = self.config.storage.per_owner;
+        let total_limit = self.config.storage.total;
         catalog
             .execute_catalog(STORE_JOB_BYTES + result.len(), move |catalog| {
-                catalog.commit_operation(&storage_id, &request_id, &result, &result)
+                catalog.commit_operation_with_quota(
+                    &storage_id,
+                    &request_id,
+                    &result,
+                    &result,
+                    Some((owner_limit, total_limit)),
+                )
             })
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         Ok(())
     }
 
@@ -1570,6 +1867,10 @@ impl Store {
         };
         let replacing = existing.is_some();
         let limits = self.config.storage;
+        let hard_count =
+            (self.config.session.history_max > 0).then(|| self.config.session.history_max as u32);
+        let pressure_owner = document.owner_id.clone();
+        let pressure_growth = document.counted_size;
         let result = catalog
             .execute_catalog(STORE_JOB_BYTES + document.slug.len(), move |catalog| {
                 if replacing {
@@ -1591,6 +1892,28 @@ impl Store {
             })
             .await
             .map_err(crate::storage::catalog::CatalogError::from);
+        if matches!(
+            &result,
+            Err(crate::storage::catalog::CatalogError::Conflict(message))
+                if message.contains("quota")
+        ) {
+            if let Some(owner) = pressure_owner {
+                let _ = catalog
+                    .execute_catalog(STORE_JOB_BYTES + owner.len(), move |catalog| {
+                        catalog.schedule_hard_pressure_for_growth_with_limits(
+                            &owner,
+                            limits.per_owner,
+                            // A failed admission has not charged these
+                            // prospective bytes yet; pressure must reserve
+                            // room for the whole attempted publication.
+                            pressure_growth,
+                            hard_count,
+                            crate::util::now_unix(),
+                        )
+                    })
+                    .await;
+            }
+        }
         let document = result.map_err(|err| match err {
             crate::storage::catalog::CatalogError::Conflict(message)
                 if message.contains("project with this name") =>
@@ -2101,38 +2424,14 @@ impl Store {
         // deployment happens to be cached rather than the whole of it. The
         // catalogue, when there is one, is asked directly instead.
         if let Some(catalog) = &self.catalog {
-            let documents = catalog
-                .execute_catalog(STORE_JOB_BYTES, |catalog| catalog.documents())
+            let limits = self.config.storage;
+            let slug = slug.to_string();
+            return catalog
+                .execute_catalog(STORE_JOB_BYTES + slug.len(), move |catalog| {
+                    catalog.physical_room_for(&slug, limits.per_owner, limits.total)
+                })
                 .await
                 .ok()?;
-            let active: Vec<_> = documents
-                .into_iter()
-                .filter(|document| document.status == "active")
-                .collect();
-            let mine = active.iter().find(|document| document.slug == slug)?;
-            let owner_id = mine.owner_id.clone();
-            let owner_key = mine.owner_key.clone();
-            let (mut total, mut mine_bytes) = (0i64, 0i64);
-            for other in &active {
-                if other.slug == slug {
-                    continue;
-                }
-                let counted = other.counted_size.max(other.size);
-                total += counted;
-                let same_owner = match &owner_id {
-                    Some(id) => other.owner_id.as_deref() == Some(id.as_str()),
-                    None => other.owner_key == owner_key,
-                };
-                if same_owner {
-                    mine_bytes += counted;
-                }
-            }
-            let limits = self.config.storage;
-            return Some(
-                (limits.total - total)
-                    .min(limits.per_owner - mine_bytes)
-                    .max(0),
-            );
         }
         let state = self.state.lock().await;
         let entry = state.entries.get(slug)?;

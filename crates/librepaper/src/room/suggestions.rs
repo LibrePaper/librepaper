@@ -346,7 +346,7 @@ impl Room {
                         base_point = point.map(|point| crate::document::history::Checkpoint {
                             sha: point.sha,
                             tree_sha: point.tree_sha,
-                            parent: point.parent,
+                            parent: point.parent.clone(),
                             at: point.at,
                             by: point.by,
                             by_account: point.by_account,
@@ -361,6 +361,9 @@ impl Room {
                                 .changed
                                 .and_then(|value| serde_json::from_str(&value).ok())
                                 .unwrap_or_default(),
+                            seq: point.seq,
+                            original_parent: point.parent.clone(),
+                            ancestry_gap: false,
                         });
                     }
                 }

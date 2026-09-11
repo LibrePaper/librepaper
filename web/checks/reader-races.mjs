@@ -20,7 +20,38 @@ const body = (start, end) => {
 };
 
 const showCheckpoint = body("  async function showCheckpoint(sha)", "  async function nameCheckpoint");
+// A ready frame must not replace an in-flight historical URL/navigation with
+// an automatic captured-current comparison.
+for (const [arrived, navigating, expected] of [["old", 0, 0], ["", 1, 0], ["", 0, 1]]) {
+  let comparisons = 0;
+  vm.runInNewContext(body('        if (panel === "history" && historyBaseline', '        if (first)'), {
+    panel: "history", historyBaseline: { sha: "old" }, historyComparePoint: null, viewing: null,
+    ARRIVED_AT: arrived, checkpointNavigationPending: navigating,
+    computeHistoryChanges: () => comparisons++,
+  });
+  assert.equal(comparisons, expected, "historical navigation owns frame readiness");
+}
 const backToNow = body("  function backToNow()", "  async function nameCheckpoint");
+for (const stale of [false, true]) {
+  let finish;
+  const pending = new Promise((resolve) => { finish = resolve; });
+  const delivered = [];
+  const ctx = vm.createContext({
+    historyController: { capturedCurrent: { sha: "captured", main: "main.md", texts: { "main.md": "frozen" } } },
+    navigationGeneration: 0, issued: 0, readerDisposed: false, viewing: null,
+    renderingStore: { invalidate: () => {} }, dropHeldRendering: () => {}, showMobileView: () => {},
+    passages: { renderTree: () => pending }, SLUG: "doc", KEY: "", keyHeaders: () => ({}),
+    framePreview: { publish: (value) => delivered.push(value) },
+    paintPreview: () => { throw new Error("captured targets must not depend on the live preview queue"); },
+  });
+  vm.runInContext(body("  async function showCapturedCurrent()", "  let restoring"), ctx);
+  const showing = ctx.showCapturedCurrent();
+  if (stale) ctx.navigationGeneration++;
+  finish({ html: "<p>frozen</p>" });
+  await showing;
+  assert.equal(delivered.length, stale ? 0 : 1);
+  if (!stale) assert.equal(delivered[0].sha, "captured");
+}
 // `paintPreview` delegates its staleness guard and its figure fetch to two
 // helpers defined next to it. They are sliced in with it so the five contexts
 // below exercise the real guard rather than a stand-in -- which is the whole
@@ -499,6 +530,55 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(compiled, 1, "a Quarto document with no live preview compiles its own draft");
   assert.equal(published[0].kind, "html");
   assert.equal(published[0].html, "<p>draft</p>");
+}
+
+// A historical endpoint uses the contemporary HTML renderer with its captured
+// tree, never the editor's ordinary renderer/PDF path. Settings and captured
+// asset bytes must reach that endpoint unchanged.
+{
+  const sourceAsset = Uint8Array.of(4, 5, 6);
+  const sourceTree = {
+    main: "paper.typ",
+    texts: { "paper.typ": "= Historical" },
+    digests: { "figure.png": "digest-history" },
+    settings: { release: "r1", engine: "typst" },
+  };
+  let renderedTree = null;
+  let ordinaryRendererCalls = 0;
+  const ctx = context({
+    displayedFormat: "typst", sourceFormat: "typst", pdfOutput: false,
+    compilesHere: false, paintsTheFrame: true, editing: false,
+    issued: 0, painted: 0, viewing: { sha: "checkpoint" },
+    navigationGeneration: 0, sourceGeneration: 0,
+    previewPaintBusy: false, previewPaintQueued: false, previewTimer: null,
+    everPainted: true, latestPreview: null,
+    SLUG: "history-doc", KEY: "", authHeaders: () => ({}),
+    keyHeaders: () => ({}),
+    treeNow: () => sourceTree,
+    headingOf: async () => "Historical",
+    figures: {
+      gather: async () => ({ assets: { "figure.png": sourceAsset.slice() }, urls: { "figure.png": "blob:history" } }),
+    },
+    passages: {
+      renderTree: async (_slug, tree) => {
+        renderedTree = tree;
+        return { html: "<p>historical</p>", diagnostics: [] };
+      },
+    },
+    renderers: {
+      formatOf: () => "typst", producesPdf: () => true,
+      render: () => { ordinaryRendererCalls += 1; return { pdf: Uint8Array.of(9), diagnostics: [] }; },
+    },
+    framePreview: { publish: (payload) => { ctx.published = payload; }, clear: () => {} },
+    renderingStore: { cancelPoll: () => {} },
+    diagnosticPainter: { rendered: () => {} }, say: () => {},
+  });
+  vm.runInContext(paintPreview, ctx);
+  await vm.runInContext("paintPreview()", ctx);
+  assert.equal(ordinaryRendererCalls, 0, "historical preview bypasses the ordinary compiler");
+  assert.equal(renderedTree.settings.release, "r1");
+  assert.deepEqual([...renderedTree.assets["figure.png"]], [4, 5, 6]);
+  assert.equal(ctx.published.html, "<p>historical</p>");
 }
 
 // Typst follows the PDF lifecycle too: one compile in flight, latest request

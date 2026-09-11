@@ -298,6 +298,24 @@ impl Session {
     }
 }
 
+/// The two independent durability boundaries a history reader may need to
+/// explain.  A live save covers the durable session snapshot; a history
+/// checkpoint is a separately scheduled recovery point.  Neither field says
+/// anything about who authored the text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HistoryDurability {
+    /// Whether this room loaded enough durable state to make the two
+    /// observations below. An unreadable or not-yet-reconciled room must not
+    /// present its default in-memory flags as proof of anything.
+    pub known: bool,
+    /// The in-memory session has changed since the last successful durable
+    /// session write.
+    pub live_save_pending: bool,
+    /// The live generation is not covered by the newest checkpoint, or an
+    /// explicit checkpoint request is waiting for its admission window.
+    pub checkpoint_pending: bool,
+}
+
 pub struct RoomState {
     pub seq: i64,
     /// Wrapped so the admission estimate can cache their serialized size:
@@ -561,6 +579,7 @@ pub struct RoomSet {
     checkpoint_cache: Arc<crate::document::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
+    rendering_cursor: Mutex<String>,
     /// Serialize capacity decisions, not cached lookups. Never acquire this
     /// while retaining a room state or registry guard.
     admission: Mutex<()>,
@@ -678,6 +697,7 @@ impl RoomSet {
             ),
             config,
             rooms: Mutex::new(HashMap::new()),
+            rendering_cursor: Mutex::new(String::new()),
             admission: Mutex::new(()),
             loading: Mutex::new(HashMap::new()),
             store: Arc::new(std::sync::OnceLock::new()),
@@ -1175,6 +1195,60 @@ impl RoomSet {
         }
     }
 
+    /// Reconcile resident manifests after account-wide retention has removed
+    /// cold rows. This is intentionally separate from `sweep`: preference
+    /// grace/application must not alter checkpoint cadence or live saves.
+    pub async fn refresh_retention(&self) {
+        let rooms: Vec<Arc<Room>> = self.rooms.lock().await.values().cloned().collect();
+        stream::iter(rooms)
+            .for_each_concurrent(
+                4,
+                |room| async move { room.refresh_retained_manifest().await },
+            )
+            .await;
+    }
+
+    /// Bound cold-document publication cleanup. A cursor makes repeated
+    /// maintenance passes fair across a large catalogue; each selected room
+    /// performs only the manifest/rendering-gated prune and never checkpoints
+    /// or saves its live session.
+    pub async fn prune_cold_renderings(&self, limit: u32) {
+        let Some(catalog) = self.catalog.get() else {
+            return;
+        };
+        let limit = limit.clamp(1, 8);
+        let after = self.rendering_cursor.lock().await.clone();
+        let mut slugs = match catalog
+            .execute_catalog(DESCRIPTOR_BYTES, {
+                let after = after.clone();
+                move |catalog| catalog.stale_rendering_slugs(&after, limit)
+            })
+            .await
+        {
+            Ok(slugs) => slugs,
+            Err(_) => return,
+        };
+        if slugs.is_empty() && !after.is_empty() {
+            *self.rendering_cursor.lock().await = String::new();
+            slugs = match catalog
+                .execute_catalog(DESCRIPTOR_BYTES, move |catalog| {
+                    catalog.stale_rendering_slugs("", limit)
+                })
+                .await
+            {
+                Ok(slugs) => slugs,
+                Err(_) => return,
+            };
+        }
+        for slug in slugs {
+            let room = self.try_get(&slug).await.ok();
+            if let Some(room) = room {
+                let _ = room.prune_renderings_periodic().await;
+            }
+            *self.rendering_cursor.lock().await = slug;
+        }
+    }
+
     /// Estimates may await room state, but never own either registry while
     /// doing so. The admission gate serializes insertions during the scan.
     async fn cached_bytes(&self) -> usize {
@@ -1265,6 +1339,25 @@ impl RoomSet {
 }
 
 impl Room {
+    /// Reports the independently observable live-save and history-checkpoint
+    /// boundaries without forcing either operation.  `dirty` is cleared only
+    /// after the session snapshot has been accepted by storage; generation
+    /// coverage is advanced only after the checkpoint is committed.  In
+    /// particular, this does not treat a journal cursor or checkpoint delay
+    /// as proof of the other boundary.
+    pub async fn history_durability(&self) -> HistoryDurability {
+        let state = self.state.lock().await;
+        let reason = FenceReason::from_stored(self.fence_reason.load(Ordering::Relaxed));
+        HistoryDurability {
+            known: !self.read_only.load(Ordering::Relaxed)
+                || matches!(reason, FenceReason::Oversized),
+            live_save_pending: state.session.dirty,
+            checkpoint_pending: state.session.generation != state.session.checkpoint_generation
+                || state.session.pending_checkpoint_since > 0
+                || state.session.asked.is_some(),
+        }
+    }
+
     fn snapshot_budget(&self, bytes: usize) -> i64 {
         let bytes = bytes.min(i64::MAX as usize) as i64;
         if self.journal.get().is_some() {

@@ -40,6 +40,7 @@ mod publish_cli;
 mod quarto_local;
 mod quarto_source;
 mod quota;
+mod quota_preferences;
 mod renderings;
 mod retention;
 mod room;

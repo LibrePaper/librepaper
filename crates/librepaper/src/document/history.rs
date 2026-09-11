@@ -72,6 +72,17 @@ pub struct Checkpoint {
     /// say what moved without opening two trees.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changed: Vec<String>,
+    /// Catalogue sequence used as a stable tie breaker during retention.
+    #[serde(default)]
+    pub seq: i64,
+    /// The parent before retention reparenting. An empty value means that the
+    /// event predates ancestry-gap metadata or was the first event.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub original_parent: String,
+    /// True when an intermediate event was removed and the parent edge is no
+    /// longer an observed adjacent edit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ancestry_gap: bool,
 }
 
 impl Checkpoint {
@@ -276,7 +287,7 @@ impl Manifest {
         Checkpoint {
             sha: row.sha,
             tree_sha: row.tree_sha,
-            parent: row.parent,
+            parent: row.parent.clone(),
             at: row.at,
             by: row.by,
             by_account: row.by_account,
@@ -288,6 +299,9 @@ impl Manifest {
             dirty: row.dirty,
             tree: true,
             changed,
+            seq: row.seq,
+            original_parent: row.parent,
+            ancestry_gap: false,
         }
     }
 
@@ -433,12 +447,19 @@ pub async fn load_tree(
     if !point.tree {
         return Ok(Tree::of_one_file(path, id, &point.sha, raw.len() as i64));
     }
-    serde_json::from_slice(&raw).map_err(|err| {
+    let tree: Tree = serde_json::from_slice(&raw).map_err(|err| {
         format!(
             "the checkpoint {} of {slug} is not readable ({err})",
             point.sha
         )
-    })
+    })?;
+    if !point.tree_sha.is_empty() && tree.digest() != point.tree_sha {
+        return Err(format!(
+            "the checkpoint {} of {slug} has a tree digest that does not match its catalogue row",
+            point.sha
+        ));
+    }
+    Ok(tree)
 }
 
 /// The manifest alone, for the callers that are only reading it.

@@ -752,6 +752,12 @@ impl Room {
             return Some(sha);
         }
         let catalog = self.catalog.get()?;
+        if read_catalog_rendering(catalog, &self.slug, sha)
+            .await
+            .is_some()
+        {
+            return Some(sha.to_owned());
+        }
         read_catalog_checkpoint(catalog, &self.slug, sha)
             .await
             .ok()
@@ -1108,51 +1114,39 @@ impl Room {
     /// a persistent cache and requires no mutation invalidation protocol.
     pub async fn newest_rendering_for(&self, current_tree: &str) -> Option<(String, String, bool)> {
         if let Some(catalog) = self.catalog.get() {
-            let candidate = read_newest_rendering_candidate(catalog, &self.slug).await?;
-            let pdf = crate::storage::blob::rendering_key(&self.storage_id, &candidate.tree_sha);
-            let pdf_available = self.blobs.exists(&pdf).await.unwrap_or(false);
-            let sync_available = if !pdf_available && candidate.synctex {
-                let key = crate::storage::blob::rendering_synctex_key(
-                    &self.storage_id,
-                    &candidate.tree_sha,
-                );
-                self.blobs.exists(&key).await.unwrap_or(false)
-            } else {
-                false
-            };
-            // Preserve this endpoint's existing unavailable-candidate policy:
-            // answer without a rendering, rather than silently choosing an
-            // older registration. BlobStore retains missing/error distinctions;
-            // this optional metadata endpoint deliberately treats both as unavailable.
-            if !pdf_available && !sync_available {
-                return None;
+            for candidate in read_rendering_candidates(catalog, &self.slug).await? {
+                let pdf =
+                    crate::storage::blob::rendering_key(&self.storage_id, &candidate.tree_sha);
+                match self.blobs.exists(&pdf).await {
+                    Ok(true) => {
+                        return Some((
+                            candidate.event_sha,
+                            candidate.at,
+                            current_tree == candidate.tree_sha,
+                        ))
+                    }
+                    Ok(false) => continue,
+                    Err(_) => return None,
+                }
             }
-            return Some((
-                candidate.event_sha,
-                candidate.at,
-                current_tree == candidate.tree_sha,
-            ));
+            return None;
         }
         let state = self.state.lock().await;
         state.manifest.checkpoints.iter().rev().find_map(|point| {
             let content = point.content_sha();
-            (state
+            state
                 .session
                 .rendering_sizes
                 .contains_key(&rendering_name(content, false))
-                || state
-                    .session
-                    .rendering_sizes
-                    .contains_key(&rendering_name(content, true)))
-            .then(|| (point.sha.clone(), point.at.clone(), current_tree == content))
+                .then(|| (point.sha.clone(), point.at.clone(), current_tree == content))
         })
     }
 
     /// Drops the renderings that are no longer worth their bytes. A rendering
     /// is derived -- the one derived thing librepaper stores -- so unlike a
-    /// checkpoint it may go, and what is kept is the newest checkpoint that
-    /// has one, because that is what a reader is shown, and every labelled
-    /// checkpoint, because a label is somebody saying this moment matters.
+    /// checkpoint it may go. The current successfully registered PDF is the
+    /// ordinary publication root; historical source labels do not pin older
+    /// bundles once the HTML/source history path can serve them.
     ///
     /// Run after the manifest that names what survives is written, never
     /// before, for the reason `prune_assets` gives: a crash then leaves an
@@ -1160,34 +1154,73 @@ impl Room {
     /// object still inside the grace period is kept whatever the manifest
     /// says, because a browser uploads a PDF and its SyncTeX file in two
     /// requests, and a checkpoint can land between them.
-    pub(super) async fn prune_renderings(&self, checkpoints: &[Checkpoint]) {
+    pub(super) async fn prune_renderings(&self, _checkpoints: &[Checkpoint]) {
+        // Only retire historical bundles for formats whose shipped browser
+        // history path supports contemporary HTML or an explicit source
+        // fallback. Unknown/legacy formats keep their publication artifacts.
+        if !matches!(
+            self.state.lock().await.session.format.as_str(),
+            "markdown" | "html" | "typst" | "latex" | "quarto"
+        ) {
+            return;
+        }
         // The pass already owns manifest_write; rendering publication remains
         // serialized until registration retirement and cache completion.
         let _rendering_writer = self.rendering_write.lock().await;
         let now = now_unix();
         let grace = self.config.asset_grace;
-        let (kept, held, written_at) = {
+        let (mut kept, held, written_at) = {
             let state = self.state.lock().await;
             let held = state.session.rendering_sizes.clone();
-            let mut kept: std::collections::HashSet<String> = state
-                .manifest
-                .checkpoints
-                .iter()
-                .filter(|point| !point.label.is_empty())
-                .map(|point| point.content_sha().to_string())
-                .collect();
-            for point in checkpoints.iter().filter(|point| !point.label.is_empty()) {
-                kept.insert(point.content_sha().to_string());
-            }
-            if let Some(newest) = checkpoints.iter().rev().find(|point| {
-                let content = point.content_sha();
-                held.contains_key(&rendering_name(content, false))
-                    || held.contains_key(&rendering_name(content, true))
-            }) {
-                kept.insert(newest.content_sha().to_string());
-            }
+            let kept = std::collections::HashSet::new();
             (kept, held, state.session.rendering_written_at.clone())
         };
+        let mut registered = Vec::new();
+        if let Some(catalog) = self.catalog.get() {
+            registered = match read_catalog_renderings(catalog, &self.slug).await {
+                Ok(rows) => rows,
+                Err(_) => {
+                    // A catalogue read failure is not evidence that old
+                    // bundles are unprotected. Preserve every artifact until
+                    // the registration state is readable again.
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "rendering_retirement_deferred",
+                            "reason": "catalogue_unavailable",
+                        })
+                    );
+                    return;
+                }
+            };
+            // The current PDF is the only ordinary publication root. A
+            // registration without its PDF is stale/incomplete and must not
+            // displace an older available PDF; if none is available, defer
+            // all cleanup rather than making viewing worse.
+            let mut latest = None;
+            for rendering in &registered {
+                let pdf =
+                    crate::storage::blob::rendering_key(&self.storage_id, &rendering.tree_sha);
+                if self.blobs.exists(&pdf).await.unwrap_or(false) {
+                    latest = Some(rendering.tree_sha.clone());
+                    break;
+                }
+            }
+            let Some(latest) = latest else { return };
+            kept.insert(latest);
+        } else {
+            // Legacy rooms have no registration table. Require an available
+            // PDF before switching to latest-only; SyncTeX alone is not a
+            // successfully published publication artifact.
+            let Some(latest) = held
+                .keys()
+                .filter(|name| !name.ends_with(".synctex") && !name.ends_with(".provenance.json"))
+                .max_by_key(|name| written_at.get(*name).copied().unwrap_or_default())
+            else {
+                return;
+            };
+            kept.insert(latest.to_string());
+        }
         let mut gone = Vec::new();
         for name in held.keys() {
             let sha = name
@@ -1202,6 +1235,23 @@ impl Room {
             }
             gone.push(name.clone());
         }
+        if !registered.is_empty() {
+            for rendering in &registered {
+                let published = time::OffsetDateTime::parse(
+                    &rendering.at,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .ok()
+                .map(|at| at.unix_timestamp());
+                if !kept.contains(&rendering.tree_sha)
+                    && published.is_some_and(|at| now.saturating_sub(at) >= grace)
+                {
+                    gone.push(rendering.tree_sha.clone());
+                }
+            }
+        }
+        gone.sort();
+        gone.dedup();
         if gone.is_empty() {
             return;
         }
@@ -1565,7 +1615,7 @@ impl Room {
             if written_at.get(sha).is_some_and(|at| now - at < grace) {
                 continue;
             }
-            gone.push((object.key.clone(), sha.to_string()));
+            gone.push((object.key.clone(), sha.to_string(), object.size));
         }
         if gone.is_empty() {
             return;
@@ -1582,7 +1632,7 @@ impl Room {
             let live: std::collections::HashSet<String> = session::assets_of(&state.session.doc)
                 .into_values()
                 .collect();
-            gone.retain(|(_, sha)| {
+            gone.retain(|(_, sha, _)| {
                 !live.contains(sha)
                     && !uploads
                         .as_ref()
@@ -1597,10 +1647,26 @@ impl Room {
         if gone.is_empty() {
             return;
         }
-        let keys: Vec<String> = gone.iter().map(|(key, _)| key.clone()).collect();
+        if let Some(catalog) = self.catalog.get() {
+            // Active catalogue rooms use the durable deletion worker.  It
+            // repeats the source-history graph/lease checks immediately
+            // before physical deletion; removing an asset directly here
+            // would let a restore lose a still-needed figure.
+            let now = now_unix();
+            for (key, _, bytes) in &gone {
+                if let Err(error) =
+                    crate::room::catalog::queue_object_delete(catalog, &self.slug, key, *bytes, now)
+                        .await
+                {
+                    eprintln!("warning: could not queue obsolete asset {}: {error}", key);
+                }
+            }
+            return;
+        }
+        let keys: Vec<String> = gone.iter().map(|(key, _, _)| key.clone()).collect();
         if self.blobs.delete(&keys).await.is_ok() {
             let mut state = self.state.lock().await;
-            for (_, sha) in gone {
+            for (_, sha, _) in gone {
                 state.session.asset_sizes.remove(&sha);
                 state.session.asset_written_at.remove(&sha);
             }

@@ -425,16 +425,17 @@ impl Server {
                 );
             }
         };
-        if let Err(err) = self.store.commit_publication(&key, &sha).await {
-            eprintln!("warning: could not commit publication {key}: {err}");
+        if let Err(err) = self.store.commit_publication_checked(&key, &sha).await {
+            let error = crate::room::WriteError::from(err);
+            eprintln!("warning: could not commit publication {key}: {error}");
             let _ = self
                 .store
-                .abort_publication(&key, &format!("commit failed: {err}"))
+                .abort_publication(&key, &format!("commit failed: {error}"))
                 .await;
             if let Err(err) = self.delete_document(&key).await {
                 eprintln!("warning: could not undo the creation of {key}: {err}");
             }
-            return write_json(500, &json!({"error": "could not store the document"}));
+            return refused("could not store the document", &error);
         }
         publication_token.commit();
         // A document only its owner can open is not published in any useful

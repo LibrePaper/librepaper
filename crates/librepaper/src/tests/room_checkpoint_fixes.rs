@@ -92,9 +92,12 @@ async fn checkpoint_tree_and_session_generation_do_not_cross() {
     rooms.attach_store(store);
     let room = rooms.get("probe").await;
     room.set_source("B", "markdown").await.unwrap();
+    // Native source history is addressed by recipes, not legacy whole-file
+    // blobs. Pausing the recipe write keeps B in flight while C advances the
+    // live generation.
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
-        blob::blob_key("probe", &crate::document::store::digest_of("B")),
+        blob::content_recipe_key("probe", &crate::document::store::digest_of("B")),
     ));
     let task = tokio::spawn({
         let room = room.clone();

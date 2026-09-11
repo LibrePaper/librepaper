@@ -18,7 +18,9 @@ pub(super) async fn fixture(
     config: Configuration,
 ) -> (tempfile::TempDir, Arc<store::Store>, room::RoomSet) {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
+    // These are ordering/barrier tests, not power-loss tests. Keep real
+    // filesystem I/O without fsync latency consuming their two-second gates.
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), false));
     let config = Arc::new(config);
     let store = Arc::new(
         store::Store::open(blobs.clone(), config.clone())
@@ -266,8 +268,12 @@ impl BlobStore for HookStore {
 /// it.
 #[tokio::test]
 async fn checkpoint_race_drops_dirty_edit() {
-    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    let sha = store.get("probe").await.unwrap().sha;
+    let (_dir, store, rooms) = fixture(Configuration::default()).await;
+    // The legacy index entry's SHA names the published source, while a native
+    // checkpoint's SHA names its serialized tree. Pause the actual retained
+    // checkpoint read rather than deriving a key from the old source layout.
+    let initial_room = rooms.get("probe").await;
+    let sha = initial_room.manifest().await.latest().unwrap().sha.clone();
     store
         .blobs
         .delete(&[blob::room_lock_key("probe")])
@@ -390,8 +396,9 @@ async fn failed_manifest_write_never_retries() {
 /// checkpoint, both in memory and once reloaded from storage.
 #[tokio::test]
 async fn concurrent_label_is_lost_by_checkpoint() {
-    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    let a = store.get("probe").await.unwrap().sha;
+    let (_dir, store, rooms) = fixture(Configuration::default()).await;
+    let initial_room = rooms.get("probe").await;
+    let a = initial_room.manifest().await.latest().unwrap().sha.clone();
     store
         .blobs
         .delete(&[blob::room_lock_key("probe")])
@@ -787,11 +794,25 @@ async fn shed_history_leaks_text_blobs() {
         room.checkpoint("comment", "").await.unwrap();
     }
     assert_eq!(room.manifest().await.checkpoints.len(), 1);
-    let objects = store.blobs.list(&blob::blob_prefix("probe")).await.unwrap();
+    let recipes = store
+        .blobs
+        .list(&blob::content_recipe_prefix("probe"))
+        .await
+        .unwrap();
+    let chunks = store
+        .blobs
+        .list(&blob::content_chunk_prefix("probe"))
+        .await
+        .unwrap();
     assert_eq!(
-        objects.len(),
+        recipes.len(),
         1,
-        "shedding checkpoints must reclaim the text blobs only they named"
+        "shedding checkpoints must reclaim recipes only retained checkpoints name"
+    );
+    assert_eq!(
+        chunks.len(),
+        1,
+        "shedding checkpoints must reclaim chunks only retained checkpoints name"
     );
     println!("history_max=1: one checkpoint retained, only its text blob retained");
 }
@@ -818,12 +839,11 @@ async fn shed_history_keeps_blob_shared_by_retained_checkpoints() {
     // still name shared.txt.
     assert_eq!(room.manifest().await.checkpoints.len(), 2);
     let shared_sha = crate::document::store::digest_of("SHARED");
-    assert!(
-        store
-            .blobs
-            .get(&blob::blob_key("probe", &shared_sha))
+    assert_eq!(
+        crate::storage::encoding::read_file(store.blobs.as_ref(), "probe", &shared_sha)
             .await
-            .is_ok(),
+            .unwrap(),
+        b"SHARED",
         "a blob shared by two retained checkpoints must survive after an earlier \
          checkpoint sharing it was shed"
     );

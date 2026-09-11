@@ -1,6 +1,7 @@
 use super::{
     Account, Catalog, CatalogError, Checkpoint, Document, JournalPreparation, JournalSegment, Link,
-    MutationAuthority, NewDocument, OperationRequest, Rendering,
+    MutationAuthority, NewDocument, OperationRequest, Rendering, SourceHistoryObject,
+    SourceHistoryRecord,
 };
 use sha2::Digest;
 
@@ -96,6 +97,231 @@ fn newest_rendering_joins_full_history_and_keeps_restore_event_identity() {
 }
 
 #[test]
+fn rendering_publication_order_survives_equal_timestamps_companions_and_retirement() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let rendering = |tree_sha: &str, at: &str, synctex: bool, bytes: i64| Rendering {
+        slug: "doc".into(),
+        tree_sha: tree_sha.into(),
+        at: at.into(),
+        backend: "test".into(),
+        engine: String::new(),
+        release: String::new(),
+        tools: String::new(),
+        bytes,
+        synctex,
+        synctex_bytes: if synctex { 2 } else { 0 },
+    };
+    let same_second = "2026-01-01T00:00:00Z";
+    // The second PDF is newer even though its tree name sorts first.
+    catalog
+        .publish_rendering(&rendering("tree-z", same_second, false, 10))
+        .unwrap();
+    catalog
+        .publish_rendering(&rendering("tree-a", same_second, false, 11))
+        .unwrap();
+    // A delayed companion for the older PDF must retain its original
+    // publication ordinal and cannot become the latest candidate by timestamp.
+    catalog
+        .publish_rendering(&rendering("tree-z", "2099-01-01T00:00:00Z", true, 10))
+        .unwrap();
+    let candidate = catalog.newest_rendering_candidate("doc").unwrap().unwrap();
+    assert_eq!(candidate.tree_sha, "tree-a");
+
+    // Rendering metadata is durable independently of the source event that
+    // first named the tree; retirement must not make latest lookup random or
+    // dependent on a now-missing checkpoint join.
+    catalog
+        .with_connection(|connection| {
+            connection.execute("DELETE FROM checkpoints WHERE slug=?1", ["doc"])?;
+            Ok(())
+        })
+        .unwrap();
+    let candidate = catalog.newest_rendering_candidate("doc").unwrap().unwrap();
+    assert_eq!(candidate.event_sha, "tree-a");
+    assert_eq!(candidate.tree_sha, "tree-a");
+}
+
+#[test]
+fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    assert!(catalog.quota_preferences("acct-1").unwrap().is_none());
+    let first = catalog
+        .save_quota_preferences(
+            "acct-1",
+            0,
+            r#"{"version":1,"futureField":true}"#,
+            "generation-1",
+            10,
+        )
+        .unwrap();
+    assert_eq!(first.revision, 1);
+    assert_eq!(first.payload, r#"{"version":1,"futureField":true}"#);
+    assert!(matches!(
+        catalog.save_quota_preferences("acct-1", 0, "{}", "stale", 11),
+        Err(CatalogError::Conflict(_))
+    ));
+    let second = catalog
+        .save_quota_preferences(
+            "acct-1",
+            1,
+            r#"{"version":1,"futureField":false}"#,
+            "generation-2",
+            12,
+        )
+        .unwrap();
+    assert_eq!(second.revision, 2);
+    assert_eq!(
+        catalog.quota_preferences("acct-1").unwrap().unwrap(),
+        second
+    );
+}
+
+#[test]
+fn retention_hard_count_overrides_protection_only_until_the_count_is_met() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    for index in 0..3 {
+        let mut point = attributed(&format!("milestone-{index}"), "alice", Some("acct-1"));
+        point.seq = index;
+        point.at = format!("2026-01-01T00:00:0{index}.000Z");
+        point.label = "important".into();
+        point.parent = if index == 0 {
+            String::new()
+        } else {
+            format!("milestone-{}", index - 1)
+        };
+        catalog.insert_checkpoint(&point).unwrap();
+    }
+    let payload =
+        serde_json::to_string(&crate::document::quota::QuotaPreferences::default()).unwrap();
+    catalog
+        .save_quota_preferences_and_schedule_with_hard_count_limit(
+            "acct-1",
+            0,
+            &payload,
+            "hard-count",
+            "approved",
+            &[
+                ("doc".into(), "milestone-0".into()),
+                ("doc".into(), "milestone-1".into()),
+            ],
+            1,
+            1,
+            Some(2),
+        )
+        .unwrap();
+    let pass = catalog.run_retention_pass(2, 100).unwrap();
+    assert_eq!(pass.removed, vec![("doc".into(), "milestone-0".into())]);
+    assert!(catalog.checkpoint("doc", "milestone-1").unwrap().is_some());
+    assert!(catalog.checkpoint("doc", "milestone-2").unwrap().is_some());
+    assert_eq!(
+        catalog
+            .checkpoint_retention_metadata("doc", "milestone-1")
+            .unwrap(),
+        Some(("milestone-0".into(), true))
+    );
+}
+
+#[test]
+fn account_usage_charges_unique_physical_objects_and_not_tree_size() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    let mut input = document();
+    input.size = 1;
+    input.counted_size = 2;
+    catalog.create_document(&input).unwrap();
+
+    // The same source chunk is present in the legacy object ledger, the new
+    // source-history graph, and a deletion queue.  It remains one charge
+    // until physical deletion succeeds.
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO object_accounting(storage_id,object_key,kind,bytes,version)
+                 VALUES('storage-1','content/storage-1/chunks/shared','source_chunk',7,'v1'),
+                       ('storage-1','content/storage-1/assets/a','asset',11,'v1'),
+                       ('storage-1','content/storage-1/renderings/tree-a/pdf','rendering',13,'v1')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let point = Checkpoint {
+        slug: "doc".into(),
+        sha: "checkpoint-a".into(),
+        seq: -1,
+        durable_seq: 0,
+        tree_sha: "tree-a".into(),
+        parent: String::new(),
+        at: "2026-01-01T00:00:00Z".into(),
+        by: String::new(),
+        why: "test".into(),
+        source_format: "markdown".into(),
+        size: 99_999,
+        label: String::new(),
+        git_commit: String::new(),
+        dirty: false,
+        changed: None,
+        by_account: None,
+    };
+    catalog
+        .insert_checkpoints_atomic_with_sources(
+            &[point],
+            None,
+            &[SourceHistoryRecord {
+                file_digest: "file-a".into(),
+                recipe_key: "content/storage-1/recipes/file-a".into(),
+                recipe_digest: "recipe-a".into(),
+                codec: 1,
+                uncompressed_bytes: 99_999,
+                recipe_bytes: 3,
+                objects: vec![
+                    SourceHistoryObject {
+                        object_key: "content/storage-1/recipes/file-a".into(),
+                        kind: "source_recipe".into(),
+                        bytes: 3,
+                    },
+                    SourceHistoryObject {
+                        object_key: "content/storage-1/chunks/shared".into(),
+                        kind: "source_chunk".into(),
+                        bytes: 7,
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+    catalog
+        .queue_delete(&super::PendingDelete {
+            slug: "doc".into(),
+            object_key: "content/storage-1/chunks/shared".into(),
+            bytes: 7,
+            queued_at: 1,
+            delete_after: 1,
+        })
+        .unwrap();
+
+    let usage = catalog.account_storage_usage("acct-1").unwrap();
+    assert!(usage.physical_accounting);
+    assert_eq!(usage.asset_bytes, 11);
+    assert_eq!(usage.publication_bytes, 13);
+    assert_eq!(
+        usage.charged_bytes - usage.metadata_bytes - usage.history_bytes,
+        34
+    );
+    assert_eq!(
+        usage.live_bytes, 10,
+        "the newest tree owns the shared source objects"
+    );
+    assert!(usage.history_bytes > 0);
+    assert!(usage.history_bytes < usage.charged_bytes);
+    assert_eq!(usage.checkpoint_count, 1);
+}
+
+#[test]
 fn new_account_examples_resume_without_reenrolling_on_profile_refresh() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
@@ -138,6 +364,105 @@ pub(super) fn document() -> NewDocument {
         last_auto_checkpoint_at: 0,
         source_format: "markdown".into(),
         main: "README.md".into(),
+    }
+}
+
+#[test]
+fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let object = SourceHistoryObject {
+        object_key: "content/storage-1/chunks/shared".into(),
+        kind: "source_chunk".into(),
+        bytes: 7,
+    };
+    let record = |digest: &str, recipe: &str| SourceHistoryRecord {
+        file_digest: digest.into(),
+        recipe_key: format!("content/storage-1/recipes/{digest}"),
+        recipe_digest: format!("recipe-{digest}"),
+        codec: 1,
+        uncompressed_bytes: 7,
+        recipe_bytes: 3,
+        objects: vec![
+            SourceHistoryObject {
+                object_key: recipe.into(),
+                kind: "source_recipe".into(),
+                bytes: 3,
+            },
+            object.clone(),
+        ],
+    };
+    let checkpoint = |sha: &str| Checkpoint {
+        slug: "doc".into(),
+        sha: sha.into(),
+        seq: -1,
+        durable_seq: 0,
+        tree_sha: sha.into(),
+        parent: String::new(),
+        at: sha.into(),
+        by: String::new(),
+        why: "test".into(),
+        source_format: "markdown".into(),
+        size: 7,
+        label: String::new(),
+        git_commit: String::new(),
+        dirty: false,
+        changed: None,
+        by_account: None,
+    };
+    let first = checkpoint("checkpoint-a");
+    catalog
+        .insert_checkpoints_atomic_with_sources(
+            std::slice::from_ref(&first),
+            None,
+            &[record("file-a", "content/storage-1/recipes/file-a")],
+        )
+        .unwrap();
+    let second = checkpoint("checkpoint-b");
+    catalog
+        .insert_checkpoints_atomic_with_sources(
+            std::slice::from_ref(&second),
+            None,
+            &[record("file-b", "content/storage-1/recipes/file-b")],
+        )
+        .unwrap();
+
+    catalog.delete_checkpoint("doc", "checkpoint-a").unwrap();
+    let pending = catalog.due_deletes(crate::util::now_unix(), 100).unwrap();
+    assert!(pending
+        .iter()
+        .all(|entry| entry.object_key != object.object_key));
+
+    catalog.delete_checkpoint("doc", "checkpoint-b").unwrap();
+    let pending = catalog.due_deletes(crate::util::now_unix(), 100).unwrap();
+    assert!(pending
+        .iter()
+        .any(|entry| entry.object_key == object.object_key));
+}
+
+#[test]
+fn source_history_writer_lease_rejects_an_object_already_queued_for_deletion() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    for (directory, kind) in [("chunks", "source_chunk"), ("assets", "asset")] {
+        let object = SourceHistoryObject {
+            object_key: format!("content/storage-1/{directory}/queued"),
+            kind: kind.into(),
+            bytes: 7,
+        };
+        catalog
+            .queue_delete(&super::PendingDelete {
+                slug: "doc".into(),
+                object_key: object.object_key.clone(),
+                bytes: object.bytes,
+                queued_at: 1,
+                delete_after: 1,
+            })
+            .unwrap();
+        let result = catalog.begin_source_history_lease("storage-1", "operation", &[object], 1, 2);
+        assert!(matches!(result, Err(CatalogError::Conflict(_))));
     }
 }
 
@@ -587,7 +912,7 @@ fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
 #[test]
 fn migrations_enable_foreign_keys_and_create_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 24);
+    assert_eq!(catalog.schema_version().unwrap(), 28);
     let names = catalog
         .with_connection(|connection| {
             let mut statement = connection
@@ -1938,7 +2263,7 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
         assert_eq!(version, 12, "an interrupted migration does not advance");
     }
     let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 24);
+    assert_eq!(catalog.schema_version().unwrap(), 28);
     let row = catalog.checkpoint("doc", "old").unwrap().unwrap();
     assert_eq!(row.by, "alice");
     assert_eq!(
@@ -1948,7 +2273,7 @@ fn interrupted_attribution_migration_restarts_and_backfills_nothing() {
     // Reopening an already-migrated catalogue is a no-op.
     drop(catalog);
     let reopened = Catalog::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 24);
+    assert_eq!(reopened.schema_version().unwrap(), 28);
 }
 
 /// A real main schema-15 database is the legacy case: the Quarto migrations must
@@ -2004,7 +2329,7 @@ fn result_metadata_migrates_main_schema15_rows_and_tracks_lifecycle() {
             .unwrap();
     }
     let catalog = Catalog::open(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 24);
+    assert_eq!(catalog.schema_version().unwrap(), 28);
     let point = catalog.comment("legacy-markdown", "old-point").unwrap();
     assert!(point.point);
     assert_eq!(point.color.as_deref(), Some("#ABCDEF"));
@@ -2116,7 +2441,7 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         })
         .unwrap();
     let restored = Catalog::open(&snapshot).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 24);
+    assert_eq!(restored.schema_version().unwrap(), 28);
     assert_eq!(
         attribution_of(&restored, "stable"),
         ("alice".to_string(), Some("acct-writer".to_string()))
