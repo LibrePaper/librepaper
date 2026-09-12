@@ -89,6 +89,9 @@ the installation script:
 | `LIBREPAPER_BUDGET_TRANSFER` | rolling 24-hour origin response budget; bare values are bytes |
 | `LIBREPAPER_BUDGET_DOCUMENT_ASSETS` | combined input assets per document, in MiB |
 | `LIBREPAPER_LATEX_MIRROR` | HTTPS static mirror URL fetched directly by browsers |
+| `LIBREPAPER_EXPIRE_AFTER` | delete documents after this duration, for example `24h` or `30d` (default: never) |
+| `LIBREPAPER_EXPIRE_FROM` | whether that duration runs from `updated` (default) or `created` |
+| `LIBREPAPER_HISTORY` | most checkpoints one document keeps (default: unlimited) |
 | `LIBREPAPER_TYPST_FONTS` | optional local directory of additional Typst fonts |
 | `LIBREPAPER_CONFIG` | optional advanced YAML policy overrides |
 | `LIBREPAPER_VERSION` | Version the installer fetches |

@@ -33,6 +33,12 @@ Run the server behind a reverse proxy that terminates HTTPS, and have the proxy 
 
 ## Retention
 
+Retention is off by default: a server started without `--document-expire-after`
+keeps every document until somebody deletes it. That is the right default for a
+server whose publishers you know, and the wrong one for a server anybody may
+publish to. A public deployment that accepts uploads from strangers is durable
+hosting for whatever they upload, so set a lifetime on it.
+
 Delete documents automatically after their most recent publication:
 
 ```sh
