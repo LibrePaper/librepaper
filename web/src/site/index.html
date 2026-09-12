@@ -26,9 +26,9 @@
       <div class="mx-auto max-w-6xl"><div id="siteBar"></div></div>
     </header>
 
-    <main class="mx-auto flex max-w-6xl flex-col gap-20 px-4 py-16">
+    <main class="flex flex-col">
       <!-- ----------------------------------------------------------- hero -->
-      <section class="flex flex-col items-center gap-6 text-center">
+      <section class="mx-auto flex w-full max-w-6xl flex-col items-center gap-5 px-4 pb-14 pt-12 text-center">
         <img src="/assets/librepaper-logo.svg" alt="LibrePaper" class="w-full max-w-md" />
         <p class="text-surface-600-400 max-w-2xl text-lg">
           A free platform to read, write, and review together.
@@ -37,93 +37,88 @@
           <a class="btn preset-filled-primary-500" href="https://app.librepaper.org/try">Try it now</a>
           <a class="btn preset-outlined-surface-300-700" href="/start/index.html">Read the docs</a>
         </div>
+        <!-- shot: the full LibrePaper editor, source and annotated paper side by side -->
       </section>
 
-      <!-- ----------------------------------------------------------- cards
-           One block per thing LibrePaper is for. Each will take a picture of
-           itself once there are better ones to take; the slots are marked.
-
-           Any Format leads and spans the row: it is the first thing that
-           separates this from marking up a PDF, and the rest only matter once
-           a reader can open the document at all. -->
-      <section class="grid gap-6 lg:grid-cols-3">
-        <article class="card preset-tonal-surface flex flex-col gap-3 p-6 lg:col-span-3">
-          <h2 class="text-xl font-semibold">Any format</h2>
-          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
-            <li>Markdown, HTML, Typst, LaTeX and Quarto.</li>
-            <li>Compilation in the browser.</li>
-            <li>No installation for reviewers.</li>
+      <!-- --------------------------------------------------------- formats -->
+      <section class="bg-primary-50-950 border-surface-200-800 border-y px-4 py-14 text-center">
+        <div class="mx-auto flex max-w-3xl flex-col items-center gap-6">
+          <h2 class="text-3xl font-semibold">Any format</h2>
+          <div class="flex flex-wrap justify-center gap-2" aria-label="Supported formats">
+            <span class="border-surface-300-700 rounded-full border px-4 py-1.5">Markdown</span>
+            <span class="border-surface-300-700 rounded-full border px-4 py-1.5">HTML</span>
+            <span class="border-surface-300-700 rounded-full border px-4 py-1.5">Typst</span>
+            <span class="border-surface-300-700 rounded-full border px-4 py-1.5">LaTeX</span>
+            <span class="border-surface-300-700 rounded-full border px-4 py-1.5">Quarto</span>
+          </div>
+          <ul class="text-surface-600-400 grid list-disc gap-x-10 gap-y-2 pl-5 text-left sm:grid-cols-2">
+            <li>Compile in the browser.</li>
+            <li>Nothing to install for reviewers.</li>
+            <li>BibTeX and BibLaTeX.</li>
+            <li>Mathematics, figures and multi-file projects.</li>
           </ul>
-          <!-- shot: the same paper open in two formats, side by side -->
+        </div>
+      </section>
+
+      <!-- --------------------------------------------------------- features -->
+      <section class="mx-auto flex w-full max-w-6xl flex-col px-4 py-8">
+        <article class="grid min-h-80 items-center gap-10 border-b border-surface-200-800 py-16 lg:grid-cols-2">
+          <div class="flex max-w-xl flex-col gap-5">
+            <h2 class="text-3xl font-semibold sm:text-4xl">Collaborate</h2>
+            <p class="text-surface-600-400 text-lg">Real-time reading, annotation and editing.</p>
+            <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+              <li>Named carets and personal undo.</li>
+              <li>Comments anchored to text or figures.</li>
+              <li>Reader, commenter, editor and owner links.</li>
+            </ul>
+          </div>
+          <!-- shot: two named carets in one paragraph, with its comment thread open -->
         </article>
 
-        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
-          <h2 class="text-lg font-semibold">Collaborate</h2>
-          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
-            <li>Real-time reading, annotation and editing.</li>
-            <li>Named carets and personal undo.</li>
-            <li>Comments anchored to text or figures.</li>
-            <li>Links for every role.</li>
-          </ul>
-          <!-- shot: two named carets in one paragraph, thread open beside it -->
+        <article class="grid min-h-80 items-center gap-10 border-b border-surface-200-800 py-16 lg:grid-cols-2">
+          <!-- shot: original passage and revision beside a response to reviewers -->
+          <div class="flex max-w-xl flex-col gap-5 lg:col-start-2">
+            <h2 class="text-3xl font-semibold sm:text-4xl">Review every change</h2>
+            <p class="text-surface-600-400 text-lg">Follow a passage from comment to revision and response.</p>
+            <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+              <li>Original passages alongside revisions.</li>
+              <li>Named checkpoints and word-level diffs.</li>
+              <li>Accept or reject each change.</li>
+              <li>Responses to reviewers from comment threads.</li>
+            </ul>
+          </div>
         </article>
 
-        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
-          <h2 class="text-lg font-semibold">History &amp; track changes</h2>
-          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
-            <li>Responses to reviewers from comment threads.</li>
-            <li>Original passages alongside revisions.</li>
-            <li>Named checkpoints and word-level diffs.</li>
-            <li>Accept or reject each change.</li>
-          </ul>
-          <!-- shot: the thread on the left, generated response.md on the right -->
+        <article class="grid min-h-80 items-center gap-10 py-16 lg:grid-cols-2">
+          <div class="flex max-w-xl flex-col gap-5">
+            <h2 class="text-3xl font-semibold sm:text-4xl">Work with agents</h2>
+            <p class="text-surface-600-400 text-lg">Bring your own agent. No additional subscription.</p>
+            <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+              <li>Three agent skills included.</li>
+              <li>Permissions limited by the link.</li>
+              <li>Credentials and inference stay local.</li>
+            </ul>
+          </div>
+          <!-- shot: an agent's anchored suggestion awaiting review -->
         </article>
+      </section>
 
-        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
-          <h2 class="text-lg font-semibold">LLM agents</h2>
-          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
-            <li>Bring your own agent. No additional subscription.</li>
-            <li>Three agent skills included.</li>
-            <li>Permissions limited by the link.</li>
-            <li>Credentials and inference stay local.</li>
-          </ul>
-          <!-- shot: an anchored suggestion from an agent, awaiting review -->
-        </article>
-
-        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
-          <h2 class="text-lg font-semibold">Writing tools</h2>
-          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
-            <li>BibTeX and BibLaTeX citations.</li>
-            <li>Typeset mathematics.</li>
-            <li>Multi-file papers with figures.</li>
-          </ul>
-          <!-- shot: a citation resolving in the preview, bibliography beneath -->
-        </article>
-
-        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
-          <h2 class="text-lg font-semibold">Self-host</h2>
-          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
-            <li>One static binary.</li>
-            <li>Runs on a laptop or small server.</li>
-            <li>Your access and retention policies.</li>
-            <li>Your documents stay on your machine.</li>
-          </ul>
-          <pre class="bg-surface-100-900 rounded-container overflow-x-auto px-3 py-2 text-sm"><code>librepaper admin serve</code></pre>
-        </article>
-
-        <article class="card preset-tonal-surface flex flex-col gap-3 p-6 lg:col-span-2">
-          <h2 class="text-lg font-semibold">Free and open source</h2>
-          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+      <!-- -------------------------------------------------------- self-host -->
+      <section class="bg-primary-900 text-primary-50 px-4 py-16">
+        <div class="mx-auto flex max-w-3xl flex-col items-start gap-5">
+          <h2 class="text-3xl font-semibold sm:text-4xl">Your papers stay yours.</h2>
+          <p class="max-w-2xl text-lg text-primary-100">
+            Self-host LibrePaper with one static binary. Run it on a laptop or a small server, and
+            choose your own access and retention policies.
+          </p>
+          <ul class="list-disc space-y-2 pl-5 text-primary-100">
             <li>Every feature is free.</li>
-            <li>No tiers, trials or seat limits.</li>
-            <li>100&nbsp;MB per publisher.</li>
-            <li>Optional paid storage may come later; features stay free.</li>
             <li>Open server, reader and renderers.</li>
             <li>Markdown and W3C JSON-LD exports.</li>
           </ul>
-        </article>
+          <pre class="rounded-container bg-primary-950 overflow-x-auto px-4 py-3 text-sm"><code>librepaper admin serve</code></pre>
+        </div>
       </section>
-
     </main>
 
     <script type="module" src="../../web/src/site/index.js"></script>

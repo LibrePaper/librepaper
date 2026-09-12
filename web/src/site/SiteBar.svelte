@@ -9,9 +9,11 @@
 <nav class="flex items-center justify-between gap-4 px-4 py-3">
   <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
     <Logo />
+    <span>LibrePaper</span>
   </a>
   <div class="flex items-center gap-4">
     <a class="text-surface-600-400 hover:text-primary-500 text-sm" href="/start/index.html">Docs</a>
+    <a class="text-surface-600-400 hover:text-primary-500 text-sm" href="https://github.com/LibrePaper/librepaper">GitHub</a>
     <a
       class="btn btn-sm preset-filled-primary-500"
       href="https://app.librepaper.org/try"
