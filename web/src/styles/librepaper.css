@@ -805,8 +805,7 @@ main.reader.source-right .editorpane {
 /* The mark is a page in two puzzle pieces, pine and ink, and the word beside
    it on the landing page is Gotham HTF outlined into paths in the file, so
    there is no brand font to serve: a page still reaches out to nobody. The
-   sources are librepaper-logo.svg and librepaper-icon.svg at the root of the
-   repository; see Logo.svelte. */
+   editable sources are in assets/brand/; see Logo.svelte. */
 
 /* ---------------------------------------------------------- documentation */
 

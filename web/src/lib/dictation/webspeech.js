@@ -3,7 +3,7 @@
 // API's `SpeechRecognition` the same way `capture.js` wraps `getUserMedia`:
 // the constructor arrives as a parameter
 // so this module never touches a browser global directly and
-// `web/checks/dictation-webspeech.mjs` can drive it under Node with a fake.
+// `web/tests/unit/dictation-webspeech.mjs` can drive it under Node with a fake.
 //
 // Unlike the local backend there is no worker, no VAD, and no segmenter --
 // the browser does its own endpointing and hands back one final result per

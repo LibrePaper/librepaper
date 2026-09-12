@@ -8,7 +8,7 @@
 //
 // Every dependency reaching outside this module -- the bridge client, the
 // timer, disposal -- arrives through the constructor so
-// `web/checks/local-preview.mjs` can drive the whole thing under Node with no
+// `web/tests/integration/local-preview.mjs` can drive the whole thing under Node with no
 // browser and no real clock.
 
 const POLL_FAST_MS = 500;

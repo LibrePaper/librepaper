@@ -1,6 +1,6 @@
 // The dictation model catalog: what the settings panel offers, and what the
 // recognizer worker needs to fetch and run each entry. Pure and browser-free
-// so `web/checks/dictation-models.mjs` drives it under Node, the same
+// so `web/tests/unit/dictation-models.mjs` drives it under Node, the same
 // discipline as `web/src/lib/latex/local.js`.
 //
 // Revisions are pinned by hand, in the spirit of `wasm-modules.lock`: moving

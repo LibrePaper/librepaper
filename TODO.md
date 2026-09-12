@@ -62,7 +62,7 @@ says which.
 ## LaTeX
 
 - The LaTeX browser acceptance scripts (`web/tools/latex-e2e.mjs` and
-  `web/checks/latex-browser.mjs`) run Chromium. Other workflows already have
+  `web/tests/browser/latex-browser.mjs`) run Chromium. Other workflows already have
   Firefox checks, but LaTeX still needs Firefox and Safari coverage and
   validation on memory-constrained devices.
 

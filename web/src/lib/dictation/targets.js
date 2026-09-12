@@ -4,7 +4,7 @@
 // CodeMirror editor behind one shape -- { insert, before, alive, focus } --
 // so service.js never branches on what it is talking to. Everything here is
 // pure DOM/editor-object manipulation with no browser globals captured at
-// module load, so `web/checks/dictation-service.mjs` can build targets over
+// module load, so `web/tests/integration/dictation-service.mjs` can build targets over
 // small fake elements/editors under Node.
 
 /// A <textarea> or a text <input>. Insertion replaces the current selection

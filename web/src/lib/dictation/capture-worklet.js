@@ -7,7 +7,7 @@
 // dependencies and of anything beyond arithmetic on typed arrays. The
 // resampling and framing logic is simple enough to read directly; the
 // correctness of the pipeline it feeds is covered by
-// `checks/dictation-service.mjs` via a fake worklet output.
+// `tests/integration/dictation-service.mjs` via a fake worklet output.
 //
 // `sampleRate` here is the AudioWorkletGlobalScope global (the context's
 // rate), not an import -- eslint/no-undef would flag it in a normal module,

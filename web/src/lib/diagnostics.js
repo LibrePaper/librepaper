@@ -9,7 +9,7 @@
 // unknown length.
 //
 // It lives here rather than in the component so that the rule can be tested
-// against a clock the test controls, which is what `checks/diagnostics.mjs`
+// against a clock the test controls, which is what `tests/unit/diagnostics.mjs`
 // does.
 
 export const DIAGNOSTIC_DELAY = 400;

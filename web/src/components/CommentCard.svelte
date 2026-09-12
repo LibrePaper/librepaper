@@ -46,7 +46,7 @@
   // a rune rather than computed inline: `history.wordDiff` is async (it runs
   // the shared WASM renderer worker), so it is asked for in an effect and
   // turned into displayable runs by the pure half of this, `runsFor`, which
-  // is what `web/checks/suggestions.mjs` actually exercises.
+  // is what `web/tests/unit/suggestions.mjs` actually exercises.
   let diffRuns = $state([]);
   let diffRequest = 0;
   $effect(() => {

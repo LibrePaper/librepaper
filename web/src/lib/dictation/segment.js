@@ -4,7 +4,7 @@
 // stream, so something has to decide where one clip ends and the next
 // begins. That is all this module does: it does not know about the
 // microphone, the worker, or any browser API, so it is exercised directly
-// under Node in web/checks/dictation-segmenter.mjs rather than through an
+// under Node in web/tests/unit/dictation-segmenter.mjs rather than through an
 // injected `deps` object like the browser-facing modules.
 //
 // `classify` may be sync or async (the real VAD runs in the same worker and

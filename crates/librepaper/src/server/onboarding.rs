@@ -18,41 +18,41 @@ const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
         main: "librepaper.md",
         title: "Learn LibrePaper with Markdown",
         format: "markdown",
-        source: include_str!("../../../../examples/tutorial-markdown/librepaper.md"),
+        source: include_str!("../../../../docs/examples/tutorial-markdown/librepaper.md"),
         extra: "sections/rendering.md",
-        extra_source: include_str!("../../../../examples/tutorial-markdown/sections/rendering.md"),
+        extra_source: include_str!("../../../../docs/examples/tutorial-markdown/sections/rendering.md"),
     },
     Starter {
         main: "librepaper.typ",
         title: "Learn LibrePaper with Typst",
         format: "typst",
-        source: include_str!("../../../../examples/tutorial-typst/librepaper.typ"),
+        source: include_str!("../../../../docs/examples/tutorial-typst/librepaper.typ"),
         extra: "sections/rendering.typ",
-        extra_source: include_str!("../../../../examples/tutorial-typst/sections/rendering.typ"),
+        extra_source: include_str!("../../../../docs/examples/tutorial-typst/sections/rendering.typ"),
     },
     Starter {
         main: "librepaper.html",
         title: "Learn LibrePaper with HTML",
         format: "html",
-        source: include_str!("../../../../examples/tutorial-html/librepaper.html"),
+        source: include_str!("../../../../docs/examples/tutorial-html/librepaper.html"),
         extra: "sections/rendering.html",
-        extra_source: include_str!("../../../../examples/tutorial-html/sections/rendering.html"),
+        extra_source: include_str!("../../../../docs/examples/tutorial-html/sections/rendering.html"),
     },
     Starter {
         main: "librepaper.tex",
         title: "Learn LibrePaper with LaTeX",
         format: "latex",
-        source: include_str!("../../../../examples/tutorial-latex/librepaper.tex"),
+        source: include_str!("../../../../docs/examples/tutorial-latex/librepaper.tex"),
         extra: "sections/rendering.tex",
-        extra_source: include_str!("../../../../examples/tutorial-latex/sections/rendering.tex"),
+        extra_source: include_str!("../../../../docs/examples/tutorial-latex/sections/rendering.tex"),
     },
     Starter {
         main: "librepaper.qmd",
         title: "Learn LibrePaper with Quarto",
         format: "quarto",
-        source: include_str!("../../../../examples/tutorial-quarto/librepaper.qmd"),
+        source: include_str!("../../../../docs/examples/tutorial-quarto/librepaper.qmd"),
         extra: "sections/rendering.qmd",
-        extra_source: include_str!("../../../../examples/tutorial-quarto/sections/rendering.qmd"),
+        extra_source: include_str!("../../../../docs/examples/tutorial-quarto/sections/rendering.qmd"),
     },
 ];
 
@@ -114,7 +114,7 @@ impl Server {
             }
             if !room.tree().await.files.contains_key("librepaper-icon.png") {
                 let icon =
-                    include_bytes!("../../../../examples/tutorial-markdown/librepaper-icon.png")
+                    include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png")
                         .to_vec();
                 let (sha, _) = room
                     .put_asset(icon, (self.config.max_asset, self.config.max_assets))

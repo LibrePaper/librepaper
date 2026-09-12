@@ -24,7 +24,6 @@
   import { createPendingChat } from "../lib/reader/chat.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
-  import PendingAnnotations from "./PendingAnnotations.svelte";
   import {
     SHELL_HEADERS,
     authHeaders,
@@ -54,7 +53,6 @@
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import CopyLink from "./CopyLink.svelte";
-  import Share from "./Share.svelte";
   import Modal from "./Modal.svelte";
   import Toasts from "./Toasts.svelte";
   import DictationDownload from "./DictationDownload.svelte";
@@ -66,18 +64,11 @@
   import { targetForActiveElement, textareaTarget } from "../lib/dictation/targets.js";
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
-  import Collaboration from "./Collaboration.svelte";
-  import Changes from "./Changes.svelte";
   import { loadRenderOptions, saveRenderOptions, parseRenderOptions } from "../lib/quarto-options.js";
-  import Agent from "./Agent.svelte";
-  import History from "./History.svelte";
-  import Diagnostics from "./Diagnostics.svelte";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import LatexStatus from "./LatexStatus.svelte";
   import PreviewStatus from "./PreviewStatus.svelte";
   import Avatar from "./Avatar.svelte";
-  import Files from "./Files.svelte";
-  import Outline from "./Outline.svelte";
   import { extractOutline } from "../lib/outline.js";
   import { createPreviewApi } from "../lib/reader/preview-api.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
@@ -85,6 +76,7 @@
   import { HIGHLIGHT_COLORS } from "../lib/annotation-colors.js";
   import DictationButton from "./DictationButton.svelte";
   import InsertMenu from "./InsertMenu.svelte";
+  import ReaderSidebar from "./reader/ReaderSidebar.svelte";
 
   const SLUG = location.pathname.split("/").pop();
 
@@ -868,7 +860,7 @@
 
   /* -------------------------------------------------------------------- room */
 
-  let collaboration = null;
+  let collaboration = $state(null);
 
   function sendLiveChat(text) {
     if (!collaboration || !connected || !mayChat) return Promise.resolve(false);
@@ -1976,7 +1968,7 @@
     // The live preview owns the pane while it is running (or starting): the
     // frame shows Quarto's own page, kept current by `syncQuartoLive` and
     // the page poller, not by anything painted here.
-    // `typeof` rather than a bare read: checks/reader-races.mjs runs this
+    // `typeof` rather than a bare read: tests/unit/reader-races.mjs runs this
     // function's body in isolation against a context that does not declare
     // these names for its non-Quarto (and some Quarto) cases.
     // Keyed to a preview actually running or starting, not to whether this
@@ -2048,7 +2040,7 @@
       // A manual compile is asked for once; the flag is read here, at the
       // one call site that reaches the compiler, and cleared immediately so
       // it cannot linger onto an edit's ordinary debounced compile.
-      // `typeof` rather than a bare read: checks/reader-races.mjs runs this
+      // `typeof` rather than a bare read: tests/unit/reader-races.mjs runs this
       // function's body in isolation, pulled out of the component by a text
       // marker, against a context that supplies only the variables each test
       // needs -- `manualCompile` among them only here, where it is read, not
@@ -3419,126 +3411,46 @@
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact || (splitTight && layout === "split")}
       style="height: calc(100dvh - var(--librepaper-bar) - {workspaceBannerHeight}px); --librepaper-activity: {ACTIVITY_WIDTH}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
-  <!-- The column, first: the files, the comments or the history, chosen by
-       the activity bar. A file dropped anywhere on it joins the project. -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <aside class="sidebar" class:collapsed={!shown.comments} ondragover={(event) => event.preventDefault()} ondrop={dropped}>
-      <div class="sidebar-activity">
-        <div class="activity-sections" role="group" aria-label="Sidebar sections">
-          {#each tabs as tab (tab.id)}
-            {#if tab.id === "diagnostics"}
-              <!-- The counts sit under the icon, in the colour of what they
-                   count, so the bar says at a glance whether the document
-                   compiles; the words go to the tooltip and the screen reader. -->
-              <div class="activity-diagnostics">
-                <IconButton icon="triangle-alert"
-                  label={diagnosticBadge ? `${tab.says}: ${diagnosticBadge}` : tab.says}
-                  pressed={panel === tab.id}
-                  onclick={() => selectPanel(tab.id)} />
-                {#if diagnostics.length}
-                  <span class="activity-counts" aria-hidden="true">
-                    {#if errorCount}<span class="activity-count errors">{errorCount}</span>{/if}
-                    {#if warningCount}<span class="activity-count warnings">{warningCount}</span>{/if}
-                  </span>
-                {/if}
-              </div>
-            {:else}
-              <IconButton
-                icon={tab.id === "files" ? "folder" : tab.id === "outline" ? "list" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "share" ? "users" : "sliders"}
-                label={tab.says} pressed={panel === tab.id}
-                onclick={() => selectPanel(tab.id)} />
-            {/if}
-          {/each}
-        </div>
-        <div class="activity-bottom" role="group" aria-label="Workspace controls">
-          {#if editing}
-            <IconButton icon={ARRANGEMENTS[layout].icon}
-              label={`Layout: ${ARRANGEMENTS[layout].says}. Switch to ${ARRANGEMENTS[ARRANGEMENTS[layout].next].says}`}
-              onclick={cycleLayout} />
-          {/if}
-          <IconButton icon="help" label="Documentation" href="/documentation" />
-        </div>
-      </div>
-      {#if settled}
-      <div class="sidebar-content">
-      {#each tabs.filter((tab) => visitedPanels.includes(tab.id) || (tab.id === "collaboration" && unconfirmed.length)) as tab (tab.id)}
-      <div class="panel-slot" hidden={panel !== tab.id || !shown.comments}>
-      {#if tab.id === "files" && mayEdit}
-        <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
-               {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
-               onmkdir={(path) => session.addFolder(path, rules)} onrelocate={relocateFiles}
-               ondelete={deleteFiles} onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
-               onfigure={addFigure} ontext={addDroppedText}
-               ondownload={downloadTree} ondownloaditem={downloadEntry} />
-      {:else if tab.id === "outline" && mayEdit}
-        <Outline headings={outlineHeadings} activeFrom={outlineActiveFrom}
-                 onselect={openOutlineHeading} />
-      {:else if tab.id === "agent"}
-        <Agent slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"} path={session?.paths?.get(openFile) || ""}
-               selection={pending} revision={pending?.revision || ""} request={assistantRequest}
-               {comments} {diagnostics} oncommenttask={askCommentAssistant} ondiagnostictask={askDiagnostic}
-               onreview={reviewAssistantResults} onpreview={previewAssistant} />
-      {:else if tab.id === "collaboration"}
-        <Collaboration messages={liveChat} {connected} canPost={mayChat}
-          onsend={sendLiveChat} {unreadChat} bind:tab={collaborationTab}
-          {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
-          canComment={mayChat} hasFigures={figureAt.length > 0} ontool={chooseTool}
-          onreveal={revealAnnotation} selected={selectedAnnotation}
-          onresolve={resolve} ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} />
-      {:else if tab.id === "changes"}
-        <Changes {comments} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
-          canComment={mayChat} ontool={chooseTool} onreveal={revealAnnotation} selected={selectedAnnotation}
-          onresolve={resolve} ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply}
-          onaccept={(comment) => decideSuggestion(comment, "accept")} onreject={(comment) => decideSuggestion(comment, "reject")}
-          onrejectconfirmed={rejectConfirmed}
-          onhistory={() => { setHistoryRedlines(true); void showPanel("history"); }} />
-      {:else if tab.id === "share" && canSeeSharing}
-        <Share open={panel === "share" && shown.comments} inline slug={SLUG} onclose={() => showPanel("")} />
-      {:else if tab.id === "diagnostics"}
-        <Diagnostics {diagnostics}
-                     localAppProblem={localAppDiagnostics.length > 0}
-                     onretrylocal={() => sourceFormat === "quarto" ? setQuartoPreviewMode("quarto") : sourceFormat === "typst" ? setTypstPreviewMode("calepin") : ensureLocalApp()}
-                     main={previewMain || session?.mainPath() || ""}
-                     canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
-                     provenance={lastLatexResult?.provenance || null} attempts={lastLatexResult?.attempts || []} />
-      {:else if tab.id === "history"}
-        <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit}
-                 durability={historyDurability}
-                 comparingCurrent={historyController.comparingCurrent} newerEdits={historyController.newerEdits}
-                 oncomparecurrent={compareWithCurrent} onrefreshcurrent={refreshHistoryCurrent}
-                 problem={historyProblem}
-                 baseline={historyBaseline} changes={historyChanges}
-                 changedPaths={historyChangedPaths}
-                 redlines={historyRedlines} onredlines={setHistoryRedlines}
-                 {fileDiff}
-                 target={historyComparePoint}
-                 onview={viewPoint} oncompare={compareSince}
-                 onback={() => viewPoint("")} onname={nameCheckpoint}
-                 onrestore={restoreCheckpoint} oncopy={checkpointLink}
-                 onstep={revealHistoryHunk}
-                 oncheckpointfile={openCheckpointFile}
-                 onfilediff={openFileDiff} onclosefilediff={historyController.closeFileDiff} />
-      {/if}
-      <!-- Submissions the room has not confirmed sit under the panel, so the
-           panel's own tabs stay anchored at the top of the column. -->
-      {#if panel === tab.id && ["collaboration", "changes"].includes(tab.id) && unconfirmed.length}
-        <div class="pending-recovery">
-          <PendingAnnotations items={unconfirmed}
-            onretry={(id) => outbox.retry(id, (message) => collaboration?.send(message))}
-            ondiscard={discardAnnotation} />
-        </div>
-      {/if}
-      </div>
-      {/each}
-      </div>
-      {/if}
-    </aside>
-  {#if shown.comments && !compact}
-    <Grip pane={PANES.sidebar} label="Resize the left-hand column" panes={panes}
-          onsize={(size) => setSize(PANES.sidebar, size)}
-          onguide={(where) => (guide = where)}
-          ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }} />
-  {/if}
+  <ReaderSidebar
+    {shown} {tabs} {panel} {diagnostics} {diagnosticBadge} {errorCount} {warningCount}
+    {editing} layout={layout} arrangements={ARRANGEMENTS} {settled} {visitedPanels} {unconfirmed}
+    {mayEdit} {files} {folders} {openFile} peersByFile={peersByFile} {rules}
+    {outlineHeadings} {outlineActiveFrom} slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
+    {canSeeSharing}
+    path={session?.paths?.get(openFile) || ""} selection={pending} selected={selectedAnnotation}
+    revision={pending?.revision || ""} request={assistantRequest} {comments} {figureAt} {identity}
+    commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
+    {liveChat} {connected} {mayChat} {unreadChat} bind:collaborationTab
+    {checkpoints} {viewing} historyDurability={historyDurability} {historyController}
+    {historyProblem} historyBaseline={historyBaseline} historyChanges={historyChanges}
+    historyChangedPaths={historyChangedPaths} historyRedlines={historyRedlines} {fileDiff}
+    historyComparePoint={historyComparePoint} localAppDiagnostics={localAppDiagnostics}
+    previewMain={previewMain || session?.mainPath() || ""} {lastLatexResult} compact={compact}
+    {outbox} {collaboration} panes={panes} sidebarPane={PANES.sidebar}
+    onselectpanel={selectPanel} oncyclelayout={cycleLayout} bind:onfilelist={fileList}
+    onopen={openTheFile} onadd={addFile} onmkdir={(path) => session.addFolder(path, rules)}
+    onrelocate={relocateFiles} ondelete={deleteFiles}
+    onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
+    onfigure={addFigure} ontext={addDroppedText} ondownload={downloadTree} ondownloaditem={downloadEntry}
+    onopenoutline={openOutlineHeading} oncommenttask={askCommentAssistant} ondiagnostictask={askDiagnostic}
+    onreview={reviewAssistantResults} onpreview={previewAssistant} onsendchat={sendLiveChat}
+    ontool={chooseTool} onreveal={revealAnnotation} onresolve={resolve} onaskdelete={askDelete}
+    ondeletemany={askDeleteMany} onreply={reply} ondecide={decideSuggestion}
+    onrejectconfirmed={rejectConfirmed} onsethistoryredlines={setHistoryRedlines}
+    onshowhistory={() => { setHistoryRedlines(true); void showPanel("history"); }}
+    onshareclose={() => showPanel("")}
+    ondrop={dropped}
+    onretrylocal={() => sourceFormat === "quarto" ? setQuartoPreviewMode("quarto") : sourceFormat === "typst" ? setTypstPreviewMode("calepin") : ensureLocalApp()}
+    canopendiagnostic={(item) => Boolean(diagnosticFile(item))} onopendiagnostic={openDiagnostic}
+    onviewpoint={viewPoint} oncompare={compareSince}
+    oncomparecurrent={compareWithCurrent} onrefreshcurrent={refreshHistoryCurrent}
+    onbackhistory={() => viewPoint("")} onnamecheckpoint={nameCheckpoint} onrestore={restoreCheckpoint}
+    oncopycheckpoint={checkpointLink} onstephistory={revealHistoryHunk} oncheckpointfile={openCheckpointFile}
+    onfilediff={openFileDiff} onclosefilediff={historyController.closeFileDiff}
+    onsize={(size) => setSize(PANES.sidebar, size)} onguide={(where) => (guide = where)}
+    ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}
+    onretryannotation={(id, send) => outbox.retry(id, send)} ondiscardannotation={discardAnnotation}
+  />
 
   {#if editing}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -3878,45 +3790,6 @@
     color: var(--color-surface-700-300);
     font-size: var(--text-sm);
   }
-  .sidebar { flex-direction: row; }
-  .sidebar.collapsed { flex: 0 0 var(--librepaper-activity); }
-  .sidebar-activity {
-    display: flex;
-    flex: none;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--spacing);
-    width: var(--librepaper-activity);
-    padding-block: calc(var(--spacing) * 3);
-    border-right: 1px solid var(--color-divider);
-  }
-  .activity-bottom { display: flex; flex-direction: column; align-items: center; gap: var(--spacing); margin-top: auto; }
-  .activity-sections {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--spacing);
-  }
-  .activity-sections :global(.icon-control) {
-    position: relative;
-    width: 2rem;
-    height: 2rem;
-    border-radius: var(--radius-base);
-  }
-  .activity-sections :global(.icon-control[aria-pressed="true"]) {
-    background: var(--color-primary-100-900);
-    color: var(--color-primary-700-300);
-  }
-  .activity-sections :global(.icon-control[aria-pressed="true"]::before) {
-    content: "";
-    position: absolute;
-    left: calc((2rem - var(--librepaper-activity)) / 2 + 1px);
-    top: 0.375rem;
-    bottom: 0.375rem;
-    width: 3px;
-    border-radius: 0 2px 2px 0;
-    background: var(--color-primary-500);
-  }
   .compact-workspace-menu { display: none; }
   .workspace-banner { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4); border-bottom: 1px solid var(--color-divider); }
   .presence { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-surface-600-400); font-size: var(--text-xs); }
@@ -3932,43 +3805,8 @@
     .desktop-workspace-menu { display: none; }
     .compact-workspace-menu { display: block; }
   }
-  .activity-diagnostics {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-  }
-  .activity-counts {
-    display: flex;
-    gap: 4px;
-    font-size: 0.625rem;
-    line-height: 1;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-  .activity-count.errors { color: var(--color-error-500); }
-  .activity-count.warnings { color: var(--color-warning-500); }
-  .sidebar-content {
-    display: flex;
-    flex-direction: column;
-    flex: 1 1 auto;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-  .panel-slot { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
-  .panel-slot[hidden] { display: none; }
-  .pending-recovery { flex-shrink:0; max-height:35%; overflow-y:auto; border-top:1px solid var(--color-surface-300-700); background:var(--color-surface-100-900); }
   .highlight-colors { display:flex; align-items:center; gap:3px; padding:2px; border-radius:4px; background:var(--color-surface-100-900); }
   .color-swatch { width:1.25rem; height:1.25rem; border:2px solid transparent; border-radius:50%; }
   .color-swatch.selected { border-color:var(--color-surface-900-100); box-shadow:0 0 0 1px var(--color-primary-500); }
   .custom-color input { width:1.35rem; height:1.35rem; padding:0; border:0; background:transparent; }
-  @media (max-width: 760px) {
-    .sidebar, .sidebar.collapsed { flex-direction: column; }
-    .sidebar-activity { display: flex; order: 1; width: 100%; padding-block: var(--spacing); border-right: 0; border-top: 1px solid var(--color-divider); }
-    .sidebar-activity .activity-sections { display: none; }
-    .activity-bottom { flex-direction: row; }
-    .activity-sections { flex-direction: row; }
-    .sidebar-content { overflow: hidden; }
-  }
 </style>

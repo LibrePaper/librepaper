@@ -5,7 +5,7 @@
 //
 // Everything ambient (creating the worker, opening the microphone, reading
 // storage, showing a toast, the wall clock) arrives through `deps`, in the
-// style of `web/src/lib/latex/local.js`, so `web/checks/dictation-service.mjs`
+// style of `web/src/lib/latex/local.js`, so `web/tests/integration/dictation-service.mjs`
 // can drive the real state machine under Node with fakes.
 //
 // `assemble` and the catalog are reached through `deps` as well, so a check

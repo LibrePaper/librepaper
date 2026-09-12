@@ -1,7 +1,7 @@
 dist/
 librepaper-data/
-examples/*.html
-examples/*_files/
+docs/examples/*.html
+docs/examples/*_files/
 .envrc
 .env
 
@@ -20,21 +20,21 @@ target/
 # Installed dependencies are generated; keep manifests and lockfiles tracked.
 node_modules/
 
-# The LaTeX distributions, mirrored locally by latex/tools/mirror.mjs. Hundreds of
+# The LaTeX distributions, mirrored locally by tools/latex/tools/mirror.mjs. Hundreds of
 # megabytes of somebody else's release; a manifest and a script rebuild it.
-latex/mirror/
+tools/latex/mirror/
 
-# What a TeX run leaves beside a document in latex/corpus. The corpus keeps
+# What a TeX run leaves beside a document in tools/latex/corpus. The corpus keeps
 # its sources and the logs the engines produced; everything else is remade by
-# `node latex/tools/texlive.mjs`.
-latex/corpus/*/main.aux
-latex/corpus/*/main.bbl
-latex/corpus/*/main.blg
-latex/corpus/*/main.log
-latex/corpus/*/main.pdf
-latex/corpus/*/main.synctex.gz
-latex/corpus/*/chapters/*.aux
-latex/corpus/article/article.bib
+# `node tools/latex/tools/texlive.mjs`.
+tools/latex/corpus/*/main.aux
+tools/latex/corpus/*/main.bbl
+tools/latex/corpus/*/main.blg
+tools/latex/corpus/*/main.log
+tools/latex/corpus/*/main.pdf
+tools/latex/corpus/*/main.synctex.gz
+tools/latex/corpus/*/chapters/*.aux
+tools/latex/corpus/article/article.bib
 
 # What wrangler leaves beside deploy/latex/wrangler.toml when it deploys.
 deploy/latex/.wrangler/

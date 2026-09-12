@@ -2,7 +2,7 @@
 // instructions for the frame, and working out whose name -- and whose
 // colour -- belongs on them.
 //
-// Pure functions only, so `web/checks/redlines.mjs` can check both without a
+// Pure functions only, so `web/tests/unit/redlines.mjs` can check both without a
 // browser: the hunk shapes come from `history.hunks` (see `Reader.svelte`'s
 // `computeHistoryChanges`, which stamps a rendered-text `position` onto each
 // one), and the checkpoint shape is the manifest's `{sha, at, by, why,

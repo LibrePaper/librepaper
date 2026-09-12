@@ -19,7 +19,7 @@ import { ephemeralMirror } from "./ephemeral-mirror.mjs";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BINARY = resolve(process.argv[2] || "target/debug/librepaper");
 const MODE = process.argv[3] || "browser";
-const REQUESTED_FIXTURE = resolve(process.argv[4] || join(ROOT, "latex", "corpus", "e2e", "biber"));
+const REQUESTED_FIXTURE = resolve(process.argv[4] || join(ROOT, "tools", "latex", "corpus", "e2e", "biber"));
 const WAIT = Number(process.argv[5] || 300);
 const MIRROR_ARG = process.argv[6] || process.env.MIRROR || join(ROOT, "..", "wasm-latex", "mirror");
 const PORT = 8600 + Math.floor(Math.random() * 200);
@@ -96,7 +96,7 @@ async function main() {
   if (!(MODE === "browser" || MODE === "local")) throw new Error(`unknown mode ${MODE}; use browser or local`);
   const fixture = existsSync(REQUESTED_FIXTURE)
     ? REQUESTED_FIXTURE
-    : join(ROOT, "latex", "corpus", "e2e", "native");
+    : join(ROOT, "tools", "latex", "corpus", "e2e", "native");
   if (!statSync(fixture)) throw new Error(`fixture does not exist: ${fixture}`);
 
   const mirrorUrl = /^https:\/\//i.test(MIRROR_ARG)

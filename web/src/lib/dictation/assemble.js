@@ -1,7 +1,7 @@
 // Turns one recognizer segment into the exact string to insert at the caret.
 //
 // This is pure and dependency-free
-// so `web/checks/dictation-assemble.mjs` can run it under Node, and so the
+// so `web/tests/unit/dictation-assemble.mjs` can run it under Node, and so the
 // service can call it synchronously on every worker `text` message without
 // worrying about ambient state. It never looks far into `before`: only the
 // last few characters can change the outcome (a caret position, not a

@@ -481,9 +481,9 @@ librepaper admin serve                                     # defaults to the pro
 ```
 
 `make deploy` checks that the selected mirror contains a default engine
-release with its TeX Live bundles (`latex/tools/check-mirror.mjs`; see
+release with its TeX Live bundles (`tools/latex/tools/check-mirror.mjs`; see
 `make latex-check` and `make latex-smoke`, MIRROR=). Older per-file mirrors
-and SwiftLaTeX/BusyTeX releases are rejected as legacy. `make latex-smoke` compiles `examples/tutorial-latex/librepaper.tex`
+and SwiftLaTeX/BusyTeX releases are rejected as legacy. `make latex-smoke` compiles `docs/examples/tutorial-latex/librepaper.tex`
 in a fresh Chromium profile against MIRROR= and requires visible PDF pages
 and selectable text before you point a deployment at it.
 

@@ -278,7 +278,7 @@ mod tests {
     }
 
     fn broken_paths() -> Vec<String> {
-        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../latex/corpus/broken");
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/latex/corpus/broken");
         let mut out = Vec::new();
         corpus_paths(&base, &base, &mut out);
         out
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn undefined_control_sequence_lands_in_the_chapter_at_line_seven() {
         let log_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../latex/corpus/broken/logs/texlive.log");
+            .join("../../tools/latex/corpus/broken/logs/texlive.log");
         let log = fs::read_to_string(&log_path).expect("broken/logs/texlive.log");
         let diagnostics = parse(&log, "main.tex", &broken_paths());
 
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn the_package_warning_is_a_warning_not_an_error() {
         let log_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../latex/corpus/broken/logs/texlive.log");
+            .join("../../tools/latex/corpus/broken/logs/texlive.log");
         let log = fs::read_to_string(&log_path).expect("broken/logs/texlive.log");
         let diagnostics = parse(&log, "main.tex", &broken_paths());
 
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn an_overfull_hbox_is_a_warning_with_its_line() {
         let log_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../latex/corpus/broken/logs/texlive.log");
+            .join("../../tools/latex/corpus/broken/logs/texlive.log");
         let log = fs::read_to_string(&log_path).expect("broken/logs/texlive.log");
         let diagnostics = parse(&log, "main.tex", &broken_paths());
 

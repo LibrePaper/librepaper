@@ -59,7 +59,7 @@ fn copy_tree(src: &Path, dst: &Path) {
 
 fn corpus_dir(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../latex/corpus")
+        .join("../../tools/latex/corpus")
         .join(name)
 }
 

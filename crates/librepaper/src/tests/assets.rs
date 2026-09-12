@@ -327,7 +327,7 @@ fn no_page_mounts_itself_into_a_wrapper() {
 // four levels up are gone for good.
 //
 // The rule that a page writes no colour or size of its own is checked over the
-// sources instead, by web/checks/vocabulary.js, where the source is.
+// sources instead, by web/tests/unit/vocabulary.js, where the source is.
 #[test]
 fn the_pages_are_built_from_the_design_system() {
     let css = stylesheets();

@@ -27,7 +27,7 @@ TYPST   := web/dist/wasm/typst.wasm
 SHELL_OUT := web/dist/index.html
 WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
-SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find examples -type f) Cargo.toml README.md
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml README.md
 
 .DEFAULT_GOAL := help
 .PHONY: help build install test test-external test-release-workloads smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
@@ -75,7 +75,7 @@ test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@cd web && bun run check
 	@cargo fmt --check
 	@node web/tools/pin-tools.test.mjs
-	@node latex/tools/check-mirror.test.mjs
+	@node tools/latex/tools/check-mirror.test.mjs
 	@cargo clippy --workspace --all-targets -- -D warnings
 # nextest runs each case in its own process, so one crate's failure does not
 # abandon the crates after it and a hung case is named rather than waited on.
@@ -116,10 +116,10 @@ smoke: $(BIN)  ## Drive the reader in headless chromium (needs chromium)
 fmt:  ## Format every crate
 	@cargo fmt
 
-# The fuzz targets in fuzz/: libFuzzer over the functions that read what a
+# The fuzz targets in tools/fuzz/: libFuzzer over the functions that read what a
 # peer sends -- the word diff and merge, the path rules, the shared document
 # and its repair, and a v1 update against the admission ceilings. Each runs
-# for FUZZ_SECONDS, then stops; a finding is left in fuzz/artifacts/. Needs a
+# for FUZZ_SECONDS, then stops; a finding is left in tools/fuzz/artifacts/. Needs a
 # nightly toolchain and cargo-fuzz (`cargo install cargo-fuzz`). No sanitizer:
 # the code under test is safe Rust, the oracle is the assertions, and the
 # sanitizer doubles the build time to find nothing the panics do not.
@@ -127,14 +127,14 @@ FUZZ_SECONDS ?= 60
 # Every target unless told otherwise. `update` is known to fail on a panic
 # inside yrs (the ignored test in crates/librepaper/src/tests/directories.rs
 # reproduces it), so CI runs the other three until that is settled.
-FUZZ_TARGETS ?= $(shell cd fuzz && cargo fuzz list)
+FUZZ_TARGETS ?= $(shell cargo fuzz list --fuzz-dir tools/fuzz)
 # The global export would evaluate this for every recipe, even outside fuzz.
 unexport FUZZ_TARGETS
 fuzz: wasm $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SECONDS (default 60) each
 	@command -v cargo-fuzz >/dev/null || { echo "cargo-fuzz is not installed: cargo install cargo-fuzz"; exit 1; }
-	@cd fuzz && for target in $(FUZZ_TARGETS); do \
+	@for target in $(FUZZ_TARGETS); do \
 		echo "fuzzing $$target for $(FUZZ_SECONDS)s"; \
-		cargo fuzz run -s none $$target -- -max_total_time=$(FUZZ_SECONDS) || exit 1; \
+		cargo fuzz run --fuzz-dir tools/fuzz -s none $$target -- -max_total_time=$(FUZZ_SECONDS) || exit 1; \
 	done
 
 # Release builds are described in .github/workflows/release.yml and run when a
@@ -166,7 +166,7 @@ serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX_MIR
 
 # One tutorial project per source format LibrePaper accepts. Each project has
 # a source file and the same relative icon asset; no example is generated.
-EXAMPLES := $(shell find examples/tutorial-* -type f)
+EXAMPLES := $(shell find docs/examples/tutorial-* -type f)
 
 # Not in the help: a step of `deploy`, not an entry point.
 examples: $(EXAMPLES)
@@ -195,12 +195,12 @@ kill:  ## Stop a server started with make serve
 MIRROR ?= ../wasm-latex/mirror
 
 latex-check:
-	@node latex/tools/check-mirror.mjs $(MIRROR)
+	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
 
 latex-smoke: $(BIN)  ## Compile and display the seeded LaTeX example in Chromium against MIRROR=
-	@node latex/tools/check-mirror.test.mjs
-	@node latex/tools/check-mirror.mjs $(MIRROR)
-	@node web/tools/latex-e2e.mjs $(BIN) browser examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
+	@node tools/latex/tools/check-mirror.test.mjs
+	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
+	@node web/tools/latex-e2e.mjs $(BIN) browser docs/examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
 
 # Use the ordinary sign-in flow: each new account receives five private
 # examples and owns its copies. Guest roles come from links created in Share.
@@ -230,7 +230,7 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 # Svelte, Skeleton, CodeMirror and Yjs, bundled into the pages the binary
 # embeds. The output goes to web/dist, so nothing under that directory is
 # edited by hand. The build refuses to run if a page has drifted from the
-# design system -- see web/checks/vocabulary.js.
+# design system -- see web/tests/unit/vocabulary.js.
 
 web: $(SHELL_OUT)  ## Build the pages from web/
 

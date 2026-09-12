@@ -39,7 +39,7 @@ fn region(index: i64, x: f64, y: f64, w: f64, h: f64) -> Option<Region> {
 pub fn seed_documents() -> Vec<SeedDocument> {
     vec![
         SeedDocument {
-            file: "examples/tutorial-markdown/librepaper.md".into(),
+            file: "docs/examples/tutorial-markdown/librepaper.md".into(),
             files: vec!["sections/rendering.md".into()],
             assets: vec!["librepaper-icon.png".into()],
             title: "Learn LibrePaper with Markdown",
@@ -59,7 +59,7 @@ pub fn seed_documents() -> Vec<SeedDocument> {
             ],
         },
         SeedDocument {
-            file: "examples/tutorial-typst/librepaper.typ".into(),
+            file: "docs/examples/tutorial-typst/librepaper.typ".into(),
             files: vec!["sections/rendering.typ".into()],
             assets: vec!["librepaper-icon.png".into()],
             title: "Learn LibrePaper with Typst",
@@ -79,7 +79,7 @@ pub fn seed_documents() -> Vec<SeedDocument> {
             ],
         },
         SeedDocument {
-            file: "examples/tutorial-html/librepaper.html".into(),
+            file: "docs/examples/tutorial-html/librepaper.html".into(),
             files: vec!["sections/rendering.html".into()],
             assets: vec!["librepaper-icon.png".into()],
             title: "Learn LibrePaper with HTML",
@@ -108,7 +108,7 @@ pub fn seed_documents() -> Vec<SeedDocument> {
             ],
         },
         SeedDocument {
-            file: "examples/tutorial-latex/librepaper.tex".into(),
+            file: "docs/examples/tutorial-latex/librepaper.tex".into(),
             files: vec!["sections/rendering.tex".into()],
             assets: vec!["librepaper-icon.png".into()],
             title: "Learn LibrePaper with LaTeX",
@@ -128,7 +128,7 @@ pub fn seed_documents() -> Vec<SeedDocument> {
             ],
         },
         SeedDocument {
-            file: "examples/tutorial-quarto/librepaper.qmd".into(),
+            file: "docs/examples/tutorial-quarto/librepaper.qmd".into(),
             files: vec!["sections/rendering.qmd".into()],
             assets: vec!["librepaper-icon.png".into()],
             title: "Learn LibrePaper with Quarto",

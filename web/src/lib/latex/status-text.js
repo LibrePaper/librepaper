@@ -5,7 +5,7 @@
 // `Attempt[]` into a sentence
 // a reader can act on. None of that needs a DOM, a worker or `latex.js`
 // itself, so it lives here, in plain functions a Node check can call
-// directly (see checks/latex-reader.mjs) -- the same reason `latex/status.js`
+// directly (see tests/unit/latex-reader.mjs) -- the same reason `latex/status.js`
 // keeps the store apart from `latex.js`.
 //
 // Every wording below either uses the controller messages verbatim (the

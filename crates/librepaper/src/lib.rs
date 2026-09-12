@@ -1,7 +1,7 @@
 //! LibrePaper: host HTML, markdown and typst documents that readers can
 //! annotate. One binary: the server, and the command line that talks to it.
 //!
-//! A library only so that `fuzz/` can reach the three modules that read what
+//! A library only so that `tools/fuzz/` can reach the three modules that read what
 //! a peer sends -- the shared document, the path rules, and the configuration
 //! that holds those rules -- and the integration tests the automation peer.
 //! Those are `pub`; everything else stays private, so the dead-code lint

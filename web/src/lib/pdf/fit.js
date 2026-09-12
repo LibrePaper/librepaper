@@ -1,6 +1,6 @@
 // How large a PDF page is drawn, given the room the frame has.
 //
-// Its own module, with no pdf.js in it, so `checks/pdf-fit.mjs` can ask it
+// Its own module, with no pdf.js in it, so `tests/unit/pdf-fit.mjs` can ask it
 // the question without a browser or a corpus PDF. `render.js` is the only
 // caller; `viewer.js` is what gives it a second chance after a resize.
 

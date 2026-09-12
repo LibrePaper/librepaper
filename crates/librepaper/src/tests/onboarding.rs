@@ -83,7 +83,7 @@ async fn account_examples_are_private_owned_and_created_once() {
                 assert_eq!(entry.main, "librepaper.qmd");
                 assert_eq!(
                     server.instance.rooms.get(&entry.slug).await.source().await,
-                    include_str!("../../../../examples/tutorial-quarto/librepaper.qmd")
+                    include_str!("../../../../docs/examples/tutorial-quarto/librepaper.qmd")
                 );
             }
             let tree = server.instance.rooms.get(&entry.slug).await.tree().await;

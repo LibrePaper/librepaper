@@ -427,7 +427,7 @@ pub fn apply_update(doc: &Doc, update: &[u8]) -> Result<(), String> {
 /// set, for one -- and an assertion is a panic, which a peer could cause with
 /// twelve bytes. The catch is around the decoder alone: it has touched no
 /// document yet, so there is nothing half-done to be left behind. (Found by
-/// fuzz/fuzz_targets/update.rs.)
+/// tools/fuzz/fuzz_targets/update.rs.)
 pub fn decode_update(update: &[u8]) -> Result<Update, String> {
     match std::panic::catch_unwind(|| Update::decode_v1(update)) {
         Ok(Ok(update)) => Ok(update),

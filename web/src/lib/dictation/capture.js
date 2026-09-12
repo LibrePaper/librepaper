@@ -2,7 +2,7 @@
 //
 // Everything that touches the browser -- getUserMedia, AudioContext, and the
 // worklet module's URL -- arrives through arguments rather than the global,
-// so `web/checks/dictation-service.mjs` can drive this exact module under
+// so `web/tests/integration/dictation-service.mjs` can drive this exact module under
 // Node with fakes, following the seam in `web/src/lib/latex/local.js`.
 const FIRST_FRAME_WAIT_MS = 2000;
 

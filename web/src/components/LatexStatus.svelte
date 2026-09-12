@@ -6,7 +6,7 @@
   // Everything here comes from `latex.subscribe`; nothing is stateful on its
   // own. The wording and the action list are pure functions in
   // `latex/status-text.js`, checked without a browser in
-  // checks/latex-reader.mjs -- this file only draws what they return and
+  // tests/unit/latex-reader.mjs -- this file only draws what they return and
   // wires the buttons to `latex.js`.
   import * as latex from "../lib/latex.js";
   import { actionsFor, backendChip, fallbackExplanation, failureHint } from "../lib/latex/status-text.js";

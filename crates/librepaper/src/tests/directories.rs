@@ -96,7 +96,7 @@ fn a_refused_path_is_renamed_rather_than_dropped() {
 
 #[test]
 fn a_file_under_an_id_that_is_not_a_name_is_still_given_one_that_passes() {
-    // Found by fuzz/fuzz_targets/document.rs. An id is a key a peer wrote, so
+    // Found by tools/fuzz/fuzz_targets/document.rs. An id is a key a peer wrote, so
     // it can be anything; a placeholder built from `/` raw was `unnamed-/.txt`,
     // a path the rules refuse, and every repair after the first reported the
     // same rename again without changing anything.
@@ -131,7 +131,7 @@ fn a_file_under_an_id_that_is_not_a_name_is_still_given_one_that_passes() {
 
 #[test]
 fn a_damaged_update_is_refused_rather_than_panicking_inside_yrs() {
-    // Found by fuzz/fuzz_targets/update.rs. One client, one block, and a
+    // Found by tools/fuzz/fuzz_targets/update.rs. One client, one block, and a
     // client id whose high bits are set: yrs asserts on that id while
     // decoding, before any transaction, and the assertion is a panic. The
     // bytes come off a socket, so the panic would have been a peer's to
@@ -152,7 +152,7 @@ fn a_damaged_update_is_refused_rather_than_panicking_inside_yrs() {
 #[test]
 #[ignore = "open: yrs 0.27 divides by zero in BlockStore::find_index while committing this update"]
 fn a_decodable_update_with_a_damaged_block_does_not_panic_at_commit() {
-    // Found by fuzz/fuzz_targets/update.rs, and not yet fixed. The encoded
+    // Found by tools/fuzz/fuzz_targets/update.rs, and not yet fixed. The encoded
     // state of a one-file document with one byte flipped and one dropped: it
     // decodes, `admit_update` says it fits, and applying it panics inside yrs
     // (block_store.rs, `clock / end` with `end` 0) as the transaction

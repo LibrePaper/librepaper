@@ -16,7 +16,7 @@
 //
 // Every dependency this file needs from the ambient browser -- fetch,
 // storage, wall clock, the wait between polls -- is reached through `deps`
-// rather than the global directly, so `web/checks/latex-local.mjs` can run
+// rather than the global directly, so `web/tests/integration/latex-local.mjs` can run
 // this exact code under Node with no browser at all. `_testing.inject`
 // overrides them; `_testing.reset` restores the defaults and clears every
 // module-level variable so checks do not leak into each other.

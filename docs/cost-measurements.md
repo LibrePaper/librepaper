@@ -6,7 +6,7 @@ process ran with a 4 GiB virtual-address-space limit (`ulimit -v 4194304`).
 The host had 54.6 GiB physical RAM; this is a constrained-process smoke test,
 not a measurement of a dedicated 4 GiB machine under sustained load.
 
-The workload published `latex/corpus/e2e/biber`, opened its read link in a
+The workload published `tools/latex/corpus/e2e/biber`, opened its read link in a
 fresh browser, compiled its bibliography with Biber WASM, drew the PDF,
 exported its transient bytes, and checked that rendering routes returned 404.
 Publishing used a locally signed test OAuth account; no provider was contacted.
@@ -34,7 +34,7 @@ Reproduce the browser workload with a built binary and populated mirror:
 
 ```sh
 node web/tools/latex-e2e.mjs target/debug/librepaper browser \
-  latex/corpus/e2e/biber 300 /path/to/wasm-latex/mirror
+  tools/latex/corpus/e2e/biber 300 /path/to/wasm-latex/mirror
 ```
 
 The harness prints aggregate status snapshots before and after the workload.
