@@ -1135,3 +1135,8 @@ impl Server {
         }
     }
 }
+/// Where the manual lives. It is a static site, deployed separately from this
+/// binary, so a documentation change never needs a release and a deployment
+/// never carries a copy of the text.
+pub const DOCUMENTATION: &str = "https://librepaper.org";
+

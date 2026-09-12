@@ -692,6 +692,14 @@ pub(super) async fn dispatch(
         }
     }
 
+    // The manual moved to the static site at librepaper.org: it is no longer
+    // embedded here, and a deployment does not carry a copy of it. Links to
+    // the old address are years old in some cases, so they still work -- they
+    // just leave for the site that now holds the text.
+    if path == "/documentation" {
+        return redirect(DOCUMENTATION);
+    }
+
     // --- the shell -------------------------------------------------------
     let mut page = path.clone();
     if !server.shell.contains_key(&page) {
@@ -704,8 +712,6 @@ pub(super) async fn dispatch(
             page = "/reader.html".to_string();
         } else if path == "/" {
             page = "/index.html".to_string();
-        } else if path == "/documentation" {
-            page = "/documentation.html".to_string();
         }
     }
     if let Some(asset) = server.shell.get(&page) {

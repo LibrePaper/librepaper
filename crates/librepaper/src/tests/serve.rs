@@ -405,7 +405,6 @@ async fn shell_routes() {
     for (path, want) in [
         ("/", "<!doctype html"),
         (&format!("/docs/{slug}"), "<!doctype html"),
-        ("/documentation", "<!doctype html"),
         (bundle.as_str(), "/api/documents/"),
     ] {
         let response = client()
@@ -420,6 +419,27 @@ async fn shell_routes() {
             "{path} returned {status}, body did not contain {want:?}"
         );
     }
+}
+
+// The manual is no longer served here. An old link to /documentation still
+// resolves -- it redirects to the static site that now holds the text --
+// rather than 404ing on a reader who bookmarked it.
+#[tokio::test]
+async fn the_documentation_path_redirects_to_the_site() {
+    let server = new_test_server().await;
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!("{}/documentation", server.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 302);
+    assert_eq!(
+        response.headers().get("location").unwrap(),
+        crate::server::DOCUMENTATION
+    );
 }
 
 // Unknown routes still return a 404; document-shaped paths deliberately

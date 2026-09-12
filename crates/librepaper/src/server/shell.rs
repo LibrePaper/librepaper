@@ -112,24 +112,8 @@ pub fn renderers() -> Vec<String> {
     list
 }
 
-/// The project README rendered into the HTML the documentation page is built
-/// around. The README is the only copy of that text: it is embedded from the
-/// shell directory, where the build puts it, so the page cannot drift from
-/// what the repository says.
-fn documentation() -> Result<String, String> {
-    let source = file("README.md")
-        .ok_or("missing README.md in the shell: run make build, which copies it in")?;
-    let body = wasm_markdown::markdown::render_body(&String::from_utf8_lossy(source));
-    // The page opens with the logo, as the landing page does,
-    // so the README's own title would say the name twice.
-    let leading = regex::Regex::new(r"(?s)^\s*<h1[^>]*>.*?</h1>").expect("a constant pattern");
-    Ok(leading.replace(&body, "").to_string())
-}
-
 /// Everything the server answers with, ready to serve.
 pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>, String> {
-    let prose = documentation()?;
-
     // The renderers first, because the reader page has to be told where they
     // are before it is served.
     let mut shell = HashMap::new();
@@ -151,9 +135,8 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
 
     for entry in walk(&SHELL) {
         let path = entry.path().to_string_lossy().to_string();
-        // The renderers are served under their digest, and the README is the
-        // documentation page's text rather than a page of its own.
-        if path.starts_with("wasm/") || path == "README.md" {
+        // The renderers are served under their digest.
+        if path.starts_with("wasm/") {
             continue;
         }
         let kind = content_type(&path);
@@ -169,7 +152,6 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
             entry
                 .contents_utf8()
                 .unwrap_or_default()
-                .replace("__README__", &prose)
                 .replace("__MODULES__", &modules)
                 .into_bytes()
                 .into()

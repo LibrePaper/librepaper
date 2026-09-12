@@ -1,8 +1,8 @@
 // The shell is compiled in from a directory, so a file added to it -- a
-// freshly built WebAssembly module, the README the Makefile copies in -- has
-// to trigger a rebuild even though no Rust source changed.
+// freshly built WebAssembly module -- has to trigger a rebuild even though no
+// Rust source changed.
 //
-// Two of those files are build outputs rather than sources, and a binary
+// Those files are build outputs rather than sources, and a binary
 // without them starts and then fails on its first request. Better to say so
 // here, where the fix is one command away, than to ship a binary that dies at
 // startup.
@@ -23,7 +23,6 @@ fn main() {
     // rebuild -- which is a stale binary that looks like a working one.
     watch(&shell);
     for (file, how) in [
-        ("README.md", "cp README.md web/dist/README.md"),
         ("wasm/markdown.wasm", "make wasm"),
         ("wasm/bibliography.wasm", "make wasm"),
         ("wasm/citations.wasm", "make wasm"),

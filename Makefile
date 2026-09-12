@@ -27,7 +27,7 @@ TYPST   := web/dist/wasm/typst.wasm
 SHELL_OUT := web/dist/index.html
 WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
-SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml README.md
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
 
 .DEFAULT_GOAL := help
 .PHONY: help build install test test-external test-release-workloads smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
@@ -53,21 +53,6 @@ $(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(TYPST) $(SHELL_OUT) | wasm
 	@# busy" while a rename just leaves it holding the old inode.
 	@cp target/release/librepaper $@.tmp && mv -f $@.tmp $@
 	@echo "$@ ($$(($$(stat -c%s $@) / 1024 / 1024)) MiB) -- deploys on its own"
-
-# The documentation page is the README, so it is copied in to be embedded. The
-# tests read it too, so both depend on it rather than on the build.
-$(BIN) test: web/dist/README.md
-
-# The README links its screenshots, so they are copied in beside it and served
-# at the relative path the page on GitHub uses.
-IMAGES := $(patsubst docs/images/%,web/dist/docs/images/%,$(wildcard docs/images/*.png))
-$(BIN) test: $(IMAGES)
-web/dist/docs/images/%.png: docs/images/%.png
-	@mkdir -p $(dir $@)
-	@cp $< $@
-web/dist/README.md: README.md
-	@mkdir -p $(dir $@)
-	@cp $< $@
 
 # The suite reads the built shell -- a test that asserts a page names its own
 # bundle needs that bundle to exist -- so the pages are built first.
@@ -234,7 +219,7 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 
 web: $(SHELL_OUT)  ## Build the pages from web/
 
-$(SHELL_OUT): $(WEB) web/dist/README.md
+$(SHELL_OUT): $(WEB)
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
 	@cd web && bun install --silent && bun run build
 

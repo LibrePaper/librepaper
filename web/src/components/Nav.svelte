@@ -46,7 +46,7 @@
          icons rather than a phrase in the middle of the bar, which is width
          the document title wanted and a shape nothing else in the bar had. -->
     {#if documentation}
-      <IconButton icon="help" label="Documentation" href="/documentation" />
+      <IconButton icon="help" label="Documentation" href="https://librepaper.org" target="_blank" rel="noopener" />
     {/if}
     <!-- The account's own picture, from GitHub or Google, in a circle, and
          nothing else: the name waits in the menu behind it. A GitHub account

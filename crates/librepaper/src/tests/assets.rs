@@ -29,7 +29,6 @@ fn every_page_is_built() {
     for page in [
         "/index.html",
         "/reader.html",
-        "/documentation.html",
         "/404.html",
         "/agent.js",
     ] {
@@ -185,20 +184,6 @@ fn the_logo_is_served_as_the_icon() {
             );
         }
     }
-}
-
-#[test]
-fn the_documentation_page_carries_the_readme() {
-    let shell = shell();
-    let page = shell["/documentation.html"].text();
-    assert!(
-        !page.contains("__README__"),
-        "the README placeholder was not filled in"
-    );
-    assert!(
-        page.contains("<h2"),
-        "the rendered README has no headings to build a contents list from"
-    );
 }
 
 // The renderer the editor previews with is served as WebAssembly at a URL that

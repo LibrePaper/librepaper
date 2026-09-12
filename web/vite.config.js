@@ -48,7 +48,6 @@ export default defineConfig({
       input: {
         index: resolve(import.meta.dirname, "pages/index.html"),
         reader: resolve(import.meta.dirname, "pages/reader.html"),
-        documentation: resolve(import.meta.dirname, "pages/documentation.html"),
         notfound: resolve(import.meta.dirname, "pages/404.html"),
         signin: resolve(import.meta.dirname, "pages/signin.html"),
         device: resolve(import.meta.dirname, "pages/device.html"),
