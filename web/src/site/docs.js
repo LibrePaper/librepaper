@@ -6,11 +6,9 @@
 // a heading position back out of.
 import { mount } from "svelte";
 import "./site.css";
-import Hero from "../components/Hero.svelte";
 import SiteBar from "./SiteBar.svelte";
 
 mount(SiteBar, { target: document.getElementById("siteBar") });
-mount(Hero, { target: document.getElementById("hero") });
 
 /* ---------------------------------------------------------------- images */
 
@@ -46,25 +44,40 @@ if (lightbox && expanded) {
 const toc = document.getElementById("tableOfContents");
 if (toc && toc.querySelector("a")) {
   const headings = [...document.querySelectorAll(".prose h2, .prose h3")];
+  const links = new Map([...toc.querySelectorAll("a")].map((a) => [a.hash.slice(1), a]));
 
-  // Beside the text it is a list that is simply there; above the text, on a
-  // narrow screen, an open one would bury the document under its own
-  // headings, so it starts closed and follows the layout it is in.
-  const wide = matchMedia("(min-width: 1100px)");
-  const details = toc.closest("details");
-  const fitLayout = () => (details.open = wide.matches);
-  fitLayout();
-  wide.addEventListener("change", fitLayout);
-  toc.addEventListener("click", () => {
-    if (!wide.matches) details.open = false;
-  });
+  // Which section is being read, rather than which heading last crossed a
+  // line: the one nearest above the top of the window, so a long section
+  // stays marked all the way down it instead of the mark falling off the end
+  // and leaving nothing lit. The last heading stays current at the foot of
+  // the page, where nothing further can scroll into view.
+  let current = "";
+  function follow() {
+    const top = 120;
+    let found = headings[0]?.id ?? "";
+    for (const heading of headings) {
+      if (heading.getBoundingClientRect().top <= top) found = heading.id;
+      else break;
+    }
+    if (found === current) return;
+    current = found;
+    for (const [id, link] of links) link.toggleAttribute("aria-current", id === found);
+    // Keep the marked entry inside a contents list long enough to scroll.
+    links.get(found)?.scrollIntoView({ block: "nearest" });
+  }
 
-  const activate = (id) => {
-    for (const link of toc.querySelectorAll("a")) link.toggleAttribute("aria-current", link.hash === `#${id}`);
+  // Cheap enough to run on every frame the browser was going to paint anyway,
+  // and a listener that reads layout on every scroll event is not.
+  let queued = false;
+  const schedule = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      follow();
+    });
   };
-  const observer = new IntersectionObserver(
-    (entries) => entries.forEach((entry) => entry.isIntersecting && activate(entry.target.id)),
-    { rootMargin: "-15% 0px -70% 0px", threshold: 0 },
-  );
-  for (const heading of headings) observer.observe(heading);
+  addEventListener("scroll", schedule, { passive: true });
+  addEventListener("resize", schedule, { passive: true });
+  follow();
 }

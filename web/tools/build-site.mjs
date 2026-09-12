@@ -144,17 +144,16 @@ function template({ title, currentPath, toc, body, scriptSrc }) {
   <body>
     <div id="siteBar"></div>
     <main class="documentation mx-auto w-full max-w-6xl px-4 py-8">
-      <div id="hero"></div>
       <div class="documentation-layout">
-        <aside class="toc" aria-label="Site navigation">
+        <aside class="sitenav" aria-label="Site navigation">
           ${renderNav(currentPath)}
-          ${
-            toc
-              ? `<details open><summary class="mt-4 mb-1 cursor-pointer font-semibold">On this page</summary><nav id="tableOfContents">\n${toc}\n</nav></details>`
-              : '<nav id="tableOfContents" hidden></nav>'
-          }
         </aside>
-        <article class="prose">${body}</article>
+        <article class="prose"><h1>${title}</h1>${body}</article>
+        ${
+          toc
+            ? `<aside class="pagetoc" aria-label="On this page"><p>On this page</p><nav id="tableOfContents">\n${toc}\n</nav></aside>`
+            : ""
+        }
       </div>
     </main>
     <dialog id="imageLightbox" class="image-lightbox m-auto max-w-[90vw] bg-transparent p-0" aria-label="Expanded image">
