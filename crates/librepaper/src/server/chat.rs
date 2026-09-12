@@ -125,6 +125,7 @@ impl Server {
                 network: connection.network.clone(),
                 principal: connection.principal.clone(),
                 document: slug.clone(),
+                role: None,
             },
         ) {
             Ok(permit) => permit,

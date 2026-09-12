@@ -187,6 +187,13 @@ impl Server {
             network: client_network(&address),
             principal: who.id.id.clone(),
             document: slug.to_string(),
+            role: Some(if may_edit {
+                super::socket_budget::SocketRole::Editor
+            } else if who.at_least(Role::Commenter) {
+                super::socket_budget::SocketRole::Commenter
+            } else {
+                super::socket_budget::SocketRole::Reader
+            }),
         };
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
         let socket_permit = match self.socket_budget.admit(socket_id, identity) {

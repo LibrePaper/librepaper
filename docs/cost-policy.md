@@ -105,6 +105,9 @@ sockets:
   network_max: 128
   principal_max: 64
   document_max: 256
+  document_readers_max: 256
+  document_commenters_max: 256
+  document_editors_max: 32
   queue_bytes_max: 16777216
   state_network_bytes: 268435456
   state_deployment_bytes: 4294967296
@@ -172,7 +175,24 @@ room. Identity keys are internal admission state, not metric labels or
 diagnostic output.
 
 Live collaboration defaults are 4096 sockets per deployment, 128 per network,
-64 per principal, and 256 per document. A socket may queue 256 frames and at
+64 per principal, and 256 per document. Within each document, room connections
+also have independent role ceilings: 256 readers, 256 commenters, and 32
+editors. Owners use editor slots. Each connection counts only toward its
+effective role, so an editor does not also consume a reader or commenter slot.
+Browser tabs and CLI sync connections each consume a slot. Chat and companion
+control sockets consume the overall allowances but no room-role slot.
+
+Set `sockets.document_readers_max`, `sockets.document_commenters_max`, and
+`sockets.document_editors_max` to positive integers in the configuration file.
+The overall document, principal, network, and deployment ceilings still apply;
+raise `document_max` as well if the desired combined capacity exceeds 256.
+A full role bucket refuses new connections with HTTP 429, `reason: socket_budget`,
+and scope `document_readers`, `document_commenters`, or `document_editors`.
+Existing connections stay open, and closing one releases its slot. Changes to
+access rights close the connection, so reconnecting checks the new role's cap.
+These are live-connection limits; ordinary HTTP reads do not occupy a slot.
+
+A socket may queue 256 frames and at
 most 16 MiB; the same 16 MiB `sockets.queue_bytes_max` ceiling is also reserved
 across all live socket queues, so a full deployment can refuse a new frame even
 when the individual socket is below its limit. State transfer is limited to

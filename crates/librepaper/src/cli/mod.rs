@@ -315,6 +315,9 @@ impl ServiceFlags {
                     "network_max" => config.sockets.network_max = count,
                     "principal_max" => config.sockets.principal_max = count,
                     "document_max" => config.sockets.document_max = count,
+                    "document_readers_max" => config.sockets.document_readers_max = count,
+                    "document_commenters_max" => config.sockets.document_commenters_max = count,
+                    "document_editors_max" => config.sockets.document_editors_max = count,
                     "queue_bytes_max" => config.sockets.queue_bytes_max = count,
                     "state_network_bytes" => config.sockets.state_network_bytes = value,
                     "state_deployment_bytes" => config.sockets.state_deployment_bytes = value,
@@ -1086,5 +1089,35 @@ fn origin_of(server: &str) -> String {
             url.port_or_known_default().unwrap_or(0)
         ),
         _ => server.trim().trim_end_matches('/').to_lowercase(),
+    }
+}
+
+#[cfg(test)]
+mod socket_policy_tests {
+    use super::*;
+
+    #[test]
+    fn advanced_configuration_accepts_separate_document_role_caps() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "sockets:\n  document_readers_max: 80\n  document_commenters_max: 12\n  document_editors_max: 5\n").unwrap();
+        let config = ServiceFlags {
+            advanced_config: Some(file.path().to_path_buf()),
+            ..Default::default()
+        }
+        .configuration();
+        assert_eq!(config.sockets.document_readers_max, 80);
+        assert_eq!(config.sockets.document_commenters_max, 12);
+        assert_eq!(config.sockets.document_editors_max, 5);
+        assert_eq!(config.sockets.document_max, 256);
+        for name in [
+            "document_readers_max",
+            "document_commenters_max",
+            "document_editors_max",
+        ] {
+            assert_eq!(
+                config.policy_origins[&format!("sockets.{name}")],
+                "configuration file"
+            );
+        }
     }
 }

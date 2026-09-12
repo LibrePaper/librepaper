@@ -11,6 +11,80 @@ use crate::config::Configuration;
 use crate::document::session;
 use crate::room;
 
+#[tokio::test]
+async fn document_role_caps_use_effective_access_and_release_on_disconnect() {
+    let mut config = Configuration::default();
+    config.sockets.document_editors_max = 1;
+    config.sockets.document_commenters_max = 2;
+    config.sockets.document_readers_max = 1;
+    let server = test_server_with(
+        config,
+        crate::auth::Policy::parse("any"),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
+    let owner = session_as("alice");
+    let (status, entry) = post_as(
+        &owner,
+        &server.url,
+        "/api/documents",
+        json!({"title": "Doc", "source": "hello", "source_format": "markdown"}),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let slug = text(&entry, "slug");
+    let mut owner_socket = dial_websocket_with(&server.url, &slug, &format!("Cookie: {owner}\r\n"))
+        .await
+        .unwrap();
+    assert_eq!(owner_socket.read().await["type"], "hello");
+    let mut sockets = Vec::new();
+    for (role, allowed) in [("editor", 0), ("commenter", 2), ("reader", 1)] {
+        let (status, link) = post_as(
+            &owner,
+            &server.url,
+            &format!("/api/documents/{slug}/share"),
+            json!({"link": {"role": role}}),
+        )
+        .await;
+        assert_eq!(status, 200, "{link}");
+        let headers = format!(
+            "Cookie: {}\r\n{}: {}\r\n",
+            session_as("bob"),
+            crate::server::LINK_HEADER,
+            text(&link, "key")
+        );
+        for _ in 0..allowed {
+            let mut socket = dial_websocket_with(&server.url, &slug, &headers)
+                .await
+                .unwrap();
+            assert_eq!(socket.read().await["type"], "hello");
+            sockets.push(socket);
+        }
+        assert_eq!(
+            dial_websocket_with(&server.url, &slug, &headers)
+                .await
+                .err(),
+            Some(429),
+            "{role}"
+        );
+    }
+    assert_eq!(server.instance.socket_budget.snapshot()["active"], 4);
+    drop(owner_socket);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while server.instance.socket_budget.snapshot()["max_document_editor_sockets"] != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("disconnect must release the editor slot");
+    let mut replacement = dial_websocket_with(&server.url, &slug, &format!("Cookie: {owner}\r\n"))
+        .await
+        .unwrap();
+    assert_eq!(replacement.read().await["type"], "hello");
+    assert_eq!(server.instance.socket_budget.snapshot()["active"], 4);
+}
+
 /// Reads the next frame, but treats the server closing the socket as an
 /// answer rather than a test failure: `Socket::read` panics on a close frame,
 /// so this is what every R01/R34 regression below uses to ask "did the
