@@ -108,6 +108,10 @@ const render = (name) => (source, file) => {
 
 export const renderMarkdown = render("markdown");
 export const renderTypst = render("typst");
+/// Markdown or quarto that cites a bibliography, which the deployment renders
+/// with this second module rather than the plain markdown one -- see the
+/// choice `renderers.js` makes on `needsBibliography`.
+export const renderCitations = render("citations");
 
 /// HTML's renderer is the identity, so what a reader sees is the source's own
 /// visible text and no module is needed to work it out.

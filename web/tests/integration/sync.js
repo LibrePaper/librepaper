@@ -11,7 +11,7 @@
 // Run by `make test`, against the examples as they are actually published.
 import { existsSync, readFileSync } from "node:fs";
 import { documentPlaceFor, sourcePlaceFor, sourcePlaceInTree, sourceSelectorFor } from "../../src/lib/sync.js";
-import { renderHtml, renderMarkdown, renderTypst } from "../../tools/render.js";
+import { renderCitations, renderHtml, renderTypst } from "../../tools/render.js";
 
 // A caret every few characters is enough to catch a whole line going missing,
 // and keeps this a second rather than a minute.
@@ -22,19 +22,30 @@ const STEP = 3;
 const ALLOWED = 0.02;
 
 const EXAMPLES = [
-  ["docs/examples/tutorial-markdown/librepaper.md", renderMarkdown, "markdown"],
+  // The markdown tutorial cites a bibliography, so the deployment renders it
+  // with the citations module rather than the plain markdown one.
+  ["docs/examples/tutorial-markdown/librepaper.md", renderCitations, "markdown"],
   ["docs/examples/tutorial-typst/librepaper.typ", renderTypst, "typst"],
   ["docs/examples/tutorial-html/librepaper.html", renderHtml, "html"],
 ];
 
-// Where a caret can be. In markdown and typst, anywhere: the whole file is
-// text somebody typed. In HTML most of the file is not -- a tag, a stylesheet,
-// a script, a base64 image -- and a caret there has nothing to find in the
-// document for the same reason a reader cannot see it. What is measured is the
-// text nodes with words in them, which is the source an author reads.
+// Where a caret can be. In markdown and typst, anywhere below the front
+// matter: the rest of the file is text somebody typed. In HTML most of the
+// file is not -- a tag, a stylesheet, a script, a base64 image -- and a caret
+// there has nothing to find in the document for the same reason a reader
+// cannot see it. What is measured is the text nodes with words in them, which
+// is the source an author reads.
 function places(source, format) {
   const out = new Uint8Array(source.length);
-  if (format !== "html") return out.fill(1);
+  if (format !== "html") {
+    out.fill(1);
+    // YAML front matter is metadata, not prose, for the same reason an HTML
+    // <head> is: a caret in "bibliography: references.bib" has nothing to
+    // find in the document because the reader is never shown it.
+    const matter = source.match(/^---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)(?:\r?\n|$)/);
+    if (matter) out.fill(0, 0, matter[0].length);
+    return out;
+  }
   const markup = /<(script|style)\b[^>]*>[\s\S]*?<\/\1>|<head\b[\s\S]*?<\/head>|<[^>]*>/gi;
   let at = 0;
   const keep = (from, to) => {
@@ -59,13 +70,26 @@ function sourceOf(file) {
   return existsSync(url) ? readFileSync(url, "utf8") : null;
 }
 
+const beside = (directory, path) =>
+  readFileSync(new URL(`../../../docs/examples/${directory}/${path}`, import.meta.url), path.endsWith(".png") ? undefined : "utf8");
+
 function renderInputOf(source, format) {
-  return format === "typst"
-    ? { main: "librepaper.typ", texts: {
+  if (format === "typst") {
+    return { main: "librepaper.typ", texts: {
       "librepaper.typ": source,
-      "sections/rendering.typ": readFileSync(new URL("../../../docs/examples/tutorial-typst/sections/rendering.typ", import.meta.url), "utf8"),
-    }, assets: { "librepaper-icon.png": readFileSync(new URL("../../../docs/examples/tutorial-typst/librepaper-icon.png", import.meta.url)) } }
-    : source;
+      "sections/rendering.typ": beside("tutorial-typst", "sections/rendering.typ"),
+      "references.bib": beside("tutorial-typst", "references.bib"),
+    }, assets: { "librepaper-icon.png": beside("tutorial-typst", "librepaper-icon.png") } };
+  }
+  // Without the .bib the citation renders as an unresolved key, which is a
+  // different document from the one a reader is shown.
+  if (format === "markdown") {
+    return { main: "librepaper.md", texts: {
+      "librepaper.md": source,
+      "references.bib": beside("tutorial-markdown", "references.bib"),
+    }, assets: {} };
+  }
+  return source;
 }
 
 let bad = false;
