@@ -363,6 +363,7 @@ async fn doctor(tex_path: Vec<PathBuf>) {
     print_tool("bibtex8", &capabilities.tools.bibtex8);
     print_tool("biber", &capabilities.tools.biber);
     print_tool("makeindex", &capabilities.tools.makeindex);
+    print_tool("calepin", &capabilities.calepin);
     print_tool("quarto", &capabilities.quarto.tool);
     if !capabilities.quarto.formats.is_empty() {
         println!(
