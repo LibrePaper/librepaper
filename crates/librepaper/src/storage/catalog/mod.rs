@@ -203,6 +203,15 @@ pub struct MutationAuthority<'a> {
     pub agent_checkpoint: Option<&'a AgentCheckpointCommit>,
 }
 
+/// Account session attached to a human annotation write. Empty account ids
+/// represent anonymous callers, whose authority is carried by their document
+/// link rather than a revocable account session.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AnnotationAuthority<'a> {
+    pub account_id: &'a str,
+    pub generation: &'a str,
+}
+
 /// A row in `accounts`.  Provider ids, rather than mutable handles, are the
 /// identity used by all ownership and authorization code.
 #[derive(Clone, Debug, Eq, PartialEq)]

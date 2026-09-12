@@ -1003,6 +1003,8 @@ impl Server {
                 &who.link,
                 who.comment_budget,
                 may_edit,
+                &id.id,
+                &id.session_generation,
             )
             .await;
         if !request_id.is_empty() {
@@ -1029,6 +1031,8 @@ impl Server {
         incoming: &RoomMessage,
         may_edit: bool,
         by: &crate::room::Attribution,
+        account_id: &str,
+        session_generation: &str,
     ) -> (Value, bool) {
         let fail = |text: &str| -> (Value, bool) {
             (
@@ -1053,7 +1057,16 @@ impl Server {
                 request_id,
                 ..
             } => {
-                return match room.accept_suggestion(&comment_id, &request_id, by).await {
+                return match room
+                    .accept_suggestion_authorized(
+                        &comment_id,
+                        &request_id,
+                        by,
+                        account_id,
+                        session_generation,
+                    )
+                    .await
+                {
                     Ok(Accepted::Applied {
                         update,
                         sha,
@@ -1103,7 +1116,10 @@ impl Server {
                 comment_id,
                 request_id,
                 ..
-            } => match room.reject_suggestion(&comment_id).await {
+            } => match room
+                .reject_suggestion_authorized(&comment_id, account_id, session_generation)
+                .await
+            {
                 Ok(mut result) => {
                     result["request_id"] = json!(request_id);
                     result["version"] = json!(1);

@@ -2,6 +2,28 @@
 
 use super::*;
 
+fn annotation_session_active(
+    tx: &rusqlite::Transaction<'_>,
+    authority: AnnotationAuthority<'_>,
+) -> CatalogResult<()> {
+    if authority.account_id.is_empty() {
+        return Ok(());
+    }
+    let active: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM accounts
+         WHERE id=?1 AND status='active' AND session_generation=?2)",
+        params![authority.account_id, authority.generation],
+        |row| row.get(0),
+    )?;
+    if active {
+        Ok(())
+    } else {
+        Err(CatalogError::Conflict(
+            "comment session generation changed".into(),
+        ))
+    }
+}
+
 fn staged_accept_for(intent: &str, result: &str, comment_id: &str) -> bool {
     let intent_value = serde_json::from_str::<serde_json::Value>(intent).ok();
     let intent_comment = intent_value
@@ -30,10 +52,19 @@ fn staged_accept_for(intent: &str, result: &str, comment_id: &str) -> bool {
 
 impl Catalog {
     pub fn insert_comment(&self, comment: &Comment) -> CatalogResult<Comment> {
+        self.insert_comment_authorized(comment, AnnotationAuthority::default())
+    }
+
+    fn insert_comment_authorized(
+        &self,
+        comment: &Comment,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Comment> {
         if comment.slug.is_empty() || comment.id.is_empty() || comment.body.len() > 65_536 {
             return Err(CatalogError::Invalid("invalid comment".into()));
         }
         self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
             let count:i64=tx.query_row("SELECT COUNT(*) FROM comments WHERE slug=?1",[&comment.slug],|r|r.get(0)).map_err(CatalogError::from)?;
             if count >= 500 { return Err(CatalogError::Conflict("comment limit reached".into())); }
             let seq: i64 = tx.query_row("SELECT comment_seq FROM documents WHERE slug=?1 AND status='active'",[&comment.slug],|r|r.get::<_, i64>(0)).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)? + 1;
@@ -56,8 +87,25 @@ impl Catalog {
         request_digest: &str,
         created_at: i64,
     ) -> CatalogResult<Comment> {
+        self.insert_comment_request_authorized(
+            comment,
+            request_id,
+            request_digest,
+            created_at,
+            AnnotationAuthority::default(),
+        )
+    }
+
+    pub fn insert_comment_request_authorized(
+        &self,
+        comment: &Comment,
+        request_id: &str,
+        request_digest: &str,
+        created_at: i64,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Comment> {
         if request_id.is_empty() {
-            return self.insert_comment(comment);
+            return self.insert_comment_authorized(comment, authority);
         }
         if request_id.len() > 128 || request_digest.is_empty() {
             return Err(CatalogError::Invalid(
@@ -65,6 +113,7 @@ impl Catalog {
             ));
         }
         self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
             let (storage_id, current_seq): (String, i64) = tx
                 .query_row(
                     "SELECT storage_id, comment_seq FROM documents
@@ -211,7 +260,16 @@ impl Catalog {
     }
 
     pub fn update_comment(&self, comment: &Comment) -> CatalogResult<Comment> {
+        self.update_comment_authorized(comment, AnnotationAuthority::default())
+    }
+
+    pub fn update_comment_authorized(
+        &self,
+        comment: &Comment,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Comment> {
         self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
             let changed = tx
                 .execute(
                     "UPDATE comments SET motivation=?3,body=?4,creator=?5,author=?6,via=?7,
@@ -275,12 +333,32 @@ impl Catalog {
         request_digest: &str,
         created_at: i64,
     ) -> CatalogResult<Option<Comment>> {
+        self.begin_suggestion_accept_authorized(
+            slug,
+            comment_id,
+            request_id,
+            request_digest,
+            created_at,
+            AnnotationAuthority::default(),
+        )
+    }
+
+    pub fn begin_suggestion_accept_authorized(
+        &self,
+        slug: &str,
+        comment_id: &str,
+        request_id: &str,
+        request_digest: &str,
+        created_at: i64,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Option<Comment>> {
         if request_id.is_empty() || request_id.len() > 128 || request_digest.is_empty() {
             return Err(CatalogError::Invalid(
                 "invalid suggestion acceptance receipt".into(),
             ));
         }
         self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
             let storage_id: String = tx
                 .query_row(
                     "SELECT storage_id FROM documents WHERE slug=?1 AND status='active'",
@@ -434,6 +512,25 @@ impl Catalog {
         request_digest: &str,
         update: &[u8],
     ) -> CatalogResult<()> {
+        self.stage_suggestion_accept_update_authorized(
+            slug,
+            comment_id,
+            request_id,
+            request_digest,
+            update,
+            AnnotationAuthority::default(),
+        )
+    }
+
+    pub fn stage_suggestion_accept_update_authorized(
+        &self,
+        slug: &str,
+        comment_id: &str,
+        request_id: &str,
+        request_digest: &str,
+        update: &[u8],
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<()> {
         if request_id.is_empty() || request_digest.is_empty() || update.is_empty() {
             return Err(CatalogError::Invalid(
                 "invalid suggestion acceptance update".into(),
@@ -446,6 +543,7 @@ impl Catalog {
         })
         .to_string();
         self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
             let storage_id: String = tx
                 .query_row(
                     "SELECT storage_id FROM documents WHERE slug=?1",
@@ -689,7 +787,17 @@ impl Catalog {
     }
 
     pub fn delete_comment(&self, slug: &str, id: &str) -> CatalogResult<bool> {
+        self.delete_comment_authorized(slug, id, AnnotationAuthority::default())
+    }
+
+    pub fn delete_comment_authorized(
+        &self,
+        slug: &str,
+        id: &str,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<bool> {
         self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
             Ok(tx
                 .execute(
                     "DELETE FROM comments WHERE slug=?1 AND id=?2",
@@ -756,10 +864,18 @@ impl Catalog {
     }
 
     pub fn insert_reply(&self, reply: &Reply) -> CatalogResult<Reply> {
+        self.insert_reply_authorized(reply, AnnotationAuthority::default())
+    }
+
+    fn insert_reply_authorized(
+        &self,
+        reply: &Reply,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Reply> {
         if reply.body.len() > 65_536 || reply.id.is_empty() {
             return Err(CatalogError::Invalid("invalid reply".into()));
         }
-        self.immediate(|tx| { let n:i64=tx.query_row("SELECT COUNT(*) FROM replies WHERE slug=?1 AND comment_id=?2",params![reply.slug,reply.comment_id],|r|r.get(0)).map_err(CatalogError::from)?; if n>=100{return Err(CatalogError::Conflict("reply limit reached".into()));} tx.execute("INSERT INTO replies(slug,comment_id,id,body,creator,author,created) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![reply.slug,reply.comment_id,reply.id,reply.body,reply.creator,reply.author,reply.created]).map_err(CatalogError::from)?; Ok(reply.clone()) })
+        self.immediate(|tx| { annotation_session_active(tx, authority)?; let n:i64=tx.query_row("SELECT COUNT(*) FROM replies WHERE slug=?1 AND comment_id=?2",params![reply.slug,reply.comment_id],|r|r.get(0)).map_err(CatalogError::from)?; if n>=100{return Err(CatalogError::Conflict("reply limit reached".into()));} tx.execute("INSERT INTO replies(slug,comment_id,id,body,creator,author,created) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![reply.slug,reply.comment_id,reply.id,reply.body,reply.creator,reply.author,reply.created]).map_err(CatalogError::from)?; Ok(reply.clone()) })
     }
 
     pub fn insert_reply_request(
@@ -769,8 +885,25 @@ impl Catalog {
         request_digest: &str,
         created_at: i64,
     ) -> CatalogResult<Reply> {
+        self.insert_reply_request_authorized(
+            reply,
+            request_id,
+            request_digest,
+            created_at,
+            AnnotationAuthority::default(),
+        )
+    }
+
+    pub fn insert_reply_request_authorized(
+        &self,
+        reply: &Reply,
+        request_id: &str,
+        request_digest: &str,
+        created_at: i64,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Reply> {
         if request_id.is_empty() {
-            return self.insert_reply(reply);
+            return self.insert_reply_authorized(reply, authority);
         }
         if request_id.len() > 128 || request_digest.is_empty() {
             return Err(CatalogError::Invalid(
@@ -778,6 +911,7 @@ impl Catalog {
             ));
         }
         self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
             let storage_id: String = tx
                 .query_row(
                     "SELECT storage_id FROM documents WHERE slug=?1 AND status='active'",

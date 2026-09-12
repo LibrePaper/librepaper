@@ -155,6 +155,8 @@ impl Server {
                         &incoming,
                         current_who.at_least(Role::Editor),
                         &by,
+                        &current_who.id.id,
+                        &current_who.id.session_generation,
                     )
                     .await
                 } else {

@@ -283,7 +283,16 @@ mod tests {
 
     async fn apply(room: &Room, command: Command) -> serde_json::Value {
         let (response, ok) = room
-            .apply_command(command, "10.0.0.1", "visitor:one", "test", None, true)
+            .apply_command(
+                command,
+                "10.0.0.1",
+                "visitor:one",
+                "test",
+                None,
+                true,
+                "",
+                "",
+            )
             .await;
         assert!(ok, "the fixture command must succeed: {response}");
         response

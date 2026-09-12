@@ -2534,6 +2534,19 @@
   }
 
   function chooseViewCommand(value) {
+    if (value === "format-pdf") {
+      if (displayedFormat === "latex") return void setLatexOutput("pdf");
+      if (displayedFormat === "typst") return void setTypstOutput("pdf");
+    }
+    if (value === "format-html") {
+      if (displayedFormat === "latex") return void setLatexOutput("html");
+      if (displayedFormat === "typst") return void setTypstOutput("html");
+    }
+    if (value.startsWith("engine-latex-")) {
+      const engine = value.slice("engine-latex-".length);
+      if (["auto", "pdflatex", "xelatex", "lualatex"].includes(engine)) session?.setLatexSettings({ ...latexSettingsState, engine });
+      return;
+    }
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
     if (value === "preview-file") return previewThisFile();
@@ -3248,16 +3261,17 @@
 {/snippet}
 
 {#snippet previewItems()}
-  {#if displayedFormat === "latex" && !viewing}
-    <div class="menu-section-label">Preview format</div>
-    <Menu.Item value="preview-latex-pdf" class="menuitem">
-      <span class="w-4">{latexOutput === "pdf" ? "✓" : ""}</span>PDF
-    </Menu.Item>
-    <Menu.Item value="preview-latex-html" class="menuitem">
-      <span class="w-4">{latexOutput === "html" ? "✓" : ""}</span>HTML
-    </Menu.Item>
-    <hr class="hr my-1" />
-  {/if}
+  {@const selectedFormat = displayedFormat === "latex" ? latexOutput : displayedFormat === "typst" ? typstOutput : displayedFormat === "quarto" ? (quartoTargetFormat() === "pdf" ? "pdf" : "html") : "html"}
+  {@const selectableFormat = !viewing && ["latex", "typst"].includes(displayedFormat)}
+  <div class="menu-section-label">Format</div>
+  <Menu.Item value="format-html" class="menuitem" disabled={!selectableFormat}>
+    <span class="w-4">{selectedFormat === "html" ? "✓" : ""}</span>HTML
+  </Menu.Item>
+  <Menu.Item value="format-pdf" class="menuitem" disabled={!selectableFormat}>
+    <span class="w-4">{selectedFormat === "pdf" ? "✓" : ""}</span>PDF
+  </Menu.Item>
+  <hr class="hr my-1" />
+  <div class="menu-section-label">Engine</div>
   {#if sourceFormat === "quarto" && !viewing}
     <!-- Nothing rendered is ever uploaded: choosing "Quarto preview" runs
          the document's code with Quarto on this computer, through the local
@@ -3265,12 +3279,11 @@
          code. The two are exclusive, with a check mark on whichever is
          active. Local app settings remain reachable from Settings… below. -->
     <Menu.Item value="preview-markdown" class="menuitem">
-      <span class="w-4">{quartoPreviewMode === "markdown" ? "✓" : ""}</span>Markdown preview
+      <span class="w-4">{quartoPreviewMode === "markdown" ? "✓" : ""}</span>Markdown
     </Menu.Item>
     <Menu.Item value="preview-quarto" class="menuitem">
-      <span class="w-4">{quartoPreviewMode === "quarto" ? "✓" : ""}</span>Quarto preview
+      <span class="w-4">{quartoPreviewMode === "quarto" ? "✓" : ""}</span>Quarto
     </Menu.Item>
-    <hr class="hr my-1" />
   {:else if displayedFormat === "typst"}
     <!-- The same two-way choice, for a Typst document: "Typst preview" is
          this browser's own rendering (unchanged from before this choice
@@ -3278,23 +3291,26 @@
          on this computer, through the local app, and shows the PDF it
          delivers. HTML is always the browser Typst renderer, even when the
          remembered companion mode is Calepin. -->
-    <Menu.Item value="preview-typst-pdf" class="menuitem">
-      <span class="w-4">{typstOutput === "pdf" ? "✓" : ""}</span>Typst PDF preview
-    </Menu.Item>
-    <Menu.Item value="preview-typst-html" class="menuitem">
-      <span class="w-4">{typstOutput === "html" ? "✓" : ""}</span>Typst HTML preview
-    </Menu.Item>
-    <hr class="hr my-1" />
-    {#if !viewing && typstOutput === "pdf"}
+    {#if !viewing}
       <Menu.Item value="preview-typst" class="menuitem">
-        <span class="w-4">{typstPreviewMode === "typst" ? "✓" : ""}</span>Typst preview
+        <span class="w-4">{typstPreviewMode === "typst" || typstOutput === "html" ? "✓" : ""}</span>Typst
       </Menu.Item>
-      <Menu.Item value="preview-calepin" class="menuitem">
-        <span class="w-4">{typstPreviewMode === "calepin" ? "✓" : ""}</span>Calepin preview
+      <Menu.Item value="preview-calepin" class="menuitem" disabled={typstOutput === "html"}>
+        <span class="w-4">{typstPreviewMode === "calepin" ? "✓" : ""}</span>Calepin
       </Menu.Item>
     {/if}
-    <hr class="hr my-1" />
+  {:else if displayedFormat === "latex"}
+    {#each [["auto", "Automatic"], ["pdflatex", "pdfLaTeX"], ["xelatex", "XeLaTeX"], ["lualatex", "LuaLaTeX"]] as [engine, label]}
+      <Menu.Item value="engine-latex-{engine}" class="menuitem" disabled={viewing}>
+        <span class="w-4">{(latexSettingsState.engine || "auto") === engine ? "✓" : ""}</span>{label}
+      </Menu.Item>
+    {/each}
+  {:else if displayedFormat === "markdown"}
+    <Menu.Item value="engine-markdown" class="menuitem" disabled><span class="w-4">✓</span>Markdown</Menu.Item>
+  {:else if displayedFormat === "html"}
+    <Menu.Item value="engine-html" class="menuitem" disabled><span class="w-4">✓</span>HTML</Menu.Item>
   {/if}
+  <hr class="hr my-1" />
 {/snippet}
 
 {#snippet viewItems()}

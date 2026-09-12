@@ -652,7 +652,7 @@ impl Server {
 
                     let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
                         let by = who.attribution();
-                        self.decide_suggestion(&room, &incoming, may_edit, &by)
+                        self.decide_suggestion(&room, &incoming, may_edit, &by, &who.id.id, &who.id.session_generation)
                             .await
                     } else {
                         self.apply_from(&room, incoming, &address, &who, &author)

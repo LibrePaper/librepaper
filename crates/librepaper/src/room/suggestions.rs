@@ -152,11 +152,24 @@ impl Room {
     /// `request_id` is the caller's idempotency token: retrying the request
     /// that already accepted this comment answers with what happened the
     /// first time rather than reapplying the edit.
+    #[allow(dead_code)]
     pub async fn accept_suggestion(
         &self,
         comment_id: &str,
         request_id: &str,
         by: impl Into<Attribution>,
+    ) -> Result<Accepted, AcceptError> {
+        self.accept_suggestion_authorized(comment_id, request_id, by, "", "")
+            .await
+    }
+
+    pub async fn accept_suggestion_authorized(
+        &self,
+        comment_id: &str,
+        request_id: &str,
+        by: impl Into<Attribution>,
+        account_id: &str,
+        session_generation: &str,
     ) -> Result<Accepted, AcceptError> {
         let by = &by.into();
         let _restore_writer = self.restore_write.lock().await;
@@ -227,6 +240,8 @@ impl Room {
                 request_id,
                 &acceptance_digest,
                 now_unix(),
+                account_id.to_owned(),
+                session_generation.to_owned(),
             )
             .await
             .map_err(AcceptError::Failed)?
@@ -480,6 +495,8 @@ impl Room {
                     request_id,
                     &acceptance_digest,
                     &update,
+                    account_id.to_owned(),
+                    session_generation.to_owned(),
                 )
                 .await
                 .map_err(AcceptError::Failed)?;
@@ -608,7 +625,17 @@ impl Room {
     /// that a reject also records the outcome and always resolves (rather
     /// than toggling), and that an accepted suggestion refuses it, because
     /// the text it proposed is already in the document.
+    #[allow(dead_code)]
     pub async fn reject_suggestion(&self, comment_id: &str) -> Result<Value, String> {
+        self.reject_suggestion_authorized(comment_id, "", "").await
+    }
+
+    pub async fn reject_suggestion_authorized(
+        &self,
+        comment_id: &str,
+        account_id: &str,
+        session_generation: &str,
+    ) -> Result<Value, String> {
         let _restore_writer = self.restore_write.lock().await;
         let _comment_writer = self.comment_write.lock().await;
         if !self.hold().await {
@@ -654,7 +681,15 @@ impl Room {
         drop(state);
         let persisted = if let Some(catalog) = self.catalog.get() {
             match catalog_comment_row(&self.slug, &rejected) {
-                Ok(row) => update_comment_row(catalog, row).await,
+                Ok(row) => {
+                    update_comment_row(
+                        catalog,
+                        row,
+                        account_id.to_owned(),
+                        session_generation.to_owned(),
+                    )
+                    .await
+                }
                 Err(error) => Err(error),
             }
         } else {

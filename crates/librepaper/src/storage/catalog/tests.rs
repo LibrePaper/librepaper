@@ -1,7 +1,7 @@
 use super::{
-    Account, Catalog, CatalogError, Checkpoint, JournalPreparation, JournalSegment, Link,
-    MutationAuthority, NewDocument, OperationRequest, Rendering, SourceHistoryObject,
-    SourceHistoryRecord,
+    Account, AnnotationAuthority, Catalog, CatalogError, Checkpoint, Comment, JournalPreparation,
+    JournalSegment, Link, MutationAuthority, NewDocument, OperationRequest, Rendering, Reply,
+    SourceHistoryObject, SourceHistoryRecord,
 };
 use sha2::Digest;
 
@@ -19,6 +19,193 @@ pub(super) fn account() -> Account {
         session_generation: "generation-1".into(),
         erasure_cursor: None,
     }
+}
+
+fn annotation(id: &str, motivation: &str) -> Comment {
+    Comment {
+        slug: "doc".into(),
+        id: id.into(),
+        seq: 0,
+        motivation: motivation.into(),
+        body: "words".into(),
+        creator: "Alice".into(),
+        author: "acct-1".into(),
+        via: String::new(),
+        created: "2026-01-01T00:00:00.000Z".into(),
+        exact: "text".into(),
+        prefix: String::new(),
+        suffix: String::new(),
+        position: None,
+        point: false,
+        color: None,
+        region: None,
+        quarto_output: None,
+        source_path: None,
+        source_exact: None,
+        source_prefix: None,
+        source_suffix: None,
+        source_position: None,
+        proposed: (motivation == "editing").then(|| "better words".into()),
+        pass: String::new(),
+        outcome: String::new(),
+        accept_request: String::new(),
+        revision: "revision".into(),
+        resolved: false,
+        resolved_at: None,
+        resolved_in: String::new(),
+    }
+}
+
+#[test]
+fn annotation_writes_recheck_the_account_session_generation() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let current = AnnotationAuthority {
+        account_id: "acct-1",
+        generation: "generation-1",
+    };
+    let comment = catalog
+        .insert_comment_request_authorized(
+            &annotation("comment-1", "commenting"),
+            "create-1",
+            "digest-1",
+            1,
+            current,
+        )
+        .unwrap();
+    catalog
+        .insert_comment_request_authorized(
+            &annotation("suggestion-1", "editing"),
+            "create-2",
+            "digest-2",
+            2,
+            current,
+        )
+        .unwrap();
+    catalog
+        .begin_suggestion_accept_authorized(
+            "doc",
+            "suggestion-1",
+            "prepared-accept",
+            "prepared-digest",
+            3,
+            current,
+        )
+        .unwrap();
+    catalog
+        .stage_suggestion_accept_update_authorized(
+            "doc",
+            "suggestion-1",
+            "prepared-accept",
+            "prepared-digest",
+            &[1, 2, 3],
+            current,
+        )
+        .unwrap();
+    catalog.revoke_sessions("acct-1", "generation-2").unwrap();
+
+    let stale = AnnotationAuthority {
+        account_id: "acct-1",
+        generation: "generation-1",
+    };
+    let mut changed = comment.clone();
+    changed.body = "stale edit".into();
+    assert!(catalog.update_comment_authorized(&changed, stale).is_err());
+    assert!(catalog
+        .insert_comment_request_authorized(
+            &annotation("comment-without-receipt", "commenting"),
+            "",
+            "",
+            3,
+            stale,
+        )
+        .is_err());
+    assert!(catalog
+        .insert_reply_request_authorized(
+            &Reply {
+                slug: "doc".into(),
+                comment_id: comment.id.clone(),
+                id: "reply-1".into(),
+                body: "stale reply".into(),
+                creator: "Alice".into(),
+                author: "acct-1".into(),
+                created: "2026-01-01T00:00:01.000Z".into(),
+            },
+            "reply-request",
+            "reply-digest",
+            3,
+            stale,
+        )
+        .is_err());
+    assert!(catalog
+        .insert_reply_request_authorized(
+            &Reply {
+                slug: "doc".into(),
+                comment_id: comment.id.clone(),
+                id: "reply-without-receipt".into(),
+                body: "stale reply".into(),
+                creator: "Alice".into(),
+                author: "acct-1".into(),
+                created: "2026-01-01T00:00:02.000Z".into(),
+            },
+            "",
+            "",
+            3,
+            stale,
+        )
+        .is_err());
+    assert!(catalog
+        .delete_comment_authorized("doc", &comment.id, stale)
+        .is_err());
+    assert!(catalog
+        .stage_suggestion_accept_update_authorized(
+            "doc",
+            "suggestion-1",
+            "prepared-accept",
+            "prepared-digest",
+            &[1, 2, 3],
+            stale,
+        )
+        .is_err());
+    assert!(catalog
+        .begin_suggestion_accept_authorized(
+            "doc",
+            "suggestion-1",
+            "accept-request",
+            "accept-digest",
+            4,
+            stale,
+        )
+        .is_err());
+
+    // Authorization belongs to preparing and staging the operation. Once its
+    // document edit has landed, the service must be able to settle that
+    // durable receipt even if the initiating session has since been revoked.
+    catalog
+        .record_suggestion_accept_checkpoint(
+            "doc",
+            "suggestion-1",
+            "prepared-accept",
+            "prepared-digest",
+            "checkpoint-sha",
+            "2026-01-01T00:00:03.000Z",
+        )
+        .unwrap();
+    let accepted = catalog
+        .finish_suggestion_accept(
+            "doc",
+            "suggestion-1",
+            "prepared-accept",
+            "prepared-digest",
+            "checkpoint-sha",
+            "2026-01-01T00:00:03.000Z",
+        )
+        .unwrap();
+    assert_eq!(accepted.outcome, "accepted");
+
+    assert_eq!(catalog.comment("doc", &comment.id).unwrap().body, "words");
+    assert!(catalog.replies("doc", &comment.id, 100).unwrap().is_empty());
 }
 
 #[test]

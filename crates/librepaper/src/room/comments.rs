@@ -807,12 +807,13 @@ impl Room {
             Ok(command) => command,
             Err(error) => return (error.response(), false),
         };
-        self.apply_command(command, address, author, via, budget, is_owner)
+        self.apply_command(command, address, author, via, budget, is_owner, "", "")
             .await
     }
 
     /// Applies a command after the compatible wire adapter has validated its
     /// discriminator and operation-specific required fields.
+    #[allow(clippy::too_many_arguments)]
     pub async fn apply_command(
         &self,
         command: Command,
@@ -821,6 +822,8 @@ impl Room {
         via: &str,
         budget: Option<i64>,
         is_owner: bool,
+        account_id: &str,
+        session_generation: &str,
     ) -> (Value, bool) {
         let temp_id = command.temp_id().to_owned();
         let request_id = command.request_id().to_owned();
@@ -996,7 +999,15 @@ impl Room {
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &refined) {
-                        Ok(row) => update_comment_row(catalog, row).await,
+                        Ok(row) => {
+                            update_comment_row(
+                                catalog,
+                                row,
+                                account_id.to_owned(),
+                                session_generation.to_owned(),
+                            )
+                            .await
+                        }
                         Err(error) => Err(error),
                     }
                 } else {
@@ -1091,7 +1102,15 @@ impl Room {
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &decided) {
-                        Ok(row) => update_comment_row(catalog, row).await,
+                        Ok(row) => {
+                            update_comment_row(
+                                catalog,
+                                row,
+                                account_id.to_owned(),
+                                session_generation.to_owned(),
+                            )
+                            .await
+                        }
                         Err(error) => Err(error),
                     }
                 } else {
@@ -1133,7 +1152,14 @@ impl Room {
                 let seq = state.seq;
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
-                    delete_comment_row(catalog, &self.slug, &comment_id).await
+                    delete_comment_row(
+                        catalog,
+                        &self.slug,
+                        &comment_id,
+                        account_id.to_owned(),
+                        session_generation.to_owned(),
+                    )
+                    .await
                 } else {
                     self.persist_comments(seq, prepared).await
                 };
@@ -1187,7 +1213,15 @@ impl Room {
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &anchored) {
-                        Ok(row) => update_comment_row(catalog, row).await,
+                        Ok(row) => {
+                            update_comment_row(
+                                catalog,
+                                row,
+                                account_id.to_owned(),
+                                session_generation.to_owned(),
+                            )
+                            .await
+                        }
                         Err(error) => Err(error),
                     }
                 } else {
@@ -1271,7 +1305,16 @@ impl Room {
                         "creator": row.creator,
                         "author": row.author,
                     }));
-                    insert_reply_request(catalog, row, request_id.clone(), digest, now_unix()).await
+                    insert_reply_request(
+                        catalog,
+                        row,
+                        request_id.clone(),
+                        digest,
+                        now_unix(),
+                        account_id.to_owned(),
+                        session_generation.to_owned(),
+                    )
+                    .await
                 } else {
                     self.persist_comments(seq, prepared).await
                 };
@@ -1525,6 +1568,8 @@ impl Room {
                         request_id.clone(),
                         digest,
                         now_unix(),
+                        account_id.to_owned(),
+                        session_generation.to_owned(),
                     )
                     .await
                     {

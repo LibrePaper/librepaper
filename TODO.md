@@ -17,8 +17,6 @@ says which.
 - A room fenced as `FenceReason::Oversized` stays read-only until its
   instance is evicted, and eviction refuses a dirty session, so an oversized
   write leaves no way back short of a restart.
-- Comment, reply and suggestion catalogue writes do not carry the session
-  generation that ownership transfer and room-level mutations check.
 
 ## Known ways work can be lost, kept deliberately
 

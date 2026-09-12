@@ -70,7 +70,7 @@ async fn paused_comment_persistence_lets_an_edit_and_a_socket_through() {
     let writing = tokio::spawn({
         let room = room.clone();
         async move {
-            room.apply_command(comment("first", ""), "1.1.1.1", "", "", None, true)
+            room.apply_command(comment("first", ""), "1.1.1.1", "", "", None, true, "", "")
                 .await
         }
     });
@@ -113,7 +113,7 @@ async fn two_concurrent_comment_writers_both_land() {
     let first = tokio::spawn({
         let room = room.clone();
         async move {
-            room.apply_command(comment("first", ""), "1.1.1.1", "", "", None, true)
+            room.apply_command(comment("first", ""), "1.1.1.1", "", "", None, true, "", "")
                 .await
         }
     });
@@ -123,7 +123,7 @@ async fn two_concurrent_comment_writers_both_land() {
     let second = tokio::spawn({
         let room = room.clone();
         async move {
-            room.apply_command(comment("second", ""), "1.1.1.2", "", "", None, true)
+            room.apply_command(comment("second", ""), "1.1.1.2", "", "", None, true, "", "")
                 .await
         }
     });
@@ -158,13 +158,13 @@ async fn two_concurrent_comment_writers_both_land() {
 #[tokio::test]
 async fn a_failed_comment_write_preserves_later_state() {
     let (_dir, store, hooked, _rooms, room) = legacy_room().await;
-    room.apply_command(comment("kept", ""), "1.1.1.1", "", "", None, true)
+    room.apply_command(comment("kept", ""), "1.1.1.1", "", "", None, true, "", "")
         .await;
     *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::room_key("probe")));
     let writing = tokio::spawn({
         let room = room.clone();
         async move {
-            room.apply_command(comment("doomed", ""), "1.1.1.2", "", "", None, true)
+            room.apply_command(comment("doomed", ""), "1.1.1.2", "", "", None, true, "", "")
                 .await
         }
     });
@@ -191,7 +191,7 @@ async fn a_failed_comment_write_preserves_later_state() {
     // The room is not fenced or wedged: the next comment lands, and every
     // reader converges on the same list.
     assert!(
-        room.apply_command(comment("after", ""), "1.1.1.3", "", "", None, true)
+        room.apply_command(comment("after", ""), "1.1.1.3", "", "", None, true, "", "")
             .await
             .1
     );
@@ -211,14 +211,23 @@ async fn a_failed_comment_write_preserves_later_state() {
 #[tokio::test]
 async fn a_cancelled_comment_write_leaves_the_room_untouched() {
     let (_dir, _store, hooked, _rooms, room) = legacy_room().await;
-    room.apply_command(comment("kept", ""), "1.1.1.1", "", "", None, true)
+    room.apply_command(comment("kept", ""), "1.1.1.1", "", "", None, true, "", "")
         .await;
     *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::room_key("probe")));
     let writing = tokio::spawn({
         let room = room.clone();
         async move {
-            room.apply_command(comment("abandoned", ""), "1.1.1.2", "", "", None, true)
-                .await
+            room.apply_command(
+                comment("abandoned", ""),
+                "1.1.1.2",
+                "",
+                "",
+                None,
+                true,
+                "",
+                "",
+            )
+            .await
         }
     });
     tokio::time::timeout(PATIENCE, hooked.reached.notified())
@@ -231,7 +240,7 @@ async fn a_cancelled_comment_write_leaves_the_room_untouched() {
     // The gate the cancelled writer held is released, so the next one runs.
     let (_, ok) = tokio::time::timeout(
         PATIENCE,
-        room.apply_command(comment("after", ""), "1.1.1.3", "", "", None, true),
+        room.apply_command(comment("after", ""), "1.1.1.3", "", "", None, true, "", ""),
     )
     .await
     .expect("the comment gate is not left held by a cancelled writer");
