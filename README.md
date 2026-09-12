@@ -70,7 +70,7 @@ The standard web-based workflow is:
 
 1. Open a LibrePaper server in a browser, 
 2. Sign in with GitHub (if the manager requires it), 
-3. Upload an `.html` or `.md` file,
+3. Upload a document file, or a `.zip` containing a multi-file project,
 4. Send the read link to your readers, or mint a comment link and send that.
 
 Only somebody holding a live link can open the document; its bare URL opens
@@ -160,7 +160,11 @@ A document is a directory, so publish the directory:
 librepaper publish paper/ --title "My Paper"
 ```
 
-Everything in it goes: the chapters, the `.bib`, the figures. Three things are
+In the browser, drop a ZIP of the project on the landing page. Check the
+selected main document, choose another if needed, and upload the project.
+ZIPs downloaded from LibrePaper can be uploaded the same way.
+
+The CLI sends the chapters, the `.bib`, and the figures. Three things are
 left behind: names beginning with a dot, the main file's own `.pdf`, and
 whatever git ignores, since a `.gitignore` is the author's own statement of
 what is derived. Which file is the document is the one text at the top level

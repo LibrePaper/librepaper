@@ -15,6 +15,8 @@
   import { SHELL_HEADERS, config as loadConfig, get, me as whoami, upload } from "../lib/api.js";
   import { FAVORITES, VIEWED, read, write } from "../lib/storage.js";
   import { day as isoDay } from "../lib/dates.js";
+  import { unzip } from "../lib/zip.js";
+  import { archiveProject, archiveSelection } from "../lib/project-upload.js";
 
   let me = $state({});
   // Replaced by the server's own on load; this is only what the drop zone
@@ -48,6 +50,8 @@
   let pendingDeletion = [];
   let fileInput = $state(null);
   let titleInput = $state(null);
+  let chooseSerial = 0;
+  let parsing = $state(false);
 
   const maxLabel = $derived(Math.round(config.max_document / (1024 * 1024)) + " MB");
 
@@ -240,6 +244,8 @@
   /* ------------------------------------------------------------ file picking */
 
   function refuse(message) {
+    chooseSerial++;
+    parsing = false;
     chosen = null;
     title = "";
     fileError = message;
@@ -258,6 +264,41 @@
       return refuse(`${file.name} is ${(file.size / (1024 * 1024)).toFixed(1)} MB; the limit is ${maxLabel}.`);
     }
     return true;
+  }
+
+  function selectArchiveMain(main) {
+    if (!chosen?.archive) return;
+    chosen.main = main;
+    try {
+      const selected = archiveSelection(chosen.project, main, config);
+      chosen.files = selected.files;
+      chosen.skipped = selected.skipped;
+      fileError = "";
+    } catch (error) {
+      chosen.files = [];
+      fileError = error.message;
+    }
+  }
+
+  async function chooseArchive(file, serial) {
+    try {
+      const entries = await unzip(file, { maxBytes: config.max_document + (config.max_assets || 0), maxFiles: (config.max_files || 200) * 9 });
+      if (serial !== chooseSerial) return;
+      const project = archiveProject(entries, config);
+      chosen = { name: file.name, project, candidates: project.candidates, main: project.main, files: [], skipped: project.skipped, archive: true };
+      title = file.name.replace(/\.zip$/i, "").replace(/[_-]+/g, " ").trim();
+      if (project.main) {
+        selectArchiveMain(project.main);
+        const mainEntry = project.files.find((entry) => entry.path === project.main);
+        title = titleFrom(new TextDecoder().decode(mainEntry.bytes), mainEntry.path);
+      }
+      await Promise.resolve();
+      if (serial === chooseSerial) titleInput?.select();
+    } catch (error) {
+      if (serial === chooseSerial) refuse(error?.message || "Could not read the ZIP archive.");
+    } finally {
+      if (serial === chooseSerial) parsing = false;
+    }
   }
 
   // The document usually names itself: <title> or the first heading in HTML,
@@ -281,18 +322,31 @@
   // decision. The title arrives selected, so typing replaces it and Enter
   // alone accepts it.
   async function choose(file) {
-    if (!valid(file)) return;
+    const serial = ++chooseSerial;
+    chosen = null;
     fileError = "";
+    parsing = true;
+    if (/\.zip$/i.test(file.name)) return chooseArchive(file, serial);
+    if (!valid(file)) return;
     chosen = file;
     title = file.name;
     await Promise.resolve();
     titleInput?.select();
     const text = await file.text().catch(() => "");
+    if (serial !== chooseSerial) return;
     // The reader may already be typing by the time the file is read.
     if (title === file.name) {
       title = titleFrom(text, file.name);
       titleInput?.select();
     }
+    parsing = false;
+  }
+
+  function cancelChoice() {
+    chooseSerial++;
+    parsing = false;
+    chosen = null;
+    title = "";
   }
 
   function drop(event) {
@@ -304,6 +358,7 @@
 
   async function submit(event) {
     event.preventDefault();
+    if (parsing || busy) return;
     if (!chosen) {
       refuse("Choose a document to upload.");
       return;
@@ -311,7 +366,12 @@
     busy = true;
     try {
       const form = new FormData();
-      form.append("file", chosen, chosen.name);
+      if (chosen.archive) {
+        if (!chosen.main) { fileError = "Choose the document file to open from the archive."; return; }
+        const selected = archiveSelection(chosen.project, chosen.main, config);
+        for (const entry of selected.files) form.append("file", new Blob([entry.bytes]), entry.path);
+        form.append("main", chosen.main);
+      } else form.append("file", chosen, chosen.name);
       form.append("title", title);
       const response = await upload(form);
       if (!response.ok) {
@@ -381,13 +441,17 @@
               Choose a file
             </button>
             <small class="text-surface-600-400">
-              {config.extensions.join(" or ")} files, up to {maxLabel}
+              {config.extensions.join(" or ")} files or .zip projects. Document text up to {maxLabel}.
             </small>
+            {#if parsing}
+              <p class="text-sm text-surface-600-400" role="status">Reading project archive…</p>
+              <button type="button" class="btn preset-outlined-surface-300-700" onclick={cancelChoice}>Cancel</button>
+            {/if}
             <input
               type="file"
               bind:this={fileInput}
               hidden
-              accept={config.extensions.join(",") + ",text/html"}
+              accept={config.extensions.join(",") + ",.zip,text/html"}
               onchange={(event) => event.currentTarget.files[0] && choose(event.currentTarget.files[0])}
             />
           </div>
@@ -395,6 +459,18 @@
           <div class="card preset-outlined-surface-300-700 p-6">
             <Stack gap={3}>
               <p class="font-semibold">{chosen.name}</p>
+              {#if chosen.archive}
+                <label class="label">
+                  <span class="label-text">Document file</span>
+                  <select class="select" value={chosen.main} onchange={(event) => selectArchiveMain(event.currentTarget.value)}>
+                    <option value="" disabled>Choose the main document</option>
+                    {#each chosen.candidates as path}
+                      <option value={path}>{path}</option>
+                    {/each}
+                  </select>
+                  {#if chosen.skipped.length}<small class="text-surface-600-400">Files excluded from upload: {chosen.skipped.join(", ")}</small>{/if}
+                </label>
+              {/if}
               <label class="label">
                 <span class="label-text">Title</span>
                 <!-- Escape backs out of the choice rather than only clearing
@@ -404,15 +480,15 @@
                   bind:this={titleInput}
                   bind:value={title}
                   onkeydown={(event) => {
-                    if (event.key === "Escape") { event.preventDefault(); chosen = null; }
+                    if (event.key === "Escape") { event.preventDefault(); cancelChoice(); }
                   }}
                 />
               </label>
               <Row gap={2} justify="end">
-                <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (chosen = null)}>
+                <button type="button" class="btn preset-outlined-surface-300-700" onclick={cancelChoice}>
                   Cancel
                 </button>
-                <button type="submit" class="btn preset-filled-primary-500" disabled={busy}>
+                <button type="submit" class="btn preset-filled-primary-500" disabled={busy || parsing || (chosen.archive && (!chosen.main || !!fileError))}>
                   {busy ? "Creating…" : "Create project"}
                 </button>
               </Row>

@@ -16,6 +16,7 @@ const body = (start, end) => {
 
 const showList = body("  async function showList()", "  async function deleteSelected");
 const reallyDelete = body("  async function reallyDelete()", "  /* ------------------------------------------------------------ file picking */");
+const submit = body("  async function submit(event)", "  $effect(() => {");
 
 const context = (values) => vm.createContext({
   Promise,
@@ -54,6 +55,26 @@ const context = (values) => vm.createContext({
   ]);
   assert.deepEqual(Array.from(ctx.documents, (doc) => doc.slug), ["first", "duplicate", "last"]);
   assert.deepEqual(problems, []);
+}
+
+// Archive submissions preserve the selected main file and send every extracted
+// entry as a directory upload. A missing main reports an error without losing
+// the archive selection, so the user can simply choose another candidate.
+{
+  const forms = [];
+  const ctx = context({
+    chosen: { archive: true, main: "", files: [{ path: "paper.qmd", bytes: new Uint8Array([1]) }], name: "paper.zip" },
+    title: "Paper", busy: false, parsing: false, fileError: "", problem: () => {},
+    refuse: () => { throw new Error("archive selection was lost"); },
+    upload: async (form) => { forms.push(form); return { ok: true, json: async () => ({ url: "/docs/paper" }) }; },
+    showList: async () => {}, shared: null, sharing: false, location: { origin: "https://example.test" },
+    URL, Blob, FormData,
+  });
+  vm.runInContext(submit, ctx);
+  await vm.runInContext("submit({ preventDefault() {} })", ctx);
+  assert.equal(forms.length, 0);
+  assert.equal(ctx.chosen.main, "");
+  assert.match(ctx.fileError, /Choose the document/);
 }
 
 // A later-page failure reports the refresh problem while leaving the prior
