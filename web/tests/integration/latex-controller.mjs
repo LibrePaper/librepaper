@@ -305,6 +305,67 @@ function nextProject() {
 // 8. Browser TeX failure -> native once; a second failure of the same
 // snapshot does not retry native.
 // ============================================================================
+
+// An explicit local direct-TeX choice uses the structured protocol-v2 build
+// path. Automatic fallback below deliberately retains the protocol-v1 call
+// while older companions remain supported.
+{
+  const project = nextProject();
+  let request = null;
+  let signal = null;
+  const localV2 = {
+    async runBuild(value, options) {
+      request = value;
+      signal = options.signal;
+      return {
+        ok: true,
+        pdf: PDF,
+        log: "native v2 ok",
+        diagnostics: [],
+        provenance: { backend: "local", builder: "tex", engine: value.engine, snapshot: value.job.snapshot },
+      };
+    },
+    async runTex() { throw new Error("explicit local TeX must not use protocol 1"); },
+  };
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localV2 });
+  latex.configure({ project, settings: { backend: "local", tool: "tex", engine: "xelatex", output: "pdf" } });
+  const browserCalls = worker()?.messages.filter((message) => message.cmd === "tex").length || 0;
+  const result = await latex.compile(tree("main.tex", "local only"));
+  assert.equal(result.ok, true);
+  assert.equal(request.builder, "tex");
+  assert.equal(request.engine, "xelatex");
+  assert.equal(signal.aborted, false);
+  assert.equal(worker()?.messages.filter((message) => message.cmd === "tex").length || 0, browserCalls, "explicit local TeX skipped the browser worker");
+}
+
+// Direct TeX remains available through the v1 bridge. Newer builders must
+// refuse rather than downgrade to the direct TeX endpoint.
+{
+  const project = nextProject();
+  let calls = 0;
+  const localV1 = {
+    status: () => ({ protocol: [1] }),
+    async runTex() { calls += 1; return { ok: true, pdf: PDF, synctex: null, log: "", diagnostics: [], provenance: { backend: "local" } }; },
+  };
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localV1 });
+  latex.configure({ project, settings: { backend: "local", tool: "tex", engine: "pdflatex" } });
+  const result = await latex.compile(tree("main.tex", "v1 direct"));
+  assert.equal(result.ok, true);
+  assert.equal(calls, 1);
+}
+
+{
+  const project = nextProject();
+  let texCalls = 0;
+  const localV1 = { status: () => ({ protocol: [1] }), async runTex() { texCalls += 1; return { ok: true, pdf: PDF }; } };
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localV1 });
+  latex.configure({ project, settings: { backend: "local", tool: "latexmk", engine: "xelatex" } });
+  const result = await latex.compile(tree("main.tex", "v1 latexmk"));
+  assert.equal(result.ok, false);
+  assert.equal(texCalls, 0);
+  assert.match(result.failure.message, /updated/i);
+}
+
 {
   const project = nextProject();
   let nativeCalls = 0;

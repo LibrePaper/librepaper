@@ -2083,3 +2083,103 @@ async fn deep_link_pair_request_duplicate_mismatch_and_wrong_verifier_are_reject
         .unwrap();
     assert_eq!(bad.status(), 403);
 }
+
+#[test]
+fn v2_bound_binding_is_scoped_to_origin_project_and_entrypoint() {
+    let state = tempfile::tempdir().expect("state");
+    let root = tempfile::tempdir().expect("root");
+    std::fs::write(root.path().join("paper.qmd"), "# paper").expect("source");
+    let bindings = BindingStore::new(state.path());
+    let grant = bindings
+        .grant(ORIGIN, "paper", root.path(), "paper.qmd")
+        .expect("grant");
+    assert!(bindings.get_scoped(&grant.id, ORIGIN, "paper").is_some());
+    assert!(bindings
+        .get_scoped(&grant.id, "https://other.example", "paper")
+        .is_none());
+    assert!(bindings.get_scoped(&grant.id, ORIGIN, "other").is_none());
+    assert_eq!(grant.entrypoint, "paper.qmd");
+}
+
+#[test]
+fn v2_preview_workspace_rejects_snapshot_shape() {
+    let request = protocol::PreviewRequest {
+        protocol: 2,
+        kind: "preview".into(),
+        project: "paper".into(),
+        origin: ORIGIN.into(),
+        snapshot: "s".into(),
+        generation: 1,
+        engine: "quarto".into(),
+        quarto: None,
+        calepin: None,
+        manifest: Vec::new(),
+        workspace: Some(protocol::WorkspaceRequest::Snapshot { binding_id: None }),
+        builder: Some("quarto".into()),
+        output: Some("html".into()),
+        entrypoint: Some("paper.qmd".into()),
+    };
+    assert!(!matches!(
+        request.workspace,
+        Some(protocol::WorkspaceRequest::Bound { .. })
+    ));
+    let raw = json!({"protocol":2,"kind":"preview","project":"paper","origin":ORIGIN,"snapshot":"s","generation":1,"builder":"calepin","workspace":{"mode":"snapshot"},"entrypoint":"paper.typ","output":"html","options":{},"manifest":[]});
+    assert!(protocol::decode_preview(raw.clone()).is_err());
+    let mut valid = raw;
+    valid["workspace"] = json!({"mode":"bound","binding_id":"grant"});
+    let decoded = protocol::decode_preview(valid.clone()).expect("valid scoped preview shape");
+    assert_eq!(decoded.calepin.unwrap().binding_id, "grant");
+    valid["calepin"] = json!({"binding_id":"other","main":"different.typ","format":"html"});
+    assert!(
+        protocol::decode_preview(valid).is_err(),
+        "old nested fields cannot override v2 scope"
+    );
+}
+
+#[tokio::test]
+async fn v2_job_admission_rejects_unsafe_options_and_ungranted_execution() {
+    let test = start_test_service(Arc::new(FakeRunner::default())).await;
+    set_code(&test, "666666");
+    let token = connected_token(&test, ORIGIN, "proj", "666666").await;
+    let source: &[u8] = b"= Test";
+    let job = json!({"protocol":2,"kind":"build","project":"proj","origin":ORIGIN,"snapshot":"s","generation":1,"builder":"typst","workspace":{"mode":"snapshot"},"entrypoint":"main.typ","output":"pdf","options":{},"manifest":manifest_for(&[("main.typ",source)])});
+    for (field, value, status) in [
+        ("builder", json!("future"), 400),
+        ("options", json!({"filter":"evil"}), 400),
+        ("output", json!("exe"), 400),
+        (
+            "workspace",
+            json!({"mode":"bound","binding_id":"missing"}),
+            400,
+        ),
+        ("project", json!("other"), 403),
+    ] {
+        let mut invalid = job.clone();
+        invalid[field] = value;
+        let response = post_job(&test, ORIGIN, &token, invalid, &[("main.typ", source)]).await;
+        assert_eq!(response.status().as_u16(), status, "{field}");
+    }
+    let mut calepin = job.clone();
+    calepin["builder"] = json!("calepin");
+    assert_eq!(
+        post_job(
+            &test,
+            ORIGIN,
+            &token,
+            calepin.clone(),
+            &[("main.typ", source)]
+        )
+        .await
+        .status(),
+        400
+    );
+    calepin["workspace"] = json!({"mode":"snapshot","binding_id":"missing"});
+    assert_eq!(
+        post_job(&test, ORIGIN, &token, calepin, &[("main.typ", source)])
+            .await
+            .status(),
+        403
+    );
+    let response = post_job(&test, ORIGIN, &token, job, &[("main.typ", source)]).await;
+    assert!(response.status().is_success(), "valid v2 snapshot accepted");
+}

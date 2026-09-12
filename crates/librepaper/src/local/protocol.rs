@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// The protocol versions this binary speaks.
-pub const PROTOCOL_VERSIONS: &[u32] = &[1];
+pub const PROTOCOL_VERSIONS: &[u32] = &[1, 2];
 
 /// The default loopback port. Configurable with `librepaper local start
 /// --port`.
@@ -176,6 +176,42 @@ pub struct Capabilities {
     /// Calepin exists on this surface only as a managed-preview adapter.
     #[serde(default)]
     pub calepin: Tool,
+    /// Adapter-oriented capability records introduced by protocol v2. The
+    /// legacy `tools` fields remain populated for v1 clients.
+    #[serde(default)]
+    pub builders: Vec<BuilderCapability>,
+}
+
+/// A stable operation/workspace pair advertised by a local adapter.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BuilderOperation {
+    pub kind: String,
+    #[serde(default)]
+    pub workspace_modes: Vec<String>,
+}
+
+/// Browser-facing description of one built-in or companion-local builder.
+/// Paths and executable details are intentionally absent.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct BuilderCapability {
+    pub id: String,
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub source_formats: Vec<String>,
+    #[serde(default)]
+    pub outputs: Vec<String>,
+    #[serde(default)]
+    pub engines: Vec<String>,
+    #[serde(default)]
+    pub operations: Vec<BuilderOperation>,
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default)]
+    pub presets: bool,
+    #[serde(default)]
+    pub note: String,
 }
 
 /// One input file the browser says it is sending.
@@ -238,6 +274,197 @@ pub struct JobRequest {
     pub manifest: Vec<ManifestEntry>,
     #[serde(default)]
     pub options: JobOptions,
+    /// Protocol v2 stable builder identifier; absent on v1 requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder_options: Option<BTreeMap<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+}
+
+/// The only workspace forms protocol v2 accepts. A path is never represented
+/// on the wire. One-shot bound inputs are copied into a fresh service-owned
+/// temporary workspace by the adapter; managed previews may watch the bound
+/// working folder.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
+pub enum WorkspaceRequest {
+    Snapshot {
+        #[serde(default)]
+        binding_id: Option<String>,
+    },
+    Bound {
+        binding_id: String,
+    },
+}
+
+impl Default for WorkspaceRequest {
+    fn default() -> Self {
+        Self::Snapshot { binding_id: None }
+    }
+}
+
+impl WorkspaceRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Snapshot { binding_id } => {
+                if binding_id
+                    .as_deref()
+                    .is_some_and(|id| id.is_empty() || id.len() > 256)
+                {
+                    Err("binding_id must be at most 256 bytes".into())
+                } else {
+                    Ok(())
+                }
+            }
+            Self::Bound { binding_id } if !binding_id.is_empty() && binding_id.len() <= 256 => {
+                Ok(())
+            }
+            Self::Bound { .. } => {
+                Err("binding_id is required and must be at most 256 bytes".into())
+            }
+        }
+    }
+}
+
+/// Version 2 structured build request. It is deliberately separate from
+/// `JobRequest` so the v1 wire shape and its existing callers remain stable
+/// during migration.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BuildRequestV2 {
+    pub protocol: u32,
+    pub kind: String,
+    pub project: String,
+    pub origin: String,
+    pub snapshot: String,
+    pub generation: u64,
+    pub builder: String,
+    pub workspace: WorkspaceRequest,
+    pub entrypoint: String,
+    pub output: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub deadline_seconds: Option<u64>,
+    #[serde(default)]
+    pub max_passes: Option<u32>,
+    #[serde(default)]
+    pub manifest: Vec<ManifestEntry>,
+}
+
+impl BuildRequestV2 {
+    pub fn validate_shape(&self) -> Result<(), String> {
+        if self.protocol != 2 {
+            return Err("unsupported protocol version".into());
+        }
+        if self.kind != "build" {
+            return Err("protocol 2 job kind must be build".into());
+        }
+        if self.builder.is_empty() || self.builder.len() > 128 {
+            return Err("builder is required and must be at most 128 bytes".into());
+        }
+        if !safe_relative_path(&self.entrypoint) {
+            return Err("entrypoint must be a safe project-relative path".into());
+        }
+        if self.output.is_empty()
+            || self.output.len() > 64
+            || !self
+                .output
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+        {
+            return Err("output must be a valid stable identifier".into());
+        }
+        self.workspace.validate()?;
+        if self.options.len() > 128 {
+            return Err("too many builder options".into());
+        }
+        if self.options.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                "executable"
+                    | "command"
+                    | "args"
+                    | "environment"
+                    | "env"
+                    | "shell"
+                    | "target"
+                    | "make_target"
+            )
+        }) {
+            return Err(
+                "builder options cannot select commands, arguments, environment, or targets".into(),
+            );
+        }
+        if self
+            .preset
+            .as_deref()
+            .is_some_and(|id| id.is_empty() || id.len() > 256)
+        {
+            return Err("preset must be at most 256 bytes".into());
+        }
+        if self
+            .deadline_seconds
+            .is_some_and(|seconds| seconds == 0 || seconds > 3600)
+            || self
+                .max_passes
+                .is_some_and(|passes| passes == 0 || passes > 20)
+        {
+            return Err("build limits are outside the supported range".into());
+        }
+        let (outputs, allowed): (&[&str], &[&str]) = match self.builder.as_str() {
+            "tex" | "latexmk" => (&["pdf"], &["engine", "synctex"]),
+            "tectonic" => (&["pdf"], &["synctex"]),
+            "typst" => (&["pdf"], &[]),
+            "pandoc" => (&["html", "docx"], &[]),
+            "calepin" => (&["html", "pdf"], &[]),
+            "quarto" => (
+                &["html", "pdf", "docx", "revealjs"],
+                &["profile", "parameters", "policy", "data_inputs"],
+            ),
+            _ => return Err("unknown builder".into()),
+        };
+        if !outputs.contains(&self.output.as_str()) {
+            return Err("unsupported builder output".into());
+        }
+        if self.preset.is_none() {
+            for (name, value) in &self.options {
+                if !allowed.contains(&name.as_str()) {
+                    return Err(format!("unknown {} option: {name}", self.builder));
+                }
+                let valid = match name.as_str() {
+                    "engine" => matches!(value.as_str(), Some("pdflatex" | "xelatex" | "lualatex")),
+                    "synctex" => value.is_boolean(),
+                    "profile" => value.is_string(),
+                    "parameters" => value.is_object(),
+                    "policy" => matches!(
+                        value.as_str(),
+                        Some("project-defaults" | "refresh-computations" | "frozen")
+                    ),
+                    "data_inputs" => value.as_array().is_some_and(|items| {
+                        items
+                            .iter()
+                            .all(|item| item.as_str().is_some_and(safe_relative_path))
+                    }),
+                    _ => false,
+                };
+                if !valid {
+                    return Err(format!("invalid typed option: {name}"));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The `POST previews` (and `GET`/`DELETE previews/{id}`) request body: a
@@ -266,6 +493,77 @@ pub struct PreviewRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calepin: Option<CalepinJobOptions>,
     pub manifest: Vec<ManifestEntry>,
+    /// Protocol v2 preview declaration. Managed previews require a bound
+    /// workspace; snapshot previews are intentionally rejected.
+    #[serde(default)]
+    pub workspace: Option<WorkspaceRequest>,
+    #[serde(default)]
+    pub builder: Option<String>,
+    #[serde(default)]
+    pub output: Option<String>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+}
+
+/// Strict v2 wire decoding; old nested tool envelopes cannot override the
+/// declared workspace, builder, or entrypoint.
+pub fn decode_preview(mut raw: serde_json::Value) -> Result<PreviewRequest, String> {
+    if raw.get("protocol").and_then(serde_json::Value::as_u64) != Some(2) {
+        return serde_json::from_value(raw).map_err(|error| error.to_string());
+    }
+    if raw.get("kind").and_then(serde_json::Value::as_str) != Some("preview") {
+        return Err("protocol 2 preview kind must be preview".into());
+    }
+    raw["kind"] = serde_json::json!("build");
+    let request: BuildRequestV2 = serde_json::from_value(raw).map_err(|error| error.to_string())?;
+    request.validate_shape()?;
+    if request.preset.is_some() {
+        return Err("presets support snapshot builds only".into());
+    }
+    let WorkspaceRequest::Bound { binding_id } = &request.workspace else {
+        return Err("managed previews require bound workspace".into());
+    };
+    let (quarto, calepin) = match request.builder.as_str() {
+        "quarto" => {
+            let mut options = serde_json::to_value(QuartoJobOptions::default())
+                .map_err(|error| error.to_string())?;
+            for (key, value) in &request.options {
+                options[key] = value.clone();
+            }
+            options["binding_id"] = serde_json::json!(binding_id);
+            options["main"] = serde_json::json!(request.entrypoint);
+            options["format"] = serde_json::json!(request.output);
+            let options: QuartoJobOptions =
+                serde_json::from_value(options).map_err(|error| error.to_string())?;
+            options.validate()?;
+            (Some(options), None)
+        }
+        "calepin" => (
+            None,
+            Some(CalepinJobOptions {
+                binding_id: binding_id.clone(),
+                main: request.entrypoint.clone(),
+                format: request.output.clone(),
+            }),
+        ),
+        _ => return Err("builder does not support managed previews".into()),
+    };
+    Ok(PreviewRequest {
+        protocol: 2,
+        kind: "quarto".into(),
+        project: request.project,
+        origin: request.origin,
+        snapshot: request.snapshot,
+        generation: request.generation,
+        engine: request.builder.clone(),
+        quarto,
+        calepin,
+        manifest: request.manifest,
+        workspace: Some(request.workspace),
+        builder: Some(request.builder),
+        output: Some(request.output),
+        entrypoint: Some(request.entrypoint),
+    })
 }
 
 /// Options accepted by the local Quarto adapter. Every value is validated
@@ -364,8 +662,10 @@ impl QuartoJobOptions {
         if self.binding_id.is_empty() || self.binding_id.len() > 256 {
             return Err("quarto binding_id is required and must be at most 256 bytes".into());
         }
-        if !safe_relative_path(&self.main) || !self.main.ends_with(".qmd") {
-            return Err("quarto main must be a safe project-relative .qmd path".into());
+        if !safe_relative_path(&self.main)
+            || !(self.main.ends_with(".qmd") || self.main.ends_with(".md"))
+        {
+            return Err("quarto main must be a safe project-relative .qmd or .md path".into());
         }
         if !matches!(self.format.as_str(), "html" | "pdf" | "docx" | "revealjs") {
             return Err(format!("unsupported quarto output format: {}", self.format));
@@ -564,7 +864,15 @@ pub struct ToolVersions {
 pub struct Provenance {
     pub backend: String,
     #[serde(default)]
+    pub builder: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
     pub engine: String,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub snapshot: String,
     #[serde(default)]
     pub tools: ToolVersions,
     /// `bwrap`, `sandbox-exec` or `none`.
@@ -734,5 +1042,30 @@ mod tests {
         snapshot.shared_inventory_complete = true;
         snapshot.shared_tree_sha256 = Some("0".repeat(64));
         assert!(snapshot.validate().is_ok());
+    }
+
+    #[test]
+    fn v2_build_rejects_command_selection_options() {
+        let value = serde_json::json!({
+            "protocol": 2, "kind": "build", "project": "p", "origin": "https://x",
+            "snapshot": "s", "generation": 1, "builder": "pandoc",
+            "workspace": {"mode": "snapshot"}, "entrypoint": "index.md", "output": "html",
+            "options": {"command": "rm -rf /"}
+        });
+        let request: BuildRequestV2 = serde_json::from_value(value).expect("decode");
+        assert!(request.validate_shape().is_err());
+    }
+
+    #[test]
+    fn v2_preview_workspace_round_trips_only_bound_binding() {
+        let request = WorkspaceRequest::Bound {
+            binding_id: "grant-1".into(),
+        };
+        let encoded = serde_json::to_value(&request).expect("encode");
+        let decoded: WorkspaceRequest = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, request);
+        assert!(WorkspaceRequest::Snapshot { binding_id: None }
+            .validate()
+            .is_ok());
     }
 }

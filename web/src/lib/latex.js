@@ -191,7 +191,7 @@ async function loadManifest() {
 export function configure({ project, settings: nextSettings, mayCompile = true } = {}) {
   const changedProject = project !== currentProject;
   currentProject = project;
-  currentSettings = { engine: "auto", ...(nextSettings || {}) };
+  currentSettings = normalizeSettings(nextSettings);
   delete currentSettings.release;
   if (changedProject) {
     cancel();
@@ -220,10 +220,17 @@ export function settings() {
   return currentSettings;
 }
 
+function normalizeSettings(next = {}) {
+  const backend = ["auto", "browser", "local"].includes(next.backend) ? next.backend : "auto";
+  const tool = typeof next.tool === "string" && next.tool ? next.tool : "tex";
+  const engine = ["auto", "pdflatex", "xelatex", "lualatex"].includes(next.engine) ? next.engine : "auto";
+  return { engine, backend, tool, output: next.output || "pdf", preset: typeof next.preset === "string" ? next.preset : "", options: next.options && typeof next.options === "object" ? { ...next.options } : {} };
+}
+
 /// An engine change clears the bibliography cache and starts a fresh routing
 /// session rather than trying to reconcile artifacts across toolchains.
 export function setSettings(next) {
-  currentSettings = { ...currentSettings, ...next };
+  currentSettings = normalizeSettings({ ...currentSettings, ...next });
   delete currentSettings.release;
   routeState = route.initialState({});
   bibCache.clear();
@@ -490,6 +497,9 @@ async function runBibliography({ request, attempts, engine, release, token }) {
       attempts.push({ stage: "browser-biber", backend: "browser", ok: false, reason: "init", log: String(error) });
     }
   }
+  if (currentSettings.backend === "browser") {
+    return { ok: false, failure: { kind: "bibliography", message: "Browser Biber could not be initialized; local helpers are disabled by the browser-only selection.", stage: "browser-biber" } };
+  }
   routeState = { ...routeState, snapshot: request.job.snapshot };
   let decision = route.decide(
     { type: "biber-needed", identity: request.identity, validBcf: Boolean(request.bcf) },
@@ -585,7 +595,7 @@ async function localTexAvailableFor(engine) {
   }
 }
 
-async function runNative({ job, tree, engine, releaseId, attempts, startedAt }) {
+async function runNative({ job, tree, engine, releaseId, attempts, startedAt, signal }) {
   const local = await getLocal();
   if (!local) {
     return buildResult({
@@ -600,7 +610,13 @@ async function runNative({ job, tree, engine, releaseId, attempts, startedAt }) 
   statusStore.set({ phase: "native", message: "Compiling locally", backend: "local", progress: null });
   let result;
   try {
-    result = await local.runTex({ job, tree, engine, main: tree.main }, {});
+    const protocols = local.status?.()?.protocol;
+    const directV1 = currentSettings.tool === "tex" && !currentSettings.preset && Array.isArray(protocols) && !protocols.includes(2);
+    if (Array.isArray(protocols) && !directV1 && !protocols.includes(2)) throw new Error("This companion must be updated to run the selected local build tool.");
+    const useV2 = !directV1 && local.runBuild;
+    result = useV2
+      ? await local.runBuild({ job, tree, builder: currentSettings.tool || "tex", engine: !currentSettings.preset && ["latexmk", "tex"].includes(currentSettings.tool || "tex") ? engine : undefined, output: currentSettings.output || "pdf", options: currentSettings.options || {}, preset: currentSettings.preset || "" }, { signal })
+      : await local.runTex({ job, tree, engine, main: tree.main }, { signal });
   } catch (error) {
     routeState = route.decide({ type: "native-failed", message: String(error?.message || error) }, routeState).state;
     attempts.push({ stage: "native", backend: "local", ok: false, log: String(error?.message || error) });
@@ -663,18 +679,22 @@ async function mirrorAbsentMessage(mirrorAbsent) {
   return `Package ${named} is not available in the browser mirror. ${instruction}`;
 }
 
-async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, kind, message }) {
+async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, kind, message, signal }) {
   routeState = { ...routeState, snapshot: job.snapshot };
   // The failure's own words are the reason; the log is the engine's, from
   // the attempt that just failed, and the diagnostics are read out of it so
   // a missing package or an undefined control sequence lands in the gutter
   // rather than behind a generic sentence.
   const lastLog = [...attempts].reverse().find((one) => one.stage === "browser")?.log || "";
-  const { available: localUsable } = await localTexAvailableFor(engine);
+  // An explicit browser choice is strict: a failed browser build must not
+  // silently execute the document through a local helper or native engine.
+  const { available: localUsable } = currentSettings.backend === "browser"
+    ? { available: false }
+    : await localTexAvailableFor(engine);
   const decision = route.decide({ type: "browser-failed", kind, message, localUsable }, routeState);
   routeState = decision.state;
   if (decision.action === "try-native") {
-    return runNative({ job, tree, engine, releaseId, attempts, startedAt });
+    return runNative({ job, tree, engine, releaseId, attempts, startedAt, signal });
   }
   return buildResult({
     job,
@@ -697,6 +717,15 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   };
 
   const engine = resolveEngine(tree, currentSettings);
+
+  // Native builds do not depend on the browser WASM mirror. Create their job
+  // identity from the source snapshot and dispatch directly to the companion.
+  if (currentSettings.backend === "local") {
+    const inputs = await snapshotDigest(tree);
+    const job = await jobsMod.makeJob({ project: currentProject, generation: generationAtStart, tree, inputs, engine, release: "local" });
+    checkpoint();
+    return runNative({ job, tree, engine, releaseId: null, attempts: [], startedAt, signal: token.abort.signal });
+  }
 
   let manifestData;
   try {
@@ -756,8 +785,8 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     });
   }
   // "Keep that project on the native route for the current editing session."
-  if (routeState.route === "native") {
-    return runNative({ job, tree, engine, releaseId, attempts, startedAt });
+  if (routeState.route === "native" && currentSettings.backend !== "browser") {
+    return runNative({ job, tree, engine, releaseId, attempts, startedAt, signal: token.abort.signal });
   }
 
   statusStore.set({ phase: "loading", message: "Loading browser compiler", backend: "browser", release: releaseId, engine, progress: null });
@@ -774,6 +803,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       releaseId,
       attempts,
       startedAt,
+      signal: token.abort.signal,
       kind: classifyWorkerError(error, "init"),
       message: String(error?.message || error),
     });
@@ -794,6 +824,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       releaseId,
       attempts,
       startedAt,
+      signal: token.abort.signal,
       kind: classifyWorkerError(error, "resources"),
       message: String(error?.message || error),
     });
@@ -821,6 +852,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         releaseId,
         attempts,
         startedAt,
+        signal: token.abort.signal,
         kind: "timeout",
         message: "The compile exceeded its time budget.",
       });
@@ -841,6 +873,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         releaseId,
         attempts,
         startedAt,
+        signal: token.abort.signal,
         kind: timedOut ? "timeout" : classifyWorkerError(error, "tex"),
         message: String(error?.message || error),
       });
@@ -861,6 +894,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         releaseId,
         attempts,
         startedAt,
+        signal: token.abort.signal,
         kind: "tex",
         message: (await mirrorAbsentMessage(reply.mirrorAbsent)) || "The document failed to compile.",
       });

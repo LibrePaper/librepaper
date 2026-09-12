@@ -66,8 +66,9 @@
   import { targetForActiveElement, textareaTarget } from "../lib/dictation/targets.js";
   import Preview from "./Preview.svelte";
   import Grip from "./Grip.svelte";
-  import { loadRenderOptions, saveRenderOptions, parseRenderOptions } from "../lib/quarto-options.js";
+  import { parseRenderOptions } from "../lib/quarto-options.js";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
+  import { anonymousIdentity, read as readBuildPreferences, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import LatexStatus from "./LatexStatus.svelte";
   import PreviewStatus from "./PreviewStatus.svelte";
   import Avatar from "./Avatar.svelte";
@@ -180,7 +181,7 @@
   // Settings and remembered per document. The format is never chosen here:
   // it comes from the document's front matter, and older remembered options
   // that still carry one are ignored.
-  let quartoOptions = $state(loadRenderOptions(SLUG));
+  let quartoOptions = $state({ profile: null, parameters: {} });
   let quartoBindingId = $state("");
   let localAppStatus = $state(localQuarto.status());
 
@@ -196,25 +197,20 @@
   // Which of Quarto's own live preview, or this browser's own Markdown
   // draft, a Quarto document shows. One person's choice, remembered per
   // document, in this browser.
-  const QUARTO_PREVIEW_MODE_KEY = `librepaper-quarto-preview:${SLUG}`;
-  let quartoPreviewMode = $state(read(QUARTO_PREVIEW_MODE_KEY, "quarto") === "markdown" ? "markdown" : "quarto");
+  let quartoPreviewMode = $state("quarto");
   // Which of the browser's own Typst rendering, or Calepin running the same
   // document's chunks on this computer through the local app, a Typst
   // document shows. Same shape of choice as Quarto's, remembered separately.
-  const TYPST_PREVIEW_MODE_KEY = `librepaper-typst-preview:${SLUG}`;
-  let typstPreviewMode = $state(read(TYPST_PREVIEW_MODE_KEY, "typst") === "calepin" ? "calepin" : "typst");
-  // HTML is the default preview for every source format. An explicit PDF
-  // choice is remembered in this browser for this document.
-  const TYPST_OUTPUT_KEY = `librepaper-typst-output:${SLUG}`;
-  let typstOutput = $state(read(TYPST_OUTPUT_KEY, "html") === "pdf" ? "pdf" : "html");
-  const LATEX_OUTPUT_KEY = `librepaper-latex-output:${SLUG}`;
-  let latexOutput = $state(read(LATEX_OUTPUT_KEY, "html") === "pdf" ? "pdf" : "html");
+  let typstPreviewMode = $state("typst");
+  // Output is loaded from the same user-scoped record as the build tool.
+  let typstOutput = $state("pdf");
+  let latexOutput = $state("pdf");
 
   async function setLatexOutput(format) {
     const next = format === "html" ? "html" : "pdf";
     if (latexOutput === next) return;
     latexOutput = next;
-    write(LATEX_OUTPUT_KEY, next);
+    setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { ...(next === "html" ? { selection: "tool", backend: "browser", tool: "tex", preset: "" } : {}), output: next }));
     navigationGeneration += 1;
     renderers.cancelPreview({ keepWarm: true });
     latex.cancel();
@@ -232,9 +228,9 @@
   }
 
   async function setQuartoPreviewMode(mode) {
+    setBuildPreferences(updateBuildPreferences(buildScope(), "quarto", { selection: "tool", backend: mode === "markdown" ? "browser" : "local", tool: mode === "markdown" ? "markdown" : "quarto", output: "html" }));
     navigationGeneration += 1;
     quartoPreviewMode = mode === "markdown" ? "markdown" : "quarto";
-    write(QUARTO_PREVIEW_MODE_KEY, quartoPreviewMode);
     // A user gesture may open the pairing popup when the app is reachable
     // but not yet paired; the mode's own effect starts the preview once it
     // is connected.
@@ -247,9 +243,9 @@
   }
 
   async function setTypstPreviewMode(mode) {
+    setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { selection: "tool", backend: mode === "calepin" ? "local" : "browser", tool: mode === "calepin" ? "calepin" : "typst" }));
     navigationGeneration += 1;
     typstPreviewMode = mode === "calepin" ? "calepin" : "typst";
-    write(TYPST_PREVIEW_MODE_KEY, typstPreviewMode);
     if (typstPreviewMode === "calepin") {
       if (await ensureLocalApp() && calepinActive) await calepinPreviewController.start();
     } else {
@@ -262,7 +258,7 @@
     const next = format === "html" ? "html" : "pdf";
     if (typstOutput === next) return;
     typstOutput = next;
-    write(TYPST_OUTPUT_KEY, typstOutput);
+    setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { output: typstOutput }));
     // Invalidate every pending delivery before stopping Calepin. A PDF that
     // finishes after this gesture must never replace the HTML frame.
     navigationGeneration += 1;
@@ -281,8 +277,8 @@
   function quartoRenderContext(tree = null) {
     return {
       format: quartoTargetFormat(tree || treeNow()),
-      profiles: quartoOptions.profile ? [quartoOptions.profile] : [],
-      parameters: { ...quartoOptions.parameters },
+      profiles: (buildPreferences.profile || quartoOptions.profile) ? [buildPreferences.profile || quartoOptions.profile] : [],
+      parameters: { ...(buildPreferences.parameters || quartoOptions.parameters) },
     };
   }
 
@@ -1212,7 +1208,7 @@
   // pane) is not required -- an editor who has not opened it yet still gets
   // the live pane the moment they are able to edit.
   const quartoLiveActive = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && mayEdit && !viewing &&
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !buildPreferences.preset && (!buildPreferences.output || buildPreferences.output === "html") && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && !viewing &&
       localAppStatus.state === "connected",
   );
 
@@ -1221,7 +1217,7 @@
   // the calepin mode chosen, paired, connected, the calepin command itself
   // found, editable, and not looking at history.
   const calepinActive = $derived(
-    sourceFormat === "typst" && !typstHtmlPreview && typstPreviewMode === "calepin" && mayEdit && !viewing &&
+    sourceFormat === "typst" && !typstHtmlPreview && typstPreviewMode === "calepin" && !buildPreferences.preset && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit && !viewing &&
       localAppStatus.state === "connected" && localQuarto.calepinAvailable(),
   );
 
@@ -1236,7 +1232,7 @@
       const context = quartoRenderContext(tree);
       // The managed Quarto preview endpoint serves HTML. Export settings
       // such as PDF or DOCX must not leave it polling for a nonexistent page.
-      return { format: context.format === "revealjs" ? "revealjs" : "html", profile: context.profiles[0] || null, parameters: context.parameters };
+      return { format: buildPreferences.output || (context.format === "revealjs" ? "revealjs" : "html"), profile: buildPreferences.profile || context.profiles[0] || null, parameters: buildPreferences.parameters || context.parameters };
     },
     // syncWorkspace writes the browser's tree to this binding. A remembered
     // external project binding may be stale and is not synchronized here.
@@ -1298,7 +1294,7 @@
   // workspace sync, so it picks them up on its own.
   async function applyRenderOptions(next) {
     quartoOptions = parseRenderOptions({ ...next, format: "default" });
-    saveRenderOptions(SLUG, quartoOptions);
+    setBuildPreferences(updateBuildPreferences(buildScope(), "quarto", { profile: quartoOptions.profile || null, parameters: quartoOptions.parameters || {} }));
     if (!quartoLiveActive) return;
     await quartoPreviewController.stop();
     if (quartoLiveActive) await quartoPreviewController.start();
@@ -1830,6 +1826,11 @@
     viewing ? "html" : editing && ((displayedFormat === "typst" && typstOutput === "html") ||
       (displayedFormat === "latex" && latexOutput === "html")) ? "html" : displayedFormat,
   );
+  const previewOutputKind = $derived(
+    !viewing && editing && ["markdown", "quarto"].includes(displayedFormat) && buildPreferences.output === "pdf"
+      ? "pdf"
+      : renderers.outputKind(previewFormat),
+  );
   const typstHtmlPreview = $derived(displayedFormat === "typst" && (Boolean(viewing) || editing && typstOutput === "html"));
   const latexHtmlPreview = $derived(displayedFormat === "latex" && (Boolean(viewing) || editing && latexOutput === "html"));
   const paintsTheFrame = $derived(!publishedMode);
@@ -1839,8 +1840,8 @@
   // Paged source formats have no HTML to paint, so their frame is the PDF
   // viewer on the documents origin rather than the empty shell. Everything
   // else about the frame is the same: same origin, same CSP, same channel.
-  const pdfOutput = $derived(renderers.producesPdf(previewFormat));
-  const framePath = $derived(publishedMode ? "" : (renderers.outputKind(previewFormat) === "pdf" ? "pdf" : "raw"));
+  const pdfOutput = $derived(previewOutputKind === "pdf");
+  const framePath = $derived(publishedMode ? "" : (previewOutputKind === "pdf" ? "pdf" : "raw"));
 
   // How long the last compile took, and whether one is running now. Paged
   // formats expose the same short-lived loading state; the elapsed time is
@@ -1859,18 +1860,62 @@
   // this browser writes one. Kept current by the `meta.observe` handler set
   // up by `configureLatex` when this project enters LaTeX mode.
   let latexSettingsState = $state({ engine: "auto" });
+  // Build selection is deliberately browser local. The collaborative session
+  // still supplies source files, never this preference.
+  let buildPreferences = $state({ selection: "automatic", backend: "auto", format: "" });
+  const buildUserId = $derived(me.provider && me.handle ? `${me.provider}:${me.handle}` : anonymousIdentity());
+  let previousBuildUser = "";
+  function buildScope() { return { origin: location.origin, user: buildUserId, document: SLUG }; }
+  $effect(() => {
+    const format = sourceFormat;
+    const user = buildUserId;
+    if (format) untrack(() => {
+      if (previousBuildUser && previousBuildUser !== user) {
+        navigationGeneration += 1;
+        renderers.cancelPreview({ keepWarm: true });
+        latex.cancel();
+        void quartoPreviewController?.stop?.();
+        void calepinPreviewController?.stop?.();
+      }
+      previousBuildUser = user;
+      buildPreferences = readBuildPreferences({ origin: location.origin, user, document: SLUG }, format);
+      {
+        if (format === "latex") latexOutput = buildPreferences.output === "html" ? "html" : "pdf";
+        if (format === "typst") typstOutput = buildPreferences.output === "html" ? "html" : "pdf";
+        latex.cancel();
+        if (format === "latex") { latex.configure({ project: SLUG, settings: buildPreferences }); latex.setSettings(buildPreferences); }
+        typstPreviewMode = buildPreferences.backend === "local" && buildPreferences.tool === "calepin" ? "calepin" : "typst";
+        if (buildPreferences.selection === "tool") quartoPreviewMode = buildPreferences.backend === "local" && buildPreferences.tool === "quarto" ? "quarto" : "markdown";
+      }
+    });
+  });
+  function setBuildPreferences(next) {
+    buildPreferences = next;
+    if (sourceFormat === "latex") latexOutput = next.output === "html" ? "html" : "pdf";
+    if (sourceFormat === "typst") typstOutput = next.output === "html" ? "html" : "pdf";
+    navigationGeneration += 1;
+    renderers.cancelPreview({ keepWarm: true });
+    latex.cancel();
+    const localSelected = next.selection === "tool" && next.backend === "local";
+    if (sourceFormat === "quarto" && (!localSelected || next.tool !== "quarto")) void quartoPreviewController?.stop?.();
+    if (sourceFormat === "typst" && (!localSelected || next.tool !== "calepin")) void calepinPreviewController?.stop?.();
+    if (sourceFormat === "quarto") quartoPreviewMode = localSelected && next.tool === "quarto" ? "quarto" : "markdown";
+    if (sourceFormat === "typst") typstPreviewMode = localSelected && next.tool === "calepin" ? "calepin" : "typst";
+    if (sourceFormat === "latex") {
+      const engine = next.engine || "auto";
+      latexSettingsState = { ...next, engine, backend: next.backend, tool: next.tool || "tex", output: next.output || "pdf", preset: next.preset || "" };
+      latex.configure({ project: SLUG, settings: latexSettingsState, mayCompile: renderers.available("latex") });
+      latex.setSettings(latexSettingsState);
+    }
+    void paintPreview();
+  }
   let latexObservedSession = null;
-  let latexSettingsObserver = null;
-  let latexConfiguration = 0;
 
   function stopLatex() {
-    latexConfiguration += 1;
     if (latexObservedSession) {
-      latexObservedSession.meta.unobserve(latexSettingsObserver);
       latex.cancel();
     }
     latexObservedSession = null;
-    latexSettingsObserver = null;
   }
 
   function configureLatex(format) {
@@ -1881,23 +1926,15 @@
     if (latexObservedSession === session) return;
     stopLatex();
     const active = session;
-    const configuration = latexConfiguration;
-    latexSettingsState = active.latexSettings();
+    buildPreferences = readBuildPreferences(buildScope(), format);
+    latexOutput = buildPreferences.output === "html" ? "html" : "pdf";
+    latexSettingsState = { ...buildPreferences, engine: buildPreferences.engine || "auto", backend: buildPreferences.backend || "auto", tool: buildPreferences.tool || "tex", output: buildPreferences.output || "pdf", preset: buildPreferences.preset || "" };
     latex.configure({
       project: SLUG,
       settings: latexSettingsState,
       mayCompile: renderers.available("latex"),
     });
     latexObservedSession = active;
-    latexSettingsObserver = (event) => {
-      if (configuration !== latexConfiguration || session !== active) return;
-      const changed = [...event.changes.keys.keys()];
-      if (!changed.includes("latex.engine")) return;
-      latexSettingsState = active.latexSettings();
-      latex.setSettings(latexSettingsState);
-      void paintPreview();
-    };
-    active.meta.observe(latexSettingsObserver);
   }
 
   // The most recent LaTeX compile result -- success or failure -- kept whole
@@ -1905,6 +1942,7 @@
   // (preserve both attempts' logs when a browser failure
   // led to a local attempt). Null for every other format.
   let lastLatexResult = $state(null);
+  let lastBuildProvenance = $state(null);
 
   // Set by the "Compile now" button and read once, at the next
   // `renderers.render` call: the plainest way to ask for
@@ -1987,6 +2025,7 @@
   // "" since the last navigation. `framePreview.preview()` knows the same,
   // but not reactively, and the File menu's download items follow this.
   let deliveredKind = $state("");
+  let docxArtifact = $state(null);
   let deliveredHistorySha = null;
   framePreview = createFramePreview({
     slug: SLUG,
@@ -1998,6 +2037,7 @@
       frameReady = false;
       issued += 1;
       deliveredKind = "";
+      docxArtifact = null;
       deliveredHistorySha = null;
       lastRegions = lastHighlight = null;
     },
@@ -2157,7 +2197,7 @@
         if (htmlPreview) renderOptions.format = "html";
         rendered = snapshotViewing
           ? await passages.renderTree(SLUG, { ...tree, label: title }, keyHeaders(KEY))
-          : await renderers.render(tree, title, Object.keys(renderOptions).length ? renderOptions : undefined);
+          : await renderers.render(tree, title, { ...renderOptions, buildPreferences, project: SLUG });
       } finally {
         // Only the newest compile owns the badge. An older one finishing
         // afterwards must not turn the spinner off under a newer one.
@@ -2165,7 +2205,7 @@
       }
       if (readerDisposed) return;
       if (format === "latex" && !htmlPreview) lastLatexResult = rendered;
-      const { html, pdf, synctex, diagnostics: said, seconds, log, provenance } = rendered;
+      const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, seconds, log, provenance } = rendered;
       const contextualDiagnostics = (said || []).map((item) => diagnosticContext(item, tree, snapshotIdentity));
       // An in-flight preview may finish after another keystroke: HTML and
       // Typst may show that intermediate progress while the queued render
@@ -2173,6 +2213,11 @@
       // LaTeX keeps its strict source guard.
       if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
       painted = mine;
+      if (artifact && artifactKind === "docx" && rendered.ok !== false) {
+        const buffer = artifact.buffer ? artifact.buffer.slice(artifact.byteOffset, artifact.byteOffset + artifact.byteLength) : artifact;
+        docxArtifact = { bytes: new Uint8Array(buffer.slice(0)), snapshot: snapshotIdentity, source: snapshotSource, navigation: snapshotNavigation };
+      } else if (artifactKind !== "docx") docxArtifact = null;
+      lastBuildProvenance = { backend: "browser", builder: format === "quarto" ? "Markdown draft" : format, ...provenance, snapshot: snapshotIdentity };
       if ((paged || htmlPreview) && seconds) lastCompile = seconds;
       // A render carries `html` or `pdf`, and the reader posts whichever it
       // has. The bytes are transferred rather than copied: a PDF is megabytes
@@ -2200,6 +2245,12 @@
         if (snapshotSource === sourceGeneration) {
           diagnosticPainter.rendered({ page: html, diagnostics: contextualDiagnostics });
         }
+        return;
+      }
+      if (artifactKind === "docx" && artifact && rendered.ok !== false) {
+        pdfFailure = false;
+        pdfFailureReason = "";
+        diagnosticPainter.rendered({ page: null, diagnostics: contextualDiagnostics });
         return;
       }
       // No new page: an already painted page stays up transiently while the
@@ -2679,7 +2730,7 @@
     }
     if (value.startsWith("engine-latex-")) {
       const engine = value.slice("engine-latex-".length);
-      if (["auto", "pdflatex", "xelatex", "lualatex"].includes(engine)) session?.setLatexSettings({ ...latexSettingsState, engine });
+      if (["auto", "pdflatex", "xelatex", "lualatex"].includes(engine)) setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { selection: "tool", backend: "browser", tool: "tex", engine }));
       return;
     }
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
@@ -2699,9 +2750,10 @@
   // rest open the panels a person looks for under File. The Files panel is
   // mounted on its first visit and draws the name field it focuses, so the
   // panel is opened and the DOM given a turn before the panel is asked.
-  const FILE_COMMANDS = ["new-file", "new-folder", "upload", "download-pdf", "download-html", "download", "share", "history"];
+  const FILE_COMMANDS = ["new-file", "new-folder", "upload", "download-pdf", "download-html", "download-docx", "download", "share", "history"];
   async function chooseFileCommand(value) {
     if (value === "download") return downloadTree();
+    if (value === "download-docx") return downloadDocx();
     if (value === "download-pdf" || value === "download-html") return downloadRendering(value.slice(9));
     if (value === "share" || value === "history") return openPanel(value);
     if (!["new-file", "new-folder", "upload"].includes(value)) return;
@@ -2718,6 +2770,13 @@
     deliveredKind,
     displayedFormat,
   }));
+
+  const docxDownload = $derived(docxArtifact && docxArtifact.source === sourceGeneration && docxArtifact.navigation === navigationGeneration && !viewing ? docxArtifact : null);
+
+  function downloadDocx() {
+    if (!docxDownload) return;
+    saveBlob(new Blob([docxDownload.bytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }), `${SLUG}.docx`);
+  }
 
   // Exports read the transient result currently held by this tab. LibrePaper
   // never fetches or uploads a generated result for an export.
@@ -2889,7 +2948,7 @@
     sourceFormat = format;
     configureLatex(format);
     renderers.warm(format);
-    if (format === "quarto" || format === "typst") pairLocalQuarto();
+    if (["quarto", "typst", "markdown"].includes(format)) pairLocalQuarto();
     if (!previous || viewing || checkpointNavigationPending) return;
     // Invalidate both running compiles and replayed pages, even when the
     // two selected files use the same renderer or both produce PDFs.
@@ -3300,7 +3359,7 @@
     const format = document_.source_format ||
       (document_.execution_engine === "quarto" ? "quarto" : "html");
     sourceFormat = format;
-    if (format === "quarto" || format === "typst") pairLocalQuarto();
+    if (["quarto", "typst", "markdown"].includes(format)) pairLocalQuarto();
     // Every reader compiles from source when the browser has the engine. A
     // missing engine produces an actionable local-tool message below.
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
@@ -3496,6 +3555,7 @@
   {:else}
     <Menu.Item value="download-html" class="menuitem" disabled={!downloads.html}>Download HTML</Menu.Item>
   {/if}
+  <Menu.Item value="download-docx" class="menuitem" disabled={!docxDownload}>Download DOCX</Menu.Item>
   {#if mayEdit}
     <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
   {/if}
@@ -3850,6 +3910,9 @@
        would reload the document and lose the reader's place in it. -->
   {#snippet previewStatusDetails()}
     <div class="preview-status-details">
+      {#if lastBuildProvenance}
+        <p>Built with {lastBuildProvenance.builder} · {lastBuildProvenance.backend}{lastBuildProvenance.engine ? ` · ${lastBuildProvenance.engine}` : ""}{lastBuildProvenance.version ? ` · ${lastBuildProvenance.version}` : ""}{lastBuildProvenance.preset ? ` · preset ${lastBuildProvenance.preset}` : ""}</p>
+      {/if}
       {#if latexHtmlPreview}
         {#if compileBadge}<p>{compileBadge}</p>{/if}
         {#if pdfFailureReason}<p>{pdfFailureReason}</p>{/if}
@@ -3949,7 +4012,7 @@
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 {sourceFormat} {mayEdit}
                 {keys} onkeys={setKeys}
-                latexSettings={latexSettingsState} onlatexsettings={(next) => session?.setLatexSettings(next)}
+                buildPreferences={buildPreferences} documentId={SLUG} userId={buildUserId} onbuildpreferences={setBuildPreferences}
                 main={previewMain} bindingId={quartoBindingId} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
                 options={quartoOptions} {viewing}
                 onapplyoptions={applyRenderOptions} />

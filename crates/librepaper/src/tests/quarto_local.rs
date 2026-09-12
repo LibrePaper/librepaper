@@ -42,6 +42,12 @@ fn fixture(source: &str) -> (tempfile::TempDir, BindingStore, JobRequest, Worksp
             deadline_seconds: 60,
             ..Default::default()
         },
+        builder: None,
+        workspace: None,
+        entrypoint: None,
+        output: None,
+        builder_options: None,
+        preset: None,
     };
     let workspace = Workspace {
         root: directory.path().join("job"),
@@ -301,6 +307,12 @@ async fn quarto_hosted_workspace_renders_from_uploads_without_a_grant() {
                     deadline_seconds: 60,
                     ..Default::default()
                 },
+                builder: None,
+                workspace: None,
+                entrypoint: None,
+                output: None,
+                builder_options: None,
+                preset: None,
             };
             let (_sender, cancel) = tokio::sync::watch::channel(false);
             let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();

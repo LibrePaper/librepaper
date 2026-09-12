@@ -36,8 +36,8 @@ use tokio::sync::{mpsc, watch, Mutex, Notify};
 use crate::local::pairing::{self, PairingStore};
 use crate::local::preview;
 use crate::local::protocol::{
-    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, PreviewRequest,
-    Workspace, BASE_PATH, MAX_FILES, MAX_JSON_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_UPLOAD_BYTES,
+    self, Capabilities, JobOptions, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace,
+    BASE_PATH, MAX_FILES, MAX_JSON_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_UPLOAD_BYTES,
     PROTOCOL_VERSIONS,
 };
 
@@ -264,6 +264,18 @@ fn hex_sha256(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn manifest_tree_digest(manifest: &[ManifestEntry], uploads: &[(String, Vec<u8>)]) -> String {
+    let mut digest = Sha256::new();
+    for entry in manifest {
+        digest.update(entry.path.as_bytes());
+        digest.update(entry.size.to_le_bytes());
+        if let Some((_, bytes)) = uploads.iter().find(|(path, _)| path == &entry.path) {
+            digest.update(bytes);
+        }
+    }
+    hex::encode(digest.finalize())
+}
+
 /// One job's live state: what `GET jobs/<id>` answers with, plus everything
 /// the service needs to run and clean it up that the browser never sees.
 struct JobEntry {
@@ -438,7 +450,10 @@ impl LocalService {
     }
 }
 
-fn read_bounded_file(path: &std::path::Path, limit: usize) -> std::io::Result<Vec<u8>> {
+pub(crate) fn read_bounded_public(
+    path: &std::path::Path,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
     let file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
@@ -488,7 +503,7 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
             let _ = std::fs::remove_dir_all(&path);
             continue;
         }
-        let valid = read_bounded_file(&record_path, 4 * 1024 * 1024)
+        let valid = read_bounded_public(&record_path, 4 * 1024 * 1024)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<DurableQuartoJob>(&bytes).ok())
             .filter(|record| {
@@ -571,7 +586,7 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
                 file_error = true;
                 break;
             }
-            let Ok(bytes) = read_bounded_file(&file_path, MAX_UPLOAD_BYTES) else {
+            let Ok(bytes) = read_bounded_public(&file_path, MAX_UPLOAD_BYTES) else {
                 file_error = true;
                 break;
             };
@@ -1047,7 +1062,7 @@ async fn handle_binding_folder(
             &json!({"error": "project does not match the connected token"}),
         );
     }
-    if let Err(error) = crate::local::quarto::validate_main(&body.entrypoint) {
+    if let Err(error) = crate::local::quarto::validate_binding_entrypoint(&body.entrypoint) {
         return write_json(400, &json!({"error": error}));
     }
     let Ok(_dialog) = inner.folder_dialog.try_lock() else {
@@ -1080,7 +1095,7 @@ async fn handle_binding_folder(
         Err(_) => {
             return write_json(
                 400,
-                &json!({"error": "The selected folder must contain the named Quarto entrypoint. Check the filename and choose its project folder again."}),
+                &json!({"error": "The selected folder must contain the named project entrypoint. Check the filename and choose its project folder again."}),
             )
         }
     };
@@ -1497,10 +1512,23 @@ async fn handle_capabilities(
         return response;
     }
     let capabilities = inner.runner.capabilities(refresh).await;
-    write_json(
-        200,
-        &serde_json::to_value(capabilities).unwrap_or(Value::Null),
-    )
+    let mut response = serde_json::to_value(capabilities).unwrap_or(Value::Null);
+    let store = super::presets::PresetStore::new(&inner.state_home);
+    let presets: Vec<_> = store
+        .list()
+        .into_iter()
+        .map(|summary| {
+            let schema = store
+                .get(&summary.id)
+                .map(|preset| preset.option_schema)
+                .unwrap_or_default();
+            let mut entry = serde_json::to_value(summary).unwrap_or(Value::Null);
+            entry["option_schema"] = json!(schema);
+            entry
+        })
+        .collect();
+    response["presets"] = json!(presets);
+    write_json(200, &response)
 }
 
 /* ---------------------------------------------------------------- jobs */
@@ -1710,12 +1738,272 @@ async fn handle_jobs_post(
     let Some(job_text) = job_text else {
         return write_json(400, &json!({"error": "missing the job part"}));
     };
-    let job: JobRequest = match serde_json::from_str(&job_text) {
+    let raw_job: Value = match serde_json::from_str(&job_text) {
         Ok(job) => job,
         Err(_) => return write_json(400, &json!({"error": "bad job description"})),
     };
+    let protocol = raw_job.get("protocol").and_then(Value::as_u64).unwrap_or(0);
+    let mut job: JobRequest = if protocol == 2 {
+        let request: protocol::BuildRequestV2 = match serde_json::from_value(raw_job) {
+            Ok(request) => request,
+            Err(_) => return write_json(400, &json!({"error": "bad protocol 2 job description"})),
+        };
+        if let Err(error) = request.validate_shape() {
+            return write_json(400, &json!({"error": error}));
+        }
+        let engine = request
+            .options
+            .get("engine")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let is_quarto = request.builder == "quarto";
+        if request.builder == "calepin"
+            && !matches!(
+                request.workspace,
+                protocol::WorkspaceRequest::Snapshot {
+                    binding_id: Some(_)
+                }
+            )
+        {
+            return write_json(
+                400,
+                &json!({"error": "Calepin builds require a scoped snapshot binding"}),
+            );
+        }
+        let quarto = if is_quarto {
+            let binding_id = match &request.workspace {
+                protocol::WorkspaceRequest::Snapshot {
+                    binding_id: Some(id),
+                } => id.clone(),
+                _ => {
+                    return write_json(
+                        400,
+                        &json!({"error": "Quarto builds require a scoped snapshot binding"}),
+                    )
+                }
+            };
+            Some(protocol::QuartoJobOptions {
+                binding_id,
+                main: request.entrypoint.clone(),
+                format: request.output.clone(),
+                execution_mode: protocol::QuartoExecutionMode::IsolatedSnapshot,
+                profile: request
+                    .options
+                    .get("profile")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+                parameters: request
+                    .options
+                    .get("parameters")
+                    .and_then(Value::as_object)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                policy: request
+                    .options
+                    .get("policy")
+                    .map(|value| serde_json::from_value(value.clone()))
+                    .transpose()
+                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                data_inputs: request
+                    .options
+                    .get("data_inputs")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                shared_inventory_complete: true,
+                shared_tree_sha256: Some(manifest_tree_digest(&request.manifest, &uploads)),
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+        let mut builder_options = request.options;
+        if request.preset.is_none() {
+            builder_options.remove("engine");
+        }
+        JobRequest {
+            protocol: 2,
+            kind: if is_quarto {
+                "quarto".into()
+            } else {
+                "build".into()
+            },
+            project: request.project,
+            origin: request.origin,
+            snapshot: request.snapshot,
+            generation: request.generation,
+            engine,
+            main: request.entrypoint.clone(),
+            stem: String::new(),
+            quarto,
+            manifest: request.manifest,
+            options: JobOptions {
+                deadline_seconds: request
+                    .deadline_seconds
+                    .unwrap_or(protocol::DEFAULT_DEADLINE_SECONDS),
+                max_passes: request.max_passes.unwrap_or(protocol::DEFAULT_MAX_PASSES),
+            },
+            builder: Some(request.builder),
+            workspace: Some(request.workspace),
+            entrypoint: Some(request.entrypoint),
+            output: Some(request.output),
+            builder_options: Some(builder_options),
+            preset: request.preset,
+        }
+    } else {
+        match serde_json::from_value(raw_job) {
+            Ok(job) => job,
+            Err(_) => return write_json(400, &json!({"error": "bad job description"})),
+        }
+    };
     if !PROTOCOL_VERSIONS.contains(&job.protocol) {
         return write_json(400, &json!({"error": "unsupported protocol version"}));
+    }
+    // Bound local reads must follow authentication and inventory limits.
+    if job.project != project
+        || pairing::normalize_origin(&job.origin) != pairing::normalize_origin(&origin)
+    {
+        return write_json(
+            403,
+            &json!({"error": "job scope does not match the connected token"}),
+        );
+    }
+    if job.manifest.len() > MAX_FILES {
+        return write_json(413, &json!({"error": "too many manifest entries"}));
+    }
+    if job
+        .manifest
+        .iter()
+        .any(|entry| !protocol::safe_relative_path(&entry.path))
+    {
+        return write_json(400, &json!({"error": "unsafe manifest path"}));
+    }
+    if job
+        .manifest
+        .iter()
+        .try_fold(0u64, |total, entry| total.checked_add(entry.size))
+        .is_none_or(|total| total > MAX_UPLOAD_BYTES as u64)
+    {
+        return write_json(413, &json!({"error": "manifest exceeds upload limits"}));
+    }
+    if job.protocol == 2 {
+        let (Some(builder), Some(workspace), Some(entrypoint), Some(output)) = (
+            job.builder.as_deref(),
+            job.workspace.as_ref(),
+            job.entrypoint.as_deref(),
+            job.output.as_deref(),
+        ) else {
+            return write_json(
+                400,
+                &json!({"error": "protocol 2 jobs require builder, workspace, entrypoint, and output"}),
+            );
+        };
+        if builder.is_empty() || builder.len() > 128 || !protocol::safe_relative_path(entrypoint) {
+            return write_json(
+                400,
+                &json!({"error": "invalid protocol 2 builder or entrypoint"}),
+            );
+        }
+        if output.is_empty()
+            || output.len() > 64
+            || !output
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+        {
+            return write_json(400, &json!({"error": "invalid protocol 2 output"}));
+        }
+        if let Err(error) = workspace.validate() {
+            return write_json(400, &json!({"error": error}));
+        }
+        // Builds always run in service-owned temporary workspaces. Bound
+        // directories are a preview surface; a snapshot may name a binding
+        // solely to authorize copying selected inputs into its temp workspace.
+        if matches!(workspace, protocol::WorkspaceRequest::Bound { .. }) {
+            return write_json(
+                400,
+                &json!({"error": "bound workspace is only available for managed previews"}),
+            );
+        }
+        if let protocol::WorkspaceRequest::Snapshot {
+            binding_id: Some(binding_id),
+        } = workspace
+        {
+            let Some(binding) = inner
+                .quarto_bindings
+                .get_scoped(binding_id, &origin, &project)
+            else {
+                return write_json(
+                    403,
+                    &json!({"error": "workspace binding is not granted for this origin and project"}),
+                );
+            };
+            if binding.entrypoint != entrypoint {
+                return write_json(
+                    403,
+                    &json!({"error": "entrypoint does not match the scoped binding"}),
+                );
+            }
+            let authorized_root = match std::fs::canonicalize(&binding.root) {
+                Ok(root) if root.is_dir() && root == binding.root => root,
+                _ => {
+                    return write_json(403, &json!({"error": "scoped binding root is unavailable"}))
+                }
+            };
+            // A bound snapshot contributes only files explicitly named by
+            // the manifest. Copying happens into this request's fresh job
+            // workspace below; the binding root itself is never executed.
+            for entry in &job.manifest {
+                if uploads.iter().any(|(name, _)| name == &entry.path) {
+                    continue;
+                }
+                let source = binding.root.join(&entry.path);
+                let source = match std::fs::canonicalize(&source) {
+                    Ok(source) if source.starts_with(&authorized_root) && source.is_file() => {
+                        source
+                    }
+                    _ => {
+                        return write_json(
+                            400,
+                            &json!({"error": format!("bound input is outside the authorized folder: {}", entry.path)}),
+                        )
+                    }
+                };
+                let bytes = match read_bounded_public(&source, MAX_UPLOAD_BYTES) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        return write_json(
+                            400,
+                            &json!({"error": format!("bound input is unavailable: {}", entry.path)}),
+                        )
+                    }
+                };
+                if bytes.len() as u64 != entry.size || hex_sha256(&bytes) != entry.sha256 {
+                    return write_json(
+                        400,
+                        &json!({"error": format!("bound input digest mismatch: {}", entry.path)}),
+                    );
+                }
+                uploads.push((entry.path.clone(), bytes));
+            }
+        }
+        if builder != "quarto" {
+            job.kind = "build".into();
+            job.main = entrypoint.to_string();
+        }
     }
     if job.project != project {
         return write_json(
@@ -1729,8 +2017,30 @@ async fn handle_jobs_post(
             &json!({"error": "origin does not match the connected token"}),
         );
     }
-    if let Err(error) = crate::local::engine_adapter::select(&job) {
-        return write_json(400, &json!({"error": error}));
+    if job.manifest.len() > MAX_FILES
+        || job
+            .manifest
+            .iter()
+            .any(|entry| !protocol::safe_relative_path(&entry.path))
+    {
+        return write_json(
+            413,
+            &json!({"error": "invalid or too many manifest entries"}),
+        );
+    }
+    if job
+        .manifest
+        .iter()
+        .map(|entry| entry.size)
+        .try_fold(0u64, |total, size| total.checked_add(size))
+        .is_none_or(|total| total > MAX_UPLOAD_BYTES as u64)
+    {
+        return write_json(413, &json!({"error": "manifest exceeds upload limits"}));
+    }
+    if job.protocol != 2 {
+        if let Err(error) = crate::local::engine_adapter::select(&job) {
+            return write_json(400, &json!({"error": error}));
+        }
     }
     let previews = inner.previews.lock().await;
     if job.kind == "quarto" {
@@ -1774,6 +2084,11 @@ async fn handle_jobs_post(
 
     if let Err(response) = validate_manifest(&job.manifest, &uploads) {
         return response;
+    }
+    if job.protocol == 2 {
+        if let Some(options) = job.quarto.as_mut() {
+            options.shared_tree_sha256 = Some(manifest_tree_digest(&job.manifest, &uploads));
+        }
     }
 
     // A lost browser response must be retryable without rerunning user code.
@@ -2070,7 +2385,16 @@ async fn handle_job_file(
         return plain(404, "not found");
     };
     let mut response = Response::new(Body::from(bytes.clone()));
-    set(&mut response, "content-type", "application/octet-stream");
+    let mime = match name {
+        "pdf" => "application/pdf",
+        "html" => "text/html; charset=utf-8",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "log" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    };
+    set(&mut response, "content-type", mime);
+    set(&mut response, "x-content-type-options", "nosniff");
+    set(&mut response, "content-security-policy", "sandbox");
     response
 }
 
@@ -2331,8 +2655,11 @@ async fn handle_preview(
         previews.stop(id).await;
         return write_json(200, &json!({"stopped":true}));
     }
-    let job = match read_json_body::<PreviewRequest>(request).await {
-        Ok(job) => job,
+    let job = match read_json_body::<Value>(request).await {
+        Ok(raw) => match protocol::decode_preview(raw) {
+            Ok(job) => job,
+            Err(error) => return write_json(400, &json!({"error": error})),
+        },
         Err(e) => return e,
     };
     if pairing::normalize_origin(&job.origin) != origin || job.project != project {
@@ -2340,8 +2667,43 @@ async fn handle_preview(
     }
     let mut job = job;
     job.origin = origin.clone();
+    if job.protocol == 2 {
+        let Some(builder) = job.builder.as_deref() else {
+            return plain(400, "protocol 2 preview requires a builder");
+        };
+        if !matches!(
+            job.workspace,
+            Some(protocol::WorkspaceRequest::Bound { .. })
+        ) {
+            return plain(400, "managed previews require a bound workspace");
+        }
+        if !matches!(builder, "quarto" | "calepin") {
+            return plain(400, "builder does not support managed preview");
+        }
+        job.kind = "quarto".into();
+        job.engine = builder.into();
+        if builder == "quarto" && job.quarto.is_none() {
+            if let Some(protocol::WorkspaceRequest::Bound { binding_id }) = &job.workspace {
+                job.quarto = Some(protocol::QuartoJobOptions {
+                    binding_id: binding_id.clone(),
+                    main: job.entrypoint.clone().unwrap_or_else(|| "index.qmd".into()),
+                    format: job.output.clone().unwrap_or_else(|| "html".into()),
+                    ..Default::default()
+                });
+            }
+        }
+        if builder == "calepin" && job.calepin.is_none() {
+            if let Some(protocol::WorkspaceRequest::Bound { binding_id }) = &job.workspace {
+                job.calepin = Some(protocol::CalepinJobOptions {
+                    binding_id: binding_id.clone(),
+                    main: job.entrypoint.clone().unwrap_or_else(|| "index.typ".into()),
+                    format: job.output.clone().unwrap_or_else(|| "html".into()),
+                });
+            }
+        }
+    }
     if !PROTOCOL_VERSIONS.contains(&job.protocol)
-        || job.kind != "quarto"
+        || !matches!(job.kind.as_str(), "quarto" | "calepin")
         || job.manifest.len() > MAX_FILES
     {
         return plain(400, "invalid preview request");

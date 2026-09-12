@@ -158,6 +158,8 @@ const context = (values) => vm.createContext({
   typstOutput: "pdf",
   previewMain: "",
   previewFile: "",
+  SLUG: "doc",
+  buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
   session: null,
   viewing: null,
   historyController: { noteLiveChange: () => {} },
@@ -315,8 +317,8 @@ console.log("reader-races: all checks passed");
   assert.equal(configured, 1);
 }
 
-// LaTeX configuration follows format/session lifetime. Shared settings reach
-// the compiler once, and session changes do not trigger a release pin.
+// LaTeX configuration follows format/session lifetime. Build settings are
+// browser-local and no longer observe collaborative metadata.
 {
   const releases = [];
   const configurations = [];
@@ -340,9 +342,10 @@ console.log("reader-races: all checks passed");
   const ctx = context({
     session: first, mayEdit: true, sourceFormat: "latex", SLUG: "project",
     renderers: { available: () => true }, paintPreview: () => paints++,
+    readBuildPreferences: () => ({ selection: "automatic", backend: "auto", engine: "auto" }),
+    buildScope: () => ({ origin: "https://app.example", user: "anonymous", document: "project" }),
     latex: {
       configure: (value) => configurations.push(value), cancel: () => {},
-      setSettings: (value) => updates.push(value),
       // Compiler releases are mirror-global. Reader setup must not fetch a
       // release list or write an automatic project pin.
       releases: () => { throw new Error("reader must not load compiler releases"); },
@@ -353,20 +356,18 @@ console.log("reader-races: all checks passed");
   assert.equal(configurations.length, 1);
   assert.equal(configurations[0].project, "project");
   assert.equal(configurations[0].mayCompile, true);
-  assert.equal(first.observers.size, 1);
-  first.change({ engine: "xelatex" });
-  assert.equal(updates[0].engine, "xelatex");
-  assert.equal(paints, 1);
+  assert.equal(first.observers.size, 0);
+  assert.equal(paints, 0);
   vm.runInContext('configureLatex("markdown")', ctx);
   assert.equal(first.observers.size, 0);
   vm.runInContext('configureLatex("latex")', ctx);
-  assert.equal(first.observers.size, 1);
+  assert.equal(first.observers.size, 0);
   assert.equal(first.writes.length, 0);
   const second = makeSession();
   ctx.session = second;
   vm.runInContext('configureLatex("latex")', ctx);
   assert.equal(first.observers.size, 0);
-  assert.equal(second.observers.size, 1);
+  assert.equal(second.observers.size, 0);
   assert.equal(first.writes.length, 0);
   assert.equal(second.writes.length, 0);
   assert.equal(releases.length, 0, "readers must not load or pin a compiler release");
@@ -392,6 +393,8 @@ for (const invalidate of [null, "navigation", "main"]) {
   let main = "main.md";
   const ctx = context({
     displayedFormat: "markdown", pdfOutput: false, compilesHere: false, paintsTheFrame: true,
+    buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
+    SLUG: "doc",
     issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
     sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
     previewTimer: null, everPainted: true, latestPreview: null,
@@ -884,6 +887,8 @@ console.log('reader-races: explicit preview selection, auxiliary files, rename a
     session: { mainPath: () => 'main.md' }, files: [],
     previewMain: '', sourceFormat: 'markdown', navigationGeneration: 7,
     checkpointNavigationPending: 7, mayEdit: false,
+    location: { origin: 'https://app.test' },
+    localQuarto: { configure: () => {}, bindingId: () => 'hosted', probe: async () => {} },
     renderers: { formatOf: () => 'markdown', warm: () => {} }, configureLatex: () => {},
   });
   vm.runInContext(`${pairLocalQuarto}\n${body('  function updatePreviewTarget()', '  function previewThisFile()')}`, ctx);

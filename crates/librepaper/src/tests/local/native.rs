@@ -80,6 +80,12 @@ fn tex_request(engine: &str, main: &str, deadline_seconds: u64, max_passes: u32)
             deadline_seconds,
             max_passes,
         },
+        builder: None,
+        workspace: None,
+        entrypoint: None,
+        output: None,
+        builder_options: None,
+        preset: None,
     }
 }
 
@@ -100,6 +106,12 @@ fn biber_request(stem: &str, deadline_seconds: u64) -> JobRequest {
             deadline_seconds,
             max_passes: 1,
         },
+        builder: None,
+        workspace: None,
+        entrypoint: None,
+        output: None,
+        builder_options: None,
+        preset: None,
     }
 }
 

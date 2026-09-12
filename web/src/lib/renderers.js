@@ -16,6 +16,8 @@ import { needsBibliography } from "./bibliography-engine.js";
 import * as latex from "./latex.js";
 import * as latexHtml from "./latex/html.js";
 import * as quarto from "./engines/quarto.js";
+import * as localBridge from "./latex/local.js";
+import { snapshotDigest } from "./tree-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
 
@@ -61,6 +63,8 @@ export function producesPdf(format) {
 
 export function cancelPreview(options) {
   latexHtml.cancel(options);
+  activeLocalAbort?.abort();
+  activeLocalAbort = null;
 }
 
 // Whether this browser can compile a source document. Readers without a
@@ -75,6 +79,8 @@ function request(format, operation, args = {}, moduleUrls = urls()) {
   if (!url) return Promise.reject(new Error(`no renderer for ${format}`));
   return rendererRequest(new URL(url, globalThis.location.href).href, operation, args);
 }
+
+let activeLocalAbort = null;
 
 /// The word-level diff shared with `librepaper sync`. It does not depend on
 /// the source format, but runs through the same engine module as the document
@@ -118,9 +124,31 @@ export function formatOf(path) {
 /// A render carries `html` or `pdf`, never both, and the caller posts
 /// whichever it has: flow documents are painted into the shell and paged
 /// documents into the PDF frame, and that is the whole difference here.
-export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null } = {}) {
+export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "" } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = formatOf(tree.main);
+  if (buildPreferences?.selection === "tool" && buildPreferences.backend === "local" && format !== "latex") {
+    localBridge.configure({ project, origin: globalThis.location?.origin || "", active: true });
+    const digest = await snapshotDigest(tree);
+    const needsBinding = ["quarto", "calepin"].includes(buildPreferences.tool);
+    const job = { snapshot: digest, generation: Date.now(), binding: needsBinding ? localBridge.bindingId() : "", inputRevision: digest };
+    if (needsBinding && localBridge.status().protocol?.includes(2) && (!job.binding || job.binding === localBridge.HOSTED_BINDING)) throw new Error("Authorize a local project folder in Local app settings before running this snapshot build.");
+    const output = buildPreferences.output || (format === "typst" ? "pdf" : "html");
+    activeLocalAbort?.abort();
+    const abort = new AbortController();
+    activeLocalAbort = abort;
+    let result;
+    if (buildPreferences.tool === "quarto") {
+      const options = { ...(buildPreferences.options || {}), ...(buildPreferences.profile ? { profile: buildPreferences.profile } : {}), ...(buildPreferences.parameters ? { parameters: buildPreferences.parameters } : {}), ...(buildPreferences.policy ? { policy: buildPreferences.policy } : {}) };
+      if (buildPreferences.preset && !localBridge.status().protocol?.includes(2)) throw new Error("Update the local companion to use presets.");
+      result = localBridge.status().protocol?.includes(2)
+        ? await localBridge.runBuild({ job, tree, builder: "quarto", output, options, preset: buildPreferences.preset, bindingId: job.binding }, { signal: abort.signal })
+        : await localBridge.runQuarto({ job, tree, options: { ...options, entrypoint: tree.main, format: output } }, { signal: abort.signal });
+      return { artifact: result.artifact, artifactKind: result.kind, html: result.kind === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null, pdf: result.kind === "pdf" ? result.artifact : null, diagnostics: result.diagnostics || [], log: result.log || result.logs || "", provenance: result.provenance, ok: result.ok, failure: result.ok ? null : { kind: "local", message: result.error || "Local Quarto build failed" } };
+    }
+    result = await localBridge.runBuild({ job, tree, builder: buildPreferences.tool, output, options: buildPreferences.options || {}, preset: buildPreferences.preset, bindingId: job.binding }, { signal: abort.signal });
+    return { artifact: result.artifact, artifactKind: output, html: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null, pdf: output === "pdf" ? result.artifact : null, diagnostics: result.diagnostics || [], log: result.log || "", provenance: result.provenance, ok: result.ok, failure: result.ok ? null : { kind: "local", message: result.error || `Local ${buildPreferences.tool} build failed` } };
+  }
   // A historical render receives a configuration snapshot resolved before
   // its cache lookup. Use its module URLs, not mutable shell globals, so the
   // cache identity names the renderer that actually runs.

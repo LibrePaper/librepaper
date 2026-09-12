@@ -69,6 +69,15 @@ pub struct BindingStore {
 }
 
 impl BindingStore {
+    pub(crate) fn preset_store(&self) -> super::presets::PresetStore {
+        super::presets::PresetStore::new(
+            self.path
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .expect("binding store has a state root"),
+        )
+    }
     pub fn new(config_home: &Path) -> Self {
         Self {
             path: config_home
@@ -112,7 +121,7 @@ impl BindingStore {
             root,
             // Decided by each job: the workspace holds whatever the document
             // holds, and the entrypoint the browser names has already been
-            // validated as a relative `.qmd` inside that tree.
+            // validated as a safe supported entrypoint inside that tree.
             entrypoint: String::new(),
             created_at: 0,
             execution_granted: true,
@@ -150,7 +159,7 @@ impl BindingStore {
         if !root.is_dir() {
             return Err("project root is not a directory".into());
         }
-        validate_main(entrypoint)?;
+        validate_binding_entrypoint(entrypoint)?;
         let entrypoint_path = root.join(entrypoint);
         let resolved_entrypoint = std::fs::canonicalize(&entrypoint_path)
             .map_err(|e| format!("project entrypoint: {e}"))?;
@@ -505,9 +514,16 @@ impl QuartoBundle {
     }
 }
 
-pub fn validate_main(main: &str) -> Result<(), String> {
-    if !protocol::safe_relative_path(main) || !main.ends_with(".qmd") {
-        return Err("entrypoint must be a safe project-relative .qmd path".into());
+/// Validate an entrypoint stored in a user-approved project binding. Bindings
+/// are shared by project-backed builders, while each builder still validates
+/// its own input before execution (for example, Quarto accepts Markdown only).
+pub fn validate_binding_entrypoint(entrypoint: &str) -> Result<(), String> {
+    if !protocol::safe_relative_path(entrypoint)
+        || !(entrypoint.ends_with(".qmd")
+            || entrypoint.ends_with(".md")
+            || entrypoint.ends_with(".typ"))
+    {
+        return Err("entrypoint must be a safe project-relative .qmd, .md, or .typ path".into());
     }
     Ok(())
 }
@@ -708,10 +724,10 @@ pub async fn run_job_with_bindings(
         .file_name()
         .map(|x| x.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let Some(options) = request.quarto.clone() else {
+    let Some(mut options) = request.quarto.clone() else {
         return failed(&request, &job_id, "quarto job is missing typed options");
     };
-    let invocation_plan = match QuartoInvocationPlan::from_options(&options) {
+    let mut invocation_plan = match QuartoInvocationPlan::from_options(&options) {
         Ok(plan) => plan,
         Err(error) => return failed(&request, &job_id, &error),
     };
@@ -719,6 +735,69 @@ pub async fn run_job_with_bindings(
         return failed(&request, &job_id, "Quarto is not installed or not on PATH");
     };
     let quarto_version = version_of(&quarto).await;
+    let Some(binding) =
+        binding_store.get_scoped(&options.binding_id, &request.origin, &request.project)
+    else {
+        return failed(
+            &request,
+            &job_id,
+            "quarto binding is missing, revoked, or outside its authorized root",
+        );
+    };
+    let preset = if let Some(preset_id) = request.preset.as_deref() {
+        let store = binding_store.preset_store();
+        let (_, preset) = match store.resolve_scoped(
+            &request.origin,
+            &request.project,
+            preset_id,
+            super::presets::WorkspaceMode::Snapshot,
+            super::presets::Operation::Build,
+            &options.main,
+        ) {
+            Ok(value) => value,
+            Err(error) => return failed(&request, &job_id, &error),
+        };
+        if preset.base_adapter != "quarto" {
+            return failed(&request, &job_id, "preset is not a Quarto preset");
+        }
+        let mut overrides = BTreeMap::new();
+        for (key, value) in request.builder_options.as_ref().into_iter().flatten() {
+            let value = match value {
+                serde_json::Value::String(value) => value.clone(),
+                _ => value.to_string(),
+            };
+            overrides.insert(key.clone(), value);
+        }
+        let effective = match super::presets::PresetStore::effective_options(&preset, &overrides) {
+            Ok(options) => options,
+            Err(error) => return failed(&request, &job_id, &error),
+        };
+        for (key, value) in effective {
+            match key.as_str() {
+                "profile" => options.profile = Some(value),
+                "policy" => {
+                    options.policy = match serde_json::from_value(serde_json::json!(value)) {
+                        Ok(value) => value,
+                        Err(_) => return failed(&request, &job_id, "invalid preset Quarto policy"),
+                    }
+                }
+                "parameters" => {
+                    options.parameters = match serde_json::from_str(&value) {
+                        Ok(value) => value,
+                        Err(_) => return failed(&request, &job_id, "invalid preset parameters"),
+                    }
+                }
+                _ => return failed(&request, &job_id, "unsupported Quarto preset option"),
+            }
+        }
+        invocation_plan = match QuartoInvocationPlan::from_options(&options) {
+            Ok(plan) => plan,
+            Err(error) => return failed(&request, &job_id, &error),
+        };
+        Some(preset)
+    } else {
+        None
+    };
     let policy = policy_name(options.policy);
     if !supported_policies(quarto_version.as_deref())
         .iter()
@@ -730,15 +809,6 @@ pub async fn run_job_with_bindings(
             &format!("installed Quarto does not support render policy: {policy}"),
         );
     }
-    let Some(binding) =
-        binding_store.get_scoped(&options.binding_id, &request.origin, &request.project)
-    else {
-        return failed(
-            &request,
-            &job_id,
-            "quarto binding is missing, revoked, or outside its authorized root",
-        );
-    };
     let hosted = BindingStore::is_hosted(&binding);
     if !hosted && options.main != binding.entrypoint {
         return failed(
@@ -966,7 +1036,17 @@ pub async fn run_job_with_bindings(
             )
         }
     };
-    let mut command = Command::new(quarto);
+    let mut command =
+        if let Some(wrapper) = preset.as_ref().and_then(|preset| preset.wrapper.as_ref()) {
+            if !Path::new(wrapper).is_absolute() || !Path::new(wrapper).is_file() {
+                return failed(&request, &job_id, "preset wrapper is unavailable");
+            }
+            let mut command = Command::new(wrapper);
+            command.arg(&quarto);
+            command
+        } else {
+            Command::new(&quarto)
+        };
     command.current_dir(&invocation_project);
     // Keep the entrypoint project-relative: Quarto's freezer/output-dir
     // handling treats an absolute source as a single-file render and rejects
@@ -980,6 +1060,11 @@ pub async fn run_job_with_bindings(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    if let Some(preset) = &preset {
+        for (key, value) in &preset.environment {
+            command.env(key, value);
+        }
+    }
     #[cfg(unix)]
     command.process_group(0);
     let started = Instant::now();
@@ -1003,6 +1088,34 @@ pub async fn run_job_with_bindings(
             &job_id,
             "bound project changed immediately before Quarto invocation",
         );
+    }
+    if let Some(preset) = preset.as_ref() {
+        if binding_store
+            .preset_store()
+            .resolve_scoped(
+                &request.origin,
+                &request.project,
+                &preset.id,
+                super::presets::WorkspaceMode::Snapshot,
+                super::presets::Operation::Build,
+                &options.main,
+            )
+            .map_or(true, |(_, current)| {
+                current.semantic_revision != preset.semantic_revision
+            })
+        {
+            return failed(
+                &request,
+                &job_id,
+                "preset changed or was revoked before execution",
+            );
+        }
+    }
+    if binding_store
+        .get_scoped(&options.binding_id, &request.origin, &request.project)
+        .is_none()
+    {
+        return failed(&request, &job_id, "binding revoked before execution");
     }
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -1325,18 +1438,22 @@ pub async fn run_job_with_bindings(
             status: "done".into(),
             stage: "finished".into(),
             exit: 0,
-            snapshot: request.snapshot,
+            snapshot: request.snapshot.clone(),
             generation: request.generation,
             log_tail: log,
             outputs,
             provenance: Provenance {
                 backend: "local".into(),
+                builder: "quarto".into(),
+                version: bundle.provenance.quarto_version.clone().unwrap_or_default(),
                 engine: bundle.provenance.quarto_version.clone().unwrap_or_default(),
                 tools: ToolVersions {
                     distribution: Some("quarto".into()),
                     ..Default::default()
                 },
                 confinement: "none".into(),
+                preset: request.preset.clone(),
+                snapshot: request.snapshot.clone(),
             },
             bundle: Some(summary),
             ..Default::default()

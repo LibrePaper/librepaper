@@ -10,7 +10,7 @@
   import EditorSettings from "./EditorSettings.svelte";
   import DictationSettings from "./DictationSettings.svelte";
   import StorageSettings from "./StorageSettings.svelte";
-  import CompilerSettings from "./CompilerSettings.svelte";
+  import BuildSettings from "./BuildSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
   import LocalAppSettings from "./LocalAppSettings.svelte";
 
@@ -23,8 +23,10 @@
     keys = "default",
     onkeys,
     // The LaTeX project.
-    latexSettings = { engine: "auto" },
-    onlatexsettings,
+    buildPreferences = {},
+    documentId = "",
+    userId = "anonymous",
+    onbuildpreferences,
     // The Quarto project and the local app it renders on.
     bindingId = "",
     main = "",
@@ -82,8 +84,8 @@
           <DictationSettings />
         {:else if shown.id === "storage"}
           <StorageSettings />
-        {:else if shown.id === "compiler"}
-          <CompilerSettings {latexSettings} {onlatexsettings} />
+        {:else if shown.id === "build"}
+          <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
         {:else if shown.id === "rendering"}
           <RenderingSettings {options} {viewing} {onapplyoptions} />
         {:else if shown.id === "local"}

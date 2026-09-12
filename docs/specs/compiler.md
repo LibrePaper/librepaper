@@ -1,6 +1,12 @@
 # Build tools and the local companion
 
-Status: Proposed
+Status: Implemented (protocol 2; protocol 1 compatibility retained)
+
+The implementation uses browser-local, user/document-scoped Build preferences,
+a shared companion client, typed snapshot build adapters, and locally managed
+presets with scoped grants. One-shot builds use temporary project directories;
+managed previews retain their authorized working-folder lifecycle. DOCX results
+are downloadable artifacts rather than preview pages.
 
 ## Purpose
 
@@ -22,18 +28,19 @@ using **Browser** and **Local companion** sections instead of prefixing every
 choice with “Browser” or “Local.” Keep unavailable local choices visible and
 disabled so users can discover the feature and understand what is missing.
 
-The selected build tool and its portable options belong to the document when
-they can be honored by collaborators. Whether this browser uses the local
-companion, its pairing token, a folder binding, and any machine-specific preset
-remain local to the user and device.
+The selected build tool, backend, engine, output, and tool-specific options
+belong to the user in this browser. Persist them per document without sending
+them through collaborative document state. Collaborators cannot change another
+user's build settings. Pairing tokens, folder bindings, and preset selections
+also remain local to the user and device.
 
 The companion accepts structured build requests and locally defined preset
 identifiers. A document or website never supplies an executable path, shell
 fragment, unrestricted argument list, or environment map.
 
-## Current behavior
+## Baseline before this change
 
-LibrePaper already has several parts of this design, but they appear through
+Before this change, LibrePaper had several parts of this design through
 different interfaces:
 
 | Source | Browser | Local companion |
@@ -64,8 +71,9 @@ contains the choices that affect how the document is rendered:
 - **Engine**: shown only when the selected tool supports an engine choice.
 - **Output**: shown when the tool supports more than one relevant preview or
   export format.
-- Tool-specific portable settings, such as a Quarto profile and parameters,
-  plus a clearly identified device-local preset choice.
+- Tool-specific settings, such as a Quarto profile and parameters, plus a
+  local preset choice. All settings on this page apply only to this user in
+  this browser.
 
 The first option in the selector is **Automatic**. Automatic prefers the
 normal browser renderer for formats that can render there and may use a paired,
@@ -195,9 +203,10 @@ probe, validates compatibility, and derives supported features. Executable
 paths never cross the bridge. Discovery must not install packages, mutate a
 toolchain, initialize a project, or run document code.
 
-An explicit **Check local setup** action may run bounded smoke tests. Report
-that a smoke test can initialize caches or fetch packages before running one
-when the underlying tool has that behavior.
+An explicit **Check local setup** action may run bounded smoke tests. Like
+builds, these invoke the installed tool under its local configuration and
+granted execution permissions; the tool may initialize caches or resolve
+dependencies as part of its normal operation.
 
 Replace the protocol's growing set of special-case tool fields with an
 additive adapter-oriented capability list. During migration, retain the old
@@ -226,7 +235,7 @@ fields for older clients:
       "outputs": ["html", "pdf"],
       "engines": [],
       "operations": [
-        { "kind": "build", "workspace_modes": ["bound"] },
+        { "kind": "build", "workspace_modes": ["snapshot"] },
         { "kind": "preview", "workspace_modes": ["bound"] }
       ],
       "preview": true,
@@ -308,13 +317,16 @@ builder to a native command.
 
 ### Workspace and authorization
 
-Every version 2 build or managed-preview request declares exactly one workspace
-mode: `{"mode":"snapshot"}` or `{"mode":"bound","binding_id":"opaque-id"}`.
-Snapshot mode uses a fresh service-owned workspace populated only from the
-validated upload manifest. Bound mode resolves an existing local binding; no
-request may supply a directory path. Reject a binding ID in snapshot mode and
-reject bound mode without one. The adapter must advertise support for the
-requested mode and operation.
+Every version 2 build or managed-preview request declares its workspace.
+All one-shot builds execute in a fresh service-owned temporary project
+directory. `{"mode":"snapshot"}` stages the validated uploaded manifest.
+`{"mode":"snapshot","binding_id":"opaque-id"}` copies verified inputs,
+including explicitly authorized local data inputs, from a scoped binding into
+that temporary directory while preserving relative paths. The binding
+authorizes the source files; it does not change the build's execution location.
+Only managed live previews use `{"mode":"bound","binding_id":"opaque-id"}`
+to watch the authorized working folder. No request may supply a directory path.
+The adapter must advertise support for the requested mode and operation.
 
 Pairing authenticates the origin and document; it does not grant access to a
 working directory or authorize arbitrary document code. Apply these initial
@@ -324,8 +336,9 @@ authorization requirements before staging inputs or starting a process:
 | --- | --- | --- |
 | Direct TeX and bibliography/index helpers | Snapshot | Existing scoped pairing and native-execution policy |
 | Built-in `latexmk`, Tectonic, native Typst, and Pandoc | Snapshot | Scoped pairing and the restricted adapter policy below |
-| Quarto builds and previews; Calepin builds and previews | Bound | Existing explicit local execution grant and scoped folder binding |
-| Custom preset | Snapshot or bound, as locally configured | Explicit preset grant; bound mode also requires its scoped binding |
+| Quarto and Calepin builds | Snapshot copied from binding | Existing explicit local execution grant and scoped folder binding |
+| Quarto and Calepin managed previews | Bound | Existing explicit local execution grant and scoped folder binding |
+| Custom preset build | Snapshot; binding required for local source inputs | Explicit preset grant; local source inputs also require a scoped binding |
 
 Other combinations are unsupported in the first release. In particular, the
 general request does not introduce ungranted snapshot execution for Quarto or
@@ -337,8 +350,8 @@ canonical-root, manifest-consistency, and concurrent-preview checks. A request
 body's `origin` is not a substitute for authenticated scope. Recheck grants
 before queued execution; revocation prevents subsequent execution and follows
 the existing cancellation policy for active jobs and previews. Selecting a
-tool, discovering it, or receiving a collaborator's preference cannot create
-a local grant.
+tool or discovering it cannot create a local grant. Collaborative document
+updates cannot modify the user's build settings or grant local execution.
 
 ### Restricted adapter policy
 
@@ -359,7 +372,12 @@ not make them safe; see the [upstream manual](https://www.cantab.net/users/johnc
 The other snapshot adapters likewise must not load document-selected executable
 filters, hooks, or plugins or start undeclared external helpers. Tool-native
 document evaluation stays within the adapter's declared confinement policy.
-Package fetching remains subject to the no-automatic-installation boundary.
+LibrePaper does not install or update local toolchains. Dependency resolution
+performed by an invoked local tool follows that tool's configuration and the
+granted execution permissions. Normal package downloads and cache updates by
+that tool are not prohibited merely because LibrePaper invoked it. LibrePaper
+does not bypass confinement or retry with broader permissions to enable them;
+report tool failures through the normal diagnostics.
 Quarto and Calepin retain their existing granted-project execution policies.
 Additional executable project configuration, such as a `latexmkrc` or Makefile,
 requires a locally configured preset whose explicit grant covers that behavior.
@@ -375,7 +393,7 @@ rules above; it never sends a version 2 request to a version 1-only companion.
 Named presets allow authors to customize builds without giving a website a
 general process-execution API. Presets are created and stored by the companion
 on the user's machine. The browser receives only their stable ID, display
-name, compatible source formats, base adapter, and portable option schema.
+name, compatible source formats, base adapter, and typed option schema.
 
 A preset may select a built-in adapter and locally configure checked arguments,
 environment values, output rules, or a wrapper executable. Its complete
@@ -383,12 +401,14 @@ command and environment remain local. A build request can name the preset and
 supply only values declared by that preset's typed schema.
 
 Using a preset for a new origin and document requires an explicit local grant.
-The grant identifies the preset and whether it operates on an uploaded
-snapshot or a bound working directory. Editing a preset invalidates grants
+The grant identifies the preset and whether its inputs come from an uploaded
+snapshot or an authorized bound folder. One-shot builds always execute in a
+temporary project directory. Editing a preset invalidates grants
 whose execution meaning changed; renewal requires explicit local approval.
 
-Folder-bound presets may support existing project build files such as a
-Makefile, but only through a locally configured, explicitly granted preset.
+Presets using bound-folder inputs may support existing project build files such
+as a Makefile in the temporary copy, but only through a locally configured,
+explicitly granted preset.
 The document must not be able to choose an arbitrary make target or command.
 
 The first release should ship native adapters for common tools rather than
@@ -396,95 +416,75 @@ modeling `latexmk`, Tectonic, Calepin, Pandoc, and Quarto as arbitrary custom
 commands. Their invocation, cancellation, diagnostic parsing, output capture,
 and confinement requirements differ enough to warrant explicit adapters.
 
-## Shared and local state
+## Per-user browser state
 
-Store a shared, portable build preference where collaborators benefit from the
-same intent, for example:
+Store one build preference per origin, user, and document in the current
+browser. Use a stable local identity for anonymous users. Keep accounts in the
+same browser separate, and persist preferences across reloads. For example:
 
 ```json
 {
   "format": "latex",
   "selection": "tool",
+  "backend": "local",
   "tool": "latexmk",
   "engine": "xelatex",
   "output": "pdf"
 }
 ```
 
-Store these on the current browser or companion instead:
+Keep the following in the browser or companion that owns them:
 
-- backend selection and any complete local build override;
+- build preferences, including backend, engine, output, and tool options;
 - pairing credentials and companion address;
 - local preset IDs and definitions;
 - folder binding IDs and paths;
 - locally discovered versions and capability cache.
 
-When the shared preference cannot be honored on a collaborator's machine,
-show the mismatch and offer compatible available choices. Do not overwrite the
-shared preference merely because one collaborator lacks its tool. A local
-override must be visibly identified and must not affect other collaborators.
+Do not write build preferences to collaborative document state or synchronize
+them to other users or browsers. If the selected local tool or preset becomes
+unavailable, retain the preference and offer setup or another choice. A
+collaborator's settings changes, including changes from an older client, never
+replace this user's preference.
 
-### Selection representation and precedence
+Project files can still contain tool-native configuration, such as Quarto YAML
+or a TeX engine directive. They remain inputs interpreted by the selected
+tool and, where specified, Automatic detection. They cannot overwrite the
+browser's explicit selection or authorize local execution.
 
-The shared record has `selection: "automatic" | "tool"`, `format`, `output`,
-and portable options. For `selection: "tool"`, `tool` is a stable catalog ID.
+### Selection representation
+
+The browser record has `selection: "automatic" | "tool"`,
+`backend: "auto" | "browser" | "local"`, `format`, `output`, and typed tool
+options. For `selection: "tool"`, `tool` is a stable catalog ID.
 Direct TeX uses `tool: "tex"` with its `engine`; `latexmk` has its own ID and
-engine option. Automatic LaTeX may retain an engine constraint for migration.
-No shared record contains a backend, preset ID, binding, or credential.
+engine option.
+Preset selections additionally name a companion-local preset ID. Credentials
+and bindings remain managed by the companion connection and authorization
+layers. Selecting a tool never creates a grant.
 
-The device record is keyed by origin and document. It contains
-`backend: "auto" | "browser" | "local"` and, optionally, a complete portable
-preference override plus a local preset ID. When a backend choice accompanies
-the shared preference, save the shared preference revision it applies to.
-If another collaborator changes that revision, clear that backend choice to
-`auto` and explain that local execution may need to be selected again. A
-complete local override remains in effect until the user clears it. Persist
-device records across reloads, without synchronizing them to collaborators.
+All selector edits update only this browser's record for the current user and
+document. No shared preference, override mode, or shared revision is needed:
 
-Default selector edits change shared portable intent and the editing device's
-backend. Offer an explicit **Only on this device** mode for a complete override.
-The selected value is derived from the effective preference and backend:
-
-| User choice | Portable preference written | Device backend |
+| User choice | Browser preference written | Backend |
 | --- | --- | --- |
-| Automatic | `selection: "automatic"`; clear explicit tool and engine constraint | `auto` |
+| Automatic | `selection: "automatic"`; clear explicit tool and engine | `auto` |
 | Browser XeLaTeX | `selection: "tool", tool: "tex", engine: "xelatex"` | `browser` |
-| Local XeLaTeX | Same portable fields as Browser XeLaTeX | `local` |
+| Local XeLaTeX | `selection: "tool", tool: "tex", engine: "xelatex"` | `local` |
 | Local `latexmk` | `selection: "tool", tool: "latexmk"` and selected engine | `local` |
-| Other named tool | `selection: "tool"` and its catalog ID and portable options | Chosen group |
-| Custom preset | Complete device override using its base adapter; shared record unchanged | `local` |
+| Other named tool | `selection: "tool"` and its catalog ID and typed options | Chosen group |
+| Custom preset | `selection: "tool"`, base adapter, and local preset ID | `local` |
 
-Automatic clears any previous device override or preset in the default mode;
-in **Only on this device** mode it stores an automatic override. Provide
-**Use document settings** to remove the override and reset backend selection
-to `auto`. Discard options incompatible with the newly selected tool.
+Automatic clears the explicit tool, engine, and preset and sets
+backend to `auto`. Discard options incompatible with the newly selected tool.
+Named choices use the backend of their selector group. Resolve the browser
+record, then check availability and authorization. Show a setup action while
+the selected tool, binding, or grant is missing; do not change the selection.
 
-Resolve a complete device override first, otherwise use the shared record.
-Apply the matching device backend next, then availability and authorization.
-With backend `auto`, a named tool uses its browser implementation if one exists,
-with the same no-local-fallback rule as explicit browser selection;
-a local-only tool requires an explicit local choice on this device, except for
-the legacy direct-TeX routing preserved below. Show a mismatch/setup action
-while that choice or grant is missing. Receiving shared intent cannot by itself
-enable Quarto, Calepin, Pandoc, `latexmk`, Tectonic, or a preset locally.
-
-### Existing LaTeX settings
-
-When no new shared build record exists, interpret the legacy engine setting
-as follows. Migration is idempotent and does not force a backend or rewrite
-preferences merely when opening the document.
-
-| Legacy engine | Effective shared preference | Routing with device backend `auto` |
-| --- | --- | --- |
-| Missing or `auto` | Automatic LaTeX, PDF, no engine constraint | Existing automatic engine detection and fallback |
-| `pdflatex` | Automatic LaTeX, PDF, engine constrained to `pdflatex` | Browser first, existing native fallback |
-| `xelatex` | Automatic LaTeX, PDF, engine constrained to `xelatex` | Browser first, existing native fallback |
-| `lualatex` | Automatic LaTeX, PDF, engine constrained to `lualatex` | Existing native route and authorization; no browser substitution |
-
-Show migrated engine constraints beside Automatic until the author changes
-them. A new build record takes precedence over the legacy field; old-client
-compatibility must not overwrite it on reconnect. Protocol version 1 transport
-support is independent of this settings migration.
+When no browser build record exists, start with Automatic and backend `auto`,
+using the source format's default output. This software is unreleased; no
+legacy settings migration or preservation is required. Remove superseded
+settings code when introducing the browser record.
 
 ## Automatic selection and fallback
 
@@ -499,8 +499,7 @@ or managed preview and prevents its late results replacing the new result.
 
 Automatic behavior is deterministic and reported to the user:
 
-- LaTeX starts with a compatible browser engine, except for the migrated
-  LuaLaTeX constraint described above. It may use the corresponding
+- LaTeX starts with a compatible browser engine. It may use the corresponding
   native direct-TeX adapter after an infrastructure, missing-package, or engine
   failure under the existing fallback policy. A source error remains a source
   error and must not cause repeated execution through every installed tool.
@@ -540,7 +539,7 @@ web/src/lib/companion/
 
 Connection and pairing state must have one owner. Builders use the common job,
 manifest, polling, cancellation, and output-verification functions rather than
-copying them. Format renderers translate document settings into a builder
+copying them. Format renderers translate the user's browser build settings into a builder
 request and translate normalized results into the existing preview surfaces.
 
 The settings registry offers **Build** according to source format and renders
@@ -582,8 +581,11 @@ the adapter interface and migrate one tool at a time.
 - No server-side native compilation. Local tools run only in the companion.
 - No executable paths, arbitrary argument vectors, shell source, or arbitrary
   environment maps supplied by the website or document.
-- No automatic installation or upgrade of TeX, Typst, Calepin, Pandoc,
-  Quarto, Tectonic, or their packages.
+- LibrePaper does not install or upgrade local toolchains or manage their
+  packages. Invoked tools resolve dependencies under their own local
+  configuration and granted execution permissions, including normal downloads
+  and cache updates. Browser compilation separately downloads its WebAssembly
+  engines and packages from LibrePaper's configured mirror.
 - No promise that every collaborator produces byte-identical output with
   different local tool versions. Provenance makes differences inspectable.
 - No silent publication of local generated files. Existing output collection
@@ -591,11 +593,12 @@ the adapter interface and migrate one tool at a time.
 - No automatic execution of code-bearing Markdown or Typst content merely
   because a capable local tool was detected.
 
-## Delivery plan
+## Delivery sequence
 
 1. Rename **Compiler** to **Build**, offer it for all supported source formats,
    and add the grouped selector with browser choices and companion setup states.
-   Preserve the existing LaTeX setting through migration.
+   Initialize new browser records at Automatic and remove superseded settings
+   code without a migration layer.
 2. Generalize capability reporting while retaining protocol version 1 fields.
    Add discovery for `latexmk`, Tectonic, native Typst, and Pandoc.
 3. Make direct native LaTeX an explicit choice in addition to its existing
@@ -613,10 +616,12 @@ the adapter interface and migrate one tool at a time.
 
 Browser settings tests verify grouped labels, keyboard and screen-reader
 semantics, format-specific options, disabled local choices, companion setup
-messages, retained unavailable selections, and shared versus local state.
-Cover each selector-to-state mapping, reload persistence, remote preference
-changes, override removal, all four legacy engine values, and idempotent
-migration. Explicit browser builds must never issue native or helper requests;
+messages, retained unavailable selections, and user/browser isolation.
+Cover each selector-to-state mapping, reload persistence, account separation,
+return to Automatic, and first-use initialization at Automatic.
+Two collaborators and two browser profiles can select different tools without
+affecting one another; remote settings changes cannot reset an explicit backend
+or enable local execution. Explicit browser builds must never issue native or helper requests;
 explicit local failures must not start browser rendering. Selection changes
 must stop incompatible previews and reject stale results.
 
@@ -641,7 +646,7 @@ and confinement policy, including child processes.
 Authorization tests reject missing, revoked, cross-origin, cross-document, and
 wrong-entrypoint bindings and grants, including revocation while queued. Pairing
 alone cannot authorize bound execution. Quarto and Calepin cannot bypass their
-existing grants through version 2 snapshot requests or shared settings changes.
+existing grants through version 2 snapshot requests or collaborative document updates.
 
 Integration tests compile representative projects with browser XeLaTeX,
 native XeLaTeX, `latexmk`, Tectonic, native Typst, Calepin, Pandoc, and Quarto
@@ -659,8 +664,9 @@ execution while leaving document files intact.
   see which one produced the current preview.
 - Explicit browser selection cannot execute local helpers or fallback builds;
   explicit local selection cannot silently render with a browser tool.
-- Selector choices survive reloads, local overrides remain device-local, and
-  legacy engine preferences retain their existing routing during migration.
+- Selector choices survive reloads and remain scoped to the user, browser,
+  and document. Collaborators cannot change them. New browser preferences
+  start at Automatic.
 - Uploaded executable configuration cannot bypass a restricted built-in
   adapter. Bound execution and presets require their scoped local grants,
   including after request migration to protocol version 2.
@@ -689,8 +695,8 @@ execution while leaving document files intact.
 - A local preset can customize a build after an explicit grant, while the
   browser cannot supply or alter its executable, unrestricted arguments, or
   environment.
-- Collaborators can honor a portable shared build preference or apply a clear
-  local override without changing another person's companion configuration.
+- Each collaborator chooses their own builder, backend, engine, output, and
+  options without changing another person's settings or companion configuration.
 - Every result and fallback reports its backend, builder, engine when
   applicable, version, preset when applicable, and source snapshot.
 - Existing protocol version 1 LaTeX fallback, Biber fallback, Quarto render,

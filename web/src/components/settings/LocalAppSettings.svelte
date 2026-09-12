@@ -7,6 +7,7 @@
 
   let { sourceFormat = "", main = "", bindingId = "", onbindingid } = $props();
   const quarto = $derived(sourceFormat === "quarto");
+  const projectBinding = $derived(["quarto", "typst", "markdown"].includes(sourceFormat));
 
   let local = $state(localBridge.status());
   $effect(() => localBridge.subscribe((status) => (local = status)));
@@ -141,15 +142,15 @@
 </SettingRow>
 <p class="setting-description"><a href={`${local?.address || localBridge.address()}librepaper/local/v1/manage`} target="_blank" rel="noreferrer">Open companion settings</a></p>
 
-{#if quarto}
-  <SettingRow id="local-binding" title="Project folder" description="Use this folder for Quarto render and export jobs. Live preview uses the shared project workspace. Selecting a folder does not upload its contents.">
-    <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder="main.qmd" bind:value={entrypoint} />
+{#if projectBinding}
+  <SettingRow id="local-binding" title="Project folder" description="Use this folder for local project builds and previews. Selecting a folder does not upload its contents.">
+    <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} />
     <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!connected || choosingFolder || !entrypoint.trim()} onclick={() => chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose project folder…"}</button>
   </SettingRow>
   <details class="setting-advanced">
     <summary>Advanced: use an existing binding</summary>
     <SettingRow title="Binding ID" description="For projects already configured with the companion CLI.">
-      <input class="input input-sm setting-input" type="text" aria-label="Local Quarto binding ID" placeholder="binding ID" value={bindingId}
+      <input class="input input-sm setting-input" type="text" aria-label="Local project binding ID" placeholder="binding ID" value={bindingId}
              onchange={(event) => onbindingid?.(event.currentTarget.value.trim())} />
     </SettingRow>
   </details>

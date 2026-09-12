@@ -297,7 +297,7 @@ console.log("quarto-local: localPreviewStatus/stopLocalPreview alias the existin
         return response({ synced: 1 });
       }
       if (init.method === "POST" && url.endsWith("/previews")) {
-        const request = JSON.parse(init.body);
+        const request = init.body?.get ? JSON.parse(await init.body.get("job").text()) : JSON.parse(init.body);
         calls.push(request[engine].binding_id);
         return request[engine].binding_id === "hosted"
           ? response({ id: "live" }, 201)
@@ -314,6 +314,7 @@ console.log("quarto-local: localPreviewStatus/stopLocalPreview alias the existin
     const errors = [];
     const context = vm.createContext({
       localQuarto: localBridge, quartoBindingId: localBridge.bindingId(),
+      buildPreferences: { output: "html", profile: null, parameters: {} },
       readerDisposed: false, navigationGeneration: 0,
       treeNow: () => ({ main: engine === "quarto" ? "main.qmd" : "main.typ", texts: { [engine === "quarto" ? "main.qmd" : "main.typ"]: "Hello" } }),
       quartoRenderContext: () => ({ format: "html", profiles: [], parameters: {} }),

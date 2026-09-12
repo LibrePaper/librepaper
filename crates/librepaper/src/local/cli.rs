@@ -4,6 +4,7 @@
 //! `start` stays in the foreground for scripts; `launch` starts an
 //! independent background process and waits for it to become ready.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,8 +13,9 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 
 use crate::cli::state_home;
-use crate::cli::{LocalArgs, LocalCommand, LocalQuartoCommand, StartupCommand};
+use crate::cli::{LocalArgs, LocalCommand, LocalPresetCommand, LocalQuartoCommand, StartupCommand};
 use crate::local::pairing::{generate_code, PairingStore, ServiceState};
+use crate::local::presets::{Operation, OptionType, Preset, PresetStore, WorkspaceMode};
 use crate::local::protocol::{self, DEFAULT_PORT};
 use crate::local::quarto::BindingStore;
 use crate::local::service::{LocalService, NativeRunner, Runner};
@@ -36,6 +38,7 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Doctor { tex_path } => doctor(tex_path).await,
         LocalCommand::Disconnect { origin, all } => disconnect(origin, all),
         LocalCommand::Rescan { tex_path } => rescan(tex_path).await,
+        LocalCommand::Preset { command } => run_preset(command),
         LocalCommand::Quarto {
             command:
                 LocalQuartoCommand::Bind {
@@ -52,6 +55,149 @@ pub async fn run(args: LocalArgs) {
             command: LocalQuartoCommand::List { origin, project },
         } => list_quarto_bindings(&origin, &project),
     }
+}
+
+fn run_preset(command: LocalPresetCommand) {
+    let store = PresetStore::new(state_home());
+    match command {
+        LocalPresetCommand::List => {
+            for preset in store.list() {
+                println!(
+                    "{}\t{}\t{}",
+                    preset.id, preset.base_adapter, preset.display_name
+                );
+            }
+        }
+        LocalPresetCommand::Create {
+            name,
+            adapter,
+            format,
+            options,
+            environment,
+            wrapper,
+        } => {
+            let preset = preset_from_args(
+                String::new(),
+                name,
+                adapter,
+                format,
+                options,
+                environment,
+                wrapper,
+            );
+            match store.create(preset) {
+                Ok(preset) => println!("created preset {}", preset.id),
+                Err(error) => die(error),
+            }
+        }
+        LocalPresetCommand::Update {
+            id,
+            name,
+            adapter,
+            format,
+            options,
+            environment,
+            wrapper,
+        } => {
+            let preset = preset_from_args(
+                id.clone(),
+                name,
+                adapter,
+                format,
+                options,
+                environment,
+                wrapper,
+            );
+            match store.update(&id, preset) {
+                Ok(preset) => println!("updated preset {} (grants must be renewed)", preset.id),
+                Err(error) => die(error),
+            }
+        }
+        LocalPresetCommand::Remove { id } => match store.remove(&id) {
+            Ok(()) => println!("removed preset {id}"),
+            Err(error) => die(error),
+        },
+        LocalPresetCommand::Grant {
+            preset,
+            origin,
+            project,
+            entrypoint,
+            workspace,
+            operation,
+        } => {
+            let workspace = match workspace.as_str() {
+                "snapshot" => WorkspaceMode::Snapshot,
+                "bound" => WorkspaceMode::Bound,
+                _ => die("workspace must be snapshot or bound"),
+            };
+            let operation = match operation.as_str() {
+                "build" => Operation::Build,
+                "preview" => Operation::Preview,
+                _ => die("operation must be build or preview"),
+            };
+            match store.grant(
+                &origin,
+                &project,
+                &preset,
+                workspace,
+                operation,
+                &entrypoint,
+                crate::auth::now_unix(),
+            ) {
+                Ok(grant) => println!("granted preset {}", grant.id),
+                Err(error) => die(error),
+            }
+        }
+        LocalPresetCommand::Revoke { id } => match store.revoke(&id) {
+            Ok(true) => println!("revoked preset grant {id}"),
+            Ok(false) => die("preset grant not found"),
+            Err(error) => die(error),
+        },
+    }
+}
+
+fn preset_from_args(
+    id: String,
+    name: String,
+    adapter: String,
+    formats: Vec<String>,
+    options: Vec<String>,
+    environment: Vec<String>,
+    wrapper: Option<String>,
+) -> Preset {
+    fn pairs(values: Vec<String>) -> BTreeMap<String, String> {
+        values
+            .into_iter()
+            .filter_map(|value| {
+                value
+                    .split_once('=')
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            })
+            .collect()
+    }
+    let option_schema = options_from_schema(&options);
+    Preset {
+        id,
+        display_name: name,
+        base_adapter: adapter,
+        source_formats: formats.into_iter().collect(),
+        options: pairs(options),
+        option_schema,
+        environment: pairs(environment),
+        wrapper,
+        semantic_revision: 0,
+    }
+}
+
+fn options_from_schema(values: &[String]) -> BTreeMap<String, OptionType> {
+    values
+        .iter()
+        .filter_map(|value| {
+            value
+                .split_once('=')
+                .map(|(key, _)| (key.to_owned(), OptionType::String))
+        })
+        .collect()
 }
 
 /// Grant the local app permission to execute one Quarto project. The caller

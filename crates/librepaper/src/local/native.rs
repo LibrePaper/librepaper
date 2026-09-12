@@ -50,16 +50,15 @@ pub async fn run_job(
     mut cancel: watch::Receiver<bool>,
     progress: mpsc::UnboundedSender<JobStatus>,
 ) -> JobOutcome {
-    let _permit = job_lock()
-        .acquire()
-        .await
-        .expect("job semaphore is never closed");
-
     let job_id = workspace
         .root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let _permit = tokio::select! {
+        permit = job_lock().acquire() => permit.expect("job semaphore is never closed"),
+        _ = wait_for_cancel(&mut cancel) => return canceled_before_start(&request, &job_id),
+    };
 
     if let Err(message) = prepare_workspace(&workspace).await {
         return failed(&request, &job_id, &message);
@@ -68,11 +67,17 @@ pub async fn run_job(
         return failed(&request, &job_id, &message);
     }
 
-    let tool_paths = discovery::tool_paths(tex_path).await;
+    let tool_paths = tokio::select! {
+        paths = discovery::tool_paths(tex_path) => paths,
+        _ = wait_for_cancel(&mut cancel) => return canceled_before_start(&request, &job_id),
+    };
     // Versions come from the same discovery pass as the paths, and only the
     // versions ever leave this process: provenance names what ran, never
     // where it lives on this machine.
-    let versions = discovery::discover(false, tex_path).await.tools;
+    let versions = tokio::select! {
+        capabilities = discovery::discover(false, tex_path) => capabilities.tools,
+        _ = wait_for_cancel(&mut cancel) => return canceled_before_start(&request, &job_id),
+    };
     let deadline = Instant::now() + Duration::from_secs(request.options.deadline_seconds.max(1));
 
     let mut ctx = Ctx {
@@ -178,11 +183,30 @@ struct Ctx<'a> {
 }
 
 /// What running one subprocess produced.
-enum RunOutcome {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RunOutcome {
     Exited(i32),
     Canceled,
     TimedOut,
     SpawnFailed(String),
+}
+
+async fn wait_for_cancel(cancel: &mut watch::Receiver<bool>) {
+    loop {
+        if *cancel.borrow() {
+            return;
+        }
+        if cancel.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+fn canceled_before_start(request: &JobRequest, id: &str) -> JobOutcome {
+    let mut outcome = failed(request, id, "canceled");
+    outcome.status.status = "canceled".into();
+    outcome.status.error = None;
+    outcome
 }
 
 impl Ctx<'_> {
@@ -213,9 +237,13 @@ impl Ctx<'_> {
         };
         Provenance {
             backend: "local".to_string(),
+            builder: "tex".to_string(),
+            version: self.tool_info(engine).unwrap_or_default(),
             engine: engine.to_string(),
             tools,
             confinement: confinement.to_string(),
+            preset: None,
+            snapshot: self.request.snapshot.clone(),
         }
     }
 
@@ -321,24 +349,46 @@ impl Ctx<'_> {
     }
 }
 
-async fn run_confined(
-    mut command: Command,
+pub(crate) async fn run_confined(
+    command: Command,
     cancel: &mut watch::Receiver<bool>,
     deadline: Instant,
 ) -> RunOutcome {
+    run_confined_logged(command, cancel, deadline).await.0
+}
+
+/// Drain both pipes for the entire process lifetime, retaining bounded logs.
+/// Stopping the read at the byte limit would deadlock a verbose compiler.
+pub(crate) async fn run_confined_logged(
+    mut command: Command,
+    cancel: &mut watch::Receiver<bool>,
+    deadline: Instant,
+) -> (RunOutcome, Vec<u8>) {
+    if *cancel.borrow() {
+        return (RunOutcome::Canceled, Vec::new());
+    }
+    if Instant::now() >= deadline {
+        return (RunOutcome::TimedOut, Vec::new());
+    }
+    command.kill_on_drop(true);
     let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(err) => return RunOutcome::SpawnFailed(err.to_string()),
+        Err(err) => return (RunOutcome::SpawnFailed(err.to_string()), Vec::new()),
     };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let mut stdout = tokio::spawn(drain_output(stdout));
+    let mut stderr = tokio::spawn(drain_output(stderr));
     let pid = child.id();
     let remaining = deadline.saturating_duration_since(Instant::now());
     let sleep = tokio::time::sleep(remaining);
     tokio::pin!(sleep);
 
-    loop {
+    let mut cancellation_open = true;
+    let outcome = loop {
         tokio::select! {
             status = child.wait() => {
-                return match status {
+                break match status {
                     Ok(status) => RunOutcome::Exited(status.code().unwrap_or(-1)),
                     Err(err) => RunOutcome::SpawnFailed(err.to_string()),
                 };
@@ -346,20 +396,51 @@ async fn run_confined(
             _ = &mut sleep => {
                 kill_tree(pid);
                 let _ = child.wait().await;
-                return RunOutcome::TimedOut;
+                break RunOutcome::TimedOut;
             }
-            changed = cancel.changed() => {
+            changed = cancel.changed(), if cancellation_open => {
                 if changed.is_err() {
+                    cancellation_open = false;
                     continue;
                 }
                 if *cancel.borrow() {
                     kill_tree(pid);
                     let _ = child.wait().await;
-                    return RunOutcome::Canceled;
+                    break RunOutcome::Canceled;
                 }
             }
         }
+    };
+    // A compiler must not leave a background helper holding its pipes open.
+    kill_tree(pid);
+    let mut log = Vec::new();
+    for task in [&mut stdout, &mut stderr] {
+        match tokio::time::timeout(Duration::from_secs(1), &mut *task).await {
+            Ok(Ok(bytes)) => log.extend_from_slice(&bytes),
+            _ => task.abort(),
+        }
     }
+    (outcome, truncate_tail(log, super::protocol::MAX_LOG_BYTES))
+}
+
+async fn drain_output<R>(stream: Option<R>) -> Vec<u8>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    if let Some(mut stream) = stream {
+        let mut buffer = [0; 8192];
+        while let Ok(count) = tokio::io::AsyncReadExt::read(&mut stream, &mut buffer).await {
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            if bytes.len() > super::protocol::MAX_LOG_BYTES {
+                bytes.drain(..bytes.len() - super::protocol::MAX_LOG_BYTES);
+            }
+        }
+    }
+    bytes
 }
 
 #[cfg(unix)]
@@ -906,6 +987,46 @@ fn blg_is_incompatible(blg: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn log_reader_drains_past_the_retention_limit() {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let sending = tokio::spawn(async move {
+            writer
+                .write_all(&vec![b'x'; super::super::protocol::MAX_LOG_BYTES * 2])
+                .await
+                .unwrap();
+            writer.write_all(b"finished").await.unwrap();
+        });
+        let bytes = tokio::time::timeout(Duration::from_secs(5), drain_output(Some(reader)))
+            .await
+            .unwrap();
+        sending.await.unwrap();
+        assert_eq!(bytes.len(), super::super::protocol::MAX_LOG_BYTES);
+        assert!(bytes.ends_with(b"finished"));
+    }
+
+    #[tokio::test]
+    async fn canceled_and_expired_commands_do_not_spawn() {
+        let (_sender, mut cancel) = watch::channel(true);
+        let command = Command::new("nonexistent-librepaper-test-executable");
+        assert!(matches!(
+            run_confined(
+                command,
+                &mut cancel,
+                Instant::now() + Duration::from_secs(5)
+            )
+            .await,
+            RunOutcome::Canceled
+        ));
+        let (_sender, mut cancel) = watch::channel(false);
+        let command = Command::new("nonexistent-librepaper-test-executable");
+        assert!(matches!(
+            run_confined(command, &mut cancel, Instant::now()).await,
+            RunOutcome::TimedOut
+        ));
+    }
 
     #[test]
     fn blg_incompatibility_needs_both_the_phrase_and_a_mismatch_word() {

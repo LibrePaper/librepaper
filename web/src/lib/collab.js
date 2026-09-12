@@ -421,31 +421,7 @@ export function join({
         digests[path] = sha;
         entries[path] = { kind: "asset", sha };
       }
-      // The selected engine rides in `meta` beside `main`, so it travels with
-      // the project rather than with this browser. A tree with no engine
-      // setting omits `settings` entirely, which is what lets
-      // `tree-digest.js`/`history.rs` keep every existing checkpoint's sha.
-      const engine = meta.get("latex.engine") || "";
-      const settings = engine ? { engine } : undefined;
-      return { main: this.mainPath(), texts, digests, files: entries, ...(settings ? { settings } : {}) };
-    },
-
-    /// This project's LaTeX compile setting: the engine an editor picked (or
-    /// "auto", the default). Shared with every collaborator through `meta`.
-    latexSettings() {
-      return {
-        engine: meta.get("latex.engine") || "auto",
-      };
-    },
-
-    /// Changes the project's engine. A reader never calls this -- `mayEdit`
-    /// refuses it the way every other write here does.
-    setLatexSettings(next) {
-      if (!mayEdit) throw new Error("This project is read-only.");
-      const current = this.latexSettings();
-      if (next.engine !== undefined && next.engine !== current.engine) {
-        meta.set("latex.engine", next.engine);
-      }
+      return { main: this.mainPath(), texts, digests, files: entries };
     },
 
     /// The text at a path, for the caller that has a path and not an id --

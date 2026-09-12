@@ -70,11 +70,67 @@ pub async fn run(
     progress: mpsc::UnboundedSender<JobStatus>,
     bindings: &super::quarto::BindingStore,
 ) -> JobOutcome {
-    let id = workspace
+    let job_id = workspace
         .root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    if request.protocol == 2 && request.builder.is_some() {
+        if request.builder.as_deref() == Some("tex")
+            && request.preset.is_none()
+            && matches!(
+                request.workspace,
+                Some(super::protocol::WorkspaceRequest::Snapshot { binding_id: None })
+            )
+        {
+            let mut legacy = request.clone();
+            legacy.kind = "tex".into();
+            legacy.engine = if request.engine.is_empty() {
+                "pdflatex".into()
+            } else {
+                request.engine.clone()
+            };
+            return native::run_job(tex_path, legacy, workspace, cancel, progress).await;
+        }
+        let tools = crate::local::discovery::tool_paths(tex_path).await;
+        if let Some(super::protocol::WorkspaceRequest::Snapshot {
+            binding_id: Some(binding_id),
+        }) = request.workspace.as_ref()
+        {
+            let binding =
+                match bindings.resolve_scoped(binding_id, &request.origin, &request.project) {
+                    Ok(binding) => binding,
+                    Err(error) => return unsupported(&request, &job_id, &error),
+                };
+            let root = match std::fs::canonicalize(&binding.root) {
+                Ok(root) if root.is_dir() => root,
+                _ => return unsupported(&request, &job_id, "bound workspace root is unavailable"),
+            };
+            if root != binding.root {
+                return unsupported(&request, &job_id, "bound workspace root changed");
+            }
+            if request.entrypoint.as_deref() != Some(binding.entrypoint.as_str()) {
+                return unsupported(
+                    &request,
+                    &job_id,
+                    "entrypoint no longer matches the scoped binding",
+                );
+            }
+        }
+        if request.builder.as_deref() == Some("quarto") {
+            return quarto::run_job_with_bindings(request, workspace, cancel, progress, bindings)
+                .await;
+        }
+        return crate::local::builders::runner::run(
+            request,
+            workspace,
+            tools,
+            cancel,
+            progress,
+            &bindings.preset_store(),
+        )
+        .await;
+    }
     match select(&request) {
         Ok(JobAdapter::Native) => {
             native::run_job(tex_path, request, workspace, cancel, progress).await
@@ -82,7 +138,7 @@ pub async fn run(
         Ok(JobAdapter::Quarto) => {
             quarto::run_job_with_bindings(request, workspace, cancel, progress, bindings).await
         }
-        Err(error) => unsupported(&request, &id, &error),
+        Err(error) => unsupported(&request, &job_id, &error),
     }
 }
 
@@ -353,6 +409,12 @@ mod tests {
             quarto: None,
             manifest: Vec::new(),
             options: Default::default(),
+            builder: None,
+            workspace: None,
+            entrypoint: None,
+            output: None,
+            builder_options: None,
+            preset: None,
         }
     }
 

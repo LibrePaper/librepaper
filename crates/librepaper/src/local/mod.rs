@@ -5,6 +5,7 @@
 //! surface and its authorization (package R1a); `discovery`, `native` and
 //! `confine` find and run the tools (package R1b); `cli` is the command line.
 
+pub mod builders;
 pub mod cli;
 pub mod confine;
 pub mod discovery;
@@ -15,6 +16,7 @@ pub mod lifecycle;
 mod management;
 pub mod native;
 pub mod pairing;
+pub mod presets;
 pub mod protocol;
 pub mod quarto;
 pub mod quarto_capture;

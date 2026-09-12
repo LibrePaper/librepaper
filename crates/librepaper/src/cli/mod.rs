@@ -681,6 +681,11 @@ pub(crate) enum BackupCommand {
 /// `librepaper local <command>`. See `crate::local::cli`.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalCommand {
+    /// Manage companion-local build presets and their execution grants.
+    Preset {
+        #[command(subcommand)]
+        command: LocalPresetCommand,
+    },
     /// Manage local Quarto execution permissions.
     Quarto {
         #[command(subcommand)]
@@ -766,6 +771,55 @@ pub enum LocalCommand {
             value_delimiter = ':'
         )]
         tex_path: Vec<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
+pub enum LocalPresetCommand {
+    /// List safe metadata for locally configured presets.
+    List,
+    /// Create a local preset. Options and environment are key=value pairs.
+    Create {
+        name: String,
+        adapter: String,
+        #[arg(long, value_delimiter = ',')]
+        format: Vec<String>,
+        #[arg(long = "option", value_name = "KEY=VALUE")]
+        options: Vec<String>,
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        environment: Vec<String>,
+        #[arg(long)]
+        wrapper: Option<String>,
+    },
+    /// Update a local preset; all grants become invalid.
+    Update {
+        id: String,
+        name: String,
+        adapter: String,
+        #[arg(long, value_delimiter = ',')]
+        format: Vec<String>,
+        #[arg(long = "option", value_name = "KEY=VALUE")]
+        options: Vec<String>,
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        environment: Vec<String>,
+        #[arg(long)]
+        wrapper: Option<String>,
+    },
+    Remove {
+        id: String,
+    },
+    Grant {
+        preset: String,
+        origin: String,
+        project: String,
+        entrypoint: String,
+        #[arg(long, default_value = "snapshot")]
+        workspace: String,
+        #[arg(long, default_value = "build")]
+        operation: String,
+    },
+    Revoke {
+        id: String,
     },
 }
 

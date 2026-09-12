@@ -7,6 +7,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, Response, StatusCode};
 
 use super::pairing::PairingStore;
+use super::presets::{Operation, PresetStore, WorkspaceMode};
 use super::protocol::BASE_PATH;
 use super::service::Runner;
 
@@ -43,6 +44,7 @@ pub(super) async fn handle(
     request: Request<Body>,
 ) -> Response<Body> {
     let store = PairingStore::new(state_home, None);
+    let presets = PresetStore::new(state_home);
     // Embedded services belong to the server process and must never offer
     // controls that stop it or change the user's standalone installation.
     let standalone = store
@@ -85,6 +87,46 @@ pub(super) async fn handle(
             );
         }
         match fields.get("action").map(String::as_str) {
+            Some("preset-remove") => {
+                let Some(id) = fields.get("preset") else {
+                    return page(StatusCode::BAD_REQUEST, "Choose a preset to remove.");
+                };
+                notice = match presets.remove(id) {
+                    Ok(()) => "Preset removed and its grants revoked.".into(),
+                    Err(error) => error,
+                };
+            }
+            Some("preset-revoke") => {
+                let Some(id) = fields.get("grant") else {
+                    return page(
+                        StatusCode::BAD_REQUEST,
+                        "Choose a preset permission to revoke.",
+                    );
+                };
+                notice = match presets.revoke(id) {
+                    Ok(true) => "Preset permission revoked.".into(),
+                    Ok(false) => "Preset permission was already absent.".into(),
+                    Err(error) => error,
+                };
+            }
+            Some("preset-grant") => {
+                let (Some(preset), Some(origin), Some(project), Some(entrypoint)) = (
+                    fields.get("preset"),
+                    fields.get("origin"),
+                    fields.get("project"),
+                    fields.get("entrypoint"),
+                ) else {
+                    return page(
+                        StatusCode::BAD_REQUEST,
+                        "Specify the preset, website, document, and source file.",
+                    );
+                };
+                notice = match presets.grant(origin, project, preset, WorkspaceMode::Snapshot,
+                    Operation::Build, entrypoint, crate::util::now_unix()) {
+                    Ok(_) => "Preset build permission granted for this website, document, and source file.".into(),
+                    Err(error) => error,
+                };
+            }
             Some("rescan") => refresh = true,
             Some("revoke") => {
                 let (Some(origin), Some(project)) = (fields.get("origin"), fields.get("project"))
@@ -137,6 +179,22 @@ pub(super) async fn handle(
             escape(tool.version.as_deref().unwrap_or(&tool.note))
         ));
     }
+    for builder in caps
+        .builders
+        .iter()
+        .filter(|builder| builder.id != "tex" && builder.id != "quarto")
+    {
+        tool_rows.push_str(&format!(
+            "<tr><th>{}</th><td>{}</td><td>{}</td></tr>",
+            escape(&builder.id),
+            if builder.available {
+                "Available"
+            } else {
+                "Unavailable"
+            },
+            escape(builder.version.as_deref().unwrap_or(&builder.note)),
+        ));
+    }
     let mut grants = String::new();
     for (origin, project) in store.active_pairings() {
         let extra = format!(
@@ -153,6 +211,48 @@ pub(super) async fn handle(
     if grants.is_empty() {
         grants = "<li>No documents connected. Enable local rendering in an online project to connect it.</li>".into();
     }
+    let mut preset_rows = String::new();
+    for preset in presets.list() {
+        let hidden = format!(
+            "<input type=\"hidden\" name=\"preset\" value=\"{}\">",
+            escape(&preset.id)
+        );
+        let grant_fields = format!(
+            "{hidden}<label>Website <input name=\"origin\" type=\"url\" required placeholder=\"https://papers.example\"></label> <label>Document <input name=\"project\" required></label> <label>Source file <input name=\"entrypoint\" required placeholder=\"main.tex\"></label> "
+        );
+        preset_rows.push_str(&format!(
+            "<li><strong>{}</strong> ({})<p>Allow this preset to build a temporary project copy for the specified document. Local source files additionally require a folder permission.</p>{}{}</li>",
+            escape(&preset.display_name), escape(&preset.base_adapter),
+            form(nonce, "preset-grant", "Allow builds", &grant_fields),
+            form(nonce, "preset-remove", "Remove preset", &hidden),
+        ));
+    }
+    if preset_rows.is_empty() {
+        preset_rows = "<li>No local build presets configured.</li>".into();
+    }
+    let mut preset_grants = String::new();
+    match presets.grants() {
+        Ok(grants) => {
+            for grant in grants {
+                let hidden = format!(
+                    "<input type=\"hidden\" name=\"grant\" value=\"{}\">",
+                    escape(&grant.id)
+                );
+                preset_grants.push_str(&format!(
+                    "<li>{} · {} · {} · {} {}</li>",
+                    escape(&grant.preset_id),
+                    escape(&grant.origin),
+                    escape(&grant.project),
+                    escape(&grant.entrypoint),
+                    form(nonce, "preset-revoke", "Revoke", &hidden),
+                ));
+            }
+        }
+        Err(error) => preset_grants = format!("<li>{}</li>", escape(&error)),
+    }
+    let preset_section = format!(
+        "<h2>Local build presets</h2><p>Define or update presets using <code>librepaper local preset</code> on this computer.</p><ul>{preset_rows}</ul><h3>Preset permissions</h3><ul>{preset_grants}</ul>"
+    );
     let lifecycle = if standalone {
         format!(
             "<h2>Background app</h2><div class=\"actions\">{}{}{}</div>",
@@ -167,6 +267,10 @@ pub(super) async fn handle(
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>LibrePaper companion</title><style>body{{font:16px/1.5 system-ui,sans-serif;max-width:850px;margin:32px auto;padding:0 20px}}h1,h2{{line-height:1.2}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:8px;border-bottom:1px solid #ddd}}button{{font:inherit;padding:6px 12px;cursor:pointer}}.actions{{display:flex;gap:12px;flex-wrap:wrap}}li{{margin:12px 0}}li form{{display:inline}}pre{{overflow:auto}}.notice{{font-weight:bold}}</style></head><body><h1>LibrePaper companion</h1><p>Running on this computer · version {}</p><p class=\"notice\">{}</p><h2>Local tools</h2><table><thead><tr><th>Tool</th><th>Status</th><th>Version or next step</th></tr></thead><tbody>{tool_rows}</tbody></table>{}<h2>Connected documents</h2><ul>{grants}</ul>{lifecycle}<h2>Updates</h2><p><a href=\"https://github.com/LibrePaper/librepaper/releases/latest\" target=\"_blank\" rel=\"noopener noreferrer\">Download the latest companion</a>. Installing an update preserves document permissions.</p><details><summary>Details</summary><pre>{}</pre></details></body></html>",
         escape(crate::VERSION), escape(&notice), form(nonce, "rescan", "Check tools again", ""), escape(&details)
+    );
+    let body = body.replace(
+        "<h2>Connected documents</h2>",
+        &format!("{preset_section}<h2>Connected documents</h2>"),
     );
     page(StatusCode::OK, &body)
 }
@@ -262,5 +366,59 @@ mod tests {
         assert!(!html.contains("<script>bad"));
         assert!(!html.contains("Quit companion"));
         assert!(html.contains("managed by that server"));
+    }
+
+    #[tokio::test]
+    async fn preset_permissions_can_only_be_granted_and_revoked_locally() {
+        let temporary = tempfile::tempdir().expect("temporary state");
+        let presets = PresetStore::new(temporary.path());
+        let preset = serde_json::from_value(serde_json::json!({
+            "id": "paper-preset", "display_name": "Paper", "base_adapter": "typst",
+            "source_formats": ["typst"], "semantic_revision": 0
+        }))
+        .expect("preset definition");
+        presets.create(preset).expect("create preset");
+        for (origin, expected) in [
+            ("https://papers.example", StatusCode::FORBIDDEN),
+            ("http://127.0.0.1:8763", StatusCode::OK),
+        ] {
+            let request = Request::post(format!("{BASE_PATH}/manage"))
+                .header("origin", origin)
+                .body(Body::from("nonce=secret&action=preset-grant&preset=paper-preset&origin=https%3A%2F%2Fpapers.example&project=paper&entrypoint=main.typ"))
+                .expect("request");
+            let response = handle(
+                temporary.path(),
+                8763,
+                "test",
+                "secret",
+                &FakeRunner::default(),
+                request,
+            )
+            .await;
+            assert_eq!(response.status(), expected);
+            if expected == StatusCode::FORBIDDEN {
+                assert!(presets.grants().expect("grants").is_empty());
+            }
+        }
+        let grants = presets.grants().expect("grants");
+        assert_eq!(grants.len(), 1);
+        let request = Request::post(format!("{BASE_PATH}/manage"))
+            .header("origin", "http://127.0.0.1:8763")
+            .body(Body::from(format!(
+                "nonce=secret&action=preset-revoke&grant={}",
+                grants[0].id
+            )))
+            .expect("request");
+        let response = handle(
+            temporary.path(),
+            8763,
+            "test",
+            "secret",
+            &FakeRunner::default(),
+            request,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(presets.grants().expect("grants").is_empty());
     }
 }

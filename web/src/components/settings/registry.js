@@ -2,19 +2,18 @@
 // The dialog draws its navigation from this and searches it; what a category
 // shows is a component beside this file.
 //
-// Most settings belong to this browser alone. The two that do not say so in
-// their `note`, shown under the category's title: the LaTeX compiler choice
-// is shared with everyone editing the document, and the local app is the one
-// running on this computer.
+// Build preferences belong to this browser and user. The local app category
+// manages the companion running on this computer.
 
 // `offered` answers with the document's format and whether this browser may
 // edit it. `terms` are the words somebody might type when looking for a row
 // and not finding its title.
 const everyone = () => true;
 const editor = ({ mayEdit }) => mayEdit;
+const build = ({ format, mayEdit }) => ["latex", "typst", "markdown", "quarto"].includes(format) && mayEdit;
 const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
 const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
-const local = ({ format, mayEdit }) => (format === "latex" || format === "quarto") && mayEdit;
+const local = ({ format, mayEdit }) => ["latex", "typst", "markdown", "quarto"].includes(format) && mayEdit;
 
 export const CATEGORIES = [
   {
@@ -38,10 +37,11 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "compiler", says: "Compiler", offered: latex,
-    note: "Shared with everyone who edits this document.",
+    id: "build", says: "Build", offered: build,
+    note: "Only this browser and user.",
     entries: [
-      { id: "compiler-engine", says: "PDF compiler", terms: "engine pdflatex xelatex lualatex automatic" },
+      { id: "build-tool", says: "Build tool", terms: "compiler engine browser local companion automatic latex typst markdown quarto" },
+      { id: "build-engine", says: "Engine", terms: "pdflatex xelatex lualatex" },
     ],
   },
   {

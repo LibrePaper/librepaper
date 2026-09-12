@@ -155,6 +155,10 @@ fn wrap_bwrap(command: &mut Command, plan: &Plan) -> Result<Applied, String> {
         }
     };
 
+    // Install the private temporary filesystem before workspace binds: a
+    // workspace below /tmp must not be hidden by a later tmpfs mount.
+    bwrap_args.push("--tmpfs".into());
+    bwrap_args.push("/tmp".into());
     // The writable workspace goes first: bwrap applies binds in order, and
     // a later, more specific bind on a path already covered by an earlier
     // one wins for that subpath. Binding the (writable) workspace before
@@ -177,6 +181,9 @@ fn wrap_bwrap(command: &mut Command, plan: &Plan) -> Result<Applied, String> {
         ro_bind(&PathBuf::from(home).join(".TinyTeX"), &mut bwrap_args);
     }
     ro_bind(Path::new("/usr"), &mut bwrap_args);
+    for path in ["/bin", "/lib", "/lib64"] {
+        ro_bind(Path::new(path), &mut bwrap_args);
+    }
     if Path::new("/etc/fonts").exists() {
         ro_bind(Path::new("/etc/fonts"), &mut bwrap_args);
     }
@@ -185,9 +192,6 @@ fn wrap_bwrap(command: &mut Command, plan: &Plan) -> Result<Applied, String> {
     bwrap_args.push("/dev".into());
     bwrap_args.push("--proc".into());
     bwrap_args.push("/proc".into());
-    bwrap_args.push("--tmpfs".into());
-    bwrap_args.push("/tmp".into());
-
     if !plan.network {
         bwrap_args.push("--unshare-net".into());
     }
