@@ -19,9 +19,10 @@ for (const [lineNumber, raw] of (await readFile(lockPath, "utf8")).split("\n").e
   const line = raw.replace(/#.*$/, "").trim();
   if (!line) continue;
   const fields = line.split(/\s+/);
-  if (fields.length !== 4) throw new Error(`${lockPath}:${lineNumber + 1}: expected module repo tag sha256`);
-  const [module, repo, tag, sha256] = fields;
+  if (fields.length !== 5) throw new Error(`${lockPath}:${lineNumber + 1}: expected module repo tag sha256 brotli_sha256`);
+  const [module, repo, tag, sha256, brotliSha256] = fields;
   if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error(`${module}: invalid sha256`);
+  if (!/^[a-f0-9]{64}$/.test(brotliSha256)) throw new Error(`${module}: invalid brotli sha256`);
   if (lock.has(module)) throw new Error(`${module}: duplicate lock entry`);
   lock.set(module, { repo, tag });
 }

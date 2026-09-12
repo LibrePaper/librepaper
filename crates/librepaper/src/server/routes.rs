@@ -90,7 +90,7 @@ pub(super) async fn dispatch(
         // the shell is served from this origin.
         if path.starts_with("/assets/") {
             if let Some(asset) = server.shell.get(&path) {
-                let mut response = write_asset(asset);
+                let mut response = write_asset(asset, request.headers());
                 privacy_headers(&mut response);
                 return response;
             }
@@ -709,7 +709,7 @@ pub(super) async fn dispatch(
         }
     }
     if let Some(asset) = server.shell.get(&page) {
-        let mut response = write_asset(asset);
+        let mut response = write_asset(asset, request.headers());
         server.issue_visitor(request.headers(), &arrival, asset, &mut response);
         return response;
     }

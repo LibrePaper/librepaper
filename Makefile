@@ -22,6 +22,7 @@ BIB     := web/dist/wasm/bibliography.wasm
 CITES   := web/dist/wasm/citations.wasm
 # Fetched, not built: see wasm-modules.lock and the bottom of this file.
 TYPST   := web/dist/wasm/typst.wasm
+WASM_BR := $(WASM).br $(BIB).br $(CITES).br $(TYPST).br
 # The pages. web/dist is entirely a build output, so it is an input to
 # nothing: what the pages are built from lives in web/src and web/public.
 SHELL_OUT := web/dist/index.html
@@ -45,7 +46,7 @@ install: $(BIN)  ## Build and install to ~/.local/bin (override PREFIX= or BINDI
 
 # Rebuilt whenever any source, page or renderer changes.
 # Keep every required renderer in step with the shell and native compiler.
-$(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(TYPST) $(SHELL_OUT) | wasm
+$(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(TYPST) $(WASM_BR) $(SHELL_OUT) | wasm
 	@mkdir -p $(dir $@)
 	@cargo build --release -p librepaper
 	@# Copied beside and renamed over: a server running from the old binary
@@ -260,7 +261,7 @@ wasm-check:  ## Check native and browser renderer tags without network access
 # The files are produced by the phony aggregate above. This rule lets Make
 # resolve them as binary prerequisites on a clean checkout while preserving
 # their mtimes so a changed renderer causes the embedding binary to rebuild.
-$(WASM) $(BIB) $(CITES) $(TYPST): | wasm
+$(WASM) $(BIB) $(CITES) $(TYPST) $(WASM_BR): | wasm
 
 # Update one explicitly named renderer tag in Cargo.toml and wasm-modules.lock.
 # The command never looks up or selects a latest release implicitly.

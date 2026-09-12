@@ -58,6 +58,10 @@ pub fn content_type(name: &str) -> &'static str {
 pub struct ShellFile {
     pub kind: &'static str,
     pub body: axum::body::Bytes,
+    /// A precompressed HTTP representation of `body`, when the build supplied
+    /// one. Renderer releases carry these so serving a large module costs no
+    /// compression work per request.
+    pub brotli: Option<axum::body::Bytes>,
     /// A file whose bytes never change under this name, so it can be cached
     /// for a year rather than five minutes. Everything the bundler names for
     /// its own contents is one, and so are the renderers.
@@ -136,6 +140,9 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
     let mut modules = serde_json::Map::new();
     for (name, path) in MODULES {
         let Some(body) = file(path) else { continue };
+        let brotli_path = format!("{path}.br");
+        let brotli = file(&brotli_path)
+            .ok_or_else(|| format!("missing {brotli_path} in the shell: run make wasm"))?;
         let route = module_route(name, body);
         modules.insert(name.to_string(), serde_json::Value::String(route.clone()));
         shell.insert(
@@ -143,6 +150,7 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
             ShellFile {
                 kind: "application/wasm",
                 body: axum::body::Bytes::from_static(body),
+                brotli: Some(axum::body::Bytes::from_static(brotli)),
                 immutable: true,
             },
         );
@@ -181,6 +189,7 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
             ShellFile {
                 kind,
                 body,
+                brotli: None,
                 immutable,
             },
         );

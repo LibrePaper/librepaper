@@ -26,7 +26,7 @@ for (const raw of lock.split("\n")) {
   const line = raw.replace(/#.*$/, "").trim();
   if (!line) continue;
   const fields = line.split(/\s+/);
-  if (fields.length !== 4 || !/^[a-f0-9]{64}$/.test(fields[3])) throw new Error("wasm-modules.lock contains a malformed entry");
+  if (fields.length !== 5 || !/^[a-f0-9]{64}$/.test(fields[3]) || !/^[a-f0-9]{64}$/.test(fields[4])) throw new Error("wasm-modules.lock contains a malformed entry");
   rows.push(fields);
 }
 if (rows.length !== expected.size || new Set(rows.map(([module]) => module)).size !== expected.size || rows.some(([module, entryRepo]) => expected.get(module) !== entryRepo)) throw new Error("wasm-modules.lock must contain exactly the four required renderer modules");
@@ -46,10 +46,12 @@ for (const line of sumsText.split("\n")) {
   if (sums.has(fields[1])) throw new Error(`duplicate SHA256SUMS entry: ${fields[1]}`);
   sums.set(fields[1], fields[0]);
 }
-const changedLock = lock.replace(new RegExp(`^(\\s*)(\\S+)(\\s+${repo}\\s+)\\S+(\\s+)([a-f0-9]{64})(.*)$`, "gm"), (_, indent, module, middle, gap, _old, rest) => {
+const changedLock = lock.replace(new RegExp(`^(\\s*)(\\S+)(\\s+${repo}\\s+)\\S+(\\s+)([a-f0-9]{64})(\\s+)([a-f0-9]{64})(.*)$`, "gm"), (_, indent, module, middle, gap, _old, brotliGap, _oldBrotli, rest) => {
   const sha = sums.get(module);
   if (!sha) throw new Error(`${repo} ${tag}: SHA256SUMS has no ${module}`);
-  return `${indent}${module}${middle}${tag}${gap}${sha}${rest}`;
+  const brotliSha = sums.get(`${module}.br`);
+  if (!brotliSha) throw new Error(`${repo} ${tag}: SHA256SUMS has no ${module}.br`);
+  return `${indent}${module}${middle}${tag}${gap}${sha}${brotliGap}${brotliSha}${rest}`;
 });
 
 const files = [];

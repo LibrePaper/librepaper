@@ -80,7 +80,7 @@ impl Server {
         let accepts_html = header_of(headers, "accept").is_some_and(|a| a.contains("text/html"));
         match self.shell.get("/signin.html") {
             Some(asset) if accepts_html => {
-                let mut response = write_asset(asset);
+                let mut response = write_asset(asset, headers);
                 // The page is the same for everybody, but the answer it leads
                 // to is not, and a shared cache holding it would be answering
                 // for this deployment's configuration long after it changed.
@@ -487,7 +487,7 @@ impl Server {
         let accepts_html = header_of(headers, "accept").is_some_and(|a| a.contains("text/html"));
         match self.shell.get("/device.html") {
             Some(asset) if accepts_html => {
-                let mut response = write_asset(asset);
+                let mut response = write_asset(asset, headers);
                 // It names the code and the account, so it is nobody's to keep
                 // but this browser's, and not for long.
                 set(&mut response, "cache-control", "no-store");

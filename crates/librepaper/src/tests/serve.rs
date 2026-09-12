@@ -575,12 +575,14 @@ async fn markdown_upload_is_stored_as_markdown() {
 #[tokio::test]
 async fn the_renderer_is_served_as_wasm() {
     let server = new_test_server().await;
+    let url = format!(
+        "{}{}",
+        server.url,
+        crate::server::shell::module_url("markdown").expect("a markdown module")
+    );
     let response = client()
-        .get(format!(
-            "{}{}",
-            server.url,
-            crate::server::shell::module_url("markdown").expect("a markdown module")
-        ))
+        .get(&url)
+        .header("accept-encoding", "identity")
         .send()
         .await
         .unwrap();
@@ -606,6 +608,28 @@ async fn the_renderer_is_served_as_wasm() {
         "the markdown module is {} bytes; it should be small",
         raw.len()
     );
+
+    // The URL continues to identify the raw module, while a browser that can
+    // decode Brotli receives the release's precompressed representation.
+    let response = client()
+        .get(&url)
+        .header("accept-encoding", "gzip, br")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.headers().get("content-encoding").unwrap(), "br");
+    assert_eq!(response.headers().get("vary").unwrap(), "Accept-Encoding");
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "application/wasm"
+    );
+    let encoded = response.bytes().await.unwrap();
+    let expected = crate::server::shell::load_shell(&Configuration::default()).unwrap()
+        [&crate::server::shell::module_url("markdown").unwrap()]
+        .brotli
+        .clone()
+        .unwrap();
+    assert_eq!(encoded, expected);
 }
 
 /// The next frame of this kind, skipping the peer counts a join broadcasts to

@@ -22,5 +22,6 @@ pub mod quarto;
 pub mod quarto_capture;
 pub mod service;
 pub mod texlog;
+pub mod zotero;
 
 pub(crate) mod preview;

@@ -915,6 +915,12 @@ async fn dispatch(
         ["capabilities", "rescan"] if *method == Method::POST => {
             handle_capabilities(inner, headers, origin, true).await
         }
+        ["zotero", "search"] if *method == Method::GET => {
+            handle_zotero_search(inner, headers, origin, request).await
+        }
+        ["zotero", "items", key] if *method == Method::GET => {
+            handle_zotero_item(inner, headers, origin, key).await
+        }
         ["previews"] if *method == Method::POST => {
             handle_preview(inner, headers, origin, None, request).await
         }
@@ -948,6 +954,56 @@ async fn dispatch(
             handle_cancel(inner, headers, origin, id).await
         }
         _ => plain(404, "not found"),
+    }
+}
+
+/* -------------------------------------------------------------- Zotero */
+
+async fn handle_zotero_search(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let query = request
+        .uri()
+        .query()
+        .and_then(|query| {
+            url::form_urlencoded::parse(query.as_bytes()).find(|(name, _)| name == "q")
+        })
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_default();
+    if query.len() > 500 {
+        return plain(400, "Zotero search query is too long");
+    }
+    match crate::local::zotero::Client::local()
+        .search(&query, 50)
+        .await
+    {
+        Ok(results) => write_json(200, &json!({ "entries": results })),
+        Err(error) => write_json(503, &json!({ "error": error.to_string() })),
+    }
+}
+
+async fn handle_zotero_item(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    key: &str,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    match crate::local::zotero::Client::local().item(key).await {
+        Ok(item) => {
+            let citation_key = crate::local::zotero::base_key(&item.data);
+            let bib = crate::local::zotero::bibliography(&[item], &BTreeMap::new());
+            write_json(200, &json!({ "citation_key": citation_key, "bibtex": bib }))
+        }
+        Err(error) => write_json(503, &json!({ "error": error.to_string() })),
     }
 }
 

@@ -146,7 +146,24 @@ pub async fn run(
 /// behind this function means the service has no engine-specific capability
 /// branch and cannot accidentally advertise a future engine.
 pub async fn capabilities(refresh: bool, tex_path: &[std::path::PathBuf]) -> Capabilities {
-    super::discovery::discover(refresh, tex_path).await
+    let zotero_client = super::zotero::Client::local();
+    let (mut capabilities, zotero) = tokio::join!(
+        super::discovery::discover(refresh, tex_path),
+        zotero_client.probe()
+    );
+    capabilities.zotero = match zotero {
+        Ok(()) => super::protocol::Tool {
+            available: true,
+            version: Some("api-v3".into()),
+            note: "Zotero desktop local API is available".into(),
+        },
+        Err(error) => super::protocol::Tool {
+            available: false,
+            version: None,
+            note: error.to_string(),
+        },
+    };
+    capabilities
 }
 
 /// Quarto policy support is version-gated by the adapter.  An unavailable or

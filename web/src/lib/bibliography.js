@@ -108,20 +108,27 @@ export function entryLabel(entry) {
   return [author, value.year, value.title, value.container].filter(Boolean).join(" — ");
 }
 export function entryDetail(entry) { const value = normalized(entry); return value.container || value.type || ""; }
-export function bibliographyCompletion({ entries, format }) {
+export function bibliographyCompletion({ entries, format, remote, onRemote }) {
   return (context) => {
     const found = citationContext(context.state.doc.toString(), context.pos, typeof format === "function" ? format() : format);
     if (!found) return null;
     const available = typeof entries === "function" ? entries() : entries;
     const exact = string(found.query).trim().toLocaleLowerCase();
     if (/[ \t]+$/.test(found.query) && (available || []).some((entry) => string(entry?.key).toLocaleLowerCase() === exact)) return null;
-    const ranked = rankEntries(available, found.query);
-    if (!ranked.length) return null;
-    return { from: found.from, to: found.to, filter: false,
-      options: ranked.map((entry) => ({ label: entry.key, displayLabel: entryLabel(entry), detail: entryDetail(entry), info: entryLabel(entry), type: "reference" })) };
+    const local = rankEntries(available, found.query);
+    const options = (remoteEntries = []) => {
+      const localKeys = new Set(local.map((entry) => entry.key.toLocaleLowerCase()));
+      const ranked = [...local, ...rankEntries(remoteEntries, found.query).filter((entry) => !localKeys.has(entry.key.toLocaleLowerCase())).map((entry) => ({ ...entry, zotero: true }))];
+      if (!ranked.length) return null;
+      return { from: found.from, to: found.to, filter: false,
+      options: ranked.map((entry) => ({ label: entry.key, displayLabel: entryLabel(entry), detail: entry.zotero ? "Zotero — import" : entryDetail(entry), info: entryLabel(entry), type: "reference",
+        ...(entry.zotero && typeof onRemote === "function" ? { apply: (view, _completion, from, to) => onRemote(entry, { view, from, to }) } : {}) })) };
+    };
+    if (typeof remote !== "function") return options();
+    return Promise.resolve(remote(found.query)).then(options, () => options());
   };
 }
-function selectedConfig(source, format) {
+export function selectedBibliographyFiles(source, format) {
   const names = [];
   if (format === "markdown" || format === "quarto") {
     const lines = string(source).split(/\r?\n/);
@@ -142,12 +149,81 @@ function selectedConfig(source, format) {
   return [...new Set(names)].sort();
 }
 export function bibliographyFiles({ texts = {} } = {}) { return Object.keys(texts).filter((path) => /\.bib$/i.test(path)).sort(); }
-export function bibliographyNeedsAnalysis(request = {}) { return bibliographyFiles(request).length > 0 || selectedConfig(request.source, request.format).length > 0; }
+export function bibliographyNeedsAnalysis(request = {}) { return bibliographyFiles(request).length > 0 || selectedBibliographyFiles(request.source, request.format).length > 0; }
 export function bibliographyCacheKey({ main = "", format = "", source = "", texts = {} } = {}) {
   const config = string(source).split(/\r?\n/).map((line, index) => [index + 1, line]).filter(([, line]) =>
     /^\s*bibliography\s*:/i.test(line) || /^\s*-\s*[^#].*\.bib\s*$/i.test(line) ||
     /#bibliography\s*\(|\\(?:addbibresource|bibliography)\b/.test(line) || /^\s*(?:---|\.\.\.)\s*$/.test(line) || /\/\*|\*\//.test(line)).map(([index, line]) => `${index}:${line}`).join("\n");
-  return JSON.stringify({ main: string(main), format: string(format), config, selected: selectedConfig(source, format), bib: bibliographyFiles({ texts }).map((path) => [path, string(texts[path])]) });
+  return JSON.stringify({ main: string(main), format: string(format), config, selected: selectedBibliographyFiles(source, format), bib: bibliographyFiles({ texts }).map((path) => [path, string(texts[path])]) });
+}
+
+function collisionSuffix(index) {
+  let value = "";
+  while (index > 0) { index--; value = String.fromCharCode(97 + index % 26) + value; index = Math.floor(index / 26); }
+  return value;
+}
+
+export function zoteroCitationKey(bibtex, item, base) {
+  const marker = new RegExp(`x-librepaper-zotero-item\\s*=\\s*[{"]${String(item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[}"]`, "i");
+  const found = marker.exec(string(bibtex));
+  if (found) {
+    const prefix = string(bibtex).slice(0, found.index);
+    const headers = [...prefix.matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)];
+    if (headers.length) return headers.at(-1)[1];
+  }
+  const used = new Set([...string(bibtex).matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)].map((match) => match[1].toLocaleLowerCase()));
+  if (!used.has(base.toLocaleLowerCase())) return base;
+  for (let index = 1; ; index++) {
+    const candidate = base + collisionSuffix(index);
+    if (!used.has(candidate.toLocaleLowerCase())) return candidate;
+  }
+}
+
+export function replaceBibtexKey(entry, key) {
+  return string(entry).replace(/^\s*(@[A-Za-z]+\s*\{\s*)[^,\s]+(\s*,)/, `$1${key}$2`).trim() + "\n";
+}
+
+export function bibliographyRegistration(source, path = "references.bib") {
+  source = string(source);
+  if (selectedBibliographyFiles(source, "markdown").length) return null;
+  const line = `bibliography: ${path}\n`;
+  if (/^---\s*\r?\n/.test(source)) {
+    const closing = /^---\s*$/m.exec(source.slice(source.indexOf("\n") + 1));
+    if (closing) {
+      const from = source.indexOf("\n") + 1 + closing.index;
+      return { from, to: from, insert: line };
+    }
+  }
+  return { from: 0, to: 0, insert: `---\n${line}---\n\n` };
+}
+
+function projectBibliographyPath(mainPath, reference) {
+  if (!reference || /^[a-z]+:/i.test(reference) || reference.startsWith("/")) return null;
+  const parts = String(mainPath || "").split("/").slice(0, -1);
+  for (const part of reference.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") { if (!parts.length) return null; parts.pop(); }
+    else parts.push(part);
+  }
+  return parts.join("/");
+}
+
+export function planZoteroImport({ source, mainPath, texts, item }) {
+  const configured = selectedBibliographyFiles(source, "markdown");
+  const configuredPaths = configured.map((path) => projectBibliographyPath(mainPath, path)).filter(Boolean);
+  const existing = bibliographyFiles({ texts });
+  const path = configuredPaths.find((name) => Object.hasOwn(texts, name)) || configuredPaths[0] || existing[0] || "references.bib";
+  const previous = string(texts[path]);
+  const key = zoteroCitationKey(previous, item.zotero_item, item.citation_key);
+  const already = new RegExp(`x-librepaper-zotero-item\\s*=\\s*[{"]${String(item.zotero_item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[}"]`, "i").test(previous);
+  const addition = already ? "" : (previous.trim() ? "\n" : "") + replaceBibtexKey(item.bibtex, key);
+  const bibtex = previous.replace(/\s*$/, "") + addition;
+  let registration = null;
+  if (!configured.length) {
+    const depth = String(mainPath || "").split("/").slice(0, -1).length;
+    registration = bibliographyRegistration(source, "../".repeat(depth) + path);
+  }
+  return { key, path, bibtex, addition, create: !Object.hasOwn(texts, path), registration, already };
 }
 export class BibliographyCache {
   constructor(limit = 4) { this.limit = limit; this.values = new Map(); }

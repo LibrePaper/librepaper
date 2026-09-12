@@ -9,7 +9,8 @@ const here = new URL(".", import.meta.url).pathname;
 const check = join(here, "check-renderer-pins.mjs");
 const update = join(here, "update-module-pin.mjs");
 const sha = "a".repeat(64);
-const lock = `markdown.wasm wasm-markdown v0.1.1 ${sha}\nbibliography.wasm wasm-bibliography v0.1.1 ${sha}\ncitations.wasm wasm-bibliography v0.1.1 ${sha}\ntypst.wasm wasm-typst v0.1.1 ${sha}\n`;
+const brotliSha = "b".repeat(64);
+const lock = `markdown.wasm wasm-markdown v0.1.1 ${sha} ${brotliSha}\nbibliography.wasm wasm-bibliography v0.1.1 ${sha} ${brotliSha}\ncitations.wasm wasm-bibliography v0.1.1 ${sha} ${brotliSha}\ntypst.wasm wasm-typst v0.1.1 ${sha} ${brotliSha}\n`;
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "librepaper-pins-"));
@@ -54,10 +55,12 @@ test("pin update validates checksums before changing either pin", async () => {
     assert.equal(await readFile(cargo, "utf8"), beforeCargo);
     assert.equal(await readFile(lockPath, "utf8"), beforeLock);
 
-    await writeFile(badSums, `${sha} markdown.wasm\n`);
+    const nextSha = "c".repeat(64);
+    const nextBrotliSha = "d".repeat(64);
+    await writeFile(badSums, `${nextSha} markdown.wasm\n${nextBrotliSha} markdown.wasm.br\n`);
     run(update, [...args, "--sums-file", badSums]);
     assert.match(await readFile(cargo, "utf8"), /wasm-markdown[^\n]*tag = "v0\.2\.0"/);
-    assert.match(await readFile(lockPath, "utf8"), /markdown\.wasm wasm-markdown v0\.2\.0/);
+    assert.match(await readFile(lockPath, "utf8"), new RegExp(`markdown\\.wasm wasm-markdown v0\\.2\\.0 ${nextSha} ${nextBrotliSha}`));
     run(check, ["--root", root]);
   } finally {
     await rm(root, { recursive: true, force: true });

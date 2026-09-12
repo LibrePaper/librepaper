@@ -311,10 +311,52 @@ pub(super) fn redirect(location: &str) -> Reply {
     response
 }
 
+/// Whether an HTTP content coding is acceptable, including a wildcard. An
+/// explicit value wins over `*`, as required for requests such as
+/// `br;q=0, *;q=1`.
+fn accepts_encoding(headers: &HeaderMap, wanted: &str) -> bool {
+    let Some(value) = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let mut explicit = None;
+    let mut wildcard = None;
+    for item in value.split(',') {
+        let mut parts = item.trim().split(';');
+        let coding = parts.next().unwrap_or_default().trim();
+        let mut quality = 1.0;
+        for parameter in parts {
+            if let Some(q) = parameter.trim().strip_prefix("q=") {
+                quality = q.parse::<f32>().unwrap_or(0.0);
+            }
+        }
+        if coding.eq_ignore_ascii_case(wanted) {
+            explicit = Some(quality);
+        } else if coding == "*" {
+            wildcard = Some(quality);
+        }
+    }
+    explicit.or(wildcard).is_some_and(|quality| quality > 0.0)
+}
+
 /// Serves one shell file, cached for a year if its bytes never change.
-pub(super) fn write_asset(asset: &ShellFile) -> Reply {
-    let mut response = Response::new(Body::from(asset.body.clone()));
+pub(super) fn write_asset(asset: &ShellFile, headers: &HeaderMap) -> Reply {
+    let encoded = asset.brotli.is_some() && accepts_encoding(headers, "br");
+    let body = if encoded {
+        asset.brotli.as_ref().expect("checked above").clone()
+    } else {
+        asset.body.clone()
+    };
+    let mut response = Response::new(Body::from(body));
     set(&mut response, "content-type", asset.kind);
+    if asset.brotli.is_some() {
+        set(&mut response, "vary", "Accept-Encoding");
+    }
+    if encoded {
+        set(&mut response, "content-encoding", "br");
+    }
     // Every shell page -- index, reader, documentation -- is a place a hostile
     // site could otherwise iframe to phish against, since the reader carries a
     // session cookie. A document keeps its own CSP, set where it is served,
@@ -337,6 +379,58 @@ pub(super) fn write_asset(asset: &ShellFile) -> Reply {
         set(&mut response, "cache-control", "public, max-age=300");
     }
     response
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::*;
+
+    fn module() -> ShellFile {
+        ShellFile {
+            kind: "application/wasm",
+            body: axum::body::Bytes::from_static(b"raw wasm"),
+            brotli: Some(axum::body::Bytes::from_static(b"brotli wasm")),
+            immutable: true,
+        }
+    }
+
+    async fn served(accept_encoding: Option<&str>) -> (HeaderMap, Vec<u8>) {
+        let mut headers = HeaderMap::new();
+        if let Some(value) = accept_encoding {
+            headers.insert(header::ACCEPT_ENCODING, value.parse().unwrap());
+        }
+        let response = write_asset(&module(), &headers);
+        let response_headers = response.headers().clone();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        (response_headers, body)
+    }
+
+    #[tokio::test]
+    async fn renderer_negotiates_its_precompressed_representation() {
+        let (headers, body) = served(Some("gzip, br")).await;
+        assert_eq!(body, b"brotli wasm");
+        assert_eq!(headers.get("content-encoding").unwrap(), "br");
+        assert_eq!(headers.get("content-type").unwrap(), "application/wasm");
+        assert_eq!(headers.get("vary").unwrap(), "Accept-Encoding");
+    }
+
+    #[tokio::test]
+    async fn renderer_keeps_identity_as_a_fallback() {
+        for encoding in [
+            None,
+            Some("identity"),
+            Some("br;q=0"),
+            Some("br;q=0, *;q=1"),
+        ] {
+            let (headers, body) = served(encoding).await;
+            assert_eq!(body, b"raw wasm", "encoding was {encoding:?}");
+            assert!(headers.get("content-encoding").is_none());
+            assert_eq!(headers.get("vary").unwrap(), "Accept-Encoding");
+        }
+    }
 }
 
 /// Keeps an unlisted link unlisted. The slug is the only thing standing

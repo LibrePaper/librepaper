@@ -118,7 +118,8 @@
 
   import { typstLanguage } from "../lib/typst-mode.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
-  import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext } from "../lib/bibliography.js";
+  import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
+  import { hasPairing, searchZotero, zoteroItem } from "../lib/companion/client.js";
   import { untrack } from "svelte";
 
   let { session, format = "", file = "", keys = "default", editable = true, tracking = null, selectedRevision = null, analyze = analyzeBibliography, onchange, oncaret, onfilechange, onbibliography, onrevision, onsave, onquit } = $props();
@@ -163,6 +164,8 @@
   let bibliographyGeneration = 0;
   let bibliographyTimer = null;
   let lastBibliographyKey = "";
+  let zoteroSearchGeneration = 0;
+  let lastZoteroError = "";
   function formatOf(path) {
     const lower = String(path || "").toLowerCase();
     if (lower.endsWith(".typ")) return "typst";
@@ -208,6 +211,74 @@
     bibliographyGeneration += 1;
     clearTimeout(bibliographyTimer);
     bibliographyTimer = setTimeout(refreshBibliography, 120);
+  }
+
+  async function remoteBibliography(query) {
+    if (!hasPairing() || !["markdown", "quarto"].includes(formatOf(session?.paths?.get(showing)))) return [];
+    const generation = ++zoteroSearchGeneration;
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    if (generation !== zoteroSearchGeneration) return [];
+    let response;
+    try {
+      response = await searchZotero(query);
+      lastZoteroError = "";
+    } catch (error) {
+      const message = error?.message || String(error);
+      if (message !== lastZoteroError) {
+        lastZoteroError = message;
+        onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero unavailable: ${message}`, file: session?.paths?.get(showing) || "", line: 0 }] }, bibliographyRequest());
+      }
+      return [];
+    }
+    if (generation !== zoteroSearchGeneration) return [];
+    return (response?.entries || []).map((entry) => ({
+      ...entry, key: entry.citation_key, year: entry.year || "", type: entry.item_type,
+    }));
+  }
+
+  async function importZotero(entry, target) {
+    if (!editable || !session || target.view !== view || !showing) return false;
+    const active = session.textOf(showing);
+    const from = Y.createRelativePositionFromTypeIndex(active, target.from);
+    const to = Y.createRelativePositionFromTypeIndex(active, target.to);
+    const activeSession = session, activeFile = showing;
+    try {
+      const fetched = await zoteroItem(entry.zotero_item);
+      if (session !== activeSession || showing !== activeFile || view !== target.view || !editable) return false;
+      const start = Y.createAbsolutePositionFromRelativePosition(from, session.doc);
+      const end = Y.createAbsolutePositionFromRelativePosition(to, session.doc);
+      if (!start || !end || start.type !== active || end.type !== active) return false;
+      const tree = session.tree();
+      const mainPath = tree.main;
+      const mainId = session.idOf(mainPath);
+      const main = session.textOf(mainId);
+      const plan = planZoteroImport({
+        source: main?.toString() || "", mainPath, texts: tree.texts,
+        item: { ...fetched, zotero_item: entry.zotero_item },
+      });
+      const bibId = session.idOf(plan.path);
+      const bib = bibId ? session.textOf(bibId) : null;
+      const changes = [{ from: start.index, to: end.index, insert: plan.key }];
+      if (plan.registration && main === active) changes.push(plan.registration);
+      changes.sort((a, b) => a.from - b.from || a.to - b.to);
+      const setupShift = plan.registration && main === active && plan.registration.from <= start.index
+        ? plan.registration.insert.length - (plan.registration.to - plan.registration.from) : 0;
+      session.doc.transact(() => {
+        if (bib) {
+          if (plan.addition) bib.insert(bib.length, plan.addition);
+        } else session.addText(plan.path, plan.bibtex);
+        if (plan.registration && main && main !== active) {
+          if (plan.registration.to > plan.registration.from) main.delete(plan.registration.from, plan.registration.to - plan.registration.from);
+          main.insert(plan.registration.from, plan.registration.insert);
+        }
+        target.view.dispatch({ changes, selection: { anchor: start.index + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
+      }, target.view.state.facet(ySyncFacet));
+      scheduleBibliography();
+      return true;
+    } catch (error) {
+      onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero import failed: ${error?.message || error}`, file: session?.paths?.get(showing) || "", line: 0 }] }, bibliographyRequest());
+      return false;
+    }
   }
 
   const sourceHighlightStyle = HighlightStyle.define(
@@ -635,7 +706,7 @@
         languageOf(path, format),
         autocompletion({
           activateOnTyping: true,
-          override: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(session?.paths?.get(showing)) })],
+          override: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(session?.paths?.get(showing)), remote: remoteBibliography, onRemote: importZotero })],
         }),
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws.

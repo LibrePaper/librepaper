@@ -216,6 +216,10 @@ fn the_renderers_are_served_as_wasm() {
     assert_eq!(module.kind, "application/wasm");
     assert!(module.immutable, "the module is not marked immutable");
     assert!(
+        module.brotli.is_some(),
+        "the module has no Brotli representation"
+    );
+    assert!(
         module.body.starts_with(b"\0asm"),
         "the module is not WebAssembly"
     );

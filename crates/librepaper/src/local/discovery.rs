@@ -632,6 +632,7 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
         distribution: cache.distribution.clone(),
         quarto: Default::default(),
         calepin: Default::default(),
+        zotero: Default::default(),
         builders,
     }
 }

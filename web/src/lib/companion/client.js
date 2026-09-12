@@ -670,6 +670,25 @@ export async function capabilities({ rescan = false } = {}) {
   return data;
 }
 
+/** Search the running Zotero desktop library through the paired companion.
+ * Results remain transient: this client does not place queries or metadata in
+ * browser storage. */
+export async function searchZotero(query) {
+  const pairing = requirePairing();
+  const path = `zotero/search?${new URLSearchParams({ q: String(query || "") })}`;
+  const response = await send("GET", path, { token: pairing.token });
+  return response.json();
+}
+
+/** Fetch one Zotero item as deterministic BibTeX. */
+export async function zoteroItem(key) {
+  const pairing = requirePairing();
+  const value = String(key || "");
+  if (!/^[A-Za-z0-9]{1,32}$/.test(value)) throw named("InvalidRequest", "Invalid Zotero item key");
+  const response = await send("GET", `zotero/items/${value}`, { token: pairing.token });
+  return response.json();
+}
+
 /** Ask the companion to open its native directory chooser and bind the
  * selected project folder. The absolute path never crosses the wire. */
 export async function chooseFolderBinding({ entrypoint = "" } = {}) {

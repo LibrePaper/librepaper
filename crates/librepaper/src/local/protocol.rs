@@ -176,6 +176,10 @@ pub struct Capabilities {
     /// Calepin exists on this surface only as a managed-preview adapter.
     #[serde(default)]
     pub calepin: Tool,
+    /// Zotero desktop's read-only local API. No Zotero account or API key is
+    /// involved; `note` distinguishes disabled, absent, and incompatible.
+    #[serde(default)]
+    pub zotero: Tool,
     /// Adapter-oriented capability records introduced by protocol v2. The
     /// legacy `tools` fields remain populated for v1 clients.
     #[serde(default)]
