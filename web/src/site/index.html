@@ -89,34 +89,36 @@
           </div>
         </article>
 
-        <article class="grid items-center gap-8 py-10 lg:grid-cols-2">
+        <article class="bg-surface-100-900 my-8 grid items-start gap-6 rounded-container p-8 lg:grid-cols-2">
           <div class="flex max-w-xl flex-col gap-3">
             <h2 class="text-3xl font-semibold sm:text-4xl">Work with agents</h2>
             <p class="text-surface-600-400 text-lg">Bring your own agent. No additional subscription.</p>
-            <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+          </div>
+          <ul class="text-surface-600-400 list-disc space-y-2 pl-5 lg:pt-2">
               <li>Three agent skills included.</li>
               <li>Permissions limited by the link.</li>
               <li>Credentials and inference stay local.</li>
-            </ul>
-          </div>
+          </ul>
           <!-- shot: an agent's anchored suggestion awaiting review -->
         </article>
       </section>
 
       <!-- -------------------------------------------------------- self-host -->
-      <section class="bg-primary-900 text-primary-50 px-4 py-12">
-        <div class="mx-auto flex max-w-3xl flex-col items-start gap-4">
-          <h2 class="text-3xl font-semibold sm:text-4xl">Your papers stay yours.</h2>
-          <p class="max-w-2xl text-lg text-primary-100">
-            Self-host LibrePaper with one static binary. Run it on a laptop or a small server, and
-            choose your own access and retention policies.
-          </p>
-          <ul class="list-disc space-y-2 pl-5 text-primary-100">
-            <li>Every feature is free.</li>
-            <li>Open server, reader and renderers.</li>
-            <li>Markdown and W3C JSON-LD exports.</li>
+      <section class="bg-primary-50-950 border-surface-200-800 border-y px-4 py-10">
+        <div class="mx-auto grid max-w-6xl gap-6 lg:grid-cols-2">
+          <div class="flex flex-col items-start gap-3">
+            <h2 class="text-3xl font-semibold sm:text-4xl">Your papers stay yours.</h2>
+            <p class="text-surface-600-400 max-w-xl text-lg">
+              Self-host LibrePaper with one static binary. Run it on a laptop or a small server, and
+              choose your own access and retention policies.
+            </p>
+            <pre class="bg-surface-50-950 rounded-container border-surface-200-800 overflow-x-auto border px-4 py-3 text-sm"><code>librepaper admin serve</code></pre>
+          </div>
+          <ul class="text-surface-600-400 list-disc space-y-2 pl-5 lg:pt-2">
+              <li>Every feature is free.</li>
+              <li>Open server, reader and renderers.</li>
+              <li>Markdown and W3C JSON-LD exports.</li>
           </ul>
-          <pre class="rounded-container bg-primary-950 overflow-x-auto px-4 py-3 text-sm"><code>librepaper admin serve</code></pre>
         </div>
       </section>
     </main>
