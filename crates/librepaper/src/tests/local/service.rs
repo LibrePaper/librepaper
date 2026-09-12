@@ -1125,36 +1125,29 @@ async fn quarto_managed_preview_starts_serves_and_stops() {
     let preview: Value = response.json().await.unwrap();
     assert_eq!(status, 201, "{preview}");
     let id = preview["id"].as_str().unwrap();
-    let url = preview["url"].as_str().unwrap();
+    assert_eq!(preview["url"], "");
     let endpoint = format!("{}/previews/{id}", test.base);
+    let page_endpoint = format!("{endpoint}/page");
     let mut ready = false;
     for _ in 0..100 {
-        let state: Value = test
+        let response = test
             .client
-            .get(&endpoint)
+            .get(&page_endpoint)
             .header("Origin", ORIGIN)
             .bearer_auth(&token)
             .send()
             .await
-            .unwrap()
-            .json()
-            .await
             .unwrap();
-        if state["state"] == "running" {
+        if response.status() == 200 {
+            assert_eq!(response.headers().get("x-librepaper-kind").unwrap(), "html");
+            assert!(response.text().await.unwrap().contains("Author-only text."));
             ready = true;
             break;
         }
+        assert_eq!(response.status(), 404);
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(ready, "preview did not become ready");
-    assert!(test
-        .client
-        .get(url)
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .is_success());
+    assert!(ready, "preview did not publish a page");
     let duplicate = test
         .client
         .post(format!("{}/previews", test.base))
@@ -1176,17 +1169,13 @@ async fn quarto_managed_preview_starts_serves_and_stops() {
     assert_eq!(response.status(), 200);
     let missing = test
         .client
-        .get(&endpoint)
+        .get(&page_endpoint)
         .header("Origin", ORIGIN)
         .bearer_auth(&token)
         .send()
         .await
         .unwrap();
     assert_eq!(missing.status(), 404);
-    assert!(
-        test.client.get(url).send().await.is_err(),
-        "stopped preview URL must no longer serve"
-    );
 }
 
 #[test]

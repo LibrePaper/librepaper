@@ -1117,6 +1117,53 @@ pub async fn run_job_with_bindings(
     {
         return failed(&request, &job_id, "binding revoked before execution");
     }
+    let confinement = super::confine::detect();
+    if !confinement.available {
+        return failed(
+            &request,
+            &job_id,
+            &format!(
+                "Quarto execution requires filesystem and network confinement: {}",
+                confinement.reason
+            ),
+        );
+    }
+    let confinement_plan = super::confine::Plan {
+        workspace: workspace.root.clone(),
+        writable: snapshot_dir
+            .as_ref()
+            .map(|_| vec![project.clone()])
+            .unwrap_or_default(),
+        read_only: if snapshot_dir.is_some() {
+            quarto
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .into_iter()
+                .collect()
+        } else {
+            std::iter::once(project.clone())
+                .chain(
+                    quarto
+                        .parent()
+                        .and_then(Path::parent)
+                        .map(Path::to_path_buf),
+                )
+                .collect()
+        },
+        network: false,
+    };
+    let applied_confinement = match super::confine::wrap(&mut command, &confinement_plan) {
+        Ok(applied) if applied != super::confine::Applied::None => applied,
+        Ok(_) => {
+            return failed(
+                &request,
+                &job_id,
+                "Quarto execution requires supported confinement",
+            )
+        }
+        Err(error) => return failed(&request, &job_id, &format!("confine Quarto: {error}")),
+    };
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -1451,7 +1498,7 @@ pub async fn run_job_with_bindings(
                     distribution: Some("quarto".into()),
                     ..Default::default()
                 },
-                confinement: "none".into(),
+                confinement: applied_confinement.as_str().into(),
                 preset: request.preset.clone(),
                 snapshot: request.snapshot.clone(),
             },

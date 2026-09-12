@@ -591,7 +591,8 @@ pub struct QuartoJobOptions {
     pub shared_tree_sha256: Option<String>,
     /// Where the adapter may read inputs.
     pub execution_mode: QuartoExecutionMode,
-    /// Render one bound document or the complete Quarto project.
+    /// Render one bound document. Project scope is retained in the wire enum
+    /// only so older clients receive an explicit validation error.
     pub render_scope: QuartoRenderScope,
     /// Local files required by the document in addition to the shared
     /// manifest.  Snapshot mode copies these only after checking their
@@ -670,15 +671,11 @@ impl QuartoJobOptions {
         if !matches!(self.format.as_str(), "html" | "pdf" | "docx" | "revealjs") {
             return Err(format!("unsupported quarto output format: {}", self.format));
         }
-        if self.render_scope == QuartoRenderScope::Project
-            && !matches!(self.format.as_str(), "html" | "revealjs")
-        {
-            return Err("Quarto project renders support only html or revealjs output".into());
-        }
-        if self.render_scope == QuartoRenderScope::Project
-            && self.policy == QuartoRenderPolicy::Frozen
-        {
-            return Err("frozen Quarto rendering does not support project scope".into());
+        if self.render_scope == QuartoRenderScope::Project {
+            return Err(
+                "Quarto website and book project renders are not supported; render one document instead"
+                    .into(),
+            );
         }
         if let Some(profile) = &self.profile {
             if profile.is_empty()
@@ -1030,6 +1027,13 @@ mod tests {
         assert_eq!(encoded["shared_inventory_complete"], false);
         let decoded: QuartoJobOptions = serde_json::from_value(encoded).expect("decode");
         assert_eq!(decoded.execution_mode, QuartoExecutionMode::WorkingTree);
+
+        let mut project_scope = decoded.clone();
+        project_scope.render_scope = QuartoRenderScope::Project;
+        assert!(project_scope
+            .validate()
+            .unwrap_err()
+            .contains("website and book project renders are not supported"));
 
         let missing = serde_json::json!({
             "binding_id": "binding", "main": "index.qmd", "format": "html"

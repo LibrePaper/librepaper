@@ -25,6 +25,7 @@ use super::protocol::Confinement;
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub workspace: PathBuf,
+    pub writable: Vec<PathBuf>,
     pub read_only: Vec<PathBuf>,
     pub network: bool,
 }
@@ -169,6 +170,14 @@ fn wrap_bwrap(command: &mut Command, plan: &Plan) -> Result<Applied, String> {
     bwrap_args.push(plan.workspace.as_os_str().to_os_string());
     bwrap_args.push(plan.workspace.as_os_str().to_os_string());
 
+    for path in &plan.writable {
+        if path.exists() {
+            bwrap_args.push("--bind".into());
+            bwrap_args.push(path.as_os_str().to_os_string());
+            bwrap_args.push(path.as_os_str().to_os_string());
+        }
+    }
+
     for path in &plan.read_only {
         ro_bind(path, &mut bwrap_args);
     }
@@ -177,6 +186,7 @@ fn wrap_bwrap(command: &mut Command, plan: &Plan) -> Result<Applied, String> {
     // already listed in `plan.read_only`.
     ro_bind(Path::new("/usr/local/texlive"), &mut bwrap_args);
     ro_bind(Path::new("/nix/store"), &mut bwrap_args);
+    ro_bind(Path::new("/opt"), &mut bwrap_args);
     if let Some(home) = std::env::var_os("HOME") {
         ro_bind(&PathBuf::from(home).join(".TinyTeX"), &mut bwrap_args);
     }
@@ -221,6 +231,7 @@ fn wrap_sandbox_exec(command: &mut Command, plan: &Plan) -> Result<Applied, Stri
     let mut allow_read: Vec<String> = plan
         .read_only
         .iter()
+        .chain(plan.writable.iter())
         .chain(std::iter::once(&plan.workspace))
         .map(|p| format!("(subpath {:?})", p.to_string_lossy()))
         .collect();
@@ -235,12 +246,18 @@ fn wrap_sandbox_exec(command: &mut Command, plan: &Plan) -> Result<Applied, Stri
         "(deny network*)\n"
     };
 
-    let profile = format!(
+    let mut profile = format!(
         "(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow file-read* {})\n(allow file-write* (subpath {:?}))\n{}",
         allow_read.join(" "),
         plan.workspace.to_string_lossy(),
         network_rule,
     );
+    for path in &plan.writable {
+        profile.push_str(&format!(
+            "(allow file-write* (subpath {:?}))\n",
+            path.to_string_lossy()
+        ));
+    }
 
     let mut sandbox_args: Vec<OsString> = vec!["-p".into(), OsString::from(profile), program];
     sandbox_args.extend(args);
@@ -326,6 +343,7 @@ mod tests {
         let mut command = Command::new("true");
         let plan = Plan {
             workspace: PathBuf::from("/tmp"),
+            writable: vec![],
             read_only: vec![],
             network: false,
         };

@@ -95,7 +95,7 @@ setup(async (url, init = {}) => {
 const first = await runQuarto({
   job: { id: "stable-job", binding: "binding-1" },
   tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" }, assets: {} },
-  options: { inputRevision: "rev-1", inputDigest: digest, executionMode:"isolated-snapshot", dataInputs:["data/local.csv"], renderScope:"project" },
+  options: { inputRevision: "rev-1", inputDigest: digest, executionMode:"isolated-snapshot", dataInputs:["data/local.csv"] },
 });
 assert.equal(first.ok, true);
 assert.equal(first.kind, "html");
@@ -108,7 +108,15 @@ assert.equal(retriedJob.quarto.shared_tree_sha256, digest);
 assert.equal(retriedJob.quarto.execution_mode, "isolated-snapshot");
 assert.equal(retriedJob.quarto.shared_inventory_complete, true);
 assert.deepEqual(retriedJob.quarto.data_inputs, ["data/local.csv"]);
-assert.equal(retriedJob.quarto.render_scope, "project");
+assert.equal(retriedJob.quarto.render_scope, "document");
+await assert.rejects(
+  runQuarto({
+    job: { id: "project-job", binding: "binding-1" },
+    tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } },
+    options: { renderScope: "project" },
+  }),
+  /website and book project renders are not supported/,
+);
 
 const missing = JSON.parse(new TextDecoder().decode(manifest));
 missing.assets = [{ path: "figures/missing.png", sha256: digest, mime: "image/png", size: 1 }];
@@ -143,10 +151,15 @@ const previewRequest = JSON.parse(previewCalls[0].init.body);
 assert.equal(previewRequest.manifest[0].sha256, await sha(new TextEncoder().encode("# Preview")));
 assert.equal(previewCalls[0].init.headers.Authorization, "Bearer token");
 assert.equal(previewRequest.token, undefined);
-assert.equal((await quartoPreviewStatus(preview.id)).state, "running");
 await stopQuartoPreview(preview.id);
-assert.equal(previewCalls[2].init.method, "DELETE");
-assert.ok(previewCalls[2].url.endsWith("/previews/preview-1"));
+const pdfPreview = await startQuartoPreview({job:{binding:"binding-1"}, tree:{main:"paper.qmd",texts:{"paper.qmd":"---\nformat: pdf\n---\n# Preview"}},options:{format:"pdf"}});
+assert.equal(pdfPreview.id, "preview-1");
+const pdfPreviewRequest = JSON.parse(previewCalls[2].init.body);
+assert.equal(pdfPreviewRequest.output || pdfPreviewRequest.quarto?.format, "pdf");
+assert.equal((await quartoPreviewStatus(preview.id)).state, "running");
+await stopQuartoPreview(pdfPreview.id);
+assert.equal(previewCalls[4].init.method, "DELETE");
+assert.ok(previewCalls[4].url.endsWith("/previews/preview-1"));
 console.log("quarto-local: snapshot inventory and managed preview lifecycle requests passed");
 
 let syncRequest = null;

@@ -328,6 +328,7 @@ impl Ctx<'_> {
         if confinement.available {
             let plan = Plan {
                 workspace: self.workspace.root.clone(),
+                writable: vec![],
                 // Never `/` as a fallback: a read-only bind of the root,
                 // applied after the workspace bind, would sit on top of it
                 // and turn every output write into a refusal. Without a

@@ -89,12 +89,13 @@ const dialect = [
 ].join("\n");
 const dialectDraft = composeDraft(dialect).markdown;
 assert.match(dialectDraft, /quarto-title-block/);
-// Fenced divs are never interpreted: the `:::` lines carry through verbatim,
-// with no callout class or wrapper markup.
+// Fenced divs are never interpreted: the complete construct is wrapped in a
+// code fence so its body cannot be partially rendered as Markdown or HTML.
+assert.match(dialectDraft, /^```\n::: \{\.callout-note #intro\}/m);
 assert.match(dialectDraft, /^::: \{\.callout-note #intro\}$/m);
 assert.match(dialectDraft, /^:::$/m);
 assert.doesNotMatch(dialectDraft, /quarto-callout/);
-assert.match(dialectDraft, /href="#fig-trend"/);
+assert.match(dialectDraft, /See @fig-trend\./, "cross-references inside literal constructs remain source text");
 // The browser draft preserves executable cells as source text. Figure
 // anchors are supplied by Quarto's authoritative companion render.
 assert.match(dialectDraft, /plot\(1\)/);
@@ -111,8 +112,8 @@ const nestedDialect = [
 const nestedParsed = parseQuarto(nestedDialect, { path: "paper.qmd" });
 assert.equal(nestedParsed.divs.find((div) => div.id === "inner").depth, 1);
 const nestedDraft = composeDraft(nestedDialect, { path: "paper.qmd" }).markdown;
-// All fenced div lines carry through verbatim, including nested ones; no
-// callout/columns/tabset class or wrapper markup is generated.
+// All fenced div source carries through inside literal blocks, including
+// nested constructs; no callout/columns/tabset wrapper markup is generated.
 for (const fenceLine of [
   "::: {.callout-note #note}", "::: {.callout-warning #inner}",
   "::: {.columns}", "::: {.column}", "::: {.panel-tabset}",
@@ -124,7 +125,13 @@ assert.doesNotMatch(nestedDraft, /quarto-callout|quarto-columns|quarto-column\b|
 assert.match(nestedDraft, /href="#fig-one">Figure 1/);
 assert.match(nestedDraft, /href="#tbl-one">Table 1/);
 const compactCallout = composeDraft(":::{.callout-note}\nCompact note.\n:::\n").markdown;
-assert.equal(compactCallout, ":::{.callout-note}\nCompact note.\n:::\n", "a compact div fence carries through verbatim with no interpretation");
+assert.equal(compactCallout, "```\n:::{.callout-note}\nCompact note.\n:::\n```\n", "a compact div is one literal source block");
+const htmlInCallout = composeDraft("::: {.callout-note}\n<div>\n  first\n  second\n</div>\n:::\n").markdown;
+assert.match(htmlInCallout, /^```\n::: \{\.callout-note\}\n<div>\n  first\n  second\n<\/div>\n:::\n```/);
+const shortcodeDraft = composeDraft("Before {{< video clip.mp4 >}} after\n").markdown;
+assert.equal(shortcodeDraft, "```\nBefore {{< video clip.mp4 >}} after\n```\n");
+const unfinishedDivDraft = composeDraft("::: {.callout-note}\nStill typing\n  indented").markdown;
+assert.equal(unfinishedDivDraft, "```\n::: {.callout-note}\nStill typing\n  indented\n```");
 const nestedAuthors = parseQuarto([
   "---", "authors:", "  - name: Ada Lovelace", "    affiliation: Analytical Engine", "  - name: Grace Hopper", "    affiliation: Navy", "---", "", "Text",
 ].join("\n"), { path: "paper.qmd" });

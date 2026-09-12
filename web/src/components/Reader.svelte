@@ -1208,7 +1208,7 @@
   // pane) is not required -- an editor who has not opened it yet still gets
   // the live pane the moment they are able to edit.
   const quartoLiveActive = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !buildPreferences.preset && (!buildPreferences.output || buildPreferences.output === "html") && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && !viewing &&
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !buildPreferences.preset && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && !viewing &&
       localAppStatus.state === "connected",
   );
 
@@ -1230,8 +1230,8 @@
     entrypointOf: (tree) => tree.main,
     optionsOf: (tree) => {
       const context = quartoRenderContext(tree);
-      // The managed Quarto preview endpoint serves HTML. Export settings
-      // such as PDF or DOCX must not leave it polling for a nonexistent page.
+      // Managed Quarto preview serves a single HTML or PDF artifact. DOCX is
+      // export-only and therefore never activates this controller.
       return { format: buildPreferences.output || (context.format === "revealjs" ? "revealjs" : "html"), profile: buildPreferences.profile || context.profiles[0] || null, parameters: buildPreferences.parameters || context.parameters };
     },
     // syncWorkspace writes the browser's tree to this binding. A remembered

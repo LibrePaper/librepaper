@@ -34,6 +34,26 @@ jobs:
           texlive-bibtex-extra texlive-xetex biber
       - run: make test
 
+  quarto-toolchains:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: quarto-dev/quarto-actions/setup@v2
+      - uses: r-lib/actions/setup-r@v2
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::knitr
+            any::rmarkdown
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get install -y --no-install-recommends bubblewrap texlive-latex-base texlive-latex-recommended
+      - run: python -m pip install jupyter ipython nbformat
+      - run: make test-external
+
   # The fuzz targets, briefly: long enough to catch a regression on an
   # invariant, not long enough to explore. `make fuzz` locally runs them for
   # as long as FUZZ_SECONDS says.

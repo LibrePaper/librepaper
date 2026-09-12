@@ -60,6 +60,7 @@ pub(crate) async fn run_plan_logged(
             &mut command,
             &confine::Plan {
                 workspace: workspace.into(),
+                writable: vec![],
                 read_only: vec![plan.executable.clone()],
                 network: false,
             },

@@ -888,6 +888,9 @@ async function buildCalepinForm({ job = {}, tree, options = {} }) {
 }
 
 async function buildQuartoForm({ job, tree, options = {} }) {
+  if (options.renderScope === "project") {
+    throw new Error("Quarto website and book project renders are not supported; render one document instead");
+  }
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
   const request = quartoRequest({
@@ -906,7 +909,6 @@ async function buildQuartoForm({ job, tree, options = {} }) {
   if (!manifest.some((file) => file.path === request.quarto.main)) {
     throw new Error(`Quarto project is missing its entrypoint: ${request.quarto.main}`);
   }
-  if (options.renderScope === "project") request.quarto.render_scope = "project";
   if (options.executionMode === "isolated-snapshot") {
     request.quarto.execution_mode = "isolated-snapshot";
     request.quarto.shared_inventory_complete = true;

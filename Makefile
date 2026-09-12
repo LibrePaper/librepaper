@@ -94,8 +94,9 @@ test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 # Explicit suites kept out of the default inventory because they require
 # host tools or intentionally exercise release-sized resource ceilings.
 test-external:  ## Run Quarto/R/Python and real local-service integration tests
-	@cargo test -p librepaper quarto -- --ignored --nocapture
-	@cargo test -p librepaper quarto_managed_preview_starts_serves_and_stops -- --ignored --nocapture
+	@cargo test -p librepaper quarto -- --ignored --nocapture --test-threads=1 \
+		--skip quarto_project_scope_collects_pages_and_nested_web_resources \
+		--skip quarto_book_scope_keeps_chapter_navigation
 
 test-release-workloads:  ## Run supported-limit and diagnostic workloads
 	@cargo test -p librepaper the_supported_maximum_source_survives_a_restart -- --ignored --nocapture

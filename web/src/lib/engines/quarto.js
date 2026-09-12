@@ -318,9 +318,9 @@ function referencesFor(parsed) {
 }
 
 // The draft is a rough view only; Quarto's own preview is authoritative.
-// Fenced divs are not semantically interpreted here — the `:::` lines are
-// carried through verbatim as ordinary text, and the content between them
-// is left to normal Markdown handling (see composeDraft).
+// Quarto constructs that this renderer does not understand are shown as
+// literal source blocks. This keeps them readable without accidentally
+// applying ordinary Markdown semantics to only part of the construct.
 
 function metadataMarkup(parsed) {
   const meta = parsed.metadata || {};
@@ -399,6 +399,9 @@ export function composeDraft(source, { path = "main.qmd", assets = {}, expandInc
   };
   let opaqueFence = null;
   const byStart = new Map(parsed.cells.map((cell) => [cell.startLine, cell]));
+  const divByStart = new Map(parsed.divs
+    .filter((div) => div.depth === 0)
+    .map((div) => [div.startLine, div]));
   const labels = new Set([
     ...parsed.cells.map((cell) => cell.label),
     ...parsed.divs.map((div) => div.id),
@@ -467,6 +470,18 @@ export function composeDraft(source, { path = "main.qmd", assets = {}, expandInc
       continue;
     }
     const cell = byStart.get(i);
+    const literalDiv = divByStart.get(i);
+    if (!cell && literalDiv) {
+      const endLine = literalDiv.endLine ?? lines.length - 1;
+      const text = lines.slice(i, endLine + 1).join("\n");
+      const { char, length } = verbatimFence(text);
+      const outerFence = char.repeat(length);
+      push(outerFence);
+      push(text, i);
+      push(outerFence);
+      i = endLine;
+      continue;
+    }
     if (!cell && opaqueFence) {
       push(lines[i], i);
       if (new RegExp(`^ {0,3}${opaqueFence.char}{${opaqueFence.length},}\\s*$`).test(lines[i])) opaqueFence = null;
@@ -478,9 +493,18 @@ export function composeDraft(source, { path = "main.qmd", assets = {}, expandInc
       if (opaque) opaqueFence = { char: opaque[1][0], length: opaque[1].length };
       if (!opaque) {
         const div = DIV_FENCE.exec(line);
-        // Fenced div lines carry through verbatim: the draft never guesses
-        // at callout/columns/tabset semantics. Only non-div prose lines are
-        // rewritten (includes expanded, inline results and crossrefs shown).
+        const shortcodes = [...line.matchAll(/\{\{<\s*([A-Za-z][\w-]*)\b[^>]*>\}\}/g)];
+        const unsupportedShortcode = shortcodes.some((match) => match[1].toLowerCase() !== "include");
+        // An unsupported shortcode is kept together with its authored line
+        // so Markdown cannot turn fragments around it into rendered HTML.
+        if (!div && unsupportedShortcode) {
+          const { char, length } = verbatimFence(line);
+          const outerFence = char.repeat(length);
+          push(outerFence);
+          push(line, i);
+          push(outerFence);
+          continue;
+        }
         if (!div) {
           line = line.replace(INCLUDE, (_, name) => expandedInclude(name, 0, new Set(), path, i + 1));
           line = proseLine(line, references, {
