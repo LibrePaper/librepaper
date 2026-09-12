@@ -157,7 +157,9 @@
         {#if comment.output_anchor}
           <span class="badge preset-tonal-surface">Current output anchor</span>
         {/if}
-        {#if comment.orphaned}
+        {#if comment.earlierPublication}
+          <span class="badge preset-tonal-warning">Earlier published version</span>
+        {:else if comment.orphaned}
           <!-- "Needs re-anchoring" said what the machine could not do. This
                says what happened to the words, which is what the person who
                wrote the comment came back to find out. -->

@@ -110,18 +110,18 @@ async fn history_reports_live_save_and_checkpoint_status_separately() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
+    let cookie = session_as(TEST_PUBLISHER);
     let room = server.instance.rooms.get(&slug).await;
 
     room.set_source("# New live text\n", "markdown")
         .await
         .expect("the live edit");
-    let pending = history_payload_keyed("", &key, &server.url, &slug).await;
+    let pending = history_payload_keyed(&cookie, "", &server.url, &slug).await;
     assert_eq!(pending["durability"]["live_save"], "pending");
     assert_eq!(pending["durability"]["history_checkpoint"], "pending");
 
     room.persist().await.expect("the live session save");
-    let saved = history_payload_keyed("", &key, &server.url, &slug).await;
+    let saved = history_payload_keyed(&cookie, "", &server.url, &slug).await;
     assert_eq!(saved["durability"]["live_save"], "saved");
     assert_eq!(saved["durability"]["history_checkpoint"], "pending");
     assert_eq!(
@@ -141,7 +141,7 @@ async fn a_checkpoint_comes_back_as_the_document_it_was() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
+    let cookie = session_as(TEST_PUBLISHER);
     let room = server.instance.rooms.get(&slug).await;
     let published = room.source().await;
 
@@ -155,12 +155,8 @@ async fn a_checkpoint_comes_back_as_the_document_it_was() {
         .expect("a checkpoint")
         .expect("a sha");
 
-    // A reader holds the link `publish` printed, not merely the slug.
-    let first = text(
-        &history_of_keyed("", &key, &server.url, &slug).await[0],
-        "sha",
-    );
-    let (status, answer) = get_checkpoint_keyed("", &key, &server.url, &slug, &first).await;
+    let first = text(&history_of(&cookie, &server.url, &slug).await[0], "sha");
+    let (status, answer) = get_checkpoint(&cookie, &server.url, &slug, &first).await;
     assert_eq!(status, 200, "{answer}");
     let main = text(&answer, "main");
     assert!(!main.is_empty(), "no main file on {answer}");
@@ -170,7 +166,7 @@ async fn a_checkpoint_comes_back_as_the_document_it_was() {
         "the first checkpoint did not come back as what was published"
     );
 
-    let (status, answer) = get_checkpoint_keyed("", &key, &server.url, &slug, &sha).await;
+    let (status, answer) = get_checkpoint(&cookie, &server.url, &slug, &sha).await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(
         answer["texts"][&main].as_str().unwrap_or_default(),
@@ -190,7 +186,7 @@ async fn a_checkpoint_carries_every_file_the_document_had() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
+    let cookie = session_as(TEST_PUBLISHER);
     let room = server.instance.rooms.get(&slug).await;
 
     room.add_text("chapters/two.md", "# Two\n\nThe second chapter.\n")
@@ -202,7 +198,7 @@ async fn a_checkpoint_carries_every_file_the_document_had() {
         .expect("a checkpoint")
         .expect("a sha");
 
-    let (status, answer) = get_checkpoint_keyed("", &key, &server.url, &slug, &sha).await;
+    let (status, answer) = get_checkpoint(&cookie, &server.url, &slug, &sha).await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(
         answer["texts"]["chapters/two.md"]
@@ -253,7 +249,6 @@ async fn a_checkpoint_can_be_named_and_unnamed() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
     let cookie = session_as(TEST_PUBLISHER);
     let sha = text(&history_of(&cookie, &server.url, &slug).await[0], "sha");
 
@@ -261,12 +256,8 @@ async fn a_checkpoint_can_be_named_and_unnamed() {
         patch_label(&cookie, &server.url, &slug, &sha, "sent to the journal").await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(text(&answer, "label"), "sent to the journal");
-    // A reader holds the link `publish` printed, not merely the slug.
     assert_eq!(
-        text(
-            &history_of_keyed("", &key, &server.url, &slug).await[0],
-            "label"
-        ),
+        text(&history_of(&cookie, &server.url, &slug).await[0], "label"),
         "sent to the journal",
         "the label did not reach the manifest a reader is served"
     );
@@ -285,10 +276,7 @@ async fn a_checkpoint_can_be_named_and_unnamed() {
     let (status, answer) = patch_label(&cookie, &server.url, &slug, &sha, "").await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(
-        text(
-            &history_of_keyed("", &key, &server.url, &slug).await[0],
-            "label"
-        ),
+        text(&history_of(&cookie, &server.url, &slug).await[0], "label"),
         "",
         "the label would not come off"
     );
@@ -302,20 +290,15 @@ async fn naming_a_checkpoint_takes_an_editor() {
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
     let key = read_key_of(&document);
-    let sha = text(
-        &history_of_keyed("", &key, &server.url, &slug).await[0],
-        "sha",
-    );
+    let cookie = session_as(TEST_PUBLISHER);
+    let sha = text(&history_of(&cookie, &server.url, &slug).await[0], "sha");
 
     // A stranger here holds the read link, and nothing more: reading every
     // word of the history is not editing a word of it.
     let (status, _) = patch_label_keyed("", &key, &server.url, &slug, &sha, "mine now").await;
     assert_eq!(status, 404, "a stranger named somebody else's checkpoint");
     assert_eq!(
-        text(
-            &history_of_keyed("", &key, &server.url, &slug).await[0],
-            "label"
-        ),
+        text(&history_of(&cookie, &server.url, &slug).await[0], "label"),
         ""
     );
 }
@@ -408,7 +391,7 @@ async fn a_comment_records_the_checkpoint_it_was_made_on() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
+    let cookie = session_as(TEST_PUBLISHER);
     let room = server.instance.rooms.get(&slug).await;
     room.set_source("# My Paper\n\nA sentence worth remarking on.\n", "markdown")
         .await
@@ -431,14 +414,14 @@ async fn a_comment_records_the_checkpoint_it_was_made_on() {
     assert!(!revision.is_empty(), "the comment recorded no checkpoint");
     // And it is a checkpoint of this document, which is the whole of what the
     // field is worth: a digest nothing can be looked up in says nothing.
-    let known: Vec<String> = history_of_keyed("", &key, &server.url, &slug)
+    let known: Vec<String> = history_of(&cookie, &server.url, &slug)
         .await
         .iter()
         .map(|point| text(point, "sha"))
         .collect();
     assert!(known.contains(&revision), "{revision} is not in {known:?}");
     // The text at that checkpoint is the text the comment quotes.
-    let (_, at) = get_checkpoint_keyed("", &key, &server.url, &slug, &revision).await;
+    let (_, at) = get_checkpoint(&cookie, &server.url, &slug, &revision).await;
     let main = text(&at, "main");
     assert!(
         at["texts"][&main]
@@ -570,10 +553,9 @@ async fn cached_checkpoint_rechecks_labels_access_and_manifest_membership() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
     let owner = session_as(TEST_PUBLISHER);
     let sha = text(&history_of(&owner, &server.url, &slug).await[0], "sha");
-    let (status, first) = get_checkpoint_keyed("", &key, &server.url, &slug, &sha).await;
+    let (status, first) = get_checkpoint(&owner, &server.url, &slug, &sha).await;
     assert_eq!(status, 200);
     assert_eq!(
         patch_label(&owner, &server.url, &slug, &sha, "fresh label")
@@ -581,7 +563,7 @@ async fn cached_checkpoint_rechecks_labels_access_and_manifest_membership() {
             .0,
         200
     );
-    let (status, next) = get_checkpoint_keyed("", &key, &server.url, &slug, &sha).await;
+    let (status, next) = get_checkpoint(&owner, &server.url, &slug, &sha).await;
     assert_eq!(status, 200);
     assert_eq!(next["label"], "fresh label");
     assert_eq!(next["texts"], first["texts"]);
@@ -593,6 +575,7 @@ async fn cached_checkpoint_rechecks_labels_access_and_manifest_membership() {
         .await
         .unwrap();
     assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let key = read_key_of(&document);
     let (status, answer) = post_as(
         &owner,
         &server.url,

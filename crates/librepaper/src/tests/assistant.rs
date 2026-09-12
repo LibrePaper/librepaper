@@ -5,6 +5,18 @@ use serde_json::json;
 use super::*;
 use crate::tests::edit::publish_with_source;
 
+async fn editor_key(base: &str, slug: &str) -> String {
+    let (status, link) = post_as(
+        &session_as(TEST_PUBLISHER),
+        base,
+        &format!("/api/documents/{slug}/share"),
+        json!({"link":{"role":"editor","until":"never"}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{link}");
+    text(&link, "key")
+}
+
 #[tokio::test]
 async fn refinement_preserves_identity_and_refuses_stale_or_decided_proposals() {
     let server = new_test_server().await;
@@ -46,7 +58,7 @@ async fn refinement_preserves_identity_and_refuses_stale_or_decided_proposals() 
     decided["request_id"] = json!("refine-decided");
     let (status, refused) = post(&server.url, &path, decided).await;
     assert_ne!(status, 200, "{refused}");
-    let (_, listing) = get_json_keyed("", &read_key_of(&document), &server.url, &path).await;
+    let (_, listing) = get_json_as(&session_as(TEST_PUBLISHER), &server.url, &path).await;
     assert_eq!(listing["comments"].as_array().unwrap().len(), 1);
     assert_eq!(listing["comments"][0]["proposed"], "planet Earth");
 }
@@ -91,7 +103,7 @@ async fn assistant_batch_reports_partial_anchor_results_and_persists_pass() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let key = editor_key(&server.url, &slug).await;
     let response = post_keyed(
         &session_as(TEST_PUBLISHER),
         &key,
@@ -126,7 +138,7 @@ async fn assistant_batch_rejects_invalid_revision_before_writing() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let key = editor_key(&server.url, &slug).await;
     let (status, body) = post_keyed(
         &session_as(TEST_PUBLISHER),
         &key,
@@ -184,7 +196,7 @@ async fn assistant_revision_survives_restore_before_a_merge_accept() {
         .content_sha()
         .to_string();
 
-    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let key = editor_key(&server.url, &slug).await;
     let (status, result) = post_keyed(
         &session_as(TEST_PUBLISHER),
         &key,

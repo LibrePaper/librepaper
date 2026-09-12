@@ -1641,7 +1641,7 @@ impl Room {
         })
         .to_string();
         let mut state = self.state.lock().await;
-        super::send_to_all(&mut state, None, &payload);
+        super::send_to_editors(&mut state, None, &payload);
         Ok(receipt)
     }
 

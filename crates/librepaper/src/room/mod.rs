@@ -140,6 +140,10 @@ pub struct Message {
     /// value so suggestion acceptance can use the existing stale path.
     #[serde(default)]
     pub revision: String,
+    /// Publication the rendered selection came from. The server treats this
+    /// as a compare-and-swap guard before accepting a reader annotation.
+    #[serde(default)]
+    pub publication_id: String,
     #[serde(default)]
     pub revision_id: String,
     #[serde(default)]
@@ -1274,6 +1278,13 @@ impl RoomSet {
 }
 
 impl Room {
+    /// Immutable storage identity shared by catalog and rendered-publication
+    /// operations. The slug is only a public handle and is not sufficient
+    /// for publication object serialization.
+    pub(crate) fn storage_id(&self) -> &str {
+        &self.storage_id
+    }
+
     /// Decides a live tracked revision. The decision is serialized with all
     /// publication writes and persisted before it is announced. Text rollback
     /// is guarded by the proposed content: if concurrent work changed the
@@ -1326,15 +1337,15 @@ impl Room {
             else {
                 return json!({"type":"error","message":"unknown revision","revision_id":revision_id,"request_id":request_id});
             };
-            if !request_id.is_empty() {
-                if records.iter().any(|other| {
+            if !request_id.is_empty()
+                && records.iter().any(|other| {
                     other.id != revision_id
                         && other.history.iter().any(|item| {
                             item.get("request_id").and_then(Value::as_str) == Some(request_id)
                         })
-                }) {
-                    return json!({"type":"error","message":"request id was already used for another revision","revision_id":revision_id,"request_id":request_id});
-                }
+                })
+            {
+                return json!({"type":"error","message":"request id was already used for another revision","revision_id":revision_id,"request_id":request_id});
             }
             let record = &records[record_index];
             if !request_id.is_empty() {
@@ -1438,8 +1449,11 @@ impl Room {
             session::encode_diff(&state.session.doc, &before_vector)
                 .unwrap_or_else(|_| session::encode_state(&state.session.doc))
         };
-        self.broadcast(&json!({"type":"y-update","update":encode_update(&update)}))
-            .await;
+        self.broadcast_editors_except(
+            None,
+            &json!({"type":"y-update","update":encode_update(&update)}),
+        )
+        .await;
         json!({"type":"revision-decision","revision_id":revision_id,"revision":revision,"request_id":request_id,"durable":true})
     }
     /// Reports the independently observable live-save and history-checkpoint
@@ -2136,6 +2150,7 @@ impl Room {
         state
             .comments
             .iter()
+            .filter(|item| is_owner || crate::room::comments::visible_to_reader(item))
             .map(|item| CommentView::for_viewer(item, author, is_owner))
             .collect()
     }
@@ -2163,6 +2178,7 @@ impl Room {
         let comments = state
             .comments
             .iter()
+            .filter(|item| is_owner || crate::room::comments::visible_to_reader(item))
             .map(|item| CommentView::for_viewer(item, author, is_owner))
             .collect();
         (source, format, tree, texts, comments)
@@ -2240,6 +2256,15 @@ impl Room {
         let message = payload.to_string();
         let mut state = self.state.lock().await;
         send_to_all(&mut state, skip, &message);
+    }
+
+    /// Relays source synchronization frames only to editor peers. Reader and
+    /// commenter sockets share this room for annotations, but must never see
+    /// Yjs updates from the editable project.
+    pub async fn broadcast_editors_except(&self, skip: Option<u64>, payload: &Value) {
+        let message = payload.to_string();
+        let mut state = self.state.lock().await;
+        send_to_editors(&mut state, skip, &message);
     }
 
     /// Counts comment actions per caller per clock hour. A live link is the
@@ -2685,7 +2710,7 @@ impl Room {
                 repaired_bytes = correction.len();
                 let payload =
                     json!({"type": "y-update", "update": encode_update(&correction)}).to_string();
-                send_to_all(&mut state, None, &payload);
+                send_to_editors(&mut state, None, &payload);
             }
         }
         // Counted only once the update is one this document actually took. A
@@ -3099,6 +3124,25 @@ fn send_to_all(state: &mut RoomState, skip: Option<u64>, message: &str) {
     let mut behind = Vec::new();
     for (id, peer) in &state.sockets {
         if Some(*id) == skip {
+            continue;
+        }
+        if peer
+            .tx
+            .try_send(Outgoing::Text(message.to_string()))
+            .is_err()
+        {
+            behind.push(*id);
+        }
+    }
+    for id in behind {
+        state.sockets.remove(&id);
+    }
+}
+
+pub(super) fn send_to_editors(state: &mut RoomState, skip: Option<u64>, message: &str) {
+    let mut behind = Vec::new();
+    for (id, peer) in &state.sockets {
+        if Some(*id) == skip || !peer.may_edit {
             continue;
         }
         if peer

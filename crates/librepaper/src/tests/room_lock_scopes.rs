@@ -21,6 +21,7 @@ const PATIENCE: Duration = Duration::from_secs(2);
 fn comment(body: &str, temp_id: &str) -> room::Command {
     room::Command::Comment {
         motivation: "commenting".into(),
+        publication_id: String::new(),
         body: body.into(),
         creator: "Reviewer".into(),
         exact: "A".into(),

@@ -84,30 +84,6 @@ where
 }
 
 impl Catalog {
-    /// Return a bounded, deterministic page of documents with superseded
-    /// rendering registrations. The caller owns the cursor so cold-document
-    /// cleanup can make progress without loading the whole catalogue.
-    pub fn stale_rendering_slugs(
-        &self,
-        after_slug: &str,
-        limit: u32,
-    ) -> CatalogResult<Vec<String>> {
-        let limit = i64::from(limit.clamp(1, 64));
-        self.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT d.slug
-                   FROM documents d JOIN renderings r ON r.slug=d.slug
-                  WHERE d.status IN ('active','creating') AND d.slug>?1
-                  GROUP BY d.slug
-                 HAVING COUNT(*)>1
-                  ORDER BY d.slug LIMIT ?2",
-            )?;
-            let rows = statement.query_map(params![after_slug, limit], |row| row.get(0))?;
-            rows.collect::<rusqlite::Result<Vec<String>>>()
-                .map_err(CatalogError::from)
-        })
-    }
-
     /// Plan hard-quota eviction account-wide.  Routine candidates are
     /// exhausted before preferentially protected history is considered; the
     /// newest checkpoint, live roots and leased objects are excluded by the
@@ -243,37 +219,10 @@ impl Catalog {
             return Ok(plan);
         }
         let routine_keys: Vec<_> = routine.into_iter().map(|(s, h, _, _)| (s, h)).collect();
-        // Older renderings are a cheaper, regenerable pressure tier than any
-        // protected source event.  Until the publication collector has
-        // retired them, defer protected-history eviction rather than
-        // violating that order.  The latest successful bundle is never an
-        // eligible pressure candidate.
-        let stale_renderings: i64 = self.with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM renderings r JOIN documents d ON d.slug=r.slug
-                     WHERE d.owner_id=?1 AND d.status IN ('active','creating')
-                       AND r.bytes>0
-                       AND r.published_seq < (SELECT COALESCE(MAX(r2.published_seq),0)
-                                              FROM renderings r2 WHERE r2.slug=r.slug)",
-                    [account_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)
-        })?;
-        if stale_renderings > 0 {
-            // Derived publication cleanup is a mandatory tier before any
-            // source checkpoint eviction. The room retention hook can verify
-            // that a latest PDF is physically available before retiring the
-            // superseded registration; this catalogue-only planner cannot.
-            // Defer rather than silently deleting source history first.
-            return Ok(plan);
-        }
-        let protected_keys: Vec<_> = if stale_renderings == 0 {
-            protected.into_iter().map(|(s, h, _, _)| (s, h)).collect()
-        } else {
-            Vec::new()
-        };
+        let protected_keys: Vec<_> = protected
+            .into_iter()
+            .map(|(slug, sha, _, _)| (slug, sha))
+            .collect();
         let (selected_routine, routine_reclaim) = minimal_prefix(&routine_keys, deficit, |set| {
             self.reclaimable_checkpoint_bytes(set)
         })?;
@@ -694,103 +643,5 @@ mod tests {
                 .status,
             "stale"
         );
-    }
-
-    #[test]
-    fn stale_renderings_defer_source_pressure_until_cold_cleanup() {
-        let catalog = crate::storage::catalog::Catalog::open_in_memory().unwrap();
-        catalog
-            .upsert_account(&Account {
-                id: "acct-rendering-pressure".into(),
-                provider: "test".into(),
-                handle: "rendering-pressure".into(),
-                name: String::new(),
-                email: String::new(),
-                first_seen: "0".into(),
-                last_seen: "0".into(),
-                plan: "test".into(),
-                status: "active".into(),
-                session_generation: "generation".into(),
-                erasure_cursor: None,
-            })
-            .unwrap();
-        catalog
-            .create_document(&NewDocument {
-                slug: "rendering-pressure-doc".into(),
-                storage_id: "rendering-pressure-storage".into(),
-                title: "Pressure".into(),
-                sha: "head".into(),
-                created_at: "0".into(),
-                published_at: "0".into(),
-                updated_at: "0".into(),
-                example: false,
-                owner_key: String::new(),
-                owner_id: Some("acct-rendering-pressure".into()),
-                status: "active".into(),
-                size: 1,
-                counted_size: 1,
-                maintenance_reserved: 0,
-                last_auto_checkpoint_at: 0,
-                source_format: "markdown".into(),
-                main: "README.md".into(),
-            })
-            .unwrap();
-        for (seq, sha) in [(0, "old"), (1, "new")] {
-            catalog
-                .insert_checkpoint(&Checkpoint {
-                    slug: "rendering-pressure-doc".into(),
-                    sha: sha.into(),
-                    seq,
-                    durable_seq: seq,
-                    tree_sha: sha.into(),
-                    parent: String::new(),
-                    at: seq.to_string(),
-                    by: String::new(),
-                    by_account: None,
-                    why: "automatic".into(),
-                    source_format: "markdown".into(),
-                    size: 1,
-                    label: String::new(),
-                    git_commit: String::new(),
-                    dirty: false,
-                    changed: None,
-                })
-                .unwrap();
-        }
-        catalog
-            .with_connection(|connection| {
-                connection.execute(
-                    "INSERT INTO object_accounting(storage_id,object_key,kind,bytes,version)
-                     VALUES(?1,?2,'checkpoint_tree',100,'test'),
-                           (?1,?3,'checkpoint_tree',100,'test')",
-                    rusqlite::params![
-                        "rendering-pressure-storage",
-                        crate::storage::blob::checkpoint_key("rendering-pressure-storage", "old"),
-                        crate::storage::blob::checkpoint_key("rendering-pressure-storage", "new")
-                    ],
-                )?;
-                connection.execute(
-                    "INSERT INTO renderings
-                     (slug,tree_sha,at,backend,engine,release,tools,bytes,synctex,synctex_bytes,published_seq)
-                     VALUES(?1,'old','0','test','','','','10',0,0,1),
-                           (?1,'new','1','test','','','','10',0,0,2)",
-                    ["rendering-pressure-doc"],
-                )?;
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(
-            catalog.stale_rendering_slugs("", 8).unwrap(),
-            vec!["rendering-pressure-doc".to_string()]
-        );
-        let usage = catalog
-            .account_storage_usage("acct-rendering-pressure")
-            .unwrap();
-        let plan = catalog
-            .plan_hard_pressure_for_growth("acct-rendering-pressure", usage.charged_bytes, 50, 100)
-            .unwrap();
-        assert!(!plan.feasible);
-        assert!(plan.routine.is_empty());
-        assert!(plan.protected.is_empty());
     }
 }

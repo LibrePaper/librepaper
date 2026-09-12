@@ -107,10 +107,10 @@ impl Catalog {
             for row in rows {
                 let seq: i64 = tx.query_row("SELECT comment_seq+1 FROM documents WHERE slug=?1",[slug],|r|r.get(0))?;
                 tx.execute("UPDATE documents SET comment_seq=?2 WHERE slug=?1",params![slug,seq])?;
-                tx.execute("INSERT INTO comments(slug,id,seq,motivation,body,creator,author,via,created,exact,prefix,suffix,position,region,quarto_output,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in,point,color)
-                    VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)
-                    ON CONFLICT(slug,id) DO UPDATE SET seq=excluded.seq,body=excluded.body,proposed=excluded.proposed,outcome=excluded.outcome,resolved=excluded.resolved,resolved_at=excluded.resolved_at,resolved_in=excluded.resolved_in",
-                    params![row.slug,row.id,seq,row.motivation,row.body,row.creator,row.author,row.via,row.created,row.exact,row.prefix,row.suffix,row.position,row.region,row.quarto_output,row.source_path,row.source_exact,row.source_prefix,row.source_suffix,row.source_position,row.proposed,row.outcome,row.accept_request,row.revision,row.pass,row.resolved,row.resolved_at,row.resolved_in,row.point,row.color])?;
+                tx.execute("INSERT INTO comments(slug,id,seq,motivation,body,creator,author,via,created,publication_id,exact,prefix,suffix,position,region,quarto_output,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in,point,color)
+                    VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)
+                    ON CONFLICT(slug,id) DO UPDATE SET seq=excluded.seq,body=excluded.body,publication_id=excluded.publication_id,proposed=excluded.proposed,outcome=excluded.outcome,resolved=excluded.resolved,resolved_at=excluded.resolved_at,resolved_in=excluded.resolved_in",
+                    params![row.slug,row.id,seq,row.motivation,row.body,row.creator,row.author,row.via,row.created,row.publication_id,row.exact,row.prefix,row.suffix,row.position,row.region,row.quarto_output,row.source_path,row.source_exact,row.source_prefix,row.source_suffix,row.source_position,row.proposed,row.outcome,row.accept_request,row.revision,row.pass,row.resolved,row.resolved_at,row.resolved_in,row.point,row.color])?;
             }
             for reply in replies {
                 if reply.slug!=slug { return Err(CatalogError::Invalid("wrong reply document".into())); }

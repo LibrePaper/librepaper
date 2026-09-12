@@ -29,6 +29,12 @@ async fn open_server() -> TestServer {
     .await
 }
 
+async fn rendered_publication_id(base: &str, login: &str, slug: &str) -> String {
+    let published =
+        publish_display(base, &session_as(login), slug, b"<p>Alice Paper</p>", &[]).await;
+    text(&published["publication"], "id")
+}
+
 /// Publishes as `login` and takes away the read link publishing minted, so
 /// that every test here starts from a document with no links at all and the
 /// links it makes are the only ones on it. The minted link has its own test.
@@ -327,6 +333,7 @@ async fn a_reader_link_opens_a_document_and_cannot_comment() {
     )
     .await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
+    let publication_id = rendered_publication_id(&server.url, "alice", &slug).await;
     let key = mint(&server.url, "alice", &slug, "reader", "").await;
 
     assert_eq!(role_of(&server.url, "", &key, &slug).await, "reader");
@@ -337,7 +344,7 @@ async fn a_reader_link_opens_a_document_and_cannot_comment() {
         &format!("/api/documents/{slug}/source"),
     )
     .await;
-    assert_eq!(status, 200, "a reader link could not read: {source}");
+    assert_eq!(status, 404, "a reader link received source: {source}");
 
     // A caller with no link at all gets what a missing document gets: the
     // bare URL is not a link.
@@ -350,10 +357,11 @@ async fn a_reader_link_opens_a_document_and_cannot_comment() {
         &key,
         &server.url,
         &format!("/api/documents/{slug}/comments"),
-        json!({"type": "comment", "exact": "Alice Paper", "body": "hi"}),
+        json!({"type": "comment", "exact": "Alice Paper", "body": "hi", "publication_id": publication_id}),
     )
     .await;
-    assert_eq!(status, 400, "a reader link commented: {posted}");
+    assert_eq!(status, 403, "a reader link commented: {posted}");
+    assert_eq!(text(&posted, "error"), "commenter access is required");
 }
 
 // A commenter link comments and cannot edit. The second half is the ceiling
@@ -584,6 +592,7 @@ async fn an_expired_link_reads_as_no_link() {
 async fn a_comment_records_the_link_it_arrived_on() {
     let server = open_server().await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
+    let publication_id = rendered_publication_id(&server.url, "alice", &slug).await;
     let key = mint(&server.url, "alice", &slug, "commenter", "").await;
 
     let (status, posted) = post_keyed(
@@ -591,7 +600,7 @@ async fn a_comment_records_the_link_it_arrived_on() {
         &key,
         &server.url,
         &format!("/api/documents/{slug}/comments"),
-        json!({"type": "comment", "exact": "Alice Paper", "body": "a remark"}),
+        json!({"type": "comment", "exact": "Alice Paper", "body": "a remark", "publication_id": publication_id}),
     )
     .await;
     assert_eq!(status, 200, "commenting returned {status}: {posted}");
@@ -660,6 +669,7 @@ async fn only_the_owner_may_see_or_change_the_sharing() {
 async fn a_read_link_is_read_only_under_an_open_comment_switch() {
     let server = open_server().await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
+    let publication_id = rendered_publication_id(&server.url, "alice", &slug).await;
     let key = mint(&server.url, "alice", &slug, "reader", "").await;
     assert_eq!(role_of(&server.url, "", &key, &slug).await, "reader");
     assert_eq!(
@@ -671,10 +681,11 @@ async fn a_read_link_is_read_only_under_an_open_comment_switch() {
         &key,
         &server.url,
         &format!("/api/documents/{slug}/comments"),
-        json!({"type": "comment", "exact": "Alice Paper", "body": "hi"}),
+        json!({"type": "comment", "exact": "Alice Paper", "body": "hi", "publication_id": publication_id}),
     )
     .await;
-    assert_eq!(status, 400, "a read link commented: {posted}");
+    assert_eq!(status, 403, "a read link commented: {posted}");
+    assert_eq!(text(&posted, "error"), "commenter access is required");
 
     server
         .instance
@@ -845,6 +856,7 @@ async fn link_budget_boundaries_are_enforced() {
     )
     .await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
+    let publication_id = rendered_publication_id(&server.url, "alice", &slug).await;
     let (status, invalid) = share(
         &server.url,
         "alice",
@@ -871,7 +883,7 @@ async fn link_budget_boundaries_are_enforced() {
             &zero,
             &server.url,
             &path,
-            json!({"type": "comment", "exact": "Alice Paper", "body": "blocked"})
+            json!({"type": "comment", "exact": "Alice Paper", "body": "blocked", "publication_id": publication_id})
         )
         .await
         .0,
@@ -886,7 +898,7 @@ async fn link_budget_boundaries_are_enforced() {
         )
         .await
         .0,
-        200
+        404
     );
 
     let (status, ordinary) = share(
@@ -904,7 +916,7 @@ async fn link_budget_boundaries_are_enforced() {
             &ordinary,
             &server.url,
             &path,
-            json!({"type": "comment", "exact": "Alice Paper", "body": "allowed"})
+            json!({"type": "comment", "exact": "Alice Paper", "body": "allowed", "publication_id": publication_id})
         )
         .await
         .0,
@@ -916,7 +928,7 @@ async fn link_budget_boundaries_are_enforced() {
             &ordinary,
             &server.url,
             &path,
-            json!({"type": "comment", "exact": "Alice Paper", "body": "limited"})
+            json!({"type": "comment", "exact": "Alice Paper", "body": "limited", "publication_id": publication_id})
         )
         .await
         .0,
@@ -932,6 +944,7 @@ async fn link_budget_boundaries_are_enforced() {
 async fn a_link_budget_is_shared_between_addresses_and_resets_each_hour() {
     let server = open_server().await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
+    let publication_id = rendered_publication_id(&server.url, "alice", &slug).await;
     let (status, made) = share(
         &server.url,
         "alice",
@@ -950,7 +963,7 @@ async fn a_link_budget_is_shared_between_addresses_and_resets_each_hour() {
             &key,
             &server.url,
             &path,
-            json!({"type": "comment", "exact": "Alice Paper", "body": body}),
+            json!({"type": "comment", "exact": "Alice Paper", "body": body, "publication_id": publication_id}),
         )
         .await;
         assert_eq!(
@@ -963,7 +976,7 @@ async fn a_link_budget_is_shared_between_addresses_and_resets_each_hour() {
         &key,
         &server.url,
         &path,
-        json!({"type": "comment", "exact": "Alice Paper", "body": "http three"}),
+        json!({"type": "comment", "exact": "Alice Paper", "body": "http three", "publication_id": publication_id}),
     )
     .await;
     assert_eq!(status, 400, "the server ignored the link budget: {refused}");
@@ -975,8 +988,8 @@ async fn a_link_budget_is_shared_between_addresses_and_resets_each_hour() {
     )
     .await;
     assert_eq!(
-        status, 200,
-        "a link past its comment budget could not read: {source}"
+        status, 404,
+        "a commenter link read source after its comment budget: {source}"
     );
     room.state.lock().await.rate.clear();
 
@@ -1121,7 +1134,7 @@ async fn a_document_answers_404_to_a_stranger_and_hello_to_whoever_is_on_it() {
 // fetched on the origin that does know who is asking; without one, or with
 // one for another document, it serves the empty shell.
 #[tokio::test]
-async fn the_documents_origin_serves_a_page_only_to_a_frame_token() {
+async fn the_documents_origin_preview_shell_never_serves_source() {
     let server = open_server().await;
     let slug = publish_as(&server.url, "alice", "Alice Paper").await;
     let other = publish_as(&server.url, "alice", "Other Paper").await;
@@ -1137,46 +1150,23 @@ async fn the_documents_origin_serves_a_page_only_to_a_frame_token() {
         "the empty shell should still carry the agent: {body:.200}"
     );
 
-    // A stranger is refused the token itself; the owner, and a link's
-    // holder, are given one.
+    // The obsolete token endpoint is gone. Publication access has its own
+    // display capability and never changes what `/raw` serves.
     let (status, _) = get_json_as(
         &session_as("mallory"),
         &server.url,
         &format!("/api/documents/{slug}/frame"),
     )
     .await;
-    assert_eq!(status, 404, "a stranger was given a frame token");
-    let query = frame_query(&session_as("alice"), "", &server.url, &slug).await;
-    let framed = on_docs_host(&server.url, &format!("/raw/{slug}/?{query}")).await;
-    let body = framed.text().await.unwrap_or_default();
-    assert!(
-        body.contains("Alice Paper") && body.contains("agent.js"),
-        "the owner's token did not serve the page: {body:.200}"
+    assert_eq!(
+        status, 404,
+        "the obsolete frame endpoint remained reachable"
     );
-    let key = mint(&server.url, "alice", &slug, "reader", "").await;
-    let query = frame_query("", &key, &server.url, &slug).await;
-    let framed = on_docs_host(&server.url, &format!("/raw/{slug}/?{query}")).await;
+    let framed = on_docs_host(&server.url, &format!("/raw/{other}/")).await;
     let body = framed.text().await.unwrap_or_default();
     assert!(
-        body.contains("Alice Paper"),
-        "a read link's token did not serve the page: {body:.200}"
-    );
-
-    // A token is for one document: the same owner's token for another slug
-    // opens nothing here, and neither does a tampered one.
-    let elsewhere = frame_query(&session_as("alice"), "", &server.url, &other).await;
-    let framed = on_docs_host(&server.url, &format!("/raw/{slug}/?{elsewhere}")).await;
-    let body = framed.text().await.unwrap_or_default();
-    assert!(
-        !body.contains("Alice Paper"),
-        "another document's token served this one: {body:.200}"
-    );
-    let forged = query.replace("until=", "until=9");
-    let framed = on_docs_host(&server.url, &format!("/raw/{slug}/?{forged}")).await;
-    let body = framed.text().await.unwrap_or_default();
-    assert!(
-        !body.contains("Alice Paper"),
-        "a token with its expiry moved served the page: {body:.200}"
+        !body.contains("Alice Paper") && !body.contains("Other Paper"),
+        "the preview shell served source: {body:.200}"
     );
 }
 

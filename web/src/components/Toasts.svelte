@@ -8,7 +8,7 @@
 
 <Toast.Group {toaster} class="fixed right-4 bottom-4 z-100 flex flex-col gap-2">
   {#snippet children(toast)}
-    <Toast.Message
+    <Toast
       {toast}
       class="card w-80 p-4 shadow-lg {toast.type === 'error'
         ? 'preset-filled-error-500'
@@ -20,6 +20,6 @@
         <Toast.Description class="text-sm" />
         <Toast.CloseTrigger class="btn-icon btn-icon-sm" aria-label="Dismiss">×</Toast.CloseTrigger>
       </div>
-    </Toast.Message>
+    </Toast>
   {/snippet}
 </Toast.Group>

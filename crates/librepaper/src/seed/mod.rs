@@ -250,7 +250,6 @@ fn reset_catalog(catalog: &crate::storage::catalog::Catalog) -> Result<(), Strin
                      DELETE FROM erasure_batches;
                      DELETE FROM replies;
                      DELETE FROM comments;
-                     DELETE FROM renderings;
                      DELETE FROM checkpoints;
                      DELETE FROM guests;
                      DELETE FROM grants;

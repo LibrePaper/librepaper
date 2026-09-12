@@ -10,6 +10,7 @@ use super::{Message, QuartoOutputAnchor, Region, SourceAnchor};
 pub enum Command {
     Comment {
         motivation: String,
+        publication_id: String,
         body: String,
         creator: String,
         exact: String,
@@ -184,6 +185,7 @@ impl Command {
         match self {
             Self::Comment {
                 motivation,
+                publication_id,
                 body,
                 exact,
                 prefix,
@@ -216,6 +218,7 @@ impl Command {
                 revision,
                 temp_id,
                 request_id,
+                publication_id,
             },
             Self::Reply {
                 comment_id,
@@ -254,6 +257,7 @@ impl Message {
         match kind.as_str() {
             "comment" => Ok(Command::Comment {
                 motivation: self.motivation,
+                publication_id: self.publication_id,
                 body: self.body,
                 creator: self.creator,
                 exact: self.exact,

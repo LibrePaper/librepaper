@@ -108,6 +108,10 @@ pub struct Comment {
     pub seq: i64,
     #[serde(default)]
     pub motivation: String,
+    /// Published rendering the reader selected from. Empty only for editor
+    /// annotations which are not tied to a rendered publication.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub publication_id: String,
     #[serde(default)]
     pub exact: String,
     #[serde(default)]
@@ -306,12 +310,32 @@ impl CommentView {
     /// empty for an anonymous caller, who is never "mine" on anything and can
     /// only delete when `is_owner` is set.
     pub fn for_viewer(comment: &Comment, author: &str, is_owner: bool) -> CommentView {
+        let mine = !author.is_empty() && comment.author == author;
+        let deletable = deletable(comment, author, is_owner);
+        let mut comment = comment.clone();
+        // Source anchors and suggestion proposals are editorial material. A
+        // rendered reader may discuss the quotation that was displayed, but
+        // must never receive source paths, source quotations, or proposed
+        // source edits through the annotation channel.
+        if !is_owner {
+            comment.source = None;
+            comment.proposed = None;
+            comment.revision.clear();
+            comment.resolved_in.clear();
+        }
         CommentView {
-            comment: comment.clone(),
-            mine: !author.is_empty() && comment.author == author,
-            deletable: deletable(comment, author, is_owner),
+            comment,
+            mine,
+            deletable,
         }
     }
+}
+
+/// Editorial annotations belong to the editable project, so only an editor
+/// may receive them. A nonempty publication id identifies a rendered
+/// annotation, including one retained from an earlier publication.
+pub fn visible_to_reader(comment: &Comment) -> bool {
+    comment.motivation != "editing" && !comment.publication_id.is_empty()
 }
 
 /// Rule H's authorization test: the document's owner may delete anything on
@@ -643,6 +667,7 @@ impl Room {
                 id: new_id(),
                 seq: next_seq,
                 motivation: "editing".into(),
+                publication_id: String::new(),
                 exact: source.exact.clone(),
                 prefix: source.prefix.clone(),
                 suffix: source.suffix.clone(),
@@ -763,23 +788,53 @@ impl Room {
     /// use an empty author (so every other caller sees `mine: false`), while
     /// the submitting socket or HTTP response asks for its own view.
     pub async fn comment_event_for(&self, payload: &Value, author: &str, is_owner: bool) -> Value {
-        if !matches!(
-            payload.get("type").and_then(Value::as_str),
-            Some("comment" | "refine")
-        ) {
+        let kind = payload.get("type").and_then(Value::as_str);
+        if !matches!(kind, Some("comment" | "refine" | "reply" | "anchor")) {
             return payload.clone();
         }
-        let Some(id) = payload
-            .get("comment")
-            .and_then(|comment| comment.get("id"))
-            .and_then(Value::as_str)
-        else {
-            return payload.clone();
+        let id = match kind {
+            Some("comment" | "refine") => payload
+                .get("comment")
+                .and_then(|comment| comment.get("id"))
+                .and_then(Value::as_str),
+            Some("reply" | "anchor") => payload.get("comment_id").and_then(Value::as_str),
+            _ => None,
+        };
+        let Some(id) = id else {
+            return if is_owner {
+                payload.clone()
+            } else {
+                json!({"type": "annotation-redacted"})
+            };
         };
         let state = self.state.lock().await;
         let Some(comment) = state.comments.iter().find(|comment| comment.id == id) else {
-            return payload.clone();
+            // Another mutation can delete a comment after its event was
+            // prepared. Never fall back to the unprojected source-bearing
+            // payload when the current visibility can no longer be checked.
+            return if is_owner {
+                payload.clone()
+            } else {
+                json!({"type": "annotation-redacted"})
+            };
         };
+        if !is_owner && !visible_to_reader(comment) {
+            // Editorial suggestions contain source anchors and proposed source
+            // text. Other empty-publication annotations are likewise local to
+            // the editable project. Neither belongs in the public annotation
+            // channel.
+            return json!({"type": "annotation-redacted", "annotation_revision": comment.seq});
+        }
+        if !is_owner && kind == Some("anchor") {
+            // An editor may re-anchor a public rendered quotation to private
+            // source, but the source selector itself never leaves the
+            // editorial channel.
+            let mut event = payload.clone();
+            if let Some(object) = event.as_object_mut() {
+                object.remove("source");
+            }
+            return event;
+        }
         let view = CommentView::for_viewer(comment, author, is_owner);
         let mut event = payload.clone();
         if let Ok(value) = serde_json::to_value(view) {
@@ -1340,6 +1395,7 @@ impl Room {
             }
             Command::Comment {
                 motivation: raw_motivation,
+                publication_id,
                 body: raw_body,
                 creator: raw_creator,
                 exact: raw_exact,
@@ -1502,6 +1558,7 @@ impl Room {
                     id: requested_id.clone().unwrap_or_else(new_id),
                     seq: next_seq,
                     motivation,
+                    publication_id,
                     exact,
                     prefix: clean(&raw_prefix, config.caps.context),
                     suffix: clean(&raw_suffix, config.caps.context),
@@ -1655,5 +1712,42 @@ mod tests {
         value = anchor();
         value.coordinate_system = "screen-pixels".into();
         assert!(valid_quarto_output_anchor(Some(&value)).is_none());
+    }
+
+    #[test]
+    fn reader_annotation_view_does_not_include_source_editorial_fields() {
+        let comment = Comment {
+            id: "comment".into(),
+            publication_id: "publication-1".into(),
+            exact: "visible quotation".into(),
+            prefix: "visible prefix ".into(),
+            suffix: " visible suffix".into(),
+            source: Some(SourceAnchor {
+                path: "private.md".into(),
+                exact: "private source text".into(),
+                ..Default::default()
+            }),
+            proposed: Some("private replacement".into()),
+            ..Default::default()
+        };
+        assert!(visible_to_reader(&comment));
+        let reader = serde_json::to_value(CommentView::for_viewer(&comment, "", false))
+            .expect("annotation view serializes");
+        assert!(reader.get("source").is_none());
+        assert!(reader.get("proposed").is_none());
+        assert_eq!(reader["publication_id"], "publication-1");
+        assert_eq!(reader["exact"], "visible quotation");
+        assert_eq!(reader["prefix"], "visible prefix ");
+        assert_eq!(reader["suffix"], " visible suffix");
+        let editor = serde_json::to_value(CommentView::for_viewer(&comment, "", true))
+            .expect("editor annotation view serializes");
+        assert_eq!(editor["source"]["path"], "private.md");
+        assert_eq!(editor["proposed"], "private replacement");
+
+        let local = Comment::default();
+        assert!(
+            !visible_to_reader(&local),
+            "an empty publication id reached the reader channel"
+        );
     }
 }

@@ -4,7 +4,7 @@
   import Modal from "../Modal.svelte";
   import { getPrivate, post } from "../../lib/api.js";
 
-  let { open = $bindable(false), slug, onclose, inline = false } = $props();
+  let { open = $bindable(false), slug, onclose, inline = false, canShare = false, mayPublish = false, publishedVersion = null, unpublishedChanges = false, publicationReady = false, publicationFailed = false, onpublish = () => {}, onrefreshpublication = () => {} } = $props();
   let sharing = $state(null);
   let busy = $state(false);
   let loading = $state(false);
@@ -20,6 +20,9 @@
   let until = $state({ reader: "180d", commenter: "180d", editor: "180d" });
   let labels = $state({ reader: "", commenter: "", editor: "" });
   let budgets = $state({ reader: "", commenter: "", editor: "" });
+  const publication = $derived(publishedVersion);
+  let publicationError = $state("");
+  let publicationBusy = $state(false);
 
   const ROLES = [
     { id: "reader", label: "Read" },
@@ -46,7 +49,7 @@
     error = "";
     feedback = "";
     try {
-      const answer = await getPrivate(`/api/documents/${documentSlug}/share`);
+      const answer = canShare ? await getPrivate(`/api/documents/${documentSlug}/share`) : { links: {} };
       if (request !== generation) return;
       sharing = answer;
       rememberLinkSettings(answer);
@@ -55,6 +58,28 @@
     } finally {
       if (request === generation) loading = false;
     }
+  }
+
+  async function publish() {
+    if (publicationBusy) return;
+    publicationBusy = true;
+    publicationError = "";
+    try {
+      await onpublish();
+    } catch (failure) {
+      publicationError = failure.message || "Could not publish this version.";
+    } finally { publicationBusy = false; }
+  }
+
+  async function refreshPublication() {
+    if (publicationBusy) return;
+    publicationBusy = true;
+    publicationError = "";
+    try {
+      await onrefreshpublication();
+    } catch (failure) {
+      publicationError = failure.message || "Could not check the published version.";
+    } finally { publicationBusy = false; }
   }
 
   $effect(() => {
@@ -66,7 +91,7 @@
   });
 
   async function change(body, message) {
-    if (busy) return false;
+    if (busy || !canShare) return false;
     const documentSlug = slug;
     const request = generation;
     busy = true;
@@ -114,7 +139,27 @@
     {#if loading}
       <p class="panel-muted" role="status">Loading sharing settings…</p>
     {:else if sharing}
-      <div class="share-links space-y-6" aria-label="Share links">
+      {#if mayPublish}
+        <section class="publication-section share-section space-y-2" aria-labelledby="published-version-heading">
+          <h4 id="published-version-heading" class="panel-section-title">Published version</h4>
+          {#if !publicationReady}
+            <p class="panel-muted" role="status">{publicationFailed ? "Could not check the published version." : "Checking published version…"}</p>
+            {#if publicationFailed}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={publicationBusy} onclick={refreshPublication}>{publicationBusy ? "Checking…" : "Retry"}</button>{/if}
+          {:else if publication?.id}
+            <p class="panel-meta">Published {publication.published_at ? dateOf(publication.published_at) : "recently"}{publication.publisher ? ` by ${publication.publisher}` : ""}</p>
+            {#if unpublishedChanges}<p class="panel-muted" role="status">Unpublished changes</p>{/if}
+            <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={publicationBusy || !(unpublishedChanges)} onclick={publish}>
+              {publicationBusy ? "Publishing…" : (unpublishedChanges ? "Publish update" : "Published")}
+            </button>
+          {:else}
+            <p class="panel-muted">Not published yet.</p>
+            <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={publicationBusy} onclick={publish}>{publicationBusy ? "Publishing…" : "Publish"}</button>
+          {/if}
+          <p class="panel-muted">Readers and commenters see the last published version.</p>
+          {#if publicationError}<p class="text-error-600-400" role="alert">{publicationError}</p>{/if}
+        </section>
+      {/if}
+      {#if canShare}<div class="share-links space-y-6" aria-label="Share links">
         {#each ROLES as role (role.id)}
           {@const link = sharing.links?.[role.id] || null}
           {@const description = role.id === "reader" ? "Anyone with this link can read the document." : role.id === "commenter" ? "Anyone with this link can read and comment." : "Anyone with this link can read, comment and edit."}
@@ -155,7 +200,7 @@
             {#if role.id === "commenter" && sharing.comment_needs_signin}<p class="panel-muted">Commenters must sign in.</p>{/if}
           </section>
         {/each}
-      </div>
+      </div>{/if}
 
     {/if}
     {#if error}

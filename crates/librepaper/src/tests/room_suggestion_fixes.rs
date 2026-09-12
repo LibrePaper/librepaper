@@ -150,6 +150,7 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
             author: "github:reviewer".into(),
             via: String::new(),
             created: crate::util::timestamp(),
+            publication_id: String::new(),
             exact: "A".into(),
             prefix: String::new(),
             suffix: String::new(),
@@ -497,7 +498,7 @@ async fn failed_accept_broadcasts_a_sequence_a_peer_can_replay() {
     let peer = session::new_doc();
     session::apply_update(&peer, &initial).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-    room.attach(99, tx, false).await;
+    room.attach(99, tx, true).await;
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
         blob::content_recipe_key("probe", &store::digest_of("B")),
@@ -704,7 +705,7 @@ async fn failed_deletion_rollback_converges_for_a_peer() {
     let peer = session::new_doc();
     session::apply_update(&peer, &initial).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-    room.attach(99, tx, false).await;
+    room.attach(99, tx, true).await;
     *hooked.pause.lock().unwrap() = Some((
         "put".into(),
         blob::content_recipe_key("probe", &store::digest_of("A ")),

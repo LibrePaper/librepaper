@@ -127,11 +127,8 @@ async fn a_reader_link_cannot_accept() {
         json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
     )
     .await;
-    assert_eq!(status, 400, "{payload}");
-    assert_eq!(
-        text(&payload, "message"),
-        "only an editor may decide a suggestion"
-    );
+    assert_eq!(status, 403, "{payload}");
+    assert_eq!(text(&payload, "reason"), "permission_denied");
 }
 
 #[tokio::test]

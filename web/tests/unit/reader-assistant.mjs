@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { capturePreviewTree } from "../../src/lib/assistant-preview.js";
 
 // Exercise Reader's actual selection capture and handoff, including the async
 // digest boundary. This catches pairing a retained quotation with a new file.
@@ -12,6 +13,7 @@ let completeDigest;
 let tree = { main: "a.md", texts: { "a.md": "same phrase" } };
 const capturedTrees = [];
 const ctx = vm.createContext({
+  mayEdit: true, publishedMode: false, publishedPublication: null, capturePreviewTree,
   pending: null, docText: "same phrase", viewing: null, selectionRevision: null,
   bar: { shown: true }, width: 600, assistantRequest: null,
   session: { paths: new Map([["a", "a.md"]]) }, openFile: "a",

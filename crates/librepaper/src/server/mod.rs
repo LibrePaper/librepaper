@@ -57,6 +57,8 @@ mod host_metrics;
 mod mcp;
 mod onboarding;
 pub mod origins;
+pub mod publication;
+mod publication_http;
 mod quarto_checkpoint;
 mod quota;
 mod reply;
@@ -1072,7 +1074,8 @@ impl Server {
                         sha,
                         resolved_at,
                     }) => {
-                        room.broadcast(
+                        room.broadcast_editors_except(
+                            None,
                             &json!({"type": "y-update", "update": encode_update(&update)}),
                         )
                         .await;

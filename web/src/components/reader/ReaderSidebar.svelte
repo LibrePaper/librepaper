@@ -45,6 +45,13 @@
     link = "",
     canShare = false,
     canSeeSharing = false,
+    mayPublish = false,
+    publishedVersion = null,
+    unpublishedChanges = false,
+    publicationReady = false,
+    publicationFailed = false,
+    onpublish = () => {},
+    onrefreshpublication = () => {},
     path = "",
     selection = null,
     selected = "",
@@ -221,8 +228,8 @@
               onreject={(comment) => ondecide?.(comment, "reject")}
               onrejectconfirmed={onrejectconfirmed}
               onhistory={onshowhistory} />
-          {:else if tab.id === "share" && canSeeSharing}
-            <Share open={panel === "share" && shown.comments} inline {slug} onclose={onshareclose} />
+          {:else if tab.id === "share" && (canSeeSharing || mayPublish)}
+            <Share open={panel === "share" && shown.comments} inline {slug} {canShare} {mayPublish} {publishedVersion} {unpublishedChanges} {publicationReady} {publicationFailed} {onpublish} {onrefreshpublication} onclose={onshareclose} />
           {:else if tab.id === "diagnostics"}
             <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0}
               onretrylocal={onretrylocal} main={previewMain} canOpen={canopendiagnostic}

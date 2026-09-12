@@ -7,7 +7,6 @@ export function createFramePreview({
   slug,
   getDocsOrigin,
   framePath,
-  api,
   setSource,
   send,
   onNavigate = () => {},
@@ -16,8 +15,6 @@ export function createFramePreview({
   let epoch = 0;
   let readyEpoch = -1;
   let kind = null;
-  let served = false;
-  let requestId = 0;
   let generation = 0;
   let source = null;
   let framedSource = null;
@@ -30,37 +27,16 @@ export function createFramePreview({
     const docsOrigin = getDocsOrigin();
     if (disposed || !docsOrigin) return false;
     const nextKind = framePath();
-    const serves = nextKind === "raw";
-    if (!nextKind || (!force && source && kind === nextKind && (served || !serves))) return false;
+    if (!nextKind || (!force && source && kind === nextKind && true)) return false;
 
     kind = nextKind;
     epoch += 1;
     readyEpoch = -1;
     deliveredGeneration = 0;
-    served = false;
     onNavigate({ epoch, kind });
     const base = `${docsOrigin}/${kind}/${slug}/?v=${++generation}`;
-    const mine = ++requestId;
-    if (!serves) {
-      source = base;
-      setSource(source);
-      return true;
-    }
     source = base;
-    Promise.resolve(api.frame())
-      .then((response) => (response.ok ? response.json() : null))
-      .catch(() => null)
-      .then((pass) => {
-        if (disposed || mine !== requestId) return;
-        served = Boolean(pass?.token);
-        source = served ? `${base}&until=${pass.until}&token=${pass.token}` : base;
-        // The previous iframe can report ready while the signed URL is
-        // pending. That acknowledgement belongs to the old DOM, not the
-        // replacement that setSource is about to mount.
-        readyEpoch = -1;
-        deliveredGeneration = 0;
-        setSource(source);
-      });
+    setSource(source);
     return true;
   }
 
@@ -125,13 +101,11 @@ export function createFramePreview({
   }
 
   function invalidate() {
-    requestId += 1;
     readyEpoch = -1;
   }
 
   function dispose() {
     disposed = true;
-    requestId += 1;
     latest = null;
     readyEpoch = -1;
   }

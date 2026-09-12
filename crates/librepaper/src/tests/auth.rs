@@ -9,6 +9,18 @@ use crate::auth::{
 };
 use crate::config::Configuration;
 
+async fn rendered_publication_id(base: &str, slug: &str) -> String {
+    let published = publish_display(
+        base,
+        &session_as(TEST_PUBLISHER),
+        slug,
+        b"<p>hello</p>",
+        &[],
+    )
+    .await;
+    text(&published["publication"], "id")
+}
+
 #[test]
 fn policies() {
     for (value, handle, allowed) in [
@@ -189,16 +201,17 @@ async fn comment_policy_refuses_and_attributes() {
     .await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
     let path = format!("/api/documents/{slug}/comments");
-    let comment = json!({"type": "comment", "exact": "hello", "body": "hi", "creator": "Impostor"});
+    let comment = json!({"type": "comment", "exact": "hello", "body": "hi", "creator": "Impostor", "publication_id": publication_id});
 
     // A comment link's role is a ceiling on what the switch grants, not a
     // grant on its own: an anonymous caller holding one is still refused
     // for lack of a signed-in account.
     let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
     let (status, payload) = post_keyed("", &key, &server.url, &path, comment.clone()).await;
-    assert_eq!(status, 400, "anonymous comment got {status} {payload}");
-    assert_eq!(text(&payload, "message"), "sign in to comment");
+    assert_eq!(status, 403, "anonymous comment got {status} {payload}");
+    assert_eq!(text(&payload, "error"), "commenter access is required");
 
     // Signed in: the name on the comment is the verified login, not the one
     // the client asked for. The switch admits this account, but writing
@@ -353,8 +366,9 @@ async fn a_google_account_comments_under_its_name() {
     .await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
     let path = format!("/api/documents/{slug}/comments");
-    let comment = json!({"type": "comment", "exact": "hello", "body": "hi", "creator": "Impostor"});
+    let comment = json!({"type": "comment", "exact": "hello", "body": "hi", "creator": "Impostor", "publication_id": publication_id});
     let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
 
     let anne = google_session_as("10769", "anne@umontreal.ca", "Anne Grandchamp");
@@ -374,11 +388,8 @@ async fn a_google_account_comments_under_its_name() {
     // than a provider.
     let elsewhere = google_session_as("2", "bob@mail.umontreal.ca", "Bob");
     let (status, payload) = post_keyed(&elsewhere, &key, &server.url, &path, comment).await;
-    assert_eq!(status, 400, "a subdomain was admitted: {payload}");
-    assert_eq!(
-        text(&payload, "message"),
-        "bob@mail.umontreal.ca may not comment here; this deployment allows an allowlist of 1 entry"
-    );
+    assert_eq!(status, 403, "a subdomain was admitted: {payload}");
+    assert_eq!(text(&payload, "error"), "commenter access is required");
 }
 
 // The two accounts a domain policy and a login policy each admit are disjoint,
@@ -772,8 +783,9 @@ async fn signed_in_comments_are_named_by_the_account() {
     let server = new_test_server().await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
     let path = format!("/api/documents/{slug}/comments");
-    let comment = json!({"type": "comment", "exact": "hello", "body": "hi", "creator": "Impostor"});
+    let comment = json!({"type": "comment", "exact": "hello", "body": "hi", "creator": "Impostor", "publication_id": publication_id});
     let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
 
     let (status, payload) = post_keyed(

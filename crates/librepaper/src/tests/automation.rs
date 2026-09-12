@@ -115,7 +115,7 @@ async fn automation_cannot_use_cached_owner_for_publish_list_or_delete() {
 }
 
 #[tokio::test]
-async fn automation_snapshot_is_link_scoped_and_consistent() {
+async fn automation_source_access_is_editor_scoped_and_consistent() {
     let server = new_test_server().await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
@@ -129,17 +129,32 @@ async fn automation_snapshot_is_link_scoped_and_consistent() {
         &format!("/api/documents/{slug}/snapshot"),
     )
     .await;
-    assert_eq!(status, 200, "{snapshot}");
-    assert_eq!(snapshot["role"], "reader");
-    assert_eq!(snapshot["capabilities"]["edit"], false);
+    assert_eq!(
+        status, 404,
+        "a reader automation link received a snapshot: {snapshot}"
+    );
+    assert!(
+        !snapshot.to_string().contains("hello world"),
+        "the reader refusal leaked editable content: {snapshot}"
+    );
+
+    let editor = mint_role(&server.url, &slug, "editor").await;
+    let (status, snapshot) = automation_get(
+        &session_as(TEST_PUBLISHER),
+        &editor,
+        &server.url,
+        &format!("/api/documents/{slug}/snapshot"),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "an editor automation link lost its snapshot: {snapshot}"
+    );
+    assert_eq!(snapshot["role"], "editor");
+    assert_eq!(snapshot["capabilities"]["edit"], true);
     assert_eq!(
         snapshot["source_sha"],
         crate::document::store::digest_of(snapshot["source"].as_str().unwrap())
-    );
-    assert_eq!(snapshot["main"], snapshot["tree"]["main"]);
-    assert_eq!(
-        snapshot["texts"][snapshot["main"].as_str().unwrap()],
-        snapshot["source"]
     );
 
     // The same cached owner session cannot use a link minted for another
@@ -186,6 +201,14 @@ async fn automation_annotation_is_attributed_to_the_link_and_deduplicated() {
     let server = new_test_server().await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
+    let publication = publish_display(
+        &server.url,
+        &session_as(TEST_PUBLISHER),
+        &slug,
+        b"<!doctype html><p>hello world</p>",
+        &[],
+    )
+    .await;
     let key = mint_role(&server.url, &slug, "commenter").await;
     let endpoint = format!("/api/documents/{slug}/comments");
     let payload = json!({
@@ -195,6 +218,7 @@ async fn automation_annotation_is_attributed_to_the_link_and_deduplicated() {
         "motivation": "commenting",
         "temp_id": "11111111-1111-4111-8111-111111111111",
         "request_id": "annotation-1",
+        "publication_id": publication["publication"]["id"],
     });
     let (status, first) = automation_post(
         &session_as(TEST_PUBLISHER),
@@ -299,9 +323,14 @@ async fn automation_never_elevates_a_nonowner_or_example_document() {
         &format!("/api/documents/{slug}/snapshot"),
     )
     .await;
-    assert_eq!(status, 200, "{snapshot}");
-    assert_eq!(snapshot["role"], "reader");
-    assert_eq!(snapshot["capabilities"]["edit"], false);
+    assert_eq!(
+        status, 404,
+        "a cached owner read source through a reader link: {snapshot}"
+    );
+    assert!(
+        !snapshot.to_string().contains("unowned"),
+        "source leaked: {snapshot}"
+    );
 
     // A non-owner is public to read through the explicit link, but an
     // automation request without an
@@ -323,10 +352,14 @@ async fn automation_never_elevates_a_nonowner_or_example_document() {
         &format!("/api/documents/{slug}/snapshot"),
     )
     .await;
-    assert_eq!(status, 200, "{snapshot}");
-    assert_eq!(snapshot["role"], "reader");
-    assert_eq!(snapshot["capabilities"]["comment"], false);
-    assert_eq!(snapshot["capabilities"]["edit"], false);
+    assert_eq!(
+        status, 404,
+        "an example document exposed a source snapshot: {snapshot}"
+    );
+    assert!(
+        !snapshot.to_string().contains("unowned"),
+        "source leaked: {snapshot}"
+    );
 }
 
 type ChatSocket =

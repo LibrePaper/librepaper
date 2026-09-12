@@ -315,7 +315,6 @@ async fn an_acknowledged_edit_survives_a_restart() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
     let mut editor = Editing::join(&server.url, &slug, &session_as(TEST_PUBLISHER), "author").await;
     assert_eq!(
         editor.text(),
@@ -339,12 +338,12 @@ async fn an_acknowledged_edit_survives_a_restart() {
     let ack = editor.expect("y-ack").await;
     assert!(ack["seq"].as_i64().unwrap_or(0) >= 1, "got {ack}");
 
-    // A different process over the same storage. This reader holds the link
-    // `publish` printed, not merely the slug.
+    // A different process over the same storage still serves an editor's
+    // source after the acknowledged write.
     let (restarted, _instance) = server_over(server.dir.path(), Configuration::default()).await;
     let (status, payload) = get_json_keyed(
+        &session_as(TEST_PUBLISHER),
         "",
-        &key,
         &restarted,
         &format!("/api/documents/{slug}/source"),
     )
@@ -406,10 +405,9 @@ async fn an_unacknowledged_edit_synchronises_after_a_reconnect() {
     );
 }
 
-/// A reader receives the document and cannot change it. This is the gate that
-/// makes the source readable by everyone safe to have.
+/// A reader never joins the source synchronization channel.
 #[tokio::test]
-async fn a_reader_receives_the_document_and_cannot_change_it() {
+async fn a_reader_is_refused_source_synchronization() {
     needs_browser!();
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
@@ -417,26 +415,14 @@ async fn a_reader_receives_the_document_and_cannot_change_it() {
     let key = read_key_of(&document);
     // No cookie, and no account: a reader who holds the link `publish`
     // printed, not the publisher, so not an editor.
-    let mut reader = Editing::join_keyed(&server.url, &slug, "", &key, "reader").await;
-    assert_eq!(reader.text(), TEST_MARKDOWN, "a reader is given the text");
-
-    reader.type_at(0, "a reader typing. ").await;
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let held = server.instance.rooms.get(&slug).await.source().await;
-    assert_eq!(held, TEST_MARKDOWN, "a reader changed the document");
-
-    // And an editor's change reaches them, which is how they see the current
-    // text at all.
-    let mut author = Editing::join(&server.url, &slug, &session_as(TEST_PUBLISHER), "author").await;
-    author.type_at(0, "from the author. ").await;
-    let relayed = reader.expect("y-update").await;
-    reader
-        .browser
-        .apply("reader", &unb64(relayed["update"].as_str().unwrap()));
+    let mut reader = dial_websocket_keyed(&server.url, &slug, &key).await;
+    assert_eq!(reader.read().await["type"], "hello");
+    reader.write(json!({"type": "y-open", "vector": ""})).await;
+    let refusal = reader.read().await;
+    assert_eq!(refusal["type"], "error", "{refusal}");
     assert!(
-        reader.text().contains("from the author."),
-        "a reader did not receive the edit: {:?}",
-        reader.text()
+        !refusal.to_string().contains(TEST_MARKDOWN),
+        "source synchronization refusal leaked the document: {refusal}"
     );
 }
 
@@ -832,8 +818,10 @@ async fn a_large_document_is_fetched_rather_than_framed() {
     .await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
-    let mut socket = dial_websocket_keyed(&server.url, &slug, &key).await;
+    let cookie = session_as(TEST_PUBLISHER);
+    let mut socket = dial_websocket_with(&server.url, &slug, &format!("Cookie: {cookie}\r\n"))
+        .await
+        .unwrap();
     socket.read().await; // hello
     socket.write(json!({"type": "y-open"})).await;
     let state = socket.read().await;
@@ -847,7 +835,7 @@ async fn a_large_document_is_fetched_rather_than_framed() {
     let response = client()
         .get(format!("{}{reference}", server.url))
         .header("x-librepaper-client", "1")
-        .header(crate::server::LINK_HEADER, &key)
+        .header("cookie", &cookie)
         .send()
         .await
         .unwrap();
@@ -861,7 +849,7 @@ async fn a_large_document_is_fetched_rather_than_framed() {
     let refused = client()
         .get(format!("{}{forged}", server.url))
         .header("x-librepaper-client", "1")
-        .header(crate::server::LINK_HEADER, &key)
+        .header("cookie", &cookie)
         .send()
         .await
         .unwrap();
@@ -1048,10 +1036,7 @@ async fn the_browser_module_and_the_server_agree() {
 async fn the_frame_is_a_shell_for_what_the_browser_renders() {
     let server = new_test_server().await;
     let slug = text(&publish_with_source(&server.url).await, "slug");
-    // With a frame token, so that what is being checked is the format rule
-    // and not the token rule.
-    let query = frame_query(&session_as(TEST_PUBLISHER), "", &server.url, &slug).await;
-    let response = on_docs_host(&server.url, &format!("/raw/{slug}/?{query}")).await;
+    let response = on_docs_host(&server.url, &format!("/raw/{slug}/")).await;
     assert_eq!(response.status().as_u16(), 200);
     let body = response.text().await.unwrap();
     assert!(

@@ -4,7 +4,7 @@ import { applyDecision } from "../suggestions.js";
 // The annotation list stays reactive in the reader. This controller owns its
 // optimistic commands and their reconciliation with the authoritative room.
 // Anchoring is supplied by the reader because it depends on the visible frame.
-export function createAnnotations({ slug, list, update, anchor, repaint, send, changed }) {
+export function createAnnotations({ slug, list, update, anchor, repaint, send, changed, publicationId = () => "" }) {
   const outbox = submissions({ slug, changed });
   const publish = () => update(list());
 
@@ -35,7 +35,7 @@ export function createAnnotations({ slug, list, update, anchor, repaint, send, c
     anchor([optimistic]);
     update([...list(), optimistic]);
     repaint();
-    submit({ type: "comment", ...selection, motivation, body, ...editingFields, ...colorFields, temp_id });
+    submit({ type: "comment", ...selection, publication_id: selection.publication_id ?? publicationId() ?? "", motivation, body, ...editingFields, ...colorFields, temp_id });
   }
 
   function reply(parent, body, creator) {

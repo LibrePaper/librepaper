@@ -29,6 +29,18 @@ async fn publish(base: &str, source: &str) -> serde_json::Value {
     document
 }
 
+async fn editor_key(base: &str, slug: &str) -> String {
+    let (status, link) = post_as(
+        &session_as(TEST_PUBLISHER),
+        base,
+        &format!("/api/documents/{slug}/share"),
+        json!({"link":{"role":"editor","until":"never"}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{link}");
+    text(&link, "key")
+}
+
 #[tokio::test]
 async fn assistant_anchor_targets_second_occurrence_and_keeps_revision() {
     let server = new_test_server().await;
@@ -89,7 +101,7 @@ async fn assistant_batch_annotation_and_rate_admission_are_whole_pass() {
         let document = publish(&server.url, "# Paper\n\nwords\n").await;
         let slug = text(&document, "slug");
         let item = json!({"anchor":{"path":"main.md","exact":"words","prefix":"","suffix":"","position":9},"proposed":"text"});
-        let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+        let key = editor_key(&server.url, &slug).await;
         let (status, result) = post_keyed(
             &session_as(TEST_PUBLISHER),
             &key,
@@ -146,7 +158,7 @@ async fn assistant_batch_item_cap_and_stale_accept_preserve_source() {
     let server = new_test_server().await;
     let document = publish(&server.url, "# Paper\n\nwords\n").await;
     let slug = text(&document, "slug");
-    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let key = editor_key(&server.url, &slug).await;
     let (_, snapshot) =
         shell_get(&server.url, &format!("/api/documents/{slug}/snapshot"), "").await;
     let revision = text(&snapshot, "sha");

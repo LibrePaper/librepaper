@@ -7,13 +7,14 @@ printed at startup as the `cost_policy` event when output is redirected, summari
 briefly on an interactive terminal, and available in full from the loopback-only
 status surface.
 
-LibrePaper keeps source, input assets, annotations, session state, and source
-history. It does not retain rendered PDF, HTML, DOCX, preview images, thumbnails,
-or generated bundles. A browser or the local companion may hold a result while
-it is being viewed, and a user may export a result to their own files, but the
-origin, browser's persistent document store, edge caches, and backups do not
-retain that result. An input PDF supplied as a document asset remains an input
-asset and is charged normally.
+LibrePaper keeps source, input assets, annotations, session state, source
+history, and one explicitly published HTML display bundle per document. Local
+previews remain transient. Typing, saving, and compiling previews never upload
+a display bundle. Publication uploads only missing content-addressed objects;
+unchanged display assets are reused. Replacing a publication reclaims objects
+no longer referenced, and abandoned staging uploads expire. Rendered PDF, DOCX,
+preview images, and thumbnails are not retained as publications. An input PDF
+supplied as a document asset remains an input asset and is charged normally.
 
 ## Operator controls
 

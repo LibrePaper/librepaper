@@ -1648,6 +1648,7 @@ async fn comment_view_agrees_across_snapshot_and_event_for_every_viewer() {
         kind: "comment".into(),
         body: "look here".into(),
         exact: "A".into(),
+        publication_id: "rendered-publication".into(),
         temp_id: "223e4567-e89b-12d3-a456-426614174000".into(),
         request_id: "view-agreement-request".into(),
         ..Default::default()
@@ -1696,6 +1697,13 @@ async fn comment_view_agrees_across_snapshot_and_event_for_every_viewer() {
     let shared = room.comment_event_for(&response, "", false).await;
     assert_eq!(shared["comment"]["mine"].as_bool(), Some(false));
     assert_eq!(shared["comment"]["deletable"].as_bool(), Some(false));
+
+    // A source event queued before a concurrent deletion can outlive its
+    // row. Missing current visibility must never expose its original bytes.
+    let removed = serde_json::json!({"type":"comment","comment":{"id":"already-deleted","exact":"private source","source":{"exact":"private source"}}});
+    let redacted = room.comment_event_for(&removed, "", false).await;
+    assert_eq!(redacted["type"], "annotation-redacted");
+    assert!(!redacted.to_string().contains("private source"));
 }
 
 /// Brief pauses cannot bypass the journal's write floor, and continuous

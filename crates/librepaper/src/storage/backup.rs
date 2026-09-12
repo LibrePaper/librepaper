@@ -389,39 +389,16 @@ fn digest(body: &[u8]) -> String {
     hex::encode(Sha256::digest(body))
 }
 
-/// Namespaces used by renderers and result publication. They are deliberately
-/// kept separate from `content/<id>/assets/`, which is an input namespace and
-/// must survive a rendering migration.
-pub fn is_generated_output_key(key: &str) -> bool {
-    key.starts_with("quarto/")
-        || key.starts_with("documents/")
-        || key.starts_with("renderings/")
-        || (key.starts_with("content/") && key.split('/').nth(2) == Some("renderings"))
-}
-
-/// Remove references to old renderer products from a catalogue image. This is
-/// used for new backups and restores of old backups alike. Annotation rows
-/// and their source/output anchors remain durable; only renderer publication
-/// and selection rows are removed.
-fn catalog_input_object_keys(
-    connection: &Connection,
-    objects_path: Option<&Path>,
-) -> BackupResult<HashSet<String>> {
-    let mut protected = HashSet::new();
+/// Durable objects reachable from the current catalogue. This graph is
+/// preserved verbatim in every recovery point so source history and in-flight
+/// source writes remain restorable.
+fn catalog_referenced_object_keys(connection: &Connection) -> BackupResult<HashSet<String>> {
+    let mut referenced = HashSet::new();
     for sql in [
         "SELECT object_key FROM checkpoint_asset_refs",
         "SELECT object_key FROM source_history_objects",
-        // A lease is a live writer's protection claim even before its object
-        // is adopted by a committed history record.  Backups must retain the
-        // object and the lease so recovery cannot expose an in-flight write
-        // to the renderer retirement migration.
         "SELECT object_key FROM source_history_write_leases",
-        "SELECT object_key FROM object_accounting
-         WHERE kind NOT IN ('rendering','rendering-provenance','quarto','result')
-           AND object_key NOT LIKE 'quarto/%'
-           AND object_key NOT LIKE 'documents/%'
-           AND object_key NOT LIKE 'renderings/%'
-           AND object_key NOT GLOB 'content/*/renderings/*'",
+        "SELECT object_key FROM object_accounting",
     ] {
         let mut statement = connection
             .prepare(sql)
@@ -430,47 +407,14 @@ fn catalog_input_object_keys(
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(|error| BackupError::Storage(error.to_string()))?;
         for row in rows {
-            protected.insert(row.map_err(|error| BackupError::Storage(error.to_string()))?);
+            referenced.insert(row.map_err(|error| BackupError::Storage(error.to_string()))?);
         }
     }
-    // Old catalogues did not have checkpoint_asset_refs. Parse their retained
-    // trees as a conservative compatibility path so an input PDF or image
-    // under a legacy namespace is never collected with renderer products.
-    if let Some(objects_path) = objects_path {
-        let mut statement = connection
-            .prepare(
-                "SELECT d.storage_id,c.sha FROM checkpoints c
-                 JOIN documents d ON d.slug=c.slug WHERE c.tree_sha<>''",
-            )
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        for row in rows {
-            let (storage_id, sha) = row.map_err(|error| BackupError::Storage(error.to_string()))?;
-            let path = objects_path.join(crate::storage::blob::checkpoint_key(&storage_id, &sha));
-            let body = match fs::read(&path) {
-                Ok(body) => body,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(BackupError::Storage(error.to_string())),
-            };
-            let Ok(tree) = serde_json::from_slice::<crate::document::history::Tree>(&body) else {
-                continue;
-            };
-            for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
-                protected.insert(crate::storage::blob::asset_key(&storage_id, &entry.sha));
-            }
-        }
-    }
-    Ok(protected)
+    Ok(referenced)
 }
 
-/// Check the input graph before any renderer namespace is filtered. A missing
-/// input must fail the backup/restore rather than silently turning a valid
-/// source tree into an incomplete recovery point.
-fn verify_input_graph(objects_path: &Path, keys: &HashSet<String>) -> BackupResult<()> {
+/// Check every catalogue-reachable object before copying a recovery point.
+fn verify_referenced_object_graph(objects_path: &Path, keys: &HashSet<String>) -> BackupResult<()> {
     for key in keys {
         if !local_relative_valid(key) {
             return Err(BackupError::Corrupt(format!(
@@ -488,37 +432,6 @@ fn verify_input_graph(objects_path: &Path, keys: &HashSet<String>) -> BackupResu
             )));
         }
     }
-    Ok(())
-}
-
-fn strip_generated_output_references(
-    connection: &Connection,
-    protected_inputs: &HashSet<String>,
-) -> BackupResult<()> {
-    connection
-        .execute_batch(
-            "BEGIN IMMEDIATE;
-             DELETE FROM renderings;
-             DELETE FROM quarto_selections;
-             DELETE FROM quarto_selection_epochs;
-             DELETE FROM quarto_selection_history;
-             COMMIT;",
-        )
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    // SQL LIKE keeps this bounded to renderer namespaces; the input set is
-    // checked explicitly so shared legacy objects remain accounted.
-    connection
-        .execute(
-            "DELETE FROM object_accounting
-             WHERE (object_key LIKE 'quarto/%'
-                 OR object_key LIKE 'documents/%'
-                 OR object_key LIKE '%/renderings/%'
-                 OR object_key LIKE 'renderings/%')
-               AND object_key NOT IN (SELECT value FROM json_each(?1))",
-            [serde_json::to_string(protected_inputs)
-                .map_err(|error| BackupError::Json(error.to_string()))?],
-        )
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
     Ok(())
 }
 
@@ -741,12 +654,6 @@ pub async fn create_backup(
     let mut created_objects = Vec::with_capacity(source_keys.len());
     let copy_result = async {
         for source_key in source_keys {
-            // Remote recovery points follow the same no-retained-renderings
-            // rule as local ones. Input assets use the content/.../assets
-            // namespace and do not match this predicate.
-            if is_generated_output_key(source_key) {
-                continue;
-            }
             if !seen.insert(source_key) {
                 return Err(BackupError::Invalid("duplicate source object key".into()));
             }
@@ -841,9 +748,6 @@ pub async fn restore_backup(
 ) -> BackupResult<BackupManifest> {
     let manifest = verify_backup(blobs, backup_id).await?;
     for object in &manifest.objects {
-        if is_generated_output_key(&object.source_key) {
-            continue;
-        }
         let body = blobs.get(&object.backup_key).await?;
         blobs
             .put(&object.source_key, body, "application/octet-stream")
@@ -1312,7 +1216,7 @@ fn verify_catalog_references(connection: &Connection, objects_path: &Path) -> Ba
         Ok(())
     }
 
-    // Every immutable checkpoint and rendering row names an object that must
+    // Every immutable checkpoint row names an object that must
     // survive the restore.  A document's mutable room/session is deliberately
     // not required here: old publications are valid before a room is opened.
     let mut statement = connection
@@ -1592,13 +1496,9 @@ pub fn create_local_backup(
     fs::create_dir_all(backup_root).map_err(|error| BackupError::Storage(error.to_string()))?;
     let mut source_object_paths = Vec::new();
     walk_regular_files(objects_path, Path::new(""), &mut source_object_paths)?;
-    let protected_inputs = catalog_input_object_keys(&connection, Some(objects_path))?;
-    verify_input_graph(objects_path, &protected_inputs)?;
-    source_object_paths.retain(|path| {
-        !path.starts_with("recovery/")
-            && path != "index.json"
-            && (!is_generated_output_key(path) || protected_inputs.contains(path))
-    });
+    let protected_inputs = catalog_referenced_object_keys(&connection)?;
+    verify_referenced_object_graph(objects_path, &protected_inputs)?;
+    source_object_paths.retain(|path| !path.starts_with("recovery/") && path != "index.json");
     let object_input_bytes = source_object_paths
         .iter()
         .map(|relative| {
@@ -1682,7 +1582,6 @@ pub fn create_local_backup(
             .map_err(|error| BackupError::Storage(error.to_string()))?;
         let snapshot_connection = Connection::open(&snapshot_path)
             .map_err(|error| BackupError::Storage(error.to_string()))?;
-        strip_generated_output_references(&snapshot_connection, &protected_inputs)?;
         snapshot_connection
             .execute_batch("PRAGMA wal_checkpoint(FULL);")
             .map_err(|error| BackupError::Storage(error.to_string()))?;
@@ -1938,9 +1837,8 @@ pub fn restore_local_backup(
     let manifest = verify_local_backup(backup_dir)?;
     let backup_catalog = Connection::open(backup_dir.join(&manifest.catalog.relative))
         .map_err(|error| BackupError::Corrupt(error.to_string()))?;
-    let protected_inputs =
-        catalog_input_object_keys(&backup_catalog, Some(&backup_dir.join("objects")))?;
-    verify_input_graph(&backup_dir.join("objects"), &protected_inputs)?;
+    let protected_inputs = catalog_referenced_object_keys(&backup_catalog)?;
+    verify_referenced_object_graph(&backup_dir.join("objects"), &protected_inputs)?;
     if destination.exists() {
         return Err(BackupError::Invalid(
             "restore destination already exists".into(),
@@ -1953,10 +1851,7 @@ pub fn restore_local_backup(
     let logical_input_bytes = if manifest.logical_input_bytes == 0 {
         std::iter::once(&manifest.catalog)
             .chain(std::iter::once(&manifest.identity))
-            .chain(manifest.objects.iter().filter(|file| {
-                let key = file.relative.strip_prefix("objects/").unwrap_or("");
-                !is_generated_output_key(key) || protected_inputs.contains(key)
-            }))
+            .chain(manifest.objects.iter())
             .chain(manifest.secrets.iter())
             .map(|file| file.length)
             .sum()
@@ -1978,10 +1873,7 @@ pub fn restore_local_backup(
     let result = (|| {
         for file in std::iter::once(&manifest.catalog)
             .chain(std::iter::once(&manifest.identity))
-            .chain(manifest.objects.iter().filter(|file| {
-                let key = file.relative.strip_prefix("objects/").unwrap_or("");
-                !is_generated_output_key(key) || protected_inputs.contains(key)
-            }))
+            .chain(manifest.objects.iter())
             .chain(manifest.secrets.iter())
         {
             copy_record(backup_dir, &temporary, file)?;
@@ -1989,9 +1881,6 @@ pub fn restore_local_backup(
         }
         let restored_catalog = Connection::open(temporary.join(&manifest.catalog.relative))
             .map_err(|error| BackupError::Corrupt(error.to_string()))?;
-        // A legacy recovery point may still contain renderer rows even when
-        // its object files are omitted from the restored tree.
-        strip_generated_output_references(&restored_catalog, &protected_inputs)?;
         let integrity: String = restored_catalog
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .map_err(|error| BackupError::Corrupt(error.to_string()))?;
@@ -2581,22 +2470,6 @@ mod tests {
             .await
             .expect("object");
 
-        let quarto_objects = [
-            ("quarto/blobs/sid/figure", "figure bytes"),
-            (
-                "quarto/bundles/sid/render/manifest.json",
-                "bundle provenance",
-            ),
-            ("quarto/selections/sid/html.json", "selected render"),
-            ("quarto/selections/sid/pdf.json", "selected render"),
-        ];
-        for (key, content) in quarto_objects {
-            objects
-                .put(key, content.as_bytes().to_vec(), "application/octet-stream")
-                .await
-                .expect("Quarto object");
-        }
-
         catalog
             .create_document(&crate::storage::catalog::NewDocument {
                 slug: "paper".into(),
@@ -2618,54 +2491,6 @@ mod tests {
                 main: "paper.qmd".into(),
             })
             .expect("Quarto document");
-        let authority = crate::storage::catalog::MutationAuthority {
-            account_id: "",
-            owner_key: "backup-owner",
-            generation: "",
-            link_hash: "",
-            policy_editor: false,
-            automation: false,
-            unowned_publisher: false,
-            execution_epoch: "",
-            agent_checkpoint: None,
-        };
-        for context in ["html", "pdf"] {
-            let key = format!("quarto/selections/sid/{context}.json");
-            catalog
-                .reserve_object_change_with_authority(
-                    crate::storage::catalog::ObjectReservationRequest {
-                        slug: "paper",
-                        operation_id: context,
-                        object_key: &key,
-                        kind: "quarto",
-                        new_bytes: "selected render".len() as i64,
-                        owner_limit: -1,
-                        total_limit: -1,
-                    },
-                    authority,
-                )
-                .expect("reserve selection");
-            catalog
-                .commit_quarto_selection_with_authority(
-                    "sid",
-                    context,
-                    &key,
-                    "quarto",
-                    &crate::quarto::sha256(b"selected render"),
-                    &crate::quarto::Selection {
-                        document_id: "paper".into(),
-                        context_id: context.into(),
-                        generation: 1,
-                        render_id: "render".into(),
-                        source_revision: "source".into(),
-                    },
-                    authority,
-                )
-                .expect("commit selection");
-        }
-        catalog
-            .clear_quarto_selection_with_authority("sid", "paper", "pdf", authority)
-            .expect("clear selection while retaining epoch");
 
         let manifest = create_local_backup(&paths, backup_root.path(), "point-1", 10)
             .expect("create local backup");
@@ -2675,11 +2500,6 @@ mod tests {
             digest(
                 &fs::read(backup_root.path().join("point-1/catalog.db")).expect("snapshot catalog")
             )
-        );
-        assert_ne!(
-            manifest.catalog.digest,
-            catalog_snapshot_digest(catalog_path).expect("live catalog digest"),
-            "the backup catalog should record the sanctioned renderer-reference rewrite"
         );
         let payload_bytes = std::iter::once(&manifest.catalog)
             .chain(std::iter::once(&manifest.identity))
@@ -2727,38 +2547,6 @@ mod tests {
             fs::read(restored.join("secrets/session.key")).expect("restored session key"),
             fs::read(secrets.join("session.key")).expect("source session key")
         );
-        let restored_catalog =
-            Catalog::open(restored.join("catalog.db")).expect("restored catalog");
-        assert!(restored_catalog
-            .quarto_selection("sid", "paper", "html")
-            .unwrap()
-            .is_none());
-        assert!(restored_catalog
-            .quarto_selection("sid", "paper", "pdf")
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            restored_catalog
-                .quarto_selection_generation("sid", "paper", "pdf")
-                .unwrap(),
-            0
-        );
-        let restored_cost_state: String = restored_catalog
-            .with_connection(|connection| {
-                connection
-                    .query_row("SELECT state FROM cost_state WHERE id=1", [], |row| {
-                        row.get(0)
-                    })
-                    .map_err(crate::storage::catalog::CatalogError::from)
-            })
-            .expect("restored cost state");
-        assert!(restored_cost_state.contains("\"ordinary\":37"));
-        for (key, content) in quarto_objects {
-            assert!(
-                fs::read(restored.join("objects").join(key)).is_err(),
-                "generated output survived restore: {key} ({content})"
-            );
-        }
     }
 
     #[tokio::test]

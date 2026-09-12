@@ -50,6 +50,7 @@ fn adapter_preserves_fields_used_by_retry_identity() {
     let message = Message {
         kind: "comment".into(),
         motivation: "editing".into(),
+        publication_id: "publication-1".into(),
         body: " note ".into(),
         exact: "passage".into(),
         prefix: "before".into(),
@@ -62,6 +63,7 @@ fn adapter_preserves_fields_used_by_retry_identity() {
     let command = message.into_command().unwrap();
     let Command::Comment {
         body,
+        publication_id,
         exact,
         proposed,
         temp_id,
@@ -72,6 +74,7 @@ fn adapter_preserves_fields_used_by_retry_identity() {
         panic!("comment wire frame did not produce a Comment command");
     };
     assert_eq!(body, " note ");
+    assert_eq!(publication_id, "publication-1");
     assert_eq!(exact, "passage");
     assert_eq!(proposed, Some(String::new()));
     assert_eq!(temp_id, "temp-1");

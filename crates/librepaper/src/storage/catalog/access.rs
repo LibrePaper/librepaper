@@ -104,6 +104,49 @@ pub(super) fn envelope_key_id(envelope: &[u8]) -> String {
 }
 
 impl Catalog {
+    /// Recheck the non-secret account part of a publication display
+    /// capability.  This is a read authorization rather than a mutation, but
+    /// it has the same revocation boundary: an erased account, a rotated
+    /// session, or a removed named-editor grant stops new document-origin
+    /// responses immediately.
+    pub fn display_account_authorized(
+        &self,
+        slug: &str,
+        account_id: &str,
+        generation_fingerprint: &str,
+    ) -> CatalogResult<bool> {
+        self.with_connection(|connection| {
+            let account = connection
+                .query_row(
+                    "SELECT status, session_generation FROM accounts WHERE id=?1",
+                    [account_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            let Some((status, generation)) = account else {
+                return Ok(false);
+            };
+            if status != "active"
+                || hex::encode(sha2::Sha256::digest(generation.as_bytes()))
+                    != generation_fingerprint
+            {
+                return Ok(false);
+            }
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM documents d
+                  WHERE d.slug=?1 AND d.status='active'
+                    AND (d.owner_id=?2 OR EXISTS(
+                        SELECT 1 FROM grants g WHERE g.slug=d.slug
+                          AND g.account_id=?2 AND g.role='editor')))",
+                    params![slug, account_id],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+    }
+
     /// Check a mutation actor against the live document and access rows.  This
     /// is deliberately evaluated inside the caller's write transaction so a
     /// link expiry, policy change, grant revocation, or account generation

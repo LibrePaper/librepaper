@@ -60,10 +60,11 @@ try {
       {id:'comment',start:start+6,end:start+11,motivation:'commenting'}
     ]},'*');
   `);
-  await until("suggestion painted once", () => page.evaluate('document.querySelectorAll("mark[data-proposed]").length === 1'), 5000);
+  await until("suggestion painted once", () => page.evaluate('document.querySelectorAll(".librepaper-suggestion-synthetic").length === 1'), 5000);
   assert.equal(await page.evaluate('[...document.querySelectorAll("mark[data-librepaper~=suggestion]")].map(m=>m.textContent).join("")'), 'quick brown fox');
   assert.equal(await page.evaluate('document.querySelectorAll("p strong, p em, p a[href]").length'), 3);
-  assert.equal(await page.evaluate('getComputedStyle(document.querySelector("mark[data-proposed]"),"::after").content'), '"slow red dog"');
+  assert.equal(await page.evaluate('document.querySelector(".librepaper-suggestion-synthetic").textContent'), 'slow red dog');
+  assert.equal(await page.evaluate('document.querySelector(".librepaper-suggestion-synthetic").getAttribute("aria-label")'), 'Suggested insertion: slow red dog');
   await page.evaluate(`postMessage({librepaper:true,type:'redlines',items:[
     {kind:'insert',start:window.trackedStart,end:window.trackedStart+15,who:'Editor'},
     {kind:'delete',at:window.trackedStart,text:'old wording',who:'Editor'}
@@ -71,12 +72,12 @@ try {
   await until("redlines painted", () => page.evaluate('Boolean(document.querySelector("mark.librepaper-del"))'), 5000);
   assert.equal(await page.evaluate('[...document.querySelectorAll("mark.librepaper-ins")].map(m=>m.textContent).join("")'), 'quick brown fox');
   assert.equal(await page.evaluate('getComputedStyle(document.querySelector("mark.librepaper-del"),"::before").content'), '"old wording"');
-  assert.equal(await page.evaluate('document.body.textContent'), original);
-  assert.equal(await page.evaluate('document.querySelectorAll("mark[data-proposed]").length'), 1);
+  assert.equal(await page.evaluate('document.body.textContent.replace("slow red dog", "")'), original);
+  assert.equal(await page.evaluate('document.querySelectorAll(".librepaper-suggestion-synthetic").length'), 1);
   await page.evaluate(`postMessage({librepaper:true,type:'redlines',items:[]},'*')`);
   await until("redlines cleared", () => page.evaluate('!document.querySelector("mark.librepaper-ins, mark.librepaper-del")'), 5000);
   assert.equal(await page.evaluate('document.querySelectorAll("mark[data-librepaper~=comment]").length'), 1);
-  assert.equal(await page.evaluate('document.body.textContent'), original);
+  assert.equal(await page.evaluate('document.body.textContent.replace("slow red dog", "")'), original);
   const readyBeforePoint = await page.evaluate('window.published.length');
   await page.evaluate(`postMessage({librepaper:true,type:'highlight',ranges:[
     {id:'point',start:window.trackedStart+2,end:window.trackedStart+2,point:true,motivation:'commenting'},
@@ -84,7 +85,7 @@ try {
     {id:'custom',start:window.trackedStart,end:window.trackedStart+5,motivation:'commenting',color:'#ff8800'}
   ]},'*')`);
   await until("point bubble painted", () => page.evaluate('Boolean(document.querySelector(".librepaper-point-bubble"))'), 5000);
-  assert.equal(await page.evaluate('document.body.textContent'), original, "point marker has no text");
+  assert.equal(await page.evaluate('document.body.textContent.replace("slow red dog", "")'), original, "point marker has no text");
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(await page.evaluate('window.published.length'), readyBeforePoint, "annotation painting does not republish ready");
   assert.match(await page.evaluate('getComputedStyle(document.querySelector("mark[data-librepaper~=custom]")).backgroundColor'), /color\(srgb 1 0\.53333\d* 0 \/ 0\.42\)|rgba\(255, 136, 0, 0\.42\)/);

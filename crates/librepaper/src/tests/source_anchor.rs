@@ -18,11 +18,10 @@ fn valid_anchor() -> serde_json::Value {
     })
 }
 
-/// A comment sent with a source anchor keeps it through a broadcast, through
-/// the REST listing, and across a restart -- the point of storing it rather
-/// than recomputing it.
+/// A source anchor remains durable for editors but never crosses the reader
+/// annotation channel, including after a reload.
 #[tokio::test]
-async fn a_source_anchor_survives_broadcast_listing_and_reload() {
+async fn a_source_anchor_stays_private_across_broadcast_listing_and_reload() {
     let server = new_test_server().await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
@@ -51,35 +50,64 @@ async fn a_source_anchor_survives_broadcast_listing_and_reload() {
     assert_eq!(source["position"], 4);
     let comment_id = text(&payload["comment"], "id");
 
-    // The same shape reaches every open socket.
+    // A source-side comment has no rendered-publication identity. The reader
+    // channel receives no annotation payload for it.
     let broadcast = socket.read().await;
-    assert_eq!(broadcast["type"], "comment");
-    assert_eq!(broadcast["comment"]["id"], comment_id);
-    assert_eq!(broadcast["comment"]["source"]["path"], "main.md");
+    assert_eq!(broadcast["type"], "annotation-redacted", "{broadcast}");
+    assert!(broadcast.get("comment").is_none(), "{broadcast}");
+
+    let (status, reply) = post(
+        &server.url,
+        &path,
+        json!({"type": "reply", "comment_id": comment_id, "body": "editorial follow-up"}),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "replying to source comment got {status}: {reply}"
+    );
+    let reply_broadcast = socket.read().await;
+    assert_eq!(
+        reply_broadcast["type"], "annotation-redacted",
+        "{reply_broadcast}"
+    );
+    assert!(reply_broadcast.get("reply").is_none(), "{reply_broadcast}");
 
     // And the listing.
     let (status, listing) = get_json_keyed("", &key, &server.url, &path).await;
     assert_eq!(status, 200);
-    let found = listing["comments"]
+    assert!(
+        listing["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|comment| text(comment, "id") != comment_id),
+        "a source-side annotation reached the reader snapshot: {listing}"
+    );
+
+    let (status, editor_listing) =
+        get_json_as(&session_as(TEST_PUBLISHER), &server.url, &path).await;
+    assert_eq!(status, 200, "{editor_listing}");
+    let editor_found = editor_listing["comments"]
         .as_array()
         .unwrap()
         .iter()
         .find(|c| text(c, "id") == comment_id)
-        .expect("the comment is listed");
-    assert_eq!(found["source"]["exact"], "brown fox");
+        .expect("editor can read the source anchor");
+    assert_eq!(editor_found["source"]["exact"], "brown fox");
 
     // And a fresh process reading the same storage.
     let (restarted, _instance) = server_over(server.dir.path(), Configuration::default()).await;
-    let (status, listing) = get_json_keyed("", &key, &restarted, &path).await;
+    let (status, listing) = get_json_as(&session_as(TEST_PUBLISHER), &restarted, &path).await;
     assert_eq!(status, 200, "{listing}");
     let found = listing["comments"]
         .as_array()
         .unwrap()
         .iter()
         .find(|c| text(c, "id") == comment_id)
-        .expect("the comment survived the restart");
-    assert_eq!(found["source"]["path"], "main.md");
+        .expect("the source anchor survived the restart");
     assert_eq!(found["source"]["exact"], "brown fox");
+    assert_eq!(found["source"]["path"], "main.md");
     assert_eq!(found["source"]["prefix"], "the quick ");
     assert_eq!(found["source"]["suffix"], " jumps");
     assert_eq!(found["source"]["position"], 4);
@@ -170,17 +198,30 @@ async fn post_sourceless_comment(
     key: &str,
     path: &str,
     body: &str,
+    publication_id: &str,
 ) -> String {
     let (status, payload) = post_keyed(
         cookie,
         key,
         base,
         path,
-        json!({"type": "comment", "exact": "hello", "body": body}),
+        json!({"type": "comment", "exact": "hello", "body": body, "publication_id": publication_id}),
     )
     .await;
     assert_eq!(status, 200, "{payload}");
     text(&payload["comment"], "id")
+}
+
+async fn rendered_publication_id(base: &str, slug: &str) -> String {
+    let published = publish_display(
+        base,
+        &session_as(TEST_PUBLISHER),
+        slug,
+        b"<p>hello</p>",
+        &[],
+    )
+    .await;
+    text(&published["publication"], "id")
 }
 
 #[tokio::test]
@@ -192,8 +233,16 @@ async fn anchor_backfill_is_accepted_once_from_the_author() {
     // A comment link, since a visitor with no account still needs one to
     // write here.
     let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
-    let comment_id =
-        post_sourceless_comment(&server.url, &cookie, &key, &path, "alpha's comment").await;
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
+    let comment_id = post_sourceless_comment(
+        &server.url,
+        &cookie,
+        &key,
+        &path,
+        "alpha's comment",
+        &publication_id,
+    )
+    .await;
 
     let (status, payload) = post_keyed(
         &cookie,
@@ -206,7 +255,21 @@ async fn anchor_backfill_is_accepted_once_from_the_author() {
     assert_eq!(status, 200, "the first anchor got {status} {payload}");
     assert_eq!(payload["type"], "anchor");
     assert_eq!(payload["comment_id"], comment_id);
-    assert_eq!(payload["source"]["path"], "main.md");
+    assert!(
+        payload.get("source").is_none(),
+        "a commenter received a source selector: {payload}"
+    );
+
+    let (status, editor_listing) =
+        get_json_as(&session_as(TEST_PUBLISHER), &server.url, &path).await;
+    assert_eq!(status, 200, "{editor_listing}");
+    let anchored = editor_listing["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|comment| text(comment, "id") == comment_id)
+        .expect("the editor can read the backfilled source selector");
+    assert_eq!(anchored["source"]["path"], "main.md");
 
     // A second try on the same comment is refused: it already has an anchor
     // of record.
@@ -231,12 +294,14 @@ async fn anchor_backfill_is_refused_from_a_non_editor_stranger() {
     let slug = text(&publish_test_document(&server.url).await, "slug");
     let path = format!("/api/documents/{slug}/comments");
     let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
     let comment_id = post_sourceless_comment(
         &server.url,
         &visitor_as("alpha"),
         &key,
         &path,
         "alpha's comment",
+        &publication_id,
     )
     .await;
 
@@ -260,12 +325,14 @@ async fn anchor_backfill_is_accepted_from_an_editor_for_someone_elses_comment() 
     let slug = text(&publish_test_document(&server.url).await, "slug");
     let path = format!("/api/documents/{slug}/comments");
     let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
     let comment_id = post_sourceless_comment(
         &server.url,
         &visitor_as("alpha"),
         &key,
         &path,
         "alpha's comment",
+        &publication_id,
     )
     .await;
 

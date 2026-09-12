@@ -216,14 +216,6 @@ async fn replacing_keeps_one_document_and_nothing_derived() {
         source.contains("version two"),
         "the document says {source:?}"
     );
-    let found = server
-        .instance
-        .store
-        .blobs
-        .list(&format!("content/{slug}/renderings/"))
-        .await
-        .unwrap();
-    assert!(found.is_empty(), "a rendered version was kept: {found:?}");
 }
 
 // The listing is how a publisher sees what is eating their quota, so the

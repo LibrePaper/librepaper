@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use yrs::updates::decoder::Decode;
+#[cfg(test)]
 use yrs::updates::encoder::Encode;
 use yrs::{Map, MapRef, Out, StickyIndex, Transact, TransactionMut};
 
@@ -120,7 +121,8 @@ pub fn records(doc: &yrs::Doc) -> Result<Vec<Revision>, String> {
 /// Creation of pending records is allowed for the editor capture path; an
 /// existing record's immutable data and status/history cannot be rewritten by
 /// a raw browser update.
-pub fn client_update_safe(before: &yrs::Doc, after: &yrs::Doc) -> Result<(), String> {
+#[cfg(test)]
+fn client_update_safe(before: &yrs::Doc, after: &yrs::Doc) -> Result<(), String> {
     client_update_safe_as(before, after, None)
 }
 

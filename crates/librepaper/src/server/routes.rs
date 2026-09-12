@@ -53,10 +53,21 @@ pub(super) async fn dispatch(
     // and nothing else: no shell, no API, no session. That is the whole point
     // of the separate hostname.
     if arrival.is_docs_host() {
-        // The shell a document is painted into. It carries the agent and
-        // nothing else: the reader renders the text itself, with the same
-        // module the editor previews with, and sends the page in. Nothing
-        // rendered is stored, so there is nothing here to serve.
+        // Keep the document path stable across publications. Relative
+        // `assets/<hash>` references then have stable cache keys too; the
+        // signed query chooses which current publication index is displayed.
+        if let ["published", slug, tail @ ..] = &parts[..] {
+            return server
+                .serve_published(
+                    &arrival,
+                    request.headers(),
+                    request.uri().query(),
+                    slug,
+                    tail,
+                )
+                .await;
+        }
+        // Editors paint local previews into this source-free isolated shell.
         if let ["raw", slug] | ["raw", slug, ""] = parts[..] {
             return server
                 .serve_shell(&arrival, slug, request.uri().query())
@@ -380,18 +391,6 @@ pub(super) async fn dispatch(
         }
     }
 
-    // What lets the documents origin serve this document's page into the
-    // frame. That origin holds no identity, so the identity is checked here,
-    // where it is, and turned into a signed, short-lived token the reader
-    // puts on the frame's URL.
-    if let ["api", "documents", slug, "frame"] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_frame(request.headers(), &arrival, slug, request.uri().query())
-                .await;
-        }
-    }
-
     // What this document used to say, and when. Readable by whoever may read
     // the document: a checkpoint is the document at a moment, and a history
     // that were harder to read than the text would be a strange kind of
@@ -448,6 +447,31 @@ pub(super) async fn dispatch(
                 .handle_assistant_capabilities(request.headers(), &arrival, slug)
                 .await;
         }
+    }
+
+    // Rendered publication channel. It is independent of source files and
+    // source synchronization: readers may inspect only the current manifest
+    // and its explicitly declared display objects, while editors may stage
+    // and activate a replacement.
+    if let ["api", "documents", slug, "publication"] = parts[..] {
+        return server
+            .handle_publication(request, &arrival, slug, "meta")
+            .await;
+    }
+    if let ["api", "documents", slug, "publication", "prepare"] = parts[..] {
+        return server
+            .handle_publication(request, &arrival, slug, "prepare")
+            .await;
+    }
+    if let ["api", "documents", slug, "publication", "objects", hash] = parts[..] {
+        return server
+            .handle_publication(request, &arrival, slug, &format!("objects/{hash}"))
+            .await;
+    }
+    if let ["api", "documents", slug, "publication", "activate"] = parts[..] {
+        return server
+            .handle_publication(request, &arrival, slug, "activate")
+            .await;
     }
 
     // The figures. Putting one takes an editor, because it puts bytes on the
@@ -593,60 +617,56 @@ pub(super) async fn dispatch(
                     eprintln!("warning: could not record a guest on {slug}: {err:?}");
                 }
             }
-            return write_json(
-                200,
-                &json!({
-                    "slug": entry.slug, "title": entry.title, "sha": entry.sha,
-                    "created_at": entry.created_at, "updated_at": entry.updated_at,
-                    "comment_count": total, "open_count": open,
-                    "files": files,
-                    // What the document was written in, when it kept its source:
-                    // the reader offers an editor for a document it can render
-                    // again.
-                    "source_format": entry.source_format,
-                    "execution_engine": metadata.execution_engine,
-                    "draft_format": metadata.draft_format,
-                    // Which file in the directory is the document. A reader
-                    // that has not joined the session yet has this and not the
-                    // maps, which is enough to name what it is rendering.
-                    "main": entry.main,
-                    // Which of those this deployment can render again, and so
-                    // offer an editor for.
-                    "renderers": server.renderers(),
-                    // The highest role this caller holds, which is what the
-                    // reader derives every affordance from: the editor at
-                    // `editor` and above, the comment tools at `commenter` and
-                    // above. `can_edit` and `can_moderate` are the same answer
-                    // in the older shape, kept so a cached page still works.
-                    "role": role.as_str(),
-                    // What the comment form should sign this caller's remarks
-                    // as, computed the same way `apply_from` computes it, so
-                    // the name shown while typing is the name the comment
-                    // actually lands under.
-                    "commenting_as": commenting_as,
-                    // Whether the Share dialog is offered, and whether it is
-                    // the owner's to change. Somebody named on the document
-                    // sees who else is in the room; a reader who arrived by
-                    // link sees no Share button at all.
-                    // Only the owner ever sees the share route now, so this is
-                    // the same question `can_share` is: a named editor used
-                    // to see a read-only dialog, but the route that drew it is
-                    // 404 to anyone who is not the owner, and offering a
-                    // button to a route that refuses would be worse than not
-                    // offering one.
-                    "can_share": role.at_least(Role::Owner),
-                    "can_see_sharing": role.at_least(Role::Owner),
-                    // Whether this caller may replace the document, which is what
-                    // an editor does on save.
-                    "can_edit": owned,
-                    // Where the reader should frame this document from, and the
-                    // only origin it will accept messages from.
-                    "docs_origin": arrival.docs_origin(),
-                    // Whether this caller may delete anyone's comment here, per
-                    // rule G.
-                    "can_moderate": owned,
-                }),
-            );
+            let mut body = json!({
+                "slug": entry.slug, "title": entry.title,
+                "created_at": entry.created_at, "updated_at": entry.updated_at,
+                "comment_count": total, "open_count": open,
+                // The highest role this caller holds, which is what the
+                // reader derives every affordance from: the editor at
+                // `editor` and above, the comment tools at `commenter` and
+                // above. `can_edit` and `can_moderate` are the same answer
+                // in the older shape, kept so a cached page still works.
+                "role": role.as_str(),
+                // What the comment form should sign this caller's remarks
+                // as, computed the same way `apply_from` computes it, so
+                // the name shown while typing is the name the comment
+                // actually lands under.
+                "commenting_as": commenting_as,
+                // Whether the Share dialog is offered, and whether it is
+                // the owner's to change. Somebody named on the document
+                // sees who else is in the room; a reader who arrived by
+                // link sees no Share button at all.
+                // Only the owner ever sees the share route now, so this is
+                // the same question `can_share` is: a named editor used
+                // to see a read-only dialog, but the route that drew it is
+                // 404 to anyone who is not the owner, and offering a
+                // button to a route that refuses would be worse than not
+                // offering one.
+                "can_share": role.at_least(Role::Owner),
+                "can_see_sharing": role.at_least(Role::Owner),
+                // Whether this caller may replace the document, which is what
+                // an editor does on save.
+                "can_edit": owned,
+                // Where the reader should frame this document from, and the
+                // only origin it will accept messages from.
+                "docs_origin": arrival.docs_origin(),
+                // Whether this caller may delete anyone's comment here, per
+                // rule G.
+                "can_moderate": owned,
+            });
+            // Paths and source format are project metadata. They are useful to
+            // editors and local source rendering, but have no place in a
+            // publication reader response.
+            if owned {
+                body["sha"] = json!(entry.sha);
+                body["execution_engine"] = json!(metadata.execution_engine);
+                body["draft_format"] = json!(metadata.draft_format);
+                body["renderers"] = json!(server.renderers());
+                body["files"] = json!(files);
+                body["source_format"] = json!(entry.source_format);
+                body["main"] = json!(entry.main);
+            }
+            return write_json(200, &body);
         }
     }
 
@@ -729,6 +749,277 @@ pub(super) fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 impl Server {
+    /// Serve one explicitly published object on the isolated document origin.
+    /// The token is scoped to the publication and the live link digest that
+    /// authorized it; every fetch rechecks that digest against the current
+    /// document entry, so revocation prevents new HTML and asset responses.
+    pub(super) async fn serve_published(
+        &self,
+        arrival: &Arrival,
+        headers: &HeaderMap,
+        query: Option<&str>,
+        slug: &str,
+        tail: &[&str],
+    ) -> Reply {
+        if !self.valid_slug(slug) || tail.len() > 16 {
+            return plain(404, "not found");
+        }
+        let Some(entry) = self.checked_entry(slug).await.ok().flatten() else {
+            return plain(404, "not found");
+        };
+        let mut fields: HashMap<String, String> = query
+            .map(|raw| {
+                url::form_urlencoded::parse(raw.as_bytes())
+                    .into_owned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Relative authored assets do not inherit the frame URL query. Keep
+        // the display capability in a document- and publication-scoped,
+        // HttpOnly cookie so they present the same non-secret capability. It
+        // is still checked against current access state for every response.
+        if !fields.contains_key("token") {
+            if let Some(raw) = headers
+                .get(header::COOKIE)
+                .and_then(|value| value.to_str().ok())
+            {
+                for item in raw.split(';') {
+                    let Some((name, value)) = item.trim().split_once('=') else {
+                        continue;
+                    };
+                    if name == "librepaper_display" {
+                        let mut values = value.split('~');
+                        if let Some(token) = values.next() {
+                            fields.insert("token".into(), token.into());
+                        }
+                        if let Some(scope) = values.next() {
+                            fields.insert("scope".into(), scope.into());
+                        }
+                        if let Some(until) = values.next() {
+                            fields.insert("until".into(), until.into());
+                        }
+                        if let Some(publication_id) = values.next() {
+                            fields.insert("publication_id".into(), publication_id.into());
+                        }
+                    }
+                }
+            }
+        }
+        let until = fields
+            .get("until")
+            .and_then(|value| value.parse::<i64>().ok());
+        let scope = fields.get("scope").cloned().unwrap_or_default();
+        let token = fields.get("token").cloned().unwrap_or_default();
+        let publication_id = fields
+            .get("publication_id")
+            .map(String::as_str)
+            .unwrap_or("");
+        let Some(until) = until else {
+            return plain(404, "not found");
+        };
+        let authorized = self.publication_display_authorized(&entry, &scope).await;
+        if until < crate::util::now_unix()
+            || !authorized
+            || !crate::auth::verifies(
+                &self.key,
+                "figure-frame-v1",
+                &crate::server::figures::frame_claim(slug, publication_id, &scope, until),
+                &token,
+            )
+        {
+            return plain(404, "not found");
+        }
+        let encoded_path = tail.join("/");
+        let Ok(path) = percent_encoding::percent_decode_str(&encoded_path).decode_utf8() else {
+            return plain(404, "not found");
+        };
+        let store = crate::server::publication::PublicationStore::for_store(self.store.clone());
+        let Some(current) = store.current(&entry.storage_id).await.ok().flatten() else {
+            return plain(404, "not found");
+        };
+        let is_html = path == "index.html";
+        // An old open page may still fetch unchanged lazy assets. Its live
+        // display authority remains valid, but only the current manifest can
+        // authorize bytes; removed assets and old HTML are never recovered.
+        if is_html && current.publication_id != publication_id {
+            return plain(404, "not found");
+        }
+        // Asset object names are content hashes. Once the current manifest has
+        // authorized one, an exact conditional match can return before reading
+        // its bytes from the object store. The authority and pointer checks
+        // above (and the second pointer check below) still make this a private
+        // revalidation rather than a capability-free cache hit.
+        if !is_html {
+            let Some(asset) = current.assets.iter().find(|asset| asset.path == path) else {
+                return plain(404, "not found");
+            };
+            let etag = format!("\"{}\"", asset.object.sha256);
+            if headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value == etag)
+            {
+                // An activation may have replaced the manifest after the
+                // membership lookup. Do not authorize a response from a
+                // pointer that has ceased to be current.
+                if !matches!(store.current(&entry.storage_id).await, Ok(Some(manifest)) if manifest.publication_id == current.publication_id)
+                {
+                    return plain(404, "not found");
+                }
+                let mut response = Response::new(Body::empty());
+                *response.status_mut() = StatusCode::NOT_MODIFIED;
+                set(&mut response, "etag", &etag);
+                set(
+                    &mut response,
+                    "cache-control",
+                    "private, max-age=0, must-revalidate",
+                );
+                set(&mut response, "referrer-policy", "no-referrer");
+                privacy_headers(&mut response);
+                return response;
+            }
+        }
+        let Ok((object, mut body)) = store.deliver(&entry.storage_id, &path).await else {
+            return plain(404, "not found");
+        };
+        // `deliver` reads the manifest itself. Recheck the publication pointer
+        // after its object read so an activation racing this request cannot
+        // make an old manifest authorize a new object (or vice versa).
+        if !matches!(store.current(&entry.storage_id).await, Ok(Some(manifest)) if manifest.publication_id == current.publication_id)
+        {
+            return plain(404, "not found");
+        }
+        if is_html {
+            body = with_agent(&body, &arrival.reader_origin());
+        }
+        let gzip = is_html
+            && header_of(headers, "accept-encoding").is_some_and(|value| {
+                value.split(',').any(|encoding| {
+                    let mut parts = encoding.trim().split(';');
+                    parts.next() == Some("gzip")
+                        && parts.all(|parameter| {
+                            parameter
+                                .trim()
+                                .strip_prefix("q=")
+                                .is_none_or(|q| q.parse::<f32>().is_ok_and(|q| q > 0.0))
+                        })
+                })
+            });
+        if gzip {
+            let mut encoded = Vec::new();
+            let mut encoder =
+                flate2::write::GzEncoder::new(&mut encoded, flate2::Compression::fast());
+            if std::io::Write::write_all(&mut encoder, &body).is_err() || encoder.finish().is_err()
+            {
+                return plain(503, "could not encode published document");
+            }
+            body = encoded;
+        }
+        let etag = format!("\"{}\"", hex::encode(Sha256::digest(&body)));
+        // A hash identifies bytes, never permission. Browser cache entries
+        // may be revalidated across publications, but must not become a
+        // shared-cache authorization bypass when a document is restricted.
+        let cache_control = "private, max-age=0, must-revalidate";
+        if headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value == etag)
+        {
+            let mut response = Response::new(Body::empty());
+            *response.status_mut() = StatusCode::NOT_MODIFIED;
+            set(&mut response, "etag", &etag);
+            set(&mut response, "cache-control", cache_control);
+            set(&mut response, "referrer-policy", "no-referrer");
+            if is_html {
+                set(&mut response, "vary", "Accept-Encoding");
+            }
+            privacy_headers(&mut response);
+            return response;
+        }
+        let mut response = Response::new(Body::from(body));
+        set(&mut response, "content-type", &object.mime);
+        set(&mut response, "etag", &etag);
+        set(&mut response, "cache-control", cache_control);
+        set(&mut response, "referrer-policy", "no-referrer");
+        if gzip {
+            set(&mut response, "content-encoding", "gzip");
+        }
+        if is_html {
+            set(&mut response, "vary", "Accept-Encoding");
+        }
+        if is_html {
+            set(
+                &mut response,
+                "content-security-policy",
+                &format!(
+                    "default-src 'self' data: blob: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; style-src 'self' 'unsafe-inline' data: blob: https:; frame-ancestors {}; form-action 'none'; base-uri 'none'",
+                    arrival.reader_origin()
+                ),
+            );
+        }
+        privacy_headers(&mut response);
+        if is_html {
+            set(
+                &mut response,
+                "set-cookie",
+                &format!(
+                    "librepaper_display={token}~{scope}~{until}~{publication_id}; Path=/published/{slug}; HttpOnly; SameSite=None; Secure"
+                ),
+            );
+        }
+        response
+    }
+
+    /// Resolve the authority embedded in a signed display capability against
+    /// the live document. The capability is transport-only: it never replaces
+    /// a link revocation, named-editor removal, account erasure, or session
+    /// generation change.
+    async fn publication_display_authorized(&self, entry: &IndexEntry, scope: &str) -> bool {
+        if scope == "public" {
+            return entry.example || entry.unowned;
+        }
+        if let Some(link) = scope.strip_prefix("link:") {
+            return !link.is_empty() && entry.link_role(link, crate::util::now_unix()).is_some();
+        }
+        let Some(account) = scope.strip_prefix("account:") else {
+            return false;
+        };
+        let Some((encoded_id, generation)) = account.rsplit_once(':') else {
+            return false;
+        };
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let Ok(id) = URL_SAFE_NO_PAD
+            .decode(encoded_id)
+            .ok()
+            .and_then(|id| String::from_utf8(id).ok())
+            .ok_or(())
+        else {
+            return false;
+        };
+        if generation.len() != 64
+            || !generation
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return false;
+        }
+        let Some(catalog) = &self.store.catalog else {
+            return false;
+        };
+        let slug = entry.slug.clone();
+        let id_for_catalog = id.clone();
+        let generation = generation.to_string();
+        catalog
+            .execute_catalog(
+                crate::server::SERVER_JOB_BYTES + slug.len() + id.len() + generation.len(),
+                move |catalog| {
+                    catalog.display_account_authorized(&slug, &id_for_catalog, &generation)
+                },
+            )
+            .await
+            .unwrap_or(false)
+    }
+
     /// Which formats this deployment can render again in a reader, and so
     /// offer an editor for. The compiled-in ones come from the build; `latex`
     /// is the one that depends on the deployment rather than on the binary,
@@ -778,7 +1069,7 @@ impl Server {
         &self,
         arrival: &Arrival,
         slug: &str,
-        query: Option<&str>,
+        _query: Option<&str>,
     ) -> Reply {
         if !self.valid_slug(slug) {
             return plain(404, "not found");
@@ -793,37 +1084,16 @@ impl Server {
         // typed. Every other format is rendered by the browser into the empty
         // shell below.
         //
-        // This origin shares no cookie with the reader's -- that is the whole
-        // point of the split -- so it has no identity of its own to ask
-        // `may_read` with, and bytes served from here are served to whoever
-        // asks. What stands in for the identity is a token the reader fetched
-        // from `handle_frame` on the origin that does carry one: signed for
-        // this slug, good for two minutes, and presented on the frame's own
-        // URL. Without one the empty shell is what arrives, whatever the
-        // format, and nothing of the document goes with it.
+        // The shell contains no project bytes. It is intentionally available
+        // before a first publication so editors keep their local preview;
+        // reader display bytes use the publication route above instead.
         let empty =
             b"<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>"
                 .to_vec();
-        let page = if self.frame_token_verifies(slug, query) {
-            match self.checked_entry(slug).await {
-                Ok(Some(_)) => {
-                    let room = match self.rooms.try_get(slug).await {
-                        Ok(room) => room,
-                        Err(error) => return plain(503, &error.to_string()),
-                    };
-                    let format = room.format().await;
-                    if format.is_empty() || format == "html" {
-                        room.source().await.into_bytes()
-                    } else {
-                        empty
-                    }
-                }
-                Ok(None) => empty,
-                Err(response) => return response,
-            }
-        } else {
-            empty
-        };
+        // The document origin has no project access. It may serve the isolated
+        // shell, but never turns a slug into the live source tree. Published
+        // bytes have their own capability and current-manifest checks.
+        let page = empty;
         let mut response = Response::new(Body::from(with_agent(&page, &reader)));
         set(&mut response, "content-type", "text/html; charset=utf-8");
         set(

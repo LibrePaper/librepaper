@@ -1,6 +1,6 @@
 use super::{
     Account, AnnotationAuthority, Catalog, CatalogError, Checkpoint, Comment, JournalPreparation,
-    JournalSegment, Link, MutationAuthority, NewDocument, OperationRequest, Rendering, Reply,
+    JournalSegment, Link, MutationAuthority, NewDocument, OperationRequest, Reply,
     SourceHistoryObject, SourceHistoryRecord,
 };
 use sha2::Digest;
@@ -32,6 +32,7 @@ fn annotation(id: &str, motivation: &str) -> Comment {
         author: "acct-1".into(),
         via: String::new(),
         created: "2026-01-01T00:00:00.000Z".into(),
+        publication_id: "publication-1".into(),
         exact: "text".into(),
         prefix: String::new(),
         suffix: String::new(),
@@ -74,6 +75,11 @@ fn annotation_writes_recheck_the_account_session_generation() {
             current,
         )
         .unwrap();
+    assert_eq!(comment.publication_id, "publication-1");
+    assert_eq!(
+        catalog.comment("doc", "comment-1").unwrap().publication_id,
+        "publication-1"
+    );
     catalog
         .insert_comment_request_authorized(
             &annotation("suggestion-1", "editing"),
@@ -209,128 +215,6 @@ fn annotation_writes_recheck_the_account_session_generation() {
 }
 
 #[test]
-fn newest_rendering_joins_full_history_and_keeps_restore_event_identity() {
-    use std::sync::atomic::Ordering;
-    let catalog = Catalog::open_in_memory().unwrap();
-    catalog.upsert_account(&account()).unwrap();
-    catalog.create_document(&document()).unwrap();
-    assert!(catalog.newest_rendering_candidate("doc").unwrap().is_none());
-    for seq in 0..130 {
-        catalog
-            .insert_checkpoint(&Checkpoint {
-                slug: "doc".into(),
-                sha: format!("event-{seq}"),
-                seq,
-                durable_seq: 0,
-                tree_sha: String::new(),
-                parent: String::new(),
-                at: format!("at-{seq}"),
-                by: String::new(),
-                why: "test".into(),
-                source_format: "markdown".into(),
-                size: 0,
-                label: String::new(),
-                git_commit: String::new(),
-                dirty: false,
-                changed: None,
-                by_account: None,
-            })
-            .unwrap();
-    }
-    catalog
-        .publish_rendering(&Rendering {
-            slug: "doc".into(),
-            tree_sha: "event-0".into(),
-            at: "old".into(),
-            backend: "test".into(),
-            engine: String::new(),
-            release: String::new(),
-            tools: String::new(),
-            bytes: 10,
-            synctex: true,
-            synctex_bytes: 5,
-        })
-        .unwrap();
-    // Measure the prior traversal/lookup shape against the joined lookup on
-    // the same connection and retained history, without timing assumptions.
-    let before = catalog.connection_operations.load(Ordering::Relaxed);
-    let history = catalog.checkpoints("doc", None, 200).unwrap();
-    for point in history.iter().rev() {
-        if catalog.rendering("doc", &point.sha).unwrap().is_some() {
-            break;
-        }
-    }
-    let previous_operations = catalog.connection_operations.load(Ordering::Relaxed) - before;
-    let before = catalog.connection_operations.load(Ordering::Relaxed);
-    let candidate = catalog.newest_rendering_candidate("doc").unwrap().unwrap();
-    let joined_operations = catalog.connection_operations.load(Ordering::Relaxed) - before;
-    assert_eq!(previous_operations, 131);
-    assert_eq!(joined_operations, 1);
-    assert_eq!(candidate.event_sha, "event-0");
-    assert_eq!(candidate.tree_sha, "event-0", "legacy SHA fallback");
-    assert!(candidate.synctex);
-    let mut restored = catalog.checkpoint("doc", "event-129").unwrap().unwrap();
-    restored.seq = -1;
-    restored.sha = "restore-event".into();
-    restored.tree_sha = "event-0".into();
-    restored.at = "restore-time".into();
-    catalog.insert_checkpoint(&restored).unwrap();
-    let candidate = catalog.newest_rendering_candidate("doc").unwrap().unwrap();
-    assert_eq!(candidate.event_sha, "restore-event");
-    assert_eq!(candidate.tree_sha, "event-0");
-    assert_eq!(candidate.at, "restore-time");
-    catalog.retire_rendering("doc", "event-0", 1, 1).unwrap();
-    assert!(catalog.newest_rendering_candidate("doc").unwrap().is_none());
-}
-
-#[test]
-fn rendering_publication_order_survives_equal_timestamps_companions_and_retirement() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    catalog.upsert_account(&account()).unwrap();
-    catalog.create_document(&document()).unwrap();
-    let rendering = |tree_sha: &str, at: &str, synctex: bool, bytes: i64| Rendering {
-        slug: "doc".into(),
-        tree_sha: tree_sha.into(),
-        at: at.into(),
-        backend: "test".into(),
-        engine: String::new(),
-        release: String::new(),
-        tools: String::new(),
-        bytes,
-        synctex,
-        synctex_bytes: if synctex { 2 } else { 0 },
-    };
-    let same_second = "2026-01-01T00:00:00Z";
-    // The second PDF is newer even though its tree name sorts first.
-    catalog
-        .publish_rendering(&rendering("tree-z", same_second, false, 10))
-        .unwrap();
-    catalog
-        .publish_rendering(&rendering("tree-a", same_second, false, 11))
-        .unwrap();
-    // A delayed companion for the older PDF must retain its original
-    // publication ordinal and cannot become the latest candidate by timestamp.
-    catalog
-        .publish_rendering(&rendering("tree-z", "2099-01-01T00:00:00Z", true, 10))
-        .unwrap();
-    let candidate = catalog.newest_rendering_candidate("doc").unwrap().unwrap();
-    assert_eq!(candidate.tree_sha, "tree-a");
-
-    // Rendering metadata is durable independently of the source event that
-    // first named the tree; retirement must not make latest lookup random or
-    // dependent on a now-missing checkpoint join.
-    catalog
-        .with_connection(|connection| {
-            connection.execute("DELETE FROM checkpoints WHERE slug=?1", ["doc"])?;
-            Ok(())
-        })
-        .unwrap();
-    let candidate = catalog.newest_rendering_candidate("doc").unwrap().unwrap();
-    assert_eq!(candidate.event_sha, "tree-a");
-    assert_eq!(candidate.tree_sha, "tree-a");
-}
-
-#[test]
 fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
@@ -431,7 +315,7 @@ fn account_usage_charges_unique_physical_objects_and_not_tree_size() {
                 "INSERT INTO object_accounting(storage_id,object_key,kind,bytes,version)
                  VALUES('storage-1','content/storage-1/chunks/shared','source_chunk',7,'v1'),
                        ('storage-1','content/storage-1/assets/a','asset',11,'v1'),
-                       ('storage-1','content/storage-1/renderings/tree-a/pdf','rendering',13,'v1')",
+                       ('storage-1','publications/storage-1/tree-a/pdf','publication',13,'v1')",
                 [],
             )?;
             Ok(())
@@ -865,115 +749,6 @@ fn measurement_keeps_maintenance_borrow_releasable() {
 }
 
 #[test]
-fn quarto_selection_pointer_is_atomic_and_rejects_stale_generation() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    catalog.upsert_account(&account()).unwrap();
-    catalog.create_document(&document()).unwrap();
-    let authority = MutationAuthority {
-        account_id: "acct-1",
-        owner_key: "",
-        generation: "generation-1",
-        link_hash: "",
-        policy_editor: false,
-        automation: false,
-        unowned_publisher: false,
-        execution_epoch: "",
-        agent_checkpoint: None,
-    };
-    let selection = crate::quarto::Selection {
-        document_id: "doc".into(),
-        context_id: "html".into(),
-        generation: 1,
-        render_id: "render-a".into(),
-        source_revision: "revision-a".into(),
-    };
-    catalog
-        .reserve_object_change_with_authority(
-            super::ObjectReservationRequest {
-                slug: "doc",
-                operation_id: "quarto-1",
-                object_key: "quarto/selections/storage-1/doc/html.json",
-                kind: "quarto",
-                new_bytes: 10,
-                owner_limit: -1,
-                total_limit: -1,
-            },
-            authority,
-        )
-        .unwrap();
-    catalog
-        .commit_quarto_selection_with_authority(
-            "storage-1",
-            "quarto-1",
-            "quarto/selections/storage-1/doc/html.json",
-            "quarto",
-            "v1",
-            &selection,
-            authority,
-        )
-        .unwrap();
-    assert_eq!(
-        catalog
-            .quarto_selection("storage-1", "doc", "html")
-            .unwrap()
-            .unwrap()
-            .render_id,
-        "render-a"
-    );
-
-    let stale = crate::quarto::Selection {
-        render_id: "render-b".into(),
-        ..selection
-    };
-    catalog
-        .reserve_object_change_with_authority(
-            super::ObjectReservationRequest {
-                slug: "doc",
-                operation_id: "quarto-2",
-                object_key: "quarto/selections/storage-1/doc/html.json",
-                kind: "quarto",
-                new_bytes: 10,
-                owner_limit: -1,
-                total_limit: -1,
-            },
-            authority,
-        )
-        .unwrap();
-    assert!(catalog
-        .commit_quarto_selection_with_authority(
-            "storage-1",
-            "quarto-2",
-            "quarto/selections/storage-1/doc/html.json",
-            "quarto",
-            "v2",
-            &stale,
-            authority,
-        )
-        .is_err());
-    catalog
-        .abort_object_change(
-            "storage-1",
-            "quarto-2",
-            "quarto/selections/storage-1/doc/html.json",
-        )
-        .unwrap();
-    assert_eq!(
-        catalog
-            .quarto_selection("storage-1", "doc", "html")
-            .unwrap()
-            .unwrap()
-            .render_id,
-        "render-a"
-    );
-    assert_eq!(
-        catalog
-            .quarto_selection_history("storage-1", "doc")
-            .unwrap(),
-        vec![("html".into(), "render-a".into(), 1)]
-    );
-}
-
-#[test]
 fn quarto_checkpoint_authority_is_checked_at_the_atomic_commit() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
@@ -1163,112 +938,6 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
         .is_err());
     catalog.finish_delete("doc").unwrap();
     assert_eq!(catalog.totals().unwrap(), (0, 0));
-}
-
-#[test]
-fn rendering_authorization_checks_visitor_owner_key_and_lifecycle() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    let mut input = document();
-    input.owner_id = None;
-    input.owner_key = "visitor-secret".into();
-    catalog.create_document(&input).unwrap();
-    let rendering = Rendering {
-        slug: "doc".into(),
-        tree_sha: "tree".into(),
-        at: "now".into(),
-        backend: "test".into(),
-        engine: String::new(),
-        release: String::new(),
-        tools: String::new(),
-        bytes: 10,
-        synctex: false,
-        synctex_bytes: 0,
-    };
-    assert!(catalog
-        .publish_rendering_authorized(&rendering, ("", "wrong", ""))
-        .is_err());
-    assert!(catalog
-        .publish_rendering_authorized(&rendering, ("", "", ""))
-        .is_err());
-    catalog
-        .publish_rendering_authorized(&rendering, ("", "visitor-secret", ""))
-        .unwrap();
-    catalog.begin_delete("doc").unwrap();
-    assert!(catalog.publish_rendering(&rendering).is_err());
-    assert!(catalog
-        .publish_rendering_authorized(&rendering, ("", "visitor-secret", ""))
-        .is_err());
-}
-
-#[test]
-fn rendering_retirement_excludes_writers_and_releases_measured_accounting() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    catalog.upsert_account(&account()).unwrap();
-    let mut input = document();
-    input.size = 0;
-    input.counted_size = 0;
-    catalog.create_document(&input).unwrap();
-    let key = "content/storage-1/renderings/tree/pdf";
-    let reservation = || super::ObjectReservationRequest {
-        slug: "doc",
-        operation_id: "render",
-        object_key: key,
-        kind: "rendering",
-        new_bytes: 10,
-        owner_limit: -1,
-        total_limit: -1,
-    };
-    let rendering = Rendering {
-        slug: "doc".into(),
-        tree_sha: "tree".into(),
-        at: "now".into(),
-        backend: "test".into(),
-        engine: String::new(),
-        release: String::new(),
-        tools: String::new(),
-        bytes: 10,
-        synctex: false,
-        synctex_bytes: 0,
-    };
-    catalog.reserve_object_change(reservation()).unwrap();
-    assert_eq!(catalog.reconcile("doc", 0).unwrap().counted_size, 10);
-    catalog.publish_rendering(&rendering).unwrap();
-    assert!(catalog.retire_rendering("doc", "tree", 1, 1).is_err());
-    catalog
-        .commit_object_change("storage-1", "render", key, "rendering", "digest")
-        .unwrap();
-    assert_eq!(catalog.reconcile("doc", 0).unwrap().size, 10);
-    catalog
-        .reserve_maintenance("compact", "doc", 100, 100, 1)
-        .unwrap();
-    catalog.retire_rendering("doc", "tree", 1, 1).unwrap();
-    assert!(catalog.publish_rendering(&rendering).is_err());
-    assert!(catalog.reserve_object_change(reservation()).is_err());
-    catalog.complete_delete_object("doc", key).unwrap();
-    catalog.complete_delete_object("doc", key).unwrap(); // Retried acknowledgement is harmless.
-    let measured = catalog.document("doc").unwrap().unwrap();
-    assert_eq!(
-        (
-            measured.size,
-            measured.counted_size,
-            measured.maintenance_reserved
-        ),
-        (0, 100, 100)
-    );
-    catalog
-        .release_maintenance("compact", "doc", 100, 2)
-        .unwrap();
-    assert_eq!(catalog.totals().unwrap().0, 0);
-    let ledger: i64 = catalog
-        .with_connection(|connection| {
-            Ok(
-                connection.query_row("SELECT COUNT(*) FROM object_accounting", [], |row| {
-                    row.get(0)
-                })?,
-            )
-        })
-        .unwrap();
-    assert_eq!(ledger, 0);
 }
 
 #[test]
@@ -1641,6 +1310,171 @@ fn object_accounting_reserves_replaces_and_aborts_exact_deltas() {
     let rolled_back = catalog.document("doc").unwrap().unwrap();
     assert_eq!(rolled_back.counted_size, 23);
     assert_eq!(rolled_back.maintenance_reserved, 0);
+
+    // Metadata headroom belongs to the physical ledger row, not to a later
+    // replacement reservation.  Aborting that replacement must not refund
+    // the existing row's metadata charge.
+    let session_metadata = || {
+        catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT metadata_bytes FROM object_accounting
+                         WHERE storage_id='storage-1' AND object_key='sessions/doc'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(CatalogError::from)
+            })
+            .unwrap()
+    };
+    // Seed a pre-existing ledger metadata charge so this check does not
+    // depend on whether the minimal fixture has reached physical accounting.
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE object_accounting SET metadata_bytes=17
+             WHERE storage_id='storage-1' AND object_key='sessions/doc'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE documents SET counted_size=counted_size+17 WHERE slug='doc'",
+                [],
+            )?;
+            connection.execute("UPDATE totals SET bytes=bytes+17 WHERE id=1", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let metadata_before_abort = session_metadata();
+    let counted_before_abort = catalog.document("doc").unwrap().unwrap().counted_size;
+    catalog
+        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
+            slug: "doc",
+            operation_id: "session-4",
+            object_key: "sessions/doc",
+            kind: "session",
+            new_bytes: 10,
+            owner_limit: -1,
+            total_limit: -1,
+        })
+        .unwrap();
+    catalog
+        .abort_object_change("storage-1", "session-4", "sessions/doc")
+        .unwrap();
+    assert_eq!(session_metadata(), metadata_before_abort);
+    assert_eq!(
+        catalog.document("doc").unwrap().unwrap().counted_size,
+        counted_before_abort
+    );
+
+    // A zero-byte object is still an existing object after its first commit:
+    // retrying it cannot allocate a second metadata charge, and an aborted
+    // replacement cannot release the first one.
+    let empty = crate::storage::catalog::ObjectReservationRequest {
+        slug: "doc",
+        operation_id: "empty-1",
+        object_key: "objects/empty",
+        kind: "publication",
+        new_bytes: 0,
+        owner_limit: -1,
+        total_limit: -1,
+    };
+    catalog.reserve_object_change(empty).unwrap();
+    catalog
+        .commit_object_change("storage-1", "empty-1", "objects/empty", "publication", "v1")
+        .unwrap();
+    let empty_metadata = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT metadata_bytes FROM object_accounting
+             WHERE storage_id='storage-1' AND object_key='objects/empty'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE object_accounting SET metadata_bytes=metadata_bytes+19
+             WHERE storage_id='storage-1' AND object_key='objects/empty'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE documents SET counted_size=counted_size+19 WHERE slug='doc'",
+                [],
+            )?;
+            connection.execute("UPDATE totals SET bytes=bytes+19 WHERE id=1", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let empty_counted = catalog.document("doc").unwrap().unwrap().counted_size;
+    let retry = crate::storage::catalog::ObjectReservationRequest {
+        slug: "doc",
+        operation_id: "empty-retry",
+        object_key: "objects/empty",
+        kind: "publication",
+        new_bytes: 0,
+        owner_limit: -1,
+        total_limit: -1,
+    };
+    assert_eq!(catalog.reserve_object_change(retry).unwrap(), 0);
+    assert_eq!(
+        catalog
+            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
+                slug: "doc",
+                operation_id: "empty-retry",
+                object_key: "objects/empty",
+                kind: "publication",
+                new_bytes: 0,
+                owner_limit: -1,
+                total_limit: -1,
+            })
+            .unwrap(),
+        0
+    );
+    catalog
+        .commit_object_change(
+            "storage-1",
+            "empty-retry",
+            "objects/empty",
+            "publication",
+            "v2",
+        )
+        .unwrap();
+    catalog
+        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
+            slug: "doc",
+            operation_id: "empty-abort",
+            object_key: "objects/empty",
+            kind: "publication",
+            new_bytes: 1,
+            owner_limit: -1,
+            total_limit: -1,
+        })
+        .unwrap();
+    catalog
+        .abort_object_change("storage-1", "empty-abort", "objects/empty")
+        .unwrap();
+    let empty_metadata_after = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT metadata_bytes FROM object_accounting
+             WHERE storage_id='storage-1' AND object_key='objects/empty'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(empty_metadata_after, empty_metadata + 19);
+    assert_eq!(
+        catalog.document("doc").unwrap().unwrap().counted_size,
+        empty_counted
+    );
 }
 
 #[test]
@@ -2039,41 +1873,6 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
     assert!(catalog
         .reserve_document_bytes_with_authority("doc", 1, 100, 1_000, Some(automation_without_link),)
         .is_err());
-}
-
-#[test]
-fn rendering_retirement_queues_real_object_keys_and_releases_accounting_on_completion() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    catalog.upsert_account(&account()).unwrap();
-    catalog.create_document(&document()).unwrap();
-    catalog.reserve("doc", 6, 100, 1_000).unwrap();
-    catalog
-        .publish_rendering(&Rendering {
-            slug: "doc".into(),
-            tree_sha: "tree".into(),
-            at: "2026-01-01T00:00:00Z".into(),
-            backend: "local".into(),
-            engine: "typst".into(),
-            release: String::new(),
-            tools: String::new(),
-            bytes: 5,
-            synctex: true,
-            synctex_bytes: 1,
-        })
-        .unwrap();
-    assert!(catalog.retire_rendering("doc", "tree", 2, 3).unwrap());
-    let jobs = catalog.due_deletes(3, 10).unwrap();
-    assert_eq!(jobs.len(), 3);
-    assert!(jobs.iter().all(|job| job
-        .object_key
-        .starts_with("content/storage-1/renderings/tree/")));
-    for job in jobs {
-        catalog
-            .complete_delete_object(&job.slug, &job.object_key)
-            .unwrap();
-    }
-    assert_eq!(catalog.document("doc").unwrap().unwrap().counted_size, 20);
-    assert_eq!(catalog.totals().unwrap().0, 20);
 }
 
 #[tokio::test]

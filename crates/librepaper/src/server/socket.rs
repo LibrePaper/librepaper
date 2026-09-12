@@ -472,6 +472,18 @@ impl Server {
                         match incoming.kind.as_str() {
                             // What the socket already has, or nothing on a cold join.
                             "y-open" | "y-sync" => {
+                                if !may_edit {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({
+                                            "type": "error",
+                                            "message": "source synchronization is restricted to editors",
+                                            "request_id": incoming.request_id,
+                                            "version": 1,
+                                            "protocol": "librepaper.annotation.v1",
+                                        }).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                }
                                 if !self.socket_budget.state_available(&client_network(&address)) {
                                     self.cost.pressure(4);
                                     let _ = send_outgoing(&tx, Outgoing::Close("state_sync_budget: retry after 60 seconds".into())).await;
@@ -525,7 +537,7 @@ impl Server {
                                 if !may_edit || incoming.update.is_empty() {
                                     continue 'reader;
                                 }
-                                room.broadcast_except(
+                                room.broadcast_editors_except(
                                     Some(socket_id),
                                     &json!({"type": "y-awareness", "update": incoming.update}),
                                 )
@@ -582,7 +594,7 @@ impl Server {
                                 // Straight on to everyone else, readers included. The
                                 // sender already has it, and is told separately, once
                                 // storage has it, that it is durable.
-                                room.broadcast_except(
+                                room.broadcast_editors_except(
                                     Some(socket_id),
                                     &json!({"type": "y-update", "update": incoming.update}),
                                 )
@@ -650,6 +662,63 @@ impl Server {
                         continue 'reader;
                     }
 
+                    // Suggestions carry source anchors and proposed source
+                    // text. Rendered commenters may submit annotations, but
+                    // only editors may create editorial source suggestions.
+                    if incoming.motivation == "editing" && !may_edit {
+                        let _ = send_outgoing(&tx, Outgoing::Text(
+                            json!({"type":"error","message":"editor access is required for suggestions","temp_id":incoming.temp_id,"request_id":incoming.request_id}).to_string(),
+                        )).await;
+                        continue 'reader;
+                    }
+
+                    // A commenter can only create annotations against a
+                    // rendered publication. Do not let an omitted ID evade
+                    // the stale-publication check; editors retain empty IDs
+                    // for source-side comments and suggestions.
+                    if incoming.kind == "comment" && !may_edit && incoming.publication_id.is_empty() {
+                        let _ = send_outgoing(&tx, Outgoing::Text(
+                            json!({"type":"error","message":"publication is required; refresh before annotating","temp_id":incoming.temp_id,"request_id":incoming.request_id}).to_string(),
+                        )).await;
+                        continue 'reader;
+                    }
+
+                    // Rendered annotations share PublicationStore's global
+                    // per-storage gate with activation. Take it before the
+                    // room-local source gate, recheck while held, then commit
+                    // the comment. Source suggestions deliberately skip this
+                    // path because they are tied to editable revisions.
+                    let _rendered_publication_guard = if incoming.kind == "comment"
+                        && !incoming.publication_id.is_empty()
+                    {
+                        Some(
+                            crate::server::publication::publication_lock(room.storage_id())
+                                .lock_owned()
+                                .await,
+                        )
+                    } else {
+                        None
+                    };
+                    if let Some(publication_id) = (incoming.kind == "comment"
+                        && !incoming.publication_id.is_empty())
+                        .then_some(incoming.publication_id.as_str())
+                    {
+                        let current = crate::server::publication::PublicationStore::for_store(
+                            self.store.clone(),
+                        )
+                        .current(room.storage_id())
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|publication| publication.publication_id);
+                        if current.as_deref() != Some(publication_id) {
+                            let _ = send_outgoing(&tx, Outgoing::Text(
+                                json!({"type":"error","message":"publication changed; refresh before annotating","request_id":incoming.request_id,"temp_id":incoming.temp_id}).to_string(),
+                            )).await;
+                            continue 'reader;
+                        }
+                    }
+                    let _publication_guard = room.publication_write.lock().await;
                     if incoming.kind == "revision-decide" {
                         let result = room
                             .decide_revision(

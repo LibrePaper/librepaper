@@ -1,6 +1,5 @@
 //! Rendered outputs are transient and have no publication or retrieval route.
 use super::*;
-use serde_json::json;
 
 #[tokio::test]
 async fn generated_output_routes_are_absent_for_owners_and_readers() {
@@ -48,42 +47,4 @@ async fn generated_output_routes_are_absent_for_owners_and_readers() {
         before,
         "rendering requests cannot create history"
     );
-}
-
-#[tokio::test]
-async fn publishing_each_source_format_retains_only_inputs() {
-    let server = new_test_server().await;
-    for (format, source) in [
-        ("typst", "= Paper"),
-        (
-            "latex",
-            "\\documentclass{article}\\begin{document}Paper\\end{document}",
-        ),
-        ("quarto", "# Paper\n\n```{r}\nstop('never execute')\n```"),
-        ("markdown", "# Paper"),
-    ] {
-        let (status, document) = post(
-            &server.url,
-            "/api/documents",
-            json!({"source":source,"source_format":format,"title":format!("Source only {format}")}),
-        )
-        .await;
-        assert_eq!(status, 201, "{document}");
-        let slug = text(&document, "slug");
-        let (status, received) = get_json_as(
-            &session_as(TEST_PUBLISHER),
-            &server.url,
-            &format!("/api/documents/{slug}/source"),
-        )
-        .await;
-        assert_eq!(status, 200, "{received}");
-        assert_eq!(received["source"], source);
-        let objects = server.instance.store.blobs.list("").await.unwrap();
-        assert!(
-            !objects
-                .iter()
-                .any(|o| crate::storage::backup::is_generated_output_key(&o.key)),
-            "generated objects retained"
-        );
-    }
 }

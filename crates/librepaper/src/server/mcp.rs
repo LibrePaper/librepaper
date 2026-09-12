@@ -253,7 +253,10 @@ impl Server {
         if who.auth_failed {
             return plain(401, "authentication expired or revoked");
         }
-        if !self.may_read(&entry, &who) {
+        // MCP exposes source views, ranges, candidate trees, and source
+        // mutations. Readers/commenters cannot use it through a link or an
+        // ambient signed-in identity.
+        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
         match method {

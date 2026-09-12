@@ -259,8 +259,14 @@ impl Room {
             .await;
         }
         for (id, reply) in batch.replies {
-            self.broadcast(&json!({"type":"reply","comment_id":id,"reply":reply,"annotation_revision":sequence}))
+            let event = self
+                .comment_event_for(
+                    &json!({"type":"reply","comment_id":id,"reply":reply,"annotation_revision":sequence}),
+                    "",
+                    false,
+                )
                 .await;
+            self.broadcast(&event).await;
         }
         serde_json::from_str(&result).map_err(|e| e.to_string())
     }

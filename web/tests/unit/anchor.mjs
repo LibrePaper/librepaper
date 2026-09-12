@@ -97,5 +97,17 @@ const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: 
   check("the sourceless comment is untouched", !("sourcePath" in comments[2]));
 }
 
+{
+  const oldPublication = { exact: "passage", position: 0, requireUnique: true };
+  check("old-publication positions cannot break an ambiguous quote tie",
+    anchorOne("passage and passage", oldPublication) === null);
+  check("an old publication follows a uniquely moved quote",
+    anchorOne("new introduction passage", oldPublication)?.start === 17);
+  check("distinct rendered context can select a repeated old-publication quote",
+    anchorOne("left passage right; other passage end", { ...oldPublication, prefix: "other ", suffix: " end" })?.start === 26);
+  check("a missing old-publication quote remains unmatched",
+    anchorOne("a replacement paragraph", oldPublication) === null);
+}
+
 if (failures) process.exit(1);
 console.log("anchor: source selectors anchor to the right file, or to none");

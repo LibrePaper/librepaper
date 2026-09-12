@@ -28,6 +28,7 @@ struct CliOutput {
 struct LiveServer {
     base: String,
     auth_cookie: String,
+    device_token: String,
     #[allow(dead_code)]
     data: TempDir,
     child: Child,
@@ -114,17 +115,13 @@ impl LiveServer {
                 erasure_cursor: None,
             })
             .expect("test account is recorded");
-        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-            format!(
-                "github|agent|github:agent|{generation}||agent|{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("system clock")
-                    .as_secs()
-                    + 3600
-            )
-            .as_bytes(),
-        );
+        let expiry = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs()
+            + 3600;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(format!("github|agent|github:agent|{generation}||agent|{}", expiry).as_bytes());
         let mut mac = Hmac::<Sha256>::new_from_slice(&key).expect("session HMAC key");
         mac.update(b"session-v2");
         mac.update(b"\0");
@@ -132,9 +129,19 @@ impl LiveServer {
         let signature =
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
         let auth_cookie = format!("librepaper_session=v2.{payload}.{signature}");
+        // Device bearers use a distinct MAC purpose from browser sessions.
+        // Keep this fixture-local rather than widening the public auth API.
+        let mut mac = Hmac::<Sha256>::new_from_slice(&key).expect("device HMAC key");
+        mac.update(b"device-v2");
+        mac.update(b"\0");
+        mac.update(payload.as_bytes());
+        let signature =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+        let device_token = format!("lp_v2.{payload}.{signature}");
         Self {
             base,
             auth_cookie,
+            device_token,
             data,
             child,
         }
@@ -211,11 +218,49 @@ fn text(value: &Value, field: &str) -> String {
         .to_string()
 }
 
-fn read_key_of(document: &Value) -> String {
-    text(document, "share_url")
-        .split_once("#k=")
-        .map(|(_, key)| key.to_string())
-        .expect("published document has a read link")
+/// The runner reads source snapshots and uses MCP source tools, so its link
+/// must carry the editor role. The server is deliberately configured with
+/// `--publishers any`, preserving the anonymous editor-link ceiling exercised
+/// by this executable-boundary fixture.
+async fn editor_key_of(server: &LiveServer, slug: &str) -> String {
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/documents/{slug}/share", server.base))
+        .header("cookie", &server.auth_cookie)
+        .header("x-librepaper-client", "1")
+        .json(&json!({"link": {"role": "editor", "until": ""}}))
+        .send()
+        .await
+        .expect("mint editor link");
+    let status = response.status();
+    let payload: Value = response.json().await.expect("editor link JSON");
+    assert_eq!(status, 200, "minting editor link: {payload}");
+    let key = text(&payload, "key");
+    assert!(!key.is_empty(), "editor link had no key: {payload}");
+    key
+}
+
+/// MCP selection reads bind revisions to the live source tree, while the
+/// upload response's `sha` names its main file. Ask the editor snapshot for
+/// the tree revision that the runner must present.
+async fn source_revision_of(server: &LiveServer, slug: &str, key: &str) -> String {
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/documents/{slug}/snapshot", server.base))
+        .header("authorization", format!("Bearer {}", server.device_token))
+        .header("x-librepaper-key", key)
+        .header("x-librepaper-automation", "1")
+        .header("x-librepaper-client", "1")
+        .send()
+        .await
+        .expect("source snapshot");
+    let status = response.status();
+    let snapshot: Value = response.json().await.expect("source snapshot JSON");
+    assert_eq!(status, 200, "source snapshot: {snapshot}");
+    let revision = text(&snapshot, "sha");
+    assert!(
+        !revision.is_empty(),
+        "snapshot lacked tree revision: {snapshot}"
+    );
+    revision
 }
 
 type BrowserSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -271,16 +316,20 @@ async fn browser_socket(
     socket
 }
 
-async fn next_frame(socket: &mut BrowserSocket) -> Value {
-    loop {
-        let frame = tokio::time::timeout(Duration::from_secs(10), socket.next())
-            .await
-            .expect("assistant frame timeout")
-            .expect("assistant socket closed")
-            .expect("assistant websocket error");
-        if let TungsteniteMessage::Text(text) = frame {
-            let value: Value = serde_json::from_str(&text).expect("assistant frame JSON");
-            return value;
+#[track_caller]
+fn next_frame(socket: &mut BrowserSocket) -> impl std::future::Future<Output = Value> + '_ {
+    let caller = std::panic::Location::caller();
+    async move {
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(10), socket.next())
+                .await
+                .unwrap_or_else(|_| panic!("assistant frame timeout at {caller}"))
+                .expect("assistant socket closed")
+                .expect("assistant websocket error");
+            if let TungsteniteMessage::Text(text) = frame {
+                let value: Value = serde_json::from_str(&text).expect("assistant frame JSON");
+                return value;
+            }
         }
     }
 }
@@ -351,7 +400,7 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
     let server = LiveServer::start().await;
     let document = publish_markdown(&server, "# Runner\n\nA paragraph.\n").await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
+    let key = editor_key_of(&server, &slug).await;
     let link = server.link(&slug, &key);
     let (conversation, token) = create_channel(&server, &slug, &key).await;
     let tools = tempfile::tempdir().expect("runner temporary directory");
@@ -369,13 +418,16 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
             "--state-directory",
             state.to_str().unwrap(),
         ])
-        .env_remove("LIBREPAPER_TOKEN")
-        .env_remove("LIBREPAPER_SERVER")
+        // The pasted editor link scopes the runner to this document; the
+        // deployment-issued bearer proves the named editor needed for source
+        // snapshots and MCP tools.
+        .env("LIBREPAPER_TOKEN", &server.device_token)
+        .env("LIBREPAPER_SERVER", &server.base)
         .env_remove("LIBREPAPER_CHAT_TOKEN")
         .env("LIBREPAPER_CODEX", &fake)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
         .expect("local runner starts");
@@ -389,7 +441,7 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
         }
     }
     assert!(saw_runner, "runner never joined");
-    let revision = text(&document, "sha");
+    let revision = source_revision_of(&server, &slug, &key).await;
     browser.send(TungsteniteMessage::Text(json!({
         "type":"message", "id":"request-success", "text":"Tighten this paragraph",
         "task":{"kind":"tighten","scope":"selection"},
@@ -547,8 +599,8 @@ async fn local_runner_executes_tasks_reports_results_and_stops_cleanly() {
                     "--state-directory",
                     state.to_str().unwrap(),
                 ])
-                .env_remove("LIBREPAPER_TOKEN")
-                .env_remove("LIBREPAPER_SERVER")
+                .env("LIBREPAPER_TOKEN", &server.device_token)
+                .env("LIBREPAPER_SERVER", &server.base)
                 .env_remove("LIBREPAPER_CHAT_TOKEN")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())

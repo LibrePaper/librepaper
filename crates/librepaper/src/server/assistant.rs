@@ -56,8 +56,11 @@ impl Server {
         if !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error":"not found"}));
         }
-        if !who.at_least(Role::Commenter) {
-            return write_json(403, &json!({"error":"comment access is required"}));
+        if !who.at_least(Role::Editor) {
+            return write_json(
+                403,
+                &json!({"error":"editor access is required for suggestions"}),
+            );
         }
         let bytes = match to_bytes(request.into_body(), 1 << 20).await {
             Ok(bytes) => bytes,
@@ -80,8 +83,8 @@ impl Server {
         if current_who.auth_failed || !self.may_read(&current_entry, &current_who) {
             return write_json(403, &json!({"error":"comment access changed"}));
         }
-        if !current_who.at_least(Role::Commenter) {
-            return write_json(403, &json!({"error":"comment access changed"}));
+        if !current_who.at_least(Role::Editor) {
+            return write_json(403, &json!({"error":"editor access changed"}));
         }
         let room = match self.rooms.try_get(slug).await {
             Ok(room) => room,
@@ -194,7 +197,7 @@ impl Server {
                 "can_delete": can_comment,
                 "can_resolve": can_comment,
                 "can_checkpoint": can_edit,
-                "can_suggest": can_comment,
+                "can_suggest": can_edit,
             }),
         )
     }

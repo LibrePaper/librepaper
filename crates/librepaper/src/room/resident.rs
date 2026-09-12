@@ -258,6 +258,7 @@ mod tests {
     fn comment(motivation: &str, body: &str, temp_id: &str) -> Command {
         Command::Comment {
             motivation: motivation.into(),
+            publication_id: String::new(),
             body: body.into(),
             creator: "reviewer".into(),
             exact: "alpha".into(),

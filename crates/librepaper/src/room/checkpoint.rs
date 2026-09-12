@@ -1940,10 +1940,13 @@ impl Room {
                 // later manifest write failed, otherwise connected clients
                 // retain a different document from this room and the next
                 // edit appears to resurrect the pre-restore text.
-                self.broadcast(&json!({
-                    "type": "y-update",
-                    "update": encode_update(&update),
-                }))
+                self.broadcast_editors_except(
+                    None,
+                    &json!({
+                        "type": "y-update",
+                        "update": encode_update(&update),
+                    }),
+                )
                 .await;
                 return Err(err);
             }

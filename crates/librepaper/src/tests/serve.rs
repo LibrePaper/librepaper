@@ -4,6 +4,18 @@ use super::*;
 use crate::config::Configuration;
 use crate::document::store::Publication;
 
+async fn rendered_publication_id(base: &str, slug: &str) -> String {
+    let published = publish_display(
+        base,
+        &session_as(TEST_PUBLISHER),
+        slug,
+        b"<p>hello</p>",
+        &[],
+    )
+    .await;
+    text(&published["publication"], "id")
+}
+
 #[tokio::test]
 async fn upload_needs_a_signed_in_publisher() {
     let server = new_test_server().await;
@@ -82,13 +94,8 @@ async fn publish_then_serve_document() {
 
     // On the document host the frame is served, with the agent in it and a CSP
     // that lets a document run its own scripts while pinning who may frame it.
-    // This document's format is `html`, so it is served as the page it is --
-    // that is the one format whose renderer is the identity, and a page with
-    // scripts of its own has to be a page rather than an innerHTML of one.
-    // It is served only to a frame URL carrying the token the reader fetched
-    // on the origin that knows who is asking, which here is the owner.
-    let query = frame_query(&session_as(TEST_PUBLISHER), "", &server.url, &slug).await;
-    let response = on_docs_host(&server.url, &format!("{shell_path}?{query}")).await;
+    // `/raw` remains a source-free preview shell, including for HTML.
+    let response = on_docs_host(&server.url, &shell_path).await;
     let csp = response
         .headers()
         .get("content-security-policy")
@@ -102,8 +109,8 @@ async fn publish_then_serve_document() {
         "the in-frame agent was not injected: {body}"
     );
     assert!(
-        body.contains("hello world"),
-        "an html document is not served as itself: {body}"
+        !body.contains("hello world"),
+        "the preview shell leaked source: {body}"
     );
     assert!(
         csp.contains("script-src 'self'") && csp.contains("frame-ancestors http://"),
@@ -149,12 +156,13 @@ async fn republish_keeps_slug_and_comments() {
     let server = new_test_server().await;
     let first = publish_test_document(&server.url).await;
     let slug = text(&first, "slug");
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
     let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
 
     let mut socket = dial_websocket_keyed(&server.url, &slug, &key).await;
     socket.read().await; // hello
     socket
-        .write(json!({"type": "comment", "exact": "hello", "body": "a note", "creator": "Reader"}))
+        .write(json!({"type": "comment", "exact": "hello", "body": "a note", "creator": "Reader", "publication_id": publication_id}))
         .await;
     socket.read().await;
 
@@ -187,12 +195,9 @@ async fn republish_keeps_slug_and_comments() {
         json!(1),
         "comment did not survive the republish: {document}"
     );
-    // The directory's paths travel with the document, for the landing page's
-    // search: a project is found by its files as well as by its title.
-    assert_eq!(
-        document["files"],
-        json!(["main.html"]),
-        "the document endpoint should list the directory: {document}"
+    assert!(
+        document.get("files").is_none(),
+        "reader metadata exposed source paths: {document}"
     );
 }
 
@@ -200,6 +205,7 @@ async fn republish_keeps_slug_and_comments() {
 async fn comments_broadcast_to_every_reader() {
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
     // The author holds a commenter link; the watcher only needs to read, so
     // the same link -- which carries at least a reader's rung -- does for
     // both.
@@ -216,7 +222,7 @@ async fn comments_broadcast_to_every_reader() {
     // cookie on this connection there is nothing to key a pseudonym on, so
     // the comment lands as "Anonymous" regardless of what was typed here.
     author
-        .write(json!({"type": "comment", "exact": "hello", "body": "a note", "creator": "Reader", "temp_id": "t1"}))
+        .write(json!({"type": "comment", "exact": "hello", "body": "a note", "creator": "Reader", "temp_id": "t1", "publication_id": publication_id}))
         .await;
 
     // The sender gets the echo too, which is how it reconciles the row it
@@ -260,6 +266,7 @@ async fn comments_broadcast_to_every_reader() {
 async fn comment_validation() {
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
     // A commenter link: the caller has to hold enough to comment at all
     // before what it typed can be checked for validity.
     let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
@@ -269,12 +276,12 @@ async fn comment_validation() {
     let cases = [
         (
             "no body",
-            json!({"type": "comment", "exact": "hello"}),
+            json!({"type": "comment", "exact": "hello", "publication_id": publication_id}),
             "comment body is required",
         ),
         (
             "no anchor",
-            json!({"type": "comment", "body": "x"}),
+            json!({"type": "comment", "body": "x", "publication_id": publication_id}),
             "select some text or part of a figure to comment on",
         ),
         (

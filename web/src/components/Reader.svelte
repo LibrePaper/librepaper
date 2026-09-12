@@ -1,7 +1,7 @@
 <script>
   // One document: the source beside it, the page itself, and everything said
   // about it.
-  import { anchorAll, anchorAllSources, flatten } from "../lib/anchor.js";
+  import { anchorAll, anchorAllSources, anchorOne, flatten } from "../lib/anchor.js";
   import * as sync from "../lib/sync.js";
   import * as renderers from "../lib/renderers.js";
   import * as quarto from "../lib/engines/quarto.js";
@@ -20,9 +20,11 @@
   import { checkPlacement, basename, inside } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
   import { createAnnotations } from "../lib/reader/annotations.js";
-  import { clearLegacyRenderingCaches, createReaderBoot } from "../lib/reader/boot.js";
+  import { createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
+  import { createPublicationPublisher, createPublicationReader, sha256 } from "../lib/publication.js";
+  import { buildDisplayBundle } from "../lib/publication-builder.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import {
     SHELL_HEADERS,
@@ -70,7 +72,6 @@
   import PreviewStatus from "./PreviewStatus.svelte";
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
-  import { createPreviewApi } from "../lib/reader/preview-api.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { createLocalPreview } from "../lib/reader/local-preview.js";
   import { HIGHLIGHT_COLORS } from "../lib/annotation-colors.js";
@@ -86,7 +87,6 @@
   // is the one part of the URL a link key can safely travel in; from here it
   // is kept under the slug and presented on every request for this document.
   const KEY = takeKeyFromFragment(SLUG);
-  const previewApi = createPreviewApi({ slug: SLUG, key: KEY, shellHeaders: SHELL_HEADERS, keyHeaders });
 
   /* ------------------------------------------------------------ the document */
 
@@ -94,6 +94,18 @@
   let readerDisposed = false;
   let docsOrigin = $state(null);
   let frameSrc = $state(null);
+  let publishedMode = $state(false);
+  let publishedPublication = $state(null);
+  let publicationUpdate = $state(false);
+  let publicationStatus = $state(false);
+  // An existing publication makes the expected-publication pointer part of a
+  // publish request. The Share panel remains available while it arrives, but
+  // its publish control must wait for that pointer.
+  let publicationMetadataReady = $state(false);
+  let publicationMetadataFailed = $state(false);
+  let publicationSourceReady = false;
+  let publicationReader;
+  const publicationPublisher = createPublicationPublisher({ slug: SLUG, key: KEY });
   let me = $state({});
   // The displayed name, since this is what goes on a comment and what the
   // reader is shown commenting as. A Google account's handle is its email and
@@ -109,6 +121,7 @@
   // named on the document. A reader who arrived by link is offered neither,
   // which is most of the point of a blind review.
   let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
+  let canPublish = $derived(["editor", "owner"].includes(doc.role));
 
   // Whether this browser's work is safe, which is a different question from
   // whether the socket is up. `pending` counts the updates the server has not
@@ -132,6 +145,7 @@
     repaint: applyHighlights,
     send: (message) => collaboration?.send(message),
     changed: (items) => (unconfirmed = items),
+    publicationId: () => publishedPublication?.publication_id || publishedPublication?.id || "",
   });
   const outbox = annotations.outbox;
   const sendAnnotation = annotations.submit;
@@ -415,7 +429,16 @@
   function anchorComments(list) {
     const renderAnchors = list.filter((comment) => !comment.region);
     anchorAll(docText || "", renderAnchors, docText === null ? null : docView);
-    anchorAllSources(treeNow(), list);
+    if (publishedMode) {
+      for (const comment of list) {
+        if (comment.publication_id === publishedPublication?.id) continue;
+        const found = !comment.region && anchorOne(docText || "", { ...comment, position: null, requireUnique: true }, docView);
+        comment.start = found?.start ?? null;
+        comment.end = found?.end ?? null;
+        comment.earlierPublication = !found;
+        if (comment.region) comment.regionUnplaceable = true;
+      }
+    } else if (mayEdit) anchorAllSources(treeNow(), list);
     for (const comment of list) applyAnchorFlags(comment);
   }
 
@@ -508,7 +531,7 @@
         // loop.
         const first = framePreview.markReady();
         frameReady = true;
-        if (first) replayPreview();
+        if (first && !publishedMode) replayPreview();
         tell({ type: "tool", tool });
         // Whatever was painted before is gone with the rebuilt DOM.
         lastRegions = lastHighlight = lastRedlines = lastSelected = null;
@@ -525,7 +548,7 @@
         // message must not start a current capture that overtakes that URL.
         if (panel === "history" && historyBaseline && !historyComparePoint && !viewing &&
             !ARRIVED_AT && !checkpointNavigationPending) void computeHistoryChanges();
-        if (first) {
+        if (first && !publishedMode) {
           void paintPreview();
         }
         break;
@@ -536,7 +559,7 @@
         // A rectangle drawn on a figure anchors the same way a quotation
         // does, but it has no words to look up in the source: a region has
         // no source anchor and never will.
-        pending = { exact: "", prefix: "", suffix: "", position: null, region: message.region, source: null };
+        pending = { exact: "", prefix: "", suffix: "", position: null, region: message.region, source: null, publication_id: publishedMode ? publishedPublication?.id || "" : "" };
         placeBar(message.rect);
         break;
       case "regions-unplaceable": {
@@ -594,7 +617,7 @@
     // server reads as "no source anchor yet" rather than as a failure.
     let source = null;
     try {
-      if (docText !== null && !point) {
+      if (mayEdit && docText !== null && !point) {
         source = sync.sourceSelectorFor(docText, pending, treeNow(), {
           open: session?.paths?.get(openFile) || "",
           formatOf: renderers.formatOf,
@@ -605,8 +628,8 @@
     }
     pending.source = source;
     const captured = pending;
-    const tree = treeNow();
-    selectionRevision = viewing?.sha ? Promise.resolve(viewing.sha) : snapshotDigest(tree);
+    pending.publication_id = publishedMode ? publishedPublication?.id || "" : "";
+    selectionRevision = !mayEdit ? Promise.resolve("") : viewing?.sha ? Promise.resolve(viewing.sha) : snapshotDigest(capturePreviewTree(treeNow()));
     void selectionRevision.then((revision) => {
       captured.revision = revision;
     }).catch(() => { captured.revision = ""; });
@@ -766,20 +789,26 @@
   }
 
   function submitAnnotation({ motivation, body, proposed }) {
-    if (!pending || !mayChat) return;
+    if (!pending || !mayChat) return false;
+    if (publishedMode && (publicationUpdate || pending.publication_id !== publishedPublication?.id)) {
+      say("Refresh the published version and select the passage again before submitting. Your draft is kept.", true);
+      return false;
+    }
     // The server determines the author when it acknowledges the submission.
     annotations.comment(pending, { motivation, body, proposed, color: motivation === "highlighting" ? highlightColor : undefined }, identity || doc.commenting_as || "Anonymous");
     pending = null;
+    return true;
   }
 
   function submitDialog(event) {
     event.preventDefault();
     const motivation = tool === "region" || tool === "point" ? "commenting" : tool;
-    submitAnnotation({
+    const submitted = submitAnnotation({
       motivation,
       body: draft.body,
       proposed: motivation === "editing" ? draft.proposed : undefined,
     });
+    if (!submitted) return;
     draft = { body: "", proposed: "" };
     commenting = false;
   }
@@ -997,7 +1026,16 @@
     if (event.type === "y-state") {
       session
         ?.start(event)
-        .then(() => paintPreview())
+        .then(() => {
+          // Binding the initial Yjs tree does not produce an observed source
+          // edit. Publication metadata must therefore begin only after this
+          // state has been applied, rather than waiting for a later edit.
+          if (mayEdit && !publicationSourceReady) {
+            publicationSourceReady = true;
+            void refreshPublicationMetadata();
+          }
+          return paintPreview();
+        })
         .catch((error) => say(error.message || "could not open the document", true));
       peers = event.count || 1;
       return;
@@ -1029,6 +1067,11 @@
         doc = { ...doc, title: event.title };
         document.title = `${event.title} · LibrePaper`;
       }
+      return;
+    }
+
+    if (event.type === "publication-updated") {
+      publicationReader?.announce({ publication_id: event.publication_id });
       return;
     }
 
@@ -1594,36 +1637,22 @@
   // digest, and which file is the document. A compiler given only the main
   // file produces the error a reader would otherwise be shown.
   //
-  // Two moments have no directory to give. A session that has not arrived yet
-  // is empty, and a document the server has not migrated is still one text
-  // under its old name. Both are answered the same way, and with the same
-  // name the server would give them -- `main_path_for` in room.rs -- so that
-  // what is rendered before the maps land and what is rendered after are the
-  // same document under the same title.
+  // Before a session arrives there is no source tree to render.
   // The file manager always operates on the live directory. In particular,
   // its list remains live while the document pane is showing a checkpoint, so
   // downloads must use the same source as that list.
   function liveTreeNow() {
     if (!session) return { main: "", texts: {}, digests: {} };
     const tree = session.tree();
-    if (tree.main) {
-      // CodeMirror owns the active Yjs binding and exposes the text it is
-      // displaying. During a local transaction its view can be one tick ahead
-      // of the directory observer, so use that current source for snapshots
-      // taken by the preview scheduler.
-      const activeText = typeof editing !== "undefined" && editing && typeof editor !== "undefined" && editor?.text?.(openFile) != null && (!openFile || session.paths?.get?.(openFile) === tree.main)
-        ? String(editor.text(openFile))
-        : null;
-      return activeText == null ? tree : { ...tree, texts: { ...tree.texts, [tree.main]: activeText } };
-    }
-    const named =
-      { typst: "main.typ", markdown: "main.md", quarto: "main.qmd", html: "main.html", latex: "main.tex" }[sourceFormat] ||
-      "main.txt";
-    return {
-      main: named,
-      texts: { [named]: session.text.toString() },
-      digests: {},
-    };
+    if (!tree.main) return tree;
+    // CodeMirror owns the active Yjs binding and exposes the text it is
+    // displaying. During a local transaction its view can be one tick ahead
+    // of the directory observer, so use that current source for snapshots
+    // taken by the preview scheduler.
+    const activeText = typeof editing !== "undefined" && editing && typeof editor !== "undefined" && editor?.text?.(openFile) != null && (!openFile || session.paths?.get?.(openFile) === tree.main)
+      ? String(editor.text(openFile))
+      : null;
+    return activeText == null ? tree : { ...tree, texts: { ...tree.texts, [tree.main]: activeText } };
   }
 
   function treeNow() {
@@ -1803,7 +1832,7 @@
   );
   const typstHtmlPreview = $derived(displayedFormat === "typst" && (Boolean(viewing) || editing && typstOutput === "html"));
   const latexHtmlPreview = $derived(displayedFormat === "latex" && (Boolean(viewing) || editing && latexOutput === "html"));
-  const paintsTheFrame = $derived(Boolean(viewing) || editing || displayedFormat !== "html");
+  const paintsTheFrame = $derived(!publishedMode);
 
   /* -------------------------------------------------------------- LaTeX */
 
@@ -1811,7 +1840,7 @@
   // viewer on the documents origin rather than the empty shell. Everything
   // else about the frame is the same: same origin, same CSP, same channel.
   const pdfOutput = $derived(renderers.producesPdf(previewFormat));
-  const framePath = $derived(renderers.outputKind(previewFormat) === "pdf" ? "pdf" : "raw");
+  const framePath = $derived(publishedMode ? "" : (renderers.outputKind(previewFormat) === "pdf" ? "pdf" : "raw"));
 
   // How long the last compile took, and whether one is running now. Paged
   // formats expose the same short-lived loading state; the elapsed time is
@@ -1963,7 +1992,6 @@
     slug: SLUG,
     getDocsOrigin: () => docsOrigin,
     framePath: () => framePath,
-    api: previewApi,
     setSource: (source) => (frameSrc = source),
     send: tell,
     onNavigate: () => {
@@ -2216,13 +2244,56 @@
     }
   }
 
-  // Editors refresh at a bounded cadence even during continuous typing.
-  // Readers wait for a pause so they do not see every half-written word.
-  const READER_DEBOUNCE = 1000;
+  // A source that is not actively being edited in this browser waits for a
+  // pause, so remote changes and preview-only views do not render every word.
+  const PASSIVE_PREVIEW_DEBOUNCE = 1000;
+
+  // A publication records both the complete source tree and the HTML renderer
+  // identity. `document.sha` is only the main source file's digest, so it
+  // cannot answer whether a multi-file project is still the one published.
+  async function refreshPublicationStatus(publication = publishedPublication) {
+    if (!mayEdit || !publication?.source_sha256) {
+      publicationStatus = false;
+      return;
+    }
+    const generation = sourceGeneration;
+    try {
+      // This runs from the Yjs source observer. CodeMirror can still display
+      // its previous transaction at that point, so status must use the
+      // committed collaboration tree rather than liveTreeNow's editor overlay.
+      const tree = capturePreviewTree(session?.tree?.() || liveTreeNow());
+      const source = await snapshotDigest(tree);
+      const configuration = await renderers.htmlConfiguration(tree);
+      const renderConfig = await sha256(JSON.stringify(configuration.identity || {}));
+      if (generation !== sourceGeneration || publication !== publishedPublication) return;
+      publicationStatus = source !== publication.source_sha256 ||
+        renderConfig !== publication.render_config_sha256;
+    } catch {
+      // If the local renderer identity cannot be resolved, do not claim that
+      // the source matches the publication.
+      if (generation === sourceGeneration && publication === publishedPublication) publicationStatus = true;
+    }
+  }
+
+  async function refreshPublicationMetadata() {
+    if (!publicationReader) return null;
+    publicationMetadataReady = false;
+    publicationMetadataFailed = false;
+    const publication = await publicationReader.refresh();
+    if (readerDisposed || !mayEdit) return null;
+    if (!publicationMetadataFailed) {
+      await refreshPublicationStatus(publication);
+      publicationMetadataReady = true;
+    }
+    return publication;
+  }
 
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
+    if (mayEdit && publishedPublication?.source_sha256) {
+      void refreshPublicationStatus();
+    }
     outlineRevision += 1;
     historyController.noteLiveChange?.();
     // A peer edit must not repaint or invalidate the historical document.
@@ -2266,10 +2337,10 @@
     // still, and the longer of the two wins.
     const wait =
       sourceFormat === "latex"
-        ? Math.max(latex.DEBOUNCE, editing ? 0 : READER_DEBOUNCE)
+        ? Math.max(latex.DEBOUNCE, editing ? 0 : PASSIVE_PREVIEW_DEBOUNCE)
         : editing
           ? 50
-          : READER_DEBOUNCE;
+          : PASSIVE_PREVIEW_DEBOUNCE;
     previewTimer = setTimeout(paintPreview, wait);
   }
 
@@ -2440,7 +2511,7 @@
   const tabs = $derived(
     TABS.filter(
       (tab) =>
-        (!tab.editorOnly || mayEdit) && (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing),
+        (!tab.editorOnly || mayEdit) && (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing || canPublish),
     ),
   );
   // Where the column goes back to when what it showed is taken away: the
@@ -2672,6 +2743,50 @@
     } catch (error) {
       say(error.message || "Could not download the rendering.", true);
     }
+  }
+
+  async function publishCurrent() {
+    if (!mayEdit || !session || viewing) throw new Error("Only the current editable document can be published.");
+    if (!publicationMetadataReady) throw new Error("Checking the published version. Try again in a moment.");
+    const tree = capturePreviewTree(liveTreeNow());
+    const sourceRevision = await snapshotDigest(tree);
+    const configuration = await renderers.htmlConfiguration(tree);
+    const gathered = await figures.gather(SLUG, tree.digests, authHeaders(KEY), { strict: true });
+    tree.assets = { ...tree.assets, ...gathered.assets };
+    tree.urls = { ...tree.urls, ...gathered.urls };
+    say("Preparing publication…");
+    const rendered = await renderers.render(tree, await headingOf(tree), { format: "html", manual: true, configuration });
+    if (!rendered?.html || rendered.ok === false || rendered.diagnostics?.some((item) => item.severity === "error")) {
+      throw new Error("The captured document could not be rendered as HTML. Fix its render errors and publish again.");
+    }
+    const bundle = await buildDisplayBundle(rendered.html, tree);
+    let publication;
+    try {
+      publication = await publicationPublisher.publish({
+        ...bundle,
+        sourceRevision,
+        renderConfig: configuration.identity,
+        expectedPublicationId: publishedPublication?.id || null,
+        onProgress: ({ phase }) => say(phase === "published" ? "Published update." : `Publishing: ${phase}…`),
+      });
+    } catch (error) {
+      if (error?.status === 409) {
+        await refreshPublicationMetadata();
+        throw new Error("A newer published version is now current. Review it, then choose Publish update again.");
+      }
+      throw error;
+    }
+    publishedPublication = publication;
+    publicationUpdate = false;
+    const generation = sourceGeneration;
+    const liveTree = capturePreviewTree(liveTreeNow());
+    const [liveRevision, liveConfiguration] = await Promise.all([
+      snapshotDigest(liveTree), renderers.htmlConfiguration(liveTree),
+    ]);
+    const liveRenderConfig = await sha256(JSON.stringify(liveConfiguration.identity || {}));
+    publicationStatus = generation !== sourceGeneration || liveRevision !== sourceRevision ||
+      liveRenderConfig !== await sha256(JSON.stringify(configuration.identity || {}));
+    return publication;
   }
 
   // Open a panel from the menu: unlike the activity bar, choosing an item
@@ -3051,7 +3166,7 @@
     paintPreview();
   }
 
-  function startCollaboration(document_) {
+  function startCollaboration(document_, { sourceSync = true } = {}) {
     stopTracking?.();
     tracking?.dispose();
     collaboration?.close();
@@ -3060,6 +3175,7 @@
       key: KEY,
       getIdentity: () => identity,
       getCanEdit: () => mayEdit,
+      sourceSync,
       onMessage: receive,
       onConnected: (up) => {
         connected = up;
@@ -3093,6 +3209,10 @@
         refreshPeers();
       },
       onSource: (active) => {
+        if (mayEdit && !publicationSourceReady) {
+          publicationSourceReady = true;
+          void refreshPublicationMetadata();
+        }
         sourceChanged();
       },
       onSwap: () => (sourceEpoch += 1),
@@ -3109,20 +3229,72 @@
   // What this browser may do with the document, and whether it can render it
   // at all.
   async function prepare(document_) {
-    // The role the document's own endpoint answers with, which is where every
-    // affordance comes from: the editor at `editor` and above. `can_edit` is
-    // the same answer in the older shape, for a server that predates the role.
+    // The role endpoint answer is authoritative for every affordance.
     const ROLES = ["reader", "commenter", "editor", "owner"];
-    const allowed = document_.role
-      ? ROLES.indexOf(document_.role) >= ROLES.indexOf("editor")
-      : document_.can_edit === undefined
-        ? document_.can_moderate
-        : document_.can_edit;
+    const allowed = ROLES.indexOf(document_.role) >= ROLES.indexOf("editor");
     // The local companion must see the resolved permission on its first
     // configuration. In particular, account examples arrive as editable
     // Quarto documents; configuring before this assignment leaves the
     // companion inactive and the pane stuck on its Markdown fallback.
     mayEdit = Boolean(allowed);
+    if (mayEdit) {
+      publicationMetadataReady = false;
+      publicationMetadataFailed = false;
+      publicationSourceReady = false;
+      publicationReader?.dispose();
+      publicationReader = createPublicationReader({
+        slug: SLUG, key: KEY,
+        onPublication: (value) => {
+          publishedPublication = value;
+        },
+        onError: (error) => {
+          publicationMetadataFailed = true;
+          say(error.message || "Could not load the published version.", true);
+        },
+      });
+    }
+    // Reader and commenter links receive the current immutable display bundle.
+    // They never join the source room, ask for a snapshot, or start a local
+    // renderer. The publication URL is an authenticated server response and
+    // remains useful even when there is no publication yet.
+    if (!mayEdit) {
+      publishedMode = true;
+      startCollaboration(document_, { sourceSync: false });
+      publicationReader?.dispose();
+      publicationReader = createPublicationReader({
+        slug: SLUG,
+        key: KEY,
+        onPublication: (value) => {
+          if (value?.pending_id && value.pending_id !== publishedPublication?.id) {
+            publicationUpdate = true;
+            return;
+          }
+          publishedPublication = value;
+          publicationUpdate = false;
+          if (value?.html_url) {
+            const source = value.html_url;
+            if (typeof source === "string" && /^https?:\/\//.test(source)) {
+              const resolved = new URL(source);
+              if (document_.docs_origin && resolved.origin !== document_.docs_origin) {
+                say("The published document URL was refused.", true);
+                return;
+              }
+              frameSrc = resolved.href;
+              docsOrigin = resolved.origin;
+            }
+            everPainted = true;
+            everPaintedShown = true;
+          }
+        },
+        onError: (error) => say(error.message || "Could not load the published version.", true),
+      });
+      await publicationReader.refresh();
+      // No publication is an explicit state, never a reason to fall back to
+      // source rendering. Keep the document pane available for the notice.
+      sourceFormat = "html";
+      settled = true;
+      return;
+    }
     // Rendering follows the durable source format. Generated-result identity
     // is deliberately absent: a reader compiles this source on demand.
     const format = document_.source_format ||
@@ -3147,6 +3319,8 @@
     // transient and does not create a server-side result.
     renderers.warm(format);
     startCollaboration(document_);
+    // `onSource` starts publication metadata only after the initial Yjs state
+    // has populated the source tree. A session object alone is not a snapshot.
     // No chooser and no saved distribution: `latex.configure` tells the
     // controller which project this is and what it is allowed to do, and the
     // first `paintPreview` (from `startEditing` below, or an edit) is what
@@ -3176,7 +3350,6 @@
   $effect(() => {
     markViewed(SLUG);
     const stopQuartoStatus = localQuarto.subscribe((status) => { localAppStatus = status; });
-    void clearLegacyRenderingCaches();
     pendingChat = createPendingChat({
       send: (message) => collaboration?.sendLive(message) || { ok: false },
     });
@@ -3223,6 +3396,8 @@
       issued += 1;
       navigationGeneration += 1;
       renderers.cancelPreview();
+      publicationReader?.dispose();
+      publicationReader = null;
       clearTimeout(previewTimer);
       previewTimer = null;
       boot.dispose();
@@ -3328,7 +3503,7 @@
     <div class="menu-section-label">Project downloads include {pendingRevisionCount} pending {pendingRevisionCount === 1 ? "change" : "changes"}.</div>
   {/if}
   <hr class="hr my-1" />
-  {#if canSeeSharing}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
+  {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
   <Menu.Item value="history" class="menuitem">History</Menu.Item>
 {/snippet}
 
@@ -3424,6 +3599,14 @@
 
 <Nav {me} documentation={false}>
   {#snippet tools()}
+    {#if publishedMode && publicationUpdate}
+      <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => { publicationUpdate = false; void publicationReader?.refresh(); }}>
+        New published version available · Refresh
+      </button>
+    {/if}
+    {#if mayEdit && publicationStatus}
+      <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => openPanel("share")}>Unpublished changes</button>
+    {/if}
     <div class="presence" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
       <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
       {#if !connected}<span class="connection-label">Offline</span>{/if}
@@ -3524,6 +3707,10 @@
     {mayEdit} {files} {folders} {openFile} peersByFile={peersByFile} {rules}
     {outlineHeadings} {outlineActiveFrom} slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
     {canSeeSharing}
+    mayPublish={canPublish} onpublish={publishCurrent}
+    publishedVersion={publishedPublication} unpublishedChanges={publicationStatus}
+    publicationReady={publicationMetadataReady} publicationFailed={publicationMetadataFailed}
+    onrefreshpublication={refreshPublicationMetadata}
     path={session?.paths?.get(openFile) || ""} selection={pending} selected={selectedAnnotation}
     revision={pending?.revision || ""} request={assistantRequest} {comments} {figureAt} {identity}
     commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
@@ -3700,6 +3887,12 @@
       <div class="preview-activity" role="status"><span class="spinner" aria-hidden="true"></span>{previewStatusLabel}…</div>
     {/if}
   {/snippet}
+  {#if publishedMode && !publishedPublication?.id}
+    <section class="latexpane" role="status"><div class="notyet">
+      <h2 class="h4">Not published yet</h2>
+      <p class="text-surface-700-300 text-sm">The publisher has not published a reader version of this document.</p>
+    </div></section>
+  {/if}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
            path={viewing?.main || previewMain} status={previewStatusControl} overlay={previewOverlay}
            away={!shown.document || unrendered || failedBeforeRender} />

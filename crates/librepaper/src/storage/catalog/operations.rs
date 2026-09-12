@@ -856,7 +856,15 @@ impl Catalog {
             if retiring {
                 return Err(CatalogError::Conflict("object is queued for deletion; retry after cleanup".into()));
             }
-            let old_bytes: i64 = tx.query_row("SELECT bytes FROM object_accounting WHERE storage_id=?1 AND object_key=?2", params![storage_id,object_key], |r|r.get(0)).optional().map_err(CatalogError::from)?.unwrap_or(0);
+            let existing_accounting: Option<(i64, i64)> = tx
+                .query_row(
+                    "SELECT bytes,metadata_bytes FROM object_accounting WHERE storage_id=?1 AND object_key=?2",
+                    params![storage_id, object_key],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            let (old_bytes, _old_metadata_bytes) = existing_accounting.unwrap_or((0, 0));
             if let Some((reserved_old, reserved_new)) = tx
                 .query_row(
                     "SELECT old_bytes, new_bytes FROM object_reservations
@@ -902,7 +910,7 @@ impl Catalog {
             // measured object.  The final checkpoint measurement reconciles
             // the exact graph/metadata rows; this preflight prevents a
             // physical object from crossing the quota before that commit.
-            let metadata_headroom = if owner_known && old_bytes == 0 {
+            let metadata_headroom = if owner_known && existing_accounting.is_none() {
                 storage_id.len().saturating_add(object_key.len())
                     .saturating_add(kind.len()).saturating_add(64) as i64
             } else { 0 };
@@ -913,7 +921,19 @@ impl Catalog {
             let total = total.saturating_sub(credit);
             if owner_limit>=0 && owner_bytes.saturating_add(charge_delta)>owner_limit { return Err(CatalogError::Conflict("owner byte quota exceeded".into())); }
             if total_limit>=0 && total.saturating_add(charge_delta)>total_limit { return Err(CatalogError::Conflict("deployment byte quota exceeded".into())); }
-            tx.execute("INSERT INTO object_reservations(storage_id,operation_id,object_key,old_bytes,new_bytes,created_at) VALUES(?1,?2,?3,?4,?5,unixepoch()) ON CONFLICT(storage_id,operation_id,object_key) DO UPDATE SET new_bytes=excluded.new_bytes",params![storage_id,operation_id,object_key,old_bytes,new_bytes]).map_err(CatalogError::from)?;
+            // A reservation records only the metadata it newly charged.  The
+            // existing ledger row owns its prior metadata charge; copying it
+            // here would make an aborted replacement refund live accounting.
+            // Prepared publications charge neither object nor metadata deltas
+            // here, so they must likewise retain zero for a later abort.
+            let reservation_metadata = if pending_publication.is_none()
+                && existing_accounting.is_none()
+            {
+                metadata_headroom
+            } else {
+                0
+            };
+            tx.execute("INSERT INTO object_reservations(storage_id,operation_id,object_key,old_bytes,new_bytes,metadata_bytes,created_at) VALUES(?1,?2,?3,?4,?5,?6,unixepoch()) ON CONFLICT(storage_id,operation_id,object_key) DO UPDATE SET new_bytes=excluded.new_bytes",params![storage_id,operation_id,object_key,old_bytes,new_bytes,reservation_metadata]).map_err(CatalogError::from)?;
             // A prepared publication already admitted its complete known
             // peak.  Its object ledger entries consume that reservation; do
             // not charge each staged object a second time.  Ordinary edits
@@ -935,15 +955,7 @@ impl Catalog {
         kind: &str,
         version: &str,
     ) -> CatalogResult<()> {
-        self.commit_object_change_inner(
-            storage_id,
-            operation_id,
-            object_key,
-            kind,
-            version,
-            None,
-            None,
-        )
+        self.commit_object_change_inner(storage_id, operation_id, object_key, kind, version, None)
     }
 
     pub fn commit_object_change_with_authority(
@@ -962,36 +974,9 @@ impl Catalog {
             kind,
             version,
             Some(actor),
-            None,
         )
     }
 
-    /// Commit a selection object and the durable pointer readers follow in
-    /// one transaction. A failed authority check leaves the prior pointer
-    /// untouched even when the physical CAS has already succeeded.
-    #[allow(clippy::too_many_arguments)]
-    pub fn commit_quarto_selection_with_authority(
-        &self,
-        storage_id: &str,
-        operation_id: &str,
-        object_key: &str,
-        kind: &str,
-        version: &str,
-        selection: &crate::quarto::Selection,
-        actor: MutationAuthority<'_>,
-    ) -> CatalogResult<()> {
-        self.commit_object_change_inner(
-            storage_id,
-            operation_id,
-            object_key,
-            kind,
-            version,
-            Some(actor),
-            Some(selection),
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
     fn commit_object_change_inner(
         &self,
         storage_id: &str,
@@ -1000,7 +985,6 @@ impl Catalog {
         kind: &str,
         version: &str,
         actor: Option<MutationAuthority<'_>>,
-        selection: Option<&crate::quarto::Selection>,
     ) -> CatalogResult<()> {
         self.immediate(|tx| {
             if let Some(actor) = actor {
@@ -1017,107 +1001,27 @@ impl Catalog {
                     ));
                 }
             }
-            let reserved: Option<(i64, i64)> = tx
+            let reserved: Option<(i64, i64, i64)> = tx
                 .query_row(
-                    "SELECT old_bytes,new_bytes FROM object_reservations WHERE storage_id=?1 AND operation_id=?2 AND object_key=?3",
+                    "SELECT old_bytes,new_bytes,metadata_bytes FROM object_reservations WHERE storage_id=?1 AND operation_id=?2 AND object_key=?3",
                     params![storage_id, operation_id, object_key],
-                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
                 )
                 .optional()
                 .map_err(CatalogError::from)?;
-            let Some((old_bytes, new_bytes)) = reserved else { return Ok(()); };
-            tx.execute("INSERT INTO object_accounting(storage_id,object_key,kind,bytes,version) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(storage_id,object_key) DO UPDATE SET kind=excluded.kind,bytes=excluded.bytes,version=excluded.version",params![storage_id,object_key,kind,new_bytes,version]).map_err(CatalogError::from)?;
+            let Some((old_bytes, new_bytes, metadata_bytes)) = reserved else { return Ok(()); };
+            let existing_metadata: i64 = tx
+                .query_row(
+                    "SELECT metadata_bytes FROM object_accounting WHERE storage_id=?1 AND object_key=?2",
+                    params![storage_id, object_key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(CatalogError::from)?
+                .unwrap_or(0);
+            let committed_metadata = existing_metadata.saturating_add(metadata_bytes);
+            tx.execute("INSERT INTO object_accounting(storage_id,object_key,kind,bytes,metadata_bytes,version) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(storage_id,object_key) DO UPDATE SET kind=excluded.kind,bytes=excluded.bytes,metadata_bytes=excluded.metadata_bytes,version=excluded.version",params![storage_id,object_key,kind,new_bytes,committed_metadata,version]).map_err(CatalogError::from)?;
             tx.execute("DELETE FROM object_reservations WHERE storage_id=?1 AND operation_id=?2 AND object_key=?3",params![storage_id,operation_id,object_key]).map_err(CatalogError::from)?;
-            if let Some(selection) = selection {
-                if selection.document_id.is_empty()
-                    || selection.context_id.is_empty()
-                    || selection.render_id.is_empty()
-                    || selection.generation == 0
-                    || selection.generation > i64::MAX as u64
-                {
-                    return Err(CatalogError::Invalid("invalid Quarto selection pointer".into()));
-                }
-                let existing: Option<(i64, String)> = tx
-                    .query_row(
-                        "SELECT generation,render_id FROM quarto_selections
-                          WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
-                        params![storage_id, selection.document_id, selection.context_id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()
-                    .map_err(CatalogError::from)?;
-                let epoch: Option<i64> = tx
-                    .query_row(
-                        "SELECT generation FROM quarto_selection_epochs
-                          WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
-                        params![storage_id, selection.document_id, selection.context_id],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(CatalogError::from)?;
-                if let Some((generation, render_id)) = existing {
-                    if generation > selection.generation as i64
-                        || (generation == selection.generation as i64
-                            && render_id != selection.render_id)
-                    {
-                        return Err(CatalogError::Conflict(
-                            "Quarto selection generation changed".into(),
-                        ));
-                    }
-                }
-                if epoch.is_some_and(|generation| generation > selection.generation as i64) {
-                    return Err(CatalogError::Conflict(
-                        "Quarto selection generation changed".into(),
-                    ));
-                }
-                tx.execute(
-                    "INSERT INTO quarto_selection_epochs
-                       (storage_id,document_id,context_id,generation)
-                     VALUES(?1,?2,?3,?4)
-                     ON CONFLICT(storage_id,document_id,context_id) DO UPDATE SET
-                       generation=excluded.generation
-                     WHERE excluded.generation >= quarto_selection_epochs.generation",
-                    params![
-                        storage_id,
-                        selection.document_id,
-                        selection.context_id,
-                        selection.generation as i64,
-                    ],
-                )
-                .map_err(CatalogError::from)?;
-                tx.execute(
-                    "INSERT INTO quarto_selections
-                       (storage_id,document_id,context_id,generation,render_id,
-                        source_revision,object_key,object_version,updated_at)
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,unixepoch())
-                     ON CONFLICT(storage_id,document_id,context_id) DO UPDATE SET
-                       generation=excluded.generation,render_id=excluded.render_id,
-                       source_revision=excluded.source_revision,
-                       object_key=excluded.object_key,object_version=excluded.object_version,
-                       updated_at=excluded.updated_at",
-                    params![
-                        storage_id,
-                        selection.document_id,
-                        selection.context_id,
-                        selection.generation as i64,
-                        selection.render_id,
-                        selection.source_revision,
-                        object_key,
-                        version,
-                    ],
-                )
-                .map_err(CatalogError::from)?;
-            }
-            if let Some(selection) = selection {
-                tx.execute(
-                    "INSERT INTO quarto_selection_history(storage_id,document_id,context_id,render_id,generation)
-                     VALUES(?1,?2,?3,?4,?5)
-                     ON CONFLICT(storage_id,document_id,context_id,render_id)
-                     DO UPDATE SET generation=MAX(generation,excluded.generation)",
-                    params![storage_id, selection.document_id, selection.context_id,
-                            selection.render_id, selection.generation as i64],
-                ).map_err(CatalogError::from)?;
-            }
             let pending: Option<String> = tx
                 .query_row(
                     "SELECT pending_publication FROM documents WHERE storage_id=?1",
@@ -1130,218 +1034,6 @@ impl Catalog {
         })
     }
 
-    pub fn quarto_selection_history(
-        &self,
-        storage_id: &str,
-        document_id: &str,
-    ) -> CatalogResult<Vec<(String, String, u64)>> {
-        self.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT context_id,render_id,generation FROM quarto_selection_history
-                 WHERE storage_id=?1 AND document_id=?2 ORDER BY generation DESC",
-            )?;
-            let rows = statement.query_map(params![storage_id, document_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(CatalogError::from)
-        })
-    }
-
-    pub fn quarto_selection(
-        &self,
-        storage_id: &str,
-        document_id: &str,
-        context_id: &str,
-    ) -> CatalogResult<Option<QuartoSelection>> {
-        self.with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT storage_id,document_id,context_id,generation,render_id,
-                            source_revision,object_key,object_version,updated_at
-                       FROM quarto_selections
-                      WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
-                    params![storage_id, document_id, context_id],
-                    |row| {
-                        Ok(QuartoSelection {
-                            storage_id: row.get(0)?,
-                            document_id: row.get(1)?,
-                            context_id: row.get(2)?,
-                            generation: row.get::<_, i64>(3)? as u64,
-                            render_id: row.get(4)?,
-                            source_revision: row.get(5)?,
-                            object_key: row.get(6)?,
-                            object_version: row.get(7)?,
-                            updated_at: row.get(8)?,
-                        })
-                    },
-                )
-                .optional()
-                .map_err(CatalogError::from)
-        })
-    }
-
-    /// The last committed generation, including a cleared selection.  The
-    /// epoch survives source restore so an upload already in flight cannot
-    /// reuse the generation that was selected before the restore.
-    pub fn quarto_selection_generation(
-        &self,
-        storage_id: &str,
-        document_id: &str,
-        context_id: &str,
-    ) -> CatalogResult<u64> {
-        self.with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT generation FROM quarto_selection_epochs
-                      WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
-                    params![storage_id, document_id, context_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()
-                .map(|generation| generation.unwrap_or(0) as u64)
-                .map_err(CatalogError::from)
-        })
-    }
-
-    pub fn quarto_selection_epochs(
-        &self,
-        storage_id: &str,
-        document_id: &str,
-    ) -> CatalogResult<Vec<(String, u64)>> {
-        self.with_connection(|connection| {
-            let mut statement = connection
-                .prepare(
-                    "SELECT context_id,generation FROM quarto_selection_epochs
-                      WHERE storage_id=?1 AND document_id=?2
-                      ORDER BY context_id",
-                )
-                .map_err(CatalogError::from)?;
-            let rows = statement
-                .query_map(params![storage_id, document_id], |row| {
-                    Ok((row.get(0)?, row.get::<_, i64>(1)? as u64))
-                })
-                .map_err(CatalogError::from)?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(CatalogError::from)
-        })
-    }
-
-    pub fn quarto_selections(
-        &self,
-        storage_id: &str,
-        document_id: &str,
-    ) -> CatalogResult<Vec<QuartoSelection>> {
-        self.with_connection(|connection| {
-            let mut statement = connection
-                .prepare(
-                    "SELECT storage_id,document_id,context_id,generation,render_id,
-                            source_revision,object_key,object_version,updated_at
-                       FROM quarto_selections
-                      WHERE storage_id=?1 AND document_id=?2
-                      ORDER BY context_id",
-                )
-                .map_err(CatalogError::from)?;
-            let rows = statement
-                .query_map(params![storage_id, document_id], |row| {
-                    Ok(QuartoSelection {
-                        storage_id: row.get(0)?,
-                        document_id: row.get(1)?,
-                        context_id: row.get(2)?,
-                        generation: row.get::<_, i64>(3)? as u64,
-                        render_id: row.get(4)?,
-                        source_revision: row.get(5)?,
-                        object_key: row.get(6)?,
-                        object_version: row.get(7)?,
-                        updated_at: row.get(8)?,
-                    })
-                })
-                .map_err(CatalogError::from)?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(CatalogError::from)
-        })
-    }
-
-    pub fn clear_quarto_selection_with_authority(
-        &self,
-        storage_id: &str,
-        document_id: &str,
-        context_id: &str,
-        actor: MutationAuthority<'_>,
-    ) -> CatalogResult<usize> {
-        self.immediate(|tx| {
-            let slug: String = tx
-                .query_row(
-                    "SELECT slug FROM documents WHERE storage_id=?1",
-                    [storage_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if !Self::mutation_authorized_in_tx(tx, &slug, actor, "editor")? {
-                return Err(CatalogError::Conflict(
-                    "actor edit rights or session generation changed".into(),
-                ));
-            }
-            let pointer_generation: Option<i64> = tx
-                .query_row(
-                    "SELECT generation FROM quarto_selections
-                      WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
-                    params![storage_id, document_id, context_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(CatalogError::from)?;
-            let epoch: Option<i64> = tx
-                .query_row(
-                    "SELECT generation FROM quarto_selection_epochs
-                      WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
-                    params![storage_id, document_id, context_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(CatalogError::from)?;
-            let next_generation = pointer_generation
-                .into_iter()
-                .chain(epoch)
-                .max()
-                .unwrap_or(0)
-                .saturating_add(1);
-            tx.execute(
-                "INSERT INTO quarto_selection_epochs
-                   (storage_id,document_id,context_id,generation)
-                 VALUES(?1,?2,?3,?4)
-                 ON CONFLICT(storage_id,document_id,context_id) DO UPDATE SET
-                   generation=MAX(generation,excluded.generation)",
-                params![storage_id, document_id, context_id, next_generation],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "DELETE FROM quarto_selections
-                  WHERE storage_id=?1 AND document_id=?2 AND context_id=?3",
-                params![storage_id, document_id, context_id],
-            )
-            .map_err(CatalogError::from)
-        })
-    }
-
-    pub fn quarto_object_committed(
-        &self,
-        storage_id: &str,
-        object_key: &str,
-        version: &str,
-    ) -> CatalogResult<bool> {
-        self.with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM object_accounting
-                                    WHERE storage_id=?1 AND object_key=?2 AND version=?3)",
-                    params![storage_id, object_key, version],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(CatalogError::from)
-        })
-    }
-
     pub fn abort_object_change(
         &self,
         storage_id: &str,
@@ -1349,8 +1041,12 @@ impl Catalog {
         object_key: &str,
     ) -> CatalogResult<()> {
         self.immediate(|tx| {
-            let reserved:Option<(i64,i64)>=tx.query_row("SELECT old_bytes,new_bytes FROM object_reservations WHERE storage_id=?1 AND operation_id=?2 AND object_key=?3",params![storage_id,operation_id,object_key],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(CatalogError::from)?;
-            let Some((old,new))=reserved else { return Ok(()) };
+            let reserved: Option<(i64, i64, i64)> = tx.query_row(
+                "SELECT old_bytes,new_bytes,metadata_bytes FROM object_reservations WHERE storage_id=?1 AND operation_id=?2 AND object_key=?3",
+                params![storage_id, operation_id, object_key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).optional().map_err(CatalogError::from)?;
+            let Some((old, new, metadata)) = reserved else { return Ok(()) };
             let delta=new.saturating_sub(old);
             tx.execute("DELETE FROM object_reservations WHERE storage_id=?1 AND operation_id=?2 AND object_key=?3",params![storage_id,operation_id,object_key]).map_err(CatalogError::from)?;
             let pending: Option<String> = tx
@@ -1360,7 +1056,19 @@ impl Catalog {
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?;
-            if pending.is_none() && delta>0 { tx.execute("UPDATE documents SET counted_size=counted_size-?2 WHERE storage_id=?1",params![storage_id,delta]).map_err(CatalogError::from)?; tx.execute("UPDATE totals SET bytes=bytes-?1 WHERE id=1",[delta]).map_err(CatalogError::from)?; }
+            if pending.is_none() && (delta > 0 || metadata > 0) {
+                let charged = delta.max(0).saturating_add(metadata);
+                let released: i64 = tx.query_row(
+                    "SELECT MIN(?2,MAX(0,counted_size-size)) FROM documents WHERE storage_id=?1",
+                    params![storage_id, charged], |row| row.get(0),
+                )?;
+                tx.execute(
+                    "UPDATE documents SET counted_size=counted_size-?2 WHERE storage_id=?1",
+                    params![storage_id, released],
+                ).map_err(CatalogError::from)?;
+                tx.execute("UPDATE totals SET bytes=MAX(0,bytes-?1) WHERE id=1", [released])
+                    .map_err(CatalogError::from)?;
+            }
             Ok(())
         })
     }
@@ -1376,20 +1084,20 @@ impl Catalog {
             let rows = {
                 let mut statement = tx
                     .prepare(
-                        "SELECT storage_id, bytes FROM object_accounting
+                        "SELECT storage_id, bytes, metadata_bytes FROM object_accounting
                          WHERE object_key = ?1",
                     )
                     .map_err(CatalogError::from)?;
                 let rows = statement
                     .query_map([object_key], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
                     })
                     .map_err(CatalogError::from)?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(CatalogError::from)?
             };
             let mut released = 0i64;
-            for (storage_id, bytes) in rows {
+            for (storage_id, bytes, metadata_bytes) in rows {
                 let old_counted: Option<i64> = tx
                     .query_row(
                         "SELECT counted_size FROM documents WHERE storage_id=?1 AND status='active'",
@@ -1408,11 +1116,12 @@ impl Catalog {
                         |row| row.get(0),
                     )
                     .map_err(CatalogError::from)?;
-                let new_counted = size.max(old_counted.saturating_sub(bytes));
+                let charge = bytes.saturating_add(metadata_bytes);
+                let new_counted = size.max(old_counted.saturating_sub(charge));
                 tx.execute(
                     "UPDATE documents SET counted_size=MAX(size,counted_size-?2)
                      WHERE storage_id=?1 AND status='active'",
-                    params![storage_id, bytes],
+                    params![storage_id, charge],
                 )
                 .map_err(CatalogError::from)?;
                 released = released.saturating_add(old_counted - new_counted);

@@ -117,6 +117,7 @@ fn open_annotation(slug: &str, revision: &str) -> Comment {
         author: "reviewer".into(),
         via: "web".into(),
         created: "2026-01-01T00:00:00.000Z".into(),
+        publication_id: String::new(),
         exact: String::new(),
         prefix: String::new(),
         suffix: String::new(),

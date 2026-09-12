@@ -219,7 +219,7 @@ impl Catalog {
             if kind == "asset" || key.contains("/assets/") {
                 return "asset";
             }
-            if kind == "rendering" || kind == "publish" || key.contains("/renderings/") {
+            if kind == "publication" || kind == "publication-maintenance" {
                 return "publication";
             }
             if kind.starts_with("source_")
@@ -729,16 +729,6 @@ impl Catalog {
                 "SELECT COALESCE(SUM(
                 length(CAST(s.storage_id AS BLOB))+length(CAST(s.checkpoint_sha AS BLOB))+8),0)
              FROM checkpoint_asset_sets s JOIN documents d ON d.storage_id=s.storage_id
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                false,
-            ),
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(r.slug AS BLOB))+length(CAST(r.tree_sha AS BLOB))+
-                length(CAST(r.at AS BLOB))+length(CAST(r.backend AS BLOB))+
-                length(CAST(r.engine AS BLOB))+length(CAST(r.release AS BLOB))+
-                length(CAST(r.tools AS BLOB))+32),0)
-             FROM renderings r JOIN documents d ON d.slug=r.slug
              WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
                 false,
             ),

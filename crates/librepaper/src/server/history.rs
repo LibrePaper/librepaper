@@ -50,7 +50,9 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, None).await;
-        if !self.may_read(&entry, &who) {
+        // History contains source paths, revisions, and source-bearing
+        // checkpoint metadata, so it is editor-only.
+        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
         let room = match self.rooms.try_get(slug).await {
@@ -149,7 +151,7 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, None).await;
-        if !self.may_read(&entry, &who) {
+        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
         let room = match self.rooms.try_get(slug).await {
@@ -376,10 +378,13 @@ impl Server {
                 return refused(&format!("could not restore {slug}"), &error);
             }
         };
-        room.broadcast(&json!({
-            "type": "y-update",
-            "update": encode_update(&update),
-        }))
+        room.broadcast_editors_except(
+            None,
+            &json!({
+                "type": "y-update",
+                "update": encode_update(&update),
+            }),
+        )
         .await;
         let checkpoint = match room.checkpoint_by_sha(&sha).await {
             Ok(point) => point,

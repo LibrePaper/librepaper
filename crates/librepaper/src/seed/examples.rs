@@ -1,7 +1,7 @@
 //! The five LibrePaper tutorials and the annotations seeded onto them. Each
 //! source format introduces the same workflow in its own syntax, including a
 //! relative icon asset, math, tables, a shared `references.bib` cited in the
-//! format's own way, previews, synchronization, and saved renderings.
+//! format's own way, previews, and synchronization.
 //!
 //! Text annotations use short, stable phrases that appear in the rendered
 //! document. The HTML tutorial also demonstrates a region annotation on its

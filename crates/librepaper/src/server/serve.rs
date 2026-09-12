@@ -294,26 +294,6 @@ pub async fn serve(options: ServeOptions) {
         journal
             .require_recovered()
             .unwrap_or_else(|err| die(format!("local journal recovery is required: {err}")));
-        // Renderer products from pre no-retention deployments are collected
-        // before any room can serve them. Source trees, input assets and
-        // annotations remain in the catalogue; only derived namespaces are
-        // eligible for this bounded migration.
-        let generated =
-            crate::storage::maintenance::collect_legacy_generated_outputs(catalog, &blobs, 10_000)
-                .await
-                .unwrap_or_else(|err| die(format!("legacy rendering cleanup failed: {err}")));
-        if generated.objects_deleted != 0 || generated.references_removed != 0 {
-            eprintln!(
-                "{}",
-                serde_json::json!({
-                    "event": "legacy_generated_outputs_collected",
-                    "references_removed": generated.references_removed,
-                    "objects_deleted": generated.objects_deleted,
-                    "objects_deferred": generated.objects_deferred,
-                    "bytes_reclaimed": generated.bytes_reclaimed,
-                })
-            );
-        }
         let worker = Arc::new(
             DeletionWorker::new(catalog.clone(), blobs.clone(), DeletionLimits::default())
                 .unwrap_or_else(|err| die(format!("could not initialize deletion worker: {err}"))),
@@ -346,6 +326,10 @@ pub async fn serve(options: ServeOptions) {
         publishers.clone(),
         commenters.clone(),
     );
+    crate::server::publication::PublicationStore::for_store(instance.store.clone())
+        .reconcile_accounting()
+        .await
+        .unwrap_or_else(|err| die(format!("publication accounting recovery failed: {err}")));
     if let Some(catalog) = instance.store.catalog.clone() {
         let journal = crate::storage::journal::JournalRuntime::new_with_policy(
             catalog,
@@ -461,6 +445,26 @@ pub async fn serve(options: ServeOptions) {
         });
     }
 
+    // Reclaim abandoned rendered-publication uploads even when the document
+    // is never opened again. The staging marker is durable, so this remains
+    // correct across restarts.
+    let publication_janitor = instance.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            if let Err(error) = crate::server::publication::PublicationStore::for_store(
+                publication_janitor.store.clone(),
+            )
+            .cleanup_all_staging(crate::util::now_unix())
+            .await
+            {
+                eprintln!("warning: publication staging cleanup failed: {error}");
+            }
+        }
+    });
+
     // The sweeper. A document nobody has open is still written out and still
     // gets its checkpoints: that is the whole difference between a session the
     // server holds and a session it relays, and it is why no browser has to
@@ -492,7 +496,6 @@ pub async fn serve(options: ServeOptions) {
 
     if let Some(worker) = deletion_worker.clone() {
         let erasure_catalog = instance.store.catalog.clone();
-        let generated_blobs = instance.store.blobs.clone();
         let retention_server = instance.clone();
         let journal_worker = journal_retirement_worker.clone();
         let retention_hard_quota = instance.config.storage.per_owner;
@@ -512,37 +515,6 @@ pub async fn serve(options: ServeOptions) {
                     }
                 }
                 if let Some(catalog) = &erasure_catalog {
-                    // Continue the resumable legacy-rendering migration after
-                    // startup. A single startup tick is intentionally bounded
-                    // and must not leave a large deployment half-migrated.
-                    match crate::storage::maintenance::collect_legacy_generated_outputs(
-                        catalog,
-                        &generated_blobs,
-                        1_000,
-                    )
-                    .await
-                    {
-                        Ok(report)
-                            if report.references_removed != 0
-                                || report.objects_deleted != 0
-                                || report.objects_deferred != 0 =>
-                        {
-                            eprintln!(
-                                "{}",
-                                serde_json::json!({
-                                    "event": "legacy_generated_outputs_collected",
-                                    "references_removed": report.references_removed,
-                                    "objects_deleted": report.objects_deleted,
-                                    "objects_deferred": report.objects_deferred,
-                                    "bytes_reclaimed": report.bytes_reclaimed,
-                                })
-                            );
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            eprintln!("warning: legacy rendering cleanup deferred: {error}");
-                        }
-                    }
                     let retention_result = catalog
                         .execute_catalog(1024, {
                             move |catalog| {

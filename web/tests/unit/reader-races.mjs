@@ -24,7 +24,7 @@ const showCheckpoint = body("  async function showCheckpoint(sha)", "  async fun
 // an automatic captured-current comparison.
 for (const [arrived, navigating, expected] of [["old", 0, 0], ["", 1, 0], ["", 0, 1]]) {
   let comparisons = 0;
-  vm.runInNewContext(body('        if (panel === "history" && historyBaseline', '        if (first)'), {
+  vm.runInNewContext(body('        if (panel === "history" && historyBaseline', '        if (first && !publishedMode)'), {
     panel: "history", historyBaseline: { sha: "old" }, historyComparePoint: null, viewing: null,
     ARRIVED_AT: arrived, checkpointNavigationPending: navigating,
     computeHistoryChanges: () => comparisons++,
@@ -60,7 +60,7 @@ const previewHelpers = body("  function superseded(mine", "  // Outline reads th
 // `updatePreviewTarget` points the local app at this document through a small
 // helper now, so that helper is sliced in wherever the function is exercised.
 const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which of Quarto's own live preview");
-const paintPreview = `${previewHelpers}\n${body("  async function paintPreview()", "  // Editors refresh at a bounded cadence")}`;
+const paintPreview = `${previewHelpers}\n${body("  async function paintPreview()", "  // A source that is not actively")}`;
 
 // Initial Quarto setup must configure the companion as active for an editor.
 // If permission is assigned afterwards, editable onboarding examples remain
@@ -149,6 +149,8 @@ const context = (values) => vm.createContext({
   Uint8Array,
   ArrayBuffer,
   readerDisposed: false,
+  mayEdit: true,
+  publishedPublication: null,
   editing: true,
   latexOutput: "pdf",
   outlineRevision: 0,
@@ -437,7 +439,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let notified = 0;
   const ctx = context({
-    sourceGeneration: 0, viewing: { sha: "old" },
+    sourceGeneration: 0, viewing: { sha: "old" }, mayEdit: true, publishedPublication: null,
     outlineRevision: 0,
     historyController: { noteLiveChange: () => notified++ },
     diagnosticPainter: { typed: () => assert.fail("historical preview must remain stable") },
@@ -452,8 +454,8 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false,
-    previewTimer: null, READER_DEBOUNCE: 1000,
+    sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedPublication: null,
+    previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
       assert.ok(ms <= 50, "Markdown starts rendering within 50 ms of an edit");

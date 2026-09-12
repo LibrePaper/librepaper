@@ -122,6 +122,12 @@ impl Server {
                 let Ok(incoming) = serde_json::from_slice::<RoomMessage>(&body) else {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
+                if incoming.motivation == "editing" && !who.at_least(Role::Editor) {
+                    return write_json(
+                        403,
+                        &json!({"error": "editor access is required for suggestions"}),
+                    );
+                }
                 // Body reads are an await boundary. Resolve identity and
                 // document rights again afterwards so revocation/transfer
                 // cannot race a large request into a mutation.
@@ -144,7 +150,63 @@ impl Server {
                 {
                     return write_json(403, &json!({"error": "comment access changed"}));
                 }
+                // A read link can open the rendered publication but never
+                // mutate its annotation channel. Refuse at the HTTP boundary
+                // so a role failure is not misreported as a room validation
+                // error after work has already begun.
+                if !current_who.at_least(Role::Commenter) {
+                    return write_json(403, &json!({"error": "commenter access is required"}));
+                }
+                // Readers and commenters only annotate the current rendered
+                // publication. An empty ID is never a fallback to source or
+                // an unchecked annotation write. Editors still use empty IDs
+                // for source-side comments and suggestions.
+                if incoming.kind == "comment"
+                    && !current_who.at_least(Role::Editor)
+                    && incoming.publication_id.is_empty()
+                {
+                    return write_json(
+                        409,
+                        &json!({"error": "publication is required; refresh before annotating"}),
+                    );
+                }
                 let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
+                // A rendered annotation is checked and committed under the
+                // same per-storage gate as publication activation. Do not
+                // take this for source suggestions: they remain editor work
+                // against the editable revision and have no publication.
+                let _rendered_publication_guard =
+                    if incoming.kind == "comment" && !incoming.publication_id.is_empty() {
+                        Some(
+                            crate::server::publication::publication_lock(&current_entry.storage_id)
+                                .lock_owned()
+                                .await,
+                        )
+                    } else {
+                        None
+                    };
+                if let Some(publication_id) = (incoming.kind == "comment"
+                    && !incoming.publication_id.is_empty())
+                .then_some(incoming.publication_id.as_str())
+                {
+                    let current =
+                        crate::server::publication::PublicationStore::for_store(self.store.clone())
+                            .current(&current_entry.storage_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|publication| publication.publication_id);
+                    if current.as_deref() != Some(publication_id) {
+                        return write_json(
+                            409,
+                            &json!({"error": "publication changed; refresh before annotating"}),
+                        );
+                    }
+                }
+                // Keep source/session publication work ordered after the
+                // rendered-publication gate; activation never takes this
+                // room-local lock, so this order cannot invert.
+                let _publication_guard = room.publication_write.lock().await;
                 let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
                     if who.at_least(Role::Editor) && !current_who.at_least(Role::Editor) {
                         return write_json(403, &json!({"error": "edit access changed"}));
@@ -760,8 +822,11 @@ impl Server {
             }
         }
         publication_token.commit();
-        room.broadcast(&json!({"type": "y-update", "update": encode_update(&update)}))
-            .await;
+        room.broadcast_editors_except(
+            None,
+            &json!({"type": "y-update", "update": encode_update(&update)}),
+        )
+        .await;
         self.store
             .rename(&existing.slug, &title)
             .await
@@ -1363,7 +1428,9 @@ impl Server {
         // holding it. Who may read is asked again, from the request itself,
         // which is the same rule the socket answers `y-open` under.
         let who = self.viewer(&entry, headers, arrival, query).await;
-        if !self.may_read(&entry, &who) {
+        // Full Yjs state is a source synchronization transport. Readers and
+        // commenters receive the rendered publication and annotation channel.
+        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
         let fields: HashMap<String, String> = query
@@ -1425,19 +1492,12 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        // "Anyone who may read the document" is the reader role as this spec
-        // defines it, which for a private document is the people named on it.
         let who = self.viewer(&entry, headers, arrival, query).await;
-        if !self.may_read(&entry, &who) {
+        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
-        // The source is readable by anyone who may read the document. It has
-        // to be: the browser cannot render what it is not given, and nothing
-        // rendered is stored any more. There is no way around it: a source that
-        // must not be seen is not published here as that source.
-        //
-        // What is answered is the live document, not a stored copy of it:
-        // there is one version, and this is it.
+        // Source is editable project material. Readers receive the current
+        // publication through the publication route and never this endpoint.
         let room = match self.rooms.try_get(slug).await {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
@@ -1483,7 +1543,7 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, query).await;
-        if !self.may_read(&entry, &who) {
+        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
         if cross_site_refused(headers, arrival) {

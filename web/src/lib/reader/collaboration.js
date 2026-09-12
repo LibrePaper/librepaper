@@ -30,6 +30,7 @@ export function createReaderCollaboration({
   onSwap = () => {},
   onFiles = () => {},
   onAwareness = () => {},
+  sourceSync = true,
   retryMs = 1000,
   setTimer = globalThis.setTimeout,
   clearTimer = globalThis.clearTimeout,
@@ -68,6 +69,7 @@ export function createReaderCollaboration({
   function join(nextDocument) {
     disposeSession();
     document_ = nextDocument;
+    if (!sourceSync) return null;
     const canEdit = Boolean(getCanEdit());
     session = collab.join({
       send,
@@ -86,7 +88,10 @@ export function createReaderCollaboration({
     awarenessHandler = () => onAwareness(active);
     active.awareness.on("change", awarenessHandler);
     onSession(active);
-    room?.send(active.open());
+    // Reader/commenter sessions use this socket only for rendered
+    // annotations. They receive the initial comment hello, but never send a
+    // Yjs open request or receive source state.
+    if (sourceSync) room?.send(active.open());
     return active;
   }
 
@@ -105,8 +110,8 @@ export function createReaderCollaboration({
       return;
     }
     const active = session;
-    if (!active || disposed) return;
-    active.disconnected();
+    if ((sourceSync && !active) || disposed) return;
+    active?.disconnected();
     try {
       const response = await fetcher(`/api/documents/${slug}`, { headers: keyHeaders(key) });
       if (disposed || current !== reconnectGeneration || session !== active) return;
@@ -115,7 +120,7 @@ export function createReaderCollaboration({
       if (disposed || current !== reconnectGeneration || session !== active) return;
       if ((document_.created_at && latest.created_at !== document_.created_at)
           || capability(latest) !== capability(document_)) return changed("capability");
-      room?.send(active.open());
+      if (sourceSync) room?.send(active.open());
       onConnected(true);
     } catch (error) {
       if (disposed || current !== reconnectGeneration || session !== active) return;

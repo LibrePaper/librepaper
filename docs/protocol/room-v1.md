@@ -11,7 +11,8 @@ a stable link pseudonym.
 
 ## Snapshot
 
-GET /api/documents/{slug}/snapshot returns one room-locked read:
+GET /api/documents/{slug}/snapshot requires editor or owner access and returns
+one room-locked read:
 
     {
       "version": 1,
@@ -26,15 +27,16 @@ GET /api/documents/{slug}/snapshot returns one room-locked read:
       "files": {},
       "texts": {"main.md": "# Paper\n"},
       "comments": [],
-      "role": "commenter",
-      "capabilities": {"read": true, "comment": true, "edit": false}
+      "role": "editor",
+      "capabilities": {"read": true, "comment": true, "edit": true}
     }
 
 source, tree, files, texts, and comments come from the same room lock.
 source_sha is the SHA-256 digest of the returned source bytes. The top-level
 main is the live tree's main path; clients must not use a stale main path from
-an older document metadata response. A reader link may fetch a snapshot. A
-commenter or editor link receives the corresponding capabilities.
+an older document metadata response. Reader and commenter links cannot fetch
+source snapshots or join source synchronization. They read the current published
+HTML and receive rendered annotations without private source anchors.
 
 ## Annotation HTTP results
 
@@ -44,7 +46,7 @@ include a UUID-shaped `temp_id`, kept unchanged across retries.
 
 | `type` | Required action fields | Optional action fields |
 |---|---|---|
-| `comment` | `body`, `exact` (the selected words) | `motivation` (defaults to commenting), `prefix`, `suffix`, `position`, `point`, `color`, `source` |
+| `comment` | `body`, `exact` (the selected words), `publication_id` for rendered annotations | `motivation` (defaults to commenting), `prefix`, `suffix`, `position`, `point`, `color`, editor-only `source` |
 | `reply` | `comment_id`, `body` | — |
 | `resolve` | `comment_id`, `resolved` (boolean; false reopens) | — |
 | `delete` | `comment_id` | — |
@@ -52,6 +54,19 @@ include a UUID-shaped `temp_id`, kept unchanged across retries.
 | `refine` | `comment_id`, `proposed`, `expected_proposed`, `revision` | `body` |
 | `accept` | `comment_id` | — |
 | `reject` | `comment_id` | — |
+
+Readers and commenters connect for annotation events only. They must not send
+`y-open`, `y-sync`, or source updates; the server refuses source synchronization
+and sends source-bearing updates only to editor peers. Source suggestions and
+source selectors are private to editors.
+
+Rendered comments carry the publication ID visible during selection. An empty
+or obsolete ID is refused for commenters. A publication changing while a comment
+is submitted is serialized with the annotation commit; a refusal keeps the client
+submission available for recovery. Editor source annotations can omit the ID.
+
+`publication-updated` carries only `publication_id`. It announces availability;
+clients offer Refresh without replacing the visible page or discarding drafts.
 
 `source` is `{path, exact, prefix, suffix, position}`: the file path and
 selected source text, with optional surrounding text and a nonnegative

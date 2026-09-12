@@ -105,6 +105,7 @@ CREATE TABLE comments (
     author TEXT NOT NULL,
     via TEXT NOT NULL,
     created TEXT NOT NULL,
+    publication_id TEXT NOT NULL,
     exact TEXT NOT NULL,
     prefix TEXT NOT NULL,
     suffix TEXT NOT NULL,
@@ -137,20 +138,6 @@ CREATE TABLE replies (
     FOREIGN KEY (slug, comment_id)
         REFERENCES comments (slug, id) ON DELETE CASCADE
 );
-CREATE TABLE renderings (
-    slug TEXT NOT NULL REFERENCES documents (slug) ON DELETE CASCADE,
-    tree_sha TEXT NOT NULL,
-    at TEXT NOT NULL,
-    backend TEXT NOT NULL,
-    engine TEXT NOT NULL,
-    release TEXT NOT NULL,
-    tools TEXT NOT NULL,
-    bytes INTEGER NOT NULL,
-    synctex INTEGER NOT NULL,
-    synctex_bytes INTEGER NOT NULL, published_seq INTEGER NOT NULL DEFAULT 0
-    CHECK (published_seq >= 0),
-    PRIMARY KEY (slug, tree_sha)
-) WITHOUT ROWID;
 CREATE TABLE pending_deletes (
     slug TEXT NOT NULL REFERENCES documents (slug) ON DELETE RESTRICT,
     object_key TEXT NOT NULL,
@@ -248,8 +235,6 @@ CREATE INDEX comments_cursor
     ON comments(slug, seq, id);
 CREATE INDEX replies_cursor
     ON replies(slug, comment_id, created, id);
-CREATE INDEX renderings_cursor
-    ON renderings(slug, at, tree_sha);
 CREATE INDEX documents_storage_status
     ON documents(storage_id, status);
 CREATE TABLE checkpoint_budgets (
@@ -315,6 +300,7 @@ CREATE TABLE object_accounting (
     object_key TEXT NOT NULL,
     kind TEXT NOT NULL,
     bytes INTEGER NOT NULL CHECK (bytes >= 0),
+    metadata_bytes INTEGER NOT NULL DEFAULT 0 CHECK (metadata_bytes >= 0),
     version TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(storage_id, object_key)
 );
@@ -324,6 +310,7 @@ CREATE TABLE object_reservations (
     object_key TEXT NOT NULL,
     old_bytes INTEGER NOT NULL CHECK (old_bytes >= 0),
     new_bytes INTEGER NOT NULL CHECK (new_bytes >= 0),
+    metadata_bytes INTEGER NOT NULL DEFAULT 0 CHECK (metadata_bytes >= 0),
     created_at INTEGER NOT NULL,
     PRIMARY KEY(storage_id, operation_id, object_key)
 );
@@ -377,29 +364,6 @@ CREATE INDEX journal_readers_object_expiry
 CREATE INDEX checkpoints_by_account
     ON checkpoints (by_account, slug, sha)
     WHERE by_account IS NOT NULL;
-CREATE TABLE quarto_selections (
-    storage_id TEXT NOT NULL,
-    document_id TEXT NOT NULL,
-    context_id TEXT NOT NULL,
-    generation INTEGER NOT NULL,
-    render_id TEXT NOT NULL,
-    source_revision TEXT NOT NULL,
-    object_key TEXT NOT NULL,
-    object_version TEXT NOT NULL,
-    updated_at INTEGER NOT NULL,
-    PRIMARY KEY (storage_id, document_id, context_id),
-    FOREIGN KEY (storage_id) REFERENCES documents(storage_id) ON DELETE CASCADE
-);
-CREATE INDEX quarto_selections_by_storage
-    ON quarto_selections (storage_id, document_id, context_id);
-CREATE TABLE quarto_selection_epochs (
-    storage_id TEXT NOT NULL,
-    document_id TEXT NOT NULL,
-    context_id TEXT NOT NULL,
-    generation INTEGER NOT NULL,
-    PRIMARY KEY (storage_id, document_id, context_id),
-    FOREIGN KEY (storage_id) REFERENCES documents(storage_id) ON DELETE CASCADE
-);
 CREATE TABLE document_results_metadata (
     slug TEXT NOT NULL PRIMARY KEY REFERENCES documents(slug) ON DELETE CASCADE,
     execution_engine TEXT NOT NULL CHECK (execution_engine IN ('none', 'quarto')),
@@ -447,14 +411,6 @@ CREATE TABLE IF NOT EXISTS "account_examples" (
     slug TEXT NOT NULL UNIQUE,
     completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
     PRIMARY KEY (account_id, position)
-) WITHOUT ROWID;
-CREATE TABLE quarto_selection_history (
-    storage_id TEXT NOT NULL REFERENCES documents(storage_id) ON DELETE CASCADE,
-    document_id TEXT NOT NULL,
-    context_id TEXT NOT NULL,
-    render_id TEXT NOT NULL,
-    generation INTEGER NOT NULL,
-    PRIMARY KEY (storage_id, document_id, context_id, render_id)
 ) WITHOUT ROWID;
 CREATE TABLE agent_objects (
     slug TEXT NOT NULL REFERENCES documents(slug) ON DELETE CASCADE,
@@ -654,8 +610,6 @@ CREATE TABLE document_retention_policy (
     enrolled_at INTEGER NOT NULL CHECK (enrolled_at >= 0),
     last_scheduled_at INTEGER NOT NULL DEFAULT 0 CHECK (last_scheduled_at >= 0)
 ) WITHOUT ROWID;
-CREATE INDEX renderings_publication_order
-    ON renderings(slug, published_seq DESC, at DESC, tree_sha DESC);
 CREATE TABLE checkpoint_asset_refs (
     storage_id TEXT NOT NULL REFERENCES documents(storage_id) ON DELETE CASCADE,
     checkpoint_sha TEXT NOT NULL,

@@ -11,6 +11,18 @@ use crate::room::{rate_key, Message, RoomSet};
 use crate::server::{client_address, local_path};
 use crate::storage::blob::{room_key, BlobError, FsStore};
 
+async fn rendered_publication_id(base: &str, slug: &str) -> String {
+    let published = publish_display(
+        base,
+        &session_as(TEST_PUBLISHER),
+        slug,
+        b"<p>hello</p>",
+        &[],
+    )
+    .await;
+    text(&published["publication"], "id")
+}
+
 // A room belongs to a document, so an invented slug gets nothing: no room, no
 // comments file, and no rate-limit counter of its own to reset.
 #[tokio::test]
@@ -259,6 +271,7 @@ async fn reply_limit_is_enforced() {
 async fn comment_delete_authorization() {
     let server = new_test_server().await;
     let slug = text(&publish_test_document(&server.url).await, "slug");
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
     let path = format!("/api/documents/{slug}/comments");
     // Every commenting caller below is a reviewer holding the commenter link
     // the owner minted -- a switch of `anyone` is a ceiling, not a grant any
@@ -270,7 +283,7 @@ async fn comment_delete_authorization() {
         &key,
         &server.url,
         &path,
-        json!({"type": "comment", "exact": "hello", "body": "alpha's comment", "creator": "Alpha"}),
+        json!({"type": "comment", "exact": "hello", "body": "alpha's comment", "creator": "Alpha", "publication_id": publication_id}),
     )
     .await;
     assert_eq!(status, 200, "alpha's comment got {status} {payload}");
@@ -312,7 +325,7 @@ async fn comment_delete_authorization() {
         &key,
         &server.url,
         &path,
-        json!({"type": "comment", "exact": "hello", "body": "alpha's second comment", "creator": "Alpha"}),
+        json!({"type": "comment", "exact": "hello", "body": "alpha's second comment", "creator": "Alpha", "publication_id": publication_id}),
     )
     .await;
     assert_eq!(status, 200);
@@ -498,6 +511,7 @@ async fn comment_author_is_persisted_but_never_sent_to_clients() {
 
     let incoming = Message {
         kind: "comment".into(),
+        publication_id: "rendered-publication".into(),
         exact: "hello".into(),
         body: "hi".into(),
         ..Message::default()

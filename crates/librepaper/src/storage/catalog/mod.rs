@@ -124,7 +124,7 @@ impl CatalogError {
         let Self::Conflict(message) = self else {
             return CatalogRefusal::Other;
         };
-        if message.contains("actor rights") {
+        if message.contains("actor rights") || message.contains("actor edit rights") {
             CatalogRefusal::ActorRights
         } else if message.contains("upload rate") {
             CatalogRefusal::UploadRate
@@ -155,22 +155,6 @@ impl From<rusqlite::Error> for CatalogError {
 }
 
 pub type CatalogResult<T> = Result<T, CatalogError>;
-
-/// The committed selection pointer for one Quarto context.  The physical
-/// selection object is an implementation detail and may be left behind by a
-/// failed object-store CAS; readers follow this catalogue row instead.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct QuartoSelection {
-    pub storage_id: String,
-    pub document_id: String,
-    pub context_id: String,
-    pub generation: u64,
-    pub render_id: String,
-    pub source_revision: String,
-    pub object_key: String,
-    pub object_version: String,
-    pub updated_at: i64,
-}
 
 /// Replay evidence committed atomically with an agent-created checkpoint.
 #[derive(Clone, Debug)]
@@ -414,6 +398,9 @@ pub struct Comment {
     pub author: String,
     pub via: String,
     pub created: String,
+    /// Rendered publication the annotation was made against. This survives a
+    /// later publication so the quoted selector keeps its provenance.
+    pub publication_id: String,
     pub exact: String,
     pub prefix: String,
     pub suffix: String,
@@ -474,30 +461,6 @@ pub struct Guest {
     pub account_id: String,
     pub since: String,
     pub link_hash: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Rendering {
-    pub slug: String,
-    pub tree_sha: String,
-    pub at: String,
-    pub backend: String,
-    pub engine: String,
-    pub release: String,
-    pub tools: String,
-    pub bytes: i64,
-    pub synctex: bool,
-    pub synctex_bytes: i64,
-}
-
-/// A history event and its registered rendering's content identity. The event
-/// may be a restore of an older tree, so these identities are not interchangeable.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RenderingCandidate {
-    pub event_sha: String,
-    pub tree_sha: String,
-    pub at: String,
-    pub synctex: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

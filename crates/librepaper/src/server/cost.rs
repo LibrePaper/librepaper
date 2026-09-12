@@ -524,6 +524,8 @@ fn classify(path: &str, method: &Method) -> usize {
         6
     } else if path.starts_with("/api/fonts/") {
         1
+    } else if path.starts_with("/published/") {
+        3
     } else if path.starts_with("/ws/") || path.contains("/agent/") {
         4
     } else if method != Method::GET && method != Method::HEAD {
@@ -625,7 +627,23 @@ pub(super) async fn handle(
             .exact()
             .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(ceiling);
-        let reservation = length.saturating_mul(4);
+        // A gzip publication object can be tiny on the wire yet expand to a
+        // 16 MiB HTML document or a 64 MiB asset. `stage_object` retains both
+        // the encoded request body and its decoded buffer, so reserve that
+        // bounded decoded peak before accepting the body.
+        let compressed_publication_object = matches!(method, Method::PUT)
+            && path.starts_with("/api/documents/")
+            && path.contains("/publication/objects/")
+            && request
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok())
+                == Some("gzip");
+        let reservation = if compressed_publication_object {
+            length.saturating_add(crate::server::publication::MAX_ASSET_BYTES)
+        } else {
+            length.saturating_mul(4)
+        };
         match u32::try_from(reservation).ok().and_then(|n| {
             server
                 .cost
@@ -718,23 +736,29 @@ pub(super) async fn handle(
             None,
         );
     }
-    let permit =
-        if matches!(class, 1..=3) || path.starts_with("/wasm/") || path.starts_with("/assets/") {
-            match server.cost.transfers.clone().try_acquire_owned() {
-                Ok(permit) => Some(permit),
-                Err(_) => {
-                    return metered(
-                        server.cost.clone(),
-                        refusal("transfer_concurrency", "deployment"),
-                        class,
-                        true,
-                        None,
-                    )
-                }
+    let publication_object_upload = matches!(method, Method::PUT)
+        && path.starts_with("/api/documents/")
+        && path.contains("/publication/objects/");
+    let permit = if matches!(class, 1..=3)
+        || publication_object_upload
+        || path.starts_with("/wasm/")
+        || path.starts_with("/assets/")
+    {
+        match server.cost.transfers.clone().try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                return metered(
+                    server.cost.clone(),
+                    refusal("transfer_concurrency", "deployment"),
+                    class,
+                    true,
+                    None,
+                )
             }
-        } else {
-            None
-        };
+        }
+    } else {
+        None
+    };
     let mut response = if path == "/api/status" {
         if !direct_operator_request(peer, request.headers()) {
             plain(403, "operator status requires a direct loopback connection")

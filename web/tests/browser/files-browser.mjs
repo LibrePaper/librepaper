@@ -181,7 +181,13 @@ window.sharingSetup = async () => {
     children: snippet('<span>Example project</span>'),
     tools: snippet('<div><button>View</button><button>Share</button></div>'),
   } });
-  window.testShare = createClassComponent({ component: Share, target: document.body, props: { open: true, slug: 'paper' } });
+  window.testShare = createClassComponent({ component: Share, target: document.body, props: {
+    open: true,
+    slug: 'paper',
+    canShare: true,
+    mayPublish: false,
+    publicationReady: true,
+  } });
   await flush();
 };
 window.sharingCheck = async () => {

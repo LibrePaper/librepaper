@@ -1,5 +1,5 @@
-//! `librepaper publish`: a file or a directory, rendered here when it is
-//! markdown or typst, sent to the deployment as one upload.
+//! `librepaper publish`: upload an editable project. Local compilation can
+//! validate inputs; readers receive a separate explicitly published HTML bundle.
 
 use super::*;
 
@@ -548,10 +548,8 @@ pub(super) async fn publish_directory(
     report_published(&server, &document, &format!("{}", root.display()));
 }
 
-/// What `publish` prints: the read link when the document has one, since
-/// that is the thing to send, and the bare URL otherwise -- which opens for
-/// the owner alone, and the note says so. The note goes to stderr so the
-/// link stays alone on stdout for a pipe.
+/// Print the share URL separately from instructions to publish the display
+/// version. Uploading source does not replace the current reader publication.
 pub(super) fn report_published(server: &str, document: &Value, path: &str) {
     let share = text(document, "share_url");
     let slug = text(document, "slug");
@@ -560,6 +558,10 @@ pub(super) fn report_published(server: &str, document: &Value, path: &str) {
     } else {
         println!("{server}{share}");
     }
+    eprintln!(
+        "Source uploaded. Open {server}/docs/{slug} and choose Share → Publish update \
+         (or Publish) to make a rendered version available to readers."
+    );
     if !is_terminal_stdout() {
         return;
     }
@@ -570,7 +572,7 @@ pub(super) fn report_published(server: &str, document: &Value, path: &str) {
         );
     } else {
         eprintln!(
-            "\nShare this link; anyone with it can read, no account needed.\n\
+            "\nAfter publishing the display version, share this link; anyone with it can read, no account needed.\n\
              To create a comment link, open it and use Share:\n  librepaper open {slug}"
         );
     }
@@ -596,9 +598,8 @@ pub(super) async fn publish_file(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    // What is stored is always HTML: the reader frames the document and
-    // anchors comments into its text nodes. Markdown and typst are rendered
-    // here, before they are uploaded.
+    // This request stores editable source. Display publication is a separate
+    // explicit action in the browser's Share panel.
     let extension = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
@@ -801,11 +802,8 @@ pub(super) async fn publish_file(
     } else {
         post_json(
         &format!("{server}/api/documents"),
-        // The source, and nothing rendered from it: the server stores the
-        // document and every browser that shows it renders it. The compile
-        // above still happens, because `publish` exists to make a document
-        // readable and a document that does not compile is not one -- but what
-        // it produces is a check, not a payload.
+        // Source is available only to editors. Compilation above validates
+        // it locally; Share publishes the separate reader display bundle.
         &json!({"title": title, "slug": slug, "source": source, "source_format": source_format}),
         &token,
         Duration::from_secs(300),

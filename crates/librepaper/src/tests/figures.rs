@@ -117,10 +117,17 @@ async fn a_figure_goes_up_and_comes_back() {
     );
     assert_eq!(answer["size"], bytes.len());
 
-    // A reader holds the link `publish` printed, not merely the slug.
+    // A source asset remains private until an explicit publication includes it.
     let (status, back) = get_asset_keyed("", &key, &server.url, &slug, &sha).await;
-    assert_eq!(status, 200);
-    assert_eq!(back, bytes, "what came back is not what went up");
+    assert_eq!(
+        status, 404,
+        "a reader retrieved an unpublished source asset"
+    );
+    assert_ne!(back, bytes, "the refusal returned the source asset");
+    assert_eq!(
+        get_asset(&session_as(TEST_PUBLISHER), &server.url, &slug, &sha).await,
+        (200, bytes)
+    );
 }
 
 #[tokio::test]
@@ -182,7 +189,7 @@ async fn an_authenticated_editor_can_update_inputs_but_cannot_upload_renderings(
 }
 
 #[tokio::test]
-async fn a_private_figure_is_not_shared_cacheable() {
+async fn a_private_figure_is_not_served_to_a_reader() {
     let server = new_test_server().await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
@@ -197,8 +204,11 @@ async fn a_private_figure_is_not_shared_cacheable() {
         .send()
         .await
         .expect("a response");
-    let caching = response.headers()["cache-control"].to_str().unwrap();
-    assert_eq!(caching, "private, no-store");
+    assert_eq!(
+        response.status(),
+        404,
+        "a reader received an unpublished source asset"
+    );
 }
 
 #[tokio::test]
@@ -784,7 +794,7 @@ async fn the_history_says_which_paths_each_checkpoint_moved() {
 }
 
 #[tokio::test]
-async fn a_history_is_as_readable_as_the_document_it_belongs_to() {
+async fn source_history_is_editor_only() {
     let server = new_test_server().await;
     let owner = session_as(TEST_PUBLISHER);
     let document = publish_test_document(&server.url).await;
@@ -792,17 +802,15 @@ async fn a_history_is_as_readable_as_the_document_it_belongs_to() {
     let path = format!("/api/documents/{slug}/history");
     let key = read_key_of(&document);
 
-    // Whoever holds the read link `publish` printed can read what the
-    // document used to say, exactly as they can read the document.
+    // A publication reader cannot inspect source history.
     assert_eq!(
         get_same_origin_keyed("", &key, &server.url, &path).await.0,
-        200,
-        "a link holder was refused the history"
+        404,
+        "a link holder read source history"
     );
 
-    // The bare URL never opened the history for a stranger, and revoking the
-    // read link -- the only thing that ever let a stranger in -- leaves them
-    // with nothing, same as it does for the document.
+    // Revocation keeps the source history unavailable, while the owner still
+    // retains it.
     let (status, said) = post_as(
         &owner,
         &server.url,

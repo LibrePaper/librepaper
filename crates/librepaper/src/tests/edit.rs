@@ -149,11 +149,9 @@ async fn a_document_is_charged_for_its_source_and_its_history() {
     }
 }
 
-// The source is readable by anyone who may read the document. It has to be:
-// the browser cannot render what it is not given, and nothing rendered is
-// stored. There is no way around it.
+// A reader sees the explicit publication, never the editable source tree.
 #[tokio::test]
-async fn the_source_is_readable_by_any_reader() {
+async fn source_is_refused_to_reader_links_and_preserved_for_editors() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
@@ -164,11 +162,17 @@ async fn the_source_is_readable_by_any_reader() {
     for cookie in ["", &session_as("stranger")] {
         let (status, payload) = get_source_keyed(cookie, &key, &server.url, &slug).await;
         assert_eq!(
-            status, 200,
+            status, 404,
             "source read with cookie {cookie:?} got {status} {payload}"
         );
-        assert_eq!(text(&payload, "source"), TEST_MARKDOWN);
+        assert!(
+            !payload.to_string().contains(TEST_MARKDOWN),
+            "source refusal leaked source for {cookie:?}: {payload}"
+        );
     }
+    let (status, payload) = get_source_as(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    assert_eq!(status, 200, "an editor lost source access: {payload}");
+    assert_eq!(text(&payload, "source"), TEST_MARKDOWN);
 }
 
 // A document in a format this deployment cannot store is refused. There is
@@ -187,14 +191,12 @@ async fn an_unknown_source_format_is_refused() {
     assert!(text(&document, "error").contains("format"), "{document}");
 }
 
-// Saving in the editor is publishing a revision, and a revision keeps the
-// comments on the document: they re-anchor in the reader.
+// Saving an editable revision preserves its private source-side comments.
 #[tokio::test]
 async fn saving_a_revision_keeps_comments() {
     let server = new_test_server().await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
     let (status, _) = post(
         &server.url,
         &format!("/api/documents/{slug}/comments"),
@@ -213,9 +215,8 @@ async fn saving_a_revision_keeps_comments() {
     .await;
     assert_eq!(status, 201, "saving returned {status}: {document}");
 
-    let (_, listing) = get_json_keyed(
-        "",
-        &key,
+    let (_, listing) = get_json_as(
+        &session_as(TEST_PUBLISHER),
         &server.url,
         &format!("/api/documents/{slug}/comments"),
     )
@@ -425,9 +426,10 @@ async fn a_state_too_large_to_send_inline_is_fetched_with_the_headers_the_shell_
     .await;
     let document = publish_with_source(&server.url).await;
     let slug = text(&document, "slug");
-    let key = read_key_of(&document);
-
-    let mut socket = dial_websocket_keyed(&server.url, &slug, &key).await;
+    let cookie = session_as(TEST_PUBLISHER);
+    let mut socket = dial_websocket_with(&server.url, &slug, &format!("Cookie: {cookie}\r\n"))
+        .await
+        .unwrap();
     assert_eq!(socket.read().await["type"], "hello");
     socket.write(json!({"type": "y-open", "vector": ""})).await;
     let state = socket.read().await;
@@ -439,12 +441,11 @@ async fn a_state_too_large_to_send_inline_is_fetched_with_the_headers_the_shell_
     );
 
     // What the shell sends: the same-origin marker every other call carries,
-    // and the read key this reader was sent, since the reference is fetched
-    // by whoever holds it rather than as the document's owner.
+    // and the editor session that opened the source synchronization channel.
     let response = client()
         .get(format!("{}{reference}", server.url))
         .header("x-librepaper-client", "shell")
-        .header(crate::server::LINK_HEADER, &key)
+        .header("cookie", &cookie)
         .send()
         .await
         .expect("a response");
@@ -459,12 +460,11 @@ async fn a_state_too_large_to_send_inline_is_fetched_with_the_headers_the_shell_
     );
 
     // And without it, refused -- which is rule A and not a property of this
-    // route, and is exactly what the reader was walking into. The key still
-    // rides along, so it is the missing marker that is on trial here rather
-    // than the read permission this reader does hold.
+    // route. The editor cookie still rides along, so the missing marker is on
+    // trial rather than source authorization.
     let response = client()
         .get(format!("{}{reference}", server.url))
-        .header(crate::server::LINK_HEADER, &key)
+        .header("cookie", &cookie)
         .send()
         .await
         .expect("a response");

@@ -174,8 +174,8 @@ Quarto projects use the narrower [sharing policy below](#quarto-documents),
 which also excludes raw data, execution caches, and generated output by default.
 
 Publishing a single file that reads its neighbours says so rather than
-publishing a document that compiles here and nowhere else. A reader renders
-it themselves, and would get the error you never saw:
+publishing a project that compiles here and nowhere else. An editor opening
+the project would otherwise be unable to reproduce its rendering:
 
 ```
 paper.typ reads lib.typ and refs.bib; publish the directory to send them along:
@@ -283,8 +283,8 @@ The **Files** sidebar is a folder tree. Its toolbar creates files and folders
 inside the selection, or uploads files from your computer; the **File** menu
 at the top of the page offers the same, along with downloads and shortcuts to
 the Share and History panels. **Download PDF** or **Download HTML** exports the
-currently rendered result to the user's computer; LibrePaper does not retain
-that result. **Download project** saves every source and input file as a ZIP. Drag files or
+displayed result to the user's computer. **Download project**, available only
+to owners and editors, saves every source and input file as a ZIP. Drag files or
 folders onto another folder to move them; drop onto empty space in the sidebar
 to move them to the top level. Dropping files or directories from your computer uploads them with
 their folder structure. Upload name collisions offer **Keep both** or **Skip**.
@@ -303,12 +303,16 @@ files are not rewritten. A folder containing the main file cannot be deleted
 until another file is made the main file.
 
 The editor is offered to whoever may replace the document, and the document
-opens ready to work on. There is nothing to save: what is typed is the
-document, readers see it a moment later, and the comments survive it. As you
-type, they re-anchor against the edited text. A comment records its passage in
-the source file as well as on the page, so it can be found in any version and
-in the editor, and one whose passage is gone from both is marked as such
-rather than quietly dropped.
+opens ready to work on. Edits save automatically. Readers and commenters see
+the last explicitly published HTML version, and receive no editable source or
+project files. In **Share → Published version**, choose **Publish** or **Publish
+update** to prepare a new version for them. The toolbar's **Unpublished changes**
+indicator opens that section. Saving and compiling previews do not publish.
+
+Comments retain their selected quotation and publication identity. When a new
+version is published, passages are located again where possible; unmatched
+comments retain their discussion and indicate an earlier publication. Only the
+current full rendering is retained, so old comments do not preserve an old page.
 
 Several people can edit at once. The source is a CRDT (Yjs), so two people
 typing in the same sentence converge without either waiting for the other, and
@@ -317,9 +321,11 @@ relays every update and keeps it, so closing the last tab loses nothing
 and whoever opens the document next, in a browser or with `librepaper sync`, joins
 what is there.
 
-What is shared is the source. The preview is not: each browser renders what it
-now has. The origin still pays for source and asset transfer, collaboration,
-persistence, and history maintenance; these are included in its cost policy.
+Editors synchronize source and render previews locally. Explicit publication
+uploads compressed HTML and only missing public display assets. Readers reuse
+unchanged assets and refresh deliberately when a newer publication is available.
+The origin pays for source transfer between editors, publication delivery,
+collaboration, persistence, and history maintenance.
 
 History is kept for you. The server takes a checkpoint of the source when the
 document has been quiet for a while, when the last editor leaves, when someone
@@ -328,16 +334,15 @@ checkpoint; an explicit restore records a new event. The history panel lets you
 read earlier versions, compare changes, and restore a whole version or bring
 back individual passages in the editor.
 
-Rendering happens on clients. Markdown readers render HTML in the browser;
-Typst editors compile PDF or experimental HTML previews in a WebAssembly worker,
-and LaTeX readers compile from the configured browser mirror. Generated results
-are transient and are never stored by the deployment, browser document store,
-or backup. The server synchronizes source and input assets; it does not compile
-documents.
+Rendering happens on editors' devices. The server stores one current published
+HTML bundle per document and serves it to readers and commenters; it does not
+compile documents. Source APIs, synchronization state, private assets, and source
+history require editor access. Published HTML and everything embedded in it are
+readable and downloadable; private inputs must be excluded from the display bundle.
 
 The formats, and they are not available in the same places:
 
-| | Published with | Renderer | Over the wire |
+| | Source uploaded with | Editor renderer | Editor compiler download |
 |---|---|---|---|
 | **Markdown** | `librepaper publish paper.md` | comrak | ~130 KB compressed |
 | **Quarto** | `librepaper publish paper.qmd` | Markdown draft; optional local Quarto render | Reuses the Markdown renderer |
@@ -368,7 +373,7 @@ PDF formatting; some templates require HTML-specific show rules. It always
 uses the browser compiler, including when Calepin is selected for PDF previews.
 HTML previews are transient client results. PDF and HTML exports are generated
 again on demand, and a compile error keeps source access available while
-showing diagnostics; readers can retry in the browser or use their local
+showing diagnostics; editors can retry in the browser or use their local
 companion.
 
 The Typst renderer is fetched with the other pinned browser modules as part of
@@ -378,11 +383,11 @@ A document published as HTML is its own source, and its renderer is the
 identity: it is shown as it was published, which it always was, and it opens in
 the editor like the other two. That covers everything Quarto, Jupyter and
 marimo produce, so the live preview, the co-editing and the comments reach the
-documents most papers actually arrive in. A document published before HTML was
-a source format needs no republishing: the HTML that is stored is its source.
+documents most papers actually arrive in. Editors may change raw HTML source;
+readers see only its last explicitly published version.
 
-The `.qmd` is the durable Quarto source. Generated previews remain local to the
-rendering client and are never published as retained document artifacts.
+The `.qmd` is the durable Quarto source. Previews remain local until an editor
+explicitly publishes an HTML display bundle.
 
 #### LaTeX
 
@@ -571,8 +576,9 @@ additional input is intended for collaborators:
 {"include": ["data/public.csv"]}
 ```
 
-Review the publication inventory. Shared source and assets are readable by
-collaborators with document access. Files needed only for local execution can
+Review the source-upload inventory. Shared source and inputs are readable by
+owners and editors. Readers and commenters receive only explicitly published
+HTML and its display assets. Files needed only for local execution can
 remain in the author's project.
 
 A project that keeps data the document does not share can be linked with
@@ -1222,6 +1228,8 @@ keeps their own undo history, and each sees the other's caret where it actually
 is, labelled with their name. The server relays those updates and applies them
 to the copy it keeps, which is the document.
 
-A reader who only reads fetches the page, its bundle and the Yjs document, and
-renders it as it changes; CodeMirror is a separate bundle, fetched only when an
-editor is actually opened.
+A reader fetches publication metadata and the stored HTML display bundle. The
+annotation connection carries comments and publication notices without source
+state. Editors retain Yjs synchronization and local rendering; CodeMirror loads
+when the editor opens. The [publication protocol](docs/protocol/publication.md)
+describes explicit activation, access checks, caching and storage limits.

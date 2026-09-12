@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::auth::{
     now_unix, sign_session, Accounts, GithubApp, GoogleApp, Identity, Policy, SESSION_COOKIE,
@@ -115,6 +116,16 @@ pub async fn new_test_server() -> TestServer {
     test_server_with(
         Configuration::default(),
         Policy::parse(TEST_PUBLISHER),
+        Policy::parse("anyone"),
+        true,
+    )
+    .await
+}
+
+pub async fn new_test_server_config(config: Configuration) -> TestServer {
+    test_server_with(
+        config,
+        Policy::parse("anyone"),
         Policy::parse("anyone"),
         true,
     )
@@ -567,6 +578,119 @@ pub fn text(value: &Value, field: &str) -> String {
         .to_string()
 }
 
+/// Activate a small explicit display bundle through the public publication
+/// protocol. Tests use this instead of teaching reader fixtures to depend on
+/// editable source delivery.
+pub async fn publish_display(
+    base: &str,
+    cookie: &str,
+    slug: &str,
+    html: &[u8],
+    assets: &[(&str, &str, &[u8])],
+) -> Value {
+    let digest = |bytes: &[u8]| hex::encode(Sha256::digest(bytes));
+    let html_sha = digest(html);
+    let asset_rows: Vec<Value> = assets.iter().map(|(path, mime, body)| json!({"path":path,"sha256":digest(body),"bytes":body.len(),"mime":mime})).collect();
+    #[derive(serde::Serialize)]
+    struct DisplayAsset<'a> {
+        path: &'a str,
+        sha256: String,
+        bytes: usize,
+        mime: &'a str,
+    }
+    #[derive(serde::Serialize)]
+    struct DisplayBundle<'a> {
+        html: &'a str,
+        assets: Vec<DisplayAsset<'a>>,
+    }
+    let mut canonical_assets: Vec<_> = assets
+        .iter()
+        .map(|(path, mime, body)| DisplayAsset {
+            path,
+            sha256: digest(body),
+            bytes: body.len(),
+            mime,
+        })
+        .collect();
+    canonical_assets.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
+    let bundle_sha = digest(
+        &serde_json::to_vec(&DisplayBundle {
+            html: &html_sha,
+            assets: canonical_assets,
+        })
+        .unwrap(),
+    );
+    let manifest = json!({"bundle_sha256":bundle_sha,"source_sha256":"a".repeat(64),"render_config_sha256":"b".repeat(64),"html":{"sha256":html_sha,"bytes":html.len(),"mime":"text/html"},"assets":asset_rows});
+    static DISPLAY_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = format!(
+        "display-{}",
+        DISPLAY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let current: Value = client()
+        .get(format!("{base}/api/documents/{slug}/publication"))
+        .header("cookie", cookie)
+        .header("x-librepaper-client", "1")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let expected = current["publication"]["id"].clone();
+    let response = client()
+        .post(format!("{base}/api/documents/{slug}/publication/prepare"))
+        .header("cookie", cookie)
+        .header("x-librepaper-client", "1")
+        .header("idempotency-key", &id)
+        .json(&json!({"manifest":manifest,"expected_publication_id":expected}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let prepared: Value = response.json().await.unwrap();
+    for (mime, body) in std::iter::once(("text/html", html))
+        .chain(assets.iter().map(|(_, mime, body)| (*mime, *body)))
+    {
+        let hash = digest(body);
+        if !prepared["missing"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(hash))
+        {
+            continue;
+        }
+        let response = client()
+            .put(format!(
+                "{base}/api/documents/{slug}/publication/objects/{hash}"
+            ))
+            .header("cookie", cookie)
+            .header("x-librepaper-client", "1")
+            .header("idempotency-key", &id)
+            .header("content-type", mime)
+            .body(body.to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 201, "{}", response.text().await.unwrap());
+    }
+    let response = client()
+        .post(format!("{base}/api/documents/{slug}/publication/activate"))
+        .header("cookie", cookie)
+        .header("x-librepaper-client", "1")
+        .header("idempotency-key", &id)
+        .json(&json!({"manifest":manifest,"expected_publication_id":expected}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "{}",
+        response.text().await.unwrap()
+    );
+    response.json().await.unwrap()
+}
+
 /// The key inside the read link `publish` hands back: what a reader who was
 /// sent that link holds, and the only thing that opens the document for
 /// anybody but its owner.
@@ -606,26 +730,6 @@ pub async fn dial_websocket_keyed(base: &str, slug: &str, key: &str) -> Socket {
     .unwrap_or_else(|status| panic!("handshake returned {status}"))
 }
 
-/// The query a frame URL has to carry for the documents origin to serve the
-/// page rather than the empty shell: what `handle_frame` answers the caller
-/// the cookie names, or the link the key names.
-pub async fn frame_query(cookie: &str, key: &str, base: &str, slug: &str) -> String {
-    let mut request = client()
-        .get(format!("{base}/api/documents/{slug}/frame"))
-        .header("x-librepaper-client", "1");
-    if !cookie.is_empty() {
-        request = request.header("cookie", cookie);
-    }
-    if !key.is_empty() {
-        request = request.header(crate::server::LINK_HEADER, key);
-    }
-    let response = request.send().await.expect("a response");
-    let status = response.status().as_u16();
-    let answer: Value = response.json().await.unwrap_or(Value::Null);
-    assert_eq!(status, 200, "no frame token: {answer}");
-    format!("until={}&token={}", answer["until"], text(&answer, "token"))
-}
-
 /// Asks the same server as if it were the document hostname, which is how the
 /// split is exercised without any DNS.
 pub async fn on_docs_host(base: &str, path: &str) -> reqwest::Response {
@@ -641,7 +745,6 @@ pub async fn on_docs_host(base: &str, path: &str) -> reqwest::Response {
 /* --- a minimal websocket client, enough to drive the server -------------- */
 
 use base64::Engine;
-use sha1::Digest as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 

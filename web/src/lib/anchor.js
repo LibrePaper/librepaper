@@ -101,12 +101,13 @@ export function anchorOne(text, selector, view = null) {
     prefix: flat(selector.prefix || ""),
     suffix: flat(selector.suffix || ""),
     position: null,
+    requireUnique: selector.requireUnique === true,
   });
   if (!loose || loose.end === loose.start) return null;
   return { start: view.map[loose.start], end: view.map[loose.end - 1] + 1 };
 }
 
-function search(text, { exact, prefix = "", suffix = "", position = null }) {
+function search(text, { exact, prefix = "", suffix = "", position = null, requireUnique = false }) {
   if (!exact) return null;
   const positions = [];
   for (let cursor = text.indexOf(exact); cursor >= 0; cursor = text.indexOf(exact, cursor + 1)) {
@@ -134,6 +135,7 @@ function search(text, { exact, prefix = "", suffix = "", position = null }) {
     if (scored[0].score > scored[1].score) {
       selected = scored[0].candidate;
     } else {
+      if (requireUnique) return null;
       // A document that repeats itself gives its passages identical context,
       // and the score cannot separate them. The offset recorded when the
       // comment was made says which copy was meant. Comments made before that

@@ -99,15 +99,21 @@ async fn mcp_propose_apply_and_retry_have_one_effect_and_bound_authority() {
         fresh["results"][0]["blocks"][0]["source"],
         "# Intro\n\nA new sentence\n\nsame\n"
     );
-    let denied = tool(
+    let (status, denied) = call(
         &server.url,
         &slug,
         &read_key_of(&doc),
-        "document_result",
-        json!({"kind":"candidate","id":proposal["candidate_id"]}),
+        &request("tools/call", json!({"name":"document_result","arguments":{"kind":"candidate","id":proposal["candidate_id"]}})),
     )
     .await;
-    assert_eq!(denied["error"]["code"], "view_expired", "{denied}");
+    assert_eq!(
+        status, 404,
+        "a reader link used an editor MCP tool: {denied}"
+    );
+    assert!(
+        !denied.to_string().contains("A new sentence"),
+        "the refusal exposed source-derived content: {denied}"
+    );
 }
 
 #[tokio::test]
@@ -160,7 +166,7 @@ async fn mcp_discovery_is_standard_stateless_and_schema_validated() {
     let server = new_test_server().await;
     let doc = publish_mcp(&server.url).await;
     let slug = text(&doc, "slug");
-    let key = read_key_of(&doc);
+    let key = editor_key(&server.url, &slug).await;
     let (status, discovery) = call(
         &server.url,
         &slug,
@@ -194,11 +200,11 @@ async fn mcp_reads_return_small_exact_views_and_preserve_snapshot_identity() {
     let server = new_test_server().await;
     let doc = publish_mcp(&server.url).await;
     let slug = text(&doc, "slug");
-    let key = read_key_of(&doc);
+    let key = editor_key(&server.url, &slug).await;
     let (_,read) = call(&server.url,&slug,&key,&request("tools/call",json!({"name":"document_read","arguments":{"queries":[{"kind":"source","path":"main.md"}]}}))).await;
     assert_eq!(read["result"]["isError"], false, "{read}");
     let result = &read["result"]["structuredContent"];
-    assert_eq!(result["permissions"]["apply"], false);
+    assert_eq!(result["permissions"]["apply"], true);
     let view = result["view_id"].as_str().expect("view");
     let old = result["source_revision"].clone();
     server
@@ -226,7 +232,7 @@ async fn mcp_rejects_header_mismatch_and_wrong_document_scope() {
     let server = new_test_server().await;
     let doc = publish_mcp(&server.url).await;
     let slug = text(&doc, "slug");
-    let key = read_key_of(&doc);
+    let key = editor_key(&server.url, &slug).await;
     let mut input = request("tools/list", json!({}));
     input["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = json!("wrong");
     let (status, error) = call(&server.url, &slug, &key, &input).await;
@@ -263,7 +269,7 @@ async fn mcp_pagination_covers_escaped_unicode_without_skips() {
     .await;
     assert_eq!(status, 201, "{doc}");
     let slug = text(&doc, "slug");
-    let key = read_key_of(&doc);
+    let key = editor_key(&server.url, &slug).await;
     let mut args =
         json!({"queries":[{"kind":"source"}],"budget":{"max_bytes":6000,"max_tokens":1500}});
     let mut collected = String::new();
@@ -427,7 +433,7 @@ async fn mcp_protocol_transfer_benchmark() {
     .await;
     assert_eq!(status, 201, "{doc}");
     let slug = text(&doc, "slug");
-    let key = read_key_of(&doc);
+    let key = editor_key(&server.url, &slug).await;
     let start = std::time::Instant::now();
     let response = client()
         .get(format!("{}/api/documents/{slug}/snapshot", server.url))

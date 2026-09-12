@@ -34,18 +34,24 @@ impl Room {
             let state = self.state.lock().await;
             session::encode_state(&state.session.doc)
         };
-        self.broadcast(&json!({
-            "type": "y-update",
-            "update": encode_update(&update),
-        }))
+        self.broadcast_editors_except(
+            None,
+            &json!({
+                "type": "y-update",
+                "update": encode_update(&update),
+            }),
+        )
         .await;
     }
 
     async fn broadcast_accept_and_current(&self, update: &[u8]) {
-        self.broadcast(&json!({
-            "type": "y-update",
-            "update": encode_update(update),
-        }))
+        self.broadcast_editors_except(
+            None,
+            &json!({
+                "type": "y-update",
+                "update": encode_update(update),
+            }),
+        )
         .await;
         self.broadcast_current_state().await;
     }
@@ -110,15 +116,21 @@ impl Room {
             }
         };
         if let (Some(update), _) = &compensation {
-            self.broadcast(&json!({
-                "type": "y-update",
-                "update": encode_update(accepted_update),
-            }))
+            self.broadcast_editors_except(
+                None,
+                &json!({
+                    "type": "y-update",
+                    "update": encode_update(accepted_update),
+                }),
+            )
             .await;
-            self.broadcast(&json!({
-                "type": "y-update",
-                "update": encode_update(update),
-            }))
+            self.broadcast_editors_except(
+                None,
+                &json!({
+                    "type": "y-update",
+                    "update": encode_update(update),
+                }),
+            )
             .await;
             // The peers must see both sides of the compensating edit even if
             // persisting the compensation fails.  A caller can retry the
@@ -127,15 +139,21 @@ impl Room {
             return self.write_session(false, true).await.map(|_| ());
         }
         let full = compensation.1;
-        self.broadcast(&json!({
-            "type": "y-update",
-            "update": encode_update(accepted_update),
-        }))
+        self.broadcast_editors_except(
+            None,
+            &json!({
+                "type": "y-update",
+                "update": encode_update(accepted_update),
+            }),
+        )
         .await;
-        self.broadcast(&json!({
-            "type": "y-update",
-            "update": encode_update(&full),
-        }))
+        self.broadcast_editors_except(
+            None,
+            &json!({
+                "type": "y-update",
+                "update": encode_update(&full),
+            }),
+        )
         .await;
         Err(WriteError::Storage(
             "could not locate the accepted proposal to roll it back".into(),
