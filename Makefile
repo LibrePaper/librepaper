@@ -236,7 +236,10 @@ site: wasm  ## Build the static docs site into site/_site
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
 	@cd web && bun install --silent && bun run build:site
 
-site-preview: site  ## Build the docs site and serve it locally (Ctrl-C to stop)
+# --open rather than launching a browser here as `serve` does: vite picks the
+# port, moving off 4173 when something already has it, so a URL guessed in this
+# file would open the wrong page. It opens $BROWSER, or the system default.
+site-preview: site  ## Build the docs site, serve it and open it in a browser (Ctrl-C to stop)
 	@cd web && bun run preview:site
 
 # --- the browser renderers -------------------------------------------------
