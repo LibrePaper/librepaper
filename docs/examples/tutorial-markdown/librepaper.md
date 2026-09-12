@@ -1,3 +1,8 @@
+---
+bibliography: references.bib
+bibliography-style: apa
+---
+
 # Learn LibrePaper with Markdown
 
 ![The LibrePaper icon](librepaper-icon.png)
@@ -17,9 +22,14 @@ the native command-line client uses the matching renderer. The server synchroniz
 
 For a sample of size $n$, the standard error of a mean is
 
-$$
+$
 SE = \frac{s}{\sqrt{n}}.
-$$
+$
+
+A formula is a rule a machine can be made to follow, the point Ada Lovelace
+made when she described the Analytical Engine weaving algebraic patterns
+[@lovelace1843]. Type `@` in the editor to cite another entry from
+`references.bib`.
 
 [Read the rendering guide in this project](sections/rendering.md). Markdown has no include directive, so a normal link is its portable multi-file equivalent.
 
@@ -41,3 +51,5 @@ Try changing the four values and leave a comment on this paragraph.
 
 The browser editor is enough for writing and reading. Use `librepaper sync` to
 keep a local folder synchronized, or use `librepaper publish` to publish from the terminal. Readers render the small Markdown document in their browser and need no local toolchain.
+
+## References
