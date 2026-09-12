@@ -1,7 +1,6 @@
 # SPEC: Room and storage
 
-Work nobody has asked for yet, and limitations kept on purpose. Each item
-says which.
+Remaining room and storage work.
 
 ## Left open
 

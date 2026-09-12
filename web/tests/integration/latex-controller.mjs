@@ -599,11 +599,13 @@ function nextProject() {
   const BASE = "https://mirror.example/mirror/";
   const bundlesIndexBytes = enc.encode(JSON.stringify({ bundles: {}, files: {} }));
   const workerBytes = enc.encode("var Module = self.Module = {}; ");
+  const resolverEvidenceBytes = enc.encode("self.__resolverEvidenceLoaded = true;");
 
   const files = {
     "bundles/bundles.json": { url: "engines/rel1/bundles/bundles.json", sha256: await sha256Hex(bundlesIndexBytes), size: bundlesIndexBytes.length },
     "xetex.fmt.gz": { url: "engines/rel1/xetex.fmt.gz", sha256: await sha256Hex(fmtGz), size: fmtGz.length },
     "icudt68l.dat.gz": { url: "engines/rel1/icudt68l.dat.gz", sha256: await sha256Hex(icuGz), size: icuGz.length },
+    "xetex-resolver-evidence.js": { url: "engines/rel1/xetex-resolver-evidence.js", sha256: await sha256Hex(resolverEvidenceBytes), size: resolverEvidenceBytes.length },
   };
   for (const name of ["xetex.worker.js", "dvipdfm.worker.js", "bibtex.worker.js", "pdftex.worker.js"]) {
     files[name] = { url: `engines/rel1/${name}`, sha256: await sha256Hex(workerBytes), size: workerBytes.length };
@@ -675,6 +677,7 @@ function nextProject() {
     if (key === new URL(release.bundles.index, BASE).href) return new Response(bundlesIndexBytes, { status: 200 });
     if (key === new URL(files["xetex.fmt.gz"].url, BASE).href) return new Response(fmtGz, { status: 200 });
     if (key === new URL(files["icudt68l.dat.gz"].url, BASE).href) return new Response(icuGz, { status: 200 });
+    if (key === new URL(files["xetex-resolver-evidence.js"].url, BASE).href) return new Response(resolverEvidenceBytes, { status: 200 });
     const workerFile = Object.values(files).find((file) => file.url && new URL(file.url, BASE).href === key);
     if (workerFile) return new Response(workerBytes, { status: 200 });
     return new Response(null, { status: 404 });

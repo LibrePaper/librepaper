@@ -52,6 +52,12 @@ const KINDS = {
 /// reaching for a per-file path that no longer exists in this worker.
 const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex", "latexml"]);
 
+// Released dvipdfm workers import the XeTeX resolver telemetry shim, but the
+// first format-1 manifests omitted that shared file from dvipdfm's inventory.
+// Keep the exception explicit and hash-verify it through `release.files` like
+// every manifest-listed engine asset.
+const COMPATIBILITY_ASSETS = { dvipdfm: ["xetex-resolver-evidence.js"] };
+
 const GZIP_MAGIC = [0x1f, 0x8b];
 
 async function ensureGzip(bytes) {
@@ -189,7 +195,7 @@ class Worker2 {
     const spec = this.release?.engines?.[kind];
     if (!spec) throw new Error(`release ${this.release?.id} has no ${kind} engine`);
     const workerUrl = resolve(this.base, `${this.release.base}${spec.worker}`);
-    const names = [...new Set(spec.files || [spec.worker])];
+    const names = [...new Set([...(spec.files || [spec.worker]), ...(COMPATIBILITY_ASSETS[kind] || [])])];
     if (!names.includes(spec.worker)) throw new Error(`Incomplete ${kind} asset inventory: ${spec.worker}`);
     const assets = {};
     for (const name of names) {

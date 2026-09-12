@@ -19,7 +19,7 @@
     "check:typst-pdf": "node tests/integration/typst-pdf.mjs",
     "check:typst-viewer": "node tests/browser/typst-viewer.mjs",
     "check:latex-html-browser": "node tests/browser/latex-html-browser.mjs",
-    "check:latex-browser": "node tests/browser/latex-browser.mjs",
+    "check:latex-browser": "node tests/browser/latex-browser.mjs both",
     "check:agent-browser": "node tests/browser/agent-browser.mjs",
     "check:responsive-browser": "node tests/browser/responsive-browser.mjs",
     "check:publication-browser": "node tests/browser/publication-browser.mjs && node tests/browser/publication-editor-browser.mjs",

@@ -1,10 +1,6 @@
 # SPEC: Quarto
 
-Work nobody has asked for yet, and limitations kept on purpose. Each item
-says which.
-
-Source preview through the paired local app, capture, binding, sync, and
-isolation all shipped. What did not:
+Remaining Quarto work.
 
 ## Left open
 
@@ -13,17 +9,14 @@ isolation all shipped. What did not:
   shortcodes other than `{{< include >}}` render as their source. The
   parser in `web/src/lib/engines/quarto.js` already tracks fences and
   spans; the missing part is a rendering for each family.
-- The draft applies none of `echo`, `include`, `output`, `eval` or
-  `code-fold`: every cell shows verbatim. That was chosen over guessing.
 - Quarto preview is HTML only. `QuartoWatch::kind()` in
   `crates/librepaper/src/local/preview/quarto.rs` is hard-wired to HTML;
   a `--to pdf` preview would use the existing PDF reader, as Calepin's does.
 - Website and book projects are collected and tested on the capture side
   but the live preview accepts document scope only.
-- No declared Quarto version support matrix, and the real-toolchain R and
-  Python tests are all `#[ignore]`d with no job that runs them. The
-  end-to-end gate (pair, live repaint, disconnect, reconnect, R then Python)
-  has no automated run.
+- The real-toolchain R and Python tests are all `#[ignore]`d with no job that
+  runs them. The end-to-end gate (pair, live repaint, disconnect, reconnect,
+  R then Python) has no automated run.
 - Confinement (`bwrap`, `sandbox-exec`, none) is detected and reported, but
   there is no model for granting a render access to data or the network.
 
