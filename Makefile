@@ -238,6 +238,22 @@ $(SHELL_OUT): $(WEB) web/dist/README.md
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
 	@cd web && bun install --silent && bun run build
 
+# --- the docs site ----------------------------------------------------------
+#
+# A separate static artifact, not the shell above: site/**/*.md rendered by
+# the same markdown engine the application embeds (web/tools/build-site.mjs),
+# wrapped in the sidebar from site/nav.js, beside the landing page authored in
+# web/src/site/. Built by vite.site.config.js into site/_site, which nothing
+# else reads -- it is deployed on its own by .github/workflows/site.yml.
+.PHONY: site site-preview
+
+site: wasm  ## Build the static docs site into site/_site
+	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
+	@cd web && bun install --silent && bun run build:site
+
+site-preview: site  ## Build the docs site and serve it locally (Ctrl-C to stop)
+	@cd web && bun run preview:site
+
 # --- the browser renderers -------------------------------------------------
 #
 # Not built here any more. Each renderer is a repository of its own -- see

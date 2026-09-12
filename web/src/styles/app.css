@@ -14,6 +14,7 @@
 @import "@skeletonlabs/skeleton";
 @import "./theme.css";
 @import "./librepaper.css";
+@import "./documentation.css";
 
 /* Where to look for the classes actually used, since the pages are Svelte
    components rather than files Tailwind scans by default. */

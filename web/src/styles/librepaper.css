@@ -807,59 +807,9 @@ main.reader.source-right .editorpane {
    there is no brand font to serve: a page still reaches out to nobody. The
    editable sources are in assets/brand/; see Logo.svelte. */
 
-/* ---------------------------------------------------------- documentation */
-
-/* Beside the text on a wide screen, above it on a narrow one. */
-.documentation-layout {
-  display: grid;
-  gap: --spacing(8);
-}
-@media (min-width: 1100px) {
-  .documentation-layout {
-    grid-template-columns: 16rem minmax(0, 1fr);
-    align-items: start;
-  }
-  .toc {
-    position: sticky;
-    top: calc(var(--librepaper-bar) + --spacing(4));
-  }
-}
-.toc nav {
-  display: grid;
-  gap: --spacing(1);
-  font-size: var(--text-sm);
-}
-.toc a {
-  color: var(--color-surface-600-400);
-  text-decoration: none;
-}
-.toc a[data-level="3"] {
-  padding-left: --spacing(3);
-}
-.toc a:hover,
-.toc a[aria-current] {
-  color: var(--color-primary-500);
-}
-/* The README is reference material with tables and code in it, not an essay:
-   it wants the width of the page rather than a narrow measure. */
-.prose img {
-  max-width: 100%;
-  border-radius: var(--radius-container);
-  cursor: zoom-in;
-}
-.prose pre {
-  overflow-x: auto;
-  padding: --spacing(3);
-  border-radius: var(--radius-base);
-  background: var(--color-surface-100-900);
-}
-.prose table {
-  display: block;
-  overflow-x: auto;
-}
-.image-lightbox::backdrop {
-  background: color-mix(in srgb, black 70%, transparent);
-}
+/* The documentation layout, table of contents and prose rules moved to
+   documentation.css: the static docs site pulls in exactly that file, and
+   none of the reader chrome around it. */
 
 /* ------------------------------------------------------------- the phone */
 

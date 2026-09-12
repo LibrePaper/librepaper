@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "node tests/unit/vocabulary.js && vite build && vite build --config vite.agent.config.js && node tools/vendor-katex.mjs",
+    "build:site": "node tools/build-site.mjs && vite build --config vite.site.config.js",
+    "preview:site": "vite preview --config vite.site.config.js",
     "dev": "vite build --watch",
     "check:track-changes": "node tests/unit/track-changes.mjs && node tests/browser/live-tracking-browser.mjs",
     "precheck": "node tests/unit/track-changes.mjs",

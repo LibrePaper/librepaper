@@ -11,6 +11,12 @@ docs/examples/*_files/
 web/dist/
 .claude
 
+# The docs site: site/.build is the markdown rendered by
+# web/tools/build-site.mjs, and site/_site is what vite.site.config.js builds
+# from it. Both are generated fresh by `make site`.
+site/.build/
+site/_site/
+
 # Cargo build output.
 target/
 

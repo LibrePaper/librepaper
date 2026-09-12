@@ -1,0 +1,54 @@
+# The docs site, built from site/**/*.md and web/src/site/ and deployed to
+# GitHub Pages. Separate from ci.yml: this touches neither the binary nor its
+# test suite, so it only runs when something it actually reads has changed.
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "web/**"
+      - ".github/workflows/site.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Pages deployments are serialized: a push that lands while one is running
+# should replace it, not queue behind it, so an in-progress run is cancelled
+# rather than left to publish a version this one is about to supersede.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@v2
+      # The markdown renderer, fetched and verified against
+      # wasm-modules.lock the same way the shell's own build does; the docs
+      # site is rendered by exactly this module, not a copy of it. Only this
+      # one module: the others (typst.wasm alone is 30+ MB) render formats
+      # the docs site never compiles.
+      - name: Fetch the pinned markdown renderer
+        run: node web/tools/fetch-modules.mjs markdown.wasm
+      - name: Build the docs site
+        run: cd web && bun install --frozen-lockfile && bun run build:site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

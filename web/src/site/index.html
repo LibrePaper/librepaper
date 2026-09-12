@@ -1,0 +1,144 @@
+<!doctype html>
+<html data-theme="librepaper">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>LibrePaper</title>
+    <meta
+      name="description"
+      content="Publish a document, share a link, and collect comments and highlights in real time."
+    />
+    <link rel="icon" type="image/svg+xml" href="/assets/librepaper-icon.svg" />
+  </head>
+  <!-- web/tools/build-site.mjs copies this file, unchanged, to
+       site/.build/index.html: vite.site.config.js's root is site/.build,
+       alongside the pages built from markdown, and an entry outside its root
+       cannot be given a stable output filename. The script path below is
+       written for that destination, not for this file's own location.
+
+       The page's own words are HTML here rather than a Svelte component
+       mounted at runtime. This is the page a stranger is sent and the page a
+       crawler indexes, so its text has to be in the document that arrives,
+       not in a bundle that has to run first. Only the bar is mounted, and it
+       is furniture: the page reads correctly without it. -->
+  <body>
+    <header class="border-surface-200-800 border-b">
+      <div class="mx-auto max-w-6xl"><div id="siteBar"></div></div>
+    </header>
+
+    <main class="mx-auto flex max-w-6xl flex-col gap-20 px-4 py-16">
+      <!-- ----------------------------------------------------------- hero -->
+      <section class="flex flex-col items-center gap-6 text-center">
+        <img src="/assets/librepaper-logo.svg" alt="LibrePaper" class="w-full max-w-md" />
+        <p class="text-surface-600-400 max-w-2xl text-lg">
+          Publish a document, share a link, and collect comments and highlights in real time.
+        </p>
+        <div class="flex flex-wrap items-center justify-center gap-3">
+          <a class="btn preset-filled-primary-500" href="https://app.librepaper.org/try" target="_blank" rel="noopener">Try it now</a>
+          <a class="btn preset-outlined-surface-300-700" href="/start/index.html">Read the docs</a>
+        </div>
+        <pre class="bg-surface-100-900 rounded-container w-full max-w-xl overflow-x-auto px-4 py-3 text-left text-sm"><code>curl -fsSL https://raw.githubusercontent.com/LibrePaper/librepaper/main/deploy/install.sh | sh</code></pre>
+      </section>
+
+      <!-- ---------------------------------------------------- screenshot -->
+      <section>
+        <img
+          class="border-surface-200-800 rounded-container w-full border"
+          src="/images/commenting.png"
+          alt="A LibrePaper document with comments and highlights beside the text"
+          loading="lazy"
+        />
+      </section>
+
+      <!-- ------------------------------------------------------ features -->
+      <section class="grid gap-8 md:grid-cols-3">
+        <div class="flex flex-col gap-2">
+          <h2 class="text-lg font-semibold">Annotate anything</h2>
+          <p class="text-surface-600-400">
+            Markdown, HTML, Typst, LaTeX and Quarto all publish to the same reader, so a comment lands
+            on the passage it is about whichever format wrote that passage.
+          </p>
+        </div>
+        <div class="flex flex-col gap-2">
+          <h2 class="text-lg font-semibold">Everyone at once</h2>
+          <p class="text-surface-600-400">
+            Several people annotate the same document simultaneously, with live updates. Two people
+            editing the same sentence converge without either waiting for the other.
+          </p>
+        </div>
+        <div class="flex flex-col gap-2">
+          <h2 class="text-lg font-semibold">Publish from the CLI</h2>
+          <p class="text-surface-600-400">
+            <code>librepaper publish</code> sends a paper and the directory around it — the chapters,
+            the figures, the <code>.bib</code> — from the project you already have.
+          </p>
+        </div>
+      </section>
+
+      <!-- ------------------------------------------------------- formats -->
+      <section class="flex flex-col items-center gap-4 text-center">
+        <h2 class="text-lg font-semibold">Bring the source you already have</h2>
+        <div class="flex flex-wrap items-center justify-center gap-3">
+          <a class="badge preset-tonal-surface" href="/start/index.html">Markdown</a>
+          <a class="badge preset-tonal-surface" href="/start/index.html">HTML</a>
+          <a class="badge preset-tonal-surface" href="/authoring/typst.html">Typst</a>
+          <a class="badge preset-tonal-surface" href="/authoring/latex.html">LaTeX</a>
+          <a class="badge preset-tonal-surface" href="/authoring/quarto.html">Quarto</a>
+        </div>
+      </section>
+
+      <!-- ------------------------------------------- response to reviewers
+           The feature nothing else does, so it gets a section rather than a
+           bullet. Both halves are real: the thread on the left is the seeded
+           example, and the block on the right is what `librepaper export
+           --format response` actually writes from it. -->
+      <section class="flex flex-col gap-6">
+        <div class="flex flex-col items-center gap-2 text-center">
+          <h2 class="text-lg font-semibold">Replying to a comment is writing the response to reviewers</h2>
+          <p class="text-surface-600-400 max-w-2xl">
+            Every comment records the checkpoint it was made on, so the export can quote the passage as
+            the reviewer saw it and say what became of it since.
+          </p>
+        </div>
+        <div class="grid gap-6 md:grid-cols-2">
+          <div class="card preset-tonal-surface flex flex-col gap-3 p-6">
+            <h3 class="text-surface-600-400 text-xs font-semibold tracking-wide uppercase">In the browser</h3>
+            <blockquote class="border-primary-500 border-l-2 pl-3 text-sm">
+              The confidence interval does not say that the parameter is inside it with 95% probability.
+            </blockquote>
+            <p class="text-sm"><strong>Vincent:</strong> Fixed as suggested; see also the new footnote on coverage.</p>
+          </div>
+          <div class="card preset-tonal-primary flex flex-col gap-3 p-6">
+            <h3 class="text-surface-600-400 text-xs font-semibold tracking-wide uppercase">In <code>response.md</code></h3>
+            <pre class="overflow-x-auto text-xs leading-relaxed"><code>### 1. commenting, resolved in d1e0f42
+
+&gt; The confidence interval does not say that
+&gt; the parameter is inside it with 95% probability.
+
+**Then:** &ldquo;with 95% probability, the true value
+lies in the interval&rdquo;
+
+**Now:** no longer in the document.
+
+**Vincent:** Fixed as suggested; see also the
+new footnote on coverage.</code></pre>
+          </div>
+        </div>
+        <a class="text-primary-500 self-center text-sm hover:underline" href="/collaborate/review.html">How it works</a>
+      </section>
+
+      <!-- ----------------------------------------------------- self-host -->
+      <section class="flex flex-col items-center gap-4 text-center">
+        <h2 class="text-lg font-semibold">Or run it yourself</h2>
+        <p class="text-surface-600-400 max-w-2xl">
+          LibrePaper is one static binary with the reader, the renderers and the server compiled into
+          it — on your laptop or on a small server.
+        </p>
+        <pre class="bg-surface-100-900 rounded-container w-full max-w-xl overflow-x-auto px-4 py-3 text-left text-sm"><code>librepaper admin serve</code></pre>
+        <a class="text-primary-500 text-sm hover:underline" href="/host/index.html">Read the hosting guide</a>
+      </section>
+    </main>
+
+    <script type="module" src="../../web/src/site/index.js"></script>
+  </body>
+</html>
