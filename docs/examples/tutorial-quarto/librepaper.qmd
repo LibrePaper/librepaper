@@ -2,6 +2,8 @@
 title: "Learn LibrePaper with Quarto"
 author: "LibrePaper"
 format: html
+bibliography: references.bib
+bibliography-style: apa
 execute:
   echo: true
   warning: false
@@ -25,6 +27,11 @@ $$
 SE = \frac{s}{\sqrt{n}}.
 $$
 
+A formula is a rule a machine can be made to follow, the point Ada Lovelace
+made when she described the Analytical Engine weaving algebraic patterns
+[@lovelace1843]. Type `@` in the editor to cite another entry from
+`references.bib`.
+
 {{< include sections/rendering.qmd >}}
 
 The icon in @fig-librepaper is a relative project asset. Change the values in
@@ -47,3 +54,8 @@ the source. Try changing `values` and leave a comment on this paragraph.
 ## Working with other clients
 
 Use `librepaper sync` to keep a local editor synchronized, or bind the companion to a project folder whose private inputs remain on your computer. Publishing a finished HTML file creates an HTML document that readers can open without R, Python, or Quarto.
+
+## References
+
+::: {#refs}
+:::

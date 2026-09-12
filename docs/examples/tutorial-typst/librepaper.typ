@@ -14,6 +14,8 @@ For a sample of size $n$, the standard error of a mean is
 
 $ "SE" = s / sqrt(n) $
 
+A formula is a rule a machine can be made to follow, the point Ada Lovelace made when she described the Analytical Engine weaving algebraic patterns @lovelace1843. Type `@` in the editor to cite another entry from `references.bib`.
+
 #include "sections/rendering.typ"
 
 The icon above is a relative project asset. Change its width, then make a checkpoint so a collaborator can compare the edit with the previous version.
@@ -31,3 +33,5 @@ Try changing the estimate and leave a comment on this paragraph. Typst Universe 
 == Working with other clients
 
 Choose Typst PDF preview for printed layout or experimental Typst HTML preview for flowing, semantic output. If a document contains executable Calepin chunks, the companion can offer a Calepin PDF preview. Use `librepaper sync` for a local editor and `librepaper publish` to publish from the terminal. Readers receive the stored PDF and do not need Typst installed.
+
+#bibliography("references.bib", style: "american-psychological-association")

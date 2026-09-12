@@ -22,9 +22,9 @@ the native command-line client uses the matching renderer. The server synchroniz
 
 For a sample of size $n$, the standard error of a mean is
 
-$
+$$
 SE = \frac{s}{\sqrt{n}}.
-$
+$$
 
 A formula is a rule a machine can be made to follow, the point Ada Lovelace
 made when she described the Analytical Engine weaving algebraic patterns
