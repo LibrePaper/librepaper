@@ -712,6 +712,8 @@ pub(super) async fn dispatch(
             page = "/reader.html".to_string();
         } else if path == "/" {
             page = "/index.html".to_string();
+        } else if path == "/try" {
+            page = "/try.html".to_string();
         }
     }
     if let Some(asset) = server.shell.get(&page) {

@@ -28,6 +28,7 @@ fn every_page_is_built() {
     let shell = shell();
     for page in [
         "/index.html",
+        "/try.html",
         "/reader.html",
         "/404.html",
         "/agent.js",

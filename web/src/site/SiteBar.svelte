@@ -14,9 +14,7 @@
     <a class="text-surface-600-400 hover:text-primary-500 text-sm" href="/start/index.html">Docs</a>
     <a
       class="btn btn-sm preset-filled-primary-500"
-      href="https://app.librepaper.org/docs/learn-librepaper-with-markdown-t678fbd47v"
-      target="_blank"
-      rel="noopener"
+      href="https://app.librepaper.org/try"
     >
       Try it now
     </a>
