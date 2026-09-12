@@ -146,7 +146,22 @@ function template({ title, currentPath, toc, body, scriptSrc }) {
     <main class="documentation mx-auto w-full max-w-6xl px-4 py-8">
       <div class="documentation-layout">
         <aside class="sitenav" aria-label="Site navigation">
-          ${renderNav(currentPath)}
+          <!-- A details rather than a button and a class: the drawer opens and
+               closes, and is reachable from the keyboard, whether or not the
+               page's script ever runs. It ships open, so a reader with no
+               script keeps the navigation at every width; docs.js closes it
+               below the breakpoint, where it becomes the drawer. -->
+          <details class="sitenav-drawer" open>
+            <summary class="sitenav-toggle">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M3 6h18M3 12h18M3 18h18" />
+              </svg>
+              <span>Menu</span>
+            </summary>
+            <div class="sitenav-panel">
+              ${renderNav(currentPath)}
+            </div>
+          </details>
         </aside>
         <article class="prose"><h1>${title}</h1>${body}</article>
         ${

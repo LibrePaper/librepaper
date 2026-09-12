@@ -66,6 +66,77 @@
   }
 }
 
+/* ------------------------------------------------------- the nav as a drawer
+
+   Below the breakpoint the navigation is a drawer: a bar that stays with you
+   as the page scrolls, and a panel that opens over the text rather than
+   pushing a screenful of links in front of it. Above the breakpoint the
+   summary is hidden and the panel is shown whatever [open] says, so one piece
+   of markup is both things and neither needs JavaScript to exist. */
+
+.sitenav-toggle {
+  display: flex;
+  align-items: center;
+  gap: --spacing(2);
+  padding: --spacing(2) --spacing(3);
+  border: 1px solid var(--color-surface-200-800);
+  border-radius: var(--radius-base);
+  background: var(--color-surface-50-950);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+/* Safari draws its own triangle from a pseudo-element the standard rule
+   above does not reach. */
+.sitenav-toggle::-webkit-details-marker {
+  display: none;
+}
+.sitenav-toggle:hover {
+  color: var(--color-primary-500);
+  border-color: var(--color-primary-500);
+}
+.sitenav-drawer[open] .sitenav-toggle {
+  color: var(--color-primary-500);
+  border-color: var(--color-primary-500);
+}
+
+@media (max-width: 899px) {
+  .sitenav {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    padding-block: --spacing(2);
+    background: var(--color-surface-50-950);
+  }
+  /* Over the text, not above it: opening the drawer should not move the
+     paragraph somebody was reading. */
+  .sitenav-drawer[open] .sitenav-panel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    margin-top: --spacing(2);
+    max-height: min(70vh, 32rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: --spacing(4);
+    border: 1px solid var(--color-surface-200-800);
+    border-radius: var(--radius-container);
+    background: var(--color-surface-50-950);
+    box-shadow: 0 12px 32px color-mix(in srgb, black 18%, transparent);
+  }
+  .sitenav-drawer {
+    position: relative;
+  }
+}
+
+@media (min-width: 900px) {
+  .sitenav-toggle {
+    display: none;
+  }
+}
+
 /* -------------------------------------------------------- the two nav lists */
 
 .sitenav nav,

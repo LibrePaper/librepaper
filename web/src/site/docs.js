@@ -10,6 +10,38 @@ import SiteBar from "./SiteBar.svelte";
 
 mount(SiteBar, { target: document.getElementById("siteBar") });
 
+/* ----------------------------------------------------------------- drawer */
+
+// The drawer opens and closes on its own -- it is a <details> -- so this only
+// adds the two things a reader expects of something that covers the page and
+// that the element does not do by itself: Escape shuts it, and so does
+// reaching past it.
+const drawer = document.querySelector(".sitenav-drawer");
+if (drawer) {
+  // The markup ships open so that a reader with no script keeps the
+  // navigation at every width. With a script, the drawer is a drawer only
+  // where there is no room for a column: closed below the breakpoint, open
+  // above it, and kept in step when the window crosses it -- so a drawer
+  // somebody shut on a phone does not follow them into a wide window and
+  // leave the column empty.
+  const wide = matchMedia("(min-width: 900px)");
+  const fitLayout = () => (drawer.open = wide.matches);
+  fitLayout();
+  wide.addEventListener("change", fitLayout);
+
+  // The two things a reader expects of something covering the page that a
+  // <details> does not do by itself.
+  addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && drawer.open && !wide.matches) {
+      drawer.open = false;
+      drawer.querySelector("summary")?.focus();
+    }
+  });
+  addEventListener("click", (event) => {
+    if (drawer.open && !wide.matches && !drawer.contains(event.target)) drawer.open = false;
+  });
+}
+
 /* ---------------------------------------------------------------- images */
 
 const lightbox = document.getElementById("imageLightbox");
