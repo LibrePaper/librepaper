@@ -50,96 +50,78 @@
       <section class="grid gap-6 lg:grid-cols-3">
         <article class="card preset-tonal-surface flex flex-col gap-3 p-6 lg:col-span-3">
           <h2 class="text-xl font-semibold">Any format</h2>
-          <p class="text-surface-600-400">
-            Markdown, HTML, Typst, LaTeX and Quarto all publish to the same reader. The compiler runs
-            in the reader&rsquo;s own browser, so somebody you send a link to needs no TeX
-            installation, no toolchain, and nothing but the page.
-          </p>
+          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+            <li>Markdown, HTML, Typst, LaTeX and Quarto.</li>
+            <li>Compilation in the browser.</li>
+            <li>No installation for reviewers.</li>
+          </ul>
           <!-- shot: the same paper open in two formats, side by side -->
         </article>
 
         <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
           <h2 class="text-lg font-semibold">Collaborate</h2>
-          <p class="text-surface-600-400">
-            Several people read, annotate and edit at once. Two in the same sentence converge without
-            either waiting; each keeps their own undo history and sees the others&rsquo; carets by
-            name. Threads hang off a passage, or off a region of a figure.
-          </p>
-          <p class="text-surface-600-400">
-            A link carries its own role &mdash; reader, commenter, editor or owner &mdash; so what you
-            send decides what they can do.
-          </p>
+          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+            <li>Real-time reading, annotation and editing.</li>
+            <li>Named carets and personal undo.</li>
+            <li>Comments anchored to text or figures.</li>
+            <li>Links for every role.</li>
+          </ul>
           <!-- shot: two named carets in one paragraph, thread open beside it -->
         </article>
 
         <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
           <h2 class="text-lg font-semibold">History &amp; track changes</h2>
-          <p class="text-surface-600-400">
-            Replying to a comment is writing the response to reviewers. Export a round of review and
-            each remark comes back with the passage as that reviewer saw it, what became of it since,
-            and your reply underneath.
-          </p>
-          <p class="text-surface-600-400">
-            Under it: checkpoints you can name, a word diff between any two, and revisions to accept
-            or reject one at a time.
-          </p>
+          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+            <li>Responses to reviewers from comment threads.</li>
+            <li>Original passages alongside revisions.</li>
+            <li>Named checkpoints and word-level diffs.</li>
+            <li>Accept or reject each change.</li>
+          </ul>
           <!-- shot: the thread on the left, generated response.md on the right -->
         </article>
 
         <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
           <h2 class="text-lg font-semibold">LLM agents</h2>
-          <p class="text-surface-600-400">
-            <strong>Bring your own agent. No additional subscription.</strong>
-          </p>
-          <p class="text-surface-600-400">
-            Three skills ship inside the binary, and an agent works through a link with exactly that
-            link&rsquo;s permissions &mdash; a read link reads, a comment link annotates. Your model
-            credentials stay on your machine; the document server never sees them and runs no
-            inference.
-          </p>
+          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+            <li><strong>Bring your own agent. No additional subscription.</strong></li>
+            <li>Three agent skills included.</li>
+            <li>Permissions limited by the link.</li>
+            <li>Credentials and inference stay local.</li>
+          </ul>
           <!-- shot: an anchored suggestion from an agent, awaiting review -->
         </article>
 
         <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
           <h2 class="text-lg font-semibold">Writing tools</h2>
-          <p class="text-surface-600-400">
-            BibTeX and BibLaTeX bibliographies with real citation styles, mathematics, and papers that
-            are a directory rather than a file &mdash; the chapters, the figures and the
-            <code>.bib</code> go up together and stay together.
-          </p>
+          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+            <li>BibTeX and BibLaTeX citations.</li>
+            <li>Typeset mathematics.</li>
+            <li>Multi-file papers with figures.</li>
+          </ul>
           <!-- shot: a citation resolving in the preview, bibliography beneath -->
         </article>
 
         <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
           <h2 class="text-lg font-semibold">Self-host</h2>
-          <p class="text-surface-600-400">
-            One static binary, with the reader, the renderers and the server compiled into it. On your
-            laptop, or on a small machine that can keep a process running.
-          </p>
-          <p class="text-surface-600-400">
-            You decide who may publish and who may comment, how long a document lives, and where the
-            LaTeX compiler is fetched from. Nothing you publish leaves the machine you run it on.
-          </p>
+          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+            <li>One static binary.</li>
+            <li>Runs on a laptop or small server.</li>
+            <li>Your access and retention policies.</li>
+            <li>Your documents stay on your machine.</li>
+          </ul>
           <pre class="bg-surface-100-900 rounded-container overflow-x-auto px-3 py-2 text-sm"><code>librepaper admin serve</code></pre>
         </article>
 
         <article class="card preset-tonal-surface flex flex-col gap-3 p-6 lg:col-span-2">
           <h2 class="text-lg font-semibold">Free and open source</h2>
-          <p class="text-surface-600-400">
-            <strong>Nothing on this page is gated.</strong> Every feature is available to everyone,
-            for nothing, right now &mdash; no paid tier, no trial, no seat count, and nothing held
-            back for a version that costs money.
-          </p>
-          <p class="text-surface-600-400">
-            The one limit is storage: 100&nbsp;MB per publisher. We may offer very cheap storage
-            accounts later for people who need more room. Features will not move behind them.
-          </p>
-          <p class="text-surface-600-400">
-            The whole of it &mdash; the server, the reader and the renderers &mdash; is open and
-            developed in the open, and what you put in comes back out: annotations export as
-            Markdown, or as W3C Web Annotation JSON-LD that another tool can read. A review made here
-            is not stranded here.
-          </p>
+          <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+            <li><strong>Every feature is free.</strong></li>
+            <li>No tiers, trials or seat limits.</li>
+            <li>100&nbsp;MB per publisher.</li>
+            <li>Optional paid storage may come later; features stay free.</li>
+            <li>Open server, reader and renderers.</li>
+            <li>Markdown and W3C JSON-LD exports.</li>
+          </ul>
         </article>
       </section>
 
