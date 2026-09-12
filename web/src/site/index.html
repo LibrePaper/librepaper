@@ -40,102 +40,116 @@
         <pre class="bg-surface-100-900 rounded-container w-full max-w-xl overflow-x-auto px-4 py-3 text-left text-sm"><code>curl -fsSL https://raw.githubusercontent.com/LibrePaper/librepaper/main/deploy/install.sh | sh</code></pre>
       </section>
 
-      <!-- ---------------------------------------------------- screenshot -->
-      <section>
-        <img
-          class="border-surface-200-800 rounded-container w-full border"
-          src="/images/commenting.png"
-          alt="A LibrePaper document with comments and highlights beside the text"
-          loading="lazy"
-        />
+      <!-- ----------------------------------------------------------- cards
+           One block per thing LibrePaper is for. Each will take a picture of
+           itself once there are better ones to take; the slots are marked.
+
+           Any Format leads and spans the row: it is the first thing that
+           separates this from marking up a PDF, and the rest only matter once
+           a reader can open the document at all. -->
+      <section class="grid gap-6 lg:grid-cols-3">
+        <article class="card preset-tonal-surface flex flex-col gap-3 p-6 lg:col-span-3">
+          <h2 class="text-xl font-semibold">Any format</h2>
+          <p class="text-surface-600-400">
+            Markdown, HTML, Typst, LaTeX and Quarto all publish to the same reader. The compiler runs
+            in the reader&rsquo;s own browser, so somebody you send a link to needs no TeX
+            installation, no toolchain, and nothing but the page.
+          </p>
+          <!-- shot: the same paper open in two formats, side by side -->
+        </article>
+
+        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
+          <h2 class="text-lg font-semibold">Collaborate</h2>
+          <p class="text-surface-600-400">
+            Several people read, annotate and edit at once. Two in the same sentence converge without
+            either waiting; each keeps their own undo history and sees the others&rsquo; carets by
+            name. Threads hang off a passage, or off a region of a figure.
+          </p>
+          <p class="text-surface-600-400">
+            A link carries its own role &mdash; reader, commenter, editor or owner &mdash; so what you
+            send decides what they can do.
+          </p>
+          <!-- shot: two named carets in one paragraph, thread open beside it -->
+        </article>
+
+        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
+          <h2 class="text-lg font-semibold">History &amp; track changes</h2>
+          <p class="text-surface-600-400">
+            Replying to a comment is writing the response to reviewers. Export a round of review and
+            each remark comes back with the passage as that reviewer saw it, what became of it since,
+            and your reply underneath.
+          </p>
+          <p class="text-surface-600-400">
+            Under it: checkpoints you can name, a word diff between any two, and revisions to accept
+            or reject one at a time.
+          </p>
+          <!-- shot: the thread on the left, generated response.md on the right -->
+        </article>
+
+        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
+          <h2 class="text-lg font-semibold">LLM agents</h2>
+          <p class="text-surface-600-400">
+            <strong>Bring your own agent. No additional subscription.</strong>
+          </p>
+          <p class="text-surface-600-400">
+            Three skills ship inside the binary, and an agent works through a link with exactly that
+            link&rsquo;s permissions &mdash; a read link reads, a comment link annotates. Your model
+            credentials stay on your machine; the document server never sees them and runs no
+            inference.
+          </p>
+          <!-- shot: an anchored suggestion from an agent, awaiting review -->
+        </article>
+
+        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
+          <h2 class="text-lg font-semibold">Writing tools</h2>
+          <p class="text-surface-600-400">
+            BibTeX and BibLaTeX bibliographies with real citation styles, mathematics, and papers that
+            are a directory rather than a file &mdash; the chapters, the figures and the
+            <code>.bib</code> go up together and stay together.
+          </p>
+          <!-- shot: a citation resolving in the preview, bibliography beneath -->
+        </article>
+
+        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
+          <h2 class="text-lg font-semibold">Self-host</h2>
+          <p class="text-surface-600-400">
+            One static binary, with the reader, the renderers and the server compiled into it. On your
+            laptop, or on a small machine that can keep a process running.
+          </p>
+          <p class="text-surface-600-400">
+            You decide who may publish and who may comment, how long a document lives, and where the
+            LaTeX compiler is fetched from. Nothing you publish leaves the machine you run it on.
+          </p>
+          <pre class="bg-surface-100-900 rounded-container overflow-x-auto px-3 py-2 text-sm"><code>librepaper admin serve</code></pre>
+        </article>
+
+        <article class="card preset-tonal-surface flex flex-col gap-3 p-6">
+          <h2 class="text-lg font-semibold">Free and open source</h2>
+          <p class="text-surface-600-400">
+            The whole of it &mdash; the server, the reader and the renderers &mdash; is open, and
+            developed in the open.
+          </p>
+          <p class="text-surface-600-400">
+            What you put in comes back out: annotations export as Markdown, or as W3C Web Annotation
+            JSON-LD that another tool can read. A review made here is not stranded here.
+          </p>
+        </article>
       </section>
 
-      <!-- ------------------------------------------------------ features -->
-      <section class="grid gap-8 md:grid-cols-3">
-        <div class="flex flex-col gap-2">
-          <h2 class="text-lg font-semibold">Annotate anything</h2>
-          <p class="text-surface-600-400">
-            Markdown, HTML, Typst, LaTeX and Quarto all publish to the same reader, so a comment lands
-            on the passage it is about whichever format wrote that passage.
-          </p>
-        </div>
-        <div class="flex flex-col gap-2">
-          <h2 class="text-lg font-semibold">Everyone at once</h2>
-          <p class="text-surface-600-400">
-            Several people annotate the same document simultaneously, with live updates. Two people
-            editing the same sentence converge without either waiting for the other.
-          </p>
-        </div>
-        <div class="flex flex-col gap-2">
-          <h2 class="text-lg font-semibold">Publish from the CLI</h2>
-          <p class="text-surface-600-400">
-            <code>librepaper publish</code> sends a paper and the directory around it — the chapters,
-            the figures, the <code>.bib</code> — from the project you already have.
-          </p>
-        </div>
-      </section>
-
-      <!-- ------------------------------------------------------- formats -->
+      <!-- --------------------------------------------------------- closing
+           The self-host block that used to sit here is a card now. What is
+           left is the ask, repeated once at the foot for a reader who got
+           this far without pressing anything. -->
       <section class="flex flex-col items-center gap-4 text-center">
-        <h2 class="text-lg font-semibold">Bring the source you already have</h2>
-        <div class="flex flex-wrap items-center justify-center gap-3">
-          <a class="badge preset-tonal-surface" href="/start/index.html">Markdown</a>
-          <a class="badge preset-tonal-surface" href="/start/index.html">HTML</a>
-          <a class="badge preset-tonal-surface" href="/authoring/typst.html">Typst</a>
-          <a class="badge preset-tonal-surface" href="/authoring/latex.html">LaTeX</a>
-          <a class="badge preset-tonal-surface" href="/authoring/quarto.html">Quarto</a>
-        </div>
-      </section>
-
-      <!-- ------------------------------------------- response to reviewers
-           The feature nothing else does, so it gets a section rather than a
-           bullet. Both halves are real: the thread on the left is the seeded
-           example, and the block on the right is what `librepaper export
-           --format response` actually writes from it. -->
-      <section class="flex flex-col gap-6">
-        <div class="flex flex-col items-center gap-2 text-center">
-          <h2 class="text-lg font-semibold">Replying to a comment is writing the response to reviewers</h2>
-          <p class="text-surface-600-400 max-w-2xl">
-            Every comment records the checkpoint it was made on, so the export can quote the passage as
-            the reviewer saw it and say what became of it since.
-          </p>
-        </div>
-        <div class="grid gap-6 md:grid-cols-2">
-          <div class="card preset-tonal-surface flex flex-col gap-3 p-6">
-            <h3 class="text-surface-600-400 text-xs font-semibold tracking-wide uppercase">In the browser</h3>
-            <blockquote class="border-primary-500 border-l-2 pl-3 text-sm">
-              The confidence interval does not say that the parameter is inside it with 95% probability.
-            </blockquote>
-            <p class="text-sm"><strong>Vincent:</strong> Fixed as suggested; see also the new footnote on coverage.</p>
-          </div>
-          <div class="card preset-tonal-primary flex flex-col gap-3 p-6">
-            <h3 class="text-surface-600-400 text-xs font-semibold tracking-wide uppercase">In <code>response.md</code></h3>
-            <pre class="overflow-x-auto text-xs leading-relaxed"><code>### 1. commenting, resolved in d1e0f42
-
-&gt; The confidence interval does not say that
-&gt; the parameter is inside it with 95% probability.
-
-**Then:** &ldquo;with 95% probability, the true value
-lies in the interval&rdquo;
-
-**Now:** no longer in the document.
-
-**Vincent:** Fixed as suggested; see also the
-new footnote on coverage.</code></pre>
-          </div>
-        </div>
-        <a class="text-primary-500 self-center text-sm hover:underline" href="/collaborate/review.html">How it works</a>
-      </section>
-
-      <!-- ----------------------------------------------------- self-host -->
-      <section class="flex flex-col items-center gap-4 text-center">
-        <h2 class="text-lg font-semibold">Or run it yourself</h2>
-        <p class="text-surface-600-400 max-w-2xl">
-          LibrePaper is one static binary with the reader, the renderers and the server compiled into
-          it — on your laptop or on a small server.
+        <h2 class="text-lg font-semibold">Open the tutorial and mark it up</h2>
+        <p class="text-surface-600-400 max-w-xl">
+          It is a real document, already published and already carrying a few comments. Drag across a
+          sentence and see what happens.
         </p>
-        <pre class="bg-surface-100-900 rounded-container w-full max-w-xl overflow-x-auto px-4 py-3 text-left text-sm"><code>librepaper admin serve</code></pre>
-        <a class="text-primary-500 text-sm hover:underline" href="/host/index.html">Read the hosting guide</a>
+        <div class="flex flex-wrap items-center justify-center gap-3">
+          <a class="btn preset-filled-primary-500" href="https://app.librepaper.org/docs/learn-librepaper-with-markdown-t678fbd47v" target="_blank" rel="noopener">Try it now</a>
+          <a class="btn preset-outlined-surface-300-700" href="/start/index.html">Read the docs</a>
+        </div>
       </section>
     </main>
 
