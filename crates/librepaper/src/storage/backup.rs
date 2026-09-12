@@ -2088,7 +2088,7 @@ pub async fn restore_cli(backup: String, destination: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{link_sealing_key_file, session_key_file};
+    use crate::auth::{link_sealing_keyring_file, session_key_file};
     use crate::config::DeploymentPaths;
     use crate::storage::blob::{BlobInfo, BlobResult, BlobStore, BlobVersion, FsStore};
     use crate::storage::catalog::{Account, Catalog};
@@ -2551,7 +2551,9 @@ mod tests {
         let catalog_path = &paths.catalog;
         let catalog = Catalog::open(catalog_path).expect("catalog");
         let secrets = &paths.secrets;
-        let link_key = link_sealing_key_file(&secrets.join("links.key"), false).expect("links");
+        let link_key = link_sealing_keyring_file(&secrets.join("links.key"), false)
+            .expect("links")
+            .remove(0);
         session_key_file(&secrets.join("session.key"), false).expect("session");
         catalog
             .set_link_sealing_key(&link_key)
@@ -2766,7 +2768,7 @@ mod tests {
         let paths = DeploymentPaths::local(live.path());
         paths.prepare_state().expect("state");
         paths.ensure_deployment_identity(false).expect("identity");
-        link_sealing_key_file(&paths.secrets.join("links.key"), false).expect("links");
+        link_sealing_keyring_file(&paths.secrets.join("links.key"), false).expect("links");
         session_key_file(&paths.secrets.join("session.key"), false).expect("session");
         let catalog = Catalog::open(&paths.catalog).expect("catalog");
         catalog
@@ -2929,7 +2931,7 @@ mod tests {
         let deployment_id = paths.ensure_deployment_identity(false).expect("identity");
         let catalog = Catalog::open(&paths.catalog).expect("catalog");
         let secrets = &paths.secrets;
-        link_sealing_key_file(&secrets.join("links.key"), false).expect("links");
+        link_sealing_keyring_file(&secrets.join("links.key"), false).expect("links");
         session_key_file(&secrets.join("session.key"), false).expect("session");
 
         let key = crate::storage::blob::journal_manifest_key(&deployment_id, "1-0");
@@ -3024,7 +3026,7 @@ mod tests {
         paths.ensure_deployment_identity(false).expect("identity");
         let catalog = Catalog::open(&paths.catalog).expect("catalog");
         let secrets = &paths.secrets;
-        link_sealing_key_file(&secrets.join("links.key"), false).expect("links");
+        link_sealing_keyring_file(&secrets.join("links.key"), false).expect("links");
         session_key_file(&secrets.join("session.key"), false).expect("session");
         catalog
             .with_connection(|connection| {

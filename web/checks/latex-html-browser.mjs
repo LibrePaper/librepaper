@@ -121,7 +121,12 @@ try {
 \input{parts/section}
 \begin{equation}\label{eq:test} y=\frac{x^2}{2}\end{equation}
 See equation~\eqref{eq:test}.
-\includegraphics{pixel.png}
+\includegraphics[width=0.12\linewidth]{pixel.png}
+\newcommand{\largerimage}{\includegraphics[width=0.24\linewidth]{pixel.png}}
+\largerimage
+\begin{minipage}{0.5\linewidth}
+\includegraphics[width=0.24\linewidth]{pixel.png}
+\end{minipage}
 \end{document}`;
   const png = Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJXcAAAAASUVORK5CYII=", "base64"));
   async function render(text, chapter = "Included chapter content.", settings = {}) {
@@ -141,6 +146,13 @@ See equation~\eqref{eq:test}.
   assert.match(first.html, /Included chapter content/);
   assert.match(first.html, /<math\b/);
   assert.match(first.html, /data:image\/png;base64,/);
+  await tab.evaluate(`(() => { const frame = document.createElement('iframe'); frame.id = 'rendered-image-check'; frame.srcdoc = ${JSON.stringify(first.html)}; document.body.append(frame); })()`);
+  await until("rendered HTML image", () => tab.evaluate(`(() => { const image = document.querySelector('#rendered-image-check')?.contentDocument?.querySelector('img'); return image?.complete && image.naturalWidth > 0; })()`));
+  const widths = await tab.evaluate(`Array.from(document.querySelector('#rendered-image-check').contentDocument.querySelectorAll('img.ltx_graphics')).map(image => image.getBoundingClientRect().width)`);
+  assert.equal(widths.length, 3);
+  assert.ok(widths[0] > 1, JSON.stringify(widths));
+  assert.ok(Math.abs(widths[1] - 2 * widths[0]) <= 2, JSON.stringify(widths));
+  assert.ok(Math.abs(widths[2] - widths[0]) <= 2, JSON.stringify(widths));
   assert.match(first.html, /<style\b/);
   const coldResources = await tab.evaluate("performance.getEntriesByType('resource').map(e => e.name)");
   assert.ok(coldResources.some((url) => url.startsWith(mirrorBase)), `cold HTML compile did not fetch verified assets from ${mirrorBase}`);
@@ -224,5 +236,11 @@ See equation~\eqref{eq:test}.
   await tab?.close();
   app?.kill();
   await new Promise((done) => server.close(done));
+  if (mirrorServer) {
+    mirrorServer.server.closeAllConnections();
+    await new Promise((done) => mirrorServer.server.close(done));
+    rmSync(mirrorServer.tls, { recursive: true, force: true });
+  }
+  if (overlay) rmSync(overlay, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });
 }

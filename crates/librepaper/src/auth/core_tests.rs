@@ -163,8 +163,15 @@ fn corrupt_missing_or_unreadable_keys_are_not_replaced() {
 fn keyring_rotation_roundtrips_and_preserves_old_keys() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("links.key");
-    let old = link_sealing_key_file(&path, false).unwrap();
-    assert!(link_sealing_keyring_file(&path, true).is_err());
+    std::fs::write(&path, hex::encode([7; 32])).unwrap();
+    assert!(link_sealing_keyring_file(&path, false).is_err());
+    std::fs::remove_file(&path).unwrap();
+    let initial = link_sealing_keyring_file(&path, false).unwrap();
+    let old = initial[0].clone();
+    let promoted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(promoted["version"], 1);
+    assert_eq!(promoted["keys"][0]["key"], hex::encode(&old));
     let keys = vec![vec![8; 32], old];
     write_link_sealing_keyring(&path, &keys).unwrap();
     assert_eq!(link_sealing_keyring_file(&path, true).unwrap(), keys);

@@ -62,6 +62,17 @@ const previewHelpers = body("  function superseded(mine", "  // Outline reads th
 const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which of Quarto's own live preview");
 const paintPreview = `${previewHelpers}\n${body("  async function paintPreview()", "  // Editors refresh at a bounded cadence")}`;
 
+// Initial Quarto setup must configure the companion as active for an editor.
+// If permission is assigned afterwards, editable onboarding examples remain
+// on the Markdown fallback even when the local app is already paired.
+{
+  const prepare = body("  async function prepare(document_)", "  $effect(() => {");
+  assert.ok(
+    prepare.indexOf("mayEdit = Boolean(allowed)") < prepare.indexOf("pairLocalQuarto()"),
+    "prepare resolves edit permission before configuring the Quarto companion",
+  );
+}
+
 // Session lifecycle checks use the extracted resource owners directly. The
 // fake room/session expose only the contracts Reader needs, which keeps these
 // checks focused on stale metadata and teardown rather than WebSocket syntax.

@@ -517,13 +517,6 @@ pub fn session_key_file(path: &std::path::Path, catalog_nonempty: bool) -> Resul
     deployment_secret_key(path, catalog_nonempty, "session")
 }
 
-pub fn link_sealing_key_file(
-    path: &std::path::Path,
-    catalog_nonempty: bool,
-) -> Result<Vec<u8>, String> {
-    deployment_secret_key(path, catalog_nonempty, "link-sealing")
-}
-
 /// Versioned local link-key ring. The first key encrypts new envelopes; the
 /// remainder are retained for interrupted rotations and backup restore.
 pub fn link_sealing_keyring_file(
@@ -559,7 +552,14 @@ pub fn link_sealing_keyring_file(
             Ok(keys)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let primary = link_sealing_key_file(path, catalog_nonempty)?;
+            if catalog_nonempty {
+                return Err(format!(
+                    "the nonempty catalogue is missing its link keyring at {}",
+                    path.display()
+                ));
+            }
+            let primary = random_bytes(32);
+            write_link_sealing_keyring(path, std::slice::from_ref(&primary))?;
             Ok(vec![primary])
         }
         Err(error) => Err(format!("could not read {}: {error}", path.display())),

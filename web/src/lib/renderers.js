@@ -59,8 +59,8 @@ export function producesPdf(format) {
   return outputKind(format) === "pdf";
 }
 
-export function cancelPreview() {
-  latexHtml.cancel();
+export function cancelPreview(options) {
+  latexHtml.cancel(options);
 }
 
 // Whether this browser can compile a source document. Readers without a

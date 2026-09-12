@@ -18,7 +18,7 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::auth::{link_sealing_key_file, session_key_file};
+use crate::auth::{link_sealing_keyring_file, session_key_file};
 use crate::cli::{server_or_die, stored_token_for};
 use crate::config::Configuration;
 use crate::document::render::{is_latex, is_markdown, is_typst, render_markdown_document};
@@ -196,11 +196,11 @@ pub async fn seed_with_backup(
         }
     }
     let secrets = &paths.secrets;
-    let link_key = link_sealing_key_file(&secrets.join("links.key"), catalog_nonempty)
+    let link_keys = link_sealing_keyring_file(&secrets.join("links.key"), catalog_nonempty)
         .unwrap_or_else(|err| die(err));
     session_key_file(&secrets.join("session.key"), catalog_nonempty).unwrap_or_else(|err| die(err));
     catalog
-        .set_link_sealing_key(&link_key)
+        .set_link_sealing_key(&link_keys[0])
         .unwrap_or_else(|err| die(format!("could not configure link sealing: {err}")));
     let marker = paths.state.join("seed-reset.json");
     let marker_body = serde_json::json!({

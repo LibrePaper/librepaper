@@ -101,9 +101,9 @@
   // their name.
   import { EditorState, Transaction } from "@codemirror/state";
   import { EditorView, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
-  import { defaultKeymap, indentWithTab } from "@codemirror/commands";
+  import { defaultKeymap, indentWithTab, selectAll } from "@codemirror/commands";
   import { autocompletion, completionKeymap, startCompletion } from "@codemirror/autocomplete";
-  import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
+  import { searchKeymap, highlightSelectionMatches, openSearchPanel } from "@codemirror/search";
   import { syntaxHighlighting, HighlightStyle, defaultHighlightStyle, StreamLanguage } from "@codemirror/language";
   import { markdown } from "@codemirror/lang-markdown";
   import { html as htmlLanguage } from "@codemirror/lang-html";
@@ -341,6 +341,43 @@
 
   export function focus() {
     view?.focus();
+  }
+
+  export function editAvailability() {
+    if (!view) return {};
+    const selected = !view.state.selection.main.empty;
+    const manager = undoManagers.get(view.state.facet(ySyncFacet).ytext);
+    return {
+      undo: editable && manager?.undoStack.length > 0,
+      redo: editable && manager?.redoStack.length > 0,
+      cut: editable && selected, copy: selected,
+      paste: editable, "select-all": true, find: true, replace: editable,
+    };
+  }
+
+  export async function editCommand(command) {
+    if (!editAvailability()[command]) return;
+    const target = view;
+    const state = target.state;
+    target.focus();
+    if (command === "undo") yUndoManagerKeymap[0].run(target);
+    else if (command === "redo") yUndoManagerKeymap[1].run(target);
+    else if (command === "select-all") selectAll(target);
+    else if (command === "find" || command === "replace") {
+      openSearchPanel(target);
+      if (command === "replace") target.dom.querySelector('[name="replace"]')?.focus();
+    } else if (command === "copy" || command === "cut") {
+      const { from, to } = state.selection.main;
+      await navigator.clipboard.writeText(state.sliceDoc(from, to));
+      if (command === "cut") {
+        if (view !== target || target.state !== state || !editable) throw new Error("The source changed before Cut finished. Select the text again.");
+        target.dispatch({ changes: { from, to }, selection: { anchor: from }, userEvent: "delete.cut" });
+      }
+    } else if (command === "paste") {
+      const text = await navigator.clipboard.readText();
+      if (view !== target || target.state !== state || !editable) throw new Error("The source changed before Paste finished. Try again.");
+      target.dispatch(state.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
+    }
   }
 
   /// Dictation's landing spot: replaces the main selection with `text` through an

@@ -192,12 +192,12 @@
   // document shows. Same shape of choice as Quarto's, remembered separately.
   const TYPST_PREVIEW_MODE_KEY = `librepaper-typst-preview:${SLUG}`;
   let typstPreviewMode = $state(read(TYPST_PREVIEW_MODE_KEY, "typst") === "calepin" ? "calepin" : "typst");
-  // Typst can paint either its ordinary transient PDF or the experimental HTML
-  // export. This is a browser preference for this document.
+  // HTML is the default preview for every source format. An explicit PDF
+  // choice is remembered in this browser for this document.
   const TYPST_OUTPUT_KEY = `librepaper-typst-output:${SLUG}`;
-  let typstOutput = $state(read(TYPST_OUTPUT_KEY, "pdf") === "html" ? "html" : "pdf");
+  let typstOutput = $state(read(TYPST_OUTPUT_KEY, "html") === "pdf" ? "pdf" : "html");
   const LATEX_OUTPUT_KEY = `librepaper-latex-output:${SLUG}`;
-  let latexOutput = $state(read(LATEX_OUTPUT_KEY, "pdf") === "html" ? "html" : "pdf");
+  let latexOutput = $state(read(LATEX_OUTPUT_KEY, "html") === "pdf" ? "pdf" : "html");
 
   async function setLatexOutput(format) {
     const next = format === "html" ? "html" : "pdf";
@@ -205,7 +205,7 @@
     latexOutput = next;
     write(LATEX_OUTPUT_KEY, next);
     navigationGeneration += 1;
-    renderers.cancelPreview();
+    renderers.cancelPreview({ keepWarm: true });
     latex.cancel();
     framePreview?.clear();
     deliveredKind = "";
@@ -2467,14 +2467,33 @@
   // icon is the one it is in rather than the one it is going to: the button is
   // as much a statement of where you are as a way of leaving.
   const ARRANGEMENTS = {
-    split: { icon: "columns-2", says: "Source and document", next: "source" },
-    source: { icon: "panel-left", says: "Source only", next: "document" },
-    document: { icon: "file-text", says: "Document only", next: "split" },
+    split: { icon: "columns-2", says: "Split", next: "document" },
+    source: { icon: "panel-left", says: "Source", next: "split" },
+    document: { icon: "file-text", says: "Preview", next: "source" },
   };
+
+  let editAvailability = $state({});
+  const editGroups = [
+    [["undo", "Undo"], ["redo", "Redo"]],
+    [["cut", "Cut"], ["copy", "Copy"], ["paste", "Paste"]],
+    [["select-all", "Select All"]],
+    [["find", "Find…"], ["replace", "Replace…"]],
+  ];
+  function chooseEditCommand(command) {
+    showMobileView("source");
+    const target = editor;
+    // Restore source focus after the menu finishes closing.
+    setTimeout(async () => {
+      if (editor !== target || !mayEdit || viewing) return;
+      try { await target?.editCommand(command); }
+      catch (error) { toastProblem(error.message || "Clipboard access failed. Try the keyboard shortcut."); }
+    }, 0);
+  }
 
   function cycleLayout() {
     layout = ARRANGEMENTS[layout].next;
     write(LAYOUT, layout);
+    if (compact) showMobileView(layout === "source" ? "source" : "document");
   }
 
   function putSourceOn(side) {
@@ -3000,6 +3019,11 @@
       : document_.can_edit === undefined
         ? document_.can_moderate
         : document_.can_edit;
+    // The local companion must see the resolved permission on its first
+    // configuration. In particular, account examples arrive as editable
+    // Quarto documents; configuring before this assignment leaves the
+    // companion inactive and the pane stuck on its Markdown fallback.
+    mayEdit = Boolean(allowed);
     // Rendering follows the durable source format. Generated-result identity
     // is deliberately absent: a reader compiles this source on demand.
     const format = document_.source_format ||
@@ -3015,7 +3039,6 @@
       settled = true;
       return;
     }
-    mayEdit = Boolean(allowed);
     // A panel remembered from an editor's visit is not one a link-holder is
     // offered. Coerced without being remembered: the preference is this
     // browser's, and an editor coming back to their own document keeps it.
@@ -3288,7 +3311,7 @@
   <Menu.Item value="settings" class="menuitem">Settings…</Menu.Item>
 {/snippet}
 
-<Nav {me}>
+<Nav {me} documentation={false}>
   {#snippet tools()}
     <div class="presence" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
       <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
@@ -3309,6 +3332,17 @@
       </div>
     {/if}
     {#if editing && mayEdit && !viewing}
+      <Menu onOpenChange={(event) => { if (event.open) editAvailability = editor?.editAvailability() || {}; }} onSelect={(chosen) => chooseEditCommand(chosen.value)}>
+        <Menu.Trigger class="menubar-item" disabled={!editor || !!mergeTarget || !!shownFigure}>Edit</Menu.Trigger>
+        <ExplorerMenu>
+          {#each editGroups as group, index}
+            {#if index}<hr class="hr my-1" />{/if}
+            {#each group as [command, label]}
+              <Menu.Item value={command} class="menuitem" disabled={!editAvailability[command]}>{label}</Menu.Item>
+            {/each}
+          {/each}
+        </ExplorerMenu>
+      </Menu>
       <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor || !!viewing} />
     {/if}
     {#if editing}
@@ -3400,7 +3434,14 @@
             {/if}
           {/each}
         </div>
-
+        <div class="activity-bottom" role="group" aria-label="Workspace controls">
+          {#if editing}
+            <IconButton icon={ARRANGEMENTS[layout].icon}
+              label={`Layout: ${ARRANGEMENTS[layout].says}. Switch to ${ARRANGEMENTS[ARRANGEMENTS[layout].next].says}`}
+              onclick={cycleLayout} />
+          {/if}
+          <IconButton icon="help" label="Documentation" href="/documentation" />
+        </div>
       </div>
       {#if settled}
       <div class="sidebar-content">
@@ -3833,6 +3874,7 @@
     padding-block: calc(var(--spacing) * 3);
     border-right: 1px solid var(--color-divider);
   }
+  .activity-bottom { display: flex; flex-direction: column; align-items: center; gap: var(--spacing); margin-top: auto; }
   .activity-sections {
     display: flex;
     flex-direction: column;
@@ -3907,7 +3949,9 @@
   .custom-color input { width:1.35rem; height:1.35rem; padding:0; border:0; background:transparent; }
   @media (max-width: 760px) {
     .sidebar, .sidebar.collapsed { flex-direction: column; }
-    .sidebar-activity { display: none; }
+    .sidebar-activity { display: flex; order: 1; width: 100%; padding-block: var(--spacing); border-right: 0; border-top: 1px solid var(--color-divider); }
+    .sidebar-activity .activity-sections { display: none; }
+    .activity-bottom { flex-direction: row; }
     .activity-sections { flex-direction: row; }
     .sidebar-content { overflow: hidden; }
   }

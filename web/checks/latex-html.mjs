@@ -51,6 +51,7 @@ function harness(options = {}) {
 const tree = (source, assets = {}) => ({ main: "paper/main.tex", texts: { "paper/main.tex": source }, assets });
 const base = "https://example.org/latex/";
 
+
 const warm = harness();
 assert.equal((await warm.compile(tree("first", { "fig.png": Uint8Array.of(1) }), { base })).html, "<p>first</p>");
 assert.equal((await warm.compile(tree("second"), { base })).html, "<p>second</p>");
@@ -63,7 +64,14 @@ assert.equal(warm.instances[0].runs[1].files["fig.png"], undefined, "deleted fil
 await warm.compile(tree("new release"), { base, settings: { release: "r2" } });
 assert.equal(warm.instances.length, 1, "legacy release settings do not pin HTML previews");
 assert.equal(warm.instances[0].dead, false);
+warm.cancel({ keepWarm: true });
+warm.cancel({ keepWarm: true });
+assert.equal(warm.instances[0].dead, false, "switching to PDF and back keeps the idle HTML engine warm");
+assert.equal((await warm.compile(tree("after switching"), { base })).html, "<p>after switching</p>");
+assert.equal(warm.instances.length, 1, "returning to HTML does not initialize another engine");
+assert.equal(warm.verified.length, 1, "returning to HTML does not reload the bundle index");
 warm.cancel();
+assert.equal(warm.instances[0].dead, true, "normal teardown still releases the warm engine");
 
 const legacyManifest = structuredClone(manifest);
 legacyManifest.releases.legacy = { engines: { pdftex: {} } };
@@ -107,13 +115,33 @@ const cancelled = harness({ init: async () => {
 const old = cancelled.compile(tree("old"), { base });
 const oldCheck = assert.rejects(old, { name: "Superseded" });
 await initializing.promise;
-cancelled.cancel();
+cancelled.cancel({ keepWarm: true });
+assert.equal(cancelled.instances[0].dead, true, "switching views still terminates an initializing engine");
 assert.equal((await cancelled.compile(tree("new"), { base })).html, "<p>new</p>", "cancelling an initializing worker does not block the next preview");
 await oldCheck;
 initialized.resolve();
 await Promise.resolve();
 assert.equal(cancelled.instances[0].runs.length, 0);
 cancelled.cancel();
+
+const compiling = deferred();
+const active = harness({ run: (engine) => {
+  if (engine === active.instances[0]) {
+    compiling.resolve();
+    return new Promise(() => {});
+  }
+  return { ok: true, html: "fresh preview" };
+} });
+const interrupted = active.compile(tree("running"), { base });
+const interruptedCheck = assert.rejects(interrupted, { name: "Superseded" });
+await compiling.promise;
+const pending = active.compile(tree("queued"), { base });
+const pendingCheck = assert.rejects(pending, { name: "Superseded" });
+active.cancel({ keepWarm: true });
+await Promise.all([interruptedCheck, pendingCheck]);
+assert.equal(active.instances[0].dead, true, "a view switch terminates an active compile");
+assert.equal((await active.compile(tree("returned"), { base })).html, "fresh preview");
+active.cancel();
 
 const timed = harness({ deadline: 5, run: () => new Promise(() => {}) });
 await assert.rejects(timed.compile(tree("loop"), { base }), /timed out/);

@@ -40,9 +40,11 @@ export function createHtmlCompiler({
     engineKey = null;
   }
 
-  function cancel() {
+  function cancel({ keepWarm = false } = {}) {
     epoch++;
-    retire();
+    // A view switch can reuse an idle runtime and its loaded TeX resources.
+    // Active jobs still need termination: their worker may be mutating state.
+    if (!keepWarm || running) retire();
     cancelActive?.(superseded());
     if (queued) queued.reject(superseded());
     queued = null;
