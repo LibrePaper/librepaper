@@ -911,7 +911,7 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   vm.runInContext('chooseViewCommand("preview-latex-html"); chooseCompactCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
   const view = body('{#snippet viewItems()}', '{#snippet toolItems()}');
-  const tools = body('{#snippet toolItems()}', '<Nav {me}>');
+  const tools = body('{#snippet toolItems()}', '<Nav {me} documentation={false}>');
   assert.match(view, /Preview this file/);
   assert.match(view, /@render previewItems\(\)/);
   assert.doesNotMatch(tools, /preview-/);

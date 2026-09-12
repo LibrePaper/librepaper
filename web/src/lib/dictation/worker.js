@@ -11,6 +11,7 @@
 // take the worker down with it.
 import { pipeline, AutoModel, Tensor, env } from "@huggingface/transformers";
 import { createSegmenter, createEnergyClassifier } from "./segment.js";
+import { whisperLanguage } from "./language.js";
 
 // The ONNX Runtime wasm binary and its .mjs loader, served from this origin
 // and never a CDN. Transformers.js's own dist only ships the .mjs
@@ -33,8 +34,8 @@ env.useBrowserCache = true;
 // The pipeline call options per catalog id. A table, not a switch, so `checks/dictation-models.mjs`
 // can assert every catalog entry is covered by reading this file as text.
 const CALL_OPTIONS = {
-  "whisper-base": (language) => (language ? { language, task: "transcribe" } : { task: "transcribe" }),
-  "whisper-small": (language) => (language ? { language, task: "transcribe" } : { task: "transcribe" }),
+  "whisper-base": (language) => (language ? { language: whisperLanguage(language), task: "transcribe" } : { task: "transcribe" }),
+  "whisper-small": (language) => (language ? { language: whisperLanguage(language), task: "transcribe" } : { task: "transcribe" }),
   "parakeet-ctc": () => ({}),
 };
 

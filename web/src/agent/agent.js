@@ -56,19 +56,18 @@ import {
   // typst's generated rules remain untouched. adoptStyles keeps it appended
   // after the document styles and it only applies while previewing flow HTML.
   const previewCanvasStyle = `
-    html.librepaper-preview.librepaper-flow { background: #f6f6f4; }
+    html.librepaper-preview.librepaper-flow { background: #fff; }
     html.librepaper-preview.librepaper-flow body {
       box-sizing: border-box;
-      width: min(800px, calc(100vw - 32px));
-      max-width: 800px;
-      margin: 32px auto 64px;
+      width: 100%;
+      max-width: none;
+      min-height: 100vh;
+      margin: 0;
       padding: 32px 40px;
       background: #fff;
     }
     @media (max-width: 640px) {
       html.librepaper-preview.librepaper-flow body {
-        width: calc(100vw - 24px);
-        margin: 16px auto 40px;
         padding: 24px 20px;
       }
     }

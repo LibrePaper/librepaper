@@ -3282,7 +3282,7 @@
       <span class="w-4">{typstOutput === "pdf" ? "✓" : ""}</span>Typst PDF preview
     </Menu.Item>
     <Menu.Item value="preview-typst-html" class="menuitem">
-      <span class="w-4">{typstOutput === "html" ? "✓" : ""}</span>Typst HTML preview (experimental)
+      <span class="w-4">{typstOutput === "html" ? "✓" : ""}</span>Typst HTML preview
     </Menu.Item>
     <hr class="hr my-1" />
     {#if !viewing && typstOutput === "pdf"}

@@ -23,7 +23,7 @@
       <Menu.Positioner>
         {#snippet element(attributes)}
           <div {...attributes} style:transform="translate3d(var(--x, -100vw), var(--y, -100vh), 0)" use:positionMenu={menu()}>
-            <Menu.Content class="explorer-menu card bg-surface-50-950 z-50 w-52 p-1 shadow-xl">
+            <Menu.Content class="explorer-menu z-50">
               {@render content()}
             </Menu.Content>
           </div>
@@ -35,7 +35,15 @@
 
 <style>
   .explorer-menu {
+    box-sizing: border-box;
+    width: max-content;
+    min-width: 11rem;
+    max-width: calc(100vw - calc(var(--spacing) * 4));
+    padding: calc(var(--spacing) * 1.5);
     border: 1px solid var(--color-divider);
     border-radius: var(--radius-base);
+    background: var(--color-surface-50-950);
+    box-shadow: var(--shadow-xl);
+    overflow-x: hidden;
   }
 </style>

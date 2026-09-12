@@ -61,7 +61,10 @@ try {
   // No math, nothing fetched.
   await preview("<!doctype html><html><head><title>Plain</title></head><body><p>No formulas here.</p></body></html>");
   await until("plain text published", () => page.evaluate('window.published.at(-1) === "No formulas here."'), 5000);
-  assert.equal(await page.evaluate('getComputedStyle(document.body).maxWidth'), "800px");
+  assert.equal(await page.evaluate('getComputedStyle(document.body).maxWidth'), "none");
+  assert.equal(await page.evaluate('getComputedStyle(document.body).margin'), "0px");
+  assert.equal(await page.evaluate('document.body.getBoundingClientRect().width === document.documentElement.clientWidth'), true);
+  assert.equal(await page.evaluate('document.body.getBoundingClientRect().height >= innerHeight'), true);
   assert.equal(await page.evaluate('document.body.hasAttribute("class") || document.body.hasAttribute("id") || document.documentElement.hasAttribute("lang")'), false);
   assert.equal(await page.evaluate('document.querySelectorAll("link[href*=katex], script[src*=katex]").length'), 0);
 

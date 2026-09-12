@@ -16,8 +16,16 @@ export async function openMicrophone({ onFrame, getUserMedia, AudioContext, work
     },
   });
 
-  const context = new AudioContext();
+  let context;
   try {
+    // Keep construction inside the cleanup boundary too: an unavailable
+    // AudioContext must not strand the stream opened above.
+    context = new AudioContext();
+    // A context created after an awaited permission/model step may start
+    // suspended even though the user clicked the dictation button. Resume it
+    // before wiring the worklet, otherwise no render quanta (and no frames)
+    // are produced.
+    if (context.state === "suspended") await context.resume();
     await context.audioWorklet.addModule(workletUrl);
     const source = context.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(context, "librepaper-dictation-capture");

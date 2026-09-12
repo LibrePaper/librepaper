@@ -953,9 +953,12 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   display: flex;
   align-items: center;
   gap: --spacing(2);
+  width: 100%;
   padding: --spacing(1.5) --spacing(2);
   border-radius: var(--radius-base);
   font-size: var(--text-sm);
+  line-height: var(--panel-line-height);
+  white-space: nowrap;
   cursor: pointer;
 }
 .menuitem:hover,
