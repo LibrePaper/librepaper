@@ -94,15 +94,17 @@ impl Room {
                 locate_anchor(&live, &proposed_anchor)
             };
             if let Some(at) = at {
-                match session::apply_path_edits(
-                    &state.session.doc,
-                    &source.path,
-                    &[wasm_helpers::text::Edit {
-                        at,
-                        delete: len16(proposed),
-                        insert: source.exact.clone(),
-                    }],
-                ) {
+                match self.checked_edit(&state.session.doc, |candidate| {
+                    Ok::<_, WriteError>(session::apply_path_edits(
+                        candidate,
+                        &source.path,
+                        &[wasm_helpers::text::Edit {
+                            at,
+                            delete: len16(proposed),
+                            insert: source.exact.clone(),
+                        }],
+                    ))
+                })? {
                     Some(update) => {
                         state.session.mark_dirty(now_unix());
                         state.session.generation += 1;
@@ -523,7 +525,10 @@ impl Room {
         };
         {
             let mut state = self.state.lock().await;
-            session::apply_update(&state.session.doc, &update).map_err(AcceptError::Failed)?;
+            self.checked_edit(&state.session.doc, |candidate| {
+                session::apply_update(candidate, &update).map_err(WriteError::Invalid)
+            })
+            .map_err(|error| AcceptError::Refused(error.client_message()))?;
             state.session.mark_dirty(now_unix());
             state.session.generation += 1;
             state.session.updated_at = now_unix();

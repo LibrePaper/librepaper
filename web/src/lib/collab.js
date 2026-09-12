@@ -39,6 +39,11 @@ import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries
 // one Yjs update.
 const UPDATE_CHUNK_BYTES = 600_000;
 
+// Carets can change once per editor transaction. Awareness is ephemeral, so
+// sending the latest state at this rate is enough for a smooth cursor while
+// avoiding one room frame per keystroke.
+const AWARENESS_THROTTLE_MS = 100;
+
 // Updates are binary and the room's socket carries JSON, so they travel
 // base64-encoded. A keystroke is a few dozen bytes either way.
 const encode = (bytes) => {
@@ -68,7 +73,18 @@ function mintId() {
 ///
 /// `mayEdit` is false for a reader, who joins to receive the text and never to
 /// change it.
-export function join({ send, onPeers, onState, name, slug, createdAt = "", key = "", mayEdit = true }) {
+export function join({
+  send,
+  onPeers,
+  onState,
+  name,
+  slug,
+  createdAt = "",
+  key = "",
+  mayEdit = true,
+  setTimer = globalThis.setTimeout,
+  clearTimer = globalThis.clearTimeout,
+}) {
   const doc = new Y.Doc();
   // A document is a directory: `files` holds one Y.Text per file under an id
   // of its own, `paths` says what each of them is called, and `meta.main`
@@ -122,6 +138,11 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
   // Whether this browser has been given the server's copy since the socket
   // last came up. Until it has, what is here may be behind.
   let joined = false;
+  let awarenessTimer = null;
+  const pendingAwareness = new Set();
+  let awarenessConnection = 0;
+  let announcedConnection = -1;
+  let left = false;
   // Whether the document is in this browser's own storage, which is what makes
   // a reload safe while the socket is down.
   let local = false;
@@ -185,12 +206,59 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
     sendUpdate(update, mine);
   });
 
-  awareness.on("update", ({ added, updated, removed }) => {
-    if (!mayEdit) return;
-    const changed = added.concat(updated, removed);
+  function clearAwarenessTimer() {
+    if (awarenessTimer !== null) clearTimer(awarenessTimer);
+    awarenessTimer = null;
+  }
+
+  function sendAwareness(changed) {
+    if (!changed.length || left) return;
     send({ type: "y-awareness", update: encode(encodeAwarenessUpdate(awareness, changed)) });
+    if (joined && changed.includes(doc.clientID)) announcedConnection = awarenessConnection;
+  }
+
+  function flushAwareness() {
+    awarenessTimer = null;
+    if (!pendingAwareness.size || left) return;
+    const changed = [...pendingAwareness];
+    pendingAwareness.clear();
+    // Encode at flush time. A burst may have advanced the awareness clock
+    // several times, and peers only need the latest state.
+    sendAwareness(changed);
+  }
+
+  awareness.on("update", ({ added, updated, removed }, origin) => {
+    // Awareness changes from peers (and expiry of stale peers) are for local
+    // rendering only. Relaying them would create a broadcast echo loop.
+    if (!mayEdit) return;
     onPeers?.(awareness.getStates().size);
+    if (left || origin !== "local") return;
+
+    const changed = added.concat(updated, removed);
+    for (const client of changed) pendingAwareness.add(client);
+
+    // A departure must reach peers before a coalescing delay can hide it.
+    // The state encoded here is null for a local destroy/removal.
+    if (removed.length) {
+      clearAwarenessTimer();
+      flushAwareness();
+      return;
+    }
+
+    // Keep local changes made while disconnected for the next join, where the
+    // current state is announced once the socket is usable.
+    if (!joined || awarenessTimer !== null) return;
+    awarenessTimer = setTimer(flushAwareness, AWARENESS_THROTTLE_MS);
   });
+
+  function announceAwareness() {
+    if (!mayEdit || left) return;
+    clearAwarenessTimer();
+    flushAwareness();
+    if (awareness.getLocalState() && announcedConnection !== awarenessConnection) {
+      sendAwareness([doc.clientID]);
+    }
+  }
 
   /// Everything this browser has, as one update. Sending it after a join is
   /// how the changes made while the socket was down reach the server: applying
@@ -521,6 +589,7 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
         Y.applyUpdate(doc, decode(state.update), "remote");
       }
       joined = true;
+      announceAwareness();
       // Whatever this browser has that the server may not: its own unsent
       // work, and -- after a reference fetch -- anything that landed while it
       // was in flight.
@@ -549,6 +618,10 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
     /// is still held, and goes again on the next join.
     disconnected() {
       joined = false;
+      awarenessConnection++;
+      // Keep a pending local state for the next join, but do not leave a
+      // timer running while the socket is unavailable.
+      clearAwarenessTimer();
       report();
     },
 
@@ -562,7 +635,10 @@ export function join({ send, onPeers, onState, name, slug, createdAt = "", key =
     },
 
     leave() {
+      clearAwarenessTimer();
+      pendingAwareness.clear();
       awareness.destroy();
+      left = true;
       store?.destroy();
       doc.destroy();
     },

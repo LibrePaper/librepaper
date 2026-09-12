@@ -14,12 +14,8 @@ says which.
 - Paginate `catalog_entries` and `documents()`, which are unbounded reads.
   `Catalog::documents_page` already exists as the keyset primitive and has
   no callers yet.
-- A room fenced as `FenceReason::Oversized` stays read-only until its
-  instance is evicted, and eviction refuses a dirty session, so an oversized
-  write leaves no way back short of a restart.
 
 ## References
 
 - [Catalogue](../../crates/librepaper/src/storage/catalog/mod.rs) -- `CatalogError`, `catalog_entries`, `documents_page`.
 - [Backup](../../crates/librepaper/src/storage/backup.rs) -- the connection opened outside the execution boundary.
-- [Room errors](../../crates/librepaper/src/room/error.rs) -- `FenceReason`.

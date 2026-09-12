@@ -223,7 +223,11 @@ impl Server {
                     let durability = queued.durability();
                     let (outgoing, _queue_reservation) = queued.into_parts();
                     if !self.cost.socket_bytes(outgoing.bytes(), durability) { break; }
-                    let (frame, close) = match outgoing { Outgoing::Text(text) => (WsMessage::Text(text.into()), false), Outgoing::Close(reason) => (WsMessage::Close(Some(axum::extract::ws::CloseFrame { code: 1000, reason: reason.into() })), true) };
+                    let (frame, close) = match outgoing {
+                        Outgoing::Text(text) => (WsMessage::Text(text.into()), false),
+                        Outgoing::SharedText(text) => (WsMessage::Text(text), false),
+                        Outgoing::Close(reason) => (WsMessage::Close(Some(axum::extract::ws::CloseFrame { code: 1000, reason: reason.into() })), true),
+                    };
                     let sent = matches!(tokio::time::timeout(Duration::from_secs(5), socket.send(frame)).await, Ok(Ok(())));
                     if !sent || close { break; }
                 }
@@ -478,9 +482,9 @@ impl Channel {
         json!({"type":"presence","browser":self.browser.is_some(),"agent":self.agent.is_some()})
     }
     fn announce(&self) {
-        let text = self.presence().to_string();
+        let text = Outgoing::shared_text(self.presence().to_string());
         for peer in [&self.browser, &self.agent].into_iter().flatten() {
-            let _ = peer.tx.try_send(Outgoing::Text(text.clone()));
+            let _ = peer.tx.try_send(text.clone());
         }
     }
 }
@@ -1016,11 +1020,11 @@ impl Hub {
                 channel.task_sequences.insert(task_id.to_string(), sequence);
             }
         }
-        let text = frame.to_string();
-        if recipient_tx.try_send(Outgoing::Text(text.clone())).is_err() {
+        let text = Outgoing::shared_text(frame.to_string());
+        if recipient_tx.try_send(text.clone()).is_err() {
             return Err((409, "recipient cannot receive events"));
         }
-        if sender_tx.try_send(Outgoing::Text(text)).is_err() {
+        if sender_tx.try_send(text).is_err() {
             return Err((409, "sender cannot receive events"));
         }
         channel.requests.push_back((key, digest));

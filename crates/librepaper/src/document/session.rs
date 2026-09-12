@@ -69,10 +69,25 @@ pub const MAIN: &str = "main";
 
 /// A document the browser can talk to. See the note above about offsets.
 pub fn new_doc() -> Doc {
-    let doc = Doc::with_options(Options {
+    doc_with_options(Options {
         offset_kind: OffsetKind::Utf16,
         ..Options::default()
-    });
+    })
+}
+
+/// A server-edit candidate uses the live server's client ID. The caller must
+/// keep the live document locked until the candidate is accepted or discarded,
+/// so its new clocks cannot race another edit from that same client.
+pub(crate) fn edit_candidate(doc: &Doc) -> Doc {
+    doc_with_options(Options {
+        client_id: doc.client_id(),
+        offset_kind: OffsetKind::Utf16,
+        ..Options::default()
+    })
+}
+
+fn doc_with_options(options: Options) -> Doc {
+    let doc = Doc::with_options(options);
     // Named up front: a type that has never been asked for cannot receive an
     // update into it.
     doc.get_or_insert_map(FILES);

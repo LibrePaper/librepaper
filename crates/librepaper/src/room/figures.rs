@@ -52,7 +52,10 @@ impl Room {
         if self.read_only() {
             return Err(self.fenced());
         }
-        session::put_asset(&state.session.doc, path, sha);
+        self.checked_edit(&state.session.doc, |candidate| {
+            session::put_asset(candidate, path, sha);
+            Ok::<_, WriteError>(())
+        })?;
         state.session.mark_dirty(now_unix());
         state.session.generation += 1;
         state.session.updated_at = now_unix();

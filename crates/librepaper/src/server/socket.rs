@@ -297,6 +297,12 @@ impl Server {
                     .await
                     .map_err(|_| ())
                     .and_then(|result| result.map_err(|_| ())),
+                    Outgoing::SharedText(text) => {
+                        tokio::time::timeout(SOCKET_WRITE_TIMEOUT, sink.send(WsMessage::Text(text)))
+                            .await
+                            .map_err(|_| ())
+                            .and_then(|result| result.map_err(|_| ()))
+                    }
                     Outgoing::Close(reason) => {
                         let _ = tokio::time::timeout(
                             SOCKET_WRITE_TIMEOUT,

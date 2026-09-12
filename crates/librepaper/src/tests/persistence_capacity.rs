@@ -486,6 +486,150 @@ async fn replacement_update(room: &crate::room::Room, source: &str) -> Vec<u8> {
     crate::document::session::encode_diff(&doc, &before).expect("peer update")
 }
 
+/// Same workload can be copied onto the baseline revision for an A/B run.
+/// Measures the room path with real quota storage and bounded delivery queues;
+/// client update generation, socket I/O, and client rendering are excluded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "explicit single-room scale and recovery workload"]
+async fn single_room_scale_workload() {
+    use crate::document::session;
+    use crate::room::{Applied, Outgoing, Sender};
+
+    let peers = env_usize("LIBREPAPER_SCALE_PEERS", 32);
+    let rounds = env_usize("LIBREPAPER_SCALE_ROUNDS", 16);
+    let initial_bytes = env_usize("LIBREPAPER_SCALE_BYTES", 100 * 1024);
+    assert!(peers > 0 && rounds > 0 && peers * rounds > 8);
+    let directory = tempfile::tempdir().unwrap();
+    let config = Arc::new(Configuration::default());
+    let deployment = open_deployment(directory.path(), config.clone()).await;
+    let source = "a".repeat(initial_bytes);
+    deployment
+        .store
+        .put(store::Publication {
+            slug: "scale-room".into(),
+            source: source.clone(),
+            source_format: "markdown".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let room = deployment.rooms.try_get("scale-room").await.unwrap();
+    room.set_main_file(&source, "markdown", "main.md")
+        .await
+        .unwrap();
+    room.persist().await.unwrap();
+    let initial = room.open_state(None).await.0;
+    let mut receivers = Vec::new();
+    let mut updates = Vec::new();
+    for peer in 0..peers {
+        let (tx, rx) = Sender::channel(8, 1024 * 1024, None, None);
+        room.attach(peer as u64 + 1, tx, true).await;
+        receivers.push(rx);
+        let doc = session::new_doc();
+        session::apply_update(&doc, &initial).unwrap();
+        let mut peer_updates = Vec::new();
+        for _ in 0..rounds {
+            let before = session::encode_vector(&doc);
+            assert!(session::apply_edits_at(
+                &doc,
+                "main.md",
+                &[wasm_helpers::text::Edit {
+                    at: 0,
+                    delete: 0,
+                    insert: "x".into()
+                }]
+            ));
+            peer_updates.push(session::encode_diff(&doc, &before).unwrap());
+        }
+        updates.push(peer_updates);
+    }
+    // This recipient never drains. Overflow must remove only that peer.
+    let (slow_tx, slow_rx) = Sender::channel(8, 1024 * 1024, None, None);
+    room.attach(peers as u64 + 1, slow_tx, true).await;
+    let mut admission_us = Vec::new();
+    let mut fanout_us = Vec::new();
+    let mut deliveries = 0;
+    for round in 0..rounds {
+        for (peer, peer_updates) in updates.iter().enumerate() {
+            let update = &peer_updates[round];
+            let start = Instant::now();
+            assert!(matches!(
+                room.receive_update(peer as u64 + 1, update, round as i64 + 1, "alice")
+                    .await,
+                Applied::Relay
+            ));
+            admission_us.push(start.elapsed().as_micros());
+            let payload =
+                serde_json::json!({"type":"y-update", "update":crate::room::encode_update(update)});
+            let start = Instant::now();
+            room.broadcast_editors_except(Some(peer as u64 + 1), &payload)
+                .await;
+            fanout_us.push(start.elapsed().as_micros());
+            for (recipient, rx) in receivers.iter_mut().enumerate() {
+                let mut count = 0;
+                while let Ok(queued) = rx.try_recv() {
+                    assert!(
+                        !queued.durability(),
+                        "relay must not acknowledge unsaved work"
+                    );
+                    count += 1;
+                }
+                assert_eq!(count, usize::from(recipient != peer));
+                deliveries += count;
+            }
+        }
+    }
+    assert_eq!(
+        room.editors_connected().await,
+        peers,
+        "only slow peer removed"
+    );
+    let expected = format!("{}{source}", "x".repeat(peers * rounds));
+    assert_eq!(room.source().await, expected);
+    let start = Instant::now();
+    assert!(room.persist().await.unwrap());
+    let persist_us = start.elapsed().as_micros();
+    for rx in &mut receivers {
+        let queued = rx.try_recv().expect("durable acknowledgement");
+        assert!(queued.durability());
+        let (Outgoing::Text(text), _reservation) = queued.into_parts() else {
+            panic!("expected acknowledgement text");
+        };
+        let ack: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(ack["type"], "y-ack");
+        assert_eq!(ack["seq"], rounds);
+    }
+    drop(slow_rx);
+    drop(receivers);
+    drop(room);
+    drop(deployment);
+    let reopened = open_deployment(directory.path(), config).await;
+    let recovered = reopened.rooms.try_get("scale-room").await.unwrap();
+    assert_eq!(
+        recovered.source().await,
+        expected,
+        "acknowledged edits survive reopening"
+    );
+    let admission_total_us: u128 = admission_us.iter().sum();
+    let fanout_total_us: u128 = fanout_us.iter().sum();
+    admission_us.sort_unstable();
+    fanout_us.sort_unstable();
+    println!(
+        "{}",
+        serde_json::json!({
+            "peers": peers, "edits": peers * rounds, "source_bytes": initial_bytes,
+            "deliveries": deliveries, "admission_total_us": admission_total_us,
+            "admission_p50_us": admission_us[admission_us.len()/2],
+            "admission_p95_us": admission_us[(admission_us.len()-1)*95/100],
+            "fanout_total_us": fanout_total_us,
+            "fanout_p50_us": fanout_us[fanout_us.len()/2],
+            "persist_us": persist_us, "slow_peer_removed": true,
+            "acknowledged_edits_recovered": true
+        })
+    );
+}
+
 #[tokio::test]
 async fn deletion_only_edit_recovers_with_unchanged_crdt_state_vector() {
     let directory = tempfile::tempdir().unwrap();

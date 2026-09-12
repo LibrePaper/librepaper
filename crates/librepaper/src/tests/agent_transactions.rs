@@ -624,3 +624,43 @@ fn source_receipt_reopens_and_rejects_digest_reuse() {
     );
     assert!(conflict.is_err(), "digest reuse must be rejected");
 }
+
+#[tokio::test]
+async fn encoded_size_refusal_aborts_agent_intent_without_changing_live_source() {
+    let mut policy = Configuration {
+        max_document: 1024,
+        ..Configuration::default()
+    };
+    policy.persistence.max_encoded_snapshot_bytes = 1024;
+    let (_dir, store, _rooms, room, authority) = room_fixture_config(policy).await;
+    let tree = agent::room_tree(&room).await;
+    let before = room.open_state(None).await.0;
+    // The source fits; the source plus the operation marker and CRDT framing
+    // cannot. A later small request must still be able to use the operation slot.
+    let request = source_request(&tree, "encoded-oversize", &"x".repeat(950), None);
+    let error = room
+        .apply_agent_request(request, authority.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, agent::AgentError::Conflict(_)), "{error}");
+    assert!(error.to_string().contains("edit history"), "{error}");
+    assert_eq!(room.open_state(None).await.0, before);
+    assert!(!room.read_only());
+    assert!(store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .document("agent-room")
+        .unwrap()
+        .unwrap()
+        .pending_publication
+        .is_none());
+    room.apply_agent_request(
+        source_request(&tree, "after-encoded-refusal", "B", None),
+        authority,
+    )
+    .await
+    .expect("a later operation can still commit");
+    assert_eq!(room.source().await, "B");
+    room.persist().await.unwrap();
+}

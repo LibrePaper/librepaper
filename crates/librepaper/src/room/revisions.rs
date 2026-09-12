@@ -216,19 +216,41 @@ pub fn client_update_safe_as(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn client_update_safe_after_as(
     before: &yrs::Doc,
     update: &[u8],
     expected_author: Option<&str>,
 ) -> bool {
+    client_update_safe_after_as_with_len(before, update, expected_author).is_some()
+}
+
+/// Validates a browser update and returns the exact encoded size of the
+/// pre-update state used to seed validation's scratch document. The receive
+/// path reuses that size for its conservative quota bound, avoiding a second
+/// full encode of the live document. `None` means the update is malformed or
+/// fails revision validation.
+pub fn client_update_safe_after_as_with_len(
+    before: &yrs::Doc,
+    update: &[u8],
+    expected_author: Option<&str>,
+) -> Option<usize> {
+    // Keep the encoded bytes used to seed the validation copy. The receive
+    // path needs this same pre-update size for its conservative quota bound;
+    // returning its length avoids encoding the live document a second time.
+    let before_state = session::encode_state(before);
+    let before_len = before_state.len();
     let scratch = session::new_doc();
-    if session::apply_update(&scratch, &session::encode_state(before)).is_err() {
-        return false;
+    if session::apply_update(&scratch, &before_state).is_err() {
+        return None;
     }
+    drop(before_state);
     if session::apply_update(&scratch, update).is_err() {
-        return false;
+        return None;
     }
-    client_update_safe_as(before, &scratch, expected_author).is_ok()
+    client_update_safe_as(before, &scratch, expected_author)
+        .is_ok()
+        .then_some(before_len)
 }
 
 /// Schema and anchor validation for a revision value received over Yjs.
@@ -512,5 +534,133 @@ mod tests {
         );
         drop(txn);
         assert!(client_update_safe(&doc, &forged).is_err());
+        let forged_update = session::encode_diff(&forged, &session::encode_vector(&doc)).unwrap();
+        assert_eq!(
+            client_update_safe_after_as_with_len(&doc, &forged_update, Some("alice")),
+            None
+        );
+        assert_eq!(
+            client_update_safe_after_as_with_len(&doc, b"not a yjs update", Some("alice")),
+            None
+        );
+    }
+
+    #[test]
+    fn client_update_validation_reports_the_seed_snapshot_size() {
+        let before = session::new_doc();
+        session::put_text(&before, "main.md", "before");
+        let before_len = session::encode_state(&before).len();
+
+        let after = session::new_doc();
+        session::apply_update(&after, &session::encode_state(&before)).unwrap();
+        session::replace_text(&after, "after", "main.md");
+        let update = session::encode_diff(&after, &session::encode_vector(&before)).unwrap();
+
+        assert_eq!(
+            client_update_safe_after_as_with_len(&before, &update, Some("alice")),
+            Some(before_len)
+        );
+    }
+
+    /// Release-only microbenchmark for the full-state encode that revision
+    /// admission already performs. It compares the old operation (validation
+    /// followed by another encode for quota sizing) with the new helper that
+    /// reuses the validation seed length. Run with:
+    ///
+    /// ```text
+    /// cargo test -p librepaper --release revision_validation_snapshot_size_benchmark \
+    ///     -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "release revision validation benchmark; run with --ignored --nocapture"]
+    fn revision_validation_snapshot_size_benchmark() {
+        const REPETITIONS: usize = 16;
+        const FRAGMENTED_EDITS: usize = 100;
+        let mut results = Vec::new();
+
+        for requested_size in [100 * 1024, 1024 * 1024] {
+            let doc = session::new_doc();
+            let mut source = String::with_capacity(requested_size);
+            for edit in 0..FRAGMENTED_EDITS {
+                let remaining = requested_size - source.len();
+                let edits_left = FRAGMENTED_EDITS - edit;
+                let chunk = remaining.div_ceil(edits_left);
+                source.extend(std::iter::repeat_n('x', chunk));
+                session::replace_text(&doc, &source, "main.md");
+            }
+            assert_eq!(source.len(), requested_size);
+
+            let after = session::new_doc();
+            session::apply_update(&after, &session::encode_state(&doc)).unwrap();
+            source.push('y');
+            session::replace_text(&after, &source, "main.md");
+            let update = session::encode_diff(&after, &session::encode_vector(&doc)).unwrap();
+
+            let mut old_nanos = 0u128;
+            let mut new_nanos = 0u128;
+            let mut old_measurement = None;
+            let mut new_measurement = None;
+            for repetition in 0..REPETITIONS {
+                if repetition % 2 == 0 {
+                    let started = std::time::Instant::now();
+                    let measured = std::hint::black_box((
+                        client_update_safe_after_as(&doc, &update, Some("alice")),
+                        session::encode_state(&doc).len(),
+                    ));
+                    old_nanos += started.elapsed().as_nanos();
+                    old_measurement = Some(measured);
+
+                    let started = std::time::Instant::now();
+                    let measured = std::hint::black_box(client_update_safe_after_as_with_len(
+                        &doc,
+                        &update,
+                        Some("alice"),
+                    ));
+                    new_nanos += started.elapsed().as_nanos();
+                    new_measurement = Some(measured);
+                } else {
+                    let started = std::time::Instant::now();
+                    let measured = std::hint::black_box(client_update_safe_after_as_with_len(
+                        &doc,
+                        &update,
+                        Some("alice"),
+                    ));
+                    new_nanos += started.elapsed().as_nanos();
+                    new_measurement = Some(measured);
+
+                    let started = std::time::Instant::now();
+                    let measured = std::hint::black_box((
+                        client_update_safe_after_as(&doc, &update, Some("alice")),
+                        session::encode_state(&doc).len(),
+                    ));
+                    old_nanos += started.elapsed().as_nanos();
+                    old_measurement = Some(measured);
+                }
+            }
+            let (old_safe, old_len) = old_measurement.expect("benchmark measured old path");
+            assert!(old_safe);
+            assert_eq!(
+                new_measurement.expect("benchmark measured new path"),
+                Some(old_len)
+            );
+            results.push(serde_json::json!({
+                "requested_bytes": requested_size,
+                "snapshot_bytes": old_len,
+                "update_bytes": update.len(),
+                "repetitions": REPETITIONS,
+                "old_ns": old_nanos,
+                "new_ns": new_nanos,
+                "speedup": old_nanos as f64 / new_nanos.max(1) as f64,
+            }));
+        }
+
+        println!(
+            "{}",
+            serde_json::json!({
+                "benchmark": "revision_validation_snapshot_size",
+                "fragmented_edits": FRAGMENTED_EDITS,
+                "results": results,
+            })
+        );
     }
 }

@@ -643,7 +643,12 @@ impl std::error::Error for AgentError {}
 
 impl From<WriteError> for AgentError {
     fn from(error: WriteError) -> Self {
-        Self::Storage(error.to_string())
+        match error {
+            // Admission refused the candidate before changing the document;
+            // its outcome is known, unlike a failed storage write.
+            WriteError::Size(_) => Self::Conflict(error.client_message()),
+            _ => Self::Storage(error.to_string()),
+        }
     }
 }
 
@@ -1435,72 +1440,94 @@ impl Room {
         let update = {
             use yrs::{Map, Out, RootRef, Text, Transact};
             let mut state = self.state.lock().await;
-            let before_vector = session::encode_vector(&state.session.doc);
-            let files = yrs::MapRef::root(session::FILES)
-                .get(&state.session.doc.transact())
-                .ok_or_else(|| AgentError::Storage("files map is absent".into()))?;
-            let paths = yrs::MapRef::root(session::PATHS)
-                .get(&state.session.doc.transact())
-                .ok_or_else(|| AgentError::Storage("paths map is absent".into()))?;
-            let meta = yrs::MapRef::root(session::META)
-                .get(&state.session.doc.transact())
-                .ok_or_else(|| AgentError::Storage("meta map is absent".into()))?;
-            let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
-            for patch in &request.patches {
-                by_path.entry(&patch.path).or_default().push(patch);
-            }
-            let mut txn = state.session.doc.transact_mut();
-            for (path, mut patches) in by_path {
-                patches.sort_by(|left, right| {
-                    right.start.cmp(&left.start).then(right.end.cmp(&left.end))
-                });
-                let file_id = paths
-                    .iter(&txn)
-                    .find_map(|(id, value)| match value {
-                        Out::Any(value) if value.to_string() == path => Some(id.to_string()),
-                        _ => None,
-                    })
-                    .ok_or_else(|| AgentError::Conflict(format!("file is absent: {path}")))?;
-                let Some(Out::YText(text)) = files.get(&txn, &file_id) else {
-                    return Err(AgentError::Conflict(format!("file is absent: {path}")));
-                };
-                for patch in patches {
-                    let at = byte_to_utf16(&tree.files[path].text, patch.start);
-                    let end = byte_to_utf16(&tree.files[path].text, patch.end);
-                    text.remove_range(&mut txn, at as u32, (end - at) as u32);
-                    if !patch.replacement.is_empty() {
-                        text.insert(&mut txn, at as u32, &patch.replacement);
+            let result = self.checked_edit(&state.session.doc, |candidate| {
+                let before_vector = session::encode_vector(candidate);
+                let files = yrs::MapRef::root(session::FILES)
+                    .get(&candidate.transact())
+                    .ok_or_else(|| AgentError::Storage("files map is absent".into()))?;
+                let paths = yrs::MapRef::root(session::PATHS)
+                    .get(&candidate.transact())
+                    .ok_or_else(|| AgentError::Storage("paths map is absent".into()))?;
+                let meta = yrs::MapRef::root(session::META)
+                    .get(&candidate.transact())
+                    .ok_or_else(|| AgentError::Storage("meta map is absent".into()))?;
+                let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
+                for patch in &request.patches {
+                    by_path.entry(&patch.path).or_default().push(patch);
+                }
+                let mut txn = candidate.transact_mut();
+                for (path, mut patches) in by_path {
+                    patches.sort_by(|left, right| {
+                        right.start.cmp(&left.start).then(right.end.cmp(&left.end))
+                    });
+                    let file_id = paths
+                        .iter(&txn)
+                        .find_map(|(id, value)| match value {
+                            Out::Any(value) if value.to_string() == path => Some(id.to_string()),
+                            _ => None,
+                        })
+                        .ok_or_else(|| AgentError::Conflict(format!("file is absent: {path}")))?;
+                    let Some(Out::YText(text)) = files.get(&txn, &file_id) else {
+                        return Err(AgentError::Conflict(format!("file is absent: {path}")));
+                    };
+                    for patch in patches {
+                        let at = byte_to_utf16(&tree.files[path].text, patch.start);
+                        let end = byte_to_utf16(&tree.files[path].text, patch.end);
+                        text.remove_range(&mut txn, at as u32, (end - at) as u32);
+                        if !patch.replacement.is_empty() {
+                            text.insert(&mut txn, at as u32, &patch.replacement);
+                        }
                     }
                 }
-            }
-            let marker = serde_json::json!({
+                let marker = serde_json::json!({
                 "digest": request_digest(&request)?,
                 "after_tree": applied.after_tree,
                 "mac": marker_mac(&marker_secret, &request_digest(&request)?, &applied.after_tree),
             })
             .to_string();
-            // There can be only one prepared source operation per document.
-            // Remove terminal markers before recording this operation so the
-            // Yjs metadata cannot grow without bound across a long-lived
-            // room. The current marker remains until the SQL receipt commits.
-            let current_marker = marker_key(&request_id);
-            let old_markers: Vec<String> = meta
-                .iter(&txn)
-                .filter_map(|(key, _)| {
-                    let key = key.to_string();
-                    (key.starts_with(MARKER_PREFIX) && key != current_marker).then_some(key)
-                })
-                .collect();
-            for key in old_markers {
-                meta.remove(&mut txn, &key);
+                // There can be only one prepared source operation per document.
+                // Remove terminal markers before recording this operation so the
+                // Yjs metadata cannot grow without bound across a long-lived
+                // room. The current marker remains until the SQL receipt commits.
+                let current_marker = marker_key(&request_id);
+                let old_markers: Vec<String> = meta
+                    .iter(&txn)
+                    .filter_map(|(key, _)| {
+                        let key = key.to_string();
+                        (key.starts_with(MARKER_PREFIX) && key != current_marker).then_some(key)
+                    })
+                    .collect();
+                for key in old_markers {
+                    meta.remove(&mut txn, &key);
+                }
+                meta.insert(&mut txn, current_marker, marker);
+                drop(txn);
+
+                session::encode_diff(candidate, &before_vector).map_err(AgentError::Conflict)
+            });
+            if result.is_ok() {
+                state.session.mark_dirty(crate::util::now_unix());
+                state.session.generation = state.session.generation.saturating_add(1);
+                state.session.updated_at = crate::util::now_unix();
             }
-            meta.insert(&mut txn, current_marker, marker);
-            drop(txn);
-            state.session.mark_dirty(crate::util::now_unix());
-            state.session.generation = state.session.generation.saturating_add(1);
-            state.session.updated_at = crate::util::now_unix();
-            session::encode_diff(&state.session.doc, &before_vector)
-                .map_err(AgentError::Conflict)?
+            result
+        };
+        let update = match update {
+            Ok(update) => update,
+            Err(error) => {
+                if let Err(abort) = abort_agent_operation(
+                    self,
+                    &catalog,
+                    &request_id,
+                    "agent edit admission failed",
+                )
+                .await
+                {
+                    self.fence(super::FenceReason::AgentRecoveryPending);
+                    return Err(abort);
+                }
+                return Err(error);
+            }
         };
         if let Err(error) = self.write_session_inner(true, false).await {
             let agent_error = AgentError::from(error.clone());
@@ -1641,7 +1668,7 @@ impl Room {
         })
         .to_string();
         let mut state = self.state.lock().await;
-        super::send_to_editors(&mut state, None, &payload);
+        super::send_to_editors(&mut state, None, super::Outgoing::shared_text(payload));
         Ok(receipt)
     }
 
@@ -1767,47 +1794,51 @@ impl Room {
     ) -> Result<(), AgentError> {
         use yrs::{Map, Out, RootRef, Text, Transact};
         let mut state = self.state.lock().await;
-        let files = yrs::MapRef::root(session::FILES)
-            .get(&state.session.doc.transact())
-            .ok_or_else(|| AgentError::Storage("files map is absent during rollback".into()))?;
-        let paths = yrs::MapRef::root(session::PATHS)
-            .get(&state.session.doc.transact())
-            .ok_or_else(|| AgentError::Storage("paths map is absent during rollback".into()))?;
-        let meta = yrs::MapRef::root(session::META)
-            .get(&state.session.doc.transact())
-            .ok_or_else(|| AgentError::Storage("meta map is absent during rollback".into()))?;
-        let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
-        for patch in &request.patches {
-            by_path.entry(&patch.path).or_default().push(patch);
-        }
-        let mut txn = state.session.doc.transact_mut();
-        for (path, mut patches) in by_path {
-            patches.sort_by_key(|patch| patch.start);
-            let file_id = paths
-                .iter(&txn)
-                .find_map(|(id, value)| match value {
-                    Out::Any(value) if value.to_string() == path => Some(id.to_string()),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    AgentError::Storage(format!("file is absent during rollback: {path}"))
-                })?;
-            let Some(Out::YText(text)) = files.get(&txn, &file_id) else {
-                return Err(AgentError::Storage(format!(
-                    "file is absent during rollback: {path}"
-                )));
-            };
-            for patch in patches {
-                let at = byte_to_utf16(&tree.files[path].text, patch.start);
-                let length = patch.replacement.encode_utf16().count();
-                text.remove_range(&mut txn, at as u32, length as u32);
-                if !patch.exact.is_empty() {
-                    text.insert(&mut txn, at as u32, &patch.exact);
+        self.checked_edit(&state.session.doc, |candidate| {
+            let files = yrs::MapRef::root(session::FILES)
+                .get(&candidate.transact())
+                .ok_or_else(|| AgentError::Storage("files map is absent during rollback".into()))?;
+            let paths = yrs::MapRef::root(session::PATHS)
+                .get(&candidate.transact())
+                .ok_or_else(|| AgentError::Storage("paths map is absent during rollback".into()))?;
+            let meta = yrs::MapRef::root(session::META)
+                .get(&candidate.transact())
+                .ok_or_else(|| AgentError::Storage("meta map is absent during rollback".into()))?;
+            let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
+            for patch in &request.patches {
+                by_path.entry(&patch.path).or_default().push(patch);
+            }
+            let mut txn = candidate.transact_mut();
+            for (path, mut patches) in by_path {
+                patches.sort_by_key(|patch| patch.start);
+                let file_id = paths
+                    .iter(&txn)
+                    .find_map(|(id, value)| match value {
+                        Out::Any(value) if value.to_string() == path => Some(id.to_string()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        AgentError::Storage(format!("file is absent during rollback: {path}"))
+                    })?;
+                let Some(Out::YText(text)) = files.get(&txn, &file_id) else {
+                    return Err(AgentError::Storage(format!(
+                        "file is absent during rollback: {path}"
+                    )));
+                };
+                for patch in patches {
+                    let at = byte_to_utf16(&tree.files[path].text, patch.start);
+                    let length = patch.replacement.encode_utf16().count();
+                    text.remove_range(&mut txn, at as u32, length as u32);
+                    if !patch.exact.is_empty() {
+                        text.insert(&mut txn, at as u32, &patch.exact);
+                    }
                 }
             }
-        }
-        meta.remove(&mut txn, &marker_key(request_id));
-        drop(txn);
+            meta.remove(&mut txn, &marker_key(request_id));
+            drop(txn);
+
+            Ok::<_, AgentError>(())
+        })?;
         state.session.mark_dirty(crate::util::now_unix());
         state.session.generation = state.session.generation.saturating_add(1);
         state.session.updated_at = crate::util::now_unix();

@@ -1906,7 +1906,16 @@ impl Room {
                 merged.insert(path.clone(), body);
             }
             let before = session::encode_vector(&state.session.doc);
-            session::restore_by_path(&state.session.doc, &effective_tree, &merged);
+            if let Err(error) = self.checked_edit(&state.session.doc, |candidate| {
+                session::restore_by_path(candidate, &effective_tree, &merged);
+                Ok::<_, WriteError>(())
+            }) {
+                drop(state);
+                if let Some(lease) = target_lease {
+                    let _ = lease.finish().await;
+                }
+                return Err(error);
+            }
             // The membership merge may retain a peer deletion of the target's
             // old main path, so derive the format from the actual CRDT main
             // path after restore rather than from a possibly discarded tree
@@ -2016,7 +2025,10 @@ impl Room {
         {
             let _assets_writer = self.assets_write.lock().await;
             let mut state = self.state.lock().await;
-            session::restore(&state.session.doc, tree, bodies);
+            self.checked_edit(&state.session.doc, |candidate| {
+                session::restore(candidate, tree, bodies);
+                Ok::<_, WriteError>(())
+            })?;
             // Asset uploads are deliberately allowed to overlap the storage
             // portion of a publication so an independent upload cannot block
             // on a paused object write. Keep every digest currently held in
@@ -2050,7 +2062,10 @@ impl Room {
         if self.read_only() {
             return Err(self.fenced());
         }
-        session::put_text(&state.session.doc, path, body);
+        self.checked_edit(&state.session.doc, |candidate| {
+            session::put_text(candidate, path, body);
+            Ok::<_, WriteError>(())
+        })?;
         state.session.mark_dirty(now_unix());
         state.session.generation += 1;
         state.session.updated_at = now_unix();

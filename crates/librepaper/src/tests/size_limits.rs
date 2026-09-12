@@ -746,3 +746,153 @@ async fn boundary_source_survives_a_restart(config: Configuration, slug: &str, c
     let restarted = room_fixture::reopen(&fixture).await;
     assert_eq!(restarted.get(slug).await.source().await, body);
 }
+
+/// Internal edits used to bypass admission, leaving a dirty room fenced at
+/// its next save. Refusal must preserve both the CRDT and earlier unsaved work.
+#[tokio::test]
+async fn internal_encoded_size_refusal_preserves_editability_and_pending_work() {
+    use crate::document::session;
+    use crate::room::WriteError;
+
+    let mut config = Configuration {
+        max_document: 1024,
+        ..Configuration::default()
+    };
+    config.persistence.max_encoded_snapshot_bytes = 1024;
+    let fixture = room_fixture::open(config).await;
+    let room = room_fixture::publish(&fixture, "internal-limit", "start\n").await;
+    room.set_source("pending\n", "markdown").await.unwrap();
+    let (before, generation) = {
+        let state = room.state.lock().await;
+        assert!(state.session.dirty);
+        (
+            session::encode_state(&state.session.doc),
+            state.session.generation,
+        )
+    };
+    let error = room
+        .add_text("chapter.md", &"x".repeat(950))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, WriteError::Size(SizeRefusal::Encoded { .. })),
+        "{error}"
+    );
+    {
+        let state = room.state.lock().await;
+        assert_eq!(session::encode_state(&state.session.doc), before);
+        assert_eq!(state.session.generation, generation);
+        assert!(state.session.dirty);
+    }
+    assert!(!room.read_only());
+    assert_eq!(room.source().await, "pending\n");
+    room.set_source("saved after refusal\n", "markdown")
+        .await
+        .unwrap();
+    room.persist().await.expect("the room remains saveable");
+    fixture
+        .blobs
+        .delete(&[crate::storage::blob::room_lock_key("internal-limit")])
+        .await
+        .unwrap();
+    let restarted = room_fixture::reopen(&fixture).await;
+    let reopened = restarted.get("internal-limit").await;
+    assert!(!reopened.read_only());
+    assert_eq!(reopened.source().await, "saved after refusal\n");
+}
+
+#[tokio::test]
+async fn asset_name_encoded_size_refusal_leaves_the_room_saveable() {
+    use crate::document::session;
+    use crate::room::WriteError;
+
+    let mut config = Configuration {
+        max_document: 1024,
+        ..Configuration::default()
+    };
+    config.persistence.max_encoded_snapshot_bytes = 1024;
+    let fixture = room_fixture::open(config).await;
+    let room = room_fixture::publish(&fixture, "asset-name-limit", "start\n").await;
+    let mut refused = false;
+    for n in 0..20 {
+        let before = room.open_state(None).await.0;
+        match room
+            .name_asset(&format!("figure-{n}.png"), &format!("{n:064x}"))
+            .await
+        {
+            Ok(()) => {}
+            Err(error) => {
+                assert!(
+                    matches!(error, WriteError::Size(SizeRefusal::Encoded { .. })),
+                    "{error}"
+                );
+                assert_eq!(room.open_state(None).await.0, before);
+                refused = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        refused,
+        "asset metadata must eventually reach the encoded ceiling"
+    );
+    assert!(!room.read_only());
+    room.persist().await.unwrap();
+    assert!(!room.state.lock().await.session.dirty);
+    assert!(session::encode_state(&room.state.lock().await.session.doc).len() <= 1024);
+}
+
+#[tokio::test]
+async fn path_repair_cannot_push_an_admitted_update_past_the_encoded_ceiling() {
+    use crate::document::session;
+    use crate::room::{Applied, WriteError};
+    use yrs::{Map, Transact};
+
+    let mut config = Configuration {
+        max_document: 1024,
+        ..Configuration::default()
+    };
+    config.persistence.max_encoded_snapshot_bytes = 1024;
+    let fixture = room_fixture::open(config).await;
+    let room = room_fixture::publish(&fixture, "repair-limit", "start\n").await;
+    let before = room.open_state(None).await.0;
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+    room.attach(1, sender, true).await;
+    let mut chosen = None;
+    for padding in 0..1024 {
+        let peer = session::new_doc();
+        session::apply_update(&peer, &before).unwrap();
+        let vector = session::encode_vector(&peer);
+        session::put_text(&peer, "x", "a");
+        peer.get_or_insert_map(session::META).insert(
+            &mut peer.transact_mut(),
+            "padding",
+            "x".repeat(padding),
+        );
+        let update = session::encode_diff(&peer, &vector).unwrap();
+        let candidate = session::edit_candidate(&room.state.lock().await.session.doc);
+        session::apply_update(&candidate, &before).unwrap();
+        session::apply_update(&candidate, &update).unwrap();
+        let original_size = session::encode_state(&candidate).len();
+        session::repair(&candidate, &fixture.config.paths());
+        if original_size <= 1024 && session::encode_state(&candidate).len() > 1024 {
+            chosen = Some(update);
+            break;
+        }
+    }
+    let update = chosen.expect("a path correction can grow a near-limit snapshot");
+    match room.receive_update(1, &update, 1, "alice").await {
+        Applied::Refuse(WriteError::Document(crate::room::error::DocumentLimit::Encoded)) => {}
+        Applied::Refuse(error) => panic!("unexpected refusal: {error}"),
+        Applied::Ignored => panic!("update was ignored"),
+        Applied::Relay => panic!("oversized repaired update was accepted"),
+    }
+    assert_eq!(room.open_state(None).await.0, before);
+    assert!(!room.read_only());
+    assert!(
+        receiver.try_recv().is_err(),
+        "a refused correction must not be relayed"
+    );
+    room.set_source("still editable", "markdown").await.unwrap();
+    room.persist().await.unwrap();
+}

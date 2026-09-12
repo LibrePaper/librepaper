@@ -761,7 +761,20 @@ impl Server {
             tree.main = main_path.clone();
 
             let before = crate::document::session::encode_vector(&state.session.doc);
-            crate::document::session::restore(&state.session.doc, &tree, &bodies);
+            if let Err(error) = room.checked_edit(&state.session.doc, |candidate| {
+                crate::document::session::restore(candidate, &tree, &bodies);
+                Ok::<_, crate::room::WriteError>(())
+            }) {
+                drop(state);
+                let _ = self
+                    .store
+                    .abort_publication(&existing.slug, &error.to_string())
+                    .await;
+                return Err(write_json(
+                    error.status(),
+                    &json!({"error": error.client_message()}),
+                ));
+            }
             if !parsed.source_format.is_empty() {
                 state.session.format = parsed.source_format.clone();
             }

@@ -1278,6 +1278,51 @@ impl RoomSet {
 }
 
 impl Room {
+    /// Apply a server edit only when its complete CRDT state can be saved.
+    /// Callers hold room state throughout this synchronous operation. Reusing
+    /// the candidate's update (rather than running the edit twice) preserves
+    /// generated file IDs and makes the measured change the committed change.
+    pub(crate) fn checked_edit<T, E>(
+        &self,
+        doc: &yrs::Doc,
+        edit: impl FnOnce(&yrs::Doc) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<WriteError>,
+    {
+        let before = session::encode_state(doc);
+        let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+        let staging = before
+            .len()
+            .saturating_add(self.config.max_document)
+            .saturating_add(4096)
+            .min(ceiling);
+        let _permit = self
+            .journal
+            .get()
+            .map(|journal| {
+                journal
+                    .memory()
+                    .try_acquire(crate::config::PersistenceLimits::staging_cost(staging))
+                    .map_err(|_| E::from(WriteError::ServerBusy))
+            })
+            .transpose()?;
+        let candidate = session::edit_candidate(doc);
+        session::apply_update(&candidate, &before)
+            .map_err(|error| E::from(WriteError::Storage(error)))?;
+        let value = edit(&candidate)?;
+        let bytes = session::encode_state(&candidate).len();
+        if bytes > ceiling {
+            return Err(E::from(WriteError::Size(
+                crate::config::SizeRefusal::Encoded { bytes, ceiling },
+            )));
+        }
+        let update = session::encode_diff(&candidate, &session::encode_vector(doc))
+            .map_err(|error| E::from(WriteError::Storage(error)))?;
+        session::apply_update(doc, &update).map_err(|error| E::from(WriteError::Storage(error)))?;
+        Ok(value)
+    }
+
     /// Immutable storage identity shared by catalog and rendered-publication
     /// operations. The slug is only a public handle and is not sufficient
     /// for publication object serialization.
@@ -1405,21 +1450,17 @@ impl Room {
             } else {
                 None
             };
-            if let Some((expected, replacement)) = inverse {
-                if let Err(error) =
-                    revisions::guarded_inverse(&state.session.doc, record, &expected, &replacement)
-                {
-                    record.status = old_status;
-                    record.history.pop();
-                    return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id});
+            if let Err(error) = self.checked_edit(&state.session.doc, |candidate| {
+                if let Some((expected, replacement)) = inverse {
+                    revisions::guarded_inverse(candidate, record, &expected, &replacement)
+                        .map_err(WriteError::Invalid)?;
                 }
-            }
-            let map = revisions::revision_map(&state.session.doc);
-            {
-                let mut txn = state.session.doc.transact_mut();
-                if revisions::put(&mut txn, &map, record).is_err() {
-                    return json!({"type":"error","message":"could not encode revision","revision_id":revision_id,"request_id":request_id});
-                }
+                let map = revisions::revision_map(candidate);
+                let mut txn = candidate.transact_mut();
+                revisions::put(&mut txn, &map, record).map_err(WriteError::Invalid)?;
+                Ok::<_, WriteError>(())
+            }) {
+                return json!({"type":"error","message":error.client_message(),"revision_id":revision_id,"request_id":request_id});
             }
             state.session.mark_dirty(crate::util::now_unix());
             state.session.generation += 1;
@@ -2255,7 +2296,7 @@ impl Room {
     pub async fn broadcast_except(&self, skip: Option<u64>, payload: &Value) {
         let message = payload.to_string();
         let mut state = self.state.lock().await;
-        send_to_all(&mut state, skip, &message);
+        send_to_all(&mut state, skip, Outgoing::shared_text(message));
     }
 
     /// Relays source synchronization frames only to editor peers. Reader and
@@ -2264,7 +2305,7 @@ impl Room {
     pub async fn broadcast_editors_except(&self, skip: Option<u64>, payload: &Value) {
         let message = payload.to_string();
         let mut state = self.state.lock().await;
-        send_to_editors(&mut state, skip, &message);
+        send_to_editors(&mut state, skip, Outgoing::shared_text(message));
     }
 
     /// Counts comment actions per caller per clock hour. A live link is the
@@ -2349,43 +2390,10 @@ impl Room {
         } else {
             state.session.format.clone()
         };
-        // A publish onto a room that already holds a long history can carry
-        // the snapshot past the encoded ceiling even though the source itself
-        // is inside `max_document`. Rehearsed on a scratch copy first, so a
-        // refusal leaves the live document exactly as it was rather than
-        // wedging the room at its next persist.
-        let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-        let known = match state.session.encoded_bound {
-            Some(bound) => bound,
-            None => {
-                let exact = session::encode_state(&state.session.doc).len();
-                state.session.encoded_bound = Some(exact);
-                exact
-            }
-        };
-        // `replace_text` writes the difference, so it cannot add more than
-        // the new source plus its framing. Only when that bound cannot decide
-        // is the scratch copy worth its allocation.
-        if known.saturating_add(source.len()).saturating_add(1024) > ceiling {
-            let scratch = session::new_doc();
-            if session::apply_update(&scratch, &session::encode_state(&state.session.doc)).is_ok() {
-                session::replace_text(&scratch, source, &main_path_for(named, &implied));
-                let candidate = session::encode_state(&scratch).len();
-                if candidate > ceiling {
-                    let refusal = crate::config::SizeRefusal::Encoded {
-                        bytes: candidate,
-                        ceiling,
-                    };
-                    eprintln!(
-                        "warning: refusing to write {}: {}",
-                        self.slug,
-                        crate::config::WriteRefusal::Permanent(refusal)
-                    );
-                    return Err(WriteError::Size(refusal));
-                }
-            }
-        }
-        session::replace_text(&state.session.doc, source, &main_path_for(named, &implied));
+        self.checked_edit(&state.session.doc, |candidate| {
+            session::replace_text(candidate, source, &main_path_for(named, &implied));
+            Ok::<_, WriteError>(())
+        })?;
         if !format.is_empty() {
             state.session.format = format.to_string();
         } else if !named.is_empty() {
@@ -2509,13 +2517,14 @@ impl Room {
             // rewrite status/history or remove a record. Rehearse the exact
             // update on a scratch document before admission so a rejected
             // metadata mutation never reaches the live document or peers.
-            if !revisions::client_update_safe_after_as(
+            let revision_base_len = match revisions::client_update_safe_after_as_with_len(
                 &state.session.doc,
                 update,
                 Some(by.display()),
             ) {
-                return Applied::Ignored;
-            }
+                Some(len) => len,
+                None => return Applied::Ignored,
+            };
             let decoded = match session::admit_decoded_update(
                 &state.session.doc,
                 decoded,
@@ -2540,10 +2549,10 @@ impl Room {
             // is not `Send`, so it cannot be held across that await: the socket
             // task's future has to stay spawnable. The parse is therefore dropped
             // here and repeated once the bytes are reserved. Repeating it is
-            // cheap beside the full document encode this same path already does
-            // to size the reservation, and it is the alternative to reserving
-            // before the size and file ceilings have decided -- which would
-            // charge, however briefly, for updates this room refuses.
+            // cheap beside the validation work this path already does, and it
+            // is the alternative to reserving before the size and file ceilings
+            // have decided -- which would charge, however briefly, for updates
+            // this room refuses.
             drop(decoded);
             // `S` bounds what a person can see; `E` bounds what persistence has
             // to write, and the two move independently -- a document whose text
@@ -2557,9 +2566,8 @@ impl Room {
                 let known = match state.session.encoded_bound {
                     Some(bound) => bound,
                     None => {
-                        let exact = session::encode_state(&state.session.doc).len();
-                        state.session.encoded_bound = Some(exact);
-                        exact
+                        state.session.encoded_bound = Some(revision_base_len);
+                        revision_base_len
                     }
                 };
                 let bound = known.saturating_add(update.len());
@@ -2615,9 +2623,11 @@ impl Room {
                 break (None, admitted_bound);
             };
             let generation = state.session.generation;
-            let bound = session::encode_state(&state.session.doc)
-                .len()
-                .saturating_add(update.len());
+            // `client_update_safe_after_as` already encoded this exact live
+            // state to build its validation copy. Reuse its length while
+            // retaining the historical conservative `state + update` quota
+            // reservation bound.
+            let bound = revision_base_len.saturating_add(update.len());
             let budget = self.snapshot_budget(bound);
             drop(state);
             let reservation = match reserve_pending_edit(
@@ -2678,40 +2688,42 @@ impl Room {
         // main-file pointer can be told from a document that already opened
         // with this main file.
         let main_before = session::main_path(&state.session.doc);
-        let applied = session::decode_update(update)
-            .and_then(|decoded| session::apply_decoded_update(&state.session.doc, decoded));
-        if applied.is_err() {
-            // Give the bytes back without room state: a malformed update must
-            // not make every reader of this document wait on a catalogue
-            // rollback it has nothing to do with.
-            drop(state);
-            if let Some(pending_edit) = pending_edit {
-                pending_edit.rollback().await;
+        // Repair may add paths or main-file metadata. Admit the repaired
+        // state too, and apply its exact update, so a correction cannot push
+        // an otherwise admissible browser edit over the persistence ceiling.
+        let applied = self.checked_edit(&state.session.doc, |candidate| {
+            session::apply_update(candidate, update).map_err(WriteError::Invalid)?;
+            let before = session::encode_vector(candidate);
+            let repaired = session::repair(candidate, &self.config.paths());
+            if repaired.is_empty() {
+                Ok(None)
+            } else {
+                session::encode_diff(candidate, &before)
+                    .map(Some)
+                    .map_err(WriteError::Invalid)
             }
-            return Applied::Ignored;
-        }
-        // Taken after the peer's update rather than before it, so that what is
-        // relayed below is the correction alone and not the peer's own work
-        // sent back to it a second time.
-        let before = session::encode_vector(&state.session.doc);
-        // Every key in the shared document is a string an editor can set, so
-        // what one wrote is checked before anybody else is shown it. A fault
-        // here is put right rather than refused: bytes are the bill and a
-        // socket that spends them is closed, but a path the rules refuse is a
-        // mistake a person can see, and closing their socket over it would
-        // lose the rest of what they typed. What the repair changed is relayed
-        // as the server's own update, after the peer's, so every browser --
-        // the one that wrote the bad path included -- ends at the same
-        // document.
-        let put_right = session::repair(&state.session.doc, &self.config.paths());
-        let mut repaired_bytes = 0usize;
-        if !put_right.is_empty() {
-            if let Ok(correction) = session::encode_diff(&state.session.doc, &before) {
-                repaired_bytes = correction.len();
-                let payload =
-                    json!({"type": "y-update", "update": encode_update(&correction)}).to_string();
-                send_to_editors(&mut state, None, &payload);
+        });
+        let correction = match applied {
+            Ok(correction) => correction,
+            Err(error) => {
+                drop(state);
+                if let Some(pending_edit) = pending_edit {
+                    pending_edit.rollback().await;
+                }
+                return match error {
+                    WriteError::Invalid(_) => Applied::Ignored,
+                    WriteError::Size(_) => Applied::Refuse(WriteError::Document(
+                        crate::room::error::DocumentLimit::Encoded,
+                    )),
+                    error => Applied::Refuse(error),
+                };
             }
+        };
+        let repaired_bytes = correction.as_ref().map_or(0, Vec::len);
+        if let Some(correction) = correction {
+            let payload =
+                json!({"type": "y-update", "update": encode_update(&correction)}).to_string();
+            send_to_editors(&mut state, None, Outgoing::shared_text(payload));
         }
         // Counted only once the update is one this document actually took. A
         // refused update must not be acknowledged by the next write, and it
@@ -3120,17 +3132,13 @@ pub fn decode_update(text: &str) -> Option<Vec<u8>> {
 /// Sends to every socket but one, dropping any that has fallen too far behind
 /// to take another frame. A dropped socket is not a lost edit: the browser
 /// reconnects and asks for what it is missing by state vector.
-fn send_to_all(state: &mut RoomState, skip: Option<u64>, message: &str) {
+fn send_to_all(state: &mut RoomState, skip: Option<u64>, message: Outgoing) {
     let mut behind = Vec::new();
     for (id, peer) in &state.sockets {
         if Some(*id) == skip {
             continue;
         }
-        if peer
-            .tx
-            .try_send(Outgoing::Text(message.to_string()))
-            .is_err()
-        {
+        if peer.tx.try_send(message.clone()).is_err() {
             behind.push(*id);
         }
     }
@@ -3139,17 +3147,13 @@ fn send_to_all(state: &mut RoomState, skip: Option<u64>, message: &str) {
     }
 }
 
-pub(super) fn send_to_editors(state: &mut RoomState, skip: Option<u64>, message: &str) {
+pub(super) fn send_to_editors(state: &mut RoomState, skip: Option<u64>, message: Outgoing) {
     let mut behind = Vec::new();
     for (id, peer) in &state.sockets {
         if Some(*id) == skip || !peer.may_edit {
             continue;
         }
-        if peer
-            .tx
-            .try_send(Outgoing::Text(message.to_string()))
-            .is_err()
-        {
+        if peer.tx.try_send(message.clone()).is_err() {
             behind.push(*id);
         }
     }
