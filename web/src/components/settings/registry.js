@@ -11,13 +11,14 @@
 // edit it. `terms` are the words somebody might type when looking for a row
 // and not finding its title.
 const everyone = () => true;
+const editor = ({ mayEdit }) => mayEdit;
 const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
 const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
 const local = ({ format, mayEdit }) => (format === "latex" || format === "quarto") && mayEdit;
 
 export const CATEGORIES = [
   {
-    id: "editor", says: "Editor", offered: everyone,
+    id: "editor", says: "Editor", offered: editor,
     entries: [{ id: "editor-keys", says: "Keys", terms: "vim emacs keymap keyboard bindings modal source standard" }],
   },
   {

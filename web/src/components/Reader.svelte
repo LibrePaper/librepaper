@@ -2664,7 +2664,7 @@
   }
 
   function chooseToolCommand(value) {
-    if (value === "settings") return openSettings();
+    if (value === "settings") return openSettings(mayEdit ? "editor" : "dictation");
     if (value === "compile") return compileNow();
   }
 
@@ -3591,7 +3591,7 @@
 {/snippet}
 
 {#snippet toolItems()}
-  {#if sourceFormat === "latex" && !viewing && compilesHere}
+  {#if mayEdit && sourceFormat === "latex" && !viewing && compilesHere}
     <Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>
   {/if}
   <Menu.Item value="settings" class="menuitem">Settings…</Menu.Item>
@@ -3647,7 +3647,7 @@
         </Menu>
       </div>
     {/if}
-    {#if mayEdit}
+    {#if mayEdit || mayChat}
       <div class="desktop-workspace-menu">
         <Menu onSelect={(chosen) => chooseToolCommand(chosen.value)}>
           <Menu.Trigger class="menubar-item">Tools</Menu.Trigger>
@@ -3662,7 +3662,7 @@
           <ExplorerMenu>
             {@render fileItems()}<hr class="hr my-1" />
             {#if editing}{@render viewItems()}<hr class="hr my-1" />{/if}
-            {#if mayEdit}{@render toolItems()}{/if}
+            {#if mayEdit || mayChat}{@render toolItems()}{/if}
           </ExplorerMenu>
         </Menu>
       </div>

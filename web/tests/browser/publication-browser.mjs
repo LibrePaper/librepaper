@@ -94,6 +94,30 @@ try {
   assert.equal(await tab.evaluate("window.roomSent.some(message=>message.type==='y-open')"),false,"commenter does not open source state");
   assert.ok(shellRequests.every(path=>!/\/(?:source|snapshot|state|history)$/.test(path)), "restricted requests: "+shellRequests);
 
+  // Commenters can configure dictation from both menu layouts without
+  // gaining editor settings. Changing a model persists on this browser.
+  let chosenModel;
+  for (const width of [1280, 390]) {
+    await tab.resize(width,900);await flush();
+    const menu = width === 1280 ? "Tools" : "Menu";
+    await tab.evaluate("[...document.querySelectorAll('.menubar-item')].find(button=>button.textContent.trim()==="+JSON.stringify(menu)+").click()");
+    await until("settings menu item",()=>tab.evaluate("[...document.querySelectorAll('[role=menuitem]')].some(item=>item.checkVisibility()&&item.textContent.trim()==='Settings…')"),3000);
+    assert.equal(await tab.evaluate("[...document.querySelectorAll('[role=menuitem]')].some(item=>item.textContent.includes('Compile now'))"),false);
+    await tab.evaluate("[...document.querySelectorAll('[role=menuitem]')].find(item=>item.checkVisibility()&&item.textContent.trim()==='Settings…').dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerType:'mouse'}))");await flush();
+    await tab.evaluate("[...document.querySelectorAll('[role=menuitem]')].find(item=>item.checkVisibility()&&item.textContent.trim()==='Settings…').click()");
+    await until("dictation settings",()=>tab.evaluate("Boolean(document.querySelector('[role=dialog][data-state=open] select[aria-label=\"Dictation model\"]'))"),3000);
+    assert.deepEqual(await tab.evaluate("[...document.querySelectorAll('.settings-nav-item')].map(item=>item.textContent.trim())"),["Dictation"]);
+    if (chosenModel) {
+      assert.equal(await tab.evaluate("document.querySelector('select[aria-label=\"Dictation model\"]').value"),chosenModel);
+    }
+    chosenModel=await tab.evaluate("(()=>{const select=document.querySelector('select[aria-label=\"Dictation model\"]');select.value=[...select.options].find(option=>option.value!==select.value).value;select.dispatchEvent(new Event('change',{bubbles:true}));return select.value})()");
+    await flush();
+    assert.equal(await tab.evaluate("localStorage.getItem('librepaper-dictation-model')"),chosenModel);
+    await tab.evaluate("document.querySelector('[role=dialog][data-state=open] button[aria-label=Close]').click()");
+    await until("settings closed",()=>tab.evaluate("!document.querySelector('[role=dialog][data-state=open]')"),3000);
+  }
+  await tab.resize(1280,900);await flush();
+
   await select();await until("selection bar",()=>tab.evaluate("Boolean(document.querySelector('#selectionbar'))"),3000);
   await tab.evaluate("document.querySelector('#selectionbar button').click()");
   await until("comment form",()=>tab.evaluate("Boolean(document.querySelector('#commentForm textarea'))"),3000);
