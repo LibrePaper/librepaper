@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest;
 use tokio::sync::{Mutex, RwLock};
+use yrs::Transact;
 
 use crate::config::{Configuration, CHECKPOINT_DEFER_SECONDS};
 use crate::document::history::{self, Checkpoint, Manifest};
@@ -42,6 +43,7 @@ mod figures;
 pub(crate) mod outgoing;
 mod resident;
 mod retention;
+pub(crate) mod revisions;
 mod suggestions;
 pub(crate) mod text;
 
@@ -138,6 +140,10 @@ pub struct Message {
     /// value so suggestion acceptance can use the existing stale path.
     #[serde(default)]
     pub revision: String,
+    #[serde(default)]
+    pub revision_id: String,
+    #[serde(default)]
+    pub action: String,
 }
 
 /// Bounded on purpose. A socket that cannot keep up is disconnected rather
@@ -1268,6 +1274,89 @@ impl RoomSet {
 }
 
 impl Room {
+    /// Decides a live tracked revision. The decision is serialized with all
+    /// publication writes and persisted before it is announced. Text rollback
+    /// is guarded by the proposed content: if concurrent work changed the
+    /// affected span, the operation remains pending and reports a conflict.
+    pub async fn decide_revision(
+        &self,
+        revision_id: &str,
+        action: &str,
+        actor: &str,
+        is_owner: bool,
+        request_id: &str,
+    ) -> Value {
+        let _publication = self.publication_write.lock().await;
+        if self.read_only() {
+            return json!({"type":"error","message":"editing is not permitted","revision_id":revision_id,"request_id":request_id});
+        }
+        if !is_owner && actor.is_empty() {
+            return json!({"type":"error","message":"revision review is not permitted","revision_id":revision_id,"request_id":request_id});
+        }
+        let before_vector;
+        let revision;
+        {
+            let mut state = self.state.lock().await;
+            before_vector = session::encode_vector(&state.session.doc);
+            let mut records = match revisions::records(&state.session.doc) {
+                Ok(records) => records,
+                Err(error) => return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id}),
+            };
+            let Some(record) = records.iter_mut().find(|record| record.id == revision_id) else {
+                return json!({"type":"error","message":"unknown revision","revision_id":revision_id,"request_id":request_id});
+            };
+            if !is_owner && record.author != actor {
+                return json!({"type":"error","message":"revision review is not permitted","revision_id":revision_id,"request_id":request_id});
+            }
+            if action != "undo" && !record.pending() {
+                return json!({"type":"revision-decision","revision_id":revision_id,"status":record.status,"request_id":request_id,"noop":true});
+            }
+            let old_status = record.status.clone();
+            let at = crate::util::timestamp();
+            if let Err(error) = record.decision(action, actor, &at) {
+                return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id});
+            }
+            // Apply a guarded inverse at the CRDT anchors. This handles
+            // insertions, replacements, and deletions without searching for
+            // repeated text. Undoing an accepted revision only reopens its
+            // status; undoing a rejection reapplies the proposal.
+            let inverse = if action == "reject" && old_status == "pending" {
+                Some((record.after.clone(), record.before.clone()))
+            } else if action == "undo" {
+                let rejected = record.history.iter().rev().nth(1).and_then(|item| item.get("to")).and_then(Value::as_str) == Some("rejected");
+                rejected.then(|| (record.before.clone(), record.after.clone()))
+            } else {
+                None
+            };
+            if let Some((expected, replacement)) = inverse {
+                if let Err(error) = revisions::guarded_inverse(&state.session.doc, record, &expected, &replacement) {
+                    record.status = old_status;
+                    record.history.pop();
+                    return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id});
+                }
+            }
+            let map = revisions::revision_map(&state.session.doc);
+            {
+                let mut txn = state.session.doc.transact_mut();
+                if revisions::put(&mut txn, &map, record).is_err() {
+                    return json!({"type":"error","message":"could not encode revision","revision_id":revision_id,"request_id":request_id});
+                }
+            }
+            state.session.mark_dirty(crate::util::now_unix());
+            state.session.generation += 1;
+            state.session.updated_at = crate::util::now_unix();
+            revision = record.clone();
+        }
+        if let Err(error) = self.persist().await {
+            return json!({"type":"error","message":format!("could not save revision: {error}"),"revision_id":revision_id,"request_id":request_id});
+        }
+        let update = {
+            let state = self.state.lock().await;
+            session::encode_diff(&state.session.doc, &before_vector).unwrap_or_else(|_| session::encode_state(&state.session.doc))
+        };
+        self.broadcast(&json!({"type":"y-update","update":encode_update(&update)})).await;
+        json!({"type":"revision-decision","revision_id":revision_id,"revision":revision,"request_id":request_id,"durable":true})
+    }
     /// Reports the independently observable live-save and history-checkpoint
     /// boundaries without forcing either operation.  `dirty` is cleared only
     /// after the session snapshot has been accepted by storage; generation
@@ -2305,6 +2394,14 @@ impl Room {
                 Ok(decoded) => decoded,
                 Err(_) => return Applied::Ignored,
             };
+            // Revision decisions and history are server-owned. A browser may
+            // create pending capture records, but a raw Yjs update cannot
+            // rewrite status/history or remove a record. Rehearse the exact
+            // update on a scratch document before admission so a rejected
+            // metadata mutation never reaches the live document or peers.
+            if !revisions::client_update_safe_after(&state.session.doc, update) {
+                return Applied::Ignored;
+            }
             let decoded = match session::admit_decoded_update(
                 &state.session.doc,
                 decoded,

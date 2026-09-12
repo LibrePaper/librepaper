@@ -1598,7 +1598,12 @@ impl Room {
                     true,
                 )
             }
-            Command::Accept { .. } | Command::Reject { .. } => {
+            Command::Accept { .. }
+            | Command::Reject { .. } => {
+                fail("suggestion decisions use the decision handler")
+            }
+            Command::RevisionDecide { revision_id, action, .. } => {
+                let _ = (revision_id, action);
                 fail("suggestion decisions use the decision handler")
             }
         }

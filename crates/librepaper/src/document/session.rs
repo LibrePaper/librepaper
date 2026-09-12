@@ -59,6 +59,9 @@ pub const FILES: &str = "files";
 pub const PATHS: &str = "paths";
 pub const ASSETS: &str = "assets";
 pub const META: &str = "meta";
+/// Server-owned tracked-edit metadata. Values are JSON strings so browsers
+/// can use the same Y.Map without depending on a Rust-specific encoding.
+pub const REVISIONS: &str = "revisions";
 
 /// The key in `meta` that names the main file, by id.
 pub const MAIN: &str = "main";
@@ -75,6 +78,7 @@ pub fn new_doc() -> Doc {
     doc.get_or_insert_map(PATHS);
     doc.get_or_insert_map(ASSETS);
     doc.get_or_insert_map(META);
+    doc.get_or_insert_map(REVISIONS);
     doc
 }
 

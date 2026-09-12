@@ -825,12 +825,24 @@ panel in the browser. Restore requires editor access; it records the current
 version before applying the earlier directory, so both versions remain
 available subject to the deployment's history quota.
 
-### Suggestions
+### Track changes
 
-Suggestions are made by selecting a passage in the browser and choosing
-**Suggest**. Editors can then refine, accept, or reject them in the comment
-thread; stale suggestions are reported there without silently changing the
-document.
+Open the **Changes** sidebar and enable **Track changes** at the top. Edit the
+source normally: insertions, deletions, and replacements become pending
+revisions. The setting applies to your edits in this document and stays on
+when you close the sidebar. Turning it off leaves pending revisions available
+for review.
+
+Use the Changes pane to inspect revisions, filter the queue, and accept or
+reject individual or selected changes. Accept keeps the proposed text;
+reject restores the prior text when it can do so safely. Changes that depend
+on other revisions require attention before an independent decision.
+**Show markup** controls the display without disabling tracking. Downloads
+include the current proposed text.
+
+Existing suggestions and proposals from assistants remain in the Changes
+pane as legacy proposals. These apply their replacement on acceptance, and
+retain their discussions. Checkpoint comparisons remain available in History.
 
 ### Export
 

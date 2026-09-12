@@ -27,6 +27,13 @@
     visitedPanels = [],
     unconfirmed = [],
     mayEdit = false,
+    trackingState = { revisions: [], enabled: false, showMarkup: true },
+    selectedRevision = "",
+    ontracking,
+    onmarkup,
+    onrevisionreveal,
+    onrevisiondecide,
+    onrevisionundo,
     files = [],
     folders = [],
     openFile = "",
@@ -158,6 +165,12 @@
               </span>
             {/if}
           </div>
+        {:else if tab.id === "changes"}
+          <div class="activity-tracking">
+            <IconButton icon={iconFor(tab.id)} label={trackingState.enabled ? "Changes — tracking on" : tab.says}
+              pressed={panel === tab.id} onclick={() => onselectpanel?.(tab.id)} />
+            {#if trackingState.enabled}<span class="tracking-indicator" aria-hidden="true"></span>{/if}
+          </div>
         {:else}
           <IconButton icon={iconFor(tab.id)} label={tab.says} pressed={panel === tab.id}
             onclick={() => onselectpanel?.(tab.id)} />
@@ -197,6 +210,9 @@
               ondeletemany={ondeletemany} onreply={onreply} />
           {:else if tab.id === "changes"}
             <Changes {comments} {figureAt} {identity} commentingAs={commentingAs} {canModerate} {tool}
+              revisions={trackingState.revisions} tracking={trackingState.enabled} showMarkup={trackingState.showMarkup}
+              canTrack={mayEdit && !viewing} {selectedRevision} {ontracking} {onmarkup}
+              onrevisionreveal={onrevisionreveal} onrevisiondecide={onrevisiondecide} onrevisionundo={onrevisionundo}
               {went} {replacements} canComment={mayChat} ontool={ontool} onreveal={onreveal}
               {selected} onresolve={onresolve} ondelete={onaskdelete}
               ondeletemany={ondeletemany} onreply={onreply}
@@ -250,6 +266,8 @@
   .activity-sections :global(.icon-control[aria-pressed="true"]) { background: var(--color-primary-100-900); color: var(--color-primary-700-300); }
   .activity-sections :global(.icon-control[aria-pressed="true"]::before) { content: ""; position: absolute; left: calc((2rem - var(--librepaper-activity)) / 2 + 1px); top: .375rem; bottom: .375rem; width: 3px; border-radius: 0 2px 2px 0; background: var(--color-primary-500); }
   .activity-diagnostics { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .activity-tracking { position: relative; }
+  .tracking-indicator { position: absolute; right: 1px; top: 1px; width: 7px; height: 7px; border-radius: 50%; background: var(--color-primary-500); pointer-events: none; }
   .activity-counts { display: flex; gap: 4px; font-size: .625rem; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
   .activity-count.errors { color: var(--color-error-500); }
   .activity-count.warnings { color: var(--color-warning-500); }

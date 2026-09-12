@@ -102,7 +102,6 @@
     { id: "commenting", icon: "comment", label: "Comment", title: "Comment on the selected passage" },
     { id: "highlighting", icon: "highlight", label: "Highlight", title: "Highlight, with no comment" },
     { id: "point", icon: "comment", label: "Point comment", title: "Comment at a point in the document" },
-    { id: "editing", icon: "pencil", label: "Suggest", title: "Suggest a replacement for the selected passage" },
     { id: "region", icon: "box", label: "Box", title: "Drag a box on a figure" },
   ];
   const TOOL_VIEWS = {

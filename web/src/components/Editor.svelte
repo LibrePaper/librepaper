@@ -99,8 +99,8 @@
   // the other, and each of them keeps their own caret, selection and undo
   // history. Everyone else's caret is drawn where they are, labelled with
   // their name.
-  import { EditorState, Transaction } from "@codemirror/state";
-  import { EditorView, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
+  import { EditorState, Transaction, StateField, StateEffect } from "@codemirror/state";
+  import { EditorView, lineNumbers, highlightActiveLine, drawSelection, Decoration, WidgetType } from "@codemirror/view";
   import { defaultKeymap, indentWithTab, selectAll } from "@codemirror/commands";
   import { autocompletion, completionKeymap, startCompletion } from "@codemirror/autocomplete";
   import { searchKeymap, highlightSelectionMatches, openSearchPanel } from "@codemirror/search";
@@ -113,7 +113,7 @@
     setDiagnostics as setLintDiagnostics,
     openLintPanel,
   } from "@codemirror/lint";
-  import { yCollab, yUndoManagerKeymap, ySyncFacet } from "y-codemirror.next";
+  import { yCollab, yUndoManagerKeymap, ySyncFacet, ySyncAnnotation } from "y-codemirror.next";
   import * as Y from "yjs";
 
   import { typstLanguage } from "../lib/typst-mode.js";
@@ -121,7 +121,41 @@
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext } from "../lib/bibliography.js";
   import { untrack } from "svelte";
 
-  let { session, format = "", file = "", keys = "default", editable = true, analyze = analyzeBibliography, onchange, oncaret, onfilechange, onbibliography, onsave, onquit } = $props();
+  let { session, format = "", file = "", keys = "default", editable = true, tracking = null, selectedRevision = null, analyze = analyzeBibliography, onchange, oncaret, onfilechange, onbibliography, onrevision, onsave, onquit } = $props();
+
+  const selectedRevisionEffect = StateEffect.define();
+  class DeletedRevisionWidget extends WidgetType {
+    constructor(record, selected) { super(); this.record = record; this.selected = selected; }
+    toDOM() {
+      const node = document.createElement("span");
+      node.className = `cm-revision-deletion${this.selected ? " cm-revision-selected" : ""}`;
+      node.dataset.revisionId = this.record.id;
+      node.textContent = this.record.before || "␡";
+      node.setAttribute("aria-label", `Deleted text: ${this.record.before || "empty"}`);
+      return node;
+    }
+    ignoreEvent() { return false; }
+  }
+  const revisionMarks = StateField.define({
+    create: () => Decoration.none,
+    update(value, transaction) {
+      for (const effect of transaction.effects) if (effect.is(selectedRevisionEffect)) {
+        const payload = effect.value || {};
+        const records = payload.showMarkup === false ? [] : (payload.records || []);
+        return Decoration.set(records.filter((record) => record.file_id === showing).flatMap((record) => {
+          const from = Math.max(0, Math.min(transaction.state.doc.length, record.position ?? record.start_offset ?? 0));
+          const to = Math.max(from, Math.min(transaction.state.doc.length, record.end_position ?? record.end_offset ?? from));
+          const selected = payload.selected === record.id;
+          const kind = record.kind === "delete" ? "cm-revision-deletion" : record.kind === "replace" ? "cm-revision-replacement" : "cm-revision-insertion";
+          if (record.kind === "delete") return [Decoration.widget({ widget: new DeletedRevisionWidget(record, selected), side: 0 }).range(from)];
+          const mark = Decoration.mark({ class: `${kind}${selected ? " cm-revision-selected" : ""}`, "data-revision-id": record.id }).range(from, Math.max(from + 1, to));
+          return [mark];
+        }));
+      }
+      return value.map(transaction.changes);
+    },
+    provide: (field) => EditorView.decorations.from(field),
+  });
 
   let parsedBibliography = $state(null);
   const insertTargets = new Map();
@@ -184,6 +218,7 @@
 
   let host = $state(null);
   let view = null;
+  let unsubscribeTracking = null;
 
   // One editor state per file, made the first time that file is opened and
   // kept afterwards. Switching files swaps the state rather than rebuilding
@@ -568,7 +603,10 @@
   function stateFor(id) {
     const text = session.textOf?.(id) || session.text;
     const path = session.paths?.get(id) || "";
-    const undoManager = undoManagers.get(text) || new Y.UndoManager(text);
+    const undoManager = undoManagers.get(text) || new Y.UndoManager(
+      tracking?.revisions ? [text, tracking.revisions] : text,
+      tracking?.undoOptions || {},
+    );
     undoManagers.set(text, undoManager);
     return EditorState.create({
       doc: text.toString(),
@@ -591,6 +629,17 @@
         // underline and the hover the lint extension draws.
         lintGutter(),
         EditorView.lineWrapping,
+        revisionMarks,
+        EditorView.domEventHandlers({
+          click(event, target) {
+            if (!tracking || !onrevision) return false;
+            const position = target.posAtCoords({ x: event.clientX, y: event.clientY });
+            if (position == null) return false;
+            const record = tracking.records?.().find((item) => item.file_id === showing && (item.position ?? item.start_offset ?? 0) <= position && (item.end_position ?? item.end_offset ?? 0) >= position);
+            if (record) { onrevision(record); return true; }
+            return false;
+          },
+        }),
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
@@ -652,6 +701,7 @@
   /// files does not flash.
   function show(id) {
     if (!view || !id || id === showing) return;
+    tracking?.breakGroup?.();
     if (showing) states.set(showing, view.state);
     if (!states.has(id)) states.set(id, stateFor(id));
     const state = states.get(id);
@@ -706,7 +756,27 @@
         if (first && !states.has(first)) states.set(first, stateFor(first));
         return { first, state: states.get(first) || stateFor(first) };
       });
-      view = new EditorView({ state: initial.state, parent: host });
+      view = new EditorView({
+        state: initial.state,
+        parent: host,
+        dispatchTransactions(transactions) {
+          const editableChanges = transactions.filter((transaction) => transaction.docChanged && !transaction.annotation(ySyncAnnotation));
+          const changes = editableChanges.flatMap((transaction) => {
+            const entries = [];
+            transaction.changes.iterChanges((from, to, _fromB, _toB, insert) => entries.push({ from, to, insert: insert.toString() }));
+            return entries;
+          });
+          const userEvent = editableChanges.map((transaction) => transaction.userEvent).find(Boolean) || "input";
+          const origin = initial.state.facet(ySyncFacet);
+          const apply = () => view.update(transactions);
+          if (tracking?.capture && changes.length) tracking.capture(showing, changes, apply, { userEvent, origin });
+          else apply();
+          if (transactions.some((transaction) => transaction.selectionSet && !transaction.docChanged)) tracking?.breakGroup?.();
+        },
+      });
+      unsubscribeTracking = tracking?.onChange?.(() => queueMicrotask(() => {
+        if (view) view.dispatch({ effects: selectedRevisionEffect.of({ selected: selectedRevision, records: tracking.snapshot?.().revisions || tracking.records?.() || [], showMarkup: tracking.snapshot?.().showMarkup !== false }) });
+      }));
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
       if (initial.first) session.inFile?.(initial.first);
@@ -719,6 +789,8 @@
         clearTimeout(bibliographyTimer);
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         if (view) viewCallbacks.delete(view);
+        unsubscribeTracking?.();
+        unsubscribeTracking = null;
         view?.destroy();
         insertTargets.clear();
         undoManagers.clear();
@@ -758,6 +830,11 @@
   $effect(() => {
     void keys;
     if (view) syncKeys(view);
+  });
+
+  $effect(() => {
+    const record = selectedRevision;
+    if (view) view.dispatch({ effects: selectedRevisionEffect.of({ selected: record, records: tracking?.records?.() || [] }) });
   });
 </script>
 

@@ -69,6 +69,11 @@ pub enum Command {
         temp_id: String,
         request_id: String,
     },
+    RevisionDecide {
+        revision_id: String,
+        action: String,
+        request_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,7 +147,8 @@ impl Command {
             | Self::Anchor { request_id, .. }
             | Self::Refine { request_id, .. }
             | Self::Accept { request_id, .. }
-            | Self::Reject { request_id, .. } => request_id,
+            | Self::Reject { request_id, .. }
+            | Self::RevisionDecide { request_id, .. } => request_id,
         }
     }
 
@@ -155,6 +161,7 @@ impl Command {
             | Self::Refine { comment_id, .. }
             | Self::Accept { comment_id, .. }
             | Self::Reject { comment_id, .. } => comment_id,
+            Self::RevisionDecide { .. } => "",
             Self::Comment { .. } => "",
         }
     }
@@ -169,6 +176,7 @@ impl Command {
             | Self::Refine { temp_id, .. }
             | Self::Accept { temp_id, .. }
             | Self::Reject { temp_id, .. } => temp_id,
+            Self::RevisionDecide { .. } => "",
         }
     }
 
@@ -349,6 +357,19 @@ impl Message {
                 Ok(Command::Reject {
                     comment_id: self.comment_id,
                     temp_id: self.temp_id,
+                    request_id: self.request_id,
+                })
+            }
+            "revision-decide" => {
+                if self.revision_id.trim().is_empty() {
+                    return missing("revision-decide", "revision_id");
+                }
+                if !matches!(self.action.as_str(), "accept" | "reject" | "undo") {
+                    return missing("revision-decide", "action");
+                }
+                Ok(Command::RevisionDecide {
+                    revision_id: self.revision_id,
+                    action: self.action,
                     request_id: self.request_id,
                 })
             }

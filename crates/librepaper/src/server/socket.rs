@@ -650,6 +650,21 @@ impl Server {
                         continue 'reader;
                     }
 
+                    if incoming.kind == "revision-decide" {
+                        let result = room
+                            .decide_revision(
+                                &incoming.revision_id,
+                                &incoming.action,
+                                &author,
+                                who.at_least(Role::Owner),
+                                &incoming.request_id,
+                            )
+                            .await;
+                        if send_outgoing(&tx, Outgoing::Text(result.to_string())).await.is_err() {
+                            break 'reader;
+                        }
+                        continue 'reader;
+                    }
                     let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
                         let by = who.attribution();
                         self.decide_suggestion(&room, &incoming, may_edit, &by, &who.id.id, &who.id.session_generation)

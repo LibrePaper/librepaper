@@ -77,6 +77,7 @@
   import DictationButton from "./DictationButton.svelte";
   import InsertMenu from "./InsertMenu.svelte";
   import ReaderSidebar from "./reader/ReaderSidebar.svelte";
+  import { createRevisionController } from "../lib/track-changes.js";
 
   const SLUG = location.pathname.split("/").pop();
 
@@ -868,6 +869,7 @@
   }
 
   function receive(event) {
+    if (tracking?.receive(event)) return;
     if (annotations.receive(event)) return;
     if (event.type === "chat") {
       if (!liveChat.some((message) => message.id === event.id)) {
@@ -1014,6 +1016,30 @@
   // collaboration module hands the same object back in its callbacks, which
   // are compared to this by identity. A deep proxy would never be equal to it.
   let session = $state.raw(null);
+  let tracking = $state.raw(null);
+  let trackingState = $state.raw({ revisions: [], enabled: false, showMarkup: true, session: "" });
+  let selectedRevision = $state("");
+  let stopTracking = null;
+  const pendingRevisionCount = $derived(trackingState.revisions.filter((item) => item.status === "pending").length);
+
+  function setTrackingEnabled(value) {
+    if (!mayEdit || viewing) return;
+    tracking?.setEnabled(value);
+  }
+
+  async function revealRevision(revision) {
+    selectedRevision = revision.id;
+    if (!mayEdit || viewing) return;
+    const location = tracking?.locate(revision);
+    if (!location || location.offset == null || !session?.textOf(location.file_id)) {
+      toastProblem("This change cannot be located in the current source. Its retained text is available in Changes.");
+      return;
+    }
+    await startEditing();
+    openTheFile({ id: location.file_id, kind: "text" });
+    await tick();
+    editor?.goToIn(location.file_id, location.offset);
+  }
   let editing = $state(false);
   // Which text the editor is bound to. Keying the component on this binds it
   // to the current main file when another file becomes main.
@@ -2976,6 +3002,8 @@
   }
 
   function startCollaboration(document_) {
+    stopTracking?.();
+    tracking?.dispose();
     collaboration?.close();
     collaboration = createReaderCollaboration({
       slug: SLUG,
@@ -2994,6 +3022,22 @@
       onState: (state_) => (persistence = state_),
       onSession: (active) => {
         session = active;
+        tracking = createRevisionController({
+          doc: active.doc,
+          author: identity || document_.commenting_as || "Anonymous",
+          documentId: `${SLUG}:${document_.created_at || ""}`,
+          mayEdit,
+          fileOf: (id) => active.paths.get(id) || "",
+          textOf: (id) => active.textOf(id),
+          send: (message) => {
+            if (!connected || !active.joined) throw new Error("Reconnect before reviewing changes.");
+            const sent = collaboration.sendLive(message);
+            if (!sent.ok) throw sent.error;
+          },
+        });
+        const refreshTracking = () => { trackingState = tracking.snapshot(); };
+        stopTracking = tracking.onChange(refreshTracking);
+        refreshTracking();
         handledFileTransactions = new WeakSet();
         refreshFiles();
         refreshPeers();
@@ -3138,6 +3182,8 @@
       framePreview.dispose();
       stopLatex();
       pendingChat?.dispose();
+      stopTracking?.();
+      tracking?.dispose();
       collaboration?.close();
     };
   });
@@ -3224,6 +3270,9 @@
     <Menu.Item value="download-html" class="menuitem" disabled={!downloads.html}>Download HTML</Menu.Item>
   {/if}
   <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
+  {#if pendingRevisionCount && !viewing}
+    <div class="menu-section-label">Downloads include {pendingRevisionCount} pending {pendingRevisionCount === 1 ? "change" : "changes"}.</div>
+  {/if}
   <hr class="hr my-1" />
   {#if canSeeSharing}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
   <Menu.Item value="history" class="menuitem">History</Menu.Item>
@@ -3412,6 +3461,10 @@
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact || (splitTight && layout === "split")}
       style="height: calc(100dvh - var(--librepaper-bar) - {workspaceBannerHeight}px); --librepaper-activity: {ACTIVITY_WIDTH}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <ReaderSidebar
+    {trackingState} {selectedRevision} ontracking={setTrackingEnabled}
+    onmarkup={(value) => tracking?.setShowMarkup(value)} onrevisionreveal={revealRevision}
+    onrevisiondecide={(id, action) => tracking.decide(id, action)}
+    onrevisionundo={(id) => tracking.undo(id)}
     {shown} {tabs} {panel} {diagnostics} {diagnosticBadge} {errorCount} {warningCount}
     {editing} layout={layout} arrangements={ARRANGEMENTS} {settled} {visitedPanels} {unconfirmed}
     {mayEdit} {files} {folders} {openFile} peersByFile={peersByFile} {rules}
@@ -3481,7 +3534,7 @@
         </div>
       {:else if Editor}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} editable={mayEdit && !viewing}
+          <Editor bind:this={editor} {session} {tracking} {selectedRevision} onrevision={(revision) => { selectedRevision = revision.id; void showPanel("changes"); }} format={editorFormat} file={openFile} {keys} editable={mayEdit && !viewing}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { openFile = id; outlineActiveFrom = null; shownFigure = null; }} />
         {/key}
