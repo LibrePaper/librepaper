@@ -23,8 +23,9 @@ impl Catalog {
             if agent_authorized_in_tx(tx, slug, request_id, execution_epoch, actor)? {
                 Ok(())
             } else {
-                Err(CatalogError::Conflict(
-                    "actor rights or session generation changed".into(),
+                Err(CatalogError::refused(
+                    super::CatalogRefusal::ActorRights,
+                    "actor rights or session generation changed",
                 ))
             }
         })
@@ -91,9 +92,7 @@ impl Catalog {
                 )
                 .map_err(CatalogError::from)?;
             if !agent_authorized_in_tx(tx, &slug, request_id, execution_epoch, actor)? {
-                return Err(CatalogError::Conflict(
-                    "actor rights or session generation changed".into(),
-                ));
+                return Err(CatalogError::refused(super::CatalogRefusal::ActorRights, "actor rights or session generation changed"));
             }
             if let Some((comment_id, expected_seq)) = acceptance {
                 let changed = tx

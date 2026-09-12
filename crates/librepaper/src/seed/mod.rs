@@ -189,8 +189,9 @@ pub async fn seed_with_backup(
         if manifest.schema_version != current_schema || manifest.head_revision != current_revision {
             die("seed backup is not an exact verified point for this deployment");
         }
-        let current_catalog_digest = crate::storage::backup::catalog_snapshot_digest(catalog_path)
-            .unwrap_or_else(|err| die(format!("could not verify current catalogue: {err}")));
+        let current_catalog_digest =
+            crate::storage::backup::catalog_snapshot_digest(&catalog, catalog_path)
+                .unwrap_or_else(|err| die(format!("could not verify current catalogue: {err}")));
         if manifest.catalog.digest != current_catalog_digest {
             die("seed backup is not fresh for the current catalogue state");
         }

@@ -359,13 +359,14 @@ impl From<CatalogError> for WriteError {
                 // admit the write now, not the write being too large.
                 CapacityRefusal::JournalQueue,
             ),
-            CatalogError::Conflict(ref why) => match error.refusal() {
+            CatalogError::Conflict(why) => Self::Conflict(why),
+            CatalogError::Refused(kind, why) => match kind {
                 CatalogRefusal::OwnerBytes => Self::Quota(QuotaKind::Owner),
                 CatalogRefusal::DeploymentBytes => Self::Quota(QuotaKind::Deployment),
                 CatalogRefusal::OwnerDocuments => Self::Quota(QuotaKind::Documents),
                 CatalogRefusal::UploadRate => Self::Quota(QuotaKind::UploadRate),
                 CatalogRefusal::ActorRights => Self::PermissionDenied,
-                CatalogRefusal::Other => Self::Conflict(why.clone()),
+                CatalogRefusal::Other => Self::Conflict(why),
             },
             CatalogError::Sql(err) => Self::Storage(err.to_string()),
         }
@@ -468,14 +469,16 @@ mod tests {
     #[test]
     fn catalogue_refusals_become_the_distinctions_callers_need() {
         assert!(matches!(
-            WriteError::from(CatalogError::Conflict(
-                "owner storage quota exceeded".into()
+            WriteError::from(CatalogError::refused(
+                CatalogRefusal::OwnerBytes,
+                "wording is irrelevant"
             )),
             WriteError::Quota(QuotaKind::Owner)
         ));
         assert!(matches!(
-            WriteError::from(CatalogError::Conflict(
-                "actor rights or session generation changed".into()
+            WriteError::from(CatalogError::refused(
+                CatalogRefusal::ActorRights,
+                "wording is irrelevant"
             )),
             WriteError::PermissionDenied
         ));

@@ -204,9 +204,7 @@ impl Catalog {
                     return Ok(());
                 };
                 if !Self::mutation_authorized_in_tx(tx, &checkpoint.slug, actor, "editor")? {
-                    return Err(CatalogError::Conflict(
-                        "actor edit rights or session generation changed".into(),
-                    ));
+                    return Err(CatalogError::refused(super::CatalogRefusal::ActorRights, "actor edit rights or session generation changed"));
                 }
             }
             let mut graph_changed = false;
@@ -828,8 +826,9 @@ impl Catalog {
         self.immediate(|tx| {
             let authorized = Self::mutation_authorized_in_tx(tx, slug, actor, "editor")?;
             if !authorized {
-                return Err(CatalogError::Conflict(
-                    "actor rights or session generation changed".into(),
+                return Err(CatalogError::refused(
+                    super::CatalogRefusal::ActorRights,
+                    "actor rights or session generation changed",
                 ));
             }
             let changed = tx

@@ -626,13 +626,15 @@ impl Catalog {
         // established counted/admission reservation remains authoritative;
         // do not turn an unknown measurement into a guessed rejection.
         if owner_known && owner_limit >= 0 && owner_bytes > owner_limit {
-            return Err(CatalogError::Conflict(
-                "owner storage quota exceeded by catalogue metadata".into(),
+            return Err(CatalogError::refused(
+                super::CatalogRefusal::OwnerBytes,
+                "owner storage quota exceeded by catalogue metadata",
             ));
         }
         if deployment_known && total_limit >= 0 && deployment_bytes > total_limit {
-            return Err(CatalogError::Conflict(
-                "deployment storage quota exceeded by catalogue metadata".into(),
+            return Err(CatalogError::refused(
+                super::CatalogRefusal::DeploymentBytes,
+                "deployment storage quota exceeded by catalogue metadata",
             ));
         }
         Ok(())

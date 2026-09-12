@@ -67,7 +67,7 @@ fn physical_admission_includes_measured_metadata_headroom() {
     };
     assert!(matches!(
         catalog.reserve_object_change(request),
-        Err(CatalogError::Conflict(message)) if message.contains("quota")
+        Err(CatalogError::Refused(super::CatalogRefusal::OwnerBytes, _))
     ));
 }
 
@@ -143,7 +143,7 @@ fn graph_metadata_cannot_cross_physical_quota_when_objects_are_reused() {
             usage.charged_bytes,
             usage.charged_bytes,
         ),
-        Err(CatalogError::Conflict(message)) if message.contains("quota")
+        Err(CatalogError::Refused(super::CatalogRefusal::OwnerBytes, _))
     ));
     assert!(catalog
         .checkpoint("doc", &checkpoint.sha)

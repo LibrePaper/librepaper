@@ -114,6 +114,9 @@ async fn require_agent_authority(
             crate::storage::catalog::CatalogExecError::Catalog(
                 crate::storage::catalog::CatalogError::Conflict(message),
             ) => AgentError::Conflict(message),
+            crate::storage::catalog::CatalogExecError::Catalog(
+                crate::storage::catalog::CatalogError::Refused(_, message),
+            ) => AgentError::Conflict(message),
             other => AgentError::Storage(other.to_string()),
         })
 }

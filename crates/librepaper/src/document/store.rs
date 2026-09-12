@@ -736,8 +736,11 @@ impl Store {
                 // this prospective write is a no-op while current usage fits.
                 if matches!(
                     &result,
-                    Err(crate::storage::catalog::CatalogError::Conflict(message))
-                        if message.contains("quota")
+                    Err(crate::storage::catalog::CatalogError::Refused(
+                        crate::storage::catalog::CatalogRefusal::OwnerBytes
+                            | crate::storage::catalog::CatalogRefusal::DeploymentBytes,
+                        _
+                    ))
                 ) {
                     let _ = catalog.schedule_hard_pressure_for_slug_for_growth_with_limits(
                         &slug,
@@ -752,24 +755,28 @@ impl Store {
             .await
             .map_err(crate::storage::catalog::CatalogError::from)
             .map_err(|error| match error {
-                crate::storage::catalog::CatalogError::Conflict(message)
-                    if message.contains("actor") =>
-                {
-                    PutError::Authorization {
-                        status: 403,
-                        message: "edit access changed",
-                    }
-                }
+                crate::storage::catalog::CatalogError::Refused(
+                    crate::storage::catalog::CatalogRefusal::ActorRights,
+                    _,
+                ) => PutError::Authorization {
+                    status: 403,
+                    message: "edit access changed",
+                },
                 crate::storage::catalog::CatalogError::NotFound => PutError::Authorization {
                     status: 404,
                     message: "not found",
                 },
-                crate::storage::catalog::CatalogError::Conflict(message)
-                    if message.contains("quota") || message.contains("deployment") =>
+                crate::storage::catalog::CatalogError::Refused(kind, _)
+                    if matches!(
+                        kind,
+                        crate::storage::catalog::CatalogRefusal::OwnerBytes
+                            | crate::storage::catalog::CatalogRefusal::DeploymentBytes
+                    ) =>
                 {
                     PutError::Quota {
                         status: 507,
-                        message: if message.contains("deployment") {
+                        message: if kind == crate::storage::catalog::CatalogRefusal::DeploymentBytes
+                        {
                             "this deployment has no room left"
                         } else {
                             "your storage quota is used up; delete a document first"
@@ -793,14 +800,13 @@ impl Store {
             .await
             .map_err(crate::storage::catalog::CatalogError::from)
             .map_err(|error| match error {
-                crate::storage::catalog::CatalogError::Conflict(message)
-                    if message.contains("upload rate") =>
-                {
-                    PutError::Quota {
-                        status: 429,
-                        message: "too many uploads this hour; try later",
-                    }
-                }
+                crate::storage::catalog::CatalogError::Refused(
+                    crate::storage::catalog::CatalogRefusal::UploadRate,
+                    _,
+                ) => PutError::Quota {
+                    status: 429,
+                    message: "too many uploads this hour; try later",
+                },
                 other => PutError::Storage(other.to_string()),
             })
     }
@@ -1821,8 +1827,11 @@ impl Store {
             .map_err(crate::storage::catalog::CatalogError::from);
         if matches!(
             &result,
-            Err(crate::storage::catalog::CatalogError::Conflict(message))
-                if message.contains("quota")
+            Err(crate::storage::catalog::CatalogError::Refused(
+                crate::storage::catalog::CatalogRefusal::OwnerBytes
+                    | crate::storage::catalog::CatalogRefusal::DeploymentBytes,
+                _
+            ))
         ) {
             if let Some(owner) = pressure_owner {
                 let _ = catalog
@@ -1851,20 +1860,26 @@ impl Store {
                 }
             }
 
-            crate::storage::catalog::CatalogError::Conflict(message)
-                if message.contains("quota exceeded") || message.contains("upload rate") =>
+            crate::storage::catalog::CatalogError::Refused(kind, _)
+                if matches!(
+                    kind,
+                    crate::storage::catalog::CatalogRefusal::OwnerBytes
+                        | crate::storage::catalog::CatalogRefusal::DeploymentBytes
+                        | crate::storage::catalog::CatalogRefusal::OwnerDocuments
+                        | crate::storage::catalog::CatalogRefusal::UploadRate
+                ) =>
             {
                 PutError::Quota {
-                    status: if message.contains("upload rate") {
+                    status: if kind == crate::storage::catalog::CatalogRefusal::UploadRate {
                         429
                     } else {
                         507
                     },
-                    message: if message.contains("document count") {
+                    message: if kind == crate::storage::catalog::CatalogRefusal::OwnerDocuments {
                         "you have reached the document limit; delete one first"
-                    } else if message.contains("upload rate") {
+                    } else if kind == crate::storage::catalog::CatalogRefusal::UploadRate {
                         "too many uploads this hour; try later"
-                    } else if message.contains("owner") {
+                    } else if kind == crate::storage::catalog::CatalogRefusal::OwnerBytes {
                         "your storage quota is used up; delete a document first"
                     } else {
                         "this deployment has no room left"

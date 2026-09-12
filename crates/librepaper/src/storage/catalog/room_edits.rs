@@ -123,10 +123,10 @@ impl Catalog {
                 (owner_bytes.saturating_sub(replaced), total.saturating_sub(replaced))
             };
             if owner_limit >= 0 && owner_bytes.saturating_add(bytes) > owner_limit {
-                return Err(CatalogError::Conflict("owner byte quota exceeded".into()));
+                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "owner byte quota exceeded"));
             }
             if total_limit >= 0 && total.saturating_add(bytes) > total_limit {
-                return Err(CatalogError::Conflict("deployment byte quota exceeded".into()));
+                return Err(CatalogError::refused(super::CatalogRefusal::DeploymentBytes, "deployment byte quota exceeded"));
             }
             let generation = old_generation.saturating_add(1);
             if writing {

@@ -589,6 +589,9 @@ impl Server {
                     crate::storage::catalog::CatalogError::Conflict(message) => {
                         write_json(409, &json!({"error": message}))
                     }
+                    crate::storage::catalog::CatalogError::Refused(_, message) => {
+                        write_json(409, &json!({"error": message}))
+                    }
                     error => {
                         eprintln!("could not authorize transfer of {slug}: {error}");
                         write_json(500, &json!({"error": "could not record the change"}))

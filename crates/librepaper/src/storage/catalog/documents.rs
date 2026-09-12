@@ -119,7 +119,10 @@ impl Catalog {
             )
             .map_err(CatalogError::from)?;
         if recent >= uploads_limit as i64 {
-            return Err(CatalogError::Conflict("owner upload rate exceeded".into()));
+            return Err(CatalogError::refused(
+                super::CatalogRefusal::UploadRate,
+                "owner upload rate exceeded",
+            ));
         }
         tx.execute(
             "INSERT INTO upload_buckets(owner_kind,owner_value,bucket,uploads)
@@ -249,8 +252,9 @@ impl Catalog {
                 )
                 .map_err(CatalogError::from)?;
             if owner_documents >= documents_limit as i64 {
-                return Err(CatalogError::Conflict(
-                    "owner document count quota exceeded".into(),
+                return Err(CatalogError::refused(
+                    super::CatalogRefusal::OwnerDocuments,
+                    "owner document count quota exceeded",
                 ));
             }
             Self::admit_upload_in_tx(
@@ -284,13 +288,15 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             let ordinary = document.counted_size - document.maintenance_reserved;
             if owner_bytes.saturating_add(ordinary) > owner_limit {
-                return Err(CatalogError::Conflict(
-                    "owner storage quota exceeded".into(),
+                return Err(CatalogError::refused(
+                    super::CatalogRefusal::OwnerBytes,
+                    "owner storage quota exceeded",
                 ));
             }
             if total_bytes.saturating_add(ordinary) > total_limit {
-                return Err(CatalogError::Conflict(
-                    "deployment storage quota exceeded".into(),
+                return Err(CatalogError::refused(
+                    super::CatalogRefusal::DeploymentBytes,
+                    "deployment storage quota exceeded",
                 ));
             }
             self.insert_document_in_tx(tx, document)?;
@@ -379,14 +385,10 @@ impl Catalog {
                 .map_err(CatalogError::from)?
                 .saturating_add(new_counted - maintenance).saturating_add(live_bytes);
             if owner_bytes > owner_limit {
-                return Err(CatalogError::Conflict(
-                    "owner storage quota exceeded".into(),
-                ));
+                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "owner storage quota exceeded"));
             }
             if total_bytes > total_limit {
-                return Err(CatalogError::Conflict(
-                    "deployment storage quota exceeded".into(),
-                ));
+                return Err(CatalogError::refused(super::CatalogRefusal::DeploymentBytes, "deployment storage quota exceeded"));
             }
             tx.execute(
                 "UPDATE documents SET title=?2, sha=?3, updated_at=?4, size=?5,
@@ -615,7 +617,7 @@ impl Catalog {
                 "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1 AND slug<>?2",
                 params![owner_id, slug], |r| r.get(0)).map_err(CatalogError::from)?;
             if target.saturating_add(counted - maintenance) > owner_limit {
-                return Err(CatalogError::Conflict("owner storage quota exceeded".into()));
+                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "owner storage quota exceeded"));
             }
             let document = Self::document_in_tx(tx, slug)?;
             Self::unique_project_title_in_tx(tx, slug, &document.title, Some(owner_id), "")?;
@@ -697,7 +699,7 @@ impl Catalog {
                 params![new_owner_id, slug], |r| r.get(0),
             ).map_err(CatalogError::from)?;
             if target.saturating_add(counted - maintenance) > owner_limit {
-                return Err(CatalogError::Conflict("owner storage quota exceeded".into()));
+                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "owner storage quota exceeded"));
             }
             let document = Self::document_in_tx(tx, slug)?;
             Self::unique_project_title_in_tx(tx, slug, &document.title, Some(new_owner_id), "")?;

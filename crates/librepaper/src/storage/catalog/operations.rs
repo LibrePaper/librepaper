@@ -14,8 +14,9 @@ impl Catalog {
             if Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {
                 Ok(())
             } else {
-                Err(CatalogError::Conflict(
-                    "actor edit rights or session generation changed".into(),
+                Err(CatalogError::refused(
+                    super::CatalogRefusal::ActorRights,
+                    "actor edit rights or session generation changed",
                 ))
             }
         })
@@ -52,13 +53,15 @@ impl Catalog {
             let metadata_headroom = if owner_known && total_known { 64 } else { 0 };
             let charge = added_bytes.saturating_add(metadata_headroom);
             if owner_bytes.saturating_add(charge) > owner_limit {
-                return Err(CatalogError::Conflict(
-                    "owner storage quota exceeded".into(),
+                return Err(CatalogError::refused(
+                    super::CatalogRefusal::OwnerBytes,
+                    "owner storage quota exceeded",
                 ));
             }
             if total_bytes.saturating_add(charge) > total_limit {
-                return Err(CatalogError::Conflict(
-                    "deployment storage quota exceeded".into(),
+                return Err(CatalogError::refused(
+                    super::CatalogRefusal::DeploymentBytes,
+                    "deployment storage quota exceeded",
                 ));
             }
             tx.execute(
@@ -266,7 +269,7 @@ impl Catalog {
                 } else {
                     tx.query_row("SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=?2 WHERE d.slug=?1 AND a.status='active' AND a.session_generation=?3 AND (d.owner_id=?2 OR ?4='editor' AND EXISTS(SELECT 1 FROM grants g WHERE g.slug=d.slug AND g.account_id=?2 AND g.role='editor')))", params![slug,actor.account_id,actor.generation,actor.required_role], |row| row.get(0))
                 }.map_err(CatalogError::from)?;
-                if !authorized { return Err(CatalogError::Conflict("actor rights or session generation changed".into())); }
+                if !authorized { return Err(CatalogError::refused(super::CatalogRefusal::ActorRights, "actor rights or session generation changed")); }
             }
             tx.execute(
                 "INSERT INTO catalog_operations
@@ -508,8 +511,9 @@ impl Catalog {
         self.immediate(|tx| {
             if let Some(actor) = actor {
                 if !Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {
-                    return Err(CatalogError::Conflict(
-                        "actor edit rights or session generation changed".into(),
+                    return Err(CatalogError::refused(
+                        super::CatalogRefusal::ActorRights,
+                        "actor edit rights or session generation changed",
                     ));
                 }
             }
@@ -667,9 +671,7 @@ impl Catalog {
             if let Some(actor) = actor {
                 let authorized = Self::mutation_authorized_in_tx(tx, slug, actor, "editor")?;
                 if !authorized {
-                    return Err(CatalogError::Conflict(
-                        "actor edit rights or session generation changed".into(),
-                    ));
+                    return Err(CatalogError::refused(super::CatalogRefusal::ActorRights, "actor edit rights or session generation changed"));
                 }
             }
             let (owner_id, owner_key): (Option<String>, String) = tx
@@ -700,12 +702,10 @@ impl Catalog {
                 .query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents", [], |row| row.get(0))
                 .map_err(CatalogError::from)?;
             if owner_limit >= 0 && owner_bytes.saturating_add(bytes) > owner_limit {
-                return Err(CatalogError::Conflict("owner byte quota exceeded".into()));
+                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "owner byte quota exceeded"));
             }
             if total_limit >= 0 && total.saturating_add(bytes) > total_limit {
-                return Err(CatalogError::Conflict(
-                    "deployment byte quota exceeded".into(),
-                ));
+                return Err(CatalogError::refused(super::CatalogRefusal::DeploymentBytes, "deployment byte quota exceeded"));
             }
             tx.execute(
                 "UPDATE documents SET counted_size=counted_size+?2 WHERE slug=?1",
@@ -844,9 +844,7 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             if let Some(actor) = actor {
                 if !Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {
-                    return Err(CatalogError::Conflict(
-                        "actor edit rights or session generation changed".into(),
-                    ));
+                    return Err(CatalogError::refused(super::CatalogRefusal::ActorRights, "actor edit rights or session generation changed"));
                 }
             }
             let retiring: bool = tx.query_row(
@@ -919,8 +917,8 @@ impl Catalog {
             } else { 0 };
             let owner_bytes = owner_bytes.saturating_sub(credit);
             let total = total.saturating_sub(credit);
-            if owner_limit>=0 && owner_bytes.saturating_add(charge_delta)>owner_limit { return Err(CatalogError::Conflict("owner byte quota exceeded".into())); }
-            if total_limit>=0 && total.saturating_add(charge_delta)>total_limit { return Err(CatalogError::Conflict("deployment byte quota exceeded".into())); }
+            if owner_limit>=0 && owner_bytes.saturating_add(charge_delta)>owner_limit { return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "owner byte quota exceeded")); }
+            if total_limit>=0 && total.saturating_add(charge_delta)>total_limit { return Err(CatalogError::refused(super::CatalogRefusal::DeploymentBytes, "deployment byte quota exceeded")); }
             // A reservation records only the metadata it newly charged.  The
             // existing ledger row owns its prior metadata charge; copying it
             // here would make an aborted replacement refund live accounting.
@@ -996,9 +994,7 @@ impl Catalog {
                     )
                     .map_err(CatalogError::from)?;
                 if !Self::mutation_authorized_in_tx(tx, &slug, actor, "editor")? {
-                    return Err(CatalogError::Conflict(
-                        "actor edit rights or session generation changed".into(),
-                    ));
+                    return Err(CatalogError::refused(super::CatalogRefusal::ActorRights, "actor edit rights or session generation changed"));
                 }
             }
             let reserved: Option<(i64, i64, i64)> = tx
@@ -1242,8 +1238,9 @@ impl Catalog {
                 }
                 .map_err(CatalogError::from)?;
                 if !authorized {
-                    return Err(CatalogError::Conflict(
-                        "actor rights or session generation changed".into(),
+                    return Err(CatalogError::refused(
+                        super::CatalogRefusal::ActorRights,
+                        "actor rights or session generation changed",
                     ));
                 }
             }

@@ -279,7 +279,11 @@ pub(crate) async fn upsert_account_job(
 fn authentication_failure_of(
     error: crate::storage::catalog::CatalogError,
 ) -> AuthenticationFailure {
-    if matches!(error, crate::storage::catalog::CatalogError::Conflict(_)) {
+    if matches!(
+        error,
+        crate::storage::catalog::CatalogError::Conflict(_)
+            | crate::storage::catalog::CatalogError::Refused(_, _)
+    ) {
         AuthenticationFailure::Invalid
     } else {
         AuthenticationFailure::Unavailable

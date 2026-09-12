@@ -73,6 +73,9 @@ pub enum CatalogError {
     Sql(rusqlite::Error),
     Invalid(String),
     Conflict(String),
+    /// A conflict whose client-facing meaning is part of the type, rather
+    /// than inferred from its human-readable explanation.
+    Refused(CatalogRefusal, String),
     NotFound,
     Busy,
     /// The catalogue connection has been closed by shutdown.
@@ -85,6 +88,7 @@ impl fmt::Display for CatalogError {
             Self::Sql(err) => write!(f, "catalogue SQL error: {err}"),
             Self::Invalid(err) => write!(f, "invalid catalogue request: {err}"),
             Self::Conflict(err) => write!(f, "catalogue conflict: {err}"),
+            Self::Refused(_, err) => write!(f, "catalogue conflict: {err}"),
             Self::NotFound => f.write_str("catalogue record not found"),
             Self::Busy => f.write_str("catalogue is busy"),
             Self::Closed => f.write_str("catalogue is closed"),
@@ -119,23 +123,15 @@ pub enum CatalogRefusal {
 }
 
 impl CatalogError {
+    pub fn refused(kind: CatalogRefusal, message: impl Into<String>) -> Self {
+        Self::Refused(kind, message.into())
+    }
+
     /// How this error classifies for a caller that has to answer a client.
     pub fn refusal(&self) -> CatalogRefusal {
-        let Self::Conflict(message) = self else {
-            return CatalogRefusal::Other;
-        };
-        if message.contains("actor rights") || message.contains("actor edit rights") {
-            CatalogRefusal::ActorRights
-        } else if message.contains("upload rate") {
-            CatalogRefusal::UploadRate
-        } else if message.contains("document count") {
-            CatalogRefusal::OwnerDocuments
-        } else if !message.contains("quota exceeded") {
-            CatalogRefusal::Other
-        } else if message.contains("deployment") {
-            CatalogRefusal::DeploymentBytes
-        } else {
-            CatalogRefusal::OwnerBytes
+        match self {
+            Self::Refused(kind, _) => *kind,
+            _ => CatalogRefusal::Other,
         }
     }
 }
@@ -155,6 +151,12 @@ impl From<rusqlite::Error> for CatalogError {
 }
 
 pub type CatalogResult<T> = Result<T, CatalogError>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CatalogSnapshot {
+    pub schema_version: i64,
+    pub head_revision: i64,
+}
 
 /// Replay evidence committed atomically with an agent-created checkpoint.
 #[derive(Clone, Debug)]
@@ -636,6 +638,55 @@ impl Catalog {
         })
     }
 
+    /// Write one consistent, compact SQLite image through this catalogue's
+    /// managed connection. Callers submit this method through the asynchronous
+    /// execution boundary when running inside a service.
+    pub fn write_backup_snapshot(&self, destination: &Path) -> CatalogResult<CatalogSnapshot> {
+        let destination = destination.to_string_lossy().to_string();
+        self.with_connection(|connection| {
+            connection
+                .execute_batch("PRAGMA wal_checkpoint(FULL);")
+                .map_err(CatalogError::from)?;
+            let schema_version = connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(CatalogError::from)?;
+            let head_revision = connection
+                .query_row(
+                    "SELECT revision FROM journal_state WHERE id = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            connection
+                .execute("VACUUM INTO ?1", [&destination])
+                .map_err(CatalogError::from)?;
+            Ok(CatalogSnapshot {
+                schema_version,
+                head_revision,
+            })
+        })
+    }
+
+    /// Verify the standalone SQLite image in a completed recovery point.
+    /// This opens the immutable copy, never a second connection to the live
+    /// catalogue.
+    pub fn verify_backup_snapshot(path: &Path) -> CatalogResult<()> {
+        let connection = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(CatalogError::from)?;
+        let integrity: String = connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(CatalogError::from)?;
+        if integrity != "ok" {
+            return Err(CatalogError::Invalid(format!(
+                "catalogue snapshot integrity: {integrity}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Run a bounded read using the catalogue connection.  Callers must not
     /// retain the connection or perform object-store I/O from this closure.
     pub fn with_connection<T>(
@@ -724,11 +775,8 @@ mod physical_admission_tests;
 mod refusal_tests {
     use super::{CatalogError, CatalogRefusal};
 
-    /// Every refusal message this module writes that a caller classifies on.
-    /// If one is reworded, this fails here rather than moving a route's
-    /// status code without anybody noticing.
     #[test]
-    fn every_classified_message_keeps_its_class() {
+    fn refusal_kind_is_independent_of_its_message() {
         let cases = [
             ("owner storage quota exceeded", CatalogRefusal::OwnerBytes),
             ("owner byte quota exceeded", CatalogRefusal::OwnerBytes),
@@ -754,11 +802,19 @@ mod refusal_tests {
         ];
         for (message, expected) in cases {
             assert_eq!(
-                CatalogError::Conflict(message.into()).refusal(),
+                CatalogError::refused(expected, message).refusal(),
                 expected,
                 "{message}"
             );
+            assert_eq!(
+                CatalogError::refused(expected, "completely reworded").refusal(),
+                expected
+            );
         }
+        assert_eq!(
+            CatalogError::Conflict("owner byte quota exceeded".into()).refusal(),
+            CatalogRefusal::Other
+        );
     }
 
     #[test]

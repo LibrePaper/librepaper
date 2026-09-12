@@ -53,7 +53,7 @@ impl Catalog {
                      FROM catalog_operations WHERE kind IN ('agent_apply','agent_annotations','agent_cancel')",
                     [slug], |row| Ok((row.get(0)?,row.get(1)?)))?;
                 if document_receipts >= 8192 || total_receipts >= 131072 {
-                    return Err(CatalogError::Conflict("agent receipt admission quota exceeded; retained results remain readable".into()));
+                    return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "agent receipt admission quota exceeded; retained results remain readable"));
                 }
             }
             let (bytes, count): (i64, i64) = tx.query_row(
@@ -62,7 +62,7 @@ impl Catalog {
             )?;
             let total: i64 = tx.query_row("SELECT COALESCE(SUM(length(payload)),0) FROM agent_objects", [], |row| row.get(0))?;
             if count >= 512 || bytes + payload.len() as i64 > MAX_DOCUMENT_BYTES || total + payload.len() as i64 > MAX_TOTAL_BYTES {
-                return Err(CatalogError::Conflict("agent object storage quota exceeded".into()));
+                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "agent object storage quota exceeded"));
             }
             let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM documents WHERE slug=?1 AND status='active')", [slug], |row| row.get(0))?;
             if !active { return Err(CatalogError::NotFound); }

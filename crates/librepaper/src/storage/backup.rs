@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::DeploymentPaths;
 use crate::storage::blob::{BlobError, BlobStore};
+use crate::storage::catalog::Catalog;
 use crate::storage::journal::ManifestShard;
 
 pub const BACKUP_FORMAT: u16 = 1;
@@ -1431,6 +1432,7 @@ pub fn read_local_manifest(backup_dir: &Path) -> BackupResult<LocalBackupManifes
 /// published last.
 pub fn create_local_backup(
     paths: &DeploymentPaths,
+    catalog: &Catalog,
     backup_root: &Path,
     backup_id: &str,
     created_at: i64,
@@ -1476,27 +1478,16 @@ pub fn create_local_backup(
             "deployment identity is invalid".into(),
         ));
     }
-    let connection =
-        Connection::open(catalog_path).map_err(|error| BackupError::Storage(error.to_string()))?;
-    connection
-        .execute_batch("PRAGMA wal_checkpoint(FULL);")
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    let schema_version: i64 = connection
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    let head_revision: i64 = connection
-        .query_row(
-            "SELECT revision FROM journal_state WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-
     fs::create_dir_all(objects_path).map_err(|error| BackupError::Storage(error.to_string()))?;
     fs::create_dir_all(backup_root).map_err(|error| BackupError::Storage(error.to_string()))?;
     let mut source_object_paths = Vec::new();
     walk_regular_files(objects_path, Path::new(""), &mut source_object_paths)?;
-    let protected_inputs = catalog_referenced_object_keys(&connection)?;
+    let protected_inputs = catalog
+        .with_connection(|connection| {
+            catalog_referenced_object_keys(connection)
+                .map_err(|error| crate::storage::catalog::CatalogError::Invalid(error.to_string()))
+        })
+        .map_err(|error| BackupError::Storage(error.to_string()))?;
     verify_referenced_object_graph(objects_path, &protected_inputs)?;
     source_object_paths.retain(|path| !path.starts_with("recovery/") && path != "index.json");
     let object_input_bytes = source_object_paths
@@ -1573,9 +1564,8 @@ pub fn create_local_backup(
     };
     let result = (|| {
         let snapshot_path = temporary.join("catalog.db");
-        let snapshot_sql = snapshot_path.to_string_lossy().to_string();
-        connection
-            .execute("VACUUM INTO ?1", [&snapshot_sql])
+        let snapshot = catalog
+            .write_backup_snapshot(&snapshot_path)
             .map_err(|error| BackupError::Storage(error.to_string()))?;
         File::open(&snapshot_path)
             .and_then(|file| file.sync_all())
@@ -1653,8 +1643,8 @@ pub fn create_local_backup(
             format_version: LOCAL_BACKUP_FORMAT,
             backup_id: backup_id.to_owned(),
             deployment_id,
-            schema_version,
-            head_revision,
+            schema_version: snapshot.schema_version,
+            head_revision: snapshot.head_revision,
             restore_point: backup_id.to_owned(),
             secret_versions: secrets.iter().map(|file| file.digest.clone()).collect(),
             created_at,
@@ -1727,7 +1717,7 @@ pub fn create_local_backup(
 /// backups.  Callers use this to compare a verified recovery point with the
 /// current catalogue, including authoritative rows that do not advance the
 /// journal head (sharing, comments, quotas, and lifecycle state).
-pub fn catalog_snapshot_digest(catalog_path: &Path) -> BackupResult<String> {
+pub fn catalog_snapshot_digest(catalog: &Catalog, catalog_path: &Path) -> BackupResult<String> {
     let parent = catalog_path
         .parent()
         .ok_or_else(|| BackupError::Invalid("catalogue has no parent directory".into()))?;
@@ -1739,14 +1729,9 @@ pub fn catalog_snapshot_digest(catalog_path: &Path) -> BackupResult<String> {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     ));
-    let connection =
-        Connection::open(catalog_path).map_err(|error| BackupError::Storage(error.to_string()))?;
-    connection
-        .execute_batch("PRAGMA wal_checkpoint(FULL);")
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
     let result = (|| {
-        connection
-            .execute("VACUUM INTO ?1", [&temporary.to_string_lossy().to_string()])
+        catalog
+            .write_backup_snapshot(&temporary)
             .map_err(|error| BackupError::Storage(error.to_string()))?;
         let file =
             File::open(&temporary).map_err(|error| BackupError::Storage(error.to_string()))?;
@@ -1786,14 +1771,8 @@ pub fn verify_local_backup(backup_dir: &Path) -> BackupResult<LocalBackupManifes
     }
     let connection = Connection::open(backup_dir.join(&manifest.catalog.relative))
         .map_err(|error| BackupError::Corrupt(error.to_string()))?;
-    let integrity: String = connection
-        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+    Catalog::verify_backup_snapshot(&backup_dir.join(&manifest.catalog.relative))
         .map_err(|error| BackupError::Corrupt(error.to_string()))?;
-    if integrity != "ok" {
-        return Err(BackupError::Corrupt(format!(
-            "catalog integrity: {integrity}"
-        )));
-    }
     verify_catalog_references(&connection, &backup_dir.join("objects"))?;
     Ok(manifest)
 }
@@ -1881,14 +1860,8 @@ pub fn restore_local_backup(
         }
         let restored_catalog = Connection::open(temporary.join(&manifest.catalog.relative))
             .map_err(|error| BackupError::Corrupt(error.to_string()))?;
-        let integrity: String = restored_catalog
-            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        Catalog::verify_backup_snapshot(&temporary.join(&manifest.catalog.relative))
             .map_err(|error| BackupError::Corrupt(error.to_string()))?;
-        if integrity != "ok" {
-            return Err(BackupError::Corrupt(format!(
-                "restored catalog integrity: {integrity}"
-            )));
-        }
         verify_catalog_references(&restored_catalog, &temporary.join("objects"))?;
         protect_tree_directories(&temporary)?;
         fs::rename(&temporary, destination)
@@ -1929,8 +1902,26 @@ pub async fn backup_cli(
     } else {
         id
     };
-    let manifest = create_local_backup(&paths, Path::new(&output), &backup_id, unix_now())
+    let catalog =
+        std::sync::Arc::new(Catalog::open(&paths.catalog).unwrap_or_else(|error| {
+            crate::util::die(format!("could not open catalogue: {error}"))
+        }));
+    let backup_paths = paths.clone();
+    let backup_root = PathBuf::from(&output);
+    let job_id = backup_id.clone();
+    let manifest = catalog
+        .execute_catalog(
+            backup_root.as_os_str().len() + job_id.len(),
+            move |catalog| {
+                create_local_backup(&backup_paths, catalog, &backup_root, &job_id, unix_now())
+                    .map_err(|error| {
+                        crate::storage::catalog::CatalogError::Invalid(error.to_string())
+                    })
+            },
+        )
+        .await
         .unwrap_or_else(|error| crate::util::die(format!("could not create backup: {error}")));
+    catalog.shutdown().await;
     let backup_count =
         completed_backups_for_deployment(Path::new(&output), &manifest.deployment_id).unwrap_or(0);
     println!(
@@ -2492,7 +2483,7 @@ mod tests {
             })
             .expect("Quarto document");
 
-        let manifest = create_local_backup(&paths, backup_root.path(), "point-1", 10)
+        let manifest = create_local_backup(&paths, &catalog, backup_root.path(), "point-1", 10)
             .expect("create local backup");
         assert_eq!(manifest.deployment_id, deployment_id);
         assert_eq!(
@@ -2688,8 +2679,9 @@ mod tests {
             )
             .expect("checkpoint graph");
 
-        let manifest = create_local_backup(&paths, backup_root.path(), "encoded-point", 10)
-            .expect("encoded backup");
+        let manifest =
+            create_local_backup(&paths, &catalog, backup_root.path(), "encoded-point", 10)
+                .expect("encoded backup");
         verify_local_backup(&backup_root.path().join(&manifest.backup_id))
             .expect("verify encoded backup");
         let restored = live.path().join("restored-encoded");
@@ -2769,7 +2761,7 @@ mod tests {
             })
             .expect("catalog manifest");
 
-        create_local_backup(&paths, backup_root.path(), "point-compact", 10)
+        create_local_backup(&paths, &catalog, backup_root.path(), "point-compact", 10)
             .expect("backup with compacted manifest");
         verify_local_backup(&backup_root.path().join("point-compact"))
             .expect("verify compacted backup");
@@ -2783,7 +2775,7 @@ mod tests {
         paths.ensure_deployment_identity(false).expect("identity");
         let catalog_path = &paths.catalog;
         let catalog = Catalog::open(catalog_path).expect("catalog");
-        let before = catalog_snapshot_digest(catalog_path).expect("digest");
+        let before = catalog_snapshot_digest(&catalog, catalog_path).expect("digest");
         catalog
             .upsert_account(&Account {
                 id: "acct-1".into(),
@@ -2799,7 +2791,7 @@ mod tests {
                 erasure_cursor: None,
             })
             .expect("account");
-        let after = catalog_snapshot_digest(catalog_path).expect("digest after");
+        let after = catalog_snapshot_digest(&catalog, catalog_path).expect("digest after");
         assert_ne!(before, after);
         let revision = catalog.journal_state().expect("journal state").revision;
         assert_eq!(revision, 0);
@@ -2828,7 +2820,7 @@ mod tests {
                     .map_err(crate::storage::catalog::CatalogError::from)
             })
             .expect("insert transition");
-        let result = create_local_backup(&paths, backup_root.path(), "point-1", 10);
+        let result = create_local_backup(&paths, &catalog, backup_root.path(), "point-1", 10);
         assert!(matches!(result, Err(BackupError::Invalid(_))));
     }
 }
