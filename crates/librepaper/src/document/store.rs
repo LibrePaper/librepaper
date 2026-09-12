@@ -45,6 +45,7 @@ use crate::util::{now_unix, parse_timestamp, timestamp};
 
 const MAX_LINKS_PER_RESULT: i64 = 16;
 const MAX_GUESTS_PER_RESULT: i64 = 256;
+const CATALOG_PAGE_SIZE: u32 = 200;
 
 /// Validate a native source-history receipt before startup rolls it forward.
 /// Unlike the normal read API this deliberately never falls back to a legacy
@@ -2264,11 +2265,30 @@ impl Store {
                 .execute_catalog(STORE_JOB_BYTES + account.id.len(), move |catalog| {
                     catalog.upsert_account(&account)?;
                     let mut moved = 0;
-                    for document in catalog.documents()? {
-                        if document.owner_id.is_none() && document.owner_key == visitor {
-                            catalog.transfer_ownership(&document.slug, &new_owner, per_owner)?;
-                            moved += 1;
+                    let mut cursor: Option<(String, String)> = None;
+                    loop {
+                        let page = catalog.documents_page(
+                            cursor
+                                .as_ref()
+                                .map(|(updated, slug)| (updated.as_str(), slug.as_str())),
+                            CATALOG_PAGE_SIZE,
+                        )?;
+                        if page.is_empty() {
+                            break;
                         }
+                        for document in &page {
+                            if document.owner_id.is_none() && document.owner_key == visitor {
+                                catalog.transfer_ownership(
+                                    &document.slug,
+                                    &new_owner,
+                                    per_owner,
+                                )?;
+                                moved += 1;
+                            }
+                        }
+                        cursor = page
+                            .last()
+                            .map(|document| (document.updated_at.clone(), document.slug.clone()));
                     }
                     Ok(moved)
                 })
@@ -2809,29 +2829,47 @@ async fn document_row(
         .map_err(CatalogError::from)
 }
 
-/// Every active document as a compatibility entry.  One job: this is the
-/// unbounded whole-table read the inventory flags, and splitting it into a
-/// job per document would multiply one already-expensive call into hundreds
-/// of dispatches without bounding anything.
+/// Every active document as a compatibility entry, read in bounded catalogue
+/// pages. The compatibility caller still receives the full set, but no query
+/// or catalogue job retains an unbounded result or monopolises the connection
+/// for the entire deployment.
 async fn catalog_entries(
     catalog: &Arc<Catalog>,
 ) -> Result<HashMap<String, IndexEntry>, CatalogError> {
-    catalog
-        .execute_catalog(STORE_JOB_BYTES, |catalog| {
-            let mut entries = HashMap::new();
-            for document in catalog.documents()? {
-                if document.status != "active" {
-                    continue;
+    let mut entries = HashMap::new();
+    let mut cursor: Option<(String, String)> = None;
+    loop {
+        let page_cursor = cursor.clone();
+        let page = catalog
+            .execute_catalog(STORE_JOB_BYTES, move |catalog| {
+                let documents = catalog.documents_page(
+                    page_cursor
+                        .as_ref()
+                        .map(|(updated, slug)| (updated.as_str(), slug.as_str())),
+                    CATALOG_PAGE_SIZE,
+                )?;
+                let mut page_entries = Vec::with_capacity(documents.len());
+                for document in &documents {
+                    if let Some(entry) = load_catalog_entry_sql(catalog, &document.slug, true)? {
+                        page_entries.push((document.slug.clone(), entry));
+                    }
                 }
-                let slug = document.slug.clone();
-                if let Some(entry) = load_catalog_entry_sql(catalog, &slug, true)? {
-                    entries.insert(slug, entry);
-                }
-            }
-            Ok(entries)
-        })
-        .await
-        .map_err(CatalogError::from)
+                let next = documents
+                    .last()
+                    .map(|document| (document.updated_at.clone(), document.slug.clone()));
+                Ok((page_entries, next))
+            })
+            .await
+            .map_err(CatalogError::from)?;
+        for (slug, entry) in page.0 {
+            entries.insert(slug, entry);
+        }
+        let Some(next) = page.1 else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    Ok(entries)
 }
 
 /// Load one listing/detail entry as a single job.

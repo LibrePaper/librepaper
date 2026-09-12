@@ -1310,7 +1310,7 @@ mod tests {
             .catalog
             .as_ref()
             .expect("test server catalog")
-            .documents()
+            .documents_page(None, 1)
             .unwrap();
         assert!(
             documents.is_empty(),
@@ -1334,7 +1334,7 @@ mod tests {
                 .catalog
                 .as_ref()
                 .expect("test server catalog")
-                .documents()
+                .documents_page(None, 2)
                 .unwrap()
                 .len(),
             1

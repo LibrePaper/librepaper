@@ -10,9 +10,6 @@ Remaining room and storage work.
 - Give `storage/backup.rs` a `Catalog` snapshot and verify API so it stops
   opening its own SQLite connection outside the execution boundary and
   shutdown.
-- Paginate `catalog_entries` and `documents()`, which are unbounded reads.
-  `Catalog::documents_page` already exists as the keyset primitive and has
-  no callers yet.
 
 ## References
 

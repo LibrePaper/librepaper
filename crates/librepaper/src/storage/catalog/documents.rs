@@ -770,31 +770,6 @@ impl Catalog {
         })
     }
 
-    /// Enumerate active catalogue rows in stable newest-first order.  This is
-    /// intentionally a bounded-query primitive for the compatibility store;
-    /// callers serving user listings should prefer `visible_documents`.
-    pub fn documents(&self) -> CatalogResult<Vec<Document>> {
-        self.with_connection(|connection| {
-            let mut statement = connection
-                .prepare(
-                    "SELECT slug, storage_id, title, sha, created_at, published_at,
-                            updated_at, example, owner_key, owner_id, status, size,
-                            counted_size, maintenance_reserved, comment_seq,
-                            last_auto_checkpoint_at, pending_publication,
-                            last_publication_id, source_format, main
-                     FROM documents WHERE status = 'active' AND pending_publication IS NULL
-                     ORDER BY updated_at DESC, slug DESC",
-                )
-                .map_err(CatalogError::from)?;
-            let mut rows = statement.query([]).map_err(CatalogError::from)?;
-            let mut documents = Vec::new();
-            while let Some(row) = rows.next().map_err(CatalogError::from)? {
-                documents.push(Self::read_document(row).map_err(CatalogError::from)?);
-            }
-            Ok(documents)
-        })
-    }
-
     /// Bounded catalogue enumeration for janitors and administrative pages.
     /// The cursor is `(updated_at, slug)` in the same descending order as
     /// `documents`, so callers never need an offset scan.

@@ -982,6 +982,48 @@ fn fresh_schema_enables_foreign_keys_and_creates_all_tables() {
 }
 
 #[test]
+fn document_pages_cross_the_limit_without_skips_or_duplicates() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    for index in 0..401 {
+        let mut row = document();
+        row.slug = format!("doc-{index:04}");
+        row.storage_id = format!("storage-{index:04}");
+        row.title = format!("Document {index}");
+        row.sha = format!("sha-{index:04}");
+        // Equal timestamps exercise the slug half of the keyset cursor.
+        row.updated_at = "2026-01-01T00:00:00.000Z".into();
+        catalog.create_document(&row).unwrap();
+    }
+
+    let mut cursor: Option<(String, String)> = None;
+    let mut slugs = Vec::new();
+    loop {
+        let page = catalog
+            .documents_page(
+                cursor
+                    .as_ref()
+                    .map(|(updated, slug)| (updated.as_str(), slug.as_str())),
+                200,
+            )
+            .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        cursor = page
+            .last()
+            .map(|row| (row.updated_at.clone(), row.slug.clone()));
+        slugs.extend(page.into_iter().map(|row| row.slug));
+    }
+
+    assert_eq!(slugs.len(), 401);
+    assert_eq!(slugs.first().map(String::as_str), Some("doc-0400"));
+    assert_eq!(slugs.last().map(String::as_str), Some("doc-0000"));
+    let unique = slugs.iter().collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique.len(), slugs.len());
+}
+
+#[test]
 fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
     let catalog = Catalog::open_in_memory().unwrap();
     for index in 0..1000 {
