@@ -20,6 +20,7 @@ import * as Y from ${modulePath("node_modules/yjs/dist/yjs.mjs")};
 import { tick } from ${modulePath("node_modules/svelte/src/index-client.js")};
 import { createClassComponent } from ${modulePath("node_modules/svelte/src/legacy/legacy-client.js")};
 import { EditorView } from ${modulePath("node_modules/@codemirror/view/dist/index.js")};
+import { Transaction } from ${modulePath("node_modules/@codemirror/state/dist/index.js")};
 import Editor from ${modulePath("src/components/Editor.svelte")};
 import Changes from ${modulePath("src/components/reader/Changes.svelte")};
 import { join as joinSession } from ${modulePath("src/lib/collab.js")};
@@ -34,6 +35,7 @@ const tracking = createRevisionController({
   send(request) {
     // Deliberately defer acknowledgment, so the UI must remain busy.
     window.pendingRequest = request;
+    (window.pendingRequests ||= []).push(request);
   },
 });
 const editor = createClassComponent({ component: Editor, target: document.querySelector("#editor"),
@@ -52,7 +54,7 @@ window.live = {
   state: () => ({ ...tracking.snapshot(), text: session.textOf(file).toString() }),
   edit: async (from, to, insert, userEvent = "input.type") => {
     const view = EditorView.findFromDOM(document.querySelector(".cm-editor"));
-    view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + insert.length }, userEvent });
+    view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + insert.length }, annotations: Transaction.userEvent.of(userEvent) });
     await tick();
   },
   remote: async () => {
@@ -62,11 +64,15 @@ window.live = {
   undo: async () => { await editor.editCommand("undo"); await tick(); },
   redo: async () => { await editor.editCommand("redo"); await tick(); },
   acknowledge: async () => {
-    const request = window.pendingRequest;
+    const request = window.pendingRequests.shift();
     const record = JSON.parse(tracking.revisions.get(request.revision_id));
-    session.doc.transact(() => tracking.revisions.set(record.id, JSON.stringify({ ...record, status: "accepted" })), "remote");
-    tracking.receive({ type: "revision-decision", request_id: request.request_id, revision_id: record.id, status: "accepted" });
+    const status = request.action === "undo" ? "pending" : "accepted";
+    session.doc.transact(() => tracking.revisions.set(record.id, JSON.stringify({ ...record, status })), "remote");
+    tracking.receive({ type: "revision-decision", request_id: request.request_id, revision_id: record.id, status });
     await tick();
+  },
+  acknowledgeAll: async () => {
+    while (window.pendingRequests.length) await window.live.acknowledge();
   },
 };
 `);
@@ -95,6 +101,10 @@ try {
   const clickText = (text) => page.evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)})?.click()`);
   await clickText("Track changes: Off");
   assert.equal(await page.evaluate("live.state().enabled"), true);
+  assert.equal(await page.evaluate("document.querySelector('[aria-label=\"Track changes: On\"]')?.getAttribute('aria-pressed')"), "true");
+  await page.evaluate('document.querySelector(".markup-toggle input").click()');
+  assert.equal(await page.evaluate("live.state().showMarkup"), false);
+  await page.evaluate('document.querySelector(".markup-toggle input").click()');
   await page.evaluate("live.edit(4, 9, 'red')");
   let state = await page.evaluate("live.state()");
   assert.equal(state.text, "The red fox.");
@@ -116,13 +126,25 @@ try {
   await page.evaluate("live.edit(19, 21, '')");
   state = await page.evaluate("live.state()");
   assert.equal(state.revisions.filter(r => r.status === "pending").length, 1, "deleting own insertion cancels it");
+  await page.evaluate("live.edit(19, 19, '!', 'input.paste')");
+  await page.evaluate("live.edit(20, 20, '?', 'input.paste')");
+  assert.equal((await page.evaluate("live.state()")).revisions.filter(r => r.status === "pending").length, 3, "separate pastes stay separate review units");
   await page.evaluate("document.querySelector('[aria-label=\"Accept change in paper.md\"]')?.click()");
   await until("decision request", () => page.evaluate("Boolean(window.pendingRequest)"), 2000);
   assert.equal(await page.evaluate("live.state().revisions[0].status"), "pending", "no optimistic acceptance");
   await page.evaluate("live.acknowledge()");
-  await until("review advanced", () => page.evaluate("document.querySelector('#changes').textContent.includes('No pending changes')"), 2000);
-  assert.equal(await page.evaluate("live.state().text"), "Remote The red fox.");
-  console.log("live-tracking-browser: toggle, replacement, undo/redo, grouping, remote edits, cancellation and acknowledged review passed");
+  await until("review advanced", () => page.evaluate("live.state().revisions.filter(r=>r.status==='pending').length===2"), 2000);
+  await page.evaluate(`document.querySelectorAll('.change-row input[type=checkbox]').forEach(input=>input.click())`);
+  await clickText("Accept 2 selected");
+  await until("captured bulk requests", () => page.evaluate("window.pendingRequests.length===2"), 2000);
+  await page.evaluate("live.acknowledgeAll()");
+  await until("bulk review completed", () => page.evaluate("document.querySelector('#changes').textContent.includes('No pending changes')"), 2000);
+  assert.equal(await page.evaluate("live.state().text"), "Remote The red fox.!?");
+  await clickText("Undo acceptance (2)");
+  await until("captured batch undo", () => page.evaluate("window.pendingRequests.length===2"), 2000);
+  await page.evaluate("live.acknowledgeAll()");
+  await until("batch undo completed", () => page.evaluate("live.state().revisions.filter(r=>r.status==='pending').length===2"), 2000);
+  console.log("live-tracking-browser: toggle, markup, replacement, undo/redo, grouping, remote edits, cancellation, individual and batch review passed");
 } finally {
   await page?.close();
   if (server) await new Promise((resolve) => server.close(resolve));

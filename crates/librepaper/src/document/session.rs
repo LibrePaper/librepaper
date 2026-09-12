@@ -45,6 +45,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use yrs::branch::BranchPtr;
 use yrs::types::text::TextPrelim;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
@@ -896,6 +897,32 @@ pub fn sticky_index_at_path(
 pub fn offset_of_sticky_index(doc: &Doc, index: &StickyIndex) -> Option<u32> {
     let txn = doc.transact();
     index.get_offset(&txn).map(|offset| offset.index)
+}
+
+/// Resolves two anchors against the text currently named by `path`.
+///
+/// A bare [`offset_of_sticky_index`] call only asks Yrs whether an anchor
+/// resolves somewhere in the document.  That is not sufficient for review:
+/// a forged anchor from another Y.Text could otherwise resolve to a plausible
+/// offset and cause a rejection to edit the wrong file.  Resolving through
+/// the named branch makes the file identity part of the guard.
+pub fn offsets_of_sticky_indices(
+    doc: &Doc,
+    path: &str,
+    start: &StickyIndex,
+    end: &StickyIndex,
+) -> Option<(u32, u32)> {
+    let (files, path_map, _, _) = maps(doc);
+    let txn = doc.transact();
+    let id = id_of_path(&path_map, &txn, path)?;
+    let text = text_at(&files, &txn, &id)?;
+    let start = start.get_offset(&txn)?;
+    let end = end.get_offset(&txn)?;
+    let branch = BranchPtr::from(<TextRef as AsRef<yrs::branch::Branch>>::as_ref(&text));
+    if start.branch != branch || end.branch != branch {
+        return None;
+    }
+    Some((start.index, end.index))
 }
 
 /// Applies edits to the text identified by its current directory path. The

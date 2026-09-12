@@ -1283,38 +1283,97 @@ impl Room {
         revision_id: &str,
         action: &str,
         actor: &str,
-        is_owner: bool,
+        can_review: bool,
         request_id: &str,
     ) -> Value {
         let _publication = self.publication_write.lock().await;
         if self.read_only() {
             return json!({"type":"error","message":"editing is not permitted","revision_id":revision_id,"request_id":request_id});
         }
-        if !is_owner && actor.is_empty() {
+        if !can_review {
             return json!({"type":"error","message":"revision review is not permitted","revision_id":revision_id,"request_id":request_id});
+        }
+        if request_id.trim().is_empty() {
+            return json!({"type":"error","message":"revision decision requires request_id","revision_id":revision_id,"request_id":request_id});
         }
         let before_vector;
         let revision;
+        let before_state;
+        let before_session;
         {
             let mut state = self.state.lock().await;
+            before_state = session::encode_state(&state.session.doc);
+            before_session = (
+                state.session.dirty,
+                state.session.dirty_since,
+                state.session.pending_checkpoint_since,
+                state.session.last_persist_at,
+                state.session.generation,
+                state.session.encoded_size,
+                state.session.encoded_bound,
+                state.session.checkpoint_generation,
+                state.session.updated_at,
+                state.session.by.clone(),
+            );
             before_vector = session::encode_vector(&state.session.doc);
             let mut records = match revisions::records(&state.session.doc) {
                 Ok(records) => records,
-                Err(error) => return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id}),
+                Err(error) => {
+                    return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id})
+                }
             };
-            let Some(record) = records.iter_mut().find(|record| record.id == revision_id) else {
+            let Some(record_index) = records.iter().position(|record| record.id == revision_id)
+            else {
                 return json!({"type":"error","message":"unknown revision","revision_id":revision_id,"request_id":request_id});
             };
-            if !is_owner && record.author != actor {
-                return json!({"type":"error","message":"revision review is not permitted","revision_id":revision_id,"request_id":request_id});
+            if !request_id.is_empty() {
+                if records.iter().any(|other| {
+                    other.id != revision_id
+                        && other.history.iter().any(|item| {
+                            item.get("request_id").and_then(Value::as_str) == Some(request_id)
+                        })
+                }) {
+                    return json!({"type":"error","message":"request id was already used for another revision","revision_id":revision_id,"request_id":request_id});
+                }
+            }
+            let record = &records[record_index];
+            if !request_id.is_empty() {
+                if let Some(previous) = record
+                    .history
+                    .iter()
+                    .find(|item| item.get("request_id").and_then(Value::as_str) == Some(request_id))
+                {
+                    if previous.get("action").and_then(Value::as_str) != Some(action) {
+                        return json!({"type":"error","message":"request id was already used for another revision action","revision_id":revision_id,"request_id":request_id});
+                    }
+                    if previous.get("actor").and_then(Value::as_str) != Some(actor) {
+                        return json!({"type":"error","message":"request id belongs to another reviewer","revision_id":revision_id,"request_id":request_id});
+                    }
+                    return json!({
+                        "type":"revision-decision", "revision_id":revision_id,
+                        "status": previous.get("to").and_then(Value::as_str).unwrap_or(&record.status),
+                        "request_id":request_id, "noop":true, "durable":true,
+                    });
+                }
+            }
+            if let Some(error) = revisions::dependency_error(record, &records) {
+                return json!({
+                    "type":"error", "message":error, "conflict":true,
+                    "revision_id":revision_id, "dependencies":record.dependencies.clone(),
+                    "request_id":request_id,
+                });
             }
             if action != "undo" && !record.pending() {
                 return json!({"type":"revision-decision","revision_id":revision_id,"status":record.status,"request_id":request_id,"noop":true});
             }
+            let record = &mut records[record_index];
             let old_status = record.status.clone();
             let at = crate::util::timestamp();
             if let Err(error) = record.decision(action, actor, &at) {
                 return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id});
+            }
+            if let Some(history) = record.history.last_mut() {
+                history["request_id"] = json!(request_id);
             }
             // Apply a guarded inverse at the CRDT anchors. This handles
             // insertions, replacements, and deletions without searching for
@@ -1323,13 +1382,22 @@ impl Room {
             let inverse = if action == "reject" && old_status == "pending" {
                 Some((record.after.clone(), record.before.clone()))
             } else if action == "undo" {
-                let rejected = record.history.iter().rev().nth(1).and_then(|item| item.get("to")).and_then(Value::as_str) == Some("rejected");
+                let rejected = record
+                    .history
+                    .iter()
+                    .rev()
+                    .nth(1)
+                    .and_then(|item| item.get("to"))
+                    .and_then(Value::as_str)
+                    == Some("rejected");
                 rejected.then(|| (record.before.clone(), record.after.clone()))
             } else {
                 None
             };
             if let Some((expected, replacement)) = inverse {
-                if let Err(error) = revisions::guarded_inverse(&state.session.doc, record, &expected, &replacement) {
+                if let Err(error) =
+                    revisions::guarded_inverse(&state.session.doc, record, &expected, &replacement)
+                {
                     record.status = old_status;
                     record.history.pop();
                     return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id});
@@ -1348,13 +1416,30 @@ impl Room {
             revision = record.clone();
         }
         if let Err(error) = self.persist().await {
+            let restored = session::new_doc();
+            if session::apply_update(&restored, &before_state).is_ok() {
+                let mut state = self.state.lock().await;
+                state.session.doc = restored;
+                state.session.dirty = before_session.0;
+                state.session.dirty_since = before_session.1;
+                state.session.pending_checkpoint_since = before_session.2;
+                state.session.last_persist_at = before_session.3;
+                state.session.generation = before_session.4;
+                state.session.encoded_size = before_session.5;
+                state.session.encoded_bound = before_session.6;
+                state.session.checkpoint_generation = before_session.7;
+                state.session.updated_at = before_session.8;
+                state.session.by = before_session.9;
+            }
             return json!({"type":"error","message":format!("could not save revision: {error}"),"revision_id":revision_id,"request_id":request_id});
         }
         let update = {
             let state = self.state.lock().await;
-            session::encode_diff(&state.session.doc, &before_vector).unwrap_or_else(|_| session::encode_state(&state.session.doc))
+            session::encode_diff(&state.session.doc, &before_vector)
+                .unwrap_or_else(|_| session::encode_state(&state.session.doc))
         };
-        self.broadcast(&json!({"type":"y-update","update":encode_update(&update)})).await;
+        self.broadcast(&json!({"type":"y-update","update":encode_update(&update)}))
+            .await;
         json!({"type":"revision-decision","revision_id":revision_id,"revision":revision,"request_id":request_id,"durable":true})
     }
     /// Reports the independently observable live-save and history-checkpoint
@@ -2399,7 +2484,11 @@ impl Room {
             // rewrite status/history or remove a record. Rehearse the exact
             // update on a scratch document before admission so a rejected
             // metadata mutation never reaches the live document or peers.
-            if !revisions::client_update_safe_after(&state.session.doc, update) {
+            if !revisions::client_update_safe_after_as(
+                &state.session.doc,
+                update,
+                Some(by.display()),
+            ) {
                 return Applied::Ignored;
             }
             let decoded = match session::admit_decoded_update(

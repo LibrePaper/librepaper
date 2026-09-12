@@ -119,6 +119,10 @@
   /* --------------------------------------------------------------- anchoring */
 
   let comments = $state([]);
+  // Legacy suggestion decisions are acknowledged over the room event, just
+  // like live revision decisions. Keeping a waiter here lets the Changes pane
+  // advance only after the server confirms the apply-on-accept operation.
+  const suggestionDecisions = new Map();
   let unconfirmed = $state([]);
   const annotations = createAnnotations({
     slug: SLUG,
@@ -788,7 +792,39 @@
   function decideSuggestion(comment, action) {
     suggestions.beginDeciding(comment, action);
     comments = comments;
-    collaboration?.send({ type: action, comment_id: comment.id, request_id: crypto.randomUUID() });
+    const request_id = crypto.randomUUID();
+    const promise = new Promise((resolve, reject) => suggestionDecisions.set(request_id, { commentId: comment.id, resolve, reject }));
+    let sent;
+    try { sent = collaboration?.send({ type: action, comment_id: comment.id, request_id }); }
+    catch (error) {
+      suggestionDecisions.delete(request_id);
+      suggestions.clearDeciding(comment);
+      comments = comments;
+      return Promise.reject(error);
+    }
+    if (sent === undefined || sent === false) {
+      suggestionDecisions.delete(request_id);
+      suggestions.clearDeciding(comment);
+      comments = comments;
+      return Promise.reject(new Error("Review transport is unavailable."));
+    }
+    if (sent?.then) sent.then((result) => {
+      if (result?.ok !== false) return;
+      const pendingDecision = suggestionDecisions.get(request_id);
+      if (!pendingDecision) return;
+      suggestionDecisions.delete(request_id);
+      suggestions.clearDeciding(comment);
+      comments = comments;
+      pendingDecision.reject(result.error instanceof Error ? result.error : new Error(result.error || "Suggestion decision failed."));
+    }).catch((error) => {
+      const pendingDecision = suggestionDecisions.get(request_id);
+      if (!pendingDecision) return;
+      suggestionDecisions.delete(request_id);
+      suggestions.clearDeciding(comment);
+      comments = comments;
+      pendingDecision.reject(error);
+    });
+    return promise;
   }
 
   async function rejectConfirmed(comment) {
@@ -869,6 +905,16 @@
   }
 
   function receive(event) {
+    const pendingSuggestion = event?.request_id && suggestionDecisions.get(event.request_id);
+    if (pendingSuggestion && (event.type === "accept" || event.type === "reject")) {
+      if (String(event.comment_id) === String(pendingSuggestion.commentId)) {
+        suggestionDecisions.delete(event.request_id);
+        pendingSuggestion.resolve(event);
+      }
+    } else if (pendingSuggestion && event.type === "error") {
+      suggestionDecisions.delete(event.request_id);
+      pendingSuggestion.reject(new Error(event.message || event.error || "Suggestion decision failed."));
+    }
     if (tracking?.receive(event)) return;
     if (annotations.receive(event)) return;
     if (event.type === "chat") {
@@ -1029,7 +1075,7 @@
 
   async function revealRevision(revision) {
     selectedRevision = revision.id;
-    if (!mayEdit || viewing) return;
+    if (viewing) return;
     const location = tracking?.locate(revision);
     if (!location || location.offset == null || !session?.textOf(location.file_id)) {
       toastProblem("This change cannot be located in the current source. Its retained text is available in Changes.");
@@ -2911,6 +2957,10 @@
   /// asking the server to assemble what is already here would be a round trip
   /// to be told what we know.
   async function downloadTree() {
+    if (!mayEdit) {
+      say("Editor access is required to download the project.", true);
+      return;
+    }
     try {
       const tree = liveTreeNow();
       const currentFolders = [...folders];
@@ -3182,6 +3232,8 @@
       framePreview.dispose();
       stopLatex();
       pendingChat?.dispose();
+      for (const pendingDecision of suggestionDecisions.values()) pendingDecision.reject(new Error("The review context was closed."));
+      suggestionDecisions.clear();
       stopTracking?.();
       tracking?.dispose();
       collaboration?.close();
@@ -3269,9 +3321,11 @@
   {:else}
     <Menu.Item value="download-html" class="menuitem" disabled={!downloads.html}>Download HTML</Menu.Item>
   {/if}
-  <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
-  {#if pendingRevisionCount && !viewing}
-    <div class="menu-section-label">Downloads include {pendingRevisionCount} pending {pendingRevisionCount === 1 ? "change" : "changes"}.</div>
+  {#if mayEdit}
+    <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
+  {/if}
+  {#if mayEdit && pendingRevisionCount && !viewing}
+    <div class="menu-section-label">Project downloads include {pendingRevisionCount} pending {pendingRevisionCount === 1 ? "change" : "changes"}.</div>
   {/if}
   <hr class="hr my-1" />
   {#if canSeeSharing}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}

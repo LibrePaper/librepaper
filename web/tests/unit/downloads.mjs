@@ -57,7 +57,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function runDownload(source, entry) {
+async function runDownload(source, entry, mayEdit = true) {
   const assets = deferred();
   const context = vm.createContext({
     Blob,
@@ -78,6 +78,7 @@ async function runDownload(source, entry) {
     saveBlob: () => {},
     captured: null,
     entry,
+    mayEdit,
     viewing: checkpoint,
     checkpointTree: (point) => ({ main: point.main, texts: point.texts, digests: {} }),
   });
@@ -104,6 +105,22 @@ assert.deepEqual([...wholeProject["project/fig.png"]], [7]);
 assert(wholeProject["project/"] instanceof Uint8Array);
 assert(wholeProject["project/old-folder/"] instanceof Uint8Array);
 assert(!wholeProject["project/new-folder/"]);
+
+// Reader and commenter sessions both set `mayEdit` to false. Even if a stale
+// menu or another caller reaches the action directly, it must stop before it
+// gathers assets or creates the project archive.
+await assert.rejects(
+  runDownload(downloadTree, null, false),
+  /Editor access is required to download the project/,
+);
+
+// The action is absent as well as guarded. Editors and owners are the two
+// roles for which Reader sets `mayEdit`.
+assert.match(
+  reader,
+  /\{#if mayEdit\}\s*<Menu\.Item value="download" class="menuitem">Download project<\/Menu\.Item>\s*\{\/if\}/,
+  "the File menu only offers the project archive to editors and owners",
+);
 
 const selectedProject = await runDownload(downloadEntry, { kind: "folder", path: "project" });
 assert.equal(selectedProject["project/current.md"], "live");

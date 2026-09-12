@@ -364,6 +364,9 @@ impl Message {
                 if self.revision_id.trim().is_empty() {
                     return missing("revision-decide", "revision_id");
                 }
+                if self.request_id.trim().is_empty() {
+                    return missing("revision-decide", "request_id");
+                }
                 if !matches!(self.action.as_str(), "accept" | "reject" | "undo") {
                     return missing("revision-decide", "action");
                 }

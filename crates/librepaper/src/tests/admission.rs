@@ -92,7 +92,10 @@ fn pending_update_is_rehearsed_before_a_predecessor_can_cross_the_limit() {
     let successor = session::encode_diff(&source, &before).expect("successor must encode");
 
     let target = session::new_doc();
-    let ceiling = successor.len() + 8;
+    // A fresh document now includes the tracked-revisions root. Leave room
+    // for that fixed CRDT structure while keeping the combined 512-byte text
+    // update beyond the ceiling exercised below.
+    let ceiling = successor.len() + 128;
     assert_eq!(
         session::admit_update(&target, &successor, ceiling, usize::MAX),
         Admission::Fits,

@@ -656,7 +656,7 @@ impl Server {
                                 &incoming.revision_id,
                                 &incoming.action,
                                 &author,
-                                who.at_least(Role::Owner),
+                                may_edit,
                                 &incoming.request_id,
                             )
                             .await;

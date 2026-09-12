@@ -220,6 +220,15 @@
   let view = null;
   let unsubscribeTracking = null;
 
+  function revisionPayload(selected = selectedRevision) {
+    const snapshot = tracking?.snapshot?.() || { revisions: tracking?.records?.() || [], showMarkup: true };
+    const records = snapshot.revisions.map((record) => {
+      const range = tracking?.range?.(record) || {};
+      return { ...record, position: range.start ?? record.start_offset, end_position: range.end ?? record.end_offset };
+    });
+    return { selected, records, showMarkup: snapshot.showMarkup !== false };
+  }
+
   // One editor state per file, made the first time that file is opened and
   // kept afterwards. Switching files swaps the state rather than rebuilding
   // it, so a visit to another chapter costs nothing and leaves the undo
@@ -406,12 +415,12 @@
       await navigator.clipboard.writeText(state.sliceDoc(from, to));
       if (command === "cut") {
         if (view !== target || target.state !== state || !editable) throw new Error("The source changed before Cut finished. Select the text again.");
-        target.dispatch({ changes: { from, to }, selection: { anchor: from }, userEvent: "delete.cut" });
+        target.dispatch({ changes: { from, to }, selection: { anchor: from }, annotations: Transaction.userEvent.of("delete.cut") });
       }
     } else if (command === "paste") {
       const text = await navigator.clipboard.readText();
       if (view !== target || target.state !== state || !editable) throw new Error("The source changed before Paste finished. Try again.");
-      target.dispatch(state.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
+      target.dispatch({ ...state.replaceSelection(text), annotations: Transaction.userEvent.of("input.paste"), scrollIntoView: true });
     }
   }
 
@@ -429,6 +438,7 @@
       changes: { from, to, insert: text },
       selection: { anchor: at },
       effects: EditorView.scrollIntoView(at),
+      annotations: Transaction.userEvent.of("input.dictation"),
     });
     return true;
   }
@@ -608,9 +618,11 @@
       tracking?.undoOptions || {},
     );
     undoManagers.set(text, undoManager);
+    tracking?.registerUndoManager?.(undoManager, id);
     return EditorState.create({
       doc: text.toString(),
       extensions: [
+        EditorView.editable.of(Boolean(editable)),
         // Vim, when the setting says so, and always first: an earlier
         // extension has precedence, and Vim has to see a key before the
         // default keymap does, or `j` inserts a letter instead of moving.
@@ -766,7 +778,7 @@
             transaction.changes.iterChanges((from, to, _fromB, _toB, insert) => entries.push({ from, to, insert: insert.toString() }));
             return entries;
           });
-          const userEvent = editableChanges.map((transaction) => transaction.userEvent).find(Boolean) || "input";
+          const userEvent = editableChanges.map((transaction) => transaction.annotation(Transaction.userEvent)).find(Boolean) || "input";
           const origin = initial.state.facet(ySyncFacet);
           const apply = () => view.update(transactions);
           if (tracking?.capture && changes.length) tracking.capture(showing, changes, apply, { userEvent, origin });
@@ -775,7 +787,7 @@
         },
       });
       unsubscribeTracking = tracking?.onChange?.(() => queueMicrotask(() => {
-        if (view) view.dispatch({ effects: selectedRevisionEffect.of({ selected: selectedRevision, records: tracking.snapshot?.().revisions || tracking.records?.() || [], showMarkup: tracking.snapshot?.().showMarkup !== false }) });
+        if (view) view.dispatch({ effects: selectedRevisionEffect.of(revisionPayload()) });
       }));
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
@@ -834,8 +846,32 @@
 
   $effect(() => {
     const record = selectedRevision;
-    if (view) view.dispatch({ effects: selectedRevisionEffect.of({ selected: record, records: tracking?.records?.() || [] }) });
+    if (view) view.dispatch({ effects: selectedRevisionEffect.of(revisionPayload(record)) });
   });
 </script>
 
 <div class="editorhost" bind:this={host}></div>
+
+<style>
+  :global(.cm-revision-insertion) {
+    text-decoration-line: underline;
+    text-decoration-style: double;
+    text-decoration-thickness: .12em;
+    text-decoration-color: var(--color-success-600-400);
+    background: color-mix(in srgb, var(--color-success-500) 12%, transparent);
+  }
+  :global(.cm-revision-replacement) {
+    text-decoration: underline .12em var(--color-warning-600-400);
+    background: color-mix(in srgb, var(--color-warning-500) 15%, transparent);
+  }
+  :global(.cm-revision-deletion) {
+    color: var(--color-error-600-400);
+    text-decoration: line-through .12em;
+    background: color-mix(in srgb, var(--color-error-500) 12%, transparent);
+    cursor: pointer;
+  }
+  :global(.cm-revision-selected) {
+    outline: 2px solid var(--color-primary-500);
+    outline-offset: 1px;
+  }
+</style>

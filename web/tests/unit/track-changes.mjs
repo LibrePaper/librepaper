@@ -14,6 +14,7 @@ function setup() {
     documentId: "doc",
     fileOf: () => "main.qmd",
     textOf: () => text,
+    send: () => ({ ok: true }),
   });
   return { doc, text, controller };
 }
@@ -28,6 +29,21 @@ test("captures an insertion with an anchored record", () => {
   assert.equal(typeof record.start, "string");
   assert.equal(controller.position(record), 5);
 });
+
+test("publishes tracked text and revision metadata in one Yjs update", () => {
+  const { doc, text, controller } = setup();
+  controller.setEnabled(true);
+  const base = Y.encodeStateAsUpdate(doc);
+  const updates = [];
+  doc.on("update", (update) => updates.push(update));
+  controller.capture("f", [{ from: 5, to: 5, insert: "!" }], () => text.insert(5, "!"), { userEvent: "input.type" });
+  assert.equal(updates.length, 1);
+  const peer = new Y.Doc();
+  Y.applyUpdate(peer, base);
+  Y.applyUpdate(peer, updates[0]);
+  assert.equal(peer.getMap("files").get("f").toString(), "hello!");
+  assert.equal(peer.getMap("revisions").size, 1);
+});
 test("captures deleted text from the pre-transaction snapshot", () => {
   const { text, controller } = setup();
   controller.setEnabled(true);
@@ -35,6 +51,20 @@ test("captures deleted text from the pre-transaction snapshot", () => {
   const [record] = controller.pending();
   assert.equal(record.kind, "delete");
   assert.equal(record.before, "el");
+});
+
+test("captures a selection replacement as one review unit", () => {
+  const { doc, text, controller } = setup();
+  controller.setEnabled(true);
+  doc.transact(() => {
+    text.delete(0, 5);
+    text.insert(0, "goodbye");
+  });
+  const records = controller.pending();
+  assert.equal(records.length, 1);
+  assert.equal(records[0].kind, "replace");
+  assert.equal(records[0].before, "hello");
+  assert.equal(records[0].after, "goodbye");
 });
 
 test("tracking off preserves text without creating a revision", () => {
@@ -45,4 +75,35 @@ test("tracking off preserves text without creating a revision", () => {
   controller.setEnabled(false);
   text.insert(0, "y");
   assert.equal(controller.pending().length, 0);
+});
+
+test("deleting an author's pending insertion cancels its revision", () => {
+  const { text, controller } = setup();
+  controller.setEnabled(true);
+  text.insert(5, " world");
+  text.delete(5, 6);
+  assert.equal(text.toString(), "hello");
+  assert.equal(controller.pending().length, 0);
+});
+
+test("editing a pending insertion while tracking is off updates the proposal", () => {
+  const { text, controller } = setup();
+  controller.setEnabled(true);
+  text.insert(5, " world");
+  controller.setEnabled(false);
+  text.delete(6, 5);
+  text.insert(6, "there");
+  const [record] = controller.pending();
+  assert.equal(record.before, "");
+  assert.equal(record.after, " there");
+});
+
+test("decision transport consumes generic revision errors", async () => {
+  const { text, controller } = setup();
+  controller.setEnabled(true);
+  text.insert(5, "!");
+  const [record] = controller.pending();
+  const request = controller.decide(record.id, "accept", "request-1");
+  assert.equal(controller.receive({ type: "error", request_id: "request-1", revision_id: record.id, message: "not allowed" }), true);
+  await assert.rejects(request, /not allowed/);
 });

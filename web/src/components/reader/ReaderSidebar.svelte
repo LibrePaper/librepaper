@@ -209,7 +209,8 @@
               {selected} onresolve={onresolve} ondelete={onaskdelete}
               ondeletemany={ondeletemany} onreply={onreply} />
           {:else if tab.id === "changes"}
-            <Changes {comments} {figureAt} {identity} commentingAs={commentingAs} {canModerate} {tool}
+            <Changes {comments} {files} {figureAt} {identity} commentingAs={commentingAs} {canModerate}
+              canReview={mayEdit && !viewing} {tool}
               revisions={trackingState.revisions} tracking={trackingState.enabled} showMarkup={trackingState.showMarkup}
               canTrack={mayEdit && !viewing} {selectedRevision} {ontracking} {onmarkup}
               onrevisionreveal={onrevisionreveal} onrevisiondecide={onrevisiondecide} onrevisionundo={onrevisionundo}

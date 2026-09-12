@@ -10,7 +10,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use yrs::updates::decoder::Decode;
-use yrs::{Map, MapRef, Out, Transact, TransactionMut, StickyIndex};
+use yrs::updates::encoder::Encode;
+use yrs::{Map, MapRef, Out, StickyIndex, Transact, TransactionMut};
 
 use crate::document::session;
 
@@ -54,7 +55,15 @@ impl Revision {
             if !matches!(previous, "accepted" | "rejected") {
                 return Err("revision has no completed decision to undo".into());
             }
+            let from = previous.to_string();
             self.status = "pending".to_string();
+            self.history.push(json!({
+                "action": action,
+                "from": from,
+                "to": self.status,
+                "actor": actor,
+                "at": at,
+            }));
         } else {
             if !self.pending() {
                 return Err("revision is already decided".into());
@@ -64,14 +73,14 @@ impl Revision {
                 "reject" => "rejected".to_string(),
                 _ => unreachable!(),
             };
+            self.history.push(json!({
+                "action": action,
+                "from": "pending",
+                "to": self.status,
+                "actor": actor,
+                "at": at,
+            }));
         }
-        self.history.push(json!({
-            "action": action,
-            "from": if action == "undo" { "accepted" } else { "pending" },
-            "to": self.status,
-            "actor": actor,
-            "at": at,
-        }));
         self.updated_at = at.to_string();
         Ok(())
     }
@@ -112,31 +121,104 @@ pub fn records(doc: &yrs::Doc) -> Result<Vec<Revision>, String> {
 /// existing record's immutable data and status/history cannot be rewritten by
 /// a raw browser update.
 pub fn client_update_safe(before: &yrs::Doc, after: &yrs::Doc) -> Result<(), String> {
+    client_update_safe_as(before, after, None)
+}
+
+/// Validates a browser update while binding newly-created and changed pending
+/// records to the authenticated socket author.  The old two-argument helper
+/// remains useful for migration/tests that have no authenticated identity;
+/// production socket admission always supplies the server-derived display.
+pub fn client_update_safe_as(
+    before: &yrs::Doc,
+    after: &yrs::Doc,
+    expected_author: Option<&str>,
+) -> Result<(), String> {
     let old = records(before)?;
     let new = records(after)?;
-    let old_by_id = old.into_iter().map(|r| (r.id.clone(), r)).collect::<std::collections::HashMap<_, _>>();
-    let new_by_id = new.into_iter().map(|r| (r.id.clone(), r)).collect::<std::collections::HashMap<_, _>>();
+    let old_by_id = old
+        .into_iter()
+        .map(|r| (r.id.clone(), r))
+        .collect::<std::collections::HashMap<_, _>>();
+    let new_by_id = new
+        .into_iter()
+        .map(|r| (r.id.clone(), r))
+        .collect::<std::collections::HashMap<_, _>>();
     for record in new_by_id.values() {
         if let Some(previous) = old_by_id.get(&record.id) {
+            // A collaborator may delete or rename the file after a revision
+            // was created. Retain that record as requiring attention; asking
+            // its old anchor to resolve during every unrelated update would
+            // make the missing-file state impossible to persist or reconnect.
+            validate_record_fields(record)?;
             if record.status != previous.status || record.history != previous.history {
-                return Err(format!("revision {} decision fields are server-owned", record.id));
+                return Err(format!(
+                    "revision {} decision fields are server-owned",
+                    record.id
+                ));
             }
-            // Pending records may be extended by their author while typing
-            // (and may be rewritten by undo/redo); status/history remain the
-            // server-owned fields guarded here.
+            let changed = record != previous;
+            if record.file_id != previous.file_id
+                || record.path != previous.path
+                || record.author != previous.author
+                || record.session != previous.session
+                || record.kind != previous.kind
+                || record.created_at != previous.created_at
+                || (matches!(record.kind.as_str(), "replace" | "replacement")
+                    && record.before != previous.before)
+            {
+                return Err(format!("revision {} immutable fields changed", record.id));
+            }
+            if changed && !previous.pending() {
+                return Err(format!("revision {} is not editable", record.id));
+            }
+            if changed && expected_author.is_some_and(|author| record.author != author) {
+                return Err(format!(
+                    "revision {} is attributed to another author",
+                    record.id
+                ));
+            }
+            if changed {
+                validate_record(after, record)?;
+            }
+            // A pending record may be refined by its own author. Its identity
+            // remains fixed; validated anchors, proposal text, dependencies,
+            // and the update timestamp are mutable capture fields.
         } else if !record.pending() {
             return Err(format!("new revision {} must be pending", record.id));
+        } else if expected_author.is_some_and(|author| record.author != author) {
+            return Err(format!(
+                "revision {} is attributed to another author",
+                record.id
+            ));
+        } else {
+            if !record.history.is_empty() {
+                return Err(format!(
+                    "new revision {} has forged decision history",
+                    record.id
+                ));
+            }
+            validate_record(after, record)?;
         }
     }
     for previous in old_by_id.values() {
-        if !new_by_id.contains_key(&previous.id) && !previous.pending() {
-            return Err(format!("revision {} cannot be deleted by a client update", previous.id));
+        if !new_by_id.contains_key(&previous.id)
+            && (!previous.pending()
+                || expected_author.is_some_and(|author| previous.author != author))
+        {
+            return Err(format!(
+                "revision {} cannot be deleted by a client update",
+                previous.id
+            ));
         }
     }
     Ok(())
 }
 
-pub fn client_update_safe_after(before: &yrs::Doc, update: &[u8]) -> bool {
+pub fn client_update_safe_after_as(
+    before: &yrs::Doc,
+    update: &[u8],
+    expected_author: Option<&str>,
+) -> bool {
     let scratch = session::new_doc();
     if session::apply_update(&scratch, &session::encode_state(before)).is_err() {
         return false;
@@ -144,7 +226,91 @@ pub fn client_update_safe_after(before: &yrs::Doc, update: &[u8]) -> bool {
     if session::apply_update(&scratch, update).is_err() {
         return false;
     }
-    client_update_safe(before, &scratch).is_ok()
+    client_update_safe_as(before, &scratch, expected_author).is_ok()
+}
+
+/// Schema and anchor validation for a revision value received over Yjs.
+/// Unknown JSON fields are ignored by serde for wire compatibility, but the
+/// fields that determine attribution, operation semantics, and inverse safety
+/// must all be present and coherent.
+fn validate_record(doc: &yrs::Doc, record: &Revision) -> Result<(), String> {
+    validate_record_fields(record)?;
+    if record.start.is_empty() || record.end.is_empty() {
+        return Err(format!("revision {} has missing anchors", record.id));
+    }
+    let current_file_id = session::paths_of(doc)
+        .into_iter()
+        .find_map(|(id, path)| (path == record.path).then_some(id));
+    if current_file_id.as_deref() != Some(record.file_id.as_str()) {
+        return Err(format!(
+            "revision {} names a missing or mismatched file",
+            record.id
+        ));
+    }
+    let start = decode_anchor(&record.start)?;
+    let end = decode_anchor(&record.end)?;
+    let Some((start_at, end_at)) =
+        session::offsets_of_sticky_indices(doc, &record.path, &start, &end)
+    else {
+        return Err(format!(
+            "revision {} anchors do not resolve in its file",
+            record.id
+        ));
+    };
+    if end_at < start_at {
+        return Err(format!(
+            "revision {} anchors resolve in reverse order",
+            record.id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_record_fields(record: &Revision) -> Result<(), String> {
+    if record.id.trim().is_empty()
+        || record.file_id.trim().is_empty()
+        || record.path.trim().is_empty()
+        || record.author.trim().is_empty()
+        || record.session.trim().is_empty()
+        || record.created_at.trim().is_empty()
+        || record.updated_at.trim().is_empty()
+    {
+        return Err(format!(
+            "revision {} has missing identity fields",
+            record.id
+        ));
+    }
+    if !matches!(
+        record.kind.as_str(),
+        "insert" | "delete" | "replace" | "replacement"
+    ) {
+        return Err(format!(
+            "revision {} has an invalid operation kind",
+            record.id
+        ));
+    }
+    if !matches!(record.status.as_str(), "pending" | "accepted" | "rejected") {
+        return Err(format!("revision {} has an invalid status", record.id));
+    }
+    let mut dependencies = std::collections::HashSet::new();
+    if record
+        .dependencies
+        .iter()
+        .any(|id| id.trim().is_empty() || id == &record.id || !dependencies.insert(id))
+    {
+        return Err(format!("revision {} has invalid dependencies", record.id));
+    }
+    if (record.kind == "insert" && (!record.before.is_empty() || record.after.is_empty()))
+        || (record.kind == "delete" && (record.before.is_empty() || !record.after.is_empty()))
+        || ((record.kind == "replace" || record.kind == "replacement")
+            && (record.before.is_empty() || record.after.is_empty()))
+    {
+        return Err(format!(
+            "revision {} content does not match its kind",
+            record.id
+        ));
+    }
+    Ok(())
 }
 
 pub fn put(txn: &mut TransactionMut, map: &MapRef, revision: &Revision) -> Result<(), String> {
@@ -153,25 +319,67 @@ pub fn put(txn: &mut TransactionMut, map: &MapRef, revision: &Revision) -> Resul
     Ok(())
 }
 
+/// Returns a concrete dependency refusal for a decision.  Dependencies are
+/// deliberately conservative: while an affected revision is still pending,
+/// deciding this one could make the dependent text impossible to review or to
+/// undo.  Missing IDs are refused as corrupt metadata rather than silently
+/// treated as already settled.
+pub fn dependency_error(record: &Revision, records: &[Revision]) -> Option<String> {
+    let by_id = records
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    for dependency in &record.dependencies {
+        let Some(other) = by_id.get(dependency.as_str()) else {
+            return Some(format!(
+                "revision {} depends on missing revision {}",
+                record.id, dependency
+            ));
+        };
+        if other.pending() {
+            return Some(format!(
+                "revision {} depends on pending revision {}; review that revision first",
+                record.id, dependency
+            ));
+        }
+    }
+    None
+}
+
 /// Applies the inverse at the revision's CRDT anchors. The current span must
 /// exactly equal the tracked proposed text; this is the guard that prevents a
 /// repeated passage or a concurrent edit from being changed accidentally.
-pub fn guarded_inverse(doc: &yrs::Doc, revision: &Revision, expected: &str, replacement: &str) -> Result<Vec<u8>, String> {
+pub fn guarded_inverse(
+    doc: &yrs::Doc,
+    revision: &Revision,
+    expected: &str,
+    replacement: &str,
+) -> Result<Vec<u8>, String> {
     let start = decode_anchor(&revision.start)?;
     let end = decode_anchor(&revision.end)?;
-    let start_at = session::offset_of_sticky_index(doc, &start).ok_or_else(|| "revision start anchor no longer resolves".to_string())?;
-    let end_at = session::offset_of_sticky_index(doc, &end).ok_or_else(|| "revision end anchor no longer resolves".to_string())?;
+    let current_file_id = session::paths_of(doc)
+        .into_iter()
+        .find_map(|(id, path)| (path == revision.path).then_some(id));
+    if current_file_id.as_deref() != Some(revision.file_id.as_str()) {
+        return Err("revision file is missing or has changed identity".into());
+    }
+    let (start_at, end_at) = session::offsets_of_sticky_indices(doc, &revision.path, &start, &end)
+        .ok_or_else(|| "revision anchors no longer resolve in their file".to_string())?;
     if end_at < start_at {
         return Err("revision anchors resolve in reverse order".into());
     }
-    let text = session::texts_of(doc).get(&revision.path).cloned().ok_or_else(|| "revision file is missing".to_string())?;
+    let text = session::texts_of(doc)
+        .get(&revision.path)
+        .cloned()
+        .ok_or_else(|| "revision file is missing".to_string())?;
     let units = text.encode_utf16().collect::<Vec<_>>();
     let start_at = start_at as usize;
     let end_at = end_at as usize;
     if end_at > units.len() {
         return Err("revision anchor is outside the file".into());
     }
-    let current = String::from_utf16(&units[start_at..end_at]).map_err(|_| "revision anchor splits UTF-16 text".to_string())?;
+    let current = String::from_utf16(&units[start_at..end_at])
+        .map_err(|_| "revision anchor splits UTF-16 text".to_string())?;
     if current != expected {
         return Err("revision conflicts with concurrent edits".into());
     }
@@ -188,7 +396,8 @@ pub fn guarded_inverse(doc: &yrs::Doc, revision: &Revision, expected: &str, repl
 }
 
 fn decode_anchor(encoded: &str) -> Result<StickyIndex, String> {
-    let bytes = crate::room::decode_update(encoded).ok_or_else(|| "invalid revision anchor encoding".to_string())?;
+    let bytes = crate::room::decode_update(encoded)
+        .ok_or_else(|| "invalid revision anchor encoding".to_string())?;
     StickyIndex::decode_v1(&bytes).map_err(|error| format!("invalid revision anchor: {error}"))
 }
 
@@ -198,11 +407,21 @@ mod tests {
 
     fn revision() -> Revision {
         Revision {
-            id: "r1".into(), file_id: "f1".into(), path: "main.md".into(),
-            author: "alice".into(), session: "s1".into(), kind: "replacement".into(),
-            before: "old".into(), after: "new".into(), start: "".into(), end: "".into(),
-            status: "pending".into(), dependencies: vec![], created_at: "1".into(),
-            updated_at: "1".into(), history: vec![],
+            id: "r1".into(),
+            file_id: "f1".into(),
+            path: "main.md".into(),
+            author: "alice".into(),
+            session: "s1".into(),
+            kind: "replacement".into(),
+            before: "old".into(),
+            after: "new".into(),
+            start: "".into(),
+            end: "".into(),
+            status: "pending".into(),
+            dependencies: vec![],
+            created_at: "1".into(),
+            updated_at: "1".into(),
+            history: vec![],
         }
     }
 
@@ -214,6 +433,59 @@ mod tests {
         assert!(record.decision("accept", "bob", "3").is_err());
         record.decision("undo", "bob", "4").unwrap();
         assert_eq!(record.status, "pending");
+        assert_eq!(record.history[1]["from"], "accepted");
+    }
+
+    #[test]
+    fn undo_records_rejection_as_its_actual_predecessor() {
+        let mut record = revision();
+        record.decision("reject", "bob", "2").unwrap();
+        record.decision("undo", "bob", "3").unwrap();
+        assert_eq!(record.history[1]["from"], "rejected");
+        assert_eq!(record.history[1]["to"], "pending");
+    }
+
+    #[test]
+    fn pending_dependencies_are_explicitly_blocked() {
+        let mut dependent = revision();
+        dependent.id = "r2".into();
+        dependent.dependencies = vec!["r1".into()];
+        assert!(dependency_error(&dependent, &[revision()]).is_some());
+        let mut settled = revision();
+        settled.status = "accepted".into();
+        assert!(dependency_error(&dependent, &[settled]).is_none());
+        assert!(dependency_error(&dependent, &[revision(), dependent.clone()]).is_some());
+        assert!(dependency_error(&dependent, &[]).is_some());
+    }
+
+    #[test]
+    fn guarded_inverse_uses_file_scoped_anchors_after_a_preceding_edit() {
+        let doc = session::new_doc();
+        session::replace_text(&doc, "The red fox.", "main.md");
+        let file_id = session::paths_of(&doc)
+            .into_iter()
+            .find_map(|(id, path)| (path == "main.md").then_some(id))
+            .unwrap();
+        let start = session::sticky_index_at_path(&doc, "main.md", 4, yrs::Assoc::After).unwrap();
+        let end = session::sticky_index_at_path(&doc, "main.md", 7, yrs::Assoc::Before).unwrap();
+        let mut record = revision();
+        record.file_id = file_id;
+        record.before = "brown".into();
+        record.after = "red".into();
+        record.start = crate::room::encode_update(&start.encode_v1());
+        record.end = crate::room::encode_update(&end.encode_v1());
+
+        session::apply_edits_at(
+            &doc,
+            "main.md",
+            &[wasm_helpers::text::Edit {
+                at: 0,
+                delete: 0,
+                insert: "Note: ".into(),
+            }],
+        );
+        guarded_inverse(&doc, &record, "red", "brown").unwrap();
+        assert_eq!(session::texts_of(&doc)["main.md"], "Note: The brown fox.");
     }
 
     #[test]
@@ -227,7 +499,15 @@ mod tests {
         session::apply_update(&forged, &session::encode_state(&doc)).unwrap();
         let forged_map = revision_map(&forged);
         let mut txn = forged.transact_mut();
-        forged_map.insert(&mut txn, "r1", serde_json::to_string(&Revision { status: "accepted".into(), ..revision() }).unwrap());
+        forged_map.insert(
+            &mut txn,
+            "r1",
+            serde_json::to_string(&Revision {
+                status: "accepted".into(),
+                ..revision()
+            })
+            .unwrap(),
+        );
         drop(txn);
         assert!(client_update_safe(&doc, &forged).is_err());
     }
