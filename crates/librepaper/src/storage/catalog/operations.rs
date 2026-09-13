@@ -1009,6 +1009,37 @@ impl Catalog {
         } else {
             None
         };
+        let execution_epoch = if kind == OperationKind::AgentApply {
+            let epoch = serde_json::from_str::<serde_json::Value>(&canonical_intent)
+                .ok()
+                .and_then(|plan| {
+                    plan.get("actor")
+                        .or_else(|| plan.get("authority"))
+                        .and_then(|actor| actor.get("execution_epoch"))
+                        .and_then(serde_json::Value::as_str)
+                })
+                .filter(|epoch| !epoch.is_empty())
+                .ok_or_else(|| {
+                    CatalogError::refused(
+                        CatalogRefusal::ActorRights,
+                        "agent source operation requires an execution epoch",
+                    )
+                })?
+                .to_owned();
+            Some(execution_epoch)
+        } else {
+            None
+        };
+        let work_expires_at = match kind {
+            OperationKind::EraseAccount
+            | OperationKind::EraseDocument
+            | OperationKind::RotateLinks
+            | OperationKind::Backup
+            | OperationKind::JournalCompact => None,
+            _ => Some(UnixMillis::new(now.0.checked_add(120_000).ok_or_else(
+                || CatalogError::Invalid("operation work deadline overflow".into()),
+            )?)?),
+        };
         let operation = self.prepare_v2_operation(
             &V2OperationInput {
                 scope: OperationScope::Document(document_id.clone()),
@@ -1019,8 +1050,8 @@ impl Catalog {
                 plan_json: canonical_intent.clone(),
                 expected_document_generation,
                 conversation_id: None,
-                execution_epoch: None,
-                work_expires_at: None,
+                execution_epoch,
+                work_expires_at,
             },
             now,
         )?;
@@ -1550,6 +1581,32 @@ impl Catalog {
                      FROM operations WHERE document_id=?1 AND request_key=?2
                      ORDER BY created_at DESC LIMIT 1",
                     params![storage_id, request_id],
+                    Self::read_operation,
+                )
+                .optional()
+                .map_err(CatalogError::from)
+        })
+    }
+
+    /// Resolve a legacy-shaped receipt only within its authenticated actor
+    /// scope.  Request keys are deliberately reusable by different actors;
+    /// callers recovering a source effect must never select another actor's
+    /// receipt merely because it has the same document and request key.
+    pub fn operation_for_actor(
+        &self,
+        storage_id: &str,
+        request_id: &str,
+        actor_key: &str,
+    ) -> CatalogResult<Option<Operation>> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT document_id,request_key,kind,request_digest,state,plan_json,
+                            COALESCE(result_json,''),created_at
+                     FROM operations
+                    WHERE document_id=?1 AND request_key=?2 AND actor_key=?3
+                    ORDER BY created_at DESC LIMIT 1",
+                    params![storage_id, request_id, actor_key],
                     Self::read_operation,
                 )
                 .optional()

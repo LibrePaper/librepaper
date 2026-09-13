@@ -3257,7 +3257,11 @@ impl Catalog {
                 }
                 let checkpoint_authority = serde_json::from_str::<serde_json::Value>(&plan_json)
                     .ok()
-                    .and_then(|plan| plan.get("authority").cloned())
+                    .and_then(|plan| {
+                        plan.get("authority")
+                            .or_else(|| plan.get("actor"))
+                            .cloned()
+                    })
                     .unwrap_or_default();
                 let expected_epoch = checkpoint_authority
                     .get("execution_epoch")
@@ -3717,6 +3721,31 @@ impl Catalog {
         {
             return Err(CatalogError::Invalid(
                 "operation actor/request key is invalid".into(),
+            ));
+        }
+        let resumable_without_deadline = matches!(
+            input.kind,
+            OperationKind::EraseAccount
+                | OperationKind::EraseDocument
+                | OperationKind::RotateLinks
+                | OperationKind::Backup
+                | OperationKind::JournalCompact
+        );
+        if !resumable_without_deadline && input.work_expires_at.is_none() {
+            return Err(CatalogError::Invalid(
+                "prepared operation needs a bounded work deadline".into(),
+            ));
+        }
+        if input.work_expires_at.is_some_and(|expiry| expiry <= now) {
+            return Err(CatalogError::Invalid(
+                "operation work deadline has expired".into(),
+            ));
+        }
+        if input.kind == OperationKind::AgentApply
+            && input.execution_epoch.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(CatalogError::Invalid(
+                "agent source operation needs an execution epoch".into(),
             ));
         }
         validate_digest(&input.request_digest, "request digest")?;
