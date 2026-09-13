@@ -13,6 +13,8 @@ pub struct AgentPayloadAuthority {
     pub generation: String,
     pub link_hash: String,
     pub automation: bool,
+    pub policy_editor: bool,
+    pub required_role: String,
 }
 
 #[derive(Clone, Debug)]
@@ -76,26 +78,23 @@ fn live_authority(
     authority: &AgentPayloadAuthority,
     now: i64,
 ) -> CatalogResult<bool> {
-    let account_live = if authority.account_id.is_empty() { false } else {
-        tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND status='active' AND session_generation=?2)",
-            params![authority.account_id, authority.generation], |row| row.get(0),
-        ).map_err(CatalogError::from)?
-    };
-    let link_editor = if authority.link_hash.is_empty() { false } else {
-        tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM links WHERE document_id=?1 AND token_hash=?2 AND role='editor' AND (expires_at IS NULL OR expires_at>?3))",
-            params![document_id, authority.link_hash, now], |row| row.get(0),
-        ).map_err(CatalogError::from)?
-    };
-    if authority.automation {
-        return Ok(account_live && link_editor);
-    }
-    let account_editor = account_live && tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM documents d WHERE d.id=?1 AND d.status='active' AND (d.owner_id=?2 OR EXISTS(SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=?2 AND g.role='editor')))",
-        params![document_id, authority.account_id], |row| row.get(0),
+    let slug: String = tx.query_row(
+        "SELECT slug FROM documents WHERE id=?1 AND status='active'",
+        [document_id], |row| row.get(0),
     ).map_err(CatalogError::from)?;
-    Ok(account_editor || link_editor)
+    let mutation = MutationAuthority {
+        account_id: &authority.account_id,
+        owner_key: "",
+        generation: &authority.generation,
+        link_hash: &authority.link_hash,
+        policy_editor: authority.policy_editor,
+        automation: authority.automation,
+        unowned_publisher: false,
+        execution_epoch: "",
+        agent_checkpoint: None,
+    };
+    let _ = now;
+    Catalog::mutation_authorized_in_tx(tx, &slug, mutation, &authority.required_role)
 }
 
 impl Catalog {
@@ -373,6 +372,8 @@ mod tests {
             generation: "session-1".into(),
             link_hash: String::new(),
             automation: false,
+            policy_editor: true,
+            required_role: "editor".into(),
         }
     }
 

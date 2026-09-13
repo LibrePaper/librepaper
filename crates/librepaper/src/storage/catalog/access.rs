@@ -235,7 +235,7 @@ impl Catalog {
     /// is deliberately evaluated inside the caller's write transaction so a
     /// link expiry, policy change, grant revocation, or account generation
     /// change cannot be bypassed by a stale route-level Viewer.
-    pub(super) fn mutation_authorized_in_tx(
+    pub(crate) fn mutation_authorized_in_tx(
         tx: &rusqlite::Transaction<'_>,
         slug: &str,
         actor: MutationAuthority<'_>,

@@ -397,6 +397,8 @@ impl Server {
             generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             automation: who.automation,
+            policy_editor: who.at_least(Role::Editor),
+            required_role: if kind == "view" { "reader".into() } else { "editor".into() },
         };
         let input = crate::storage::catalog::AgentPayloadInput {
             slug: slug.to_owned(),
@@ -442,6 +444,8 @@ impl Server {
             generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             automation: who.automation,
+            policy_editor: who.at_least(Role::Editor),
+            required_role: if kind == "view" { "reader".into() } else { "editor".into() },
         };
         let operation_id = admitted.operation_id.clone();
         catalog.execute_catalog(
@@ -469,6 +473,8 @@ impl Server {
             generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             automation: who.automation,
+            policy_editor: who.at_least(Role::Editor),
+            required_role: if kind == "view" { "reader".into() } else { "editor".into() },
         };
         let slug_owned = slug.to_owned();
         let id_owned = id.to_owned();
