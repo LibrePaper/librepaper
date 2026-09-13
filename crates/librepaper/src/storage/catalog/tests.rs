@@ -335,7 +335,7 @@ fn reopening_annotation_restores_protection_from_stored_source_revision() {
     comment.revision = "revision".into();
     let comment_request = crate::util::new_request_key();
     let comment_digest = "d".repeat(64);
-    catalog
+    let stored_comment = catalog
         .insert_comment_request_authorized(
             &comment,
             &comment_request,
@@ -354,7 +354,7 @@ fn reopening_annotation_restores_protection_from_stored_source_revision() {
             Ok(())
         })
         .unwrap();
-    let mut reopened = comment;
+    let mut reopened = stored_comment;
     reopened.body = "reopened body".into();
     catalog
         .update_comment_authorized(&reopened, owner)
@@ -551,89 +551,61 @@ fn account_usage_charges_unique_physical_objects_and_not_tree_size() {
     input.counted_size = 2;
     catalog.create_document(&input).unwrap();
 
-    // The same source chunk is present in the legacy object ledger, the new
-    // source-history graph, and a deletion queue.  It remains one charge
-    // until physical deletion succeeds.
+    // V2 accounting is held by the account/server counters and the typed
+    // object closure.  Keep a tree object for the checkpoint and three
+    // differently typed physical objects whose measured bytes sum to 34;
+    // the logical document size remains deliberately unrelated.
+    let tree_id = fixture_object_id("usage-tree");
+    let tree_digest = fixture_tree_digest("usage-tree");
     catalog
         .with_connection(|connection| {
             connection.execute(
-                "INSERT INTO object_accounting(storage_id,object_key,kind,bytes,version)
-                 VALUES('storage-1','content/storage-1/chunks/shared','source_chunk',7,'v1'),
-                       ('storage-1','content/storage-1/assets/a','asset',11,'v1'),
-                       ('storage-1','publications/storage-1/tree-a/pdf','publication',13,'v1')",
+                "INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                 VALUES('storage-1',?1,?2,'source_tree','available',?3,3,0,0)",
+                rusqlite::params![
+                    tree_id,
+                    format!("v2/documents/storage-1/objects/{tree_id}"),
+                    tree_digest,
+                ],
+            )?;
+            for (id, kind, bytes) in [
+                (fixture_object_id("usage-chunk"), "source_chunk", 7),
+                (fixture_object_id("usage-asset"), "asset", 11),
+                (fixture_object_id("usage-publication"), "publication_html", 13),
+            ] {
+                connection.execute(
+                    "INSERT INTO objects
+                     (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                     VALUES('storage-1',?1,?2,?3,'available',?4,?5,0,0)",
+                    rusqlite::params![
+                        id,
+                        format!("v2/documents/storage-1/objects/{id}"),
+                        kind,
+                        "a".repeat(64),
+                        bytes,
+                    ],
+                )?;
+            }
+            connection.execute(
+                "UPDATE documents SET stored_bytes=34 WHERE id='storage-1'",
                 [],
             )?;
+            connection.execute(
+                "UPDATE accounts SET stored_bytes=34 WHERE id='acct-1'",
+                [],
+            )?;
+            connection.execute("UPDATE server_state SET stored_bytes=34 WHERE id=1", [])?;
             Ok(())
         })
         .unwrap();
-    let point = Checkpoint {
-        slug: "doc".into(),
-        sha: "checkpoint-a".into(),
-        seq: -1,
-        durable_seq: 0,
-        tree_sha: "tree-a".into(),
-        parent: String::new(),
-        at: "2026-01-01T00:00:00Z".into(),
-        by: String::new(),
-        why: "test".into(),
-        source_format: "markdown".into(),
-        size: 99_999,
-        label: String::new(),
-        git_commit: String::new(),
-        dirty: false,
-        changed: None,
-        by_account: None,
-    };
-    catalog
-        .insert_checkpoints_atomic_with_sources(
-            &[point],
-            None,
-            &[SourceHistoryRecord {
-                file_digest: "file-a".into(),
-                recipe_key: "content/storage-1/recipes/file-a".into(),
-                recipe_digest: "recipe-a".into(),
-                codec: 1,
-                uncompressed_bytes: 99_999,
-                recipe_bytes: 3,
-                objects: vec![
-                    SourceHistoryObject {
-                        object_key: "content/storage-1/recipes/file-a".into(),
-                        kind: "source_recipe".into(),
-                        bytes: 3,
-                    },
-                    SourceHistoryObject {
-                        object_key: "content/storage-1/chunks/shared".into(),
-                        kind: "source_chunk".into(),
-                        bytes: 7,
-                    },
-                ],
-            }],
-        )
-        .unwrap();
-    catalog
-        .queue_delete(&super::PendingDelete {
-            slug: "doc".into(),
-            object_key: "content/storage-1/chunks/shared".into(),
-            bytes: 7,
-            queued_at: 1,
-            delete_after: 1,
-        })
-        .unwrap();
+    let point = attributed("checkpoint-a", "Alice", Some("acct-1"));
+    insert_fixture_checkpoint(&catalog, &point);
 
     let usage = catalog.account_storage_usage("acct-1").unwrap();
     assert!(usage.physical_accounting);
-    assert_eq!(usage.asset_bytes, 11);
-    assert_eq!(usage.publication_bytes, 13);
-    assert_eq!(
-        usage.charged_bytes - usage.metadata_bytes - usage.history_bytes,
-        34
-    );
-    assert_eq!(
-        usage.live_bytes, 10,
-        "the newest tree owns the shared source objects"
-    );
-    assert!(usage.history_bytes > 0);
-    assert!(usage.history_bytes < usage.charged_bytes);
+    assert_eq!(usage.charged_bytes, 34);
+    assert_eq!(usage.document_count, 1);
     assert_eq!(usage.checkpoint_count, 1);
 }
 
@@ -1218,6 +1190,36 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    // `begin_delete` reports the durable v2 physical closure, which is kept
+    // charged until the worker has settled its object.  The old fixture only
+    // populated NewDocument::counted_size, a compatibility field that v2
+    // deliberately ignores.
+    let object_id = fixture_object_id("deletion-live-object");
+    let object_digest = fixture_tree_digest("deletion-live-object");
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                 VALUES('storage-1',?1,?2,'source_tree','available',?3,20,0,0)",
+                rusqlite::params![
+                    object_id,
+                    format!("v2/documents/storage-1/objects/{object_id}"),
+                    object_digest,
+                ],
+            )?;
+            connection.execute(
+                "UPDATE documents SET stored_bytes=20 WHERE id='storage-1'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE accounts SET stored_bytes=20 WHERE id='acct-1'",
+                [],
+            )?;
+            connection.execute("UPDATE server_state SET stored_bytes=20 WHERE id=1", [])?;
+            Ok(())
+        })
+        .unwrap();
     let request_id = crate::util::new_request_key();
     let now = crate::util::now_millis();
     let operation_digest = "b".repeat(64);
@@ -1247,6 +1249,30 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
         .commit_operation("storage-1", &request_id, "{}", "head")
         .is_err());
     drain_document_delete(&catalog, "doc");
+    // The bounded document worker only marks roots for physical retirement.
+    // Model the separate blob-GC acknowledgement before finalization; the
+    // catalogue must not refund these bytes merely because deletion started.
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "DELETE FROM objects WHERE document_id='storage-1'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE documents SET stored_bytes=0,reserved_bytes=0 WHERE id='storage-1'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE accounts SET stored_bytes=0,reserved_bytes=0 WHERE id='acct-1'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE server_state SET stored_bytes=0,reserved_bytes=0 WHERE id=1",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     catalog.finish_delete("doc").unwrap();
     assert_eq!(catalog.totals().unwrap(), (0, 0));
 }
