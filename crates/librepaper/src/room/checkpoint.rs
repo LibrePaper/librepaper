@@ -1046,7 +1046,7 @@ impl Room {
                         .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
                             catalog.schedule_document_balanced(
                                 &slug,
-                                crate::util::now_unix(),
+                                crate::util::now_millis(),
                                 retention_bounds,
                             )
                         })

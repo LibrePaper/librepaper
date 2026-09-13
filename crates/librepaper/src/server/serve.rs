@@ -476,7 +476,7 @@ pub async fn serve(options: ServeOptions) {
                         .execute_catalog(1024, {
                             move |catalog| {
                                 catalog.run_retention_pass_with_limits(
-                                    crate::util::now_unix(),
+                                    crate::util::now_millis(),
                                     500,
                                     Some(retention_hard_quota),
                                     retention_hard_count,

@@ -486,3 +486,40 @@ fn quota_preferences_reject_stale_and_invalid_updates_atomically() {
         1
     );
 }
+
+#[test]
+fn retention_releases_only_the_deleted_closure_and_preserves_shared_objects() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    account(&catalog);
+    document(&catalog, "retention", "Retention");
+    catalog.with_connection(|db| {
+        for id in ["old-tree", "current-tree", "shared", "unrelated-orphan"] {
+            db.execute("INSERT INTO objects(document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at,gc_after)
+                VALUES('retention',?1,?2,'source_tree','available',?3,1,0,1,?4)",
+                rusqlite::params![id,format!("v2/documents/retention/objects/{id}"),"a".repeat(64), (id=="unrelated-orphan").then_some(7)])?;
+        }
+        for (id,tree,seq) in [("old","old-tree",1), ("current","current-tree",2)] {
+            db.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,created_at,author_label,reason,source_format,logical_bytes,journal_epoch,journal_sequence,eligible_after)
+                VALUES('retention',?1,?2,?3,?4,1,'Owner','test','markdown',1,0,0,2)",rusqlite::params![id,seq,tree,"a".repeat(64)])?;
+            for object in [tree,"shared"] {
+                db.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES('retention',?1,?2)",rusqlite::params![id,object])?;
+            }
+        }
+        db.execute_batch(r#"UPDATE documents SET status='active',current_checkpoint_id='current',stored_bytes=4,checkpoint_ref_count=4,
+            retention_json='{"version":1,"evaluation":{"accountRevision":0,"documentRevision":0}}' WHERE id='retention';
+            UPDATE accounts SET stored_bytes=4 WHERE id='owner';
+            UPDATE server_state SET stored_bytes=4,checkpoint_ref_count=4 WHERE id=1;"#)?;
+        Ok(())
+    }).unwrap();
+    let doc = DocumentId::new("retention").unwrap();
+    assert!(!catalog.delete_v2_checkpoint(&doc,&CheckpointId::new("current").unwrap(),UnixMillis::new(100).unwrap()).unwrap());
+    assert!(catalog.delete_v2_checkpoint(&doc,&CheckpointId::new("old").unwrap(),UnixMillis::new(100).unwrap()).unwrap());
+    catalog.with_connection(|db| {
+        let grace = |id: &str| db.query_row("SELECT gc_after FROM objects WHERE document_id='retention' AND id=?1",[id],|row|row.get::<_,Option<i64>>(0));
+        assert_eq!(grace("old-tree")?,Some(900_100));
+        assert_eq!(grace("shared")?,None);
+        assert_eq!(grace("unrelated-orphan")?,Some(7));
+        Ok(())
+    }).unwrap();
+    assert!(catalog.audit_v2_counters().unwrap());
+}

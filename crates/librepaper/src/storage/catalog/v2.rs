@@ -1705,7 +1705,12 @@ impl Catalog {
                 |row| row.get(0),
             ).map_err(CatalogError::from)?;
             if backup_frozen { return Ok(false); }
-            let current: Option<String> = tx.query_row("SELECT current_checkpoint_id FROM documents WHERE id=?1 AND status <> 'deleting'", [document_id.as_str()], |row| row.get(0)).optional().map_err(CatalogError::from)?;
+            let current: Option<Option<String>> = tx.query_row(
+                "SELECT d.current_checkpoint_id FROM documents d JOIN accounts a ON a.id=d.owner_id
+                 WHERE d.id=?1 AND d.status='active' AND a.status='active'",
+                [document_id.as_str()], |row| row.get(0),
+            ).optional().map_err(CatalogError::from)?;
+            let Some(current) = current else { return Ok(false); };
             if current.as_deref() == Some(checkpoint_id.as_str()) { return Ok(false); }
             let due: Option<i64> = tx.query_row(
                 "SELECT eligible_after FROM checkpoints WHERE document_id=?1 AND id=?2",
@@ -1734,10 +1739,29 @@ impl Catalog {
             let edges: i64 = tx.query_row("SELECT count(*) FROM checkpoint_objects WHERE document_id=?1 AND checkpoint_id=?2", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if edges == 0 { return Ok(false); }
             if edges > 32_768 { return Err(CatalogError::Conflict("checkpoint_delete_batch_limit: closure exceeds 32768 edges".into())); }
+            // Only objects whose final checkpoint edge is being removed can
+            // gain a new grace deadline. Other orphans retain their existing
+            // deadline, so repeated retention passes cannot defer GC forever.
+            let released_objects: Vec<String> = {
+                let mut statement = tx.prepare(
+                    "SELECT object_id FROM checkpoint_objects WHERE document_id=?1 AND checkpoint_id=?2",
+                )?;
+                let rows = statement.query_map(params![document_id.as_str(), checkpoint_id.as_str()], |row| row.get(0))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
             tx.execute("DELETE FROM checkpoints WHERE document_id=?1 AND id=?2", params![document_id.as_str(),checkpoint_id.as_str()]).map_err(CatalogError::from)?;
             tx.execute("UPDATE documents SET checkpoint_ref_count=checkpoint_ref_count-?1,updated_at=max(updated_at,?2) WHERE id=?3", params![edges,now.0,document_id.as_str()]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count-?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1", params![edges,now.0]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE objects SET gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END WHERE document_id=?2 AND state='available' AND live_root=0 AND publication_root=0 AND id NOT IN (SELECT object_id FROM checkpoint_objects WHERE document_id=?2)", params![now.0.saturating_add(900_000),document_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count-?1,catalog_revision=catalog_revision+1,updated_at=max(updated_at,?2) WHERE id=1", params![edges,now.0]).map_err(CatalogError::from)?;
+            for object_id in released_objects {
+                tx.execute(
+                    "UPDATE objects SET gc_after=max(COALESCE(gc_after,?1),?1)
+                     WHERE document_id=?2 AND id=?3 AND state='available'
+                       AND live_root=0 AND publication_root=0
+                       AND NOT EXISTS(SELECT 1 FROM checkpoint_objects
+                           WHERE document_id=?2 AND object_id=?3)",
+                    params![now.0.saturating_add(900_000), document_id.as_str(), object_id],
+                )?;
+            }
             Ok(true)
         })
     }
