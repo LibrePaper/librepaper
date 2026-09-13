@@ -1,4 +1,4 @@
-//! Annotation effects and their replay receipt commit in one SQLite transaction.
+//! Atomic annotation effects and replay receipts for v2 agent operations.
 use super::*;
 
 #[derive(Clone)]
@@ -8,58 +8,74 @@ pub struct AgentAnnotationAuthority {
     pub link_hash: String,
     pub policy_comment: bool,
     pub require_editor: bool,
-    /// Independent batch children share the parent's cancellation boundary.
     pub parent_request_id: String,
-    /// Present only for a sidebar runner; external MCP callers leave it
-    /// empty and do not participate in runner fencing.
     pub execution_epoch: String,
 }
 
+fn actor_key(authority: &AgentAnnotationAuthority) -> String {
+    if !authority.account_id.is_empty() {
+        authority.account_id.clone()
+    } else if !authority.link_hash.is_empty() {
+        format!("link:{}", authority.link_hash)
+    } else {
+        "internal".into()
+    }
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+fn valid_json(value: &str) -> CatalogResult<()> {
+    if value.len() > 65_536
+        || !serde_json::from_str::<serde_json::Value>(value)
+            .map(|v| v.is_object())
+            .unwrap_or(false)
+    {
+        return Err(CatalogError::Invalid(
+            "agent annotation receipt must be a JSON object within 65536 bytes".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl Catalog {
-    /// Check the current annotation authority without creating an operation
-    /// row. Replay paths use this before returning a stored receipt; otherwise
-    /// a revoked link could replay an old mutation indefinitely.
     pub fn agent_annotation_authorized(
         &self,
         slug: &str,
         authority: &AgentAnnotationAuthority,
     ) -> CatalogResult<()> {
         self.with_connection(|db| {
-            let account_ok = authority.account_id.is_empty()
-                || db.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND status='active' AND session_generation=?2)",
-                    params![authority.account_id, authority.generation],
-                    |row| row.get::<_, bool>(0),
-                )?;
-            let link_ok = !authority.link_hash.is_empty() && db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM links WHERE slug=?1 AND hash=?2 AND role IN ('commenter','editor') AND (?3=0 OR role='editor') AND (until='' OR unixepoch(until)>unixepoch('now')))",
-                params![slug, authority.link_hash, authority.require_editor],
-                |row| row.get::<_, bool>(0),
-            )?;
-            if !authority.policy_comment || !account_ok || !link_ok {
-                return Err(CatalogError::Conflict("agent annotation permission changed".into()));
+            let document_id: String = db.query_row("SELECT id FROM documents WHERE slug=?1 AND status='active'", [slug], |r| r.get(0)).map_err(CatalogError::from)?;
+            if !authority.account_id.is_empty() {
+                let active: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND status='active' AND session_generation=?2)", params![authority.account_id,authority.generation], |r| r.get(0)).map_err(CatalogError::from)?;
+                if !active { return Err(CatalogError::refused(CatalogRefusal::ActorRights, "agent annotation session changed")); }
             }
+            if !authority.link_hash.is_empty() {
+                let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM links WHERE document_id=?1 AND token_hash=?2 AND (expires_at IS NULL OR expires_at>?3))", params![document_id,authority.link_hash,unix_millis()], |r| r.get(0)).map_err(CatalogError::from)?;
+                if !valid { return Err(CatalogError::refused(CatalogRefusal::ActorRights, "agent annotation link changed")); }
+            }
+            if !authority.policy_comment { return Err(CatalogError::refused(CatalogRefusal::ActorRights, "agent annotation policy changed")); }
             Ok(())
         })
     }
 
-    /// The durable annotation sequence advances for updates, replies and
-    /// deletions, including when the last comment itself has been removed.
     pub fn agent_annotation_sequence(&self, slug: &str) -> CatalogResult<i64> {
         self.with_connection(|db| {
             db.query_row(
-                "SELECT comment_seq FROM documents WHERE slug=?1 AND status='active'",
+                "SELECT next_annotation_seq FROM documents WHERE slug=?1 AND status='active'",
                 [slug],
-                |row| row.get(0),
+                |r| r.get::<_, i64>(0),
             )
             .optional()
-            .map(|value| value.unwrap_or(0))
+            .map(|v| v.unwrap_or(0))
             .map_err(CatalogError::from)
         })
     }
-}
 
-impl Catalog {
     #[allow(clippy::too_many_arguments)]
     pub fn agent_annotations(
         &self,
@@ -72,55 +88,58 @@ impl Catalog {
         receipt: &str,
         authority: &AgentAnnotationAuthority,
     ) -> CatalogResult<String> {
+        if request_id.is_empty()
+            || !valid_digest(digest)
+            || receipt.len() > 65_536
+            || request_id.len() > 128
+        {
+            return Err(CatalogError::Invalid(
+                "invalid agent annotation request".into(),
+            ));
+        }
+        let issued = crate::util::request_key_timestamp(request_id).ok_or_else(|| {
+            CatalogError::Invalid("request key must be v2.<issued-milliseconds>.<nonce32>".into())
+        })?;
+        let now = unix_millis();
+        if issued > now.saturating_add(60_000) || now.saturating_sub(issued) > 15 * 60_000 {
+            return Err(CatalogError::Invalid(
+                "request key is outside the admission freshness window".into(),
+            ));
+        }
         self.immediate(|tx| {
-            let storage_id: String = tx.query_row("SELECT storage_id FROM documents WHERE slug=?1 AND status='active'",[slug],|r|r.get(0))?;
-            if !Self::agent_execution_epoch_active_tx(tx, slug, &authority.execution_epoch)? {
-                return Err(CatalogError::Conflict("runner execution lease expired".into()));
+            let document_id: String = tx.query_row("SELECT id FROM documents WHERE slug=?1 AND status='active'", [slug], |r| r.get(0)).map_err(CatalogError::from)?;
+            if !authority.account_id.is_empty() {
+                let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND status='active' AND session_generation=?2)", params![authority.account_id,authority.generation], |r| r.get(0)).map_err(CatalogError::from)?;
+                if !active { return Err(CatalogError::refused(CatalogRefusal::ActorRights, "agent annotation session changed")); }
             }
-            let account_ok = authority.account_id.is_empty() || tx.query_row("SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND status='active' AND session_generation=?2)",params![authority.account_id,authority.generation],|r|r.get::<_,bool>(0))?;
-            let link_ok: bool = !authority.link_hash.is_empty() && tx.query_row("SELECT EXISTS(SELECT 1 FROM links WHERE slug=?1 AND hash=?2 AND role IN ('commenter','editor') AND (?3=0 OR role='editor') AND (until='' OR unixepoch(until)>unixepoch('now')))",params![slug,authority.link_hash,authority.require_editor],|r|r.get(0))?;
-            if !authority.policy_comment || !account_ok || !link_ok {
-                return Err(CatalogError::Conflict("agent annotation permission changed".into()));
+            if !authority.link_hash.is_empty() {
+                let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM links WHERE document_id=?1 AND token_hash=?2 AND (expires_at IS NULL OR expires_at>?3))", params![document_id,authority.link_hash,now], |r| r.get(0)).map_err(CatalogError::from)?;
+                if !valid { return Err(CatalogError::refused(CatalogRefusal::ActorRights, "agent annotation link changed")); }
             }
-            let previous: Option<(String,String,String,String)> = tx.query_row("SELECT kind,status,request_digest,result FROM catalog_operations WHERE storage_id=?1 AND request_id=?2",params![storage_id,request_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-            if let Some((kind,status,old,result)) = previous {
-                return if kind == "agent_annotations" && status == "committed" && old == digest {
-                    Ok(result)
-                } else {
-                    Err(CatalogError::Conflict("operation key reused".into()))
-                };
+            if !authority.policy_comment { return Err(CatalogError::refused(CatalogRefusal::ActorRights, "agent annotation policy changed")); }
+            if !Self::agent_execution_epoch_active_tx(tx, slug, &authority.execution_epoch)? { return Err(CatalogError::Conflict("runner execution lease expired".into())); }
+            let actor = actor_key(authority);
+            let existing: Option<(String,String,String)> = tx.query_row("SELECT id,state,request_digest FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3 AND kind='agent_annotations'", params![document_id,actor,request_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?;
+            if let Some((operation_id,state,old_digest)) = existing {
+                if old_digest != digest { return Err(CatalogError::Conflict("operation key reused with different content".into())); }
+                if state == "committed" { return Ok(tx.query_row("SELECT result_json FROM operations WHERE id=?1", [&operation_id], |r| r.get(0)).map_err(CatalogError::from)?); }
+                return Err(CatalogError::Conflict("annotation operation is not replayable while prepared".into()));
             }
-            if Self::agent_cancellation_active_tx(tx, &storage_id, request_id)?
-                || (!authority.parent_request_id.is_empty()
-                    && Self::agent_cancellation_active_tx(tx, &storage_id, &authority.parent_request_id)?) {
-                return Err(CatalogError::Conflict("agent operation was cancelled".into()));
+            if Self::agent_cancellation_active_tx(tx, &document_id, request_id)? || (!authority.parent_request_id.is_empty() && Self::agent_cancellation_active_tx(tx, &document_id, &authority.parent_request_id)?) { return Err(CatalogError::Conflict("agent operation was cancelled".into())); }
+            let generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
+            let operation_id = hex::encode(crate::auth::random_bytes(16));
+            let plan = serde_json::json!({"version":2,"effect":"annotations","authority":{"account_id":authority.account_id,"generation":authority.generation,"link_hash":authority.link_hash,"policy_editor":authority.require_editor,"execution_epoch":authority.execution_epoch}}).to_string();
+            tx.execute("INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?8,?9)", params![operation_id,document_id,actor,request_id,digest,generation,plan,now,now.saturating_add(3_600_000)]).map_err(CatalogError::from)?;
+            for id in deletes {
+                tx.execute("DELETE FROM annotations WHERE document_id=?1 AND id=?2", params![document_id,id]).map_err(CatalogError::from)?;
             }
-            let count: i64 = tx.query_row("SELECT COUNT(*) FROM comments WHERE slug=?1",[slug],|r|r.get(0))?;
-            let mut added = 0;
-            for row in rows {
-                if row.slug != slug { return Err(CatalogError::Invalid("wrong comment document".into())); }
-                let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM comments WHERE slug=?1 AND id=?2)",params![slug,row.id],|r|r.get(0))?;
-                if !exists { added+=1; }
-            }
-            if count + added - deletes.len() as i64 > 500 { return Err(CatalogError::Conflict("comment quota exceeded".into())); }
-            for id in deletes { tx.execute("DELETE FROM comments WHERE slug=?1 AND id=?2",params![slug,id])?; }
-            for row in rows {
-                let seq: i64 = tx.query_row("SELECT comment_seq+1 FROM documents WHERE slug=?1",[slug],|r|r.get(0))?;
-                tx.execute("UPDATE documents SET comment_seq=?2 WHERE slug=?1",params![slug,seq])?;
-                tx.execute("INSERT INTO comments(slug,id,seq,motivation,body,creator,author,via,created,publication_id,exact,prefix,suffix,position,region,quarto_output,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,pass,resolved,resolved_at,resolved_in,point,color)
-                    VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)
-                    ON CONFLICT(slug,id) DO UPDATE SET seq=excluded.seq,body=excluded.body,publication_id=excluded.publication_id,proposed=excluded.proposed,outcome=excluded.outcome,resolved=excluded.resolved,resolved_at=excluded.resolved_at,resolved_in=excluded.resolved_in",
-                    params![row.slug,row.id,seq,row.motivation,row.body,row.creator,row.author,row.via,row.created,row.publication_id,row.exact,row.prefix,row.suffix,row.position,row.region,row.quarto_output,row.source_path,row.source_exact,row.source_prefix,row.source_suffix,row.source_position,row.proposed,row.outcome,row.accept_request,row.revision,row.pass,row.resolved,row.resolved_at,row.resolved_in,row.point,row.color])?;
-            }
-            for reply in replies {
-                if reply.slug!=slug { return Err(CatalogError::Invalid("wrong reply document".into())); }
-                let count: i64=tx.query_row("SELECT COUNT(*) FROM replies WHERE slug=?1 AND comment_id=?2",params![slug,reply.comment_id],|r|r.get(0))?;
-                if count>=100 { return Err(CatalogError::Conflict("reply quota exceeded".into())); }
-                tx.execute("INSERT INTO replies(slug,comment_id,id,body,creator,author,created) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![slug,reply.comment_id,reply.id,reply.body,reply.creator,reply.author,reply.created])?;
-            }
-            if !deletes.is_empty() || !replies.is_empty() { tx.execute("UPDATE documents SET comment_seq=comment_seq+1 WHERE slug=?1",[slug])?; }
-            tx.execute("INSERT INTO catalog_operations(storage_id,request_id,kind,request_digest,status,intent,result,created_at) VALUES(?1,?2,'agent_annotations',?3,'committed','{}',?4,?5)",params![storage_id,request_id,digest,receipt,crate::auth::now_unix()])?;
-            Ok(receipt.to_string())
+            let annotation_authority = AnnotationAuthority { account_id:&authority.account_id, generation:&authority.generation, link_hash:&authority.link_hash, policy_comment:authority.policy_comment, require_editor:authority.require_editor, execution_epoch:&authority.execution_epoch };
+            for row in rows { if row.slug != slug { return Err(CatalogError::Invalid("wrong comment document".into())); } Self::insert_comment_tx(tx,row,annotation_authority)?; }
+            for reply in replies { if reply.slug != slug { return Err(CatalogError::Invalid("wrong reply document".into())); } Self::insert_reply_tx(tx,reply,annotation_authority)?; }
+            let result = if receipt.is_empty() { serde_json::json!({"version":2,"request_id":request_id}).to_string() } else { receipt.to_owned() };
+            valid_json(&result)?;
+            tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'", params![result,now,now.saturating_add(3_600_000),operation_id]).map_err(CatalogError::from)?;
+            Ok(result)
         })
     }
 }

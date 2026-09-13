@@ -426,18 +426,18 @@ impl Catalog {
 
     pub fn discard_aborted_creation(&self, slug: &str) -> CatalogResult<bool> {
         self.immediate(|tx| {
-            let document: Option<(String, String)> = tx
+            let found: Option<(String, String)> = tx
                 .query_row(
                     "SELECT id,owner_id FROM documents WHERE slug=?1 AND status='creating'",
                     [slug], |r| Ok((r.get(0)?, r.get(1)?)),
                 ).optional().map_err(CatalogError::from)?;
-            let Some((document_id, owner_id)) = document else { return Ok(false); };
+            let Some((document_id, owner_id)) = found else { return Ok(false); };
             let objects: i64 = tx.query_row("SELECT count(*) FROM objects WHERE document_id=?1", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
             let operations: i64 = tx.query_row("SELECT count(*) FROM operations WHERE document_id=?1 AND state='prepared'", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
             if objects != 0 || operations != 0 { return Err(CatalogError::Conflict("creating document still has durable work".into())); }
             tx.execute("DELETE FROM documents WHERE id=?1 AND status='creating'", [&document_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE accounts SET document_count=CASE WHEN document_count>0 THEN document_count-1 ELSE 0 END WHERE id=?1", [&owner_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE server_state SET document_count=CASE WHEN document_count>0 THEN document_count-1 ELSE 0 END,catalog_revision=catalog_revision+1,updated_at=?1 WHERE id=1", [unix_millis()]).map_err(CatalogError::from)?;
+            if tx.execute("UPDATE accounts SET document_count=document_count-1 WHERE id=?1 AND document_count>=1", [&owner_id]).map_err(CatalogError::from)? != 1 { return Err(CatalogError::Conflict("owner document counter is inconsistent".into())); }
+            if tx.execute("UPDATE server_state SET document_count=document_count-1,catalog_revision=catalog_revision+1,updated_at=?1 WHERE id=1 AND document_count>=1", [unix_millis()]).map_err(CatalogError::from)? != 1 { return Err(CatalogError::Conflict("deployment document counter is inconsistent".into())); }
             Ok(true)
         })
     }
