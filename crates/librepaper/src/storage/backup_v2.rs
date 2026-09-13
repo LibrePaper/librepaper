@@ -23,11 +23,6 @@ pub const BACKUP_FORMAT_V2: u16 = 2;
 pub const BACKUP_OBJECT_LIMIT: usize = 1_000_000;
 pub const MAX_CATALOG_SNAPSHOT_BYTES: usize = 512 * 1024 * 1024;
 pub const BACKUP_PREFIX_V2: &str = "recovery/v2";
-/// Scratch space reserved while a v2 snapshot is copied.  These values are
-/// configuration metadata; the v2 operation itself accounts every copied
-/// catalogue/object byte through its prepared operation.
-pub const BACKUP_TEMP_RESERVATION_BYTES: u64 = 64 * 1024 * 1024;
-pub const BACKUP_EMERGENCY_HEADROOM_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupObjectEntry {
