@@ -902,9 +902,9 @@ impl Catalog {
                 .ok()
                 .and_then(|plan| {
                     plan.get("manifest_object_id")
-                        .and_then(serde_json::Value::as_str)
+                        .and_then(serde_json::Value::as_str).map(str::to_owned)
                 });
-            if planned_manifest != Some(manifest_object_id.as_str()) {
+            if planned_manifest.as_deref() != Some(manifest_object_id.as_str()) {
                 return Err(CatalogError::Conflict(
                     "publication manifest is not bound to the prepared operation".into(),
                 ));
@@ -1751,9 +1751,9 @@ impl Catalog {
                 .ok()
                 .and_then(|plan| {
                     plan.get("manifest_object_id")
-                        .and_then(serde_json::Value::as_str)
+                        .and_then(serde_json::Value::as_str).map(str::to_owned)
                 });
-            if planned_manifest != Some(proof.manifest_object_id.as_str()) {
+            if planned_manifest.as_deref() != Some(proof.manifest_object_id.as_str()) {
                 return Err(CatalogError::Conflict(
                     "publication manifest is not bound to the prepared operation".into(),
                 ));

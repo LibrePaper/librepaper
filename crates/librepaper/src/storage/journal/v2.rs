@@ -215,7 +215,7 @@ where
         request: JournalAppendRequest,
         segments: &[Segment],
     ) -> JournalResult<Vec<WrittenJournalObject>> {
-        append_segments(self.catalog.as_ref(), self.blobs.as_ref(), request, segments).await
+        append_segments(self.catalog.as_ref(), self.blobs.clone(), request, segments).await
     }
 
     /// Read all catalogued segment descriptors in bounded pages and fail
@@ -696,7 +696,7 @@ fn verify_object_bytes(reference: &JournalObjectRef, bytes: &[u8]) -> JournalRes
 
 pub async fn append_segments(
     catalog: &dyn V2JournalCatalog,
-    blobs: &dyn BlobStore,
+    blobs: Arc<dyn BlobStore>,
     request: JournalAppendRequest,
     segments: &[Segment],
 ) -> JournalResult<Vec<WrittenJournalObject>> {
@@ -831,11 +831,7 @@ async fn write_encoded_segments(
             body.clone(),
             JOURNAL_OBJECT_CONTENT_TYPE,
         )
-            .await
-            .map_err(|error| match error {
-                BlobError::Conflict => JournalError::Conflict("journal allocation id reused".into()),
-                other => JournalError::Storage(other.to_string()),
-            })?;
+            .await?;
         written.push(WrittenJournalObject {
             object_id: allocation.object_id.clone(),
             storage_key: allocation.storage_key.clone(),
