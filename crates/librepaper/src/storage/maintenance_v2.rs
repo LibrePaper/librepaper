@@ -95,13 +95,17 @@ pub async fn run_gc_pass(
                 .map_err(|error| GcError::Invalid(error.to_string()))?;
         }
         let keys = batch.iter().map(|candidate| candidate.storage_key.clone()).collect::<Vec<_>>();
-        let outcomes = blobs
-            .delete_each(&keys)
-            .await
-            .map_err(|error| GcError::Storage(error.to_string()))?;
-        if outcomes.len() != batch.len() {
-            return Err(GcError::Storage("object store returned a short delete result".into()));
-        }
+        let outcomes = match blobs.delete_each(&keys).await {
+            Ok(outcomes) if outcomes.len() == batch.len() => outcomes,
+            Ok(_) | Err(_) => {
+                // The provider did not give per-key evidence. Keep every
+                // claimed row charged and retry it later; one bad batch must
+                // not strand the remaining candidates in deleting state.
+                vec![crate::storage::blob::DeleteOutcome::Uncertain(
+                    "delete batch did not settle".into(),
+                ); batch.len()]
+            }
+        };
         for (candidate, outcome) in batch.iter().zip(outcomes) {
             if outcome.confirmed() {
                 let released = catalog

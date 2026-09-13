@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::storage::blob::{validate_v2_object_key, BlobStore};
+use crate::storage::blob::{parse_v2_object_key, BlobStore};
 
 pub const BACKUP_FORMAT_V2: u16 = 2;
 pub const BACKUP_OBJECT_LIMIT: usize = 1_000_000;
@@ -26,6 +26,14 @@ pub struct BackupObjectEntry {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupFileEntry {
+    pub relative: String,
+    pub backup_key: String,
+    pub digest: String,
+    pub byte_length: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupManifestV2 {
     pub format_version: u16,
     pub operation_id: String,
@@ -34,6 +42,8 @@ pub struct BackupManifestV2 {
     pub created_at: i64,
     pub catalog_digest: String,
     pub catalog_length: u64,
+    pub identity: BackupFileEntry,
+    pub secrets: Vec<BackupFileEntry>,
     pub secret_versions: Vec<String>,
     pub objects: Vec<BackupObjectEntry>,
     pub complete: bool,
@@ -49,17 +59,22 @@ impl BackupManifestV2 {
             || !self.complete
             || self.objects.len() > BACKUP_OBJECT_LIMIT
             || !is_digest(&self.catalog_digest)
+            || !valid_backup_file(&self.identity)
+            || self.identity.relative != "state/deployment.id"
+            || self.secrets.len() > 16
         {
             return Err(BackupV2Error::Invalid("incomplete or malformed v2 manifest".into()));
         }
         let mut source_keys = HashSet::new();
         let mut backup_keys = HashSet::new();
         for object in &self.objects {
-            validate_v2_object_key(&object.source_key)
+            let (key_document, key_object) = parse_v2_object_key(&object.source_key)
                 .map_err(|error| BackupV2Error::Invalid(error.to_string()))?;
             if object.document_id.is_empty()
                 || object.object_id.len() != 32
                 || !object.object_id.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                || key_document != object.document_id
+                || key_object.as_str() != object.object_id
                 || !is_digest(&object.digest)
                 || !object.backup_key.starts_with(&format!("{BACKUP_PREFIX_V2}/"))
                 || object.backup_key.contains("..")
@@ -68,6 +83,24 @@ impl BackupManifestV2 {
             {
                 return Err(BackupV2Error::Invalid("invalid or duplicate object entry".into()));
             }
+        }
+        let mut files = HashSet::new();
+        if !files.insert(&self.identity.relative)
+            || self.secrets.iter().any(|secret| !files.insert(&secret.relative) || !valid_backup_file(secret))
+        {
+            return Err(BackupV2Error::Invalid("duplicate or malformed backup file entry".into()));
+        }
+        if self.secret_versions.len() != self.secrets.len()
+            || self
+                .secret_versions
+                .iter()
+                .any(|version| !is_digest(version))
+            || self
+                .secret_versions
+                .iter()
+                .any(|version| !self.secrets.iter().any(|secret| &secret.digest == version))
+        {
+            return Err(BackupV2Error::Invalid("secret versions do not match copied secrets".into()));
         }
         Ok(())
     }
@@ -100,8 +133,17 @@ pub struct BackupSnapshot {
     pub deployment_id: String,
     pub snapshot_revision: i64,
     pub catalog_bytes: Vec<u8>,
-    pub objects: Vec<BackupObjectEntry>,
+    pub object_count: usize,
+    pub identity: BackupPayload,
+    pub secrets: Vec<BackupPayload>,
     pub secret_versions: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BackupPayload {
+    pub relative: String,
+    pub bytes: Vec<u8>,
+    pub digest: String,
 }
 
 /// The catalog side of the online backup fence. `prepare_backup` must finish
@@ -109,6 +151,12 @@ pub struct BackupSnapshot {
 #[async_trait::async_trait]
 pub trait V2BackupCatalog: Send + Sync {
     async fn prepare_backup(&self, now: i64) -> Result<BackupSnapshot, String>;
+    async fn backup_objects_page(
+        &self,
+        operation_id: &str,
+        after_object_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<BackupObjectEntry>, String>;
     async fn commit_backup(&self, operation_id: &str, manifest_digest: &str) -> Result<(), String>;
     async fn abort_backup(&self, operation_id: &str) -> Result<(), String>;
 }
@@ -136,11 +184,27 @@ pub async fn create_backup(
         created_at: now,
         catalog_digest: hex::encode(Sha256::digest(&snapshot.catalog_bytes)),
         catalog_length: snapshot.catalog_bytes.len() as u64,
+        identity: BackupFileEntry {
+            relative: snapshot.identity.relative.clone(),
+            backup_key: format!("{BACKUP_PREFIX_V2}/{backup_id}/{}", snapshot.identity.relative),
+            digest: snapshot.identity.digest.clone(),
+            byte_length: snapshot.identity.bytes.len() as u64,
+        },
+        secrets: snapshot
+            .secrets
+            .iter()
+            .map(|secret| BackupFileEntry {
+                relative: secret.relative.clone(),
+                backup_key: format!("{BACKUP_PREFIX_V2}/{backup_id}/{}", secret.relative),
+                digest: secret.digest.clone(),
+                byte_length: secret.bytes.len() as u64,
+            })
+            .collect(),
         secret_versions: snapshot.secret_versions,
-        objects: Vec::with_capacity(snapshot.objects.len()),
+        objects: Vec::with_capacity(snapshot.object_count.min(BACKUP_OBJECT_LIMIT)),
         complete: false,
     };
-    if snapshot.objects.len() > BACKUP_OBJECT_LIMIT {
+    if snapshot.object_count > BACKUP_OBJECT_LIMIT {
         let _ = catalog.abort_backup(&snapshot.operation_id).await;
         return Err(BackupV2Error::Invalid("backup object limit exceeded".into()));
     }
@@ -148,11 +212,28 @@ pub async fn create_backup(
         let catalog_key = format!("{BACKUP_PREFIX_V2}/{backup_id}/catalog.db");
         put_new_destination(destination, &catalog_key, snapshot.catalog_bytes, "application/vnd.sqlite3")
             .await?;
-        for mut object in snapshot.objects {
-            object.backup_key = format!(
-                "{BACKUP_PREFIX_V2}/{backup_id}/objects/{}/{}",
-                object.document_id, object.object_id
-            );
+        copy_file_payload(destination, &manifest.identity, &snapshot.identity.bytes).await?;
+        for (secret, entry) in snapshot.secrets.iter().zip(&manifest.secrets) {
+            copy_file_payload(destination, entry, &secret.bytes).await?;
+        }
+        let mut after = None;
+        let mut copied = 0usize;
+        loop {
+            let page = catalog
+                .backup_objects_page(&snapshot.operation_id, after.as_deref(), 256)
+                .await
+                .map_err(BackupV2Error::Catalog)?;
+            if page.is_empty() {
+                break;
+            }
+            if page.len() > 256 {
+                return Err(BackupV2Error::Catalog("backup object page exceeded bound".into()));
+            }
+            for mut object in page {
+                object.backup_key = format!(
+                    "{BACKUP_PREFIX_V2}/{backup_id}/objects/{}/{}",
+                    object.document_id, object.object_id
+                );
             let body = source
                 .get(&object.source_key)
                 .await
@@ -167,6 +248,16 @@ pub async fn create_backup(
             }
             put_new_destination(destination, &object.backup_key, body, "application/octet-stream").await?;
             manifest.objects.push(object);
+                copied = copied.saturating_add(1);
+            }
+            let next = manifest.objects.last().map(|object| object.object_id.clone());
+            if next == after {
+                return Err(BackupV2Error::Catalog("backup object cursor did not advance".into()));
+            }
+            after = next;
+        }
+        if copied != snapshot.object_count {
+            return Err(BackupV2Error::Corrupt("backup object cursor did not cover snapshot".into()));
         }
         manifest.complete = true;
         manifest.validate()?;
@@ -206,6 +297,7 @@ pub trait V2RestoreCatalog: Send + Sync {
         snapshot_revision: i64,
         catalog_bytes: Vec<u8>,
     ) -> Result<(), String>;
+    async fn install_deployment_file(&self, relative: &str, bytes: Vec<u8>) -> Result<(), String>;
     async fn finish_restore(&self) -> Result<(), String>;
 }
 
@@ -235,6 +327,22 @@ pub async fn restore_backup(
         || hex::encode(Sha256::digest(&catalog_bytes)) != manifest.catalog_digest
     {
         return Err(BackupV2Error::Corrupt("catalog snapshot digest mismatch".into()));
+    }
+    for file in std::iter::once(&manifest.identity).chain(manifest.secrets.iter()) {
+        if !file.backup_key.starts_with(&format!("{BACKUP_PREFIX_V2}/{backup_id}/")) {
+            return Err(BackupV2Error::Corrupt("backup file escapes its destination scope".into()));
+        }
+        let body = backup
+            .get(&file.backup_key)
+            .await
+            .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+        if body.len() as u64 != file.byte_length || hex::encode(Sha256::digest(&body)) != file.digest {
+            return Err(BackupV2Error::Corrupt(format!("backup file {} failed digest verification", file.relative)));
+        }
+        catalog
+            .install_deployment_file(&file.relative, body)
+            .await
+            .map_err(BackupV2Error::Catalog)?;
     }
     catalog
         .install_catalog_snapshot(
@@ -291,6 +399,27 @@ async fn put_new_destination(
         .map_err(|error| BackupV2Error::Storage(error.to_string()))
 }
 
+async fn copy_file_payload(
+    destination: &dyn BlobStore,
+    entry: &BackupFileEntry,
+    body: &[u8],
+) -> Result<(), BackupV2Error> {
+    if body.len() as u64 != entry.byte_length || hex::encode(Sha256::digest(body)) != entry.digest {
+        return Err(BackupV2Error::Corrupt(format!("backup payload {} failed digest verification", entry.relative)));
+    }
+    put_new_destination(destination, &entry.backup_key, body.to_vec(), "application/octet-stream").await
+}
+
+fn valid_backup_file(file: &BackupFileEntry) -> bool {
+    !file.relative.is_empty()
+        && !file.relative.starts_with('/')
+        && !file.relative.contains("..")
+        && !file.relative.contains('\\')
+        && file.backup_key.starts_with(&format!("{BACKUP_PREFIX_V2}/"))
+        && !file.backup_key.contains("..")
+        && is_digest(&file.digest)
+}
+
 fn is_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
@@ -321,6 +450,13 @@ mod tests {
             created_at: 2,
             catalog_digest: digest(),
             catalog_length: 0,
+            identity: BackupFileEntry {
+                relative: "state/deployment.id".into(),
+                backup_key: "recovery/v2/backup/state/deployment.id".into(),
+                digest: digest(),
+                byte_length: 0,
+            },
+            secrets: Vec::new(),
             secret_versions: Vec::new(),
             objects: vec![entry.clone(), entry],
             complete: true,

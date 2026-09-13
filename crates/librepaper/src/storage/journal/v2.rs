@@ -237,11 +237,13 @@ pub fn recover_records(
             .first()
             .ok_or_else(|| JournalError::Corrupt("empty journal fragment group".into()))?;
         let count = first_part.fragment_count;
+        let expected_retry_id = first_part.retry_id.clone();
+        let expected_digest = first_part.digest.clone();
         if parts.len() != count as usize
             || parts.iter().any(|part| {
                 part.fragment_count != count
-                    || part.retry_id != first_part.retry_id
-                    || part.digest != first_part.digest
+                    || part.retry_id != expected_retry_id
+                    || part.digest != expected_digest
                     || part.epoch != epoch
             })
         {
@@ -253,13 +255,13 @@ pub fn recover_records(
             return Err(JournalError::Corrupt("journal fragment index gap".into()));
         }
         let payload = parts.iter().flat_map(|part| part.payload.iter().copied()).collect::<Vec<_>>();
-        if hex::encode(Sha256::digest(&payload)) != first_part.digest {
+        if hex::encode(Sha256::digest(&payload)) != expected_digest {
             return Err(JournalError::Corrupt("complete journal record digest mismatch".into()));
         }
         recovered.push(JournalRecord::new(
             document_id,
             sequence,
-            first_part.retry_id.clone(),
+            expected_retry_id,
             epoch,
             payload,
         )?);

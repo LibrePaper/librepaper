@@ -95,6 +95,10 @@ pub fn validate_document_id(document_id: &str) -> BlobResult<()> {
 }
 
 pub fn validate_v2_object_key(key: &str) -> BlobResult<()> {
+    parse_v2_object_key(key).map(|_| ())
+}
+
+pub fn parse_v2_object_key(key: &str) -> BlobResult<(String, ObjectId)> {
     let mut components = key.split('/');
     if components.next() != Some("v2")
         || components.next() != Some("documents")
@@ -109,7 +113,7 @@ pub fn validate_v2_object_key(key: &str) -> BlobResult<()> {
         return Err(BlobError::Other("object key has unexpected components".into()));
     }
     validate_document_id(document_id)?;
-    ObjectId::parse(object_id.to_owned()).map(|_| ())
+    ObjectId::parse(object_id.to_owned()).map(|object_id| (document_id.to_owned(), object_id))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
