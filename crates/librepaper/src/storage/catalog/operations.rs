@@ -799,13 +799,54 @@ impl Catalog {
             }
         };
         let actor_key = match request.actor.as_ref() {
-            Some(actor) if actor.account_id.is_empty() => actor.owner_key.to_owned(),
+            Some(actor) if actor.account_id.is_empty() && !actor.owner_key.is_empty() => {
+                format!(
+                    "account:anonymous:{}",
+                    hex::encode(sha2::Sha256::digest(actor.owner_key.as_bytes()))
+                )
+            }
+            Some(actor) if actor.account_id.is_empty() => "internal".to_owned(),
             Some(actor) => {
                 // Account actors are namespaced so a link or internal actor
                 // can never collide with an account id.
                 format!("account:{}", actor.account_id)
             }
-            None => "internal".to_owned(),
+            None => {
+                // Agent source callers are checked at their dedicated
+                // authority boundary before reaching this compatibility
+                // adapter. Derive the durable actor namespace from the
+                // signed intent so the adapter never stores a bearer key.
+                let proof = serde_json::from_str::<serde_json::Value>(request.intent)
+                    .ok()
+                    .and_then(|plan| plan.get("actor").or_else(|| plan.get("authority")).cloned());
+                let account_id = proof
+                    .as_ref()
+                    .and_then(|value| value.get("account_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let link_hash = proof
+                    .as_ref()
+                    .and_then(|value| value.get("link_hash"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let owner_key = proof
+                    .as_ref()
+                    .and_then(|value| value.get("owner_key"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if !account_id.is_empty() {
+                    format!("account:{account_id}")
+                } else if !link_hash.is_empty() {
+                    format!("link:{link_hash}")
+                } else if owner_key.is_empty() {
+                    "internal".to_owned()
+                } else {
+                    format!(
+                        "account:anonymous:{}",
+                        hex::encode(sha2::Sha256::digest(owner_key.as_bytes()))
+                    )
+                }
+            }
         };
         if actor_key.is_empty() || request.intent.len() > 65_536 {
             return Err(CatalogError::Invalid(

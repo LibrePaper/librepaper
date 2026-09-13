@@ -27,40 +27,6 @@ fn actor_key(actor: MutationAuthority<'_>) -> String {
     }
 }
 
-fn intent_actor_matches(intent: &str, actor: MutationAuthority<'_>) -> bool {
-    let Ok(plan) = serde_json::from_str::<serde_json::Value>(intent) else {
-        return false;
-    };
-    let Some(proof) = plan.get("actor").or_else(|| plan.get("authority")) else {
-        return actor.account_id.is_empty()
-            && actor.owner_key.is_empty()
-            && actor.link_hash.is_empty()
-            && actor.automation;
-    };
-    let account_id = proof
-        .get("account_id")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let link_hash = proof
-        .get("link_hash")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let owner_key = proof
-        .get("owner_key")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let expected = if !account_id.is_empty() {
-        format!("account:{account_id}")
-    } else if !link_hash.is_empty() {
-        format!("link:{link_hash}")
-    } else if let Some(account_id) = actor_anonymous_account(owner_key) {
-        format!("account:{account_id}")
-    } else {
-        "internal".to_owned()
-    };
-    expected == actor_key(actor)
-}
-
 fn read_operation_v2(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
     Ok(Operation {
         storage_id: row.get(0)?,
@@ -115,14 +81,16 @@ impl Catalog {
         }
         let document_id = DocumentId::new(storage_id.to_owned())
             .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+        let requested_actor = actor_key(actor);
         self.immediate(|tx| {
             let record = tx
                 .query_row(
                     "SELECT document_id,request_key,kind,request_digest,state,plan_json,
                             result_json,created_at,actor_key,receipt_expires_at
                        FROM operations
-                      WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'",
-                    params![document_id.as_str(), request_id],
+                      WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                        AND kind='agent_apply'",
+                    params![document_id.as_str(), requested_actor.as_str(), request_id],
                     |row| {
                         Ok((
                             read_operation_v2(row)?,
@@ -136,23 +104,21 @@ impl Catalog {
             let Some((operation, stored_actor, receipt_expires_at)) = record else {
                 return Err(CatalogError::NotFound);
             };
-            if operation.request_digest != request_digest {
-                return Err(CatalogError::Conflict(
-                    "request id was reused with different content".into(),
-                ));
-            }
             if !agent_authorized_in_tx(tx, storage_id, request_id, execution_epoch, actor)? {
                 return Err(CatalogError::refused(
                     CatalogRefusal::ActorRights,
                     "actor rights or session generation changed",
                 ));
             }
-            if stored_actor != actor_key(actor)
-                && !(stored_actor == "internal" && intent_actor_matches(&operation.intent, actor))
-            {
+            if stored_actor != requested_actor {
                 return Err(CatalogError::refused(
                     CatalogRefusal::ActorRights,
                     "operation actor identity changed",
+                ));
+            }
+            if operation.request_digest != request_digest {
+                return Err(CatalogError::Conflict(
+                    "request id was reused with different content".into(),
                 ));
             }
             if operation.status == "committed" {
@@ -247,8 +213,9 @@ impl Catalog {
                 "SELECT document_id,request_key,kind,request_digest,state,plan_json,
                         result_json,created_at
                    FROM operations
-                  WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'",
-                params![storage_id, request_id],
+                  WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                    AND kind='agent_apply'",
+                params![storage_id, requested_actor.as_str(), request_id],
                 read_operation_v2,
             )
             .map_err(CatalogError::from)
@@ -272,19 +239,28 @@ fn agent_authorized_in_tx(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(CatalogError::from)?;
-    let stored_actor: Option<(String, String)> = tx
+    let stored_actor: Option<String> = tx
         .query_row(
-            "SELECT actor_key,plan_json FROM operations
-              WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'",
-            params![document_id, request_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            "SELECT actor_key FROM operations
+              WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                AND kind='agent_apply'",
+            params![document_id, actor_key(actor), request_id],
+            |row| row.get(0),
         )
         .optional()
         .map_err(CatalogError::from)?;
-    if let Some((stored, intent)) = stored_actor {
-        if stored != actor_key(actor)
-            && !(stored == "internal" && intent_actor_matches(&intent, actor))
-        {
+    if stored_actor.is_none() && !request_id.is_empty() {
+        // A preflight check legitimately runs before prepare_operation. A
+        // commit/replay cannot reach this point without the actor-scoped row.
+        let prepared: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM operations
+                  WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply')",
+                params![document_id, request_id],
+                |row| row.get(0),
+            )
+            .map_err(CatalogError::from)?;
+        if prepared {
             return Ok(false);
         }
     }

@@ -761,14 +761,15 @@ impl Room {
             })
             .collect::<Result<Vec<_>, WriteError>>()?;
         let source_lease = if let Some(catalog) = self.catalog.get() {
+            let lease_now = crate::util::now_millis();
             Some(
                 begin_source_history_lease(
                     catalog,
                     &self.storage_id,
                     &lease_operation,
                     lease_objects,
-                    now.saturating_mul(1000),
-                    now.saturating_mul(1000).saturating_add(120_000),
+                    lease_now,
+                    lease_now.saturating_add(120_000),
                 )
                 .await?,
             )
