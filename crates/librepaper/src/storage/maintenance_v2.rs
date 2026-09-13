@@ -276,35 +276,63 @@ pub async fn run_gc_pass(
         lease_rows_expired,
         ..GcReport::default()
     };
+    let mut first_error = None;
     for batch in candidates.chunks(GC_DELETE_BATCH) {
         for candidate in batch {
-            validate_v2_object_key(&candidate.storage_key)
-                .map_err(|error| GcError::Invalid(error.to_string()))?;
+            if let Err(error) = validate_v2_object_key(&candidate.storage_key) {
+                let result = catalog
+                    .settle_gc(
+                        &candidate.document_id,
+                        &candidate.object_id,
+                        false,
+                        now.saturating_add(OBJECT_SUPERSESSION_GRACE_MS),
+                    )
+                    .await;
+                if let Err(settle_error) = result {
+                    first_error.get_or_insert(GcError::Catalog(settle_error));
+                }
+                report.objects_deferred += 1;
+                first_error.get_or_insert(GcError::Invalid(error.to_string()));
+            }
         }
-        let keys = batch.iter().map(|candidate| candidate.storage_key.clone()).collect::<Vec<_>>();
+        let valid = batch
+            .iter()
+            .filter(|candidate| validate_v2_object_key(&candidate.storage_key).is_ok())
+            .collect::<Vec<_>>();
+        if valid.is_empty() {
+            continue;
+        }
+        let keys = valid.iter().map(|candidate| candidate.storage_key.clone()).collect::<Vec<_>>();
         let outcomes = match blobs.delete_each(&keys).await {
-            Ok(outcomes) if outcomes.len() == batch.len() => outcomes,
+            Ok(outcomes) if outcomes.len() == valid.len() => outcomes,
             Ok(_) | Err(_) => {
                 // The provider did not give per-key evidence. Keep every
                 // claimed row charged and retry it later; one bad batch must
                 // not strand the remaining candidates in deleting state.
                 vec![crate::storage::blob::DeleteOutcome::Uncertain(
                     "delete batch did not settle".into(),
-                ); batch.len()]
+                ); valid.len()]
             }
         };
-        for (candidate, outcome) in batch.iter().zip(outcomes) {
+        for (candidate, outcome) in valid.into_iter().zip(outcomes) {
             if outcome.confirmed() {
-                let released = catalog
+                let released = match catalog
                     .settle_gc(&candidate.document_id, &candidate.object_id, true, now)
                     .await
-                    .map_err(GcError::Catalog)?;
+                {
+                    Ok(released) => released,
+                    Err(error) => {
+                        first_error.get_or_insert(GcError::Catalog(error));
+                        report.objects_deferred += 1;
+                        continue;
+                    }
+                };
                 report.objects_deleted += 1;
                 report.bytes_released = report.bytes_released.saturating_add(released);
             } else {
                 // Failed and uncertain outcomes keep the row, state and full
                 // charge. A retry deadline prevents hot-looping this key.
-                catalog
+                if let Err(error) = catalog
                     .settle_gc(
                         &candidate.document_id,
                         &candidate.object_id,
@@ -312,10 +340,15 @@ pub async fn run_gc_pass(
                         now.saturating_add(OBJECT_SUPERSESSION_GRACE_MS),
                     )
                     .await
-                    .map_err(GcError::Catalog)?;
+                {
+                    first_error.get_or_insert(GcError::Catalog(error));
+                }
                 report.objects_deferred += 1;
             }
         }
     }
-    Ok(report)
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(report),
+    }
 }
