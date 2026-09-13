@@ -1735,6 +1735,7 @@ impl Catalog {
                 return Err(CatalogError::Conflict("source operation id already exists".into()));
             }
             let operation_plan_json = operation_plan.to_string();
+            validate_json(&operation_plan_json, "source operation plan", 65_536)?;
             tx.execute(
                 "INSERT INTO operations
                  (id,document_id,account_id,actor_key,request_key,kind,request_digest,state,
