@@ -1,6 +1,66 @@
 //! Atomic receipt transition for agent source operations in catalog v2.
 use super::*;
 
+const AGENT_RECEIPT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+
+fn actor_anonymous_account(owner_key: &str) -> Option<String> {
+    if owner_key.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "anonymous:{}",
+        hex::encode(sha2::Sha256::digest(owner_key.as_bytes()))
+    ))
+}
+
+fn actor_key(actor: MutationAuthority<'_>) -> String {
+    if !actor.account_id.is_empty() {
+        format!("account:{}", actor.account_id)
+    } else if !actor.link_hash.is_empty() {
+        format!("link:{}", actor.link_hash)
+    } else if let Some(account_id) = actor_anonymous_account(actor.owner_key) {
+        // Keep the bearer credential transient. The operation records only
+        // the stable anonymous account identity derived from it.
+        format!("account:{account_id}")
+    } else {
+        "internal".to_owned()
+    }
+}
+
+fn intent_actor_matches(intent: &str, actor: MutationAuthority<'_>) -> bool {
+    let Ok(plan) = serde_json::from_str::<serde_json::Value>(intent) else {
+        return false;
+    };
+    let Some(proof) = plan.get("actor").or_else(|| plan.get("authority")) else {
+        return actor.account_id.is_empty()
+            && actor.owner_key.is_empty()
+            && actor.link_hash.is_empty()
+            && actor.automation;
+    };
+    let account_id = proof
+        .get("account_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let link_hash = proof
+        .get("link_hash")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let owner_key = proof
+        .get("owner_key")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let expected = if !account_id.is_empty() {
+        format!("account:{account_id}")
+    } else if !link_hash.is_empty() {
+        format!("link:{link_hash}")
+    } else if let Some(account_id) = actor_anonymous_account(owner_key) {
+        format!("account:{account_id}")
+    } else {
+        "internal".to_owned()
+    };
+    expected == actor_key(actor)
+}
+
 fn read_operation_v2(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
     Ok(Operation {
         storage_id: row.get(0)?,
@@ -12,15 +72,6 @@ fn read_operation_v2(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
         result: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
         created_at: row.get(7)?,
     })
-}
-fn actor_key(actor: MutationAuthority<'_>) -> String {
-    if !actor.account_id.is_empty() {
-        format!("account:{}", actor.account_id)
-    } else if !actor.link_hash.is_empty() {
-        format!("link:{}", actor.link_hash)
-    } else {
-        "internal".to_owned()
-    }
 }
 
 impl Catalog {
@@ -58,30 +109,149 @@ impl Catalog {
             || request_digest.len() != 64
             || !request_digest
                 .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         {
             return Err(CatalogError::Invalid("invalid agent source commit".into()));
         }
         let document_id = DocumentId::new(storage_id.to_owned())
-            .map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            .map_err(|error| CatalogError::Invalid(error.to_string()))?;
         self.immediate(|tx| {
-            let operation: Option<Operation> = tx.query_row("SELECT document_id,request_key,kind,request_digest,state,plan_json,result_json,created_at FROM operations WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'", params![document_id.as_str(),request_id], read_operation_v2).optional().map_err(CatalogError::from)?;
-            let Some(operation) = operation else { return Err(CatalogError::NotFound); };
-            if operation.request_digest != request_digest { return Err(CatalogError::Conflict("request id was reused with different content".into())); }
-            if operation.status == "committed" { return Ok(operation); }
-            if operation.status != "prepared" { return Err(CatalogError::Conflict("operation was aborted".into())); }
-            if !agent_authorized_in_tx(tx, storage_id, request_id, execution_epoch, actor)? { return Err(CatalogError::refused(CatalogRefusal::ActorRights, "actor rights or session generation changed")); }
-            if Self::agent_cancellation_active_tx(tx, storage_id, request_id)? { return Err(CatalogError::Conflict("agent operation was cancelled".into())); }
+            let record = tx
+                .query_row(
+                    "SELECT document_id,request_key,kind,request_digest,state,plan_json,
+                            result_json,created_at,actor_key,receipt_expires_at
+                       FROM operations
+                      WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'",
+                    params![document_id.as_str(), request_id],
+                    |row| {
+                        Ok((
+                            read_operation_v2(row)?,
+                            row.get::<_, String>(8)?,
+                            row.get::<_, Option<i64>>(9)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            let Some((operation, stored_actor, receipt_expires_at)) = record else {
+                return Err(CatalogError::NotFound);
+            };
+            if operation.request_digest != request_digest {
+                return Err(CatalogError::Conflict(
+                    "request id was reused with different content".into(),
+                ));
+            }
+            if !agent_authorized_in_tx(tx, storage_id, request_id, execution_epoch, actor)? {
+                return Err(CatalogError::refused(
+                    CatalogRefusal::ActorRights,
+                    "actor rights or session generation changed",
+                ));
+            }
+            if stored_actor != actor_key(actor)
+                && !(stored_actor == "internal" && intent_actor_matches(&operation.intent, actor))
+            {
+                return Err(CatalogError::refused(
+                    CatalogRefusal::ActorRights,
+                    "operation actor identity changed",
+                ));
+            }
+            if operation.status == "committed" {
+                if receipt_expires_at.unwrap_or_default() <= unix_millis() {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::RequestExpired,
+                        "request receipt has expired; submit a new request key",
+                    ));
+                }
+                return Ok(operation);
+            }
+            if operation.status != "prepared" {
+                return Err(CatalogError::Conflict("operation was aborted".into()));
+            }
+            if Self::agent_cancellation_active_tx(tx, storage_id, request_id)? {
+                return Err(CatalogError::Conflict(
+                    "agent operation was cancelled".into(),
+                ));
+            }
             if let Some((comment_id, expected_seq)) = acceptance {
-                let changed = tx.execute("UPDATE annotations SET suggestion_state='accepted',resolved_at=?1,acceptance_operation_id=?2,resolution_revision=?3 WHERE document_id=?4 AND id=?5 AND seq=?6 AND kind='suggestion' AND suggestion_state='proposed'", params![unix_millis(),request_id,request_id,storage_id,comment_id,expected_seq]).map_err(CatalogError::from)?;
-                if changed != 1 { return Err(CatalogError::Conflict("suggestion version or outcome changed".into())); }
+                let revision: String = tx
+                    .query_row(
+                        "SELECT COALESCE(current_checkpoint_id,'')
+                           FROM documents WHERE id=?1 AND status='active'",
+                        [storage_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if revision.is_empty() {
+                    return Err(CatalogError::Conflict(
+                        "suggestion acceptance requires a committed checkpoint".into(),
+                    ));
+                }
+                let changed = tx
+                    .execute(
+                        "UPDATE annotations
+                            SET protected_checkpoint_id=NULL,
+                                suggestion_state='accepted',
+                                resolved_at=?1,
+                                acceptance_operation_id=?2,
+                                resolution_revision=?3,
+                                updated_at=max(updated_at,?1)
+                          WHERE document_id=?4 AND id=?5 AND seq=?6
+                            AND kind='suggestion' AND suggestion_state='proposed'",
+                        params![
+                            unix_millis(),
+                            request_id,
+                            revision,
+                            storage_id,
+                            comment_id,
+                            expected_seq
+                        ],
+                    )
+                    .map_err(CatalogError::from)?;
+                if changed != 1 {
+                    return Err(CatalogError::Conflict(
+                        "suggestion version or outcome changed".into(),
+                    ));
+                }
                 tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=?1", [storage_id])?;
             }
             let completed = unix_millis();
-            let result_json = if result.is_empty() { serde_json::json!({"version":2,"operation":request_id}).to_string() } else { result.to_owned() };
-            if serde_json::from_str::<serde_json::Value>(&result_json).map(|v| !v.is_object()).unwrap_or(true) { return Err(CatalogError::Invalid("agent source result must be a JSON object".into())); }
-            tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE document_id=?4 AND request_key=?5 AND kind='agent_apply' AND state='prepared'", params![result_json,completed,completed.saturating_add(3_600_000),storage_id,request_id]).map_err(CatalogError::from)?;
-            tx.query_row("SELECT document_id,request_key,kind,request_digest,state,plan_json,result_json,created_at FROM operations WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'", params![storage_id,request_id], read_operation_v2).map_err(CatalogError::from)
+            let result_json = if result.is_empty() {
+                serde_json::json!({"version":2,"operation":request_id}).to_string()
+            } else {
+                result.to_owned()
+            };
+            if serde_json::from_str::<serde_json::Value>(&result_json)
+                .map(|value| !value.is_object())
+                .unwrap_or(true)
+            {
+                return Err(CatalogError::Invalid(
+                    "agent source result must be a JSON object".into(),
+                ));
+            }
+            tx.execute(
+                "UPDATE operations
+                    SET state='committed',result_json=?1,completed_at=?2,
+                        receipt_expires_at=?3,updated_at=?2
+                  WHERE document_id=?4 AND request_key=?5
+                    AND kind='agent_apply' AND state='prepared'",
+                params![
+                    result_json,
+                    completed,
+                    completed.saturating_add(AGENT_RECEIPT_RETENTION_MS),
+                    storage_id,
+                    request_id
+                ],
+            )
+            .map_err(CatalogError::from)?;
+            tx.query_row(
+                "SELECT document_id,request_key,kind,request_digest,state,plan_json,
+                        result_json,created_at
+                   FROM operations
+                  WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'",
+                params![storage_id, request_id],
+                read_operation_v2,
+            )
+            .map_err(CatalogError::from)
         })
     }
 }
@@ -93,30 +263,63 @@ fn agent_authorized_in_tx(
     execution_epoch: &str,
     actor: MutationAuthority<'_>,
 ) -> CatalogResult<bool> {
-    let slug: String = tx
+    let (document_id, slug): (String, String) = tx
         .query_row(
-            "SELECT slug FROM documents WHERE id=?1 AND status='active'",
+            "SELECT d.id,d.slug
+               FROM documents d
+              WHERE (d.id=?1 OR d.slug=?1) AND d.status='active'",
             [storage_id],
-            |r| r.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(CatalogError::from)?;
+    let stored_actor: Option<(String, String)> = tx
+        .query_row(
+            "SELECT actor_key,plan_json FROM operations
+              WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'",
+            params![document_id, request_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(CatalogError::from)?;
+    if let Some((stored, intent)) = stored_actor {
+        if stored != actor_key(actor)
+            && !(stored == "internal" && intent_actor_matches(&intent, actor))
+        {
+            return Ok(false);
+        }
+    }
     if !Catalog::agent_execution_epoch_active_tx(tx, &slug, execution_epoch)? {
         return Ok(false);
     }
-    if !actor.account_id.is_empty() {
-        let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND status='active' AND session_generation=?2)", params![actor.account_id,actor.generation], |r| r.get(0)).map_err(CatalogError::from)?;
-        if !active {
+    if !actor.account_id.is_empty() || !actor.link_hash.is_empty() {
+        return Catalog::mutation_authorized_in_tx(tx, &slug, actor, "editor");
+    }
+    if let Some(anonymous_id) = actor_anonymous_account(actor.owner_key) {
+        let generation: String = tx
+            .query_row(
+                "SELECT session_generation FROM accounts
+                  WHERE id=?1 AND status='active'",
+                [anonymous_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(CatalogError::from)?
+            .unwrap_or_default();
+        if generation.is_empty() {
             return Ok(false);
         }
+        let effective = MutationAuthority {
+            account_id: anonymous_id.as_str(),
+            owner_key: "",
+            generation: generation.as_str(),
+            link_hash: "",
+            policy_editor: true,
+            automation: false,
+            unowned_publisher: false,
+            execution_epoch,
+            agent_checkpoint: actor.agent_checkpoint,
+        };
+        return Catalog::mutation_authorized_in_tx(tx, &slug, effective, "editor");
     }
-    if !actor.link_hash.is_empty() {
-        let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM links WHERE document_id=?1 AND token_hash=?2 AND role='editor' AND (expires_at IS NULL OR expires_at>?3))", params![storage_id,actor.link_hash,unix_millis()], |r| r.get(0)).map_err(CatalogError::from)?;
-        if !valid {
-            return Ok(false);
-        }
-    }
-    if actor.account_id.is_empty() && actor.link_hash.is_empty() {
-        return Ok(actor.automation);
-    }
-    Catalog::mutation_authorized_in_tx(tx, &slug, actor, "editor")
+    Ok(actor.automation)
 }
