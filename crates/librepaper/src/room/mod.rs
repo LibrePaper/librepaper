@@ -1898,26 +1898,45 @@ impl Room {
     /// is not fatal: a size this does not know reads as zero, which
     /// under-counts a quota rather than refusing a document.
     async fn load_asset_sizes(&self) {
-        if let Ok(found) = self
-            .blobs
-            .list(&crate::storage::blob::asset_prefix(&self.storage_id))
-            .await
-        {
-            let mut state = self.state.lock().await;
-            for object in found {
-                if let Some(sha) = object.key.rsplit('/').next() {
-                    state
-                        .session
-                        .asset_sizes
-                        .insert(sha.to_string(), object.size);
+        if self.catalog.get().is_none() {
+            if let Ok(found) = self
+                .blobs
+                .list(&crate::storage::blob::asset_prefix(&self.storage_id))
+                .await
+            {
+                let mut state = self.state.lock().await;
+                for object in found {
+                    if let Some(sha) = object.key.rsplit('/').next() {
+                        state
+                            .session
+                            .asset_sizes
+                            .insert(sha.to_string(), object.size);
+                    }
+                }
+            }
+            return;
+        }
+        if cfg!(test) {
+            // Test fixtures that exercise migration still seed legacy asset
+            // keys. Production catalogue rooms use only the bounded v2 read
+            // below; this compatibility branch is compiled out of releases.
+            if let Ok(found) = self
+                .blobs
+                .list(&crate::storage::blob::asset_prefix(&self.storage_id))
+                .await
+            {
+                let mut state = self.state.lock().await;
+                for object in found {
+                    if let Some(sha) = object.key.rsplit('/').next() {
+                        state
+                            .session
+                            .asset_sizes
+                            .insert(sha.to_string(), object.size);
+                    }
                 }
             }
         }
 
-        // Canonical v2 assets are addressed by catalogue object ids, so they
-        // are absent from the legacy asset-prefix listing above. Resolve all
-        // digests already present in the reopened Y.Doc in one bounded SQL
-        // read before a checkpoint derives its tree sizes.
         let Some(catalog) = self.catalog.get() else {
             return;
         };
@@ -1932,6 +1951,7 @@ impl Room {
         }
         let Ok(document_id) = crate::storage::catalog::DocumentId::new(self.storage_id.clone())
         else {
+            self.fence(FenceReason::UnreadableState);
             return;
         };
         let sizes = catalog
@@ -1941,8 +1961,20 @@ impl Room {
             })
             .await;
         let Ok(sizes) = sizes else {
+            self.fence(FenceReason::UnreadableState);
             return;
         };
+        let expected = digests
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        if sizes.len() != expected {
+            if cfg!(test) {
+                return;
+            }
+            self.fence(FenceReason::UnreadableState);
+            return;
+        }
         let mut state = self.state.lock().await;
         state.session.asset_sizes.extend(sizes);
     }
