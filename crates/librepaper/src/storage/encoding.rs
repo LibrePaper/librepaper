@@ -901,6 +901,11 @@ pub async fn read_file_v2(
     }
     let envelope = SourceRecipeEnvelope::from_bytes(&recipe_bytes)?;
     let mut objects = HashMap::<[u8; 32], Vec<u8>>::with_capacity(envelope.chunk_locators.len());
+    let mut encoded_bytes = 0u64;
+    let encoded_limit = envelope
+        .recipe
+        .uncompressed_len
+        .saturating_add((envelope.chunk_locators.len() as u64).saturating_mul(256));
     for locator in &envelope.chunk_locators {
         let logical_digest = locator
             .logical_digest
@@ -914,6 +919,10 @@ pub async fn read_file_v2(
         let actual: [u8; 32] = Sha256::digest(&bytes).into();
         if bytes.len() as u64 != locator.byte_length || actual != locator.object_digest {
             return Err(EncodingError::Integrity("source chunk object digest mismatch".into()));
+        }
+        encoded_bytes = encoded_bytes.saturating_add(bytes.len() as u64);
+        if bytes.len() as u64 > MAX_OBJECT_BYTES || encoded_bytes > encoded_limit {
+            return Err(EncodingError::Integrity("encoded source exceeds read budget".into()));
         }
         objects.insert(logical_digest, bytes);
     }
