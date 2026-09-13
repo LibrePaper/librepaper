@@ -67,12 +67,19 @@ fn annotation_writes_recheck_the_account_session_generation() {
         generation: "generation-1",
         ..Default::default()
     };
+    let comment_request = crate::util::new_request_key();
+    let suggestion_request = crate::util::new_request_key();
+    let accept_request = crate::util::new_request_key();
+    let comment_digest = "1".repeat(64);
+    let suggestion_digest = "2".repeat(64);
+    let accept_digest = "3".repeat(64);
+    let now = crate::util::now_millis();
     let comment = catalog
         .insert_comment_request_authorized(
             &annotation("comment-1", "commenting"),
-            "create-1",
-            "digest-1",
-            1,
+            &comment_request,
+            &comment_digest,
+            now,
             current,
         )
         .unwrap();
@@ -84,9 +91,9 @@ fn annotation_writes_recheck_the_account_session_generation() {
     catalog
         .insert_comment_request_authorized(
             &annotation("suggestion-1", "editing"),
-            "create-2",
-            "digest-2",
-            2,
+            &suggestion_request,
+            &suggestion_digest,
+            now.saturating_add(1),
             current,
         )
         .unwrap();
@@ -94,9 +101,9 @@ fn annotation_writes_recheck_the_account_session_generation() {
         .begin_suggestion_accept_authorized(
             "doc",
             "suggestion-1",
-            "prepared-accept",
-            "prepared-digest",
-            3,
+            &accept_request,
+            &accept_digest,
+            now.saturating_add(2),
             current,
         )
         .unwrap();
@@ -104,8 +111,8 @@ fn annotation_writes_recheck_the_account_session_generation() {
         .stage_suggestion_accept_update_authorized(
             "doc",
             "suggestion-1",
-            "prepared-accept",
-            "prepared-digest",
+            &accept_request,
+            &accept_digest,
             &[1, 2, 3],
             current,
         )
@@ -117,6 +124,9 @@ fn annotation_writes_recheck_the_account_session_generation() {
         generation: "generation-1",
         ..Default::default()
     };
+    let reply_request = crate::util::new_request_key();
+    let reply_digest = "4".repeat(64);
+    let stale_accept_request = crate::util::new_request_key();
     let mut changed = comment.clone();
     changed.body = "stale edit".into();
     assert!(catalog.update_comment_authorized(&changed, stale).is_err());
@@ -140,9 +150,9 @@ fn annotation_writes_recheck_the_account_session_generation() {
                 author: "acct-1".into(),
                 created: "2026-01-01T00:00:01.000Z".into(),
             },
-            "reply-request",
-            "reply-digest",
-            3,
+            &reply_request,
+            &reply_digest,
+            now.saturating_add(3),
             stale,
         )
         .is_err());
@@ -170,8 +180,8 @@ fn annotation_writes_recheck_the_account_session_generation() {
         .stage_suggestion_accept_update_authorized(
             "doc",
             "suggestion-1",
-            "prepared-accept",
-            "prepared-digest",
+            &accept_request,
+            &accept_digest,
             &[1, 2, 3],
             stale,
         )
@@ -180,9 +190,9 @@ fn annotation_writes_recheck_the_account_session_generation() {
         .begin_suggestion_accept_authorized(
             "doc",
             "suggestion-1",
-            "accept-request",
-            "accept-digest",
-            4,
+            &stale_accept_request,
+            &"5".repeat(64),
+            now.saturating_add(4),
             stale,
         )
         .is_err());
@@ -194,8 +204,8 @@ fn annotation_writes_recheck_the_account_session_generation() {
         .record_suggestion_accept_checkpoint(
             "doc",
             "suggestion-1",
-            "prepared-accept",
-            "prepared-digest",
+            &accept_request,
+            &accept_digest,
             "checkpoint-sha",
             "2026-01-01T00:00:03.000Z",
         )
@@ -204,8 +214,8 @@ fn annotation_writes_recheck_the_account_session_generation() {
         .finish_suggestion_accept(
             "doc",
             "suggestion-1",
-            "prepared-accept",
-            "prepared-digest",
+            &accept_request,
+            &accept_digest,
             "checkpoint-sha",
             "2026-01-01T00:00:03.000Z",
         )
@@ -400,7 +410,7 @@ fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
     assert_eq!(stored.account_id, second.account_id);
     assert_eq!(stored.revision, second.revision);
     assert_eq!(stored.payload, second.payload);
-    assert!(stored.updated_at >= second.updated_at);
+    assert_eq!(stored.updated_at, second.updated_at);
 }
 
 #[test]
@@ -1085,7 +1095,7 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
         by_account: Some("acct-1".into()),
     };
     let commit = super::AgentCheckpointCommit {
-        request_id: "agent-checkpoint-operation".into(),
+        request_id: crate::util::new_request_key(),
         digest: "payload-digest".into(),
         operation: serde_json::json!({"epoch":"epoch","id":"checkpoint"}),
         source_revision: "tree".into(),
@@ -1176,14 +1186,16 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let request_id = crate::util::new_request_key();
+    let now = crate::util::now_millis();
     catalog
         .prepare_operation(&OperationRequest {
             storage_id: "storage-1",
-            request_id: "publish",
+            request_id: &request_id,
             kind: "replace",
             request_digest: "digest",
             intent: "{}",
-            created_at: 1,
+            created_at: now,
             actor: None,
         })
         .unwrap();
@@ -1192,14 +1204,14 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
     assert!(deleting.pending_publication.is_none());
     assert_eq!(
         catalog
-            .operation("storage-1", "publish")
+            .operation("storage-1", &request_id)
             .unwrap()
             .unwrap()
             .status,
         "aborted"
     );
     assert!(catalog
-        .commit_operation("storage-1", "publish", "result", "head")
+        .commit_operation("storage-1", &request_id, "result", "head")
         .is_err());
     catalog.finish_delete("doc").unwrap();
     assert_eq!(catalog.totals().unwrap(), (0, 0));
@@ -1581,24 +1593,26 @@ fn deleting_document_cannot_commit_a_prepared_publication() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let request_id = crate::util::new_request_key();
+    let now = crate::util::now_millis();
     catalog
         .prepare_operation(&OperationRequest {
             storage_id: "storage-1",
-            request_id: "request-1",
+            request_id: &request_id,
             kind: "publish",
             request_digest: "digest",
             intent: "{}",
-            created_at: 1,
+            created_at: now,
             actor: None,
         })
         .unwrap();
     catalog.begin_delete("doc").unwrap();
     assert!(catalog
-        .commit_operation("storage-1", "request-1", "{}", "request-1")
+        .commit_operation("storage-1", &request_id, "{}", &request_id)
         .is_err());
     assert_eq!(
         catalog
-            .operation("storage-1", "request-1")
+            .operation("storage-1", &request_id)
             .unwrap()
             .unwrap()
             .status,
