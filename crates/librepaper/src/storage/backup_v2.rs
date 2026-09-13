@@ -3,10 +3,18 @@
 //! The catalog remains authoritative. A prepared server-scoped backup freezes
 //! destructive reclamation, captures one SQLite snapshot revision, copies the
 //! exact available object set, and writes its completion manifest last.
+//!
+//! The v1 backup fixture categories are covered here through their v2
+//! boundaries: authoritative catalog-row digest coverage by the streamed
+//! catalog verifier, compacted-manifest/object closure by the inventory
+//! digest and object round trip, lifecycle-transition refusal by the prepared
+//! operation fence, and identity/secrets/source restoration by the complete
+//! restore tests. The old deployment-wide `storage_id` fixtures remain only
+//! as an explicit v1 converter module and are not a serving fallback.
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufWriter, Read, Write};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -20,7 +28,6 @@ use crate::storage::blob::{parse_v2_object_key, BlobStore, FsStore};
 use crate::storage::catalog::Catalog;
 
 pub const BACKUP_FORMAT_V2: u16 = 2;
-pub const BACKUP_OBJECT_LIMIT: usize = 1_000_000;
 pub const MAX_CATALOG_SNAPSHOT_BYTES: usize = 512 * 1024 * 1024;
 pub const BACKUP_PREFIX_V2: &str = "recovery/v2";
 
@@ -54,7 +61,11 @@ pub struct BackupManifestV2 {
     pub identity: BackupFileEntry,
     pub secrets: Vec<BackupFileEntry>,
     pub secret_versions: Vec<String>,
-    pub objects: Vec<BackupObjectEntry>,
+    /// The number of entries in the streamed, authenticated JSON-lines
+    /// inventory. Entries are never embedded in the completion manifest.
+    pub object_count: u64,
+    pub objects_digest: String,
+    pub inventory: Option<BackupFileEntry>,
     pub complete: bool,
 }
 
@@ -66,38 +77,30 @@ impl BackupManifestV2 {
             || self.snapshot_revision < 0
             || self.created_at < 0
             || !self.complete
-            || self.objects.len() > BACKUP_OBJECT_LIMIT
             || !is_digest(&self.catalog_digest)
             || !valid_backup_file(&self.identity)
             || self.identity.relative != "state/deployment.id"
             || self.secrets.len() > 16
+            || !is_digest(&self.objects_digest)
         {
             return Err(BackupV2Error::Invalid("incomplete or malformed v2 manifest".into()));
-        }
-        let mut source_keys = HashSet::new();
-        let mut backup_keys = HashSet::new();
-        for object in &self.objects {
-            let (key_document, key_object) = parse_v2_object_key(&object.source_key)
-                .map_err(|error| BackupV2Error::Invalid(error.to_string()))?;
-            if object.document_id.is_empty()
-                || object.object_id.len() != 32
-                || !object.object_id.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-                || key_document != object.document_id
-                || key_object.as_str() != object.object_id
-                || !is_digest(&object.digest)
-                || !object.backup_key.starts_with(&format!("{BACKUP_PREFIX_V2}/"))
-                || object.backup_key.contains("..")
-                || !source_keys.insert(&object.source_key)
-                || !backup_keys.insert(&object.backup_key)
-            {
-                return Err(BackupV2Error::Invalid("invalid or duplicate object entry".into()));
-            }
         }
         let mut files = HashSet::new();
         if !files.insert(&self.identity.relative)
             || self.secrets.iter().any(|secret| !files.insert(&secret.relative) || !valid_backup_file(secret))
         {
             return Err(BackupV2Error::Invalid("duplicate or malformed backup file entry".into()));
+        }
+        let inventory = self
+            .inventory
+            .as_ref()
+            .ok_or_else(|| BackupV2Error::Invalid("missing streamed object inventory".into()))?;
+        if !valid_backup_file(inventory)
+            || inventory.relative != "objects/index.jsonl"
+            || inventory.digest != self.objects_digest
+            || !files.insert(&inventory.relative)
+        {
+            return Err(BackupV2Error::Invalid("invalid streamed object inventory".into()));
         }
         if self.secret_versions.len() != self.secrets.len()
             || self
@@ -122,9 +125,8 @@ impl BackupManifestV2 {
         let prefix = format!("{BACKUP_PREFIX_V2}/{backup_id}/");
         if self.identity.backup_key != format!("{prefix}{}", self.identity.relative)
             || self.secrets.iter().any(|file| file.backup_key != format!("{prefix}{}", file.relative))
-            || self.objects.iter().any(|object| {
-                object.backup_key
-                    != format!("{prefix}objects/{}/{}", object.document_id, object.object_id)
+            || self.inventory.as_ref().is_none_or(|file| {
+                file.backup_key != format!("{prefix}{}", file.relative)
             })
         {
             return Err(BackupV2Error::Invalid("backup entry escapes its destination scope".into()));
@@ -185,6 +187,12 @@ pub struct BackupPayload {
     pub digest: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackupObjectCursor {
+    pub document_id: String,
+    pub object_id: String,
+}
+
 /// The catalog side of the online backup fence. `prepare_backup` must finish
 /// in one immediate transaction after all in-flight deletes have settled.
 #[async_trait::async_trait]
@@ -193,11 +201,68 @@ pub trait V2BackupCatalog: Send + Sync {
     async fn backup_objects_page(
         &self,
         operation_id: &str,
-        after_object_id: Option<&str>,
+        after: Option<&BackupObjectCursor>,
         limit: usize,
     ) -> Result<Vec<BackupObjectEntry>, String>;
     async fn commit_backup(&self, operation_id: &str, manifest_digest: &str) -> Result<(), String>;
     async fn abort_backup(&self, operation_id: &str) -> Result<(), String>;
+}
+
+struct InventoryWriter {
+    sender: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+    task: Option<tokio::task::JoinHandle<Result<(tempfile::NamedTempFile, String, u64), String>>>,
+}
+
+impl InventoryWriter {
+    fn new(file: tempfile::NamedTempFile) -> Self {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+        let task = tokio::task::spawn_blocking(move || {
+            let mut writer = BufWriter::new(file.as_file());
+            let mut digest = Sha256::new();
+            let mut byte_length = 0_u64;
+            while let Some(line) = receiver.blocking_recv() {
+                writer.write_all(&line).map_err(|error| error.to_string())?;
+                digest.update(&line);
+                byte_length = byte_length
+                    .checked_add(line.len() as u64)
+                    .ok_or_else(|| "inventory length overflow".to_string())?;
+            }
+            writer.flush().map_err(|error| error.to_string())?;
+            drop(writer);
+            Ok((file, hex::encode(digest.finalize()), byte_length))
+        });
+        Self {
+            sender: Some(sender),
+            task: Some(task),
+        }
+    }
+
+    async fn write(&self, mut object: Vec<u8>) -> Result<(), BackupV2Error> {
+        object.push(b'\n');
+        self.sender
+            .as_ref()
+            .ok_or_else(|| BackupV2Error::Storage("inventory writer is closed".into()))?
+            .send(object)
+            .await
+            .map_err(|_| BackupV2Error::Storage("inventory writer stopped".into()))
+    }
+
+    async fn finish(mut self) -> Result<(tempfile::NamedTempFile, String, u64), BackupV2Error> {
+        self.sender.take();
+        self.task
+            .take()
+            .ok_or_else(|| BackupV2Error::Storage("inventory task is missing".into()))?
+            .await
+            .map_err(|error| BackupV2Error::Storage(format!("inventory task failed: {error}")))?
+            .map_err(BackupV2Error::Storage)
+    }
+}
+
+impl Drop for InventoryWriter {
+    fn drop(&mut self) {
+        self.sender.take();
+        self.task.take();
+    }
 }
 
 pub fn backup_manifest_key(backup_id: &str) -> String {
@@ -252,13 +317,11 @@ pub async fn create_backup(
             })
             .collect(),
         secret_versions: snapshot.secret_versions,
-        objects: Vec::with_capacity(snapshot.object_count.min(BACKUP_OBJECT_LIMIT)),
+        object_count: snapshot.object_count as u64,
+        objects_digest: String::new(),
+        inventory: None,
         complete: false,
     };
-    if snapshot.object_count > BACKUP_OBJECT_LIMIT {
-        let _ = catalog.abort_backup(&snapshot.operation_id).await;
-        return Err(BackupV2Error::Invalid("backup object limit exceeded".into()));
-    }
     let result = async {
         let catalog_key = format!("{BACKUP_PREFIX_V2}/{backup_id}/catalog.db");
         if let Some(catalog_file) = snapshot.catalog_file.as_ref() {
@@ -289,11 +352,15 @@ pub async fn create_backup(
         for (secret, entry) in snapshot.secrets.iter().zip(&manifest.secrets) {
             copy_file_payload(&destination, entry, &secret.bytes).await?;
         }
-        let mut after = None;
+        let inventory_file = tempfile::NamedTempFile::new()
+            .map_err(|error| BackupV2Error::Storage(format!("inventory temp file: {error}")))?;
+        let mut inventory_writer = Some(InventoryWriter::new(inventory_file));
+        let mut after: Option<BackupObjectCursor> = None;
         let mut copied = 0usize;
+        let mut previous_cursor: Option<BackupObjectCursor> = None;
         loop {
             let page = catalog
-                .backup_objects_page(&snapshot.operation_id, after.as_deref(), 256)
+                .backup_objects_page(&snapshot.operation_id, after.as_ref(), 256)
                 .await
                 .map_err(BackupV2Error::Catalog)?;
             if page.is_empty() {
@@ -302,7 +369,22 @@ pub async fn create_backup(
             if page.len() > 256 {
                 return Err(BackupV2Error::Catalog("backup object page exceeded bound".into()));
             }
+            if copied.saturating_add(page.len()) > snapshot.object_count {
+                return Err(BackupV2Error::Corrupt("backup object page exceeds snapshot count".into()));
+            }
+            let mut page_last = None;
             for mut object in page {
+                let cursor = BackupObjectCursor {
+                    document_id: object.document_id.clone(),
+                    object_id: object.object_id.clone(),
+                };
+                if previous_cursor.as_ref().is_some_and(|previous| {
+                    (cursor.document_id.as_str(), cursor.object_id.as_str())
+                        <= (previous.document_id.as_str(), previous.object_id.as_str())
+                }) {
+                    return Err(BackupV2Error::Corrupt("backup object cursor is not strictly increasing".into()));
+                }
+                previous_cursor = Some(cursor.clone());
                 object.backup_key = format!(
                     "{BACKUP_PREFIX_V2}/{backup_id}/objects/{}/{}",
                     object.document_id, object.object_id
@@ -320,18 +402,47 @@ pub async fn create_backup(
                 )));
             }
             put_new_destination(Arc::clone(&destination), &object.backup_key, body, "application/octet-stream").await?;
-            manifest.objects.push(object);
+            page_last = Some(cursor);
+            let line = serde_json::to_vec(&object)
+                .map_err(|error| BackupV2Error::Invalid(format!("inventory encoding failed: {error}")))?;
+            inventory_writer
+                .as_mut()
+                .ok_or_else(|| BackupV2Error::Storage("inventory writer disappeared".into()))?
+                .write(line)
+                .await?;
                 copied = copied.saturating_add(1);
             }
-            let next = manifest.objects.last().map(|object| object.object_id.clone());
-            if next == after {
+            let next = page_last.ok_or_else(|| BackupV2Error::Catalog("backup object page had no cursor".into()))?;
+            if after.as_ref() == Some(&next) {
                 return Err(BackupV2Error::Catalog("backup object cursor did not advance".into()));
             }
-            after = next;
+            after = Some(next);
         }
         if copied != snapshot.object_count {
             return Err(BackupV2Error::Corrupt("backup object cursor did not cover snapshot".into()));
         }
+        let (inventory_file, digest, byte_length) = inventory_writer
+            .take()
+            .ok_or_else(|| BackupV2Error::Storage("inventory writer disappeared".into()))?
+            .finish()
+            .await?;
+        let entry = BackupFileEntry {
+            relative: "objects/index.jsonl".into(),
+            backup_key: format!("{BACKUP_PREFIX_V2}/{backup_id}/objects/index.jsonl"),
+            digest: digest.clone(),
+            byte_length,
+        };
+        put_new_file_destination(
+            Arc::clone(&destination),
+            &entry.backup_key,
+            inventory_file.path(),
+            "application/x-ndjson",
+            byte_length,
+            &digest,
+        )
+        .await?;
+        manifest.inventory = Some(entry);
+        manifest.objects_digest = digest;
         manifest.complete = true;
         manifest.validate_for_backup(backup_id)?;
         let encoded = serde_json::to_vec(&manifest)
@@ -486,34 +597,118 @@ pub async fn restore_backup(
         snapshot_revision: manifest.snapshot_revision,
         ..RestoreReport::default()
     };
-    for object in &manifest.objects {
-        let body = backup
-            .get(&object.backup_key)
+    if let Some(inventory) = &manifest.inventory {
+        let inventory_length = backup
+            .length(&inventory.backup_key)
             .await
             .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
-        if body.len() as u64 != object.byte_length
-            || hex::encode(Sha256::digest(&body)) != object.digest
-        {
-            return Err(BackupV2Error::Corrupt(format!(
-                "backup object {} failed digest verification",
-                object.backup_key
-            )));
+        if inventory_length != inventory.byte_length {
+            return Err(BackupV2Error::Corrupt("object inventory length mismatch".into()));
         }
-        let key = object.source_key.clone();
-        let target_for_put = Arc::clone(&target);
-        tokio::spawn(async move {
-            target_for_put
-                .put_new(&key, body, "application/octet-stream")
+        let mut inventory_digest = Sha256::new();
+        let mut inventory_offset = 0_u64;
+        let mut buffered = Vec::new();
+        let mut previous_cursor: Option<BackupObjectCursor> = None;
+        while inventory_offset < inventory_length {
+            let end = inventory_offset.saturating_add(64 * 1024).min(inventory_length);
+            let chunk = backup
+                .get_range(&inventory.backup_key, inventory_offset..end)
                 .await
-                .map_err(|error| BackupV2Error::Storage(error.to_string()))
-        })
-        .await
-        .map_err(|error| BackupV2Error::Storage(format!("restore object task failed: {error}")))??;
-        report.objects_restored += 1;
-        report.bytes_restored = report.bytes_restored.saturating_add(object.byte_length);
+                .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+            if chunk.len() as u64 != end - inventory_offset {
+                return Err(BackupV2Error::Corrupt("object inventory short range".into()));
+            }
+            if buffered.len().saturating_add(chunk.len()) > 256 * 1024 {
+                return Err(BackupV2Error::Corrupt("object inventory line exceeds bound".into()));
+            }
+            inventory_digest.update(&chunk);
+            buffered.extend_from_slice(&chunk);
+            inventory_offset = end;
+            while let Some(newline) = buffered.iter().position(|byte| *byte == b'\n') {
+                let line = buffered.drain(..=newline).collect::<Vec<_>>();
+                let line = &line[..line.len().saturating_sub(1)];
+                if line.is_empty() {
+                    return Err(BackupV2Error::Corrupt("empty object inventory entry".into()));
+                }
+                let object: BackupObjectEntry = serde_json::from_slice(line)
+                    .map_err(|error| BackupV2Error::Corrupt(format!("object inventory entry is invalid: {error}")))?;
+                validate_object_entry(&object, backup_id)?;
+                let cursor = BackupObjectCursor {
+                    document_id: object.document_id.clone(),
+                    object_id: object.object_id.clone(),
+                };
+                if previous_cursor.as_ref().is_some_and(|previous| {
+                    (cursor.document_id.as_str(), cursor.object_id.as_str())
+                        <= (previous.document_id.as_str(), previous.object_id.as_str())
+                }) {
+                    return Err(BackupV2Error::Corrupt("object inventory is not strictly ordered".into()));
+                }
+                previous_cursor = Some(cursor);
+                restore_object_entry(&backup, &target, &object).await?;
+                report.objects_restored = report.objects_restored.saturating_add(1);
+                report.bytes_restored = report.bytes_restored.saturating_add(object.byte_length);
+            }
+        }
+        if !buffered.is_empty() {
+            return Err(BackupV2Error::Corrupt("object inventory has an unterminated entry".into()));
+        }
+        if report.objects_restored as u64 != manifest.object_count
+            || hex::encode(inventory_digest.finalize()) != inventory.digest
+        {
+            return Err(BackupV2Error::Corrupt("object inventory digest or count mismatch".into()));
+        }
+    } else {
+        return Err(BackupV2Error::Corrupt("missing streamed object inventory".into()));
+    }
+    if report.objects_restored as u64 != manifest.object_count {
+        return Err(BackupV2Error::Corrupt("backup object count mismatch".into()));
     }
     catalog.finish_restore().await.map_err(BackupV2Error::Catalog)?;
     Ok(report)
+}
+
+fn validate_object_entry(object: &BackupObjectEntry, backup_id: &str) -> Result<(), BackupV2Error> {
+    let (document_id, object_id) = parse_v2_object_key(&object.source_key)
+        .map_err(|error| BackupV2Error::Corrupt(error.to_string()))?;
+    if document_id != object.document_id
+        || object_id.as_str() != object.object_id
+        || !is_digest(&object.digest)
+        || object.backup_key
+            != format!("{BACKUP_PREFIX_V2}/{backup_id}/objects/{}/{}", object.document_id, object.object_id)
+    {
+        return Err(BackupV2Error::Corrupt("object inventory entry identity mismatch".into()));
+    }
+    Ok(())
+}
+
+async fn restore_object_entry(
+    backup: &Arc<dyn BlobStore>,
+    target: &Arc<dyn BlobStore>,
+    object: &BackupObjectEntry,
+) -> Result<(), BackupV2Error> {
+    let body = backup
+        .get(&object.backup_key)
+        .await
+        .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+    if body.len() as u64 != object.byte_length
+        || hex::encode(Sha256::digest(&body)) != object.digest
+    {
+        return Err(BackupV2Error::Corrupt(format!(
+            "backup object {} failed digest verification",
+            object.backup_key
+        )));
+    }
+    let key = object.source_key.clone();
+    let target_for_put = Arc::clone(target);
+    tokio::spawn(async move {
+        target_for_put
+            .put_new(&key, body, "application/octet-stream")
+            .await
+            .map_err(|error| BackupV2Error::Storage(error.to_string()))
+    })
+    .await
+    .map_err(|error| BackupV2Error::Storage(format!("restore object task failed: {error}")))??;
+    Ok(())
 }
 
 struct RestoreTempFile(Option<PathBuf>);
@@ -848,6 +1043,18 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
                                 "a v2 backup is already in progress".into(),
                             ));
                         }
+                        let lifecycle: i64 = connection
+                            .query_row(
+                                "SELECT count(*) FROM operations WHERE state='prepared' AND kind IN ('erase_account','erase_document','rotate_links')",
+                                [],
+                                |row| row.get(0),
+                            )
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        if lifecycle != 0 {
+                            return Err(crate::storage::catalog::CatalogError::Conflict(
+                                "a lifecycle operation is still in progress".into(),
+                            ));
+                        }
                         let operation_id = backup_operation_id();
                         let writer_generation: String = connection
                             .query_row(
@@ -991,14 +1198,14 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
     async fn backup_objects_page(
         &self,
         operation_id: &str,
-        after_object_id: Option<&str>,
+        after: Option<&BackupObjectCursor>,
         limit: usize,
     ) -> Result<Vec<BackupObjectEntry>, String> {
         if limit == 0 || limit > 256 {
             return Err("invalid v2 backup page size".into());
         }
         let operation_id = operation_id.to_owned();
-        let after = after_object_id.map(str::to_owned);
+        let after = after.cloned();
         let snapshot_path = self
             .snapshot_path
             .lock()
@@ -1021,23 +1228,43 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
             if prepared != 1 {
                 return Err("backup operation is absent from immutable snapshot".into());
             }
-            let mut statement = connection
-                .prepare("SELECT o.document_id,o.id,o.storage_key,o.digest,o.byte_length FROM objects o WHERE o.state='available' AND (?1 IS NULL OR o.id>?1) ORDER BY o.id LIMIT ?2")
-                .map_err(|error| error.to_string())?;
-            let rows = statement
-                .query_map(rusqlite::params![after, limit as i64], |row| {
-                    Ok(BackupObjectEntry {
-                        document_id: row.get(0)?,
-                        object_id: row.get(1)?,
-                        source_key: row.get(2)?,
-                        backup_key: String::new(),
-                        digest: row.get(3)?,
-                        byte_length: row.get::<_, i64>(4)?.max(0) as u64,
+            let sql = if after.is_some() {
+                "SELECT o.document_id,o.id,o.storage_key,o.digest,o.byte_length FROM objects o WHERE o.state='available' AND (o.document_id,o.id)>(?1,?2) ORDER BY o.document_id,o.id LIMIT ?3"
+            } else {
+                "SELECT o.document_id,o.id,o.storage_key,o.digest,o.byte_length FROM objects o WHERE o.state='available' ORDER BY o.document_id,o.id LIMIT ?1"
+            };
+            let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
+            let mut objects = Vec::new();
+            if let Some(after) = after {
+                let rows = statement
+                    .query_map(rusqlite::params![after.document_id, after.object_id, limit as i64], |row| {
+                        Ok(BackupObjectEntry {
+                            document_id: row.get(0)?,
+                            object_id: row.get(1)?,
+                            source_key: row.get(2)?,
+                            backup_key: String::new(),
+                            digest: row.get(3)?,
+                            byte_length: row.get::<_, i64>(4)?.max(0) as u64,
+                        })
                     })
-                })
-                .map_err(|error| error.to_string())?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                objects.extend(rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?);
+            } else {
+                let rows = statement
+                    .query_map(rusqlite::params![limit as i64], |row| {
+                        Ok(BackupObjectEntry {
+                            document_id: row.get(0)?,
+                            object_id: row.get(1)?,
+                            source_key: row.get(2)?,
+                            backup_key: String::new(),
+                            digest: row.get(3)?,
+                            byte_length: row.get::<_, i64>(4)?.max(0) as u64,
+                        })
+                    })
+                    .map_err(|error| error.to_string())?;
+                objects.extend(rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?);
+            }
+            Ok(objects)
         })
         .await
         .map_err(|error| error.to_string())?
@@ -1471,7 +1698,7 @@ pub async fn backup_cli_v2(
         .unwrap_or_else(|error| crate::util::die(format!("could not create v2 backup: {error}")));
     catalog.shutdown().await;
     println!("completed v2 backup {} at {}", backup_id, output);
-    println!("{}", serde_json::json!({"event":"backup_completed","format_version":2,"backup_id":backup_id,"deployment_id":manifest.deployment_id,"objects":manifest.objects.len()}));
+    println!("{}", serde_json::json!({"event":"backup_completed","format_version":2,"backup_id":backup_id,"deployment_id":manifest.deployment_id,"objects":manifest.object_count}));
 }
 
 pub async fn restore_cli_v2(backup: String, destination: String) {
@@ -1755,17 +1982,26 @@ mod tests {
         async fn backup_objects_page(
             &self,
             _operation_id: &str,
-            after_object_id: Option<&str>,
+            after: Option<&BackupObjectCursor>,
             limit: usize,
         ) -> Result<Vec<BackupObjectEntry>, String> {
             self.events.lock().unwrap().push("page");
-            Ok(self
+            let mut objects = self
                 .objects
                 .iter()
-                .filter(|object| after_object_id.map_or(true, |after| object.object_id.as_str() > after))
-                .take(limit)
+                .filter(|object| {
+                    after.map_or(true, |after| {
+                        (object.document_id.as_str(), object.object_id.as_str())
+                            > (after.document_id.as_str(), after.object_id.as_str())
+                    })
+                })
                 .cloned()
-                .collect())
+                .collect::<Vec<_>>();
+            objects.sort_by(|left, right| {
+                (left.document_id.as_str(), left.object_id.as_str())
+                    .cmp(&(right.document_id.as_str(), right.object_id.as_str()))
+            });
+            Ok(objects.into_iter().take(limit).collect())
         }
 
         async fn commit_backup(&self, _operation_id: &str, _digest: &str) -> Result<(), String> {
@@ -1862,49 +2098,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_rejects_duplicate_source_objects() {
-        let entry = BackupObjectEntry {
-            document_id: "doc".into(),
-            object_id: "0123456789abcdef0123456789abcdef".into(),
-            source_key: "v2/documents/doc/objects/0123456789abcdef0123456789abcdef".into(),
-            backup_key: "recovery/v2/backup/objects/doc/0123456789abcdef0123456789abcdef".into(),
-            digest: digest(),
-            byte_length: 0,
-        };
-        let mut manifest = BackupManifestV2 {
-            format_version: BACKUP_FORMAT_V2,
-            operation_id: "operation".into(),
-            deployment_id: "deployment".into(),
-            snapshot_revision: 1,
-            created_at: 2,
-            catalog_digest: digest(),
-            catalog_length: 0,
-            identity: BackupFileEntry {
-                relative: "state/deployment.id".into(),
-                backup_key: "recovery/v2/backup/state/deployment.id".into(),
-                digest: digest(),
-                byte_length: 0,
-            },
-            secrets: Vec::new(),
-            secret_versions: Vec::new(),
-            objects: vec![entry.clone(), entry],
-            complete: true,
-        };
-        assert!(manifest.validate().is_err());
-        manifest.objects.truncate(1);
-        assert!(manifest.validate().is_ok());
-    }
-
-    #[test]
-    fn manifest_rejects_entries_outside_exact_backup_scope() {
-        let object = BackupObjectEntry {
-            document_id: "doc".into(),
-            object_id: "0123456789abcdef0123456789abcdef".into(),
-            source_key: "v2/documents/doc/objects/0123456789abcdef0123456789abcdef".into(),
-            backup_key: "recovery/v2/backup/objects/doc/0123456789abcdef0123456789abcdef/extra".into(),
-            digest: digest(),
-            byte_length: 0,
-        };
+    fn manifest_requires_streamed_inventory() {
         let manifest = BackupManifestV2 {
             format_version: BACKUP_FORMAT_V2,
             operation_id: "operation".into(),
@@ -1921,7 +2115,40 @@ mod tests {
             },
             secrets: Vec::new(),
             secret_versions: Vec::new(),
-            objects: vec![object],
+            object_count: 0,
+            objects_digest: digest(),
+            inventory: None,
+            complete: true,
+        };
+        assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn manifest_rejects_entries_outside_exact_backup_scope() {
+        let manifest = BackupManifestV2 {
+            format_version: BACKUP_FORMAT_V2,
+            operation_id: "operation".into(),
+            deployment_id: "deployment".into(),
+            snapshot_revision: 1,
+            created_at: 2,
+            catalog_digest: digest(),
+            catalog_length: 0,
+            identity: BackupFileEntry {
+                relative: "state/deployment.id".into(),
+                backup_key: "recovery/v2/backup/state/deployment.id".into(),
+                digest: digest(),
+                byte_length: 0,
+            },
+            secrets: Vec::new(),
+            secret_versions: Vec::new(),
+            object_count: 1,
+            objects_digest: digest(),
+            inventory: Some(BackupFileEntry {
+                relative: "objects/index.jsonl".into(),
+                backup_key: "recovery/v2/backup/objects/index.jsonl/extra".into(),
+                digest: digest(),
+                byte_length: 0,
+            }),
             complete: true,
         };
         assert!(manifest.validate_for_backup("backup").is_err());
@@ -2172,6 +2399,42 @@ mod tests {
         assert_eq!(events.lock().unwrap().last(), Some(&"abort"));
     }
 
+    #[tokio::test]
+    async fn v2_backup_rejects_a_prepared_lifecycle_operation() {
+        let root = tempfile::tempdir().expect("deployment directory");
+        let paths = DeploymentPaths::local(root.path().to_path_buf());
+        fs::create_dir_all(&paths.state).expect("state directory");
+        fs::create_dir_all(&paths.secrets).expect("secret directory");
+        let catalog = Arc::new(Catalog::open_with(&paths.catalog, false).expect("catalog"));
+        let deployment_id: String = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT deployment_id FROM server_state WHERE id=1", [], |row| row.get(0))
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("deployment identity");
+        fs::write(&paths.deployment_identity, format!("{deployment_id}\n")).expect("identity");
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at) VALUES('backup-owner','registered','test','backup-owner','backup-owner','Backup Owner',NULL,'active','generation','test',1,1)",
+                    [],
+                )?;
+                connection.execute(
+                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES('backup-document','backup','backup-owner','owned','Backup','backup','active',1,1,'markdown','index.md')",
+                    [],
+                )?;
+                connection.execute(
+                    "INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at,work_expires_at) VALUES('erase-op','backup-document',NULL,'system','erase-op','erase_document',?1,'prepared',(SELECT writer_generation FROM server_state WHERE id=1),'{}',1,1,NULL)",
+                    ["a".repeat(64)],
+                )?;
+                Ok(())
+            })
+            .expect("prepared lifecycle operation");
+        let adapter = LocalV2BackupCatalog::new(catalog.clone(), paths);
+        assert!(matches!(adapter.prepare_backup(10).await, Err(error) if error.contains("lifecycle operation")));
+    }
+
     #[test]
     fn restore_source_and_destination_must_not_overlap() {
         let root = std::env::temp_dir().join(format!("librepaper-backup-test-{}", std::process::id()));
@@ -2321,6 +2584,8 @@ mod tests {
             .await
             .expect("real backup");
         assert!(manifest.complete);
+        assert_eq!(manifest.object_count, 2);
+        assert!(manifest.inventory.is_some(), "object closure uses the streamed index");
 
         let restore_paths = DeploymentPaths::local(restore_root.path().to_path_buf());
         let restore_adapter = LocalV2RestoreCatalog::new(restore_paths.clone());
@@ -2362,6 +2627,18 @@ mod tests {
         assert_eq!(restored_asset.0, hex::encode(asset_digest));
         assert_eq!(restored_asset.1, asset_body.len() as i64);
         assert_eq!(restored_asset.2, "available");
+        let restored_account: (String, i64) = restored_catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT handle,document_count FROM accounts WHERE id=?1",
+                        [account_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("restored non-journal account row");
+        assert_eq!(restored_account, ("roundtrip".into(), 1));
         let restored_counters: (i64, i64, i64, i64, i64) = restored_catalog
             .with_connection(|connection| {
                 connection
