@@ -398,7 +398,7 @@ impl Server {
             link_hash: who.link.clone(),
             automation: who.automation,
             policy_editor: who.at_least(Role::Editor),
-            required_role: if kind == "view" { "reader".into() } else { "editor".into() },
+            required_role: "editor".into(),
         };
         let input = crate::storage::catalog::AgentPayloadInput {
             slug: slug.to_owned(),
@@ -431,7 +431,7 @@ impl Server {
         }
         let writer = V2ObjectWriter::new(Arc::clone(catalog), Arc::clone(&self.store.blobs));
         writer.write_allocated(
-            admitted.document_id.as_str(), admitted.object_id.clone(), bytes,
+            admitted.document_id.as_str(), crate::storage::blob::ObjectId::parse(admitted.object_id.as_str()).map_err(|error| Failure::new("internal", error.to_string()))?, bytes,
             "application/vnd.librepaper.agent-payload+zlib",
         ).await.map_err(|error| Failure::new("unavailable", error))?;
         let result_json = serde_json::json!({
@@ -445,7 +445,7 @@ impl Server {
             link_hash: who.link.clone(),
             automation: who.automation,
             policy_editor: who.at_least(Role::Editor),
-            required_role: if kind == "view" { "reader".into() } else { "editor".into() },
+            required_role: "editor".into(),
         };
         let operation_id = admitted.operation_id.clone();
         catalog.execute_catalog(
@@ -474,7 +474,7 @@ impl Server {
             link_hash: who.link.clone(),
             automation: who.automation,
             policy_editor: who.at_least(Role::Editor),
-            required_role: if kind == "view" { "reader".into() } else { "editor".into() },
+            required_role: "editor".into(),
         };
         let slug_owned = slug.to_owned();
         let id_owned = id.to_owned();
@@ -678,7 +678,7 @@ impl Server {
                 Err(error) => return Err(error),
             }
         };
-        self.mcp_read_existing(slug, actor, headers, arrival, args, &view_id, view)
+        self.mcp_read_existing(slug, actor, who, headers, arrival, args, &view_id, view)
             .await
     }
 
@@ -687,6 +687,7 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
         args: &Value,

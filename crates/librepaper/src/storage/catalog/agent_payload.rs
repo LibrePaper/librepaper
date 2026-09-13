@@ -188,10 +188,9 @@ impl Catalog {
             let writer_generation: String = tx.query_row(
                 "SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0),
             ).map_err(CatalogError::from)?;
-            let object_id = ObjectId::random();
+            let object_id = ObjectId::new(hex::encode(crate::auth::random_bytes(16))).map_err(|error|CatalogError::Invalid(error.to_string()))?;
             let doc = DocumentId::new(document_id.clone()).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-            let storage_key = crate::storage::blob::v2_object_key(&doc, &object_id)
-                .map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            let storage_key = format!("v2/documents/{}/objects/{}",doc.as_str(),object_id.as_str());
             let mut plan: serde_json::Value = serde_json::from_str(&input.plan_json)
                 .map_err(|_| CatalogError::Invalid("agent payload plan is invalid".into()))?;
             if let Some(existing_object) = plan.get("object_id").and_then(serde_json::Value::as_str) {
@@ -436,7 +435,7 @@ mod tests {
         let lease_count: i64 = catalog.with_connection(|db| db.query_row(
             "SELECT count(*) FROM object_leases WHERE operation_id=?1 AND purpose='stage'",
             params![first.operation_id.as_str()], |row| row.get(0),
-        )) .expect("lease count");
+        ).map_err(CatalogError::from)) .expect("lease count");
         assert_eq!(lease_count, 1);
     }
 

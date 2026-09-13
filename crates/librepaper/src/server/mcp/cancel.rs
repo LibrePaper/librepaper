@@ -156,7 +156,7 @@ impl Server {
 
         self.mcp_epoch(actor, &operation, false)?;
         self.mcp_epoch(actor, &target, true)?;
-        self.mcp_admit(slug, actor, &operation, &request_digest)
+        self.mcp_admit(slug, actor, &who, &operation, &request_digest)
             .await?;
         let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
 

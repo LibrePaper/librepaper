@@ -86,7 +86,7 @@ async fn load_candidate(
     headers: &HeaderMap,
     arrival: &Arrival,
     candidate_id: &str,
-) -> Result<(Candidate, View, String), Box<Reply>> {
+) -> Result<(Candidate, View, String, Viewer), Box<Reply>> {
     let entry = match server.checked_entry(slug).await {
         Ok(Some(entry)) => entry,
         Ok(None) => return Err(boxed_error(404, "not found")),

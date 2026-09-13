@@ -274,7 +274,7 @@ impl Server {
         self.mcp_epoch(actor, key, true)?;
         let id = key.scoped_request_id(actor);
         let admitted = match self
-            .mcp_load::<Admission>(slug, actor, &id, "admission")
+            .mcp_load::<Admission>(slug, actor, who, &id, "admission")
             .await
         {
             Ok(admitted) if digest.is_some_and(|digest| digest != admitted.digest) => {
@@ -493,6 +493,7 @@ impl Server {
                         .load_render_receipt(
                             slug,
                             actor,
+                            who,
                             args["candidate_id"].as_str().unwrap_or_default(),
                         )
                         .await?;
@@ -936,9 +937,9 @@ impl Server {
         }
         let digest = candidate.digest.clone();
         let render = if candidate.validation == "compile" {
-            Some(match self.load_render_receipt(slug,actor,candidate_id).await {
+            Some(match self.load_render_receipt(slug,actor,who,candidate_id).await {
                 Ok(receipt)=>receipt,
-                Err(error) if error.code=="view_expired"=>self.mcp_render(slug,actor,headers,arrival,candidate_id,candidate,&key.id).await.map_err(|error|error.with_data(json!({"candidate_id":candidate_id,"operation":key,"retry_tool":"document_result","retry_arguments":{"kind":"render","id":candidate_id}})))?,
+                Err(error) if error.code=="view_expired"=>self.mcp_render(slug,actor,who,headers,arrival,candidate_id,candidate,&key.id).await.map_err(|error|error.with_data(json!({"candidate_id":candidate_id,"operation":key,"retry_tool":"document_result","retry_arguments":{"kind":"render","id":candidate_id}})))?,
                 Err(error)=>return Err(error),
             })
         } else {
@@ -1131,7 +1132,7 @@ impl Server {
                     .mcp_load(
                         slug,
                         actor,
-                        who,
+                        &who,
                         args["id"].as_str().unwrap_or_default(),
                         "candidate",
                     )
@@ -1157,7 +1158,7 @@ impl Server {
                     }
                     let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
                     let view = self
-                        .mcp_load::<View>(slug, actor, &candidate.view_id, "view")
+                        .mcp_load::<View>(slug, actor, &who, &candidate.view_id, "view")
                         .await?;
                     return self
                         .mcp_finish_proposal(
