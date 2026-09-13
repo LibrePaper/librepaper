@@ -600,6 +600,13 @@ struct CostDurable {
 fn validate_secret_material(source_root: &Path, source: &Connection, active: &str) -> Result<()> {
     let secrets = source_root.join("secrets");
     if !secrets.exists() {
+        if has_table(source, "links")?
+            && source.query_row("SELECT COUNT(*) FROM links", [], |row| row.get::<_, i64>(0))? > 0
+        {
+            return Err(Error::Invalid(
+                "source has encrypted links but no secrets directory".into(),
+            ));
+        }
         return Ok(());
     }
     if fs::symlink_metadata(&secrets)?.file_type().is_symlink() {
@@ -4713,16 +4720,19 @@ mod tests {
             session_secret
         );
         let target_db = Connection::open(target_root.join("catalog.db")).expect("target catalog");
-        assert_eq!(
-            target_db
+        let cost_json: Value = serde_json::from_str(
+            &target_db
                 .query_row::<String, _, _>(
                     "SELECT cost_json FROM server_state WHERE id=1",
                     [],
                     |r| r.get(0),
                 )
                 .expect("cost json"),
-            r#"{"version":2,"state":{"minutes":[],"sent":[0,0,0,0,0,0,0,0]}}"#
-        );
+        )
+        .expect("valid cost json");
+        assert_eq!(cost_json["version"], 2);
+        assert_eq!(cost_json["state"]["minutes"], json!([]));
+        assert_eq!(cost_json["state"]["sent"], json!([0, 0, 0, 0, 0, 0, 0, 0]));
         assert_eq!(
             target_db
                 .query_row::<i64, _, _>("SELECT COUNT(*) FROM annotations", [], |r| r.get(0))
