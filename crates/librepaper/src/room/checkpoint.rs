@@ -788,6 +788,10 @@ impl Room {
                     })
                     .map(|point| point.sha.clone());
                 let existing = existing.or_else(|| {
+                    (state.session.last_tree.as_ref() == Some(&tree)
+                        && !state.session.last_checkpoint.is_empty())
+                        .then(|| state.session.last_checkpoint.clone())
+                }).or_else(|| {
                     // In catalogue mode the room keeps only a bounded tail.
                     // A revert to an older tree is still the same immutable
                     // checkpoint, even when that row is no longer resident.

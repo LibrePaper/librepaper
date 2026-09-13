@@ -41,6 +41,88 @@ const CHECKPOINT_SELECT: &str = "SELECT d.slug,c.id,c.seq,c.journal_sequence,c.t
      JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'";
 
 impl Catalog {
+    /// Record an actor-scoped receipt for an already retained checkpoint.
+    /// This does not insert a second checkpoint or resolve objects by digest.
+    pub(crate) fn commit_retained_agent_checkpoint(
+        &self,
+        slug: &str,
+        checkpoint_id: &str,
+        actor: MutationAuthority<'_>,
+        request: &AgentCheckpointCommit,
+    ) -> CatalogResult<String> {
+        let issued = crate::util::request_key_timestamp(&request.request_id)
+            .ok_or_else(|| CatalogError::Invalid("invalid checkpoint request key".into()))?;
+        if request.digest.len() != 64 || !request.digest.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+            return Err(CatalogError::Invalid("invalid checkpoint request digest".into()));
+        }
+        let actor_key = if !actor.account_id.is_empty() {
+            format!("account:{}", actor.account_id)
+        } else if !actor.link_hash.is_empty() {
+            format!("link:{}", actor.link_hash)
+        } else {
+            return Err(CatalogError::refused(CatalogRefusal::ActorRights, "checkpoint actor is missing"));
+        };
+        self.immediate(|tx| {
+            if !Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {
+                return Err(CatalogError::refused(CatalogRefusal::ActorRights, "checkpoint authority changed"));
+            }
+            let document: String = tx.query_row("SELECT id FROM documents WHERE slug=?1 AND status='active'", [slug], |row| row.get(0))?;
+            if Self::agent_cancellation_active_tx(tx, &document, &request.request_id, &actor_key)? {
+                return Err(CatalogError::Conflict("checkpoint operation was cancelled".into()));
+            }
+            let now = super::unix_millis();
+            let existing: Option<(String, String, String, Option<String>, Option<i64>)> = tx.query_row(
+                "SELECT kind,state,request_digest,result_json,receipt_expires_at FROM operations
+                 WHERE document_id=?1 AND actor_key=?2 AND request_key=?3",
+                params![document, actor_key, request.request_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            ).optional()?;
+            if let Some((kind, state, digest, result, expiry)) = existing {
+                if kind != "checkpoint" || digest != request.digest {
+                    return Err(CatalogError::Conflict("checkpoint key was reused with different content".into()));
+                }
+                if state != "committed" || expiry.is_none_or(|at| at <= now) {
+                    return Err(CatalogError::Conflict("checkpoint receipt is not replayable".into()));
+                }
+                return result.and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                    .and_then(|value| value.get("checkpoint_id").and_then(|id| id.as_str()).map(str::to_owned))
+                    .ok_or_else(|| CatalogError::Invalid("checkpoint receipt has no identity".into()));
+            }
+            if issued > now.saturating_add(60_000) || now.saturating_sub(issued) > 15 * 60_000 {
+                return Err(CatalogError::refused(CatalogRefusal::RequestExpired, "checkpoint request is outside its admission window"));
+            }
+            let retained: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM checkpoints c JOIN objects tree
+                   ON tree.document_id=c.document_id AND tree.id=c.tree_object_id
+                 WHERE c.document_id=?1 AND c.id=?2 AND c.tree_digest=?3
+                   AND tree.state='available' AND tree.kind='source_tree'
+                   AND NOT EXISTS(SELECT 1 FROM checkpoint_objects co JOIN objects o
+                     ON o.document_id=co.document_id AND o.id=co.object_id
+                     WHERE co.document_id=c.document_id AND co.checkpoint_id=c.id AND o.state<>'available'))",
+                params![document, checkpoint_id, request.source_revision], |row| row.get(0),
+            )?;
+            if !retained {
+                return Err(CatalogError::Conflict("captured checkpoint is no longer available".into()));
+            }
+            Self::admit_operation_slot(tx, Some(&document), "checkpoint")?;
+            let result = serde_json::json!({"version":2,"operation":request.operation,
+                "status":"committed","action":"checkpoint","checkpoint_id":checkpoint_id,
+                "source_revision":request.source_revision,"replay":false}).to_string();
+            if result.len() > 65_536 {
+                return Err(CatalogError::Invalid("checkpoint receipt is too large".into()));
+            }
+            tx.execute(
+                "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,
+                   writer_generation,plan_json,result_json,created_at,updated_at,completed_at,receipt_expires_at)
+                 SELECT ?1,?2,?3,?4,'checkpoint',?5,'committed',writer_generation,'{}',?6,?7,?7,?7,?8
+                 FROM server_state WHERE id=1",
+                params![hex::encode(crate::auth::random_bytes(16)), document, actor_key, request.request_id,
+                    request.digest, result, now, issued.saturating_add(7 * 24 * 60 * 60 * 1_000).max(now)],
+            )?;
+            Ok(checkpoint_id.to_owned())
+        })
+    }
+
     pub fn insert_checkpoint(&self, checkpoint: &Checkpoint) -> CatalogResult<Checkpoint> {
         self.insert_checkpoints_atomic(std::slice::from_ref(checkpoint))?;
         self.checkpoint(&checkpoint.slug, &checkpoint.sha)?

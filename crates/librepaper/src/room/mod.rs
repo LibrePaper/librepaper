@@ -1757,7 +1757,11 @@ impl Room {
                 None => self.published_source(entry.as_ref()).await,
             }
         };
-        let recovered_from_durable_checkpoint = if stored.is_some() {
+        let recovered_from_durable_checkpoint = if checkpoint_seed.is_some() {
+            // A document without a journal was just reconstructed from the
+            // verified current checkpoint. Its first quiet tick is unchanged.
+            true
+        } else if stored.is_some() {
             if let Some(catalog) = self.catalog.get() {
                 let slug = self.slug.clone();
                 match catalog
@@ -1906,10 +1910,9 @@ impl Room {
         drop(state);
         self.load_asset_sizes().await;
         if recovered_from_durable_checkpoint {
-            // The recovered journal is exactly at the checkpoint watermark,
-            // so its CRDT identities are the checkpoint's identities. Set the
-            // quiet comparison only after asset sizes are rehydrated; a newer
-            // journal deliberately leaves it unset and must checkpoint.
+            // The source came from the checkpoint or its exact journal
+            // watermark. Set the quiet comparison after asset sizes are
+            // rehydrated; a newer journal must still checkpoint.
             let mut state = self.state.lock().await;
             state.session.last_tree = Some(tree_of(
                 &state.session.doc,

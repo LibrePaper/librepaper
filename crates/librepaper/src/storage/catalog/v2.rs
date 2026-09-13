@@ -3900,7 +3900,13 @@ impl Catalog {
             };
             let count = i64::try_from(checkpoint.object_ids.len()).map_err(|_| CatalogError::Invalid("checkpoint closure too large".into()))?;
             if checked_add(doc_refs,count,"document checkpoint references")? > MAX_DOCUMENT_CHECKPOINT_REFS { return Err(CatalogError::refused(super::CatalogRefusal::Other,"checkpoint_reference_limit")); }
-            tx.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,checkpoint.author_account_id,checkpoint.author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,checkpoint.journal_epoch,checkpoint.journal_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|value|value.0)]).map_err(CatalogError::from)?;
+            // The CAS above checks the captured input watermark. A base written
+            // in this transaction becomes the durable representation of this
+            // checkpoint, so retain its resulting watermark on the checkpoint.
+            let (committed_epoch, committed_sequence) = journal_base.as_ref()
+                .map(|(_, _, epoch, sequence)| (*epoch, *sequence))
+                .unwrap_or((checkpoint.journal_epoch, checkpoint.journal_sequence));
+            tx.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,checkpoint.author_account_id,checkpoint.author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,committed_epoch,committed_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|value|value.0)]).map_err(CatalogError::from)?;
             for object_id in &checkpoint.object_ids { tx.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?; }
             if let Some((comment_id, payload_id)) = annotation_acceptance {
                 let changed = tx

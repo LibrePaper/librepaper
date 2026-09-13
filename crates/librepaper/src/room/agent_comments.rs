@@ -57,7 +57,7 @@ impl Room {
             let owned = super::catalog::OwnedAuthority::new(&actor);
             catalog
                 .execute_catalog(4096, move |catalog| {
-                    catalog.insert_checkpoints_atomic_with_authority(&[point], Some(owned.borrow()))
+                    catalog.commit_retained_agent_checkpoint(&point.slug, &point.sha, owned.borrow(), &commit)
                 })
                 .await
                 .map_err(|error| error.to_string())?;
