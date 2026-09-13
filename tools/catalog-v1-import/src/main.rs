@@ -1152,6 +1152,13 @@ fn make_plan(
             errors.push(format!("document {} has no owner identity", doc.storage_id));
             continue;
         }
+        if doc.published_at.is_some() && doc.last_publication_id.is_empty() {
+            errors.push(format!(
+                "document {} has published_at without a current publication identity",
+                doc.storage_id
+            ));
+            continue;
+        }
         documents.push(doc);
     }
     for requested in allowlist {
@@ -1542,7 +1549,7 @@ fn insert_documents(
         } else {
             ("balanced".into(), 0, "{\"version\":1}".into())
         };
-        tx.execute("INSERT OR IGNORE INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,published_at,source_format,main_path,settings_json,retention_mode,retention_revision,retention_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'{\"version\":1}',?13,?14,?15)", params![doc.storage_id,doc.slug,owner,mode,doc.title,title_key_value,status,doc.created_at,doc.updated_at,doc.published_at,doc.source_format,doc.main_path,retention_mode,retention_revision,retention_json])?;
+        tx.execute("INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,published_at,source_format,main_path,settings_json,retention_mode,retention_revision,retention_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,?10,?11,'{\"version\":1}',?12,?13,?14) ON CONFLICT(id) DO NOTHING", params![doc.storage_id,doc.slug,owner,mode,doc.title,title_key_value,status,doc.created_at,doc.updated_at,doc.source_format,doc.main_path,retention_mode,retention_revision,retention_json])?;
     }
     // A source-side unique title collision can be hidden by a resumed target;
     // verify every existing row still names the same document.
