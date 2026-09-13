@@ -1041,14 +1041,45 @@ async fn catalog_room_named_asset_is_journal_root_through_reopen_and_gc() {
             .await
             .unwrap(),
     );
+    catalog
+        .create_v2_account(
+            &crate::storage::catalog::V2AccountInput {
+                id: "alice".into(),
+                kind: crate::storage::catalog::AccountKind::Registered,
+                provider: Some("github".into()),
+                provider_subject: Some("asset-journal".into()),
+                handle: "alice".into(),
+                display_name: "Alice".into(),
+                email: None,
+                plan: "default".into(),
+                session_generation: "asset-journal-session".into(),
+                preferences_json: r#"{"version":2}"#.into(),
+                bookmarks_json: r#"{"version":1}"#.into(),
+                onboarding_json: r#"{"version":1}"#.into(),
+            },
+            crate::storage::catalog::UnixMillis(crate::util::now_millis()),
+        )
+        .unwrap();
     store
-        .put(store::Publication {
+        .put_as_actor(
+            store::Publication {
             slug: "asset-journal".into(),
             source: "initial".into(),
             source_format: "markdown".into(),
             owner: "alice".into(),
+            owner_id: "alice".into(),
             ..Default::default()
-        })
+            },
+            crate::document::store::MutationActor {
+                account_id: "alice".into(),
+                owner_key: "".into(),
+                session_generation: "asset-journal-session".into(),
+                link_hash: "".into(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
         .await
         .unwrap();
     let runtime = Arc::new(

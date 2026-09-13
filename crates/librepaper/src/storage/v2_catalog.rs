@@ -1295,6 +1295,7 @@ impl V2GcCatalog for Catalog {
         if now < 0 || limit == 0 {
             return Err("invalid prepared-operation expiry request".into());
         }
+        let page_limit = limit.min(256);
         sql(self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1302,34 +1303,60 @@ impl V2GcCatalog for Catalog {
             let changed = transaction
                 .execute(
                     r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?1 + CASE kind WHEN 'journal_append' THEN 60000 WHEN 'journal_compact' THEN 60000 WHEN 'agent_stage' THEN 3600000 WHEN 'agent_execution' THEN 3600000 ELSE 604800000 END,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations candidate WHERE candidate.state='prepared' AND candidate.work_expires_at IS NOT NULL AND candidate.work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects allocated WHERE allocated.allocation_operation_id=candidate.id AND allocated.state='allocated') ORDER BY candidate.work_expires_at,candidate.id LIMIT ?2)"#,
-                    params![now, i64::try_from(limit).unwrap_or(i64::MAX)],
+                    params![now, i64::try_from(page_limit).unwrap_or(256)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let expired_receipts = transaction
-                .execute(
-                    "UPDATE objects SET live_root=0,gc_after=COALESCE(gc_after,?1+?2)
-                     WHERE kind='agent_payload' AND state='available' AND live_root=1
-                       AND allocation_operation_id IS NULL
-                       AND EXISTS (SELECT 1 FROM operations op
-                                   WHERE op.kind='agent_stage'
-                                     AND op.state IN ('committed','aborted')
-                                     AND op.receipt_expires_at IS NOT NULL
-                                     AND op.receipt_expires_at<=?1
-                                     AND op.document_id=objects.document_id
-                                     AND json_extract(op.plan_json,'$.object_id')=objects.id)",
-                    params![now, GC_RETRY_MS],
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)?;
+            // Unroot at most the same bounded page of expired agent stages
+            // that the receipt cleanup can inspect.  The old correlated UPDATE
+            // walked every live payload on every maintenance tick and made the
+            // operation LIMIT ineffective under a large payload population.
+            let stage_objects = {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT document_id,json_extract(plan_json,'$.object_id')
+                         FROM operations
+                         WHERE kind='agent_stage'
+                           AND state IN ('committed','aborted')
+                           AND receipt_expires_at IS NOT NULL
+                           AND receipt_expires_at<=?1
+                         ORDER BY receipt_expires_at,id LIMIT ?2",
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                statement
+                    .query_map(
+                        params![now, i64::try_from(page_limit).unwrap_or(256)],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(crate::storage::catalog::CatalogError::from)?
+            };
+            let mut unrooted = 0usize;
+            for (document_id, object_id) in stage_objects {
+                let Some(object_id) = object_id else { continue };
+                unrooted += transaction
+                    .execute(
+                        "UPDATE objects INDEXED BY objects_live_roots
+                         SET live_root=0,gc_after=COALESCE(gc_after,?1+?2)
+                         WHERE document_id=?3 AND id=?4 AND kind='agent_payload'
+                           AND state='available' AND live_root=1
+                           AND allocation_operation_id IS NULL",
+                        params![now, GC_RETRY_MS, document_id, object_id],
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+            }
             let expired_receipts = transaction
                 .execute(
                     "DELETE FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM operations blocker WHERE blocker.state='prepared' AND (blocker.target_operation_id=operations.id OR (operations.kind='agent_cancel' AND blocker.document_id=operations.document_id AND blocker.actor_key=operations.actor_key AND blocker.request_key=operations.target_request_key) OR (blocker.document_id=operations.document_id AND blocker.actor_key=operations.actor_key AND blocker.conversation_id IS NOT NULL AND blocker.conversation_id=operations.conversation_id AND blocker.execution_epoch IS NOT NULL AND blocker.execution_epoch=operations.execution_epoch AND blocker.kind IN ('agent_apply','agent_annotations','agent_execution','agent_stage')))) AND id IN (SELECT candidate.id FROM operations candidate WHERE candidate.state IN ('committed','aborted') AND candidate.receipt_expires_at IS NOT NULL AND candidate.receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=candidate.id) AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=candidate.id) AND NOT EXISTS (SELECT 1 FROM operations blocker WHERE blocker.state='prepared' AND (blocker.target_operation_id=candidate.id OR (candidate.kind='agent_cancel' AND blocker.document_id=candidate.document_id AND blocker.actor_key=candidate.actor_key AND blocker.request_key=candidate.target_request_key) OR (blocker.document_id=candidate.document_id AND blocker.actor_key=candidate.actor_key AND blocker.conversation_id IS NOT NULL AND blocker.conversation_id=candidate.conversation_id AND blocker.execution_epoch IS NOT NULL AND blocker.execution_epoch=candidate.execution_epoch AND blocker.kind IN ('agent_apply','agent_annotations','agent_execution','agent_stage')))) ORDER BY candidate.receipt_expires_at,candidate.id LIMIT ?2)",
-                    params![now, i64::try_from(limit).unwrap_or(i64::MAX)],
+                    params![now, i64::try_from(page_limit).unwrap_or(256)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             transaction
                 .commit()
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            Ok(changed.saturating_add(expired_receipts))
+            Ok(changed
+                .saturating_add(unrooted)
+                .saturating_add(expired_receipts))
         }))
     }
 
