@@ -1,6 +1,65 @@
 //! Account identity, preferences, bounded usage queries, and erasure.
 use super::*;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+
+const MAX_ERASURE_BATCH: u32 = 250;
+
+fn update_erasure_progress(
+    tx: &Transaction<'_>,
+    account_id: &str,
+    stage: &str,
+    cursor: Option<&str>,
+    updated_at: i64,
+) -> CatalogResult<()> {
+    if !matches!(
+        stage,
+        "grants" | "bookmarks" | "annotations" | "replies" | "checkpoints" | "operations"
+    ) {
+        return Err(CatalogError::Invalid("unknown erasure stage".into()));
+    }
+    let raw: String = tx
+        .query_row(
+            "SELECT plan_json FROM operations
+             WHERE account_id=?1 AND kind='erase_account' AND state='prepared'",
+            [account_id],
+            |row| row.get(0),
+        )
+        .map_err(CatalogError::from)?;
+    let mut plan: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|error| CatalogError::Invalid(format!("invalid erasure plan: {error}")))?;
+    if !plan.is_object() || plan.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return Err(CatalogError::Invalid(
+            "unsupported erasure plan version".into(),
+        ));
+    }
+    plan["stage"] = serde_json::Value::String(stage.to_owned());
+    plan["cursor"] = match cursor {
+        Some(value) => serde_json::from_str(value)
+            .map_err(|_| CatalogError::Invalid("invalid erasure cursor".into()))?,
+        None => serde_json::Value::Null,
+    };
+    let encoded = serde_json::to_string(&plan)
+        .map_err(|error| CatalogError::Invalid(format!("cannot encode erasure plan: {error}")))?;
+    if encoded.len() > 65_536 {
+        return Err(CatalogError::Invalid(
+            "erasure plan exceeds its size limit".into(),
+        ));
+    }
+    let changed = tx
+        .execute(
+            "UPDATE operations SET plan_json=?2,updated_at=max(updated_at,?3)
+             WHERE account_id=?1 AND kind='erase_account' AND state='prepared'",
+            params![account_id, encoded, updated_at],
+        )
+        .map_err(CatalogError::from)?;
+    if changed != 1 {
+        return Err(CatalogError::Conflict(
+            "account erasure operation is missing".into(),
+        ));
+    }
+    Ok(())
+}
 
 impl Catalog {
     pub fn account_open_annotation_references(
@@ -508,19 +567,28 @@ impl Catalog {
             return Err(CatalogError::Invalid("session generation is empty".into()));
         }
         self.immediate(|tx| {
-            let changed = tx
-                .execute(
-                    "UPDATE accounts
-                    SET status = 'erasing', session_generation = ?2,
-                     erasure_cursor = NULL
-                    WHERE id = ?1
-                    AND status = 'active'",
-                    params![id, new_generation],
-                )
+            let status: Option<String> = tx
+                .query_row("SELECT status FROM accounts WHERE id=?1", [id], |row| row.get(0))
+                .optional()
                 .map_err(CatalogError::from)?;
-            if changed == 0 {
-                return Err(CatalogError::NotFound);
+            match status.as_deref() {
+                Some("erasing") => {
+                    let prepared: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM operations WHERE account_id=?1 AND kind='erase_account' AND state='prepared'",
+                        [id], |row| row.get(0))?;
+                    if prepared == 1 {
+                        return Ok(());
+                    }
+                    return Err(CatalogError::Conflict("account erasure has no recoverable operation".into()));
+                }
+                Some("active") => {}
+                Some(_) => return Err(CatalogError::Conflict("account cannot be erased in its current state".into())),
+                None => return Err(CatalogError::NotFound),
             }
+            tx.execute(
+                "UPDATE accounts SET status='erasing', session_generation=?2 WHERE id=?1 AND status='active'",
+                params![id, new_generation],
+            ).map_err(CatalogError::from)?;
             // Withdrawal is part of the lifecycle transition.  The erasure
             // worker still owns physical reclamation and must retain these
             // rows (and their reservations) until object cleanup succeeds.
@@ -543,13 +611,26 @@ impl Catalog {
                 "UPDATE operations
                     SET state='aborted', result_json=?2, completed_at=?3, receipt_expires_at=?3, updated_at=max(updated_at,?3)
 
-                    WHERE state='prepared'
+                    WHERE state='prepared' AND kind <> 'erase_account'
                     AND document_id IN
                    (SELECT id
                     FROM documents
                     WHERE owner_id=?1
                     AND status='deleting')",
                 params![id, r#"{"version":1,"reason":"account_erasure"}"#, super::unix_millis()],
+            ).map_err(CatalogError::from)?;
+            let operation_id = crate::util::new_id();
+            let request_digest = hex::encode(Sha256::digest(id.as_bytes()));
+            let request_key = format!("erase-account:{}", &request_digest[..32]);
+            let plan = r#"{"version":1,"stage":"grants","cursor":null}"#;
+            let writer_generation: String = tx.query_row(
+                "SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0))?;
+            let now = super::unix_millis();
+            tx.execute(
+                "INSERT INTO operations
+                    (id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at)
+                 VALUES(?1,?2,'system:erasure',?3,'erase_account',?4,'prepared',?5,?6,?7,?7)",
+                params![operation_id, id, request_key, request_digest, writer_generation, plan, now],
             ).map_err(CatalogError::from)?;
             Ok(())
         })
@@ -591,7 +672,7 @@ impl Catalog {
         updated_at: i64,
         limit: u32,
     ) -> CatalogResult<u32> {
-        if stage.is_empty() || stage.len() > 64 || limit == 0 || limit > 1000 {
+        if stage.is_empty() || stage.len() > 64 || limit == 0 {
             return Err(CatalogError::Invalid("invalid erasure batch".into()));
         }
         self.immediate(|tx| {
@@ -609,24 +690,8 @@ impl Catalog {
             if status != "erasing" {
                 return Err(CatalogError::Conflict("account is not erasing".into()));
             }
-            tx.execute(
-                "INSERT INTO erasure_batches(account_id, stage, cursor, updated_at)
-
-                    VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(account_id) DO UPDATE
-                    SET stage=excluded.stage,
-                   cursor=excluded.cursor, updated_at=excluded.updated_at",
-                params![id, stage, cursor, updated_at],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE accounts
-                    SET erasure_cursor = ?2
-                    WHERE id = ?1",
-                params![id, cursor],
-            )
-            .map_err(CatalogError::from)?;
-            Ok(limit)
+            update_erasure_progress(&tx, id, stage, cursor, updated_at)?;
+            Ok(limit.min(MAX_ERASURE_BATCH))
         })
     }
 
@@ -641,7 +706,7 @@ impl Catalog {
         updated_at: i64,
         limit: u32,
     ) -> CatalogResult<u32> {
-        if limit == 0 || limit > 1000 || stage.is_empty() {
+        if limit == 0 || stage.is_empty() {
             return Err(CatalogError::Invalid("invalid erasure batch".into()));
         }
         self.immediate(|tx| {
@@ -671,7 +736,7 @@ impl Catalog {
                 .transpose()?;
             let n_and_cursor = match stage {
                 "grants" => {
-                    let (after_slug, after_role) = cursor_parts
+                    let (after_document, after_account) = cursor_parts
                         .as_ref()
                         .map(|parts| {
                             if parts.len() != 2 {
@@ -683,20 +748,20 @@ impl Catalog {
                         .unwrap_or(("", ""));
                     let mut rows = tx
                         .prepare(
-                            "SELECT slug, role
+                            "SELECT document_id, account_id
                     FROM grants
 
                     WHERE account_id=?1
 
-                    AND (slug>?2
-                    OR (slug=?2
-                    AND role>?3))
+                    AND (document_id>?2
+                    OR (document_id=?2
+                    AND account_id>?3))
 
-                    ORDER BY slug, role LIMIT ?4",
+                    ORDER BY document_id, account_id LIMIT ?4",
                         )
                         .map_err(CatalogError::from)?
                         .query_map(
-                            params![id, after_slug, after_role, i64::from(limit)],
+                            params![id, after_document, after_account, i64::from(limit.min(MAX_ERASURE_BATCH))],
                             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                         )
                         .map_err(CatalogError::from)?
@@ -704,28 +769,28 @@ impl Catalog {
                         .map_err(CatalogError::from)?;
                     let last = rows.last().cloned();
                     let has_rows = last.is_some();
-                    for (slug, role) in rows.drain(..) {
+                    for (document_id, account_id) in rows.drain(..) {
                         tx.execute(
                             "DELETE
                     FROM grants
-                    WHERE slug=?1
-                    AND role=?2
-                    AND account_id=?3",
-                            params![slug, role, id],
+                    WHERE document_id=?1
+                    AND account_id=?2",
+                            params![document_id, account_id],
                         )
                         .map_err(CatalogError::from)?;
                     }
                     (
-                        last.map(|(slug, role)| serde_json::json!([slug, role]).to_string()),
+                        last.map(|(document_id, account_id)| serde_json::json!([document_id, account_id]).to_string()),
                         has_rows,
                     )
                 }
-                "guests" => {
-                    let (after_slug, after_link) = cursor_parts
+                "bookmarks" => (None, false),
+                "annotations" => {
+                    let (after_document, after_id) = cursor_parts
                         .as_ref()
                         .map(|parts| {
                             if parts.len() != 2 {
-                                return Err(CatalogError::Invalid("invalid guests cursor".into()));
+                                return Err(CatalogError::Invalid("invalid annotations cursor".into()));
                             }
                             Ok((parts[0].as_str(), parts[1].as_str()))
                         })
@@ -733,71 +798,19 @@ impl Catalog {
                         .unwrap_or(("", ""));
                     let mut rows = tx
                         .prepare(
-                            "SELECT slug, link_hash
-                    FROM guests
+                            "SELECT document_id, id
+                    FROM annotations
 
-                    WHERE account_id=?1
+                    WHERE author_account_id=?1
 
-                    AND (slug>?2
-                    OR (slug=?2
-                    AND link_hash>?3))
-
-                    ORDER BY slug, link_hash LIMIT ?4",
-                        )
-                        .map_err(CatalogError::from)?
-                        .query_map(
-                            params![id, after_slug, after_link, i64::from(limit)],
-                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                        )
-                        .map_err(CatalogError::from)?
-                        .collect::<rusqlite::Result<Vec<_>>>()
-                        .map_err(CatalogError::from)?;
-                    let last = rows.last().cloned();
-                    let has_rows = last.is_some();
-                    for (slug, link_hash) in rows.drain(..) {
-                        tx.execute(
-                            "DELETE
-                    FROM guests
-                    WHERE slug=?1
-                    AND account_id=?2
-                    AND link_hash=?3",
-                            params![slug, id, link_hash],
-                        )
-                        .map_err(CatalogError::from)?;
-                    }
-                    (
-                        last.map(|(slug, link)| serde_json::json!([slug, link]).to_string()),
-                        has_rows,
-                    )
-                }
-                "comments" => {
-                    let (after_slug, after_id) = cursor_parts
-                        .as_ref()
-                        .map(|parts| {
-                            if parts.len() != 2 {
-                                return Err(CatalogError::Invalid(
-                                    "invalid comments cursor".into(),
-                                ));
-                            }
-                            Ok((parts[0].as_str(), parts[1].as_str()))
-                        })
-                        .transpose()?
-                        .unwrap_or(("", ""));
-                    let mut rows = tx
-                        .prepare(
-                            "SELECT slug, id
-                    FROM comments
-
-                    WHERE author=?1
-
-                    AND (slug>?2
-                    OR (slug=?2
+                    AND (document_id>?2
+                    OR (document_id=?2
                     AND id>?3))
 
-                    ORDER BY slug, id LIMIT ?4",
+                    ORDER BY document_id, id LIMIT ?4",
                         )
                         .map_err(CatalogError::from)?
-                        .query_map(params![id, after_slug, after_id, i64::from(limit)], |row| {
+                        .query_map(params![id, after_document, after_id, i64::from(limit.min(MAX_ERASURE_BATCH))], |row| {
                             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                         })
                         .map_err(CatalogError::from)?
@@ -805,26 +818,26 @@ impl Catalog {
                         .map_err(CatalogError::from)?;
                     let last = rows.last().cloned();
                     let has_rows = last.is_some();
-                    for (slug, comment_id) in rows.drain(..) {
+                    for (document_id, annotation_id) in rows.drain(..) {
                         tx.execute(
                             "DELETE
-                    FROM comments
-                    WHERE slug=?1
+                    FROM annotations
+                    WHERE document_id=?1
                     AND id=?2
-                    AND author=?3",
-                            params![slug, comment_id, id],
+                    AND author_account_id=?3",
+                            params![document_id, annotation_id, id],
                         )
                         .map_err(CatalogError::from)?;
                     }
                     (
-                        last.map(|(slug, comment_id)| {
-                            serde_json::json!([slug, comment_id]).to_string()
+                        last.map(|(document_id, annotation_id)| {
+                            serde_json::json!([document_id, annotation_id]).to_string()
                         }),
                         has_rows,
                     )
                 }
                 "replies" => {
-                    let (after_slug, after_comment, after_id) = cursor_parts
+                    let (after_document, after_annotation, after_id) = cursor_parts
                         .as_ref()
                         .map(|parts| {
                             if parts.len() != 3 {
@@ -836,24 +849,24 @@ impl Catalog {
                         .unwrap_or(("", "", ""));
                     let mut rows = tx
                         .prepare(
-                            "SELECT slug, comment_id, id
+                            "SELECT document_id, annotation_id, id
                     FROM replies
 
-                    WHERE author=?1
+                    WHERE author_account_id=?1
 
-                    AND (slug>?2
-                    OR (slug=?2
-                    AND comment_id>?3)
+                    AND (document_id>?2
+                    OR (document_id=?2
+                    AND annotation_id>?3)
 
-                    OR (slug=?2
-                    AND comment_id=?3
+                    OR (document_id=?2
+                    AND annotation_id=?3
                     AND id>?4))
 
-                    ORDER BY slug, comment_id, id LIMIT ?5",
+                    ORDER BY document_id, annotation_id, id LIMIT ?5",
                         )
                         .map_err(CatalogError::from)?
                         .query_map(
-                            params![id, after_slug, after_comment, after_id, i64::from(limit)],
+                            params![id, after_document, after_annotation, after_id, i64::from(limit.min(MAX_ERASURE_BATCH))],
                             |row| {
                                 Ok((
                                     row.get::<_, String>(0)?,
@@ -867,47 +880,32 @@ impl Catalog {
                         .map_err(CatalogError::from)?;
                     let last = rows.last().cloned();
                     let has_rows = last.is_some();
-                    for (slug, comment_id, reply_id) in rows.drain(..) {
+                    for (document_id, annotation_id, reply_id) in rows.drain(..) {
                         tx.execute(
                             "DELETE
                     FROM replies
 
-                    WHERE slug=?1
-                    AND comment_id=?2
+                    WHERE document_id=?1
+                    AND annotation_id=?2
                     AND id=?3
-                    AND author=?4",
-                            params![slug, comment_id, reply_id, id],
+                    AND author_account_id=?4",
+                            params![document_id, annotation_id, reply_id, id],
                         )
                         .map_err(CatalogError::from)?;
                     }
                     (
-                        last.map(|(slug, comment, reply)| {
-                            serde_json::json!([slug, comment, reply]).to_string()
+                        last.map(|(document, annotation, reply)| {
+                            serde_json::json!([document, annotation, reply]).to_string()
                         }),
                         has_rows,
                     )
                 }
-                // Checkpoints are the account's contributions to documents it
-                // may not own.  The row itself is retained -- its content,
-                // sha, tree_sha, parent, timestamps and label are the
-                // document's history, and the event identity other rows point
-                // at -- and only the identifying attribution is cleared.
-                //
-                // Two stages, because there are two ways a row can name this
-                // account.  The indexed one is the stable id; the legacy one
-                // is a pre-migration row whose `by` literally holds an account
-                // id, which is what the erasure query matched before this
-                // column existed.  That second match is on the account id, not
-                // on a handle: no row is selected because its display name
-                // resembles the account's.
                 "checkpoints" => {
-                    let (after_slug, after_sha) = cursor_parts
+                    let (after_document, after_checkpoint) = cursor_parts
                         .as_ref()
                         .map(|parts| {
                             if parts.len() != 2 {
-                                return Err(CatalogError::Invalid(
-                                    "invalid checkpoints cursor".into(),
-                                ));
+                                return Err(CatalogError::Invalid("invalid checkpoints cursor".into()));
                             }
                             Ok((parts[0].as_str(), parts[1].as_str()))
                         })
@@ -915,20 +913,20 @@ impl Catalog {
                         .unwrap_or(("", ""));
                     let mut rows = tx
                         .prepare(
-                            "SELECT slug, sha
+                            "SELECT document_id, id
                     FROM checkpoints
 
-                    WHERE by_account=?1
+                    WHERE author_account_id=?1
 
-                    AND (slug>?2
-                    OR (slug=?2
-                    AND sha>?3))
+                    AND (document_id>?2
+                    OR (document_id=?2
+                    AND id>?3))
 
-                    ORDER BY slug, sha LIMIT ?4",
+                    ORDER BY document_id, id LIMIT ?4",
                         )
                         .map_err(CatalogError::from)?
                         .query_map(
-                            params![id, after_slug, after_sha, i64::from(limit)],
+                            params![id, after_document, after_checkpoint, i64::from(limit.min(MAX_ERASURE_BATCH))],
                             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                         )
                         .map_err(CatalogError::from)?
@@ -936,75 +934,58 @@ impl Catalog {
                         .map_err(CatalogError::from)?;
                     let last = rows.last().cloned();
                     let has_rows = last.is_some();
-                    for (slug, sha) in rows.drain(..) {
+                    for (document_id, checkpoint_id) in rows.drain(..) {
                         tx.execute(
                             "UPDATE checkpoints
-                    SET by=?4, by_account=NULL
+                    SET author_label=?4, author_account_id=NULL
 
-                    WHERE slug=?1
-                    AND sha=?2
-                    AND by_account=?3",
-                            params![slug, sha, id, ERASED_ATTRIBUTION],
+                    WHERE document_id=?1
+                    AND id=?2
+                    AND author_account_id=?3",
+                            params![document_id, checkpoint_id, id, ERASED_ATTRIBUTION],
                         )
                         .map_err(CatalogError::from)?;
                     }
                     (
-                        last.map(|(slug, sha)| serde_json::json!([slug, sha]).to_string()),
+                        last.map(|(document_id, checkpoint_id)| serde_json::json!([document_id, checkpoint_id]).to_string()),
                         has_rows,
                     )
                 }
-                "checkpoints_legacy" => {
-                    let (after_slug, after_sha) = cursor_parts
+                "operations" => {
+                    let after_id = cursor_parts
                         .as_ref()
                         .map(|parts| {
-                            if parts.len() != 2 {
-                                return Err(CatalogError::Invalid(
-                                    "invalid legacy checkpoints cursor".into(),
-                                ));
+                            if parts.len() != 1 {
+                                return Err(CatalogError::Invalid("invalid operations cursor".into()));
                             }
-                            Ok((parts[0].as_str(), parts[1].as_str()))
+                            Ok(parts[0].as_str())
                         })
                         .transpose()?
-                        .unwrap_or(("", ""));
+                        .unwrap_or("");
                     let mut rows = tx
                         .prepare(
-                            "SELECT slug, sha
-                    FROM checkpoints
-
-                    WHERE by_account IS NULL
-                    AND by=?1
-
-                    AND (slug>?2
-                    OR (slug=?2
-                    AND sha>?3))
-
-                    ORDER BY slug, sha LIMIT ?4",
-                        )
-                        .map_err(CatalogError::from)?
+                            "SELECT o.id FROM operations o
+                             WHERE o.account_id=?1 AND o.kind <> 'erase_account'
+                               AND o.state <> 'prepared' AND o.id>?2
+                               AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=o.id)
+                               AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=o.id)
+                             ORDER BY o.id LIMIT ?3",
+                        )?
                         .query_map(
-                            params![id, after_slug, after_sha, i64::from(limit)],
-                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                        )
-                        .map_err(CatalogError::from)?
-                        .collect::<rusqlite::Result<Vec<_>>>()
-                        .map_err(CatalogError::from)?;
+                            params![id, after_id, i64::from(limit.min(MAX_ERASURE_BATCH))],
+                            |row| row.get::<_, String>(0),
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
                     let last = rows.last().cloned();
                     let has_rows = last.is_some();
-                    for (slug, sha) in rows.drain(..) {
+                    for operation_id in rows.drain(..) {
                         tx.execute(
-                            "UPDATE checkpoints
-                    SET by=?4
-
-                    WHERE slug=?1
-                    AND sha=?2
-                    AND by_account IS NULL
-                    AND by=?3",
-                            params![slug, sha, id, ERASED_ATTRIBUTION],
-                        )
-                        .map_err(CatalogError::from)?;
+                            "DELETE FROM operations WHERE id=?1 AND account_id=?2 AND state <> 'prepared'",
+                            params![operation_id, id],
+                        )?;
                     }
                     (
-                        last.map(|(slug, sha)| serde_json::json!([slug, sha]).to_string()),
+                        last.map(|operation_id| serde_json::json!([operation_id]).to_string()),
                         has_rows,
                     )
                 }
@@ -1012,20 +993,7 @@ impl Catalog {
             };
             let n = u32::from(n_and_cursor.1);
             let next_cursor = n_and_cursor.0;
-            tx.execute(
-                "INSERT INTO erasure_batches(account_id,stage,cursor,updated_at) VALUES(?1,?2,?3,?4)
-                 ON CONFLICT(account_id) DO UPDATE
-                    SET stage=excluded.stage,cursor=excluded.cursor,updated_at=excluded.updated_at",
-                params![id, stage, next_cursor, updated_at],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE accounts
-                    SET erasure_cursor=?2
-                    WHERE id=?1",
-                params![id, next_cursor],
-            )
-            .map_err(CatalogError::from)?;
+            update_erasure_progress(&tx, id, stage, next_cursor.as_deref(), updated_at)?;
             Ok(n)
         })
     }
@@ -1057,29 +1025,22 @@ impl Catalog {
             if owned != 0 {
                 return Err(CatalogError::Conflict("owned documents remain".into()));
             }
+            let charges: (i64, i64, i64) = tx.query_row(
+                "SELECT stored_bytes, reserved_bytes, document_count FROM accounts WHERE id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            if charges != (0, 0, 0) {
+                return Err(CatalogError::Conflict("account charges remain".into()));
+            }
             let references: i64 = tx
                 .query_row(
                     "SELECT
-                       (SELECT COUNT(*)
-                    FROM grants
-                    WHERE account_id=?1) +
-                       (SELECT COUNT(*)
-                    FROM guests
-                    WHERE account_id=?1) +
-                       (SELECT COUNT(*)
-                    FROM comments
-                    WHERE author=?1) +
-                       (SELECT COUNT(*)
-                    FROM replies
-                    WHERE author=?1) +
-                       (SELECT COUNT(*)
-                    FROM checkpoints
-                    WHERE by_account=?1) +
-                       (SELECT COUNT(*)
-                    FROM checkpoints
-
-                    WHERE by_account IS NULL
-                    AND by=?1)",
+                       (SELECT COUNT(*) FROM grants WHERE account_id=?1) +
+                       (SELECT COUNT(*) FROM annotations WHERE author_account_id=?1) +
+                       (SELECT COUNT(*) FROM replies WHERE author_account_id=?1) +
+                       (SELECT COUNT(*) FROM checkpoints WHERE author_account_id=?1) +
+                       (SELECT COUNT(*) FROM operations WHERE account_id=?1 AND state='prepared' AND kind <> 'erase_account')",
                     [id],
                     |row| row.get(0),
                 )
@@ -1087,6 +1048,22 @@ impl Catalog {
             if references != 0 {
                 return Err(CatalogError::Conflict("account attribution remains".into()));
             }
+            let operation_id: String = tx.query_row(
+                "SELECT id FROM operations WHERE account_id=?1 AND kind='erase_account' AND state='prepared'",
+                [id], |row| row.get(0)).optional()?.ok_or_else(|| {
+                    CatalogError::Conflict("account erasure operation is missing".into())
+                })?;
+            let now = super::unix_millis();
+            tx.execute(
+                "UPDATE operations SET state='committed', result_json=?2,
+                    completed_at=?3, receipt_expires_at=?3, updated_at=max(updated_at,?3)
+                 WHERE id=?1 AND account_id=?4 AND kind='erase_account' AND state='prepared'",
+                params![operation_id, r#"{"version":1,"status":"erased"}"#, now, id],
+            )?;
+            tx.execute(
+                "DELETE FROM operations WHERE account_id=?1 AND state <> 'prepared'",
+                [id],
+            )?;
             tx.execute(
                 "DELETE
                     FROM accounts
@@ -1104,7 +1081,7 @@ impl Catalog {
         after_id: Option<&str>,
         limit: u32,
     ) -> CatalogResult<Vec<String>> {
-        let limit = i64::from(limit.clamp(1, 100));
+        let limit = i64::from(limit.clamp(1, MAX_ERASURE_BATCH));
         self.with_connection(|connection| {
             let mut statement = connection
                 .prepare(
@@ -1125,31 +1102,58 @@ impl Catalog {
 
     pub fn erasure_stage(&self, id: &str) -> CatalogResult<Option<String>> {
         self.with_connection(|connection| {
-            connection
+            let plan: Option<String> = connection
                 .query_row(
-                    "SELECT stage
-                    FROM erasure_batches
-                    WHERE account_id=?1",
+                    "SELECT plan_json FROM operations
+                 WHERE account_id=?1 AND kind='erase_account' AND state='prepared'",
                     [id],
                     |row| row.get(0),
                 )
                 .optional()
-                .map_err(CatalogError::from)
+                .map_err(CatalogError::from)?;
+            plan.map(|raw| {
+                let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+                    CatalogError::Invalid(format!("invalid erasure plan: {error}"))
+                })?;
+                value
+                    .get("stage")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| CatalogError::Invalid("erasure plan has no stage".into()))
+            })
+            .transpose()
         })
     }
 
     pub fn erasure_progress(&self, id: &str) -> CatalogResult<Option<(String, Option<String>)>> {
         self.with_connection(|connection| {
-            connection
+            let plan: Option<String> = connection
                 .query_row(
-                    "SELECT stage, cursor
-                    FROM erasure_batches
-                    WHERE account_id=?1",
+                    "SELECT plan_json FROM operations
+                 WHERE account_id=?1 AND kind='erase_account' AND state='prepared'",
                     [id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| row.get(0),
                 )
                 .optional()
-                .map_err(CatalogError::from)
+                .map_err(CatalogError::from)?;
+            plan.map(|raw| {
+                let value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+                    CatalogError::Invalid(format!("invalid erasure plan: {error}"))
+                })?;
+                let stage = value
+                    .get("stage")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| CatalogError::Invalid("erasure plan has no stage".into()))?
+                    .to_owned();
+                let cursor = match value.get("cursor") {
+                    Some(serde_json::Value::Null) | None => None,
+                    Some(value) => Some(serde_json::to_string(value).map_err(|error| {
+                        CatalogError::Invalid(format!("invalid erasure cursor: {error}"))
+                    })?),
+                };
+                Ok((stage, cursor))
+            })
+            .transpose()
         })
     }
 }

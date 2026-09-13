@@ -130,7 +130,7 @@ pub async fn run_erasure_pass_async(
 }
 
 fn validate_erasure_limits(now: i64, accounts: u32, rows: u32) -> MaintenanceResult<()> {
-    if now < 0 || accounts == 0 || rows == 0 || rows > 1000 {
+    if now < 0 || accounts == 0 || rows == 0 || rows > 250 {
         return Err(MaintenanceError::Invalid(
             "invalid erasure pass limits".into(),
         ));
@@ -149,11 +149,11 @@ fn erasure_pass_sql(
         touched += 1;
         let stages = [
             "grants",
-            "guests",
-            "comments",
+            "bookmarks",
+            "annotations",
             "replies",
             "checkpoints",
-            "checkpoints_legacy",
+            "operations",
         ];
         let (current, stored_cursor) = catalog
             .erasure_progress(&id)?
