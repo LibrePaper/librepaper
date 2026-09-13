@@ -3010,6 +3010,16 @@ fn v2_document_worker_bounds_checkpoint_edges_and_repeated_begin() {
     catalog.erase_document_batch("doc", 250, 1_000).unwrap();
     catalog.erase_document_batch("doc", 250, 1_000).unwrap();
     catalog.erase_document_batch("doc", 250, 1_000).unwrap();
+    assert_eq!(catalog.erase_document_batch("doc", 250, 1_000).unwrap(), 1);
+    let mut pinned_batch = None;
+    for _ in 0..8 {
+        let changed = catalog.erase_document_batch("doc", 250, 1_000).unwrap();
+        if changed == 0 {
+            pinned_batch = Some(changed);
+            break;
+        }
+    }
+    assert_eq!(pinned_batch, Some(0));
     let remaining_edges: i64 = catalog
         .with_connection(|connection| {
             connection
@@ -3021,7 +3031,33 @@ fn v2_document_worker_bounds_checkpoint_edges_and_repeated_begin() {
                 .map_err(CatalogError::from)
         })
         .unwrap();
-    assert_eq!(remaining_edges, 1024);
-    assert_eq!(catalog.erase_document_batch("doc", 250, 1_000).unwrap(), 0);
+    assert_eq!(remaining_edges, 0);
+    let counters: (i64, i64) = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT d.checkpoint_ref_count,
+                            (SELECT checkpoint_ref_count FROM server_state WHERE id=1)
+                     FROM documents d WHERE d.id='storage-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(counters, (0, 0));
+    let pinned_rows: (i64, i64) = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM operations WHERE id='operation-pinned'),
+                            (SELECT COUNT(*) FROM objects WHERE id='allocated-object')",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(pinned_rows, (1, 1));
 
 }
