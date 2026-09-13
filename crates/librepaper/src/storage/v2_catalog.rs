@@ -159,6 +159,27 @@ impl V2GcCatalog for Catalog {
         }))
     }
 
+    async fn expire_prepared_operations(&self, now: i64, limit: usize) -> Result<usize, String> {
+        if now < 0 || limit == 0 {
+            return Err("invalid prepared-operation expiry request".into());
+        }
+        sql(self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let changed = transaction
+                .execute(
+                    r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations WHERE state='prepared' ORDER BY work_expires_at,id LIMIT ?3)"#,
+                    params![now, now.saturating_add(RECEIPT_RETENTION_MS), i64::try_from(limit).unwrap_or(i64::MAX)],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            transaction
+                .commit()
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            Ok(changed)
+        }))
+    }
+
     async fn claim_gc(&self, now: i64, limit: usize) -> Result<Vec<GcCandidate>, String> {
         if now < 0 || limit == 0 {
             return Err("invalid GC claim request".into());

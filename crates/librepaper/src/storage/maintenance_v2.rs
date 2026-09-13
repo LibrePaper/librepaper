@@ -32,6 +32,7 @@ pub struct GcReport {
     pub objects_deferred: usize,
     pub bytes_released: i64,
     pub lease_rows_expired: usize,
+    pub prepared_operations_expired: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +105,12 @@ impl std::error::Error for GcError {}
 #[async_trait]
 pub trait V2GcCatalog: Send + Sync {
     async fn expire_leases(&self, now: i64, limit: usize) -> Result<usize, String>;
+    /// Abort expired work only when it has no allocated physical rows. An
+    /// operation with an admitted PUT remains charged for startup recovery.
+    async fn expire_prepared_operations(&self, now: i64, limit: usize) -> Result<usize, String> {
+        let _ = (now, limit);
+        Ok(0)
+    }
     async fn claim_gc(&self, now: i64, limit: usize) -> Result<Vec<GcCandidate>, String>;
     async fn settle_gc(
         &self,
@@ -267,6 +274,10 @@ pub async fn run_gc_pass(
         .expire_leases(now, GC_PAGE_SIZE)
         .await
         .map_err(GcError::Catalog)?;
+    let prepared_operations_expired = catalog
+        .expire_prepared_operations(now, GC_PAGE_SIZE)
+        .await
+        .map_err(GcError::Catalog)?;
     let candidates = catalog
         .claim_gc(now, GC_PAGE_SIZE)
         .await
@@ -274,6 +285,7 @@ pub async fn run_gc_pass(
     let mut report = GcReport {
         candidates_claimed: candidates.len(),
         lease_rows_expired,
+        prepared_operations_expired,
         ..GcReport::default()
     };
     let mut first_error = None;
