@@ -53,7 +53,7 @@ fn validate_new_request_key(key: &str) -> CatalogResult<()> {
 }
 fn annotation_actor(authority: AnnotationAuthority<'_>) -> String {
     if !authority.account_id.is_empty() {
-        authority.account_id.to_string()
+        format!("account:{}", authority.account_id)
     } else if !authority.generation.is_empty() {
         format!("session:{}", authority.generation)
     } else {
@@ -62,7 +62,7 @@ fn annotation_actor(authority: AnnotationAuthority<'_>) -> String {
 }
 fn document_id(tx: &rusqlite::Transaction<'_>, slug: &str) -> CatalogResult<String> {
     tx.query_row(
-        "SELECT id FROM documents WHERE slug=?1 AND status='active'",
+        "SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1 AND d.status='active'",
         [slug],
         |row| row.get(0),
     )
@@ -73,7 +73,7 @@ fn document_id(tx: &rusqlite::Transaction<'_>, slug: &str) -> CatalogResult<Stri
 fn document_id_connection(connection: &rusqlite::Connection, slug: &str) -> CatalogResult<String> {
     connection
         .query_row(
-            "SELECT id FROM documents WHERE slug=?1 AND status='active'",
+            "SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1 AND d.status='active'",
             [slug],
             |row| row.get(0),
         )
@@ -91,7 +91,9 @@ fn annotation_account_authorized(
     }
     let allowed: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=?2
+            "SELECT EXISTS(SELECT 1 FROM documents d
+             JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'
+             JOIN accounts a ON a.id=?2
              WHERE d.id=?1 AND d.status='active' AND a.status='active'
                AND a.session_generation=?3 AND (d.owner_id=?2 OR EXISTS(
                  SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=?2
@@ -187,9 +189,10 @@ const COMMENT_SELECT: &str = r#"SELECT d.slug,a.id,a.seq,
  json_extract(a.selector_json,'$.source.suffix'),json_extract(a.selector_json,'$.source.position'),
  a.proposed_text,COALESCE(a.suggestion_state,''),COALESCE(a.acceptance_operation_id,''),
  COALESCE(a.resolution_revision,''),COALESCE(json_extract(a.context_json,'$.pass'),''),
- a.resolved_at IS NOT NULL,a.resolved_at,COALESCE(a.resolution_revision,''),
+ a.resolved_at IS NOT NULL,a.resolved_at,COALESCE(a.protected_checkpoint_id,a.resolution_revision,''),
  COALESCE(json_extract(a.selector_json,'$.rendered.point'),0),json_extract(a.selector_json,'$.rendered.color')
- FROM annotations a JOIN documents d ON d.id=a.document_id"#;
+ FROM annotations a JOIN documents d ON d.id=a.document_id
+ JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'"#;
 
 impl Catalog {
     pub fn insert_comment(&self, comment: &Comment) -> CatalogResult<Comment> {
@@ -231,25 +234,115 @@ impl Catalog {
         if request_id.is_empty() {
             return self.insert_comment_authorized(comment, authority);
         }
-        if request_id.len() > 128 || request_digest.len() != 64 {
+        if request_id.len() > 128
+            || request_digest.len() != 64
+            || !request_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || created_at < 0
+        {
             return Err(CatalogError::Invalid(
                 "invalid comment request receipt".into(),
             ));
         }
         self.immediate(|tx| {
             annotation_session_active(tx, authority)?;
-            let doc=document_id(tx,&comment.slug)?;
-            let actor=annotation_actor(authority);
-            let existing:Option<(String,String,String)>=tx.query_row("SELECT id,state,request_digest FROM operations WHERE document_id=?1 AND request_key=?2 AND kind='agent_annotations' AND json_extract(plan_json,'$.commentId')=?3",params![doc,actor,request_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?;
-            if let Some((_,state,digest))=existing { if digest!=request_digest{return Err(CatalogError::Conflict("request id was reused with different content".into()))}; if state=="committed" { return Self::comment_in_tx(tx,&comment.slug,&comment.id); } return Err(CatalogError::Conflict("comment request is still prepared".into())); }
+            let document_id = document_id(tx, &comment.slug)?;
+            let actor = annotation_actor(authority);
+            let existing: Option<(String, String, String, String)> = tx
+                .query_row(
+                    "SELECT id,state,request_digest,plan_json
+                     FROM operations
+                     WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                       AND kind='agent_annotations'",
+                    params![document_id, actor, request_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            if let Some((_operation_id, state, old_digest, plan_json)) = existing {
+                if old_digest != request_digest {
+                    return Err(CatalogError::Conflict(
+                        "request id was reused with different content".into(),
+                    ));
+                }
+                let stored_id = serde_json::from_str::<serde_json::Value>(&plan_json)
+                    .ok()
+                    .and_then(|plan| plan.get("commentId").and_then(serde_json::Value::as_str))
+                    .ok_or_else(|| {
+                        CatalogError::Invalid("annotation receipt has no comment identity".into())
+                    })?;
+                if stored_id != comment.id {
+                    return Err(CatalogError::Conflict(
+                        "request id was reused for another annotation".into(),
+                    ));
+                }
+                if state == "committed" {
+                    return Self::comment_in_tx(tx, &comment.slug, stored_id);
+                }
+                return Err(CatalogError::Conflict(
+                    "comment request is still prepared".into(),
+                ));
+            }
             validate_new_request_key(request_id)?;
-            let operation_id=hex::encode(crate::auth::random_bytes(16));
-            let generation:String=tx.query_row("SELECT writer_generation FROM server_state WHERE id=1",[],|r|r.get(0)).map_err(CatalogError::from)?;
-            let now=created_at.max(0); let expiry=now.saturating_add(7*24*60*60*1000);
-            tx.execute("INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?8,?9)",params![operation_id,doc,actor,request_id,request_digest,generation,r#"{"version":2,"effect":"annotation_insert"}"#,now,expiry]).map_err(CatalogError::from)?;
-            let inserted=insert_comment_tx(tx,comment,authority)?;
-            let done=unix_millis(); let result=serde_json::json!({"version":2,"annotationId":comment.id}).to_string();
-            tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'",params![result,done,done.saturating_add(7*24*60*60*1000),operation_id]).map_err(CatalogError::from)?;
+            let operation_id = hex::encode(crate::auth::random_bytes(16));
+            let writer_generation: String = tx
+                .query_row(
+                    "SELECT writer_generation FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            let plan = serde_json::json!({
+                "version": 2,
+                "effect": "annotation_insert",
+                "commentId": comment.id,
+                "authority": {
+                    "account_id": authority.account_id,
+                    "session_generation": authority.generation,
+                },
+            })
+            .to_string();
+            let work_expires = created_at.checked_add(3_600_000).ok_or_else(|| {
+                CatalogError::Invalid("annotation receipt expiry overflow".into())
+            })?;
+            tx.execute(
+                "INSERT INTO operations(
+                    id,document_id,actor_key,request_key,kind,request_digest,state,
+                    writer_generation,plan_json,created_at,updated_at,work_expires_at
+                 ) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?8,?9)",
+                params![
+                    operation_id,
+                    document_id,
+                    actor,
+                    request_id,
+                    request_digest,
+                    writer_generation,
+                    plan,
+                    created_at,
+                    work_expires,
+                ],
+            )
+            .map_err(CatalogError::from)?;
+            let inserted = insert_comment_tx(tx, comment, authority)?;
+            let completed = unix_millis();
+            let receipt = serde_json::json!({
+                "version": 2,
+                "annotationId": comment.id,
+            })
+            .to_string();
+            tx.execute(
+                "UPDATE operations SET state='committed',result_json=?1,
+                    completed_at=?2,receipt_expires_at=?3,updated_at=?2
+                 WHERE id=?4 AND state='prepared'",
+                params![
+                    receipt,
+                    completed,
+                    completed.saturating_add(3_600_000),
+                    operation_id
+                ],
+            )
+            .map_err(CatalogError::from)?;
             Ok(inserted)
         })
     }
@@ -320,12 +413,93 @@ impl Catalog {
         created_at: i64,
         authority: AnnotationAuthority<'_>,
     ) -> CatalogResult<Option<Comment>> {
-        if request_id.is_empty() || request_digest.len() != 64 {
+        if request_id.is_empty()
+            || request_digest.len() != 64
+            || !request_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || created_at < 0
+        {
             return Err(CatalogError::Invalid(
                 "invalid suggestion acceptance receipt".into(),
             ));
         }
-        self.immediate(|tx|{annotation_session_active(tx,authority)?;let doc=document_id(tx,slug)?;annotation_account_authorized(tx,&doc,authority)?;let actor=annotation_actor(authority);let existing:Option<(String,String,String)>=tx.query_row("SELECT id,state,request_digest FROM operations WHERE document_id=?1 AND request_key=?2 AND kind='agent_annotations' AND json_extract(plan_json,'$.commentId')=?3",params![doc,actor,request_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?;if let Some((_,state,digest))=existing{if digest!=request_digest{return Err(CatalogError::Conflict("request id was reused with different content".into()))}return if state=="committed"{Self::comment_in_tx(tx,slug,comment_id).map(Some)}else{Ok(None)}}validate_new_request_key(request_id)?;let op=hex::encode(crate::auth::random_bytes(16));let generation:String=tx.query_row("SELECT writer_generation FROM server_state WHERE id=1",[],|r|r.get(0)).map_err(CatalogError::from)?;let now=created_at.max(0);let expiry=now.saturating_add(7*24*60*60*1000);let plan=serde_json::json!({"version":1,"commentId":comment_id}).to_string();tx.execute("INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?8,?9)",params![op,doc,actor,request_id,request_digest,generation,plan,now,expiry]).map_err(CatalogError::from)?;Ok(None)})
+        self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
+            let doc = document_id(tx, slug)?;
+            annotation_account_authorized(tx, &doc, authority)?;
+            let actor = annotation_actor(authority);
+            let existing: Option<(String, String, String, String)> = tx
+                .query_row(
+                    "SELECT id,state,request_digest,plan_json
+                     FROM operations
+                     WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                       AND kind='agent_annotations'",
+                    params![doc, actor, request_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            if let Some((_operation_id, state, digest, plan_json)) = existing {
+                if digest != request_digest {
+                    return Err(CatalogError::Conflict(
+                        "request id was reused with different content".into(),
+                    ));
+                }
+                let plan = serde_json::from_str::<serde_json::Value>(&plan_json)
+                    .map_err(|_| CatalogError::Invalid("invalid acceptance plan".into()))?;
+                if plan.get("commentId").and_then(serde_json::Value::as_str) != Some(comment_id) {
+                    return Err(CatalogError::Conflict(
+                        "request id was reused for another annotation".into(),
+                    ));
+                }
+                if state == "committed" {
+                    return Self::comment_in_tx(tx, slug, comment_id).map(Some);
+                }
+                return Ok(None);
+            }
+            validate_new_request_key(request_id)?;
+            let operation_id = hex::encode(crate::auth::random_bytes(16));
+            let generation: String = tx
+                .query_row(
+                    "SELECT writer_generation FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            let plan = serde_json::json!({
+                "version": 2,
+                "effect": "suggestion_accept",
+                "commentId": comment_id,
+                "authority": {
+                    "account_id": authority.account_id,
+                    "session_generation": authority.generation,
+                },
+            })
+            .to_string();
+            let work_expires = created_at.checked_add(3_600_000).ok_or_else(|| {
+                CatalogError::Invalid("acceptance receipt expiry overflow".into())
+            })?;
+            tx.execute(
+                "INSERT INTO operations(
+                    id,document_id,actor_key,request_key,kind,request_digest,state,
+                    writer_generation,plan_json,created_at,updated_at,work_expires_at
+                 ) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?8,?9)",
+                params![
+                    operation_id,
+                    doc,
+                    actor,
+                    request_id,
+                    request_digest,
+                    generation,
+                    plan,
+                    created_at,
+                    work_expires,
+                ],
+            )
+            .map_err(CatalogError::from)?;
+            Ok(None)
+        })
     }
     pub fn record_suggestion_accept_checkpoint(
         &self,
@@ -566,12 +740,137 @@ impl Catalog {
         if request_id.is_empty() {
             return self.insert_reply_authorized(reply, authority);
         }
-        if request_id.len() > 128 || request_digest.len() != 64 {
+        if request_id.len() > 128
+            || request_digest.len() != 64
+            || !request_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || created_at < 0
+        {
             return Err(CatalogError::Invalid(
                 "invalid reply request receipt".into(),
             ));
         }
-        self.immediate(|tx|{annotation_session_active(tx,authority)?;let doc=document_id(tx,&reply.slug)?; annotation_account_authorized(tx,&doc,authority)?;let actor=annotation_actor(authority);let existing:Option<(String,String,String)>=tx.query_row("SELECT id,state,request_digest FROM operations WHERE document_id=?1 AND request_key=?2 AND kind='agent_annotations' AND json_extract(plan_json,'$.commentId')=?3",params![doc,actor,request_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?;if let Some((_,state,digest))=existing{if digest!=request_digest{return Err(CatalogError::Conflict("request id was reused with different content".into()))}if state=="committed"{return tx.query_row("SELECT ?1,annotation_id,id,body,author_key,author_label,created_at FROM replies WHERE document_id=?2 AND annotation_id=?3 AND id=?4",params![reply.slug,doc,reply.comment_id,reply.id],|r|Ok(Reply{slug:r.get(0)?,comment_id:r.get(1)?,id:r.get(2)?,body:r.get(3)?,creator:r.get(4)?,author:r.get(5)?,created:timestamp(r.get::<_,i64>(6)?)})).map_err(CatalogError::from)}return Err(CatalogError::Conflict("reply request is still prepared".into()))}validate_new_request_key(request_id)?;let operation_id=hex::encode(crate::auth::random_bytes(16));let generation:String=tx.query_row("SELECT writer_generation FROM server_state WHERE id=1",[],|r|r.get(0)).map_err(CatalogError::from)?;let now=created_at.max(0);let expiry=now.saturating_add(7*24*60*60*1000);tx.execute("INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?8,?9)",params![operation_id,doc,actor,request_id,request_digest,generation,r#"{"version":2,"effect":"reply_insert"}"#,now,expiry]).map_err(CatalogError::from)?;let inserted=Self::insert_reply_tx(tx,reply,authority)?;let done=unix_millis();let result=serde_json::json!({"version":2,"replyId":reply.id}).to_string();tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'",params![result,done,done.saturating_add(7*24*60*60*1000),operation_id]).map_err(CatalogError::from)?;Ok(inserted)})
+        self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
+            let document_id = document_id(tx, &reply.slug)?;
+            annotation_account_authorized(tx, &document_id, authority)?;
+            let actor = annotation_actor(authority);
+            let existing: Option<(String, String, String, String)> = tx
+                .query_row(
+                    "SELECT id,state,request_digest,plan_json
+                     FROM operations
+                     WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                       AND kind='agent_annotations'",
+                    params![document_id, actor, request_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            if let Some((_operation_id, state, old_digest, plan_json)) = existing {
+                if old_digest != request_digest {
+                    return Err(CatalogError::Conflict(
+                        "request id was reused with different content".into(),
+                    ));
+                }
+                let plan = serde_json::from_str::<serde_json::Value>(&plan_json)
+                    .map_err(|_| CatalogError::Invalid("invalid reply receipt plan".into()))?;
+                if plan.get("replyId").and_then(serde_json::Value::as_str)
+                    != Some(reply.id.as_str())
+                    || plan.get("commentId").and_then(serde_json::Value::as_str)
+                        != Some(reply.comment_id.as_str())
+                {
+                    return Err(CatalogError::Conflict(
+                        "request id was reused for another reply".into(),
+                    ));
+                }
+                if state == "committed" {
+                    return tx
+                        .query_row(
+                            "SELECT ?1,annotation_id,id,body,author_key,author_label,created_at
+                             FROM replies
+                             WHERE document_id=?2 AND annotation_id=?3 AND id=?4",
+                            params![reply.slug, document_id, reply.comment_id, reply.id],
+                            |row| {
+                                Ok(Reply {
+                                    slug: row.get(0)?,
+                                    comment_id: row.get(1)?,
+                                    id: row.get(2)?,
+                                    body: row.get(3)?,
+                                    creator: row.get(4)?,
+                                    author: row.get(5)?,
+                                    created: timestamp(row.get::<_, i64>(6)?),
+                                })
+                            },
+                        )
+                        .map_err(CatalogError::from);
+                }
+                return Err(CatalogError::Conflict(
+                    "reply request is still prepared".into(),
+                ));
+            }
+            validate_new_request_key(request_id)?;
+            let operation_id = hex::encode(crate::auth::random_bytes(16));
+            let writer_generation: String = tx
+                .query_row(
+                    "SELECT writer_generation FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            let plan = serde_json::json!({
+                "version": 2,
+                "effect": "reply_insert",
+                "commentId": reply.comment_id,
+                "replyId": reply.id,
+                "authority": {
+                    "account_id": authority.account_id,
+                    "session_generation": authority.generation,
+                },
+            })
+            .to_string();
+            let work_expires = created_at
+                .checked_add(3_600_000)
+                .ok_or_else(|| CatalogError::Invalid("reply receipt expiry overflow".into()))?;
+            tx.execute(
+                "INSERT INTO operations(
+                    id,document_id,actor_key,request_key,kind,request_digest,state,
+                    writer_generation,plan_json,created_at,updated_at,work_expires_at
+                 ) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?8,?9)",
+                params![
+                    operation_id,
+                    document_id,
+                    actor,
+                    request_id,
+                    request_digest,
+                    writer_generation,
+                    plan,
+                    created_at,
+                    work_expires,
+                ],
+            )
+            .map_err(CatalogError::from)?;
+            let inserted = Self::insert_reply_tx(tx, reply, authority)?;
+            let completed = unix_millis();
+            let receipt = serde_json::json!({
+                "version": 2,
+                "replyId": reply.id,
+            })
+            .to_string();
+            tx.execute(
+                "UPDATE operations SET state='committed',result_json=?1,
+                    completed_at=?2,receipt_expires_at=?3,updated_at=?2
+                 WHERE id=?4 AND state='prepared'",
+                params![
+                    receipt,
+                    completed,
+                    completed.saturating_add(3_600_000),
+                    operation_id
+                ],
+            )
+            .map_err(CatalogError::from)?;
+            Ok(inserted)
+        })
     }
     pub fn update_reply(&self, reply: &Reply) -> CatalogResult<Reply> {
         self.immediate(|tx|{let doc=document_id(tx,&reply.slug)?;let at=millis(&reply.created);let n=tx.execute("UPDATE replies SET body=?4,author_key=?5,author_label=?6,updated_at=?7 WHERE document_id=?1 AND annotation_id=?2 AND id=?3",params![doc,reply.comment_id,reply.id,reply.body,reply.creator,reply.author,at]).map_err(CatalogError::from)?;if n==1{Ok(reply.clone())}else{Err(CatalogError::NotFound)}})
