@@ -149,9 +149,12 @@ fn object_fixture(now: i64) -> (Arc<Catalog>, Arc<dyn BlobStore>, tempfile::Temp
                 "UPDATE documents SET stored_bytes=7,agent_payload_bytes=7,agent_payload_count=1 WHERE id=?1",
                 [&document_id],
             )?;
-            connection.execute("UPDATE accounts SET stored_bytes=7 WHERE id=?1", [&account_id])?;
             connection.execute(
-                "UPDATE server_state SET stored_bytes=7,agent_payload_bytes=7,agent_payload_count=1 WHERE id=1",
+                "UPDATE accounts SET stored_bytes=7,document_count=1 WHERE id=?1",
+                [&account_id],
+            )?;
+            connection.execute(
+                "UPDATE server_state SET stored_bytes=7,document_count=1,agent_payload_bytes=7,agent_payload_count=1 WHERE id=1",
                 [],
             )?;
             Ok(())
@@ -257,6 +260,18 @@ async fn v2_gc_keeps_a_second_owner_independent_when_its_object_is_leased() {
             connection.execute(
                 "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,'other-reader','read',NULL,'generation',?3,?4)",
                 rusqlite::params![other_document, other_object, now - 1, now + 1_000],
+            )?;
+            connection.execute(
+                "UPDATE documents SET stored_bytes=5,agent_payload_bytes=5,agent_payload_count=1 WHERE id=?1",
+                [other_document],
+            )?;
+            connection.execute(
+                "UPDATE accounts SET stored_bytes=5,document_count=1 WHERE id='maintenance-other-account'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE server_state SET stored_bytes=stored_bytes+5,document_count=document_count+1,agent_payload_bytes=agent_payload_bytes+5,agent_payload_count=agent_payload_count+1 WHERE id=1",
+                [],
             )?;
             Ok(())
         })
