@@ -8,6 +8,11 @@ use super::*;
 /// is a list of names rather than of paragraphs.
 pub(super) const MAX_LABEL: usize = 120;
 
+fn is_checkpoint_id(value: &str) -> bool {
+    crate::storage::catalog::CheckpointId::new(value).is_ok()
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 /// Content authorship is separate from the checkpoint event actor. Current
 /// session writes do not carry a durable contributor interval proof, so the
 /// browser receives an explicit unknown value rather than mistaking `by` for
@@ -138,8 +143,9 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        // A digest and nothing else: this becomes a storage key.
-        if !is_sha(sha) {
+        // The checkpoint event ID addresses a catalog row; its tree digest
+        // and physical object locator are separate identities.
+        if !is_checkpoint_id(sha) {
             return plain(404, "not found");
         }
         if cross_site_refused(headers, arrival) {
@@ -225,7 +231,7 @@ impl Server {
         // `current` is a virtual row used by the history panel. Naming it
         // first captures pending edits, then labels the resulting checkpoint.
         let current = sha == "current";
-        if !current && !is_sha(sha) {
+        if !current && !is_checkpoint_id(sha) {
             return plain(404, "not found");
         }
         if cross_site_refused(request.headers(), arrival) {
@@ -337,13 +343,8 @@ impl Server {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .trim();
-        if requested.is_empty()
-            || requested.len() > 64
-            || !requested
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        {
-            return write_json(400, &json!({"error": "a checkpoint SHA is required"}));
+        if !is_checkpoint_id(requested) {
+            return write_json(400, &json!({"error": "a checkpoint ID is required"}));
         }
 
         let room = match self.rooms.try_get(slug).await {
