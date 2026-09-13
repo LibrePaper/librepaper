@@ -1898,22 +1898,53 @@ impl Room {
     /// is not fatal: a size this does not know reads as zero, which
     /// under-counts a quota rather than refusing a document.
     async fn load_asset_sizes(&self) {
-        let Ok(found) = self
+        if let Ok(found) = self
             .blobs
             .list(&crate::storage::blob::asset_prefix(&self.storage_id))
             .await
+        {
+            let mut state = self.state.lock().await;
+            for object in found {
+                if let Some(sha) = object.key.rsplit('/').next() {
+                    state
+                        .session
+                        .asset_sizes
+                        .insert(sha.to_string(), object.size);
+                }
+            }
+        }
+
+        // Canonical v2 assets are addressed by catalogue object ids, so they
+        // are absent from the legacy asset-prefix listing above. Resolve all
+        // digests already present in the reopened Y.Doc in one bounded SQL
+        // read before a checkpoint derives its tree sizes.
+        let Some(catalog) = self.catalog.get() else {
+            return;
+        };
+        let digests = {
+            let state = self.state.lock().await;
+            session::assets_of(&state.session.doc)
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        if digests.is_empty() {
+            return;
+        }
+        let Ok(document_id) = crate::storage::catalog::DocumentId::new(self.storage_id.clone())
         else {
             return;
         };
+        let sizes = catalog
+            .execute_catalog(digests.len().saturating_mul(64).saturating_add(256), {
+                let digests = digests.clone();
+                move |catalog| catalog.available_asset_sizes(&document_id, &digests)
+            })
+            .await;
+        let Ok(sizes) = sizes else {
+            return;
+        };
         let mut state = self.state.lock().await;
-        for object in found {
-            if let Some(sha) = object.key.rsplit('/').next() {
-                state
-                    .session
-                    .asset_sizes
-                    .insert(sha.to_string(), object.size);
-            }
-        }
+        state.session.asset_sizes.extend(sizes);
     }
 
     /// The bytes a session is seeded from, for a document that has one and no

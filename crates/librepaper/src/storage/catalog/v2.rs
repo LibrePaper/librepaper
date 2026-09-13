@@ -1200,6 +1200,52 @@ impl Catalog {
         )
     }
 
+    /// Return the byte lengths of the current document's canonical asset
+    /// objects in one bounded read.  Room cold-start uses this to rebuild its
+    /// in-memory asset accounting before deriving a new tree; legacy blob
+    /// listing alone cannot see v2 object keys.
+    pub(crate) fn available_asset_sizes(
+        &self,
+        document_id: &DocumentId,
+        logical_digests: &[String],
+    ) -> CatalogResult<HashMap<String, i64>> {
+        if logical_digests.is_empty() {
+            return Ok(HashMap::new());
+        }
+        self.with_connection(|connection| {
+            let placeholders = std::iter::repeat("?")
+                .take(logical_digests.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT o.logical_digest,o.byte_length FROM objects o
+                 JOIN documents d ON d.id=o.document_id
+                 JOIN accounts a ON a.id=d.owner_id
+                 WHERE o.document_id=?1 AND o.kind=?2 AND o.state='available'
+                   AND d.status='active' AND a.status='active'
+                   AND o.logical_digest IN ({placeholders})"
+            );
+            let mut values = Vec::with_capacity(logical_digests.len() + 2);
+            values.push(document_id.as_str().to_owned());
+            values.push(ObjectKind::Asset.as_str().to_owned());
+            values.extend(logical_digests.iter().cloned());
+            let mut statement = connection.prepare(&sql).map_err(CatalogError::from)?;
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(values.iter()), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                })
+                .map_err(CatalogError::from)?;
+            let mut sizes = HashMap::new();
+            for row in rows {
+                let (digest, size) = row.map_err(CatalogError::from)?;
+                if let Some(size) = size {
+                    sizes.insert(digest, size);
+                }
+            }
+            Ok(sizes)
+        })
+    }
+
     /// Read the journal watermark captured by a checkpoint snapshot.
     pub(crate) fn v2_document_journal_head(
         &self,
