@@ -1974,7 +1974,10 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         if payload_byte_length as usize > self.limits.max_encoded_snapshot_bytes {
             return Err("journal base payload exceeds the configured encoded snapshot limit".into());
         }
-        if byte_length > (crate::storage::journal::MAX_RECOVERY_BASE_PAYLOAD_BYTES as u64).saturating_add(128) {
+        let max_physical_length = payload_byte_length.saturating_add(
+            crate::storage::journal::recovery_base_framing_bytes(document_id.len()) as u64,
+        );
+        if byte_length > max_physical_length {
             return Err("journal base physical envelope exceeds the recovery limit".into());
         }
         let owner_limit = self.owner_limit;

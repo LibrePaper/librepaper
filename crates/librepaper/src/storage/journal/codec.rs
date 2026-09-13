@@ -90,6 +90,14 @@ const RECOVERY_BASE_CODEC_VERSION: u16 = 1;
 /// journal record. Keep its aggregate bounded independently of record framing.
 pub const MAX_RECOVERY_BASE_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
+/// Bytes surrounding a recovery-base payload for a document identity of the
+/// supplied length. Keep this derived from the fixed binary fields so the
+/// storage adapter can distinguish logical snapshot budget from envelope
+/// overhead without a guessed constant.
+pub const fn recovery_base_framing_bytes(identity_len: usize) -> usize {
+    96 + identity_len
+}
+
 /// Encode recovery bases as bounded binary objects.
 pub(crate) fn encode_recovery_base(body: &RecoveryBaseBody) -> JournalResult<Vec<u8>> {
     validate_recovery_base(body)?;
@@ -107,7 +115,9 @@ pub(crate) fn encode_recovery_base(body: &RecoveryBaseBody) -> JournalResult<Vec
     );
     put_bytes_u16(&mut encoded, body.digest.as_bytes())?;
     encoded.extend_from_slice(&body.payload);
-    if encoded.len() > MAX_RECOVERY_BASE_PAYLOAD_BYTES + 128 {
+    if encoded.len()
+        > MAX_RECOVERY_BASE_PAYLOAD_BYTES.saturating_add(recovery_base_framing_bytes(body.storage_id.len()))
+    {
         return Err(JournalError::Limit("recovery base is too large".into()));
     }
     Ok(encoded)
@@ -146,6 +156,11 @@ pub(crate) fn decode_recovery_base(bytes: &[u8]) -> JournalResult<RecoveryBaseBo
         payload,
         digest,
     };
+    if bytes.len()
+        > MAX_RECOVERY_BASE_PAYLOAD_BYTES.saturating_add(recovery_base_framing_bytes(body.storage_id.len()))
+    {
+        return Err(JournalError::Limit("recovery base is too large".into()));
+    }
     validate_recovery_base(&body)?;
     Ok(body)
 }

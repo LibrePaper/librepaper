@@ -1125,7 +1125,6 @@ fn install_catalog_snapshot_file_sync(
     create_secure_dirs(&paths.deployment)?;
     create_secure_dirs(&paths.state)?;
     let temporary = paths.catalog.with_extension("restore");
-    let _temporary_cleanup = RestoreTempFile(Some(temporary.clone()));
     secure_copy_atomic(&temporary, source)?;
     Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
     let snapshot_identity = Connection::open_with_flags(
@@ -1167,7 +1166,6 @@ impl V2RestoreCatalog for LocalV2RestoreCatalog {
         create_secure_dirs(&self.paths.deployment)?;
         create_secure_dirs(&self.paths.state)?;
         let temporary = self.paths.catalog.with_extension("restore");
-        let _temporary_cleanup = RestoreTempFile(Some(temporary.clone()));
         secure_atomic_write(&temporary, &catalog_bytes)?;
         Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
         let snapshot_identity = Connection::open_with_flags(
@@ -1340,15 +1338,13 @@ fn secure_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     }
     let result = (|| {
         let mut file = options.open(&temporary).map_err(|error| error.to_string())?;
+        let _temporary_cleanup = RestoreTempFile(Some(temporary.clone()));
         file.write_all(bytes).map_err(|error| error.to_string())?;
         file.sync_all().map_err(|error| error.to_string())?;
         drop(file);
         publish_noreplace(&temporary, path)?;
         sync_directory(Some(parent))
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
     result
 }
 
@@ -1378,15 +1374,13 @@ fn secure_copy_atomic(path: &Path, source: &Path) -> Result<(), String> {
             options.mode(0o600).custom_flags(nofollow_flag());
         }
         let mut output = options.open(&temporary).map_err(|error| error.to_string())?;
+        let _temporary_cleanup = RestoreTempFile(Some(temporary.clone()));
         std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
         output.sync_all().map_err(|error| error.to_string())?;
         drop(output);
         publish_noreplace(&temporary, path)?;
         sync_directory(Some(parent))
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
     result
 }
 
