@@ -178,15 +178,20 @@ impl Catalog {
         if !Self::agent_execution_epoch_active_tx(tx, slug, actor.execution_epoch)? {
             return Ok(false);
         }
-        let required_role = if role == "reader" { "reader" } else { "editor" };
+        let required_role = match role {
+            "reader" => "reader",
+            "commenter" => "commenter",
+            _ => "editor",
+        };
         let now = unix_millis();
         let link_ok: bool = !actor.link_hash.is_empty()
             && tx
                 .query_row(
                     "SELECT EXISTS(
                        SELECT 1 FROM links l JOIN documents d ON d.id=l.document_id
+                        JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'
                         WHERE d.slug=?1 AND l.token_hash=?2 AND d.status='active'
-                          AND (l.role=?3 OR l.role='editor')
+                          AND (l.role=?3 OR l.role='editor' OR (?3='reader' AND l.role='commenter'))
                           AND (l.expires_at IS NULL OR l.expires_at>?4))",
                     params![slug, actor.link_hash, required_role, now],
                     |row| row.get::<_, bool>(0),
@@ -209,7 +214,7 @@ impl Catalog {
                     return Ok(false);
                 }
             }
-            return Ok(role == "editor" && link_ok);
+            return Ok(matches!(role, "editor" | "commenter") && link_ok && actor.policy_editor);
         }
         if actor.account_id.is_empty() {
             if actor.unowned_publisher && actor.policy_editor {
@@ -228,6 +233,7 @@ impl Catalog {
         }
         tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM documents d
+               JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'
                JOIN accounts a ON a.id=?2
               WHERE d.slug=?1 AND d.status='active'
                 AND a.status='active' AND a.session_generation=?3

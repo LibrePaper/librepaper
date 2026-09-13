@@ -54,8 +54,8 @@ fn validate_new_request_key(key: &str) -> CatalogResult<()> {
 fn annotation_actor(authority: AnnotationAuthority<'_>) -> String {
     if !authority.account_id.is_empty() {
         format!("account:{}", authority.account_id)
-    } else if !authority.generation.is_empty() {
-        format!("session:{}", authority.generation)
+    } else if !authority.link_hash.is_empty() {
+        format!("link:{}", authority.link_hash)
     } else {
         "anonymous".into()
     }
@@ -86,23 +86,32 @@ fn annotation_account_authorized(
     document_id: &str,
     authority: AnnotationAuthority<'_>,
 ) -> CatalogResult<()> {
-    if authority.account_id.is_empty() {
-        return Ok(());
-    }
-    let allowed: bool = tx
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM documents d
-             JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'
-             JOIN accounts a ON a.id=?2
-             WHERE d.id=?1 AND d.status='active' AND a.status='active'
-               AND a.session_generation=?3 AND (d.owner_id=?2 OR EXISTS(
-                 SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=?2
-                   AND g.role IN ('commenter','editor'))))",
-            params![document_id, authority.account_id, authority.generation],
-            |row| row.get(0),
-        )
-        .map_err(CatalogError::from)?;
-    if allowed {
+    let slug: String = tx.query_row(
+        "SELECT slug FROM documents WHERE id=?1",
+        [document_id],
+        |row| row.get(0),
+    )?;
+    let actor = MutationAuthority {
+        account_id: authority.account_id,
+        owner_key: "",
+        generation: authority.generation,
+        link_hash: authority.link_hash,
+        policy_editor: authority.policy_comment,
+        automation: authority.automation,
+        unowned_publisher: false,
+        execution_epoch: "",
+        agent_checkpoint: None,
+    };
+    if Catalog::mutation_authorized_in_tx(
+        tx,
+        &slug,
+        actor,
+        if authority.require_editor {
+            "editor"
+        } else {
+            "commenter"
+        },
+    )? {
         Ok(())
     } else {
         Err(CatalogError::refused(
@@ -111,6 +120,7 @@ fn annotation_account_authorized(
         ))
     }
 }
+
 fn selector(comment: &Comment) -> String {
     serde_json::json!({"version":1,"rendered":{"exact":comment.exact,"prefix":comment.prefix,"suffix":comment.suffix,"position":comment.position,"region":comment.region,"point":comment.point,"color":comment.color,"quartoOutput":comment.quarto_output},"source":{"path":comment.source_path,"exact":comment.source_exact,"prefix":comment.source_prefix,"suffix":comment.source_suffix,"position":comment.source_position}}).to_string()
 }
@@ -269,7 +279,11 @@ impl Catalog {
                 }
                 let stored_id = serde_json::from_str::<serde_json::Value>(&plan_json)
                     .ok()
-                    .and_then(|plan| plan.get("commentId").and_then(serde_json::Value::as_str).map(str::to_owned))
+                    .and_then(|plan| {
+                        plan.get("commentId")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
                     .ok_or_else(|| {
                         CatalogError::Invalid("annotation receipt has no comment identity".into())
                     })?;

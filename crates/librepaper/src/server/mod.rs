@@ -1002,15 +1002,14 @@ impl Server {
         // a commenter by name.
         let command = command.with_creator(creator);
         let (mut result, ok) = room
-            .apply_command(
+            .apply_command_with_actor(
                 command,
                 address,
                 author,
                 &who.link,
                 who.comment_budget,
                 may_edit,
-                &id.id,
-                &id.session_generation,
+                self.annotation_mutation_actor(who, false),
             )
             .await;
         if !request_id.is_empty() {
@@ -1031,14 +1030,34 @@ impl Server {
     /// its Yjs update is relayed here, the way `handle_restore` relays a
     /// restore's -- to every socket, sender included, since nobody's own copy
     /// already has an edit the server made on their behalf.
+    fn annotation_mutation_actor(
+        &self,
+        who: &Viewer,
+        require_editor: bool,
+    ) -> crate::document::store::MutationActor {
+        let ceiling = self.ceiling_for(&who.id);
+        crate::document::store::MutationActor {
+            account_id: who.id.id.clone(),
+            owner_key: who.key.clone(),
+            session_generation: who.id.session_generation.clone(),
+            link_hash: who.link.clone(),
+            policy_editor: if require_editor {
+                ceiling.edit
+            } else {
+                ceiling.comment
+            },
+            automation: who.automation,
+            unowned_publisher: false,
+        }
+    }
+
     async fn decide_suggestion(
         &self,
         room: &Room,
         incoming: &RoomMessage,
         may_edit: bool,
         by: &crate::room::Attribution,
-        account_id: &str,
-        session_generation: &str,
+        actor: crate::document::store::MutationActor,
     ) -> (Value, bool) {
         let fail = |text: &str| -> (Value, bool) {
             (
@@ -1064,13 +1083,7 @@ impl Server {
                 ..
             } => {
                 return match room
-                    .accept_suggestion_authorized(
-                        &comment_id,
-                        &request_id,
-                        by,
-                        account_id,
-                        session_generation,
-                    )
+                    .accept_suggestion_with_actor(&comment_id, &request_id, by, actor.clone())
                     .await
                 {
                     Ok(Accepted::Applied {
@@ -1123,10 +1136,7 @@ impl Server {
                 comment_id,
                 request_id,
                 ..
-            } => match room
-                .reject_suggestion_authorized(&comment_id, account_id, session_generation)
-                .await
-            {
+            } => match room.reject_suggestion_with_actor(&comment_id, actor).await {
                 Ok(mut result) => {
                     result["request_id"] = json!(request_id);
                     result["version"] = json!(1);

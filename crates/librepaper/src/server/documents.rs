@@ -217,8 +217,7 @@ impl Server {
                         &incoming,
                         current_who.at_least(Role::Editor),
                         &by,
-                        &current_who.id.id,
-                        &current_who.id.session_generation,
+                        self.annotation_mutation_actor(&current_who, true),
                     )
                     .await
                 } else {

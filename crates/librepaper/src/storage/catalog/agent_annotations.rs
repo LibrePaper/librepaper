@@ -133,7 +133,7 @@ impl Catalog {
             for id in deletes {
                 tx.execute("DELETE FROM annotations WHERE document_id=?1 AND id=?2", params![document_id,id]).map_err(CatalogError::from)?;
             }
-            let annotation_authority = AnnotationAuthority { account_id:&authority.account_id, generation:&authority.generation };
+            let annotation_authority = AnnotationAuthority { account_id:&authority.account_id, generation:&authority.generation, link_hash:&authority.link_hash, policy_comment:authority.policy_comment, automation:true, require_editor:authority.require_editor };
             for row in rows { if row.slug != slug { return Err(CatalogError::Invalid("wrong comment document".into())); } super::comments::insert_comment_tx(tx,row,annotation_authority)?; }
             for reply in replies { if reply.slug != slug { return Err(CatalogError::Invalid("wrong reply document".into())); } Catalog::insert_reply_tx(tx,reply,annotation_authority)?; }
             let result = if receipt.is_empty() { serde_json::json!({"version":2,"request_id":request_id}).to_string() } else { receipt.to_owned() };

@@ -34,8 +34,8 @@ mod journal;
 mod operations;
 mod pressure;
 mod publication;
-mod retention;
 mod read_objects;
+mod retention;
 mod room_edits;
 mod source_history;
 mod v2;
@@ -48,9 +48,11 @@ pub use execution::{
 };
 pub use pressure::HardPressurePlan;
 pub(crate) use publication::{publication_actor_key, PublicationWork};
+pub use read_objects::{
+    CheckpointReadLease, CheckpointReadSet, ObjectReadLease, PublicationReadLease,
+};
 pub use retention::{RetentionJob, RetentionPass};
 pub use room_edits::RoomEditReservation;
-pub use read_objects::{CheckpointReadLease, CheckpointReadSet, ObjectReadLease, PublicationReadLease};
 pub use source_history::{SourceHistoryLease, SourceHistoryObject, SourceHistoryRecord};
 pub use v2::{
     AccountKind, CheckpointCommit, CheckpointId, DocumentId, DocumentStatus, IdError, LeasePurpose,
@@ -223,6 +225,10 @@ pub struct MutationAuthority<'a> {
 pub struct AnnotationAuthority<'a> {
     pub account_id: &'a str,
     pub generation: &'a str,
+    pub link_hash: &'a str,
+    pub policy_comment: bool,
+    pub automation: bool,
+    pub require_editor: bool,
 }
 
 /// A row in `accounts`.  Provider ids, rather than mutable handles, are the

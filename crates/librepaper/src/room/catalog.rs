@@ -1310,14 +1310,13 @@ pub(super) async fn insert_comment_request(
     request_id: String,
     digest: String,
     at: i64,
-    account_id: String,
-    generation: String,
-) -> Result<i64, String> {
+    actor: crate::document::store::MutationActor,
+) -> Result<(i64, String), String> {
     let input_bytes = comment_row_bytes(&row)
         + request_id.len()
         + digest.len()
-        + account_id.len()
-        + generation.len();
+        + actor.account_id.len()
+        + actor.session_generation.len();
     catalog
         .execute_catalog(input_bytes, move |catalog| {
             catalog
@@ -1325,13 +1324,17 @@ pub(super) async fn insert_comment_request(
                     &row,
                     &request_id,
                     &digest,
-                    at,
+                    at.saturating_mul(1000),
                     crate::storage::catalog::AnnotationAuthority {
-                        account_id: &account_id,
-                        generation: &generation,
+                        account_id: &actor.account_id,
+                        generation: &actor.session_generation,
+                        link_hash: &actor.link_hash,
+                        policy_comment: actor.policy_editor,
+                        automation: actor.automation,
+                        require_editor: false,
                     },
                 )
-                .map(|row| row.seq)
+                .map(|row| (row.seq, row.created))
         })
         .await
         .map_err(|error| error.to_string())
@@ -1347,18 +1350,22 @@ pub(super) async fn insert_comment_request(
 pub(super) async fn update_comment_row(
     catalog: &Arc<Catalog>,
     row: crate::storage::catalog::Comment,
-    account_id: String,
-    generation: String,
+    actor: crate::document::store::MutationActor,
 ) -> Result<(), String> {
-    let input_bytes = comment_row_bytes(&row) + account_id.len() + generation.len();
+    let input_bytes =
+        comment_row_bytes(&row) + actor.account_id.len() + actor.session_generation.len();
     catalog
         .execute_catalog(input_bytes, move |catalog| {
             catalog
                 .update_comment_authorized(
                     &row,
                     crate::storage::catalog::AnnotationAuthority {
-                        account_id: &account_id,
-                        generation: &generation,
+                        account_id: &actor.account_id,
+                        generation: &actor.session_generation,
+                        link_hash: &actor.link_hash,
+                        policy_comment: actor.policy_editor,
+                        automation: actor.automation,
+                        require_editor: false,
                     },
                 )
                 .map(|_| ())
@@ -1372,22 +1379,29 @@ pub(super) async fn delete_comment_row(
     catalog: &Arc<Catalog>,
     slug: &str,
     id: &str,
-    account_id: String,
-    generation: String,
+    actor: crate::document::store::MutationActor,
 ) -> Result<(), String> {
     let slug = slug.to_string();
     let id = id.to_string();
     catalog
         .execute_catalog(
-            slug.len() + id.len() + account_id.len() + generation.len() + DESCRIPTOR_BYTES,
+            slug.len()
+                + id.len()
+                + actor.account_id.len()
+                + actor.session_generation.len()
+                + DESCRIPTOR_BYTES,
             move |catalog| {
                 catalog
                     .delete_comment_authorized(
                         &slug,
                         &id,
                         crate::storage::catalog::AnnotationAuthority {
-                            account_id: &account_id,
-                            generation: &generation,
+                            account_id: &actor.account_id,
+                            generation: &actor.session_generation,
+                            link_hash: &actor.link_hash,
+                            policy_comment: actor.policy_editor,
+                            automation: actor.automation,
+                            require_editor: false,
                         },
                     )
                     .map(|_| ())
@@ -1404,9 +1418,8 @@ pub(super) async fn insert_reply_request(
     request_id: String,
     digest: String,
     at: i64,
-    account_id: String,
-    generation: String,
-) -> Result<(), String> {
+    actor: crate::document::store::MutationActor,
+) -> Result<String, String> {
     let input_bytes = DESCRIPTOR_BYTES
         + row.slug.len()
         + row.comment_id.len()
@@ -1414,8 +1427,8 @@ pub(super) async fn insert_reply_request(
         + row.body.len()
         + request_id.len()
         + digest.len()
-        + account_id.len()
-        + generation.len();
+        + actor.account_id.len()
+        + actor.session_generation.len();
     catalog
         .execute_catalog(input_bytes, move |catalog| {
             catalog
@@ -1423,13 +1436,17 @@ pub(super) async fn insert_reply_request(
                     &row,
                     &request_id,
                     &digest,
-                    at,
+                    at.saturating_mul(1000),
                     crate::storage::catalog::AnnotationAuthority {
-                        account_id: &account_id,
-                        generation: &generation,
+                        account_id: &actor.account_id,
+                        generation: &actor.session_generation,
+                        link_hash: &actor.link_hash,
+                        policy_comment: actor.policy_editor,
+                        automation: actor.automation,
+                        require_editor: false,
                     },
                 )
-                .map(|_| ())
+                .map(|row| row.created)
         })
         .await
         .map_err(|error| error.to_string())
@@ -1450,8 +1467,7 @@ pub(super) async fn begin_suggestion_accept(
     request_id: &str,
     digest: &str,
     at: i64,
-    account_id: String,
-    generation: String,
+    actor: crate::document::store::MutationActor,
 ) -> Result<Option<crate::storage::catalog::Comment>, String> {
     let slug = slug.to_string();
     let comment_id = comment_id.to_string();
@@ -1461,8 +1477,8 @@ pub(super) async fn begin_suggestion_accept(
         + comment_id.len()
         + request_id.len()
         + digest.len()
-        + account_id.len()
-        + generation.len()
+        + actor.account_id.len()
+        + actor.session_generation.len()
         + DESCRIPTOR_BYTES;
     catalog
         .execute_catalog(input_bytes, move |catalog| {
@@ -1471,10 +1487,14 @@ pub(super) async fn begin_suggestion_accept(
                 &comment_id,
                 &request_id,
                 &digest,
-                at,
+                at.saturating_mul(1000),
                 crate::storage::catalog::AnnotationAuthority {
-                    account_id: &account_id,
-                    generation: &generation,
+                    account_id: &actor.account_id,
+                    generation: &actor.session_generation,
+                    link_hash: &actor.link_hash,
+                    policy_comment: actor.policy_editor,
+                    automation: actor.automation,
+                    require_editor: true,
                 },
             )
         })
@@ -1528,16 +1548,15 @@ pub(super) async fn stage_suggestion_accept_update(
     request_id: &str,
     digest: &str,
     update: &[u8],
-    account_id: String,
-    generation: String,
+    actor: crate::document::store::MutationActor,
 ) -> Result<(), String> {
     let input_bytes = slug.len()
         + comment_id.len()
         + request_id.len()
         + digest.len()
         + update.len()
-        + account_id.len()
-        + generation.len()
+        + actor.account_id.len()
+        + actor.session_generation.len()
         + DESCRIPTOR_BYTES;
     let reservation = catalog
         .reserve_execution(input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES))
@@ -1557,8 +1576,12 @@ pub(super) async fn stage_suggestion_accept_update(
                 &digest,
                 &update,
                 crate::storage::catalog::AnnotationAuthority {
-                    account_id: &account_id,
-                    generation: &generation,
+                    account_id: &actor.account_id,
+                    generation: &actor.session_generation,
+                    link_hash: &actor.link_hash,
+                    policy_comment: actor.policy_editor,
+                    automation: actor.automation,
+                    require_editor: true,
                 },
             )
         })

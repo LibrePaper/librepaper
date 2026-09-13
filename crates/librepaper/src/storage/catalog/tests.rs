@@ -65,6 +65,7 @@ fn annotation_writes_recheck_the_account_session_generation() {
     let current = AnnotationAuthority {
         account_id: "acct-1",
         generation: "generation-1",
+        ..Default::default()
     };
     let comment = catalog
         .insert_comment_request_authorized(
@@ -114,6 +115,7 @@ fn annotation_writes_recheck_the_account_session_generation() {
     let stale = AnnotationAuthority {
         account_id: "acct-1",
         generation: "generation-1",
+        ..Default::default()
     };
     let mut changed = comment.clone();
     changed.body = "stale edit".into();
@@ -2814,4 +2816,47 @@ fn v2_erasure_worker_resumes_pinned_operation_and_refuses_live_child_cascade() {
         })
         .unwrap();
     assert_eq!(still_there, 1);
+}
+
+#[test]
+fn annotation_receipt_rechecks_live_link_and_preserves_seven_day_window() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    let link = "b".repeat(64);
+    catalog.with_connection(|db| {
+        db.execute_batch("INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path)
+            VALUES('doc','doc','acct-1','owned','Title','title','active',0,0,'markdown','main.md');
+            UPDATE accounts SET document_count=1 WHERE id='acct-1';
+            UPDATE server_state SET document_count=1 WHERE id=1;")?;
+        db.execute("INSERT INTO links(document_id,id,role,token_hash,sealed_token,sealing_key_id,label,created_at)
+            VALUES('doc','comment-link','commenter',?1,X'00','test','Reviewer',0)",[&link])?;
+        Ok(())
+    }).unwrap();
+    let authority = AnnotationAuthority {
+        link_hash: &link,
+        policy_comment: true,
+        ..Default::default()
+    };
+    let key = crate::util::new_request_key();
+    let digest = "c".repeat(64);
+    let comment = annotation("comment-link-retry", "commenting");
+    let now = crate::util::now_millis();
+    let inserted = catalog
+        .insert_comment_request_authorized(&comment, &key, &digest, now, authority)
+        .unwrap();
+    let replay = catalog
+        .insert_comment_request_authorized(&comment, &key, &digest, now, authority)
+        .unwrap();
+    assert_eq!(inserted, replay);
+    catalog.with_connection(|db| {
+        let (created,completed,expiry):(i64,i64,i64) = db.query_row("SELECT created_at,completed_at,receipt_expires_at FROM operations WHERE request_key=?1",[&key],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+        assert_eq!(created,now);
+        assert_eq!(expiry-completed,7*24*60*60*1000);
+        db.execute("DELETE FROM links WHERE token_hash=?1",[&link])?;
+        Ok(())
+    }).unwrap();
+    assert!(matches!(
+        catalog.insert_comment_request_authorized(&comment, &key, &digest, now, authority),
+        Err(CatalogError::Refused(super::CatalogRefusal::ActorRights, _))
+    ));
 }

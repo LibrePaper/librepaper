@@ -880,6 +880,36 @@ impl Room {
         account_id: &str,
         session_generation: &str,
     ) -> (Value, bool) {
+        self.apply_command_with_actor(
+            command,
+            address,
+            author,
+            via,
+            budget,
+            is_owner,
+            crate::document::store::MutationActor {
+                account_id: account_id.to_owned(),
+                owner_key: String::new(),
+                session_generation: session_generation.to_owned(),
+                link_hash: via.to_owned(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
+        .await
+    }
+
+    pub async fn apply_command_with_actor(
+        &self,
+        command: Command,
+        address: &str,
+        author: &str,
+        via: &str,
+        budget: Option<i64>,
+        is_owner: bool,
+        mutation_actor: crate::document::store::MutationActor,
+    ) -> (Value, bool) {
         let temp_id = command.temp_id().to_owned();
         let request_id = command.request_id().to_owned();
         let comment_id = command.comment_id().to_owned();
@@ -922,7 +952,9 @@ impl Room {
                 .then(|| format!("request:{}", crate::document::store::digest_of(&request_id)))
         });
         if let Some(id) = requested_id.as_deref() {
-            if matches!(&command, Command::Comment { .. } | Command::Reply { .. }) {
+            if self.catalog.get().is_none()
+                && matches!(&command, Command::Comment { .. } | Command::Reply { .. })
+            {
                 for item in &state.comments {
                     if item.id == id {
                         if matches!(&command, Command::Comment { .. })
@@ -958,6 +990,12 @@ impl Room {
             }
         }
 
+        let existing_submission = requested_id.as_deref().is_some_and(|id| {
+            state.comments.iter().any(|comment| {
+                comment.id == id || comment.replies.iter().any(|reply| reply.id == id)
+            })
+        });
+
         // What the document says at this moment, by name. The socket takes a
         // checkpoint before a comment reaches here, so for a comment this is
         // the text the reviewer was looking at; for a resolve it is the text
@@ -972,7 +1010,7 @@ impl Room {
         // Resolving and deleting cost a slot too, the same as posting: a
         // caller who could resolve or delete without limit could still make a
         // thread unusable, just by different means than flooding it with text.
-        if !self.rate_ok(&mut state, address, via, budget) {
+        if !existing_submission && !self.rate_ok(&mut state, address, via, budget) {
             let source = if via.is_empty() { "address" } else { "link" };
             return fail(&format!("too many comments from this {source}; try later"));
         }
@@ -1054,15 +1092,7 @@ impl Room {
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &refined) {
-                        Ok(row) => {
-                            update_comment_row(
-                                catalog,
-                                row,
-                                account_id.to_owned(),
-                                session_generation.to_owned(),
-                            )
-                            .await
-                        }
+                        Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
                         Err(error) => Err(error),
                     }
                 } else {
@@ -1157,15 +1187,7 @@ impl Room {
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &decided) {
-                        Ok(row) => {
-                            update_comment_row(
-                                catalog,
-                                row,
-                                account_id.to_owned(),
-                                session_generation.to_owned(),
-                            )
-                            .await
-                        }
+                        Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
                         Err(error) => Err(error),
                     }
                 } else {
@@ -1207,14 +1229,8 @@ impl Room {
                 let seq = state.seq;
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
-                    delete_comment_row(
-                        catalog,
-                        &self.slug,
-                        &comment_id,
-                        account_id.to_owned(),
-                        session_generation.to_owned(),
-                    )
-                    .await
+                    delete_comment_row(catalog, &self.slug, &comment_id, mutation_actor.clone())
+                        .await
                 } else {
                     self.persist_comments(seq, prepared).await
                 };
@@ -1268,15 +1284,7 @@ impl Room {
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &anchored) {
-                        Ok(row) => {
-                            update_comment_row(
-                                catalog,
-                                row,
-                                account_id.to_owned(),
-                                session_generation.to_owned(),
-                            )
-                            .await
-                        }
+                        Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
                         Err(error) => Err(error),
                     }
                 } else {
@@ -1319,10 +1327,11 @@ impl Room {
                 else {
                     return fail("unknown comment");
                 };
-                if state.comments[index].replies.len() >= config.max_replies {
+                if !existing_submission && state.comments[index].replies.len() >= config.max_replies
+                {
                     return fail("this comment has reached its reply limit");
                 }
-                let added = Reply {
+                let mut added = Reply {
                     id: requested_id.clone().unwrap_or_else(new_id),
                     body,
                     creator,
@@ -1366,10 +1375,10 @@ impl Room {
                         request_id.clone(),
                         digest,
                         now_unix(),
-                        account_id.to_owned(),
-                        session_generation.to_owned(),
+                        mutation_actor.clone(),
                     )
                     .await
+                    .map(|created| added.created = created)
                 } else {
                     self.persist_comments(seq, prepared).await
                 };
@@ -1381,7 +1390,9 @@ impl Room {
                     if let Some(target) =
                         state.comments.iter_mut().find(|item| item.id == target_id)
                     {
-                        target.replies.push(added.clone());
+                        if !target.replies.iter().any(|reply| reply.id == added.id) {
+                            target.replies.push(added.clone());
+                        }
                     }
                 }
                 (
@@ -1426,7 +1437,7 @@ impl Room {
                 if creator.is_empty() {
                     creator = "Anonymous".to_string();
                 }
-                if state.comments.len() >= config.max_comments {
+                if !existing_submission && state.comments.len() >= config.max_comments {
                     return fail("this document has reached its comment limit");
                 }
                 let exact = clean(&raw_exact, config.caps.exact).trim().to_string();
@@ -1554,7 +1565,7 @@ impl Room {
                 // The selector is the durable anchor. Offsets are recomputed in
                 // the reader against whatever version of the document is on
                 // screen, so replacing a document needs no migration pass here.
-                let added = Comment {
+                let mut added = Comment {
                     id: requested_id.clone().unwrap_or_else(new_id),
                     seq: next_seq,
                     motivation,
@@ -1625,17 +1636,19 @@ impl Room {
                         request_id.clone(),
                         digest,
                         now_unix(),
-                        account_id.to_owned(),
-                        session_generation.to_owned(),
+                        mutation_actor.clone(),
                     )
                     .await
                     {
-                        Ok(seq) => {
-                            let mut stored = added.clone();
-                            stored.seq = seq;
+                        Ok((seq, created)) => {
+                            added.seq = seq;
+                            added.created = created;
+                            let stored = added.clone();
                             let mut state = self.state.lock().await;
                             state.seq = state.seq.max(seq);
-                            state.comments.push(stored);
+                            if !state.comments.iter().any(|comment| comment.id == stored.id) {
+                                state.comments.push(stored);
+                            }
                             Ok(())
                         }
                         Err(error) => {

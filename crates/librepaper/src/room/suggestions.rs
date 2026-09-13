@@ -191,6 +191,30 @@ impl Room {
         account_id: &str,
         session_generation: &str,
     ) -> Result<Accepted, AcceptError> {
+        self.accept_suggestion_with_actor(
+            comment_id,
+            request_id,
+            by,
+            crate::document::store::MutationActor {
+                account_id: account_id.to_owned(),
+                owner_key: String::new(),
+                session_generation: session_generation.to_owned(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
+        .await
+    }
+
+    pub async fn accept_suggestion_with_actor(
+        &self,
+        comment_id: &str,
+        request_id: &str,
+        by: impl Into<Attribution>,
+        mutation_actor: crate::document::store::MutationActor,
+    ) -> Result<Accepted, AcceptError> {
         let by = &by.into();
         let _restore_writer = self.restore_write.lock().await;
         if self.read_only() {
@@ -260,8 +284,7 @@ impl Room {
                 request_id,
                 &acceptance_digest,
                 now_unix(),
-                account_id.to_owned(),
-                session_generation.to_owned(),
+                mutation_actor.clone(),
             )
             .await
             .map_err(AcceptError::Failed)?
@@ -515,8 +538,7 @@ impl Room {
                     request_id,
                     &acceptance_digest,
                     &update,
-                    account_id.to_owned(),
-                    session_generation.to_owned(),
+                    mutation_actor.clone(),
                 )
                 .await
                 .map_err(AcceptError::Failed)?;
@@ -659,6 +681,26 @@ impl Room {
         account_id: &str,
         session_generation: &str,
     ) -> Result<Value, String> {
+        self.reject_suggestion_with_actor(
+            comment_id,
+            crate::document::store::MutationActor {
+                account_id: account_id.to_owned(),
+                owner_key: String::new(),
+                session_generation: session_generation.to_owned(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
+        .await
+    }
+
+    pub async fn reject_suggestion_with_actor(
+        &self,
+        comment_id: &str,
+        mutation_actor: crate::document::store::MutationActor,
+    ) -> Result<Value, String> {
         let _restore_writer = self.restore_write.lock().await;
         let _comment_writer = self.comment_write.lock().await;
         if !self.hold().await {
@@ -704,15 +746,7 @@ impl Room {
         drop(state);
         let persisted = if let Some(catalog) = self.catalog.get() {
             match catalog_comment_row(&self.slug, &rejected) {
-                Ok(row) => {
-                    update_comment_row(
-                        catalog,
-                        row,
-                        account_id.to_owned(),
-                        session_generation.to_owned(),
-                    )
-                    .await
-                }
+                Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
                 Err(error) => Err(error),
             }
         } else {
