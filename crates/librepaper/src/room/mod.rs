@@ -2953,16 +2953,30 @@ impl Room {
                 .iter()
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
-            let dependencies = state
-                .session
-                .asset_sizes
-                .iter()
-                .map(|(digest, bytes)| crate::storage::journal::JournalDependencyHint {
+            let mut dependencies = Vec::new();
+            let mut seen_assets = std::collections::HashSet::new();
+            for digest in session::assets_of(&state.session.doc).values() {
+                if !seen_assets.insert(digest.clone()) {
+                    continue;
+                }
+                let Some(bytes) = state.session.asset_sizes.get(digest) else {
+                    return Err(WriteError::Storage(
+                        "snapshot names an asset whose size is not admitted".into(),
+                    ));
+                };
+                if *bytes <= 0 {
+                    return Err(WriteError::Storage(
+                        "snapshot names an asset with an invalid size".into(),
+                    ));
+                }
+                dependencies.push(crate::storage::journal::JournalDependencyHint {
                     kind: "asset".to_string(),
                     digest: digest.clone(),
-                    byte_length: u64::try_from(*bytes).unwrap_or(0),
-                })
-                .collect();
+                    byte_length: u64::try_from(*bytes).map_err(|_| {
+                        WriteError::Storage("snapshot asset size exceeds the physical limit".into())
+                    })?,
+                });
+            }
             (body, generation, durable, state.session_version.clone(), dependencies)
         };
         // The reservation comes back as a guard rather than as a bare

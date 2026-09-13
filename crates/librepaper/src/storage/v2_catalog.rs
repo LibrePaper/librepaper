@@ -523,7 +523,7 @@ fn resolve_journal_dependencies(
     for hint in hints {
         if hint.byte_length == 0
             || hint.byte_length > 64 * 1024 * 1024
-            || !matches!(hint.kind.as_str(), "asset" | "publication_asset" | "source_chunk" | "source_recipe" | "source_tree")
+            || hint.kind != "asset"
             || hint.digest.len() != 64
             || !hint.digest.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         {
@@ -538,7 +538,7 @@ fn resolve_journal_dependencies(
             .query_row(
                 "SELECT id,kind,digest,byte_length FROM objects
                  WHERE document_id=?1 AND state='available'
-                   AND ((?2='asset' AND kind IN ('asset','publication_asset')) OR kind=?2)
+                   AND kind IN ('asset','publication_asset')
                    AND digest=?3 AND byte_length=?4 ORDER BY id LIMIT 1",
                 params![document_id, hint.kind, hint.digest, bytes],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
@@ -778,7 +778,7 @@ async fn heartbeat_stage_leases_page(
                          WHERE lease.purpose='stage'
                            AND lease.expires_at>?1
                            AND lease.expires_at<=?2
-                           AND candidate.kind IN ('display_publish','agent_stage')
+                           AND candidate.kind IN ('display_publish','agent_stage','journal_append','journal_compact')
                            AND candidate.state='prepared'
                            AND candidate.writer_generation=(
                                SELECT writer_generation FROM server_state WHERE id=1)
@@ -843,7 +843,7 @@ async fn heartbeat_stage_leases_page(
                                        ON o.document_id=lease.document_id AND o.id=lease.object_id
                                     WHERE lease.purpose='stage'
                                       AND lease.expires_at>?1 AND lease.expires_at<=?2
-                                      AND candidate.kind IN ('display_publish','agent_stage')
+                                      AND candidate.kind IN ('display_publish','agent_stage','journal_append','journal_compact')
                                       AND candidate.state='prepared'
                                       AND candidate.writer_generation=(
                                           SELECT writer_generation FROM server_state WHERE id=1)
@@ -1248,7 +1248,7 @@ impl V2GcCatalog for Catalog {
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let renewed = transaction
                 .execute(
-                    "UPDATE object_leases SET expires_at=MIN(?1,(SELECT op.work_expires_at FROM operations op WHERE op.id=object_leases.operation_id AND op.document_id=object_leases.document_id)) WHERE purpose='stage' AND expires_at>?2 AND writer_generation=(SELECT op.writer_generation FROM operations op WHERE op.id=object_leases.operation_id AND op.document_id=object_leases.document_id) AND (document_id,object_id,holder_id) IN (SELECT lease.document_id,lease.object_id,lease.holder_id FROM object_leases lease JOIN operations candidate ON candidate.id=lease.operation_id AND candidate.document_id=lease.document_id JOIN documents d ON d.id=lease.document_id JOIN accounts a ON a.id=d.owner_id JOIN objects o ON o.document_id=lease.document_id AND o.id=lease.object_id WHERE lease.purpose='stage' AND lease.expires_at>?2 AND candidate.kind IN ('display_publish','agent_stage') AND candidate.state='prepared' AND candidate.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1) AND candidate.work_expires_at IS NOT NULL AND candidate.work_expires_at>?2 AND lease.writer_generation=candidate.writer_generation AND o.state IN ('allocated','available') AND d.status='active' AND a.status='active' ORDER BY lease.expires_at,lease.document_id,lease.object_id,lease.holder_id LIMIT ?3)",
+                    "UPDATE object_leases SET expires_at=MIN(?1,(SELECT op.work_expires_at FROM operations op WHERE op.id=object_leases.operation_id AND op.document_id=object_leases.document_id)) WHERE purpose='stage' AND expires_at>?2 AND writer_generation=(SELECT op.writer_generation FROM operations op WHERE op.id=object_leases.operation_id AND op.document_id=object_leases.document_id) AND (document_id,object_id,holder_id) IN (SELECT lease.document_id,lease.object_id,lease.holder_id FROM object_leases lease JOIN operations candidate ON candidate.id=lease.operation_id AND candidate.document_id=lease.document_id JOIN documents d ON d.id=lease.document_id JOIN accounts a ON a.id=d.owner_id JOIN objects o ON o.document_id=lease.document_id AND o.id=lease.object_id WHERE lease.purpose='stage' AND lease.expires_at>?2 AND candidate.kind IN ('display_publish','agent_stage','journal_append','journal_compact') AND candidate.state='prepared' AND candidate.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1) AND candidate.work_expires_at IS NOT NULL AND candidate.work_expires_at>?2 AND lease.writer_generation=candidate.writer_generation AND o.state IN ('allocated','available') AND d.status='active' AND a.status='active' ORDER BY lease.expires_at,lease.document_id,lease.object_id,lease.holder_id LIMIT ?3)",
                     params![now.saturating_add(READ_LEASE_MS), now, i64::try_from(limit.min(256)).unwrap_or(256)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
@@ -1677,7 +1677,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             for dependency in &resolved_dependencies {
                 tx.execute(
                     "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,?3,'stage',?4,?5,?6,?7)",
-                    params![request.document_id, dependency.object_id.as_str(), format!("journal-stage-{}", operation_id), operation_id, writer_generation, now, now.saturating_add(3_600_000)],
+                    params![request.document_id, dependency.object_id.as_str(), format!("journal-stage-{}", operation_id), operation_id, writer_generation, now, now.saturating_add(READ_LEASE_MS)],
                 ).map_err(crate::storage::catalog::CatalogError::from)?;
             }
             plan["objects"] = serde_json::Value::Array(
@@ -1779,9 +1779,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             tx.execute(
                 "UPDATE objects SET live_root=0,gc_after=?1
                  WHERE document_id=?2 AND state='available' AND live_root=1
-                   AND kind IN ('asset','publication_asset','source_chunk','source_recipe','source_tree')
-                   AND publication_root=0
-                   AND NOT EXISTS (SELECT 1 FROM checkpoint_objects c WHERE c.document_id=objects.document_id AND c.object_id=objects.id)",
+                   AND kind IN ('asset','publication_asset','source_chunk','source_recipe','source_tree')",
                 params![now.saturating_add(900_000), admission.document_id],
             ).map_err(crate::storage::catalog::CatalogError::from)?;
             for dependency in plan.get("dependencies").and_then(serde_json::Value::as_array).into_iter().flatten() {
@@ -1895,7 +1893,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             for dependency in &resolved_dependencies {
                 tx.execute(
                     "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,?3,'stage',?4,?5,?6,?7)",
-                    params![document_id, dependency.object_id.as_str(), format!("journal-stage-{operation_id}"), operation_id, writer_generation, now, now.saturating_add(3_600_000)],
+                    params![document_id, dependency.object_id.as_str(), format!("journal-stage-{operation_id}"), operation_id, writer_generation, now, now.saturating_add(READ_LEASE_MS)],
                 ).map_err(crate::storage::catalog::CatalogError::from)?;
             }
             tx.execute("UPDATE documents SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![bytes,document_id]).map_err(crate::storage::catalog::CatalogError::from)?;
@@ -1946,9 +1944,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             tx.execute(
                 "UPDATE objects SET live_root=0,gc_after=?1
                  WHERE document_id=?2 AND state='available' AND live_root=1
-                   AND kind IN ('asset','publication_asset','source_chunk','source_recipe','source_tree')
-                   AND publication_root=0
-                   AND NOT EXISTS (SELECT 1 FROM checkpoint_objects c WHERE c.document_id=objects.document_id AND c.object_id=objects.id)",
+                   AND kind IN ('asset','publication_asset','source_chunk','source_recipe','source_tree')",
                 params![now.saturating_add(900_000), admission.document_id],
             ).map_err(crate::storage::catalog::CatalogError::from)?;
             for dependency in &admission.dependencies {

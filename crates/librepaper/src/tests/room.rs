@@ -1067,7 +1067,9 @@ async fn catalog_room_named_asset_is_journal_root_through_reopen_and_gc() {
     rooms.attach_journal(runtime);
     let room = rooms.get("asset-journal").await;
     let body = b"named asset body".to_vec();
+    let (unused_digest, _) = room.put_asset(b"uploaded but never named".to_vec(), (1024, 4096)).await.unwrap();
     let (digest, size) = room.put_asset(body.clone(), (1024, 4096)).await.unwrap();
+    assert_ne!(unused_digest, digest);
     room.name_asset("figure.bin", &digest).await.unwrap();
     let document_id: String = catalog
         .with_connection(|connection| {
