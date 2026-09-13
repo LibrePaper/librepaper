@@ -1775,7 +1775,12 @@ async fn handle_jobs_post(
     let mut job: JobRequest = if protocol == 2 {
         let request: protocol::BuildRequestV2 = match serde_json::from_value(raw_job) {
             Ok(request) => request,
-            Err(_) => return write_json(400, &json!({"error": "bad protocol 2 job description"})),
+            Err(error) => {
+                return write_json(
+                    400,
+                    &json!({"error": format!("bad protocol 2 job description: {error}")}),
+                )
+            }
         };
         if let Err(error) = request.validate_shape() {
             return write_json(400, &json!({"error": error}));
@@ -1896,7 +1901,12 @@ async fn handle_jobs_post(
     } else {
         match serde_json::from_value(raw_job) {
             Ok(job) => job,
-            Err(_) => return write_json(400, &json!({"error": "bad job description"})),
+            Err(error) => {
+                return write_json(
+                    400,
+                    &json!({"error": format!("bad job description: {error}")}),
+                )
+            }
         }
     };
     if !PROTOCOL_VERSIONS.contains(&job.protocol) {

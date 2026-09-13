@@ -594,16 +594,20 @@ pub struct QuartoJobOptions {
     #[serde(default)]
     pub shared_tree_sha256: Option<String>,
     /// Where the adapter may read inputs.
+    #[serde(default)]
     pub execution_mode: QuartoExecutionMode,
     /// Render one bound document. Project scope is retained in the wire enum
     /// only so older clients receive an explicit validation error.
+    #[serde(default)]
     pub render_scope: QuartoRenderScope,
     /// Local files required by the document in addition to the shared
     /// manifest.  Snapshot mode copies these only after checking their
     /// declared, project-relative paths.
+    #[serde(default)]
     pub data_inputs: Vec<String>,
     /// Snapshot mode requires the caller to attest that `manifest` is the
     /// complete shared inventory.  This is intentionally opt-in.
+    #[serde(default)]
     pub shared_inventory_complete: bool,
 }
 
@@ -1019,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn quarto_options_have_an_explicit_current_schema_and_gate_snapshots() {
+    fn quarto_options_encode_the_current_schema_decode_legacy_and_gate_snapshots() {
         let options = QuartoJobOptions {
             binding_id: "binding".into(),
             ..Default::default()
@@ -1032,17 +1036,23 @@ mod tests {
         let decoded: QuartoJobOptions = serde_json::from_value(encoded).expect("decode");
         assert_eq!(decoded.execution_mode, QuartoExecutionMode::WorkingTree);
 
+        let legacy: QuartoJobOptions = serde_json::from_value(serde_json::json!({
+            "binding_id": "binding",
+            "main": "paper.qmd",
+            "format": "html"
+        }))
+        .expect("the pre-snapshot Quarto request remains valid");
+        assert_eq!(legacy.execution_mode, QuartoExecutionMode::WorkingTree);
+        assert_eq!(legacy.render_scope, QuartoRenderScope::Document);
+        assert!(legacy.data_inputs.is_empty());
+        assert!(!legacy.shared_inventory_complete);
+
         let mut project_scope = decoded.clone();
         project_scope.render_scope = QuartoRenderScope::Project;
         assert!(project_scope
             .validate()
             .unwrap_err()
             .contains("website and book project renders are not supported"));
-
-        let missing = serde_json::json!({
-            "binding_id": "binding", "main": "index.qmd", "format": "html"
-        });
-        assert!(serde_json::from_value::<QuartoJobOptions>(missing).is_err());
 
         let mut snapshot = options;
         snapshot.execution_mode = QuartoExecutionMode::IsolatedSnapshot;
