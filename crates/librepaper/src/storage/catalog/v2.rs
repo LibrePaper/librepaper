@@ -511,13 +511,97 @@ fn checked_add(a: i64, b: i64, label: &str) -> CatalogResult<i64> {
         .ok_or_else(|| CatalogError::Invalid(format!("{label} counter overflow")))
 }
 
+fn operation_authorized_in_tx(
+    tx: &Transaction<'_>,
+    document_id: &str,
+    actor_key: &str,
+    plan_json: &str,
+    required_role: &str,
+) -> CatalogResult<()> {
+    let plan: serde_json::Value = serde_json::from_str(plan_json)
+        .map_err(|error| CatalogError::Invalid(format!("operation plan: {error}")))?;
+    let authorization = plan
+        .get("authority")
+        .or_else(|| plan.get("authorization"))
+        .ok_or_else(|| {
+            CatalogError::Conflict("operation has no final authorization proof".into())
+        })?;
+    let account_id = authorization
+        .get("account_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let owner_key = authorization
+        .get("owner_key")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let generation = authorization
+        .get("generation")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let link_hash = authorization
+        .get("link_hash")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let expected_actor = if !account_id.is_empty() {
+        account_id.to_owned()
+    } else if !link_hash.is_empty() {
+        format!("link:{link_hash}")
+    } else {
+        owner_key.to_owned()
+    };
+    if expected_actor != actor_key {
+        return Err(CatalogError::refused(
+            CatalogRefusal::ActorRights,
+            "operation actor proof changed",
+        ));
+    }
+    let slug: String = tx
+        .query_row(
+            "SELECT slug FROM documents WHERE id=?1",
+            [document_id],
+            |row| row.get(0),
+        )
+        .map_err(CatalogError::from)?;
+    let authority = MutationAuthority {
+        account_id,
+        owner_key,
+        generation,
+        link_hash,
+        policy_editor: authorization
+            .get("policy_editor")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(required_role == "editor"),
+        automation: authorization
+            .get("automation")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        unowned_publisher: authorization
+            .get("unowned_publisher")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        execution_epoch: authorization
+            .get("execution_epoch")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(""),
+        agent_checkpoint: None,
+    };
+    if Self::mutation_authorized_in_tx(tx, &slug, authority, required_role)? {
+        Ok(())
+    } else {
+        Err(CatalogError::refused(
+            CatalogRefusal::ActorRights,
+            "operation actor rights or session generation changed",
+        ))
+    }
+}
+
 impl Catalog {
     /// Verify the immutable publication closure after the object worker has
     /// decoded the manifest.  The catalogue rechecks the operation fence,
     /// object kinds, availability, and operation-owned stage leases in one
     /// transaction.  A manifest-only or source-tree closure can therefore
     /// never become an activation proof.
-    pub fn verify_v2_publication_bundle(
+    pub(crate) fn verify_v2_publication_bundle(
         &self,
         document_id: &DocumentId,
         operation_id: &OperationId,
@@ -1186,7 +1270,7 @@ impl Catalog {
     /// object list in operation JSON. The operation plan carries only the
     /// bounded SHA-256 closure digest; checkpoint_objects receives the full
     /// list in the commit transaction.
-    pub fn verify_v2_checkpoint_closure(
+    pub(crate) fn verify_v2_checkpoint_closure(
         &self,
         operation_id: &OperationId,
         checkpoint: &CheckpointCommit,
@@ -1255,7 +1339,7 @@ impl Catalog {
 
     /// Commit a closure only after the typed verifier has established its
     /// operation, generation, lease, and source-tree fences.
-    pub fn commit_v2_checkpoint_verified(
+    pub(crate) fn commit_v2_checkpoint_verified(
         &self,
         proof: &VerifiedCheckpointClosure,
         checkpoint: &CheckpointCommit,
@@ -1269,6 +1353,21 @@ impl Catalog {
                 "checkpoint closure proof does not match commit".into(),
             ));
         }
+        let (_, generation, _) = self.v2_server_state()?;
+        let source_generation: i64 = self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT source_generation FROM documents WHERE id=?1",
+                    [checkpoint.document_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })?;
+        if proof.writer_generation != generation || proof.source_generation != source_generation {
+            return Err(CatalogError::Conflict(
+                "checkpoint closure proof is stale".into(),
+            ));
+        }
         self.commit_v2_checkpoint_for_operation(&proof.operation_id, checkpoint, result_json)
     }
 
@@ -1278,7 +1377,7 @@ impl Catalog {
     /// closure is compared byte-for-byte with the caller's set under the
     /// SQLite write lock, so a late writer cannot acknowledge a different
     /// tree or source generation.
-    pub fn commit_v2_checkpoint_for_operation(
+    pub(crate) fn commit_v2_checkpoint_for_operation(
         &self,
         operation_id: &OperationId,
         checkpoint: &CheckpointCommit,
@@ -1302,17 +1401,18 @@ impl Catalog {
             ));
         }
         self.immediate(|tx| {
-            let (state, kind, generation, expected_generation, plan_json): (String,String,String,Option<i64>,String) = tx.query_row(
-                "SELECT state,kind,writer_generation,expected_document_generation,plan_json
+            let (state, kind, generation, expected_generation, actor_key, plan_json): (String,String,String,Option<i64>,String,String) = tx.query_row(
+                "SELECT state,kind,writer_generation,expected_document_generation,actor_key,plan_json
                  FROM operations WHERE id=?1 AND document_id=?2",
                 params![operation_id.as_str(), checkpoint.document_id.as_str()],
-                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
             ).map_err(CatalogError::from)?;
             if state != "prepared" || !matches!(kind.as_str(), "source_publish" | "checkpoint") {
                 return Err(CatalogError::Conflict("source checkpoint operation is not prepared".into()));
             }
             let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
             if generation != current_generation { return Err(CatalogError::Conflict("source operation belongs to an obsolete writer generation".into())); }
+            operation_authorized_in_tx(tx, checkpoint.document_id.as_str(), &actor_key, &plan_json, "editor")?;
             let (source_generation, next, doc_refs): (i64,i64,i64) = tx.query_row(
                 "SELECT source_generation,next_checkpoint_seq,checkpoint_ref_count FROM documents WHERE id=?1 AND status<>'deleting'",
                 [checkpoint.document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
@@ -1418,11 +1518,11 @@ impl Catalog {
             return Err(CatalogError::Invalid("publication id is empty".into()));
         }
         self.immediate(|tx| {
-            let (state, kind, generation, expected_generation, actor_key): (String, String, String, Option<i64>, String) = tx.query_row(
-                "SELECT state,kind,writer_generation,expected_document_generation,actor_key
+            let (state, kind, generation, expected_generation, actor_key, plan_json): (String, String, String, Option<i64>, String, String) = tx.query_row(
+                "SELECT state,kind,writer_generation,expected_document_generation,actor_key,plan_json
                  FROM operations WHERE id=?1 AND document_id=?2",
                 params![proof.operation_id.as_str(), proof.document_id.as_str()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             ).map_err(CatalogError::from)?;
             if state != "prepared" || kind != OperationKind::DisplayPublish.as_str() || actor_key.is_empty() {
                 return Err(CatalogError::Conflict("publication operation is not prepared".into()));
@@ -1431,6 +1531,7 @@ impl Catalog {
             if generation != current_generation || proof.writer_generation != current_generation {
                 return Err(CatalogError::Conflict("publication belongs to an obsolete writer generation".into()));
             }
+            operation_authorized_in_tx(tx, proof.document_id.as_str(), &actor_key, &plan_json, "editor")?;
             let source_generation: i64 = tx.query_row(
                 "SELECT source_generation FROM documents WHERE id=?1 AND status='active'",
                 [proof.document_id.as_str()], |r| r.get(0),

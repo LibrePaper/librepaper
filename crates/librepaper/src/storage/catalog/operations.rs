@@ -27,7 +27,7 @@ impl Catalog {
     /// refusal rather than an implicit quota bypass.
     pub fn reserve(
         &self,
-        slug: &str,
+        _slug: &str,
         added_bytes: i64,
         owner_limit: i64,
         total_limit: i64,
@@ -37,27 +37,8 @@ impl Catalog {
                 "negative admission amount or limit".into(),
             ));
         }
-        self.immediate(|tx| {
-            let (document_id, owner_id, stored, reserved): (String, String, i64, i64) = tx.query_row(
-                "SELECT id,owner_id,stored_bytes,reserved_bytes FROM documents WHERE slug=?1 AND status <> 'deleting'",
-                [slug], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
-            let (owner_stored, owner_reserved): (i64, i64) = tx.query_row(
-                "SELECT stored_bytes,reserved_bytes FROM accounts WHERE id=?1", [&owner_id], |r| Ok((r.get(0)?, r.get(1)?)),
-            ).map_err(CatalogError::from)?;
-            let (total_stored, total_reserved): (i64, i64) = tx.query_row(
-                "SELECT stored_bytes,reserved_bytes FROM server_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?)),
-            ).map_err(CatalogError::from)?;
-            let new_owner = owner_stored.checked_add(owner_reserved).and_then(|v| v.checked_add(added_bytes)).ok_or_else(|| CatalogError::Invalid("owner accounting overflow".into()))?;
-            let new_total = total_stored.checked_add(total_reserved).and_then(|v| v.checked_add(added_bytes)).ok_or_else(|| CatalogError::Invalid("deployment accounting overflow".into()))?;
-            if new_owner > owner_limit { return Err(CatalogError::refused(CatalogRefusal::OwnerBytes, "owner storage quota exceeded")); }
-            if new_total > total_limit { return Err(CatalogError::refused(CatalogRefusal::DeploymentBytes, "deployment storage quota exceeded")); }
-            let next_reserved = reserved.checked_add(added_bytes).ok_or_else(|| CatalogError::Invalid("document reservation overflow".into()))?;
-            tx.execute("UPDATE documents SET reserved_bytes=?1,updated_at=max(updated_at,?2) WHERE id=?3", params![next_reserved, unix_millis(), document_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE accounts SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![added_bytes, owner_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE server_state SET reserved_bytes=reserved_bytes+?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1", params![added_bytes, unix_millis()]).map_err(CatalogError::from)?;
-            Ok(Admission { slug: slug.to_owned(), added_bytes, owner_bytes: new_owner, total_bytes: new_total, counted_size: stored.checked_add(next_reserved).ok_or_else(|| CatalogError::Invalid("document accounting overflow".into()))? })
-        })
+        let _ = (added_bytes, owner_limit, total_limit);
+        Err(CatalogError::Invalid("standalone admission is obsolete in catalog v2; allocate an object with its operation reservation".into()))
     }
 
     /// Reconcile measured retained payload and release excess ordinary slack.
@@ -79,9 +60,20 @@ impl Catalog {
                 let now = unix_millis();
                 tx.execute(
                     "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,
-                        receipt_expires_at=?2,updated_at=?2
-                     WHERE document_id=?3 AND state='prepared'",
-                    params![r#"{"version":2,"reason":"document_deleting"}"#, now, document_id],
+                        receipt_expires_at=?3,updated_at=?2
+                     WHERE document_id=?4 AND state='prepared'",
+                    params![r#"{"version":2,"reason":"document_deleting"}"#, now, now.saturating_add(7 * 24 * 60 * 60 * 1_000), document_id],
+                ).map_err(CatalogError::from)?;
+                tx.execute(
+                    "UPDATE objects SET publication_root=0,
+                        gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END
+                     WHERE document_id=?2 AND publication_root=1",
+                    params![now.saturating_add(900_000), document_id],
+                ).map_err(CatalogError::from)?;
+                tx.execute(
+                    "UPDATE documents SET publication_id=NULL,publication_object_id=NULL,published_at=NULL
+                     WHERE id=?1",
+                    [&document_id],
                 ).map_err(CatalogError::from)?;
             }
             Self::document_in_tx(tx, slug)
@@ -103,8 +95,10 @@ impl Catalog {
                 return Err(CatalogError::Conflict("document objects or operations remain".into()));
             }
             tx.execute("DELETE FROM documents WHERE id=?1 AND status='deleting'", [&document_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE accounts SET document_count=CASE WHEN document_count>0 THEN document_count-1 ELSE 0 END WHERE id=?1", [&owner_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE server_state SET document_count=CASE WHEN document_count>0 THEN document_count-1 ELSE 0 END,catalog_revision=catalog_revision+1,updated_at=?1 WHERE id=1", [unix_millis()]).map_err(CatalogError::from)?;
+            let account_changed = tx.execute("UPDATE accounts SET document_count=document_count-1 WHERE id=?1 AND document_count>=1", [&owner_id]).map_err(CatalogError::from)?;
+            if account_changed != 1 { return Err(CatalogError::Conflict("owner document counter is inconsistent".into())); }
+            let server_changed = tx.execute("UPDATE server_state SET document_count=document_count-1,catalog_revision=catalog_revision+1,updated_at=?1 WHERE id=1 AND document_count>=1", [unix_millis()]).map_err(CatalogError::from)?;
+            if server_changed != 1 { return Err(CatalogError::Conflict("deployment document counter is inconsistent".into())); }
             Ok(())
         })
     }
@@ -489,8 +483,8 @@ impl Catalog {
         if let Some(actor) = actor {
             self.require_mutation_authority(slug, actor)?;
         }
-        self.reserve(slug, bytes, owner_limit, total_limit)
-            .map(|_| ())
+        let _ = (bytes, owner_limit, total_limit);
+        Err(CatalogError::Invalid("standalone document reservation is obsolete in catalog v2; allocate an object with its operation reservation".into()))
     }
 
     pub fn release_document_bytes(&self, slug: &str, bytes: i64) -> CatalogResult<()> {
@@ -510,30 +504,12 @@ impl Catalog {
         })
     }
 
-    /// Reserve the conservative replacement peak in v2 counters and the
-    /// prepared operation plan.
-    pub fn reserve_publication_peak(&self, slug: &str, bytes: i64) -> CatalogResult<()> {
+    /// Publication peaks are charged by object allocation in v2.
+    pub fn reserve_publication_peak(&self, _slug: &str, bytes: i64) -> CatalogResult<()> {
         if bytes < 0 {
             return Err(CatalogError::Invalid("negative publication peak".into()));
         }
-        self.immediate(|tx| {
-            let (operation_id, document_id, owner_id, plan): (String,String,String,String) = tx.query_row(
-                "SELECT o.id,d.id,d.owner_id,o.plan_json FROM operations o JOIN documents d ON d.id=o.document_id
-                 WHERE d.slug=?1 AND o.kind='display_publish' AND o.state='prepared'
-                 ORDER BY o.created_at DESC,o.id DESC LIMIT 1", [slug],
-                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
-            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
-            let mut value: serde_json::Value = serde_json::from_str(&plan).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-            if value.get("peak_reserved").and_then(serde_json::Value::as_i64).unwrap_or(0) != 0 { return Err(CatalogError::Conflict("publication peak was already reserved".into())); }
-            value["peak_reserved"] = serde_json::json!(bytes);
-            let encoded = serde_json::to_string(&value).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-            if encoded.len() > 65_536 { return Err(CatalogError::Invalid("publication plan exceeds 65536 bytes".into())); }
-            tx.execute("UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2) WHERE id=?3 AND state='prepared'", params![encoded,unix_millis(),operation_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE documents SET reserved_bytes=reserved_bytes+?1,updated_at=max(updated_at,?2) WHERE id=?3", params![bytes,unix_millis(),document_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE accounts SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![bytes,owner_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE server_state SET reserved_bytes=reserved_bytes+?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1", params![bytes,unix_millis()]).map_err(CatalogError::from)?;
-            Ok(())
-        })
+        Err(CatalogError::Invalid("standalone publication peaks are obsolete in catalog v2; allocate publication objects under the operation".into()))
     }
 
     /// Reserve an exact object replacement delta. Replacing a 10-byte session
