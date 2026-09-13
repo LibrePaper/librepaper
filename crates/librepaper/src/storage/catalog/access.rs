@@ -26,11 +26,21 @@ pub(super) fn promote_link_key(keys: &mut Vec<(String, [u8; 32])>, id: String, k
 }
 
 fn link_time(value: &str) -> CatalogResult<i64> {
-    if value.is_empty() { return Ok(unix_millis()); }
-    if let Ok(value) = value.parse::<i64>() { return Ok(if value < 10_000_000_000 { value.saturating_mul(1_000) } else { value }); }
+    if value.is_empty() {
+        return Ok(unix_millis());
+    }
+    if let Ok(value) = value.parse::<i64>() {
+        return Ok(if value < 10_000_000_000 {
+            value.saturating_mul(1_000)
+        } else {
+            value
+        });
+    }
     crate::util::parse_timestamp(value)
         .map(|value| value.saturating_mul(1_000))
-        .ok_or_else(|| CatalogError::Invalid("link time must be Unix milliseconds or RFC3339".into()))
+        .ok_or_else(|| {
+            CatalogError::Invalid("link time must be Unix milliseconds or RFC3339".into())
+        })
 }
 
 pub(super) fn open_link_envelope(
@@ -285,7 +295,16 @@ impl Catalog {
     /// on-disk keyring: a destination may have been written to the ring just
     /// before the SQLite rotation row was created.
     pub fn link_keyring_primary_id(&self) -> CatalogResult<Option<String>> {
-        self.with_connection(|connection| connection.query_row("SELECT active_link_key_id FROM server_state WHERE id=1", [], |row| row.get(0)).optional().map_err(CatalogError::from))
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT active_link_key_id FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(CatalogError::from)
+        })
     }
 
     pub fn seal_link_key(
@@ -928,7 +947,11 @@ impl Catalog {
 
     pub fn revoke_grant(&self, slug: &str, role: &str, account_id: &str) -> CatalogResult<bool> {
         self.immediate(|tx| {
-            let document_id: String = tx.query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| row.get(0)).map_err(CatalogError::from)?;
+            let document_id: String = tx
+                .query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| {
+                    row.get(0)
+                })
+                .map_err(CatalogError::from)?;
             let n = tx
                 .execute(
                     "DELETE FROM grants WHERE document_id=?1 AND role=?2 AND account_id=?3",
@@ -1005,7 +1028,11 @@ impl Catalog {
 
     pub fn drop_link(&self, slug: &str, role: &str) -> CatalogResult<bool> {
         self.immediate(|tx| {
-            let document_id: String = tx.query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| row.get(0)).map_err(CatalogError::from)?;
+            let document_id: String = tx
+                .query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| {
+                    row.get(0)
+                })
+                .map_err(CatalogError::from)?;
             let n = tx
                 .execute(
                     "DELETE FROM links WHERE document_id=?1 AND role=?2",
@@ -1063,16 +1090,52 @@ impl Catalog {
         link_hash: &str,
     ) -> CatalogResult<bool> {
         self.immediate(|tx| {
-            let document_id: Option<String> = tx.query_row("SELECT id FROM documents WHERE slug=?1", [slug], |r| r.get(0)).optional().map_err(CatalogError::from)?;
-            let Some(document_id) = document_id else { return Ok(false); };
-            let payload: String = tx.query_row("SELECT bookmarks_json FROM accounts WHERE id=?1", [account_id], |r| r.get(0)).map_err(CatalogError::from)?;
-            let mut json: serde_json::Value = serde_json::from_str(&payload).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-            let items = json.get_mut("items").and_then(serde_json::Value::as_array_mut).ok_or_else(|| CatalogError::Invalid("bookmarks_json has invalid shape".into()))?;
+            let document_id: Option<String> = tx
+                .query_row("SELECT id FROM documents WHERE slug=?1", [slug], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(CatalogError::from)?;
+            let Some(document_id) = document_id else {
+                return Ok(false);
+            };
+            let payload: String = tx
+                .query_row(
+                    "SELECT bookmarks_json FROM accounts WHERE id=?1",
+                    [account_id],
+                    |r| r.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            let mut json: serde_json::Value =
+                serde_json::from_str(&payload).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            let items = json
+                .get_mut("items")
+                .and_then(serde_json::Value::as_array_mut)
+                .ok_or_else(|| CatalogError::Invalid("bookmarks_json has invalid shape".into()))?;
             let before = items.len();
-            let link_id: Option<String> = tx.query_row("SELECT id FROM links WHERE document_id=?1 AND token_hash=?2", params![document_id,link_hash], |r| r.get(0)).optional().map_err(CatalogError::from)?;
-            items.retain(|item| item.get("link_id").and_then(serde_json::Value::as_str) != link_id.as_deref());
-            if items.len() == before { return Ok(false); }
-            tx.execute("UPDATE accounts SET bookmarks_json=?1 WHERE id=?2", params![serde_json::to_string(&json).map_err(|e| CatalogError::Invalid(e.to_string()))?,account_id]).map_err(CatalogError::from)?;
+            let link_id: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM links WHERE document_id=?1 AND token_hash=?2",
+                    params![document_id, link_hash],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            items.retain(|item| {
+                item.get("link_id").and_then(serde_json::Value::as_str) != link_id.as_deref()
+            });
+            if items.len() == before {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE accounts SET bookmarks_json=?1 WHERE id=?2",
+                params![
+                    serde_json::to_string(&json)
+                        .map_err(|e| CatalogError::Invalid(e.to_string()))?,
+                    account_id
+                ],
+            )
+            .map_err(CatalogError::from)?;
             Ok(true)
         })
     }
@@ -1105,8 +1168,9 @@ impl Catalog {
             let cursor_time = cursor.and_then(|value| value.0.parse::<i64>().ok());
             let cursor_slug = cursor.map(|value| value.1);
             let account = account_id.unwrap_or("");
-            let mut statement = connection.prepare(
-                "SELECT d.slug,d.id,d.title,d.created_at,d.published_at,d.updated_at,
+            let mut statement = connection
+                .prepare(
+                    "SELECT d.slug,d.id,d.title,d.created_at,d.published_at,d.updated_at,
                         d.ownership_mode,d.owner_id,d.status,d.stored_bytes,d.reserved_bytes,
                         d.source_format,d.main_path
                  FROM documents d
@@ -1118,21 +1182,45 @@ impl Catalog {
                         OR EXISTS(SELECT 1 FROM grants g WHERE g.document_id=d.id
                                   AND g.account_id=?1))
                  ORDER BY d.updated_at DESC,d.slug DESC LIMIT ?5",
-            ).map_err(CatalogError::from)?;
-            let mut rows = statement.query(params![account,cursor_time,cursor_slug,include_examples,limit as i64]).map_err(CatalogError::from)?;
+                )
+                .map_err(CatalogError::from)?;
+            let mut rows = statement
+                .query(params![
+                    account,
+                    cursor_time,
+                    cursor_slug,
+                    include_examples,
+                    limit as i64
+                ])
+                .map_err(CatalogError::from)?;
             let mut documents = Vec::new();
             while let Some(row) = rows.next().map_err(CatalogError::from)? {
                 documents.push(Document {
-                    slug: row.get(0)?, storage_id: row.get(1)?, title: row.get(2)?, sha: String::new(),
+                    slug: row.get(0)?,
+                    storage_id: row.get(1)?,
+                    title: row.get(2)?,
+                    sha: String::new(),
                     created_at: row.get::<_, i64>(3)?.to_string(),
-                    published_at: row.get::<_, Option<i64>>(4)?.map_or_else(String::new, |value| value.to_string()),
+                    published_at: row
+                        .get::<_, Option<i64>>(4)?
+                        .map_or_else(String::new, |value| value.to_string()),
                     updated_at: row.get::<_, i64>(5)?.to_string(),
                     example: matches!(row.get::<_, String>(6)?.as_str(), "example"),
-                    owner_key: String::new(), owner_id: row.get(7)?, status: row.get(8)?,
-                    size: row.get(9)?, counted_size: row.get::<_, i64>(9)?.checked_add(row.get(10)?).ok_or_else(|| rusqlite::Error::InvalidQuery)?,
-                    maintenance_reserved: 0, comment_seq: 0, last_auto_checkpoint_at: 0,
-                    pending_publication: None, last_publication_id: String::new(),
-                    source_format: row.get(11)?, main: row.get(12)?,
+                    owner_key: String::new(),
+                    owner_id: row.get(7)?,
+                    status: row.get(8)?,
+                    size: row.get(9)?,
+                    counted_size: row
+                        .get::<_, i64>(9)?
+                        .checked_add(row.get(10)?)
+                        .ok_or_else(|| rusqlite::Error::InvalidQuery)?,
+                    maintenance_reserved: 0,
+                    comment_seq: 0,
+                    last_auto_checkpoint_at: 0,
+                    pending_publication: None,
+                    last_publication_id: String::new(),
+                    source_format: row.get(11)?,
+                    main: row.get(12)?,
                 });
             }
             Ok(documents)

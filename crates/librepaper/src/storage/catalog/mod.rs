@@ -51,10 +51,11 @@ pub use room_edits::RoomEditReservation;
 pub use read_objects::{CheckpointReadLease, CheckpointReadSet, ObjectReadLease, PublicationReadLease};
 pub use source_history::{SourceHistoryLease, SourceHistoryObject, SourceHistoryRecord};
 pub use v2::{
-    AccountKind, CheckpointCommit, CheckpointId, DocumentId, DocumentStatus, IdError,
-    LeasePurpose, ObjectId, ObjectKind, ObjectState, OperationId, OperationKind,
-    OperationScope, SourceFormat, UnixMillis, V2AccountInput, V2DocumentInput,
-    V2AdmissionLimits, V2Object, V2ObjectAllocation, V2Operation, V2OperationInput,
+    AccountKind, CheckpointCommit, CheckpointId, DocumentId, DocumentStatus, IdError, LeasePurpose,
+    ObjectId, ObjectKind, ObjectState, OperationId, OperationKind, OperationScope, SourceFormat,
+    UnixMillis, V2AccountInput, V2AdmissionLimits, V2DocumentInput, V2Object, V2ObjectAllocation,
+    V2Operation, V2OperationInput, VerifiedCheckpointClosure, VerifiedPublicationBundle,
+    MAX_CHECKPOINT_OBJECTS,
 };
 
 /// One durable physical asset reference carried by a checkpoint.
@@ -673,7 +674,9 @@ impl Catalog {
         // partially initialized file into a different deployment.
         if version == LATEST_SCHEMA {
             let singleton: i64 = connection
-                .query_row("SELECT count(*) FROM server_state WHERE id=1", [], |row| row.get(0))
+                .query_row("SELECT count(*) FROM server_state WHERE id=1", [], |row| {
+                    row.get(0)
+                })
                 .map_err(CatalogError::from)?;
             if singleton != 1 {
                 return Err(CatalogError::Invalid(

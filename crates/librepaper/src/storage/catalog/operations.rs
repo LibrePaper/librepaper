@@ -22,8 +22,9 @@ impl Catalog {
         })
     }
 
-    /// Atomically grow a reservation.  Owner and deployment sums include all
-    /// lifecycle states, as required for safe replacement/deletion races.
+    /// Reserve bytes against the v2 document, owner, and deployment counters
+    /// under one SQLite admission lock. Checked arithmetic makes overflow a
+    /// refusal rather than an implicit quota bypass.
     pub fn reserve(
         &self,
         slug: &str,
@@ -37,50 +38,25 @@ impl Catalog {
             ));
         }
         self.immediate(|tx| {
-            let (owner_id, owner_key, counted): (Option<String>, String, i64) = tx
-                .query_row(
-                    "SELECT owner_id, owner_key, counted_size
-                     FROM documents WHERE slug = ?1",
-                    [slug],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .optional()
-                .map_err(CatalogError::from)?
-                .ok_or(CatalogError::NotFound)?;
-            let (owner_bytes, owner_known) =
-                Self::owner_admission_bytes_on(tx, owner_id.as_deref(), &owner_key)?;
-            let (total_bytes, total_known) = Self::deployment_admission_bytes_on(tx)?;
-            let metadata_headroom = if owner_known && total_known { 64 } else { 0 };
-            let charge = added_bytes.saturating_add(metadata_headroom);
-            if owner_bytes.saturating_add(charge) > owner_limit {
-                return Err(CatalogError::refused(
-                    super::CatalogRefusal::OwnerBytes,
-                    "owner storage quota exceeded",
-                ));
-            }
-            if total_bytes.saturating_add(charge) > total_limit {
-                return Err(CatalogError::refused(
-                    super::CatalogRefusal::DeploymentBytes,
-                    "deployment storage quota exceeded",
-                ));
-            }
-            tx.execute(
-                "UPDATE documents SET counted_size = counted_size + ?2 WHERE slug = ?1",
-                params![slug, charge],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE totals SET bytes = bytes + ?1 WHERE id = 1",
-                [charge],
-            )
-            .map_err(CatalogError::from)?;
-            Ok(Admission {
-                slug: slug.to_owned(),
-                added_bytes,
-                owner_bytes: owner_bytes + charge,
-                total_bytes: total_bytes + charge,
-                counted_size: counted + charge,
-            })
+            let (document_id, owner_id, stored, reserved): (String, String, i64, i64) = tx.query_row(
+                "SELECT id,owner_id,stored_bytes,reserved_bytes FROM documents WHERE slug=?1 AND status <> 'deleting'",
+                [slug], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            let (owner_stored, owner_reserved): (i64, i64) = tx.query_row(
+                "SELECT stored_bytes,reserved_bytes FROM accounts WHERE id=?1", [&owner_id], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).map_err(CatalogError::from)?;
+            let (total_stored, total_reserved): (i64, i64) = tx.query_row(
+                "SELECT stored_bytes,reserved_bytes FROM server_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).map_err(CatalogError::from)?;
+            let new_owner = owner_stored.checked_add(owner_reserved).and_then(|v| v.checked_add(added_bytes)).ok_or_else(|| CatalogError::Invalid("owner accounting overflow".into()))?;
+            let new_total = total_stored.checked_add(total_reserved).and_then(|v| v.checked_add(added_bytes)).ok_or_else(|| CatalogError::Invalid("deployment accounting overflow".into()))?;
+            if new_owner > owner_limit { return Err(CatalogError::refused(CatalogRefusal::OwnerBytes, "owner storage quota exceeded")); }
+            if new_total > total_limit { return Err(CatalogError::refused(CatalogRefusal::DeploymentBytes, "deployment storage quota exceeded")); }
+            let next_reserved = reserved.checked_add(added_bytes).ok_or_else(|| CatalogError::Invalid("document reservation overflow".into()))?;
+            tx.execute("UPDATE documents SET reserved_bytes=?1,updated_at=max(updated_at,?2) WHERE id=?3", params![next_reserved, unix_millis(), document_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![added_bytes, owner_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET reserved_bytes=reserved_bytes+?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1", params![added_bytes, unix_millis()]).map_err(CatalogError::from)?;
+            Ok(Admission { slug: slug.to_owned(), added_bytes, owner_bytes: new_owner, total_bytes: new_total, counted_size: stored.checked_add(next_reserved).ok_or_else(|| CatalogError::Invalid("document accounting overflow".into()))? })
         })
     }
 
@@ -90,243 +66,162 @@ impl Catalog {
         self.record_document_measurement(slug, measured_size, None, None, "", "")
     }
 
-    /// Mark a live row deleting, withdrawing it from normal reads.
+    /// Mark a v2 document deleting and abort all prepared document operations
+    /// in the same write transaction. Publication reads filter lifecycle state.
     pub fn begin_delete(&self, slug: &str) -> CatalogResult<Document> {
         self.immediate(|tx| {
-            let changed = tx
-                .execute(
-                    "UPDATE documents SET status = 'deleting', pending_publication = NULL
-                     WHERE slug = ?1 AND status IN ('creating', 'active')",
-                    [slug],
-                )
-                .map_err(CatalogError::from)?;
-            if changed == 0 {
-                let status: Option<String> = tx
-                    .query_row(
-                        "SELECT status FROM documents WHERE slug = ?1",
-                        [slug],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if status.as_deref() != Some("deleting") {
-                    return Err(CatalogError::NotFound);
-                }
+            let document_id: String = tx.query_row(
+                "SELECT id FROM documents WHERE slug=?1", [slug], |r| r.get(0),
+            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            let status: String = tx.query_row("SELECT status FROM documents WHERE id=?1", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
+            if status != "deleting" {
+                tx.execute("UPDATE documents SET status='deleting',updated_at=max(updated_at,?1) WHERE id=?2 AND status IN ('creating','active')", params![unix_millis(), document_id]).map_err(CatalogError::from)?;
+                let now = unix_millis();
+                tx.execute(
+                    "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,
+                        receipt_expires_at=?2,updated_at=?2
+                     WHERE document_id=?3 AND state='prepared'",
+                    params![r#"{"version":2,"reason":"document_deleting"}"#, now, document_id],
+                ).map_err(CatalogError::from)?;
             }
-            // Withdrawal resolves product publications in the same transaction.
-            // Their reservations remain charged until physical deletion; a late
-            // publisher cannot reactivate the row or strand an undiscoverable
-            // prepared receipt after pending_publication has been cleared.
-            tx.execute(
-                "UPDATE catalog_operations SET status='aborted',
-                 result='document deletion withdrew the publication'
-                 WHERE status='prepared' AND storage_id IN
-                   (SELECT storage_id FROM documents WHERE slug=?1 AND status='deleting')",
-                [slug],
-            )
-            .map_err(CatalogError::from)?;
             Self::document_in_tx(tx, slug)
         })
     }
 
-    /// Finish deletion after object/journal reclamation has succeeded.  The
-    /// counted reservation is subtracted exactly once with the row removal.
+    /// Remove a deleting v2 document only after all object, operation, and
+    /// lease rows have drained. Foreign keys provide the final race fence.
     pub fn finish_delete(&self, slug: &str) -> CatalogResult<()> {
         self.immediate(|tx| {
-            let counted: Option<i64> = tx
-                .query_row(
-                    "SELECT counted_size FROM documents WHERE slug = ?1 AND status = 'deleting'",
-                    [slug],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(CatalogError::from)?;
-            let Some(counted) = counted else {
-                return Err(CatalogError::NotFound);
-            };
-            let queued: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM pending_deletes WHERE slug = ?1",
-                    [slug],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if queued != 0 {
-                return Err(CatalogError::Conflict(
-                    "document objects remain queued for deletion".into(),
-                ));
+            let (document_id, owner_id): (String, String) = tx.query_row(
+                "SELECT id,owner_id FROM documents WHERE slug=?1 AND status='deleting'",
+                [slug], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            let objects: i64 = tx.query_row("SELECT count(*) FROM objects WHERE document_id=?1", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
+            let prepared: i64 = tx.query_row("SELECT count(*) FROM operations WHERE document_id=?1 AND state='prepared'", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
+            let leases: i64 = tx.query_row("SELECT count(*) FROM object_leases WHERE document_id=?1", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
+            if objects != 0 || prepared != 0 || leases != 0 {
+                return Err(CatalogError::Conflict("document objects or operations remain".into()));
             }
-            let prepared: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM catalog_operations o
-                     JOIN documents d ON d.storage_id=o.storage_id
-                     WHERE d.slug=?1 AND o.status='prepared'",
-                    [slug],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if prepared != 0 {
-                return Err(CatalogError::Conflict(
-                    "document has an unresolved publication".into(),
-                ));
-            }
-            let storage_id: String = tx
-                .query_row(
-                    "SELECT storage_id FROM documents WHERE slug = ?1 AND status = 'deleting'",
-                    [slug],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            let journal_owned: i64 = tx
-                .query_row(
-                    "SELECT
-                        (SELECT COUNT(*) FROM journal_bases WHERE storage_id = ?1) +
-                        (SELECT COUNT(*) FROM journal_segment_coverage WHERE storage_id = ?1) +
-                        (SELECT COUNT(*) FROM journal_segments WHERE storage_id = ?1)",
-                    [&storage_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if journal_owned != 0 {
-                return Err(CatalogError::Conflict(
-                    "document journal ownership remains".into(),
-                ));
-            }
-            // Shared journal objects are attributed to the storage identity
-            // that released their final coverage. Legacy/deployment-wide
-            // rows use the empty identity and remain a conservative global
-            // gate. Keep this document's reservation until its own durable
-            // retirement queue has been reclaimed.
-            let retirements: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM journal_retirements
-                     WHERE storage_id = ?1 OR storage_id = ''",
-                    [&storage_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if retirements != 0 {
-                return Err(CatalogError::Conflict(
-                    "journal retirement objects remain queued".into(),
-                ));
-            }
-            tx.execute("DELETE FROM documents WHERE slug = ?1", [slug])
-                .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE totals SET bytes = bytes - ?1, documents = documents - 1 WHERE id = 1",
-                [counted],
-            )
-            .map_err(CatalogError::from)?;
+            tx.execute("DELETE FROM documents WHERE id=?1 AND status='deleting'", [&document_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET document_count=CASE WHEN document_count>0 THEN document_count-1 ELSE 0 END WHERE id=?1", [&owner_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET document_count=CASE WHEN document_count>0 THEN document_count-1 ELSE 0 END,catalog_revision=catalog_revision+1,updated_at=?1 WHERE id=1", [unix_millis()]).map_err(CatalogError::from)?;
             Ok(())
         })
     }
 
-    /// Prepare an object-backed operation and bind it to the document's
-    /// pending-publication slot.  Equal retries return the existing receipt;
-    /// different content with the same request id is a conflict.
+    /// Prepare an idempotent v2 operation while preserving the legacy
+    /// `Operation` return shape used by older callers. The receipt identity is
+    /// still request-scoped; durable state lives only in `operations`.
     pub fn prepare_operation(&self, request: &OperationRequest<'_>) -> CatalogResult<Operation> {
-        if request.request_id.is_empty() || request.request_id.len() > 128 {
+        let document_id = DocumentId::new(request.storage_id.to_owned())
+            .map_err(|e| CatalogError::Invalid(e.to_string()))?;
+        let kind = match request.kind {
+            "source_publish" => OperationKind::SourcePublish,
+            "display_publish" => OperationKind::DisplayPublish,
+            "checkpoint" => OperationKind::Checkpoint,
+            "checkpoint_delete" => OperationKind::CheckpointDelete,
+            "journal_append" => OperationKind::JournalAppend,
+            "journal_compact" => OperationKind::JournalCompact,
+            "agent_apply" => OperationKind::AgentApply,
+            "agent_annotations" => OperationKind::AgentAnnotations,
+            "agent_cancel" => OperationKind::AgentCancel,
+            "agent_execution" => OperationKind::AgentExecution,
+            "agent_stage" => OperationKind::AgentStage,
+            "erase_document" => OperationKind::EraseDocument,
+            "rotate_links" => OperationKind::RotateLinks,
+            "backup" => OperationKind::Backup,
+            _ => {
+                return Err(CatalogError::Invalid(
+                    "unsupported v2 operation kind".into(),
+                ))
+            }
+        };
+        let actor_key = request
+            .actor
+            .as_ref()
+            .map(|actor| {
+                if actor.account_id.is_empty() {
+                    actor.owner_key
+                } else {
+                    actor.account_id
+                }
+            })
+            .unwrap_or("internal");
+        if actor_key.is_empty() || request.intent.len() > 65_536 {
             return Err(CatalogError::Invalid(
-                "request id must be 1..=128 bytes".into(),
+                "operation actor or intent is invalid".into(),
             ));
         }
-        if request.intent.len() > 65_536 || request.request_digest.is_empty() {
-            return Err(CatalogError::Invalid(
-                "operation intent or digest is invalid".into(),
-            ));
-        }
-        self.immediate(|tx| {
-            let existing: Option<Operation> = tx
-                .query_row(
-                    "SELECT storage_id, request_id, kind, request_digest, status, intent,
-                            result, created_at FROM catalog_operations
-                     WHERE storage_id = ?1 AND request_id = ?2",
-                    params![request.storage_id, request.request_id],
-                    Self::read_operation,
-                )
-                .optional()
-                .map_err(CatalogError::from)?;
-            if let Some(operation) = existing {
-                if operation.request_digest != request.request_digest
-                    || operation.intent != request.intent
-                {
-                    return Err(CatalogError::Conflict(
-                        "request id was reused with different content".into(),
+        if let Some(actor) = request.actor.as_ref() {
+            self.immediate(|tx| {
+                let slug: String = tx
+                    .query_row(
+                        "SELECT slug FROM documents WHERE id=?1",
+                        [document_id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                let authority = MutationAuthority {
+                    account_id: actor.account_id,
+                    owner_key: actor.owner_key,
+                    generation: actor.generation,
+                    link_hash: "",
+                    policy_editor: actor.required_role == "editor",
+                    automation: false,
+                    unowned_publisher: actor.account_id.is_empty(),
+                    execution_epoch: "",
+                    agent_checkpoint: None,
+                };
+                if !Self::mutation_authorized_in_tx(tx, &slug, authority, actor.required_role)? {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::ActorRights,
+                        "actor rights or session generation changed",
                     ));
                 }
-                return Ok(operation);
-            }
-            let slug: String = tx
-                .query_row(
-                    "SELECT slug FROM documents WHERE storage_id = ?1
-                     AND status IN ('creating', 'active')",
-                    [request.storage_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if let Some(actor) = &request.actor {
-                let authorized: bool = if actor.account_id.is_empty() {
-                    tx.query_row("SELECT EXISTS(SELECT 1 FROM documents WHERE slug=?1 AND owner_id IS NULL AND owner_key=?2)", params![slug,actor.owner_key], |row| row.get(0))
-                } else {
-                    tx.query_row("SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=?2 WHERE d.slug=?1 AND a.status='active' AND a.session_generation=?3 AND (d.owner_id=?2 OR ?4='editor' AND EXISTS(SELECT 1 FROM grants g WHERE g.slug=d.slug AND g.account_id=?2 AND g.role='editor')))", params![slug,actor.account_id,actor.generation,actor.required_role], |row| row.get(0))
-                }.map_err(CatalogError::from)?;
-                if !authorized { return Err(CatalogError::refused(super::CatalogRefusal::ActorRights, "actor rights or session generation changed")); }
-            }
-            tx.execute(
-                "INSERT INTO catalog_operations
-                 (storage_id, request_id, kind, request_digest, status, intent, result, created_at)
-                VALUES (?1, ?2, ?3, ?4, 'prepared', ?5, '', ?6)",
-                params![
-                    request.storage_id,
-                    request.request_id,
-                    request.kind,
-                    request.request_digest,
-                    request.intent,
-                    request.created_at
-                ],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE documents SET pending_publication = ?2 WHERE slug = ?1
-                 AND pending_publication IS NULL",
-                params![slug, request.request_id],
-            )
-            .map_err(CatalogError::from)?;
-            let pending: Option<String> = tx
-                .query_row(
-                    "SELECT pending_publication FROM documents WHERE slug = ?1",
-                    [slug],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if pending.as_deref() != Some(request.request_id) {
-                return Err(CatalogError::Conflict(
-                    "document has another pending publication".into(),
-                ));
-            }
-            tx.query_row(
-                "SELECT storage_id, request_id, kind, request_digest, status, intent,
-                        result, created_at FROM catalog_operations
-                 WHERE storage_id = ?1 AND request_id = ?2",
-                params![request.storage_id, request.request_id],
-                Self::read_operation,
-            )
-            .map_err(CatalogError::from)
+                Ok(())
+            })?;
+        }
+        let now = UnixMillis::new(request.created_at)?;
+        let operation = self.prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(document_id.clone()),
+                actor_key: actor_key.to_owned(),
+                request_key: request.request_id.to_owned(),
+                kind,
+                request_digest: request.request_digest.to_owned(),
+                plan_json: request.intent.to_owned(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: None,
+            },
+            now,
+        )?;
+        Ok(Operation {
+            storage_id: document_id.to_string(),
+            request_id: operation.request_key,
+            kind: operation.kind,
+            request_digest: operation.request_digest,
+            status: operation.state,
+            intent: request.intent.to_owned(),
+            result: String::new(),
+            created_at: request.created_at,
         })
     }
 
-    /// Bounded startup worklist for publications interrupted after prepare.
+    /// Return prepared display operations as the v2 recovery worklist.
     pub fn pending_publications(&self, limit: u32) -> CatalogResult<Vec<PendingPublication>> {
         self.with_connection(|connection| {
             let mut statement = connection
                 .prepare(
-                    "SELECT slug, storage_id, pending_publication, sha,
-                            last_publication_id, status
-                     FROM documents
-                     WHERE pending_publication IS NOT NULL
-                     ORDER BY slug LIMIT ?1",
+                    "SELECT d.slug,d.id,o.request_key,COALESCE(d.current_checkpoint_id,''),
+                        COALESCE(d.publication_id,''),d.status
+                 FROM operations o JOIN documents d ON d.id=o.document_id
+                 WHERE o.kind='display_publish' AND o.state='prepared'
+                 ORDER BY o.created_at,o.id LIMIT ?1",
                 )
                 .map_err(CatalogError::from)?;
-            let rows = statement
+            statement
                 .query_map([i64::from(limit.min(1000))], |row| {
                     Ok(PendingPublication {
                         slug: row.get(0)?,
@@ -337,18 +232,13 @@ impl Catalog {
                         lifecycle: row.get(5)?,
                     })
                 })
-                .map_err(CatalogError::from)?;
-            let pending = rows
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(CatalogError::from)?;
-            Ok(pending)
+                .map_err(CatalogError::from)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(CatalogError::from)
         })
     }
 
-    /// Stage publication metadata in the prepared receipt.  Object and
-    /// journal writes happen before this call; the metadata is intentionally
-    /// not made visible through `documents` or `checkpoints` until
-    /// `commit_operation` consumes the complete staged intent.
+    /// Add bounded measurement metadata to a prepared v2 display operation.
     pub fn stage_publication_measurement(
         &self,
         slug: &str,
@@ -357,49 +247,35 @@ impl Catalog {
         format: &str,
         main: &str,
     ) -> CatalogResult<()> {
-        if measured_size < 0 {
-            return Err(CatalogError::Invalid("negative measured size".into()));
+        if slug.is_empty() || measured_size < 0 || format.is_empty() || main.is_empty() {
+            return Err(CatalogError::Invalid(
+                "invalid publication measurement".into(),
+            ));
         }
         self.immediate(|tx| {
-            let (storage_id, request_id): (String, String) = tx
-                .query_row(
-                    "SELECT storage_id,pending_publication FROM documents
-                     WHERE slug=?1 AND pending_publication IS NOT NULL",
-                    [slug],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(CatalogError::from)?
-                .ok_or(CatalogError::NotFound)?;
-            let intent: String = tx
-                .query_row(
-                    "SELECT intent FROM catalog_operations
-                     WHERE storage_id=?1 AND request_id=?2 AND status='prepared'",
-                    params![storage_id, request_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            let mut value: serde_json::Value = serde_json::from_str(&intent).map_err(|error| {
-                CatalogError::Invalid(format!("invalid publication intent: {error}"))
+            let (operation_id, plan): (String, String) = tx.query_row(
+                "SELECT o.id,o.plan_json FROM operations o JOIN documents d ON d.id=o.document_id
+                 WHERE d.slug=?1 AND o.kind='display_publish' AND o.state='prepared'
+                 ORDER BY o.created_at DESC,o.id DESC LIMIT 1",
+                [slug], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            let mut value: serde_json::Value = serde_json::from_str(&plan).map_err(|error| {
+                CatalogError::Invalid(format!("invalid publication plan: {error}"))
             })?;
             value["measurement"] = serde_json::json!({
-                "size": measured_size,
-                "sha": sha,
-                "format": format,
-                "main": main,
+                "version": 2, "size": measured_size, "sha": sha, "format": format, "main": main,
             });
-            value["output_descriptors"] = serde_json::json!({
-                "measurement": value["measurement"].clone(),
-            });
+            let encoded = serde_json::to_string(&value)
+                .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+            if encoded.len() > 65_536 {
+                return Err(CatalogError::Invalid(
+                    "publication plan exceeds 65536 bytes".into(),
+                ));
+            }
             tx.execute(
-                "UPDATE catalog_operations SET intent=?3
-                 WHERE storage_id=?1 AND request_id=?2 AND status='prepared'",
-                params![
-                    storage_id,
-                    request_id,
-                    serde_json::to_string(&value)
-                        .map_err(|error| CatalogError::Invalid(error.to_string()))?
-                ],
+                "UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2)
+                 WHERE id=?3 AND state='prepared'",
+                params![encoded, unix_millis(), operation_id],
             )
             .map_err(CatalogError::from)?;
             Ok(())
@@ -508,118 +384,65 @@ impl Catalog {
         lease_operation: Option<&str>,
         quota: Option<(i64, i64)>,
     ) -> CatalogResult<()> {
+        if let Some(actor) = actor {
+            self.require_mutation_authority(slug, actor)?;
+        }
+        if checkpoint.sha.is_empty() || checkpoint.tree_sha.is_empty() || checkpoint.size < 0 {
+            return Err(CatalogError::Invalid("invalid staged checkpoint".into()));
+        }
+        if sources.len() > MAX_CHECKPOINT_OBJECTS || assets.len() > MAX_CHECKPOINT_OBJECTS {
+            return Err(CatalogError::Invalid(
+                "staged checkpoint metadata is too large".into(),
+            ));
+        }
         self.immediate(|tx| {
-            if let Some(actor) = actor {
-                if !Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {
-                    return Err(CatalogError::refused(
-                        super::CatalogRefusal::ActorRights,
-                        "actor edit rights or session generation changed",
-                    ));
-                }
-            }
-            let (storage_id, request_id): (String, String) = tx
-                .query_row(
-                    "SELECT storage_id,pending_publication FROM documents
-                     WHERE slug=?1 AND pending_publication IS NOT NULL",
-                    [slug],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(CatalogError::from)?
-                .ok_or(CatalogError::NotFound)?;
-            let intent: String = tx
-                .query_row(
-                    "SELECT intent FROM catalog_operations
-                     WHERE storage_id=?1 AND request_id=?2 AND status='prepared'",
-                    params![storage_id, request_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            let mut value: serde_json::Value = serde_json::from_str(&intent).map_err(|error| {
-                CatalogError::Invalid(format!("invalid publication intent: {error}"))
-            })?;
-            value["checkpoint"] = serde_json::json!({
-                "slug": checkpoint.slug,
-                "sha": checkpoint.sha,
-                "seq": checkpoint.seq,
-                "durable_seq": checkpoint.durable_seq,
-                "tree_sha": checkpoint.tree_sha,
-                "parent": checkpoint.parent,
-                "at": checkpoint.at,
-                "by": checkpoint.by,
-                "why": checkpoint.why,
-                "source_format": checkpoint.source_format,
-                "size": checkpoint.size,
-                "label": checkpoint.label,
-                "git_commit": checkpoint.git_commit,
-                "dirty": checkpoint.dirty,
-                "changed": checkpoint.changed,
-                "by_account": checkpoint.by_account,
+            let (operation_id, mut plan): (String, serde_json::Value) = tx.query_row(
+                "SELECT o.id,o.plan_json FROM operations o JOIN documents d ON d.id=o.document_id
+                 WHERE d.slug=?1 AND o.kind IN ('source_publish','display_publish','checkpoint')
+                   AND o.state='prepared' ORDER BY o.created_at DESC,o.id DESC LIMIT 1",
+                [slug], |r| {
+                    let id: String = r.get(0)?; let raw: String = r.get(1)?;
+                    let plan = serde_json::from_str(&raw).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    Ok((id, plan))
+                },
+            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            plan["checkpoint"] = serde_json::json!({
+                "version": 2, "id": checkpoint.sha, "tree_digest": checkpoint.tree_sha,
+                "parent": checkpoint.parent, "reason": checkpoint.why,
+                "source_format": checkpoint.source_format, "logical_bytes": checkpoint.size,
+                "label": checkpoint.label, "journal_sequence": checkpoint.durable_seq,
             });
-            value["new_head"] = serde_json::json!(checkpoint.sha);
-            value["durable_coverage"] = serde_json::json!({
-                "tree_sha": checkpoint.tree_sha,
-                "durable_seq": checkpoint.durable_seq,
-                "checkpoint_sha": checkpoint.sha,
-            });
-            if !sources.is_empty() {
-                value["source_history"] = serde_json::to_value(sources).map_err(|error| {
-                    CatalogError::Invalid(format!("invalid source-history descriptors: {error}"))
-                })?;
+            plan["source_history_count"] = serde_json::json!(sources.len());
+            plan["checkpoint_assets"] = serde_json::to_value(assets).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            if let Some(operation) = lease_operation {
+                if operation.is_empty() { return Err(CatalogError::Invalid("source-history lease id is empty".into())); }
+                plan["source_history_lease"] = serde_json::Value::String(operation.to_owned());
             }
-            value["checkpoint_assets"] = serde_json::to_value(assets).map_err(|error| {
-                CatalogError::Invalid(format!("invalid checkpoint asset descriptors: {error}"))
-            })?;
-            if let Some(operation_id) = lease_operation {
-                if operation_id.is_empty() {
-                    return Err(CatalogError::Invalid(
-                        "source-history lease id is empty".into(),
-                    ));
-                }
-                value["source_history_lease"] = serde_json::json!(operation_id);
+            if let Some((owner, deployment)) = quota {
+                if owner < 0 || deployment < 0 { return Err(CatalogError::Invalid("negative publication quota".into())); }
+                plan["physical_quota"] = serde_json::json!({"owner": owner, "deployment": deployment});
             }
-            if let Some((owner_limit, total_limit)) = quota {
-                value["physical_quota"] = serde_json::json!({
-                    "owner": owner_limit,
-                    "deployment": total_limit,
-                });
-            }
-            tx.execute(
-                "UPDATE catalog_operations SET intent=?3
-                 WHERE storage_id=?1 AND request_id=?2 AND status='prepared'",
-                params![
-                    storage_id,
-                    request_id,
-                    serde_json::to_string(&value)
-                        .map_err(|error| CatalogError::Invalid(error.to_string()))?
-                ],
-            )
-            .map_err(CatalogError::from)?;
+            let encoded = serde_json::to_string(&plan).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            if encoded.len() > 65_536 { return Err(CatalogError::Invalid("publication plan exceeds 65536 bytes".into())); }
+            tx.execute("UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2) WHERE id=?3 AND state='prepared'", params![encoded, unix_millis(), operation_id]).map_err(CatalogError::from)?;
             Ok(())
         })
     }
 
     pub fn discard_aborted_creation(&self, slug: &str) -> CatalogResult<bool> {
         self.immediate(|tx| {
-            let counted: Option<i64> = tx
+            let (document_id, owner_id): Option<(String, String)> = tx
                 .query_row(
-                    "SELECT counted_size FROM documents
-                     WHERE slug=?1 AND status='creating' AND pending_publication IS NULL",
-                    [slug],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(CatalogError::from)?;
-            let Some(counted) = counted else {
-                return Ok(false);
-            };
-            tx.execute("DELETE FROM documents WHERE slug=?1", [slug])
-                .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE totals SET bytes=bytes-?1, documents=documents-1 WHERE id=1",
-                [counted],
-            )
-            .map_err(CatalogError::from)?;
+                    "SELECT id,owner_id FROM documents WHERE slug=?1 AND status='creating'",
+                    [slug], |r| Ok((r.get(0)?, r.get(1)?)),
+                ).optional().map_err(CatalogError::from)?;
+            let Some((document_id, owner_id)) = (document_id, owner_id) else { return Ok(false); };
+            let objects: i64 = tx.query_row("SELECT count(*) FROM objects WHERE document_id=?1", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
+            let operations: i64 = tx.query_row("SELECT count(*) FROM operations WHERE document_id=?1 AND state='prepared'", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
+            if objects != 0 || operations != 0 { return Err(CatalogError::Conflict("creating document still has durable work".into())); }
+            tx.execute("DELETE FROM documents WHERE id=?1 AND status='creating'", [&document_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET document_count=CASE WHEN document_count>0 THEN document_count-1 ELSE 0 END WHERE id=?1", [&owner_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET document_count=CASE WHEN document_count>0 THEN document_count-1 ELSE 0 END,catalog_revision=catalog_revision+1,updated_at=?1 WHERE id=1", [unix_millis()]).map_err(CatalogError::from)?;
             Ok(true)
         })
     }
@@ -647,15 +470,13 @@ impl Catalog {
                 link_hash: "",
                 policy_editor: true,
                 automation: false,
-                unowned_publisher: false,
+                unowned_publisher: account_id.is_empty(),
                 execution_epoch: "",
                 agent_checkpoint: None,
             }),
         )
     }
 
-    /// Reserve bytes while rechecking account, link, policy and document
-    /// rights under the same write lock that updates quota accounting.
     pub fn reserve_document_bytes_with_authority(
         &self,
         slug: &str,
@@ -664,141 +485,52 @@ impl Catalog {
         total_limit: i64,
         actor: Option<MutationAuthority<'_>>,
     ) -> CatalogResult<()> {
-        if bytes < 0 {
-            return Err(CatalogError::Invalid("negative byte reservation".into()));
+        if let Some(actor) = actor {
+            self.require_mutation_authority(slug, actor)?;
         }
-        self.immediate(|tx| {
-            if let Some(actor) = actor {
-                let authorized = Self::mutation_authorized_in_tx(tx, slug, actor, "editor")?;
-                if !authorized {
-                    return Err(CatalogError::refused(super::CatalogRefusal::ActorRights, "actor edit rights or session generation changed"));
-                }
-            }
-            let (owner_id, owner_key): (Option<String>, String) = tx
-                .query_row(
-                    "SELECT owner_id,owner_key FROM documents WHERE slug=?1
-                     AND status IN ('creating','active')",
-                    [slug],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(CatalogError::from)?;
-            let owner_bytes: i64 = if let Some(owner_id) = owner_id {
-                tx.query_row(
-                    "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1",
-                    [owner_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?
-            } else {
-                tx.query_row(
-                    "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents
-                     WHERE owner_id IS NULL AND owner_key=?1",
-                    [owner_key],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?
-            };
-            let total: i64 = tx
-                .query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents", [], |row| row.get(0))
-                .map_err(CatalogError::from)?;
-            if owner_limit >= 0 && owner_bytes.saturating_add(bytes) > owner_limit {
-                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "owner byte quota exceeded"));
-            }
-            if total_limit >= 0 && total.saturating_add(bytes) > total_limit {
-                return Err(CatalogError::refused(super::CatalogRefusal::DeploymentBytes, "deployment byte quota exceeded"));
-            }
-            tx.execute(
-                "UPDATE documents SET counted_size=counted_size+?2 WHERE slug=?1",
-                params![slug, bytes],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute("UPDATE totals SET bytes=bytes+?1 WHERE id=1", [bytes])
-                .map_err(CatalogError::from)?;
-            Ok(())
-        })
+        self.reserve(slug, bytes, owner_limit, total_limit)
+            .map(|_| ())
     }
 
     pub fn release_document_bytes(&self, slug: &str, bytes: i64) -> CatalogResult<()> {
+        if bytes < 0 {
+            return Err(CatalogError::Invalid("negative byte release".into()));
+        }
         self.immediate(|tx| {
-            let released: i64 = tx
-                .query_row(
-                    "SELECT MIN(?2,MAX(0,counted_size-size)) FROM documents WHERE slug=?1",
-                    params![slug, bytes.max(0)],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE documents SET counted_size=counted_size-?2 WHERE slug=?1",
-                params![slug, released],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute("UPDATE totals SET bytes=bytes-?1 WHERE id=1", [released])
-                .map_err(CatalogError::from)?;
+            let (document_id, owner_id, reserved): (String, String, i64) = tx.query_row(
+                "SELECT id,owner_id,reserved_bytes FROM documents WHERE slug=?1", [slug],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            let released = bytes.min(reserved);
+            tx.execute("UPDATE documents SET reserved_bytes=reserved_bytes-?1,updated_at=max(updated_at,?2) WHERE id=?3", params![released,unix_millis(),document_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET reserved_bytes=reserved_bytes-?1 WHERE id=?2 AND reserved_bytes>=?1", params![released,owner_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET reserved_bytes=reserved_bytes-?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1 AND reserved_bytes>=?1", params![released,unix_millis()]).map_err(CatalogError::from)?;
             Ok(())
         })
     }
 
-    /// Reserve the conservative peak of a replacement after its publication
-    /// receipt has been prepared.  Creation reserves this at admission; a
-    /// replacement already has a live row, so its peak is attached to the
-    /// pending receipt and reconciled by the commit transaction.
+    /// Reserve the conservative replacement peak in v2 counters and the
+    /// prepared operation plan.
     pub fn reserve_publication_peak(&self, slug: &str, bytes: i64) -> CatalogResult<()> {
         if bytes < 0 {
             return Err(CatalogError::Invalid("negative publication peak".into()));
         }
         self.immediate(|tx| {
-            let (storage_id, request_id, intent): (String, String, String) = tx
-                .query_row(
-                    "SELECT storage_id,pending_publication,
-                            (SELECT intent FROM catalog_operations
-                             WHERE storage_id=documents.storage_id
-                               AND request_id=documents.pending_publication
-                               AND status='prepared')
-                     FROM documents
-                     WHERE slug=?1 AND pending_publication IS NOT NULL",
-                    [slug],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .map_err(CatalogError::from)?;
-            let mut intent_value: serde_json::Value =
-                serde_json::from_str(&intent).map_err(|error| {
-                    CatalogError::Invalid(format!("invalid publication intent: {error}"))
-                })?;
-            let previous = intent_value
-                .get("peak_reserved")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(0);
-            if previous != 0 {
-                return Err(CatalogError::Conflict(
-                    "publication peak was already reserved".into(),
-                ));
-            }
-            intent_value["peak_reserved"] = serde_json::json!(bytes);
-            intent_value["reservations"] = serde_json::json!({"peak_bytes": bytes});
-            tx.execute(
-                "UPDATE catalog_operations SET intent=?3
-                 WHERE storage_id=?1 AND request_id=?2 AND status='prepared'",
-                params![
-                    storage_id,
-                    request_id,
-                    serde_json::to_string(&intent_value)
-                        .map_err(|error| CatalogError::Invalid(error.to_string()))?
-                ],
-            )
-            .map_err(CatalogError::from)?;
-            let changed = tx
-                .execute(
-                    "UPDATE documents SET counted_size=counted_size+?2
-                     WHERE slug=?1 AND pending_publication IS NOT NULL
-                       AND status IN ('creating','active')",
-                    params![slug, bytes],
-                )
-                .map_err(CatalogError::from)?;
-            if changed != 1 {
-                return Err(CatalogError::Conflict("publication is not prepared".into()));
-            }
-            tx.execute("UPDATE totals SET bytes=bytes+?1 WHERE id=1", [bytes])
-                .map_err(CatalogError::from)?;
+            let (operation_id, document_id, owner_id, plan): (String,String,String,String) = tx.query_row(
+                "SELECT o.id,d.id,d.owner_id,o.plan_json FROM operations o JOIN documents d ON d.id=o.document_id
+                 WHERE d.slug=?1 AND o.kind='display_publish' AND o.state='prepared'
+                 ORDER BY o.created_at DESC,o.id DESC LIMIT 1", [slug],
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            let mut value: serde_json::Value = serde_json::from_str(&plan).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            if value.get("peak_reserved").and_then(serde_json::Value::as_i64).unwrap_or(0) != 0 { return Err(CatalogError::Conflict("publication peak was already reserved".into())); }
+            value["peak_reserved"] = serde_json::json!(bytes);
+            let encoded = serde_json::to_string(&value).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            if encoded.len() > 65_536 { return Err(CatalogError::Invalid("publication plan exceeds 65536 bytes".into())); }
+            tx.execute("UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2) WHERE id=?3 AND state='prepared'", params![encoded,unix_millis(),operation_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE documents SET reserved_bytes=reserved_bytes+?1,updated_at=max(updated_at,?2) WHERE id=?3", params![bytes,unix_millis(),document_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![bytes,owner_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET reserved_bytes=reserved_bytes+?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1", params![bytes,unix_millis()]).map_err(CatalogError::from)?;
             Ok(())
         })
     }

@@ -11,6 +11,7 @@ use std::fmt;
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
 use super::{unix_millis, Catalog, CatalogError, CatalogResult};
@@ -49,28 +50,47 @@ macro_rules! id_type {
             pub fn new(value: impl Into<String>) -> Result<Self, IdError> {
                 let value = value.into();
                 if value.is_empty() || value.len() > 128 {
-                    return Err(IdError(format!("{} must contain 1..=128 characters", stringify!($name))));
+                    return Err(IdError(format!(
+                        "{} must contain 1..=128 characters",
+                        stringify!($name)
+                    )));
                 }
-                if $exact_hex && (value.len() != 32 || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())) {
-                    return Err(IdError(format!("{} must be 32 lowercase hexadecimal characters", stringify!($name))));
+                if $exact_hex
+                    && (value.len() != 32
+                        || !value
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+                {
+                    return Err(IdError(format!(
+                        "{} must be 32 lowercase hexadecimal characters",
+                        stringify!($name)
+                    )));
                 }
                 Ok(Self(value))
             }
 
-            pub fn as_str(&self) -> &str { &self.0 }
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
         }
 
         impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
         }
 
         impl AsRef<str> for $name {
-            fn as_ref(&self) -> &str { self.as_str() }
+            fn as_ref(&self) -> &str {
+                self.as_str()
+            }
         }
 
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where D: serde::Deserializer<'de> {
+            where
+                D: serde::Deserializer<'de>,
+            {
                 let value = String::deserialize(deserializer)?;
                 Self::new(value).map_err(serde::de::Error::custom)
             }
@@ -87,100 +107,182 @@ id_type!(CheckpointId, false);
 pub struct UnixMillis(pub i64);
 
 impl UnixMillis {
-    pub fn now() -> Self { Self(unix_millis()) }
+    pub fn now() -> Self {
+        Self(unix_millis())
+    }
 
     pub fn new(value: i64) -> CatalogResult<Self> {
         if value < 0 {
-            return Err(CatalogError::Invalid("Unix milliseconds cannot be negative".into()));
+            return Err(CatalogError::Invalid(
+                "Unix milliseconds cannot be negative".into(),
+            ));
         }
         Ok(Self(value))
     }
 }
 
 impl From<UnixMillis> for i64 {
-    fn from(value: UnixMillis) -> Self { value.0 }
+    fn from(value: UnixMillis) -> Self {
+        value.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AccountKind { Registered, Anonymous, System }
+pub enum AccountKind {
+    Registered,
+    Anonymous,
+    System,
+}
 
 impl AccountKind {
     pub const fn as_str(self) -> &'static str {
-        match self { Self::Registered => "registered", Self::Anonymous => "anonymous", Self::System => "system" }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DocumentStatus { Creating, Active, Deleting }
-
-impl DocumentStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self { Self::Creating => "creating", Self::Active => "active", Self::Deleting => "deleting" }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SourceFormat { Markdown, Html, Typst, Latex, Quarto }
-
-impl SourceFormat {
-    pub const fn as_str(self) -> &'static str {
-        match self { Self::Markdown => "markdown", Self::Html => "html", Self::Typst => "typst", Self::Latex => "latex", Self::Quarto => "quarto" }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ObjectKind {
-    SourceChunk, SourceRecipe, SourceTree, Asset, PublicationManifest,
-    PublicationHtml, PublicationAsset, JournalSegment, JournalBase, AgentPayload,
-}
-
-impl ObjectKind {
-    pub const fn as_str(self) -> &'static str {
         match self {
-            Self::SourceChunk => "source_chunk", Self::SourceRecipe => "source_recipe",
-            Self::SourceTree => "source_tree", Self::Asset => "asset",
-            Self::PublicationManifest => "publication_manifest", Self::PublicationHtml => "publication_html",
-            Self::PublicationAsset => "publication_asset", Self::JournalSegment => "journal_segment",
-            Self::JournalBase => "journal_base", Self::AgentPayload => "agent_payload",
+            Self::Registered => "registered",
+            Self::Anonymous => "anonymous",
+            Self::System => "system",
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ObjectState { Allocated, Available, Deleting }
+pub enum DocumentStatus {
+    Creating,
+    Active,
+    Deleting,
+}
 
-impl ObjectState {
+impl DocumentStatus {
     pub const fn as_str(self) -> &'static str {
-        match self { Self::Allocated => "allocated", Self::Available => "available", Self::Deleting => "deleting" }
+        match self {
+            Self::Creating => "creating",
+            Self::Active => "active",
+            Self::Deleting => "deleting",
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LeasePurpose { Read, Write, Stage }
+pub enum SourceFormat {
+    Markdown,
+    Html,
+    Typst,
+    Latex,
+    Quarto,
+}
+
+impl SourceFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Html => "html",
+            Self::Typst => "typst",
+            Self::Latex => "latex",
+            Self::Quarto => "quarto",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectKind {
+    SourceChunk,
+    SourceRecipe,
+    SourceTree,
+    Asset,
+    PublicationManifest,
+    PublicationHtml,
+    PublicationAsset,
+    JournalSegment,
+    JournalBase,
+    AgentPayload,
+}
+
+impl ObjectKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceChunk => "source_chunk",
+            Self::SourceRecipe => "source_recipe",
+            Self::SourceTree => "source_tree",
+            Self::Asset => "asset",
+            Self::PublicationManifest => "publication_manifest",
+            Self::PublicationHtml => "publication_html",
+            Self::PublicationAsset => "publication_asset",
+            Self::JournalSegment => "journal_segment",
+            Self::JournalBase => "journal_base",
+            Self::AgentPayload => "agent_payload",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectState {
+    Allocated,
+    Available,
+    Deleting,
+}
+
+impl ObjectState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allocated => "allocated",
+            Self::Available => "available",
+            Self::Deleting => "deleting",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeasePurpose {
+    Read,
+    Write,
+    Stage,
+}
 
 impl LeasePurpose {
     pub const fn as_str(self) -> &'static str {
-        match self { Self::Read => "read", Self::Write => "write", Self::Stage => "stage" }
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Stage => "stage",
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationKind {
-    SourcePublish, DisplayPublish, Checkpoint, CheckpointDelete, JournalAppend,
-    JournalCompact, AgentApply, AgentAnnotations, AgentCancel, AgentExecution,
-    AgentStage, EraseAccount, EraseDocument, RotateLinks, Backup,
+    SourcePublish,
+    DisplayPublish,
+    Checkpoint,
+    CheckpointDelete,
+    JournalAppend,
+    JournalCompact,
+    AgentApply,
+    AgentAnnotations,
+    AgentCancel,
+    AgentExecution,
+    AgentStage,
+    EraseAccount,
+    EraseDocument,
+    RotateLinks,
+    Backup,
 }
 
 impl OperationKind {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::SourcePublish => "source_publish", Self::DisplayPublish => "display_publish",
-            Self::Checkpoint => "checkpoint", Self::CheckpointDelete => "checkpoint_delete",
-            Self::JournalAppend => "journal_append", Self::JournalCompact => "journal_compact",
-            Self::AgentApply => "agent_apply", Self::AgentAnnotations => "agent_annotations",
-            Self::AgentCancel => "agent_cancel", Self::AgentExecution => "agent_execution",
-            Self::AgentStage => "agent_stage", Self::EraseAccount => "erase_account",
-            Self::EraseDocument => "erase_document", Self::RotateLinks => "rotate_links",
+            Self::SourcePublish => "source_publish",
+            Self::DisplayPublish => "display_publish",
+            Self::Checkpoint => "checkpoint",
+            Self::CheckpointDelete => "checkpoint_delete",
+            Self::JournalAppend => "journal_append",
+            Self::JournalCompact => "journal_compact",
+            Self::AgentApply => "agent_apply",
+            Self::AgentAnnotations => "agent_annotations",
+            Self::AgentCancel => "agent_cancel",
+            Self::AgentExecution => "agent_execution",
+            Self::AgentStage => "agent_stage",
+            Self::EraseAccount => "erase_account",
+            Self::EraseDocument => "erase_document",
+            Self::RotateLinks => "rotate_links",
             Self::Backup => "backup",
         }
     }
@@ -259,7 +361,11 @@ pub struct V2OperationInput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OperationScope { Document(DocumentId), Account(String), Server }
+pub enum OperationScope {
+    Document(DocumentId),
+    Account(String),
+    Server,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct V2Operation {
@@ -295,24 +401,88 @@ pub struct CheckpointCommit {
     pub now: UnixMillis,
 }
 
+/// A publication bundle can only be activated after the object-store worker
+/// has decoded and verified its manifest, acquired stage leases for every
+/// listed object, and this catalogue transaction has rechecked their kinds.
+/// Fields stay private so callers cannot manufacture an activation proof from
+/// an arbitrary manifest ID or object list.
+#[derive(Clone, Debug)]
+pub struct VerifiedPublicationBundle {
+    document_id: DocumentId,
+    operation_id: OperationId,
+    object_ids: Vec<ObjectId>,
+    manifest_object_id: ObjectId,
+    writer_generation: String,
+    source_generation: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct VerifiedCheckpointClosure {
+    document_id: DocumentId,
+    operation_id: OperationId,
+    tree_object_id: ObjectId,
+    object_ids: Vec<ObjectId>,
+    writer_generation: String,
+    source_generation: i64,
+}
+
+const MAX_PUBLICATION_ASSETS: usize = 512;
+
+fn closure_digest(object_ids: &[ObjectId]) -> String {
+    let mut digest = Sha256::new();
+    for object_id in object_ids {
+        digest.update(object_id.as_str().as_bytes());
+        digest.update([0]);
+    }
+    hex::encode(digest.finalize())
+}
+
+impl VerifiedPublicationBundle {
+    /// The proof is intentionally opaque.  A caller may retain and pass it
+    /// between the object-store verification and activation calls, but it
+    /// cannot alter the document, operation, or immutable object closure.
+    pub fn document_id(&self) -> &DocumentId {
+        &self.document_id
+    }
+    pub fn operation_id(&self) -> &OperationId {
+        &self.operation_id
+    }
+}
+
 fn validate_digest(value: &str, label: &str) -> CatalogResult<()> {
-    if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
-        return Err(CatalogError::Invalid(format!("{label} must be lowercase SHA-256 hex")));
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(CatalogError::Invalid(format!(
+            "{label} must be lowercase SHA-256 hex"
+        )));
     }
     Ok(())
 }
 
 fn validate_json(value: &str, label: &str, max_bytes: usize) -> CatalogResult<()> {
     if value.len() > max_bytes {
-        return Err(CatalogError::Invalid(format!("{label} exceeds {max_bytes} bytes")));
+        return Err(CatalogError::Invalid(format!(
+            "{label} exceeds {max_bytes} bytes"
+        )));
     }
     let parsed: serde_json::Value = serde_json::from_str(value)
         .map_err(|error| CatalogError::Invalid(format!("{label} is not valid JSON: {error}")))?;
-    if parsed.get("version").and_then(serde_json::Value::as_i64).is_none() {
-        return Err(CatalogError::Invalid(format!("{label} must contain an integer version")));
+    if parsed
+        .get("version")
+        .and_then(serde_json::Value::as_i64)
+        .is_none()
+    {
+        return Err(CatalogError::Invalid(format!(
+            "{label} must contain an integer version"
+        )));
     }
     if !parsed.is_object() {
-        return Err(CatalogError::Invalid(format!("{label} must be a JSON object")));
+        return Err(CatalogError::Invalid(format!(
+            "{label} must be a JSON object"
+        )));
     }
     Ok(())
 }
@@ -322,32 +492,228 @@ fn title_key(title: &str) -> String {
 }
 
 fn validate_main_path(path: &str) -> CatalogResult<()> {
-    if path.is_empty() || path.starts_with('/') || path.contains('\0') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
-        return Err(CatalogError::Invalid("main_path must be a normalized relative path".into()));
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\0')
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(CatalogError::Invalid(
+            "main_path must be a normalized relative path".into(),
+        ));
     }
     Ok(())
 }
 
 fn checked_add(a: i64, b: i64, label: &str) -> CatalogResult<i64> {
-    a.checked_add(b).ok_or_else(|| CatalogError::Invalid(format!("{label} counter overflow")))
+    a.checked_add(b)
+        .ok_or_else(|| CatalogError::Invalid(format!("{label} counter overflow")))
 }
 
 impl Catalog {
+    /// Verify the immutable publication closure after the object worker has
+    /// decoded the manifest.  The catalogue rechecks the operation fence,
+    /// object kinds, availability, and operation-owned stage leases in one
+    /// transaction.  A manifest-only or source-tree closure can therefore
+    /// never become an activation proof.
+    pub fn verify_v2_publication_bundle(
+        &self,
+        document_id: &DocumentId,
+        operation_id: &OperationId,
+        object_ids: &[ObjectId],
+        manifest_object_id: &ObjectId,
+        manifest_digest: &str,
+        now: UnixMillis,
+    ) -> CatalogResult<VerifiedPublicationBundle> {
+        validate_digest(manifest_digest, "publication manifest digest")?;
+        if object_ids.len() < 2 || object_ids.len() > MAX_PUBLICATION_ASSETS + 2 {
+            return Err(CatalogError::Invalid("publication bundle must contain one manifest, one HTML object, and at most 512 assets".into()));
+        }
+        let distinct: HashSet<&ObjectId> = object_ids.iter().collect();
+        if distinct.len() != object_ids.len()
+            || !object_ids.iter().any(|id| id == manifest_object_id)
+        {
+            return Err(CatalogError::Invalid(
+                "publication bundle contains duplicate objects or omits its manifest".into(),
+            ));
+        }
+        self.immediate(|tx| {
+            let (state, kind, writer_generation, expected_generation): (
+                String,
+                String,
+                String,
+                Option<i64>,
+            ) = tx
+                .query_row(
+                    "SELECT state,kind,writer_generation,expected_document_generation
+                 FROM operations WHERE id=?1 AND document_id=?2",
+                    params![operation_id.as_str(), document_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(CatalogError::from)?;
+            if state != "prepared" || kind != OperationKind::DisplayPublish.as_str() {
+                return Err(CatalogError::Conflict(
+                    "publication operation is not prepared".into(),
+                ));
+            }
+            let current_generation: String = tx
+                .query_row(
+                    "SELECT writer_generation FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if writer_generation != current_generation {
+                return Err(CatalogError::Conflict(
+                    "publication belongs to an obsolete writer generation".into(),
+                ));
+            }
+            let source_generation: i64 = tx
+                .query_row(
+                    "SELECT source_generation FROM documents WHERE id=?1 AND status <> 'deleting'",
+                    [document_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if expected_generation != Some(source_generation) {
+                return Err(CatalogError::Conflict(
+                    "publication source generation changed".into(),
+                ));
+            }
+
+            let mut manifest_count = 0usize;
+            let mut html_count = 0usize;
+            let mut asset_count = 0usize;
+            for object_id in object_ids {
+                let (kind, digest): (String, String) = tx
+                    .query_row(
+                        "SELECT kind,digest FROM objects
+                     WHERE document_id=?1 AND id=?2 AND state='available'",
+                        params![document_id.as_str(), object_id.as_str()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(CatalogError::from)?
+                    .ok_or_else(|| {
+                        CatalogError::Conflict(
+                            "publication bundle contains an unavailable object".into(),
+                        )
+                    })?;
+                match kind.as_str() {
+                    "publication_manifest" => {
+                        manifest_count += 1;
+                        if object_id != manifest_object_id || digest != manifest_digest {
+                            return Err(CatalogError::Invalid(
+                                "publication manifest proof does not match the settled object"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    "publication_html" => html_count += 1,
+                    "publication_asset" => asset_count += 1,
+                    _ => {
+                        return Err(CatalogError::Invalid(
+                            "publication bundle contains a non-publication object".into(),
+                        ))
+                    }
+                }
+            }
+            if manifest_count != 1 || html_count != 1 || asset_count > MAX_PUBLICATION_ASSETS {
+                return Err(CatalogError::Invalid(
+                    "publication bundle must contain exactly one manifest and one HTML object"
+                        .into(),
+                ));
+            }
+            for object_id in object_ids {
+                let leased: i64 = tx
+                    .query_row(
+                        "SELECT count(*) FROM object_leases
+                     WHERE document_id=?1 AND object_id=?2 AND operation_id=?3
+                       AND purpose='stage' AND writer_generation=?4 AND expires_at>?5",
+                        params![
+                            document_id.as_str(),
+                            object_id.as_str(),
+                            operation_id.as_str(),
+                            writer_generation,
+                            now.0
+                        ],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if leased == 0 {
+                    return Err(CatalogError::Conflict(
+                        "publication bundle is missing an operation-owned stage lease".into(),
+                    ));
+                }
+            }
+            Ok(VerifiedPublicationBundle {
+                document_id: document_id.clone(),
+                operation_id: operation_id.clone(),
+                object_ids: object_ids.to_vec(),
+                manifest_object_id: manifest_object_id.clone(),
+                writer_generation,
+                source_generation,
+            })
+        })
+    }
+
     /// Bind the complete immutable publication bundle to a prepared display
     /// operation. Activation accepts only this proof, so an acknowledged
     /// manifest cannot strand its HTML or asset siblings as unrooted bytes.
-    pub fn bind_v2_publication_bundle(
+    pub(crate) fn bind_v2_publication_bundle(
         &self,
         document_id: &DocumentId,
         operation_id: &OperationId,
         object_ids: &[ObjectId],
         now: UnixMillis,
     ) -> CatalogResult<()> {
-        if object_ids.is_empty() || object_ids.len() > 16_384 {
-            return Err(CatalogError::Invalid("publication bundle is empty or too large".into()));
+        if object_ids.len() < 2 {
+            return Err(CatalogError::Invalid(
+                "publication bundle requires a verified manifest and HTML object".into(),
+            ));
         }
-        let distinct: HashSet<&ObjectId> = object_ids.iter().collect();
-        if distinct.len() != object_ids.len() { return Err(CatalogError::Invalid("publication bundle contains duplicate objects".into())); }
+        let manifest_object_id = self
+            .with_connection(|connection| {
+                for object_id in object_ids {
+                    let is_manifest: bool = connection
+                        .query_row(
+                            "SELECT kind='publication_manifest' FROM objects
+                     WHERE document_id=?1 AND id=?2 AND state='available'",
+                            params![document_id.as_str(), object_id.as_str()],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(CatalogError::from)?
+                        .unwrap_or(false);
+                    if is_manifest {
+                        return Ok(Some(object_id.to_string()));
+                    }
+                }
+                Ok(None)
+            })?
+            .ok_or_else(|| {
+                CatalogError::Invalid("publication bundle has no manifest object".into())
+            })?;
+        let manifest_object_id =
+            ObjectId::new(manifest_object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+        let manifest_digest = self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT digest FROM objects WHERE document_id=?1 AND id=?2",
+                    params![document_id.as_str(), manifest_object_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(CatalogError::from)
+        })?;
+        let proof = self.verify_v2_publication_bundle(
+            document_id,
+            operation_id,
+            object_ids,
+            &manifest_object_id,
+            &manifest_digest,
+            now,
+        )?;
         self.immediate(|tx| {
             let (state, kind, plan): (String, String, String) = tx.query_row(
                 "SELECT state,kind,plan_json FROM operations WHERE id=?1 AND document_id=?2",
@@ -360,7 +726,7 @@ impl Catalog {
             let mut value: serde_json::Value = serde_json::from_str(&plan)
                 .map_err(|e| CatalogError::Invalid(format!("publication plan: {e}")))?;
             value["bundle_object_ids"] = serde_json::Value::Array(
-                object_ids.iter().map(|id| serde_json::Value::String(id.to_string())).collect(),
+                proof.object_ids.iter().map(|id| serde_json::Value::String(id.to_string())).collect(),
             );
             let encoded = serde_json::to_string(&value).map_err(|e| CatalogError::Invalid(format!("publication plan: {e}")))?;
             validate_json(&encoded, "publication plan", 65_536)?;
@@ -369,37 +735,76 @@ impl Catalog {
         })
     }
 
-    pub fn object_by_id(&self, document_id: &DocumentId, object_id: &ObjectId) -> CatalogResult<Option<V2Object>> {
+    pub fn object_by_id(
+        &self,
+        document_id: &DocumentId,
+        object_id: &ObjectId,
+    ) -> CatalogResult<Option<V2Object>> {
         self.with_connection(|connection| {
             connection.query_row("SELECT document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,allocation_operation_id FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),object_id.as_str()], |row| Ok(V2Object { document_id:DocumentId::new(row.get::<_,String>(0)?).map_err(|_| rusqlite::Error::InvalidQuery)?, id:ObjectId::new(row.get::<_,String>(1)?).map_err(|_| rusqlite::Error::InvalidQuery)?, storage_key:row.get(2)?,kind:row.get(3)?,state:row.get(4)?,digest:row.get(5)?,byte_length:row.get(6)?,reserved_bytes:row.get(7)?,allocation_operation_id:row.get::<_,Option<String>>(8)?.map(|id| OperationId::new(id).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()? })).optional().map_err(CatalogError::from)
         })
     }
 
-    pub fn objects_by_ids(&self, document_id: &DocumentId, object_ids: &[ObjectId]) -> CatalogResult<Vec<V2Object>> {
-        if object_ids.len() > MAX_CHECKPOINT_OBJECTS { return Err(CatalogError::Invalid("object set exceeds v2 closure limit".into())); }
+    pub fn objects_by_ids(
+        &self,
+        document_id: &DocumentId,
+        object_ids: &[ObjectId],
+    ) -> CatalogResult<Vec<V2Object>> {
+        if object_ids.len() > MAX_CHECKPOINT_OBJECTS {
+            return Err(CatalogError::Invalid(
+                "object set exceeds v2 closure limit".into(),
+            ));
+        }
         let mut result = Vec::with_capacity(object_ids.len());
         for object_id in object_ids {
-            result.push(self.object_by_id(document_id, object_id)?.ok_or(CatalogError::NotFound)?);
+            result.push(
+                self.object_by_id(document_id, object_id)?
+                    .ok_or(CatalogError::NotFound)?,
+            );
         }
         Ok(result)
     }
 
-    pub fn checkpoint_tree_object(&self, slug: &str, checkpoint_id: &str) -> CatalogResult<Option<V2Object>> {
+    pub fn checkpoint_tree_object(
+        &self,
+        slug: &str,
+        checkpoint_id: &str,
+    ) -> CatalogResult<Option<V2Object>> {
         let row: Option<(String,String)> = self.with_connection(|connection| {
             connection.query_row("SELECT c.document_id,c.tree_object_id FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.slug=?1 AND c.id=?2", params![slug,checkpoint_id], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(CatalogError::from)
         })?;
-        let Some((document_id,object_id)) = row else { return Ok(None); };
-        self.object_by_id(&DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?, &ObjectId::new(object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?)
+        let Some((document_id, object_id)) = row else {
+            return Ok(None);
+        };
+        self.object_by_id(
+            &DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?,
+            &ObjectId::new(object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?,
+        )
     }
 
     pub fn current_tree_object(&self, slug: &str) -> CatalogResult<Option<V2Object>> {
         let row: Option<(String,String)> = self.with_connection(|connection| connection.query_row("SELECT d.id,c.tree_object_id FROM documents d JOIN checkpoints c ON c.document_id=d.id AND c.id=d.current_checkpoint_id WHERE d.slug=?1", [slug], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(CatalogError::from))?;
-        let Some((document_id,object_id)) = row else { return Ok(None); };
-        self.object_by_id(&DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?, &ObjectId::new(object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?)
+        let Some((document_id, object_id)) = row else {
+            return Ok(None);
+        };
+        self.object_by_id(
+            &DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?,
+            &ObjectId::new(object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?,
+        )
     }
 
-    pub fn acquire_v2_read_set(&self, document_id: &DocumentId, object_ids: &[ObjectId], holder_id: &str, writer_generation: &str, expires_at: UnixMillis, now: UnixMillis) -> CatalogResult<Vec<V2Object>> {
-        if object_ids.is_empty() || object_ids.len() > MAX_CHECKPOINT_OBJECTS { return Err(CatalogError::Invalid("invalid read set".into())); }
+    pub fn acquire_v2_read_set(
+        &self,
+        document_id: &DocumentId,
+        object_ids: &[ObjectId],
+        holder_id: &str,
+        writer_generation: &str,
+        expires_at: UnixMillis,
+        now: UnixMillis,
+    ) -> CatalogResult<Vec<V2Object>> {
+        if object_ids.is_empty() || object_ids.len() > MAX_CHECKPOINT_OBJECTS {
+            return Err(CatalogError::Invalid("invalid read set".into()));
+        }
         let _objects = self.objects_by_ids(document_id, object_ids)?;
         self.immediate(|tx| {
             for object_id in object_ids {
@@ -412,7 +817,11 @@ impl Catalog {
 
     pub fn cost_state_json(&self) -> CatalogResult<String> {
         self.with_connection(|connection| {
-            connection.query_row("SELECT cost_json FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)
+            connection
+                .query_row("SELECT cost_json FROM server_state WHERE id=1", [], |row| {
+                    row.get(0)
+                })
+                .map_err(CatalogError::from)
         })
     }
 
@@ -427,9 +836,15 @@ impl Catalog {
 
     pub fn catalog_allocated_bytes(&self) -> CatalogResult<i64> {
         self.with_connection(|connection| {
-            let page_count: i64 = connection.query_row("PRAGMA page_count", [], |row| row.get(0)).map_err(CatalogError::from)?;
-            let page_size: i64 = connection.query_row("PRAGMA page_size", [], |row| row.get(0)).map_err(CatalogError::from)?;
-            page_count.checked_mul(page_size).ok_or_else(|| CatalogError::Invalid("catalogue size overflow".into()))
+            let page_count: i64 = connection
+                .query_row("PRAGMA page_count", [], |row| row.get(0))
+                .map_err(CatalogError::from)?;
+            let page_size: i64 = connection
+                .query_row("PRAGMA page_size", [], |row| row.get(0))
+                .map_err(CatalogError::from)?;
+            page_count
+                .checked_mul(page_size)
+                .ok_or_else(|| CatalogError::Invalid("catalogue size overflow".into()))
         })
     }
 
@@ -445,17 +860,31 @@ impl Catalog {
     }
 
     pub fn create_v2_account(&self, input: &V2AccountInput, now: UnixMillis) -> CatalogResult<()> {
-        if input.id.is_empty() || input.id.len() > 128 || input.handle.is_empty() || input.plan.is_empty() {
-            return Err(CatalogError::Invalid("account identity and plan are required".into()));
+        if input.id.is_empty()
+            || input.id.len() > 128
+            || input.handle.is_empty()
+            || input.plan.is_empty()
+        {
+            return Err(CatalogError::Invalid(
+                "account identity and plan are required".into(),
+            ));
         }
         validate_json(&input.preferences_json, "preferences_json", 65_536)?;
         validate_json(&input.bookmarks_json, "bookmarks_json", 262_144)?;
         validate_json(&input.onboarding_json, "onboarding_json", 16_384)?;
-        if input.kind == AccountKind::Registered && (input.provider.is_none() || input.provider_subject.is_none()) {
-            return Err(CatalogError::Invalid("registered accounts require provider identity".into()));
+        if input.kind == AccountKind::Registered
+            && (input.provider.is_none() || input.provider_subject.is_none())
+        {
+            return Err(CatalogError::Invalid(
+                "registered accounts require provider identity".into(),
+            ));
         }
-        if input.kind != AccountKind::Registered && (input.provider.is_some() || input.provider_subject.is_some()) {
-            return Err(CatalogError::Invalid("anonymous/system accounts cannot have provider identity".into()));
+        if input.kind != AccountKind::Registered
+            && (input.provider.is_some() || input.provider_subject.is_some())
+        {
+            return Err(CatalogError::Invalid(
+                "anonymous/system accounts cannot have provider identity".into(),
+            ));
         }
         self.immediate(|tx| {
             tx.execute(
@@ -464,20 +893,41 @@ impl Catalog {
                   session_generation,plan,created_at,last_seen_at,preferences_json,
                   bookmarks_json,onboarding_json)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,'active',?8,?9,?10,?10,?11,?12,?13)",
-                params![input.id, input.kind.as_str(), input.provider, input.provider_subject,
-                    input.handle, input.display_name, input.email, input.session_generation,
-                    input.plan, now.0, input.preferences_json, input.bookmarks_json, input.onboarding_json],
-            ).map_err(CatalogError::from)?;
+                params![
+                    input.id,
+                    input.kind.as_str(),
+                    input.provider,
+                    input.provider_subject,
+                    input.handle,
+                    input.display_name,
+                    input.email,
+                    input.session_generation,
+                    input.plan,
+                    now.0,
+                    input.preferences_json,
+                    input.bookmarks_json,
+                    input.onboarding_json
+                ],
+            )
+            .map_err(CatalogError::from)?;
             Ok(())
         })
     }
 
-    pub fn create_v2_document(&self, input: &V2DocumentInput, now: UnixMillis) -> CatalogResult<()> {
+    pub fn create_v2_document(
+        &self,
+        input: &V2DocumentInput,
+        now: UnixMillis,
+    ) -> CatalogResult<()> {
         if input.slug.is_empty() || input.slug.len() > 256 || input.title.len() > 4096 {
-            return Err(CatalogError::Invalid("document slug/title exceeds v2 limits".into()));
+            return Err(CatalogError::Invalid(
+                "document slug/title exceeds v2 limits".into(),
+            ));
         }
         if !matches!(input.ownership_mode.as_str(), "owned" | "open" | "example") {
-            return Err(CatalogError::Invalid("invalid document ownership mode".into()));
+            return Err(CatalogError::Invalid(
+                "invalid document ownership mode".into(),
+            ));
         }
         if !matches!(input.retention_mode.as_str(), "balanced" | "manual") {
             return Err(CatalogError::Invalid("invalid retention mode".into()));
@@ -506,16 +956,23 @@ impl Catalog {
 
     pub fn allocate_v2_object(&self, allocation: &V2ObjectAllocation) -> CatalogResult<V2Object> {
         let _ = allocation;
-        Err(CatalogError::Invalid("object allocation requires configured admission limits".into()))
+        Err(CatalogError::Invalid(
+            "object allocation requires configured admission limits".into(),
+        ))
     }
 
-    pub fn allocate_v2_object_with_limits(&self, allocation: &V2ObjectAllocation, limits: V2AdmissionLimits) -> CatalogResult<V2Object> {
+    pub(crate) fn allocate_v2_object_with_limits(
+        &self,
+        allocation: &V2ObjectAllocation,
+        limits: V2AdmissionLimits,
+    ) -> CatalogResult<V2Object> {
         validate_digest(&allocation.digest, "object digest")?;
-        if let Some(digest) = allocation.logical_digest.as_deref() { validate_digest(digest, "logical digest")?; }
+        if let Some(digest) = allocation.logical_digest.as_deref() {
+            validate_digest(digest, "logical digest")?;
+        }
         let expected_storage_key = format!(
             "v2/documents/{}/objects/{}",
-            allocation.document_id,
-            allocation.id
+            allocation.document_id, allocation.id
         );
         if allocation.reserved_bytes < 0
             || allocation.encoding_version < 1
@@ -523,7 +980,10 @@ impl Catalog {
         {
             return Err(CatalogError::Invalid("invalid object allocation".into()));
         }
-        let _admission_guard = self.room_reservations.lock().map_err(|_| CatalogError::Busy)?;
+        let _admission_guard = self
+            .room_reservations
+            .lock()
+            .map_err(|_| CatalogError::Busy)?;
         self.immediate(|tx| {
             let owner_id: String = tx.query_row("SELECT owner_id FROM documents WHERE id=?1 AND status <> 'deleting'", [allocation.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             let prepared: i64 = tx.query_row("SELECT count(*) FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared'", params![allocation.operation_id.as_str(), allocation.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
@@ -556,8 +1016,18 @@ impl Catalog {
     }
 
     /// Settle a local PUT after its guarded filesystem task has completed.
-    pub fn settle_v2_object(&self, document_id: &DocumentId, object_id: &ObjectId, measured_bytes: i64, now: UnixMillis) -> CatalogResult<()> {
-        if measured_bytes < 0 { return Err(CatalogError::Invalid("measured object length cannot be negative".into())); }
+    pub fn settle_v2_object(
+        &self,
+        document_id: &DocumentId,
+        object_id: &ObjectId,
+        measured_bytes: i64,
+        now: UnixMillis,
+    ) -> CatalogResult<()> {
+        if measured_bytes < 0 {
+            return Err(CatalogError::Invalid(
+                "measured object length cannot be negative".into(),
+            ));
+        }
         self.immediate(|tx| {
             let (state, old_reserved, kind, operation): (String,i64,String,Option<String>) = tx.query_row("SELECT state,reserved_bytes,kind,allocation_operation_id FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(CatalogError::from)?;
             if state == "available" { let existing: i64 = tx.query_row("SELECT byte_length FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?; if existing != measured_bytes { return Err(CatalogError::Conflict("object was already settled at a different length".into())); } return Ok(()); }
@@ -578,9 +1048,27 @@ impl Catalog {
         })
     }
 
-    pub fn acquire_v2_lease(&self, document_id: &DocumentId, object_id: &ObjectId, holder_id: &str, purpose: LeasePurpose, operation_id: Option<&OperationId>, writer_generation: &str, expires_at: UnixMillis, now: UnixMillis) -> CatalogResult<()> {
-        if holder_id.is_empty() || expires_at <= now { return Err(CatalogError::Invalid("invalid lease holder or expiry".into())); }
-        if purpose != LeasePurpose::Read && operation_id.is_none() { return Err(CatalogError::Invalid("write/stage leases require an operation".into())); }
+    pub fn acquire_v2_lease(
+        &self,
+        document_id: &DocumentId,
+        object_id: &ObjectId,
+        holder_id: &str,
+        purpose: LeasePurpose,
+        operation_id: Option<&OperationId>,
+        writer_generation: &str,
+        expires_at: UnixMillis,
+        now: UnixMillis,
+    ) -> CatalogResult<()> {
+        if holder_id.is_empty() || expires_at <= now {
+            return Err(CatalogError::Invalid(
+                "invalid lease holder or expiry".into(),
+            ));
+        }
+        if purpose != LeasePurpose::Read && operation_id.is_none() {
+            return Err(CatalogError::Invalid(
+                "write/stage leases require an operation".into(),
+            ));
+        }
         self.immediate(|tx| {
             let state: String = tx.query_row("SELECT state FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if state == "deleting" { return Err(CatalogError::Conflict("deleting object cannot acquire a lease".into())); }
@@ -594,11 +1082,29 @@ impl Catalog {
         })
     }
 
-    pub fn release_v2_lease(&self, document_id: &DocumentId, object_id: &ObjectId, holder_id: &str) -> CatalogResult<bool> {
-        self.immediate(|tx| tx.execute("DELETE FROM object_leases WHERE document_id=?1 AND object_id=?2 AND holder_id=?3", params![document_id.as_str(),object_id.as_str(),holder_id]).map(|count| count != 0).map_err(CatalogError::from))
+    pub fn release_v2_lease(
+        &self,
+        document_id: &DocumentId,
+        object_id: &ObjectId,
+        holder_id: &str,
+    ) -> CatalogResult<bool> {
+        self.immediate(|tx| {
+            tx.execute(
+                "DELETE FROM object_leases WHERE document_id=?1 AND object_id=?2 AND holder_id=?3",
+                params![document_id.as_str(), object_id.as_str(), holder_id],
+            )
+            .map(|count| count != 0)
+            .map_err(CatalogError::from)
+        })
     }
 
-    pub fn claim_v2_object_for_deletion(&self, document_id: &DocumentId, object_id: &ObjectId, now: UnixMillis, retry_at: UnixMillis) -> CatalogResult<bool> {
+    pub fn claim_v2_object_for_deletion(
+        &self,
+        document_id: &DocumentId,
+        object_id: &ObjectId,
+        now: UnixMillis,
+        retry_at: UnixMillis,
+    ) -> CatalogResult<bool> {
         self.immediate(|tx| {
             let (state, gc_after): (Option<String>, Option<i64>) = tx.query_row("SELECT state,gc_after FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(CatalogError::from)?.unwrap_or((None,None));
             if state.as_deref() != Some("available") { return Ok(false); }
@@ -614,7 +1120,11 @@ impl Catalog {
     }
 
     /// Remove a row only after the physical store reports Deleted/Absent.
-    pub fn confirm_v2_object_deleted(&self, document_id: &DocumentId, object_id: &ObjectId) -> CatalogResult<bool> {
+    pub fn confirm_v2_object_deleted(
+        &self,
+        document_id: &DocumentId,
+        object_id: &ObjectId,
+    ) -> CatalogResult<bool> {
         self.immediate(|tx| {
             let row: Option<(String,i64,Option<i64>,String)> = tx.query_row("SELECT state,reserved_bytes,byte_length,kind FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(CatalogError::from)?;
             let Some((state,reserved,bytes,kind)) = row else { return Ok(false); };
@@ -628,17 +1138,27 @@ impl Catalog {
         })
     }
 
-    pub fn commit_v2_checkpoint(&self, checkpoint: &CheckpointCommit) -> CatalogResult<i64> {
+    pub(crate) fn commit_v2_checkpoint(&self, checkpoint: &CheckpointCommit) -> CatalogResult<i64> {
         validate_digest(&checkpoint.tree_digest, "tree digest")?;
         validate_json(&checkpoint.metadata_json, "checkpoint metadata", 65_536)?;
-        if checkpoint.logical_bytes < 0 || checkpoint.journal_epoch < 0 || checkpoint.journal_sequence < 0 || checkpoint.object_ids.is_empty() || checkpoint.object_ids.len() > MAX_CHECKPOINT_OBJECTS {
+        if checkpoint.logical_bytes < 0
+            || checkpoint.journal_epoch < 0
+            || checkpoint.journal_sequence < 0
+            || checkpoint.object_ids.is_empty()
+            || checkpoint.object_ids.len() > MAX_CHECKPOINT_OBJECTS
+        {
             return Err(CatalogError::Invalid("invalid checkpoint closure".into()));
         }
         let distinct: HashSet<&ObjectId> = checkpoint.object_ids.iter().collect();
         if distinct.len() != checkpoint.object_ids.len()
-            || !checkpoint.object_ids.iter().any(|id| id == &checkpoint.tree_object_id)
+            || !checkpoint
+                .object_ids
+                .iter()
+                .any(|id| id == &checkpoint.tree_object_id)
         {
-            return Err(CatalogError::Invalid("checkpoint closure must be distinct and include its tree".into()));
+            return Err(CatalogError::Invalid(
+                "checkpoint closure must be distinct and include its tree".into(),
+            ));
         }
         self.immediate(|tx| {
             let next: i64 = tx.query_row("SELECT next_checkpoint_seq FROM documents WHERE id=?1 AND status <> 'deleting'", [checkpoint.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
@@ -662,6 +1182,96 @@ impl Catalog {
         })
     }
 
+    /// Verify a decoded source tree closure without persisting the unbounded
+    /// object list in operation JSON. The operation plan carries only the
+    /// bounded SHA-256 closure digest; checkpoint_objects receives the full
+    /// list in the commit transaction.
+    pub fn verify_v2_checkpoint_closure(
+        &self,
+        operation_id: &OperationId,
+        checkpoint: &CheckpointCommit,
+    ) -> CatalogResult<VerifiedCheckpointClosure> {
+        if checkpoint.object_ids.is_empty() || checkpoint.object_ids.len() > MAX_CHECKPOINT_OBJECTS
+        {
+            return Err(CatalogError::Invalid("invalid checkpoint closure".into()));
+        }
+        let distinct: HashSet<&ObjectId> = checkpoint.object_ids.iter().collect();
+        if distinct.len() != checkpoint.object_ids.len()
+            || !checkpoint
+                .object_ids
+                .iter()
+                .any(|id| id == &checkpoint.tree_object_id)
+        {
+            return Err(CatalogError::Invalid(
+                "checkpoint closure must be distinct and include its tree".into(),
+            ));
+        }
+        self.immediate(|tx| {
+            let (state, kind, writer_generation, expected_generation, plan_json): (String, String, String, Option<i64>, String) = tx.query_row(
+                "SELECT state,kind,writer_generation,expected_document_generation,plan_json
+                 FROM operations WHERE id=?1 AND document_id=?2",
+                params![operation_id.as_str(), checkpoint.document_id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            ).map_err(CatalogError::from)?;
+            if state != "prepared" || !matches!(kind.as_str(), "source_publish" | "checkpoint") {
+                return Err(CatalogError::Conflict("source checkpoint operation is not prepared".into()));
+            }
+            let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
+            if writer_generation != current_generation { return Err(CatalogError::Conflict("source operation belongs to an obsolete writer generation".into())); }
+            let (source_generation, plan_digest): (i64, Option<String>) = tx.query_row(
+                "SELECT source_generation, json_extract(?2,'$.closure_digest') FROM documents WHERE id=?1 AND status <> 'deleting'",
+                params![checkpoint.document_id.as_str(), plan_json], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).map_err(CatalogError::from)?;
+            if expected_generation != Some(source_generation) { return Err(CatalogError::Conflict("source generation changed".into())); }
+            if plan_digest.as_deref() != Some(closure_digest(&checkpoint.object_ids).as_str()) {
+                return Err(CatalogError::Conflict("source closure digest does not match the prepared operation".into()));
+            }
+            let tree_kind: String = tx.query_row(
+                "SELECT kind FROM objects WHERE document_id=?1 AND id=?2 AND state='available'",
+                params![checkpoint.document_id.as_str(), checkpoint.tree_object_id.as_str()], |r| r.get(0),
+            ).map_err(CatalogError::from)?;
+            if tree_kind != ObjectKind::SourceTree.as_str() { return Err(CatalogError::Invalid("checkpoint tree must be a source_tree object".into())); }
+            for object_id in &checkpoint.object_ids {
+                let available: i64 = tx.query_row(
+                    "SELECT count(*) FROM objects WHERE document_id=?1 AND id=?2 AND state='available'",
+                    params![checkpoint.document_id.as_str(), object_id.as_str()], |r| r.get(0),
+                ).map_err(CatalogError::from)?;
+                if available != 1 { return Err(CatalogError::Conflict("checkpoint closure contains an unavailable object".into())); }
+                let leased: i64 = tx.query_row(
+                    "SELECT count(*) FROM object_leases WHERE document_id=?1 AND object_id=?2
+                     AND operation_id=?3 AND purpose IN ('write','stage')
+                     AND writer_generation=?4 AND expires_at>?5",
+                    params![checkpoint.document_id.as_str(), object_id.as_str(), operation_id.as_str(), current_generation, checkpoint.now.0], |r| r.get(0),
+                ).map_err(CatalogError::from)?;
+                if leased == 0 { return Err(CatalogError::Conflict("checkpoint closure is missing an active operation lease".into())); }
+            }
+            Ok(VerifiedCheckpointClosure {
+                document_id: checkpoint.document_id.clone(), operation_id: operation_id.clone(),
+                tree_object_id: checkpoint.tree_object_id.clone(), object_ids: checkpoint.object_ids.clone(),
+                writer_generation: current_generation, source_generation,
+            })
+        })
+    }
+
+    /// Commit a closure only after the typed verifier has established its
+    /// operation, generation, lease, and source-tree fences.
+    pub fn commit_v2_checkpoint_verified(
+        &self,
+        proof: &VerifiedCheckpointClosure,
+        checkpoint: &CheckpointCommit,
+        result_json: &str,
+    ) -> CatalogResult<i64> {
+        if proof.document_id != checkpoint.document_id
+            || proof.tree_object_id != checkpoint.tree_object_id
+            || proof.object_ids != checkpoint.object_ids
+        {
+            return Err(CatalogError::Conflict(
+                "checkpoint closure proof does not match commit".into(),
+            ));
+        }
+        self.commit_v2_checkpoint_for_operation(&proof.operation_id, checkpoint, result_json)
+    }
+
     /// Commit a source publication and its complete verified closure in the
     /// same transaction as the prepared operation receipt. The operation plan
     /// carries the exact object IDs produced by manifest verification; the
@@ -676,12 +1286,20 @@ impl Catalog {
     ) -> CatalogResult<i64> {
         validate_json(result_json, "checkpoint result", 65_536)?;
         validate_digest(&checkpoint.tree_digest, "tree digest")?;
-        if checkpoint.object_ids.is_empty() || checkpoint.object_ids.len() > MAX_CHECKPOINT_OBJECTS {
+        if checkpoint.object_ids.is_empty() || checkpoint.object_ids.len() > MAX_CHECKPOINT_OBJECTS
+        {
             return Err(CatalogError::Invalid("invalid checkpoint closure".into()));
         }
         let distinct: HashSet<&ObjectId> = checkpoint.object_ids.iter().collect();
-        if distinct.len() != checkpoint.object_ids.len() || !checkpoint.object_ids.iter().any(|id| id == &checkpoint.tree_object_id) {
-            return Err(CatalogError::Invalid("checkpoint closure must be distinct and include its tree".into()));
+        if distinct.len() != checkpoint.object_ids.len()
+            || !checkpoint
+                .object_ids
+                .iter()
+                .any(|id| id == &checkpoint.tree_object_id)
+        {
+            return Err(CatalogError::Invalid(
+                "checkpoint closure must be distinct and include its tree".into(),
+            ));
         }
         self.immediate(|tx| {
             let (state, kind, generation, expected_generation, plan_json): (String,String,String,Option<i64>,String) = tx.query_row(
@@ -700,18 +1318,24 @@ impl Catalog {
                 [checkpoint.document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
             ).map_err(CatalogError::from)?;
             if expected_generation != Some(source_generation) { return Err(CatalogError::Conflict("source generation changed".into())); }
-            let closure = serde_json::from_str::<serde_json::Value>(&plan_json).ok()
-                .and_then(|value| value.get("closure_object_ids").cloned())
-                .and_then(|value| value.as_array().cloned())
-                .ok_or_else(|| CatalogError::Invalid("source operation has no verified closure proof".into()))?;
-            let planned: Vec<String> = closure.iter().map(|value| value.as_str().map(str::to_owned).ok_or_else(|| CatalogError::Invalid("closure proof contains a non-text id".into()))).collect::<CatalogResult<_>>()?;
-            let actual: Vec<String> = checkpoint.object_ids.iter().map(ToString::to_string).collect();
-            if planned != actual { return Err(CatalogError::Conflict("source closure changed after manifest verification".into())); }
+            let planned_digest = serde_json::from_str::<serde_json::Value>(&plan_json).ok()
+                .and_then(|value| value.get("closure_digest").and_then(serde_json::Value::as_str).map(str::to_owned))
+                .ok_or_else(|| CatalogError::Invalid("source operation has no verified closure digest".into()))?;
+            if planned_digest != closure_digest(&checkpoint.object_ids) {
+                return Err(CatalogError::Conflict("source closure changed after manifest verification".into()));
+            }
             let tree_kind: String = tx.query_row("SELECT kind FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![checkpoint.document_id.as_str(),checkpoint.tree_object_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
             if tree_kind != ObjectKind::SourceTree.as_str() { return Err(CatalogError::Invalid("checkpoint tree must be a source_tree object".into())); }
             for object_id in &checkpoint.object_ids {
                 let available: i64 = tx.query_row("SELECT count(*) FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![checkpoint.document_id.as_str(),object_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
                 if available != 1 { return Err(CatalogError::Conflict("checkpoint closure contains an unavailable object".into())); }
+                let leased: i64 = tx.query_row(
+                    "SELECT count(*) FROM object_leases WHERE document_id=?1 AND object_id=?2
+                     AND operation_id=?3 AND purpose IN ('write','stage')
+                     AND writer_generation=?4 AND expires_at>?5",
+                    params![checkpoint.document_id.as_str(), object_id.as_str(), operation_id.as_str(), generation, checkpoint.now.0], |r| r.get(0),
+                ).map_err(CatalogError::from)?;
+                if leased == 0 { return Err(CatalogError::Conflict("checkpoint closure is missing an active operation lease".into())); }
             }
             let count = i64::try_from(checkpoint.object_ids.len()).map_err(|_| CatalogError::Invalid("checkpoint closure too large".into()))?;
             if checked_add(doc_refs,count,"document checkpoint references")? > MAX_DOCUMENT_CHECKPOINT_REFS { return Err(CatalogError::refused(super::CatalogRefusal::Other,"checkpoint_reference_limit")); }
@@ -728,7 +1352,12 @@ impl Catalog {
     /// Delete one retained checkpoint and its flattened dependency edges.
     /// The current checkpoint, protected annotations, and active roots remain
     /// ineligible; byte counters are decremented by the exact edge count.
-    pub fn delete_v2_checkpoint(&self, document_id: &DocumentId, checkpoint_id: &CheckpointId, now: UnixMillis) -> CatalogResult<bool> {
+    pub fn delete_v2_checkpoint(
+        &self,
+        document_id: &DocumentId,
+        checkpoint_id: &CheckpointId,
+        now: UnixMillis,
+    ) -> CatalogResult<bool> {
         self.immediate(|tx| {
             let backup_frozen: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM operations WHERE kind='backup' AND state='prepared')",
@@ -741,8 +1370,8 @@ impl Catalog {
             let due: Option<i64> = tx.query_row(
                 "SELECT eligible_after FROM checkpoints WHERE document_id=?1 AND id=?2",
                 params![document_id.as_str(), checkpoint_id.as_str()],
-                |row| row.get(0),
-            ).optional().map_err(CatalogError::from)?;
+                |row| row.get::<_, Option<i64>>(0),
+            ).optional().map_err(CatalogError::from)?.flatten();
             if due.is_none_or(|deadline| deadline > now.0) { return Ok(false); }
             let (retention_json, account_revision, document_revision): (String, i64, i64) = tx.query_row(
                 "SELECT d.retention_json,a.preferences_revision,d.retention_revision
@@ -773,54 +1402,155 @@ impl Catalog {
         })
     }
 
-    /// Atomically activate a settled rendered publication and complete its
-    /// prepared operation. The old bundle remains charged until GC confirms
-    /// deletion after the supersession grace period.
-    pub fn activate_v2_publication(&self, document_id: &DocumentId, operation_id: &OperationId, expected_publication_id: Option<&str>, publication_id: &str, manifest_object_id: &ObjectId, now: UnixMillis, result_json: &str) -> CatalogResult<()> {
+    /// Activate a bundle after the verified proof has been returned. The
+    /// proof is checked again under the commit transaction; callers cannot
+    /// replace its object list through mutable operation JSON.
+    pub fn activate_v2_publication_verified(
+        &self,
+        proof: &VerifiedPublicationBundle,
+        expected_publication_id: Option<&str>,
+        publication_id: &str,
+        now: UnixMillis,
+        result_json: &str,
+    ) -> CatalogResult<()> {
         validate_json(result_json, "publication result", 65_536)?;
-        if publication_id.is_empty() { return Err(CatalogError::Invalid("publication id is empty".into())); }
+        if publication_id.is_empty() {
+            return Err(CatalogError::Invalid("publication id is empty".into()));
+        }
         self.immediate(|tx| {
-            let (state,kind,generation,expected_generation,plan_json): (String,String,String,Option<i64>,String) = tx.query_row("SELECT state,kind,writer_generation,expected_document_generation,plan_json FROM operations WHERE id=?1 AND document_id=?2", params![operation_id.as_str(),document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(CatalogError::from)?;
-            if state != "prepared" || kind != OperationKind::DisplayPublish.as_str() { return Err(CatalogError::Conflict("publication operation is not prepared".into())); }
+            let (state, kind, generation, expected_generation, actor_key): (String, String, String, Option<i64>, String) = tx.query_row(
+                "SELECT state,kind,writer_generation,expected_document_generation,actor_key
+                 FROM operations WHERE id=?1 AND document_id=?2",
+                params![proof.operation_id.as_str(), proof.document_id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            ).map_err(CatalogError::from)?;
+            if state != "prepared" || kind != OperationKind::DisplayPublish.as_str() || actor_key.is_empty() {
+                return Err(CatalogError::Conflict("publication operation is not prepared".into()));
+            }
             let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
-            if generation != current_generation { return Err(CatalogError::Conflict("publication belongs to an obsolete writer generation".into())); }
-            let source_generation: i64 = tx.query_row("SELECT source_generation FROM documents WHERE id=?1", [document_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
-            if expected_generation != Some(source_generation) { return Err(CatalogError::Conflict("publication source generation changed".into())); }
-            let current: Option<String> = tx.query_row("SELECT publication_id FROM documents WHERE id=?1", [document_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
-            if current.as_deref() != expected_publication_id { return Err(CatalogError::Conflict("publication head changed".into())); }
-            let bundle = serde_json::from_str::<serde_json::Value>(&plan_json)
-                .ok()
-                .and_then(|plan| plan.get("bundle_object_ids").cloned())
-                .and_then(|value| value.as_array().cloned())
-                .ok_or_else(|| CatalogError::Invalid("publication plan has no verified bundle closure".into()))?;
-            let mut bundle_ids = Vec::with_capacity(bundle.len());
-            for value in bundle {
-                let id = value.as_str().ok_or_else(|| CatalogError::Invalid("publication bundle id is not text".into()))?;
-                bundle_ids.push(ObjectId::new(id.to_string()).map_err(|e| CatalogError::Invalid(e.to_string()))?);
+            if generation != current_generation || proof.writer_generation != current_generation {
+                return Err(CatalogError::Conflict("publication belongs to an obsolete writer generation".into()));
             }
-            if bundle_ids.is_empty() || !bundle_ids.iter().any(|id| id == manifest_object_id) {
-                return Err(CatalogError::Invalid("publication bundle must include its manifest".into()));
+            let source_generation: i64 = tx.query_row(
+                "SELECT source_generation FROM documents WHERE id=?1 AND status='active'",
+                [proof.document_id.as_str()], |r| r.get(0),
+            ).map_err(CatalogError::from)?;
+            if expected_generation != Some(source_generation) || proof.source_generation != source_generation {
+                return Err(CatalogError::Conflict("publication source generation changed".into()));
             }
-            let distinct: HashSet<&ObjectId> = bundle_ids.iter().collect();
-            if distinct.len() != bundle_ids.len() { return Err(CatalogError::Invalid("publication bundle contains duplicate objects".into())); }
-            for object_id in &bundle_ids {
-                let available: Option<String> = tx.query_row("SELECT kind FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),object_id.as_str()], |r| r.get(0)).optional().map_err(CatalogError::from)?;
-                let Some(kind) = available else { return Err(CatalogError::Conflict("publication bundle contains an unavailable object".into())); };
-                if !matches!(kind.as_str(), "publication_manifest" | "publication_html" | "publication_asset") {
-                    return Err(CatalogError::Invalid("publication bundle contains a non-publication object".into()));
+            let current: Option<String> = tx.query_row(
+                "SELECT publication_id FROM documents WHERE id=?1", [proof.document_id.as_str()], |r| r.get(0),
+            ).map_err(CatalogError::from)?;
+            if current.as_deref() != expected_publication_id {
+                return Err(CatalogError::Conflict("publication head changed".into()));
+            }
+            let mut manifest_count = 0usize;
+            let mut html_count = 0usize;
+            let mut asset_count = 0usize;
+            for object_id in &proof.object_ids {
+                let kind: String = tx.query_row(
+                    "SELECT kind FROM objects WHERE document_id=?1 AND id=?2 AND state='available'",
+                    params![proof.document_id.as_str(), object_id.as_str()], |r| r.get(0),
+                ).optional().map_err(CatalogError::from)?
+                    .ok_or_else(|| CatalogError::Conflict("publication bundle changed after verification".into()))?;
+                match kind.as_str() {
+                    "publication_manifest" => { manifest_count += 1; if object_id != &proof.manifest_object_id { return Err(CatalogError::Conflict("publication manifest changed after verification".into())); } }
+                    "publication_html" => html_count += 1,
+                    "publication_asset" => asset_count += 1,
+                    _ => return Err(CatalogError::Invalid("publication bundle contains a non-publication object".into())),
                 }
+                let leased: i64 = tx.query_row(
+                    "SELECT count(*) FROM object_leases
+                     WHERE document_id=?1 AND object_id=?2 AND operation_id=?3
+                       AND purpose='stage' AND writer_generation=?4 AND expires_at>?5",
+                    params![proof.document_id.as_str(), object_id.as_str(), proof.operation_id.as_str(), current_generation, now.0],
+                    |r| r.get(0),
+                ).map_err(CatalogError::from)?;
+                if leased == 0 { return Err(CatalogError::Conflict("publication stage lease expired or changed".into())); }
+            }
+            if manifest_count != 1 || html_count != 1 || asset_count > MAX_PUBLICATION_ASSETS {
+                return Err(CatalogError::Invalid("publication bundle must contain exactly one manifest and one HTML object".into()));
             }
             let grace = now.0.checked_add(900_000).ok_or_else(|| CatalogError::Invalid("publication grace overflow".into()))?;
-            tx.execute("UPDATE objects SET publication_root=0,gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END WHERE document_id=?2 AND publication_root=1", params![grace,document_id.as_str()]).map_err(CatalogError::from)?;
-            for object_id in &bundle_ids {
-                tx.execute("UPDATE objects SET publication_root=1,gc_after=NULL WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute(
+                "UPDATE objects SET publication_root=0,
+                    gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END
+                 WHERE document_id=?2 AND publication_root=1", params![grace, proof.document_id.as_str()],
+            ).map_err(CatalogError::from)?;
+            for object_id in &proof.object_ids {
+                tx.execute(
+                    "UPDATE objects SET publication_root=1,gc_after=NULL
+                     WHERE document_id=?1 AND id=?2 AND state='available'",
+                    params![proof.document_id.as_str(), object_id.as_str()],
+                ).map_err(CatalogError::from)?;
             }
-            tx.execute("UPDATE documents SET publication_id=?1,publication_object_id=?2,published_at=?3,updated_at=max(updated_at,?3) WHERE id=?4", params![publication_id,manifest_object_id.as_str(),now.0,document_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute(
+                "UPDATE documents SET publication_id=?1,publication_object_id=?2,published_at=?3,
+                    updated_at=max(updated_at,?3) WHERE id=?4",
+                params![publication_id, proof.manifest_object_id.as_str(), now.0, proof.document_id.as_str()],
+            ).map_err(CatalogError::from)?;
             let receipt_expires = now.0.checked_add(7 * 24 * 60 * 60 * 1_000)
                 .ok_or_else(|| CatalogError::Invalid("publication receipt expiry overflow".into()))?;
-            tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=max(updated_at,?2) WHERE id=?4 AND state='prepared'", params![result_json,now.0,receipt_expires,operation_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute(
+                "UPDATE operations SET state='committed',result_json=?1,completed_at=?2,
+                    receipt_expires_at=?3,updated_at=max(updated_at,?2)
+                 WHERE id=?4 AND state='prepared'", params![result_json, now.0, receipt_expires, proof.operation_id.as_str()],
+            ).map_err(CatalogError::from)?;
             Ok(())
         })
+    }
+
+    /// Compatibility entry point for callers that still hold the operation
+    /// handle. It can only discover a proof from a previously bound plan;
+    /// arbitrary IDs are rejected by the verifier's kind and lease checks.
+    pub fn activate_v2_publication(
+        &self,
+        document_id: &DocumentId,
+        operation_id: &OperationId,
+        expected_publication_id: Option<&str>,
+        publication_id: &str,
+        manifest_object_id: &ObjectId,
+        now: UnixMillis,
+        result_json: &str,
+    ) -> CatalogResult<()> {
+        let bundle: Vec<ObjectId> = self.with_connection(|connection| {
+            let plan: String = connection.query_row(
+                "SELECT plan_json FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared'",
+                params![operation_id.as_str(), document_id.as_str()], |r| r.get(0),
+            ).map_err(CatalogError::from)?;
+            let values = serde_json::from_str::<serde_json::Value>(&plan).ok()
+                .and_then(|value| value.get("bundle_object_ids").cloned())
+                .and_then(|value| value.as_array().cloned())
+                .ok_or_else(|| CatalogError::Invalid("publication operation has no verified bundle".into()))?;
+            values.iter().map(|value| value.as_str()
+                .ok_or_else(|| CatalogError::Invalid("publication bundle id is not text".into()))
+                .and_then(|id| ObjectId::new(id.to_owned()).map_err(|e| CatalogError::Invalid(e.to_string()))))
+                .collect()
+        })?;
+        let digest = self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT digest FROM objects WHERE document_id=?1 AND id=?2",
+                    params![document_id.as_str(), manifest_object_id.as_str()],
+                    |r| r.get::<_, String>(0),
+                )
+                .map_err(CatalogError::from)
+        })?;
+        let proof = self.verify_v2_publication_bundle(
+            document_id,
+            operation_id,
+            &bundle,
+            manifest_object_id,
+            &digest,
+            now,
+        )?;
+        self.activate_v2_publication_verified(
+            &proof,
+            expected_publication_id,
+            publication_id,
+            now,
+            result_json,
+        )
     }
 
     /// Recompute cache values for audit tooling.  This is intentionally an
@@ -873,13 +1603,28 @@ impl Catalog {
 
 impl OperationScope {
     fn sql_values(&self) -> (Option<&str>, Option<&str>) {
-        match self { Self::Document(id) => (Some(id.as_str()),None), Self::Account(id) => (None,Some(id.as_str())), Self::Server => (None,None) }
+        match self {
+            Self::Document(id) => (Some(id.as_str()), None),
+            Self::Account(id) => (None, Some(id.as_str())),
+            Self::Server => (None, None),
+        }
     }
 }
 
 impl Catalog {
-    pub fn prepare_v2_operation(&self, input: &V2OperationInput, now: UnixMillis) -> CatalogResult<V2Operation> {
-        if input.actor_key.is_empty() || input.request_key.is_empty() || input.request_key.len() > 128 { return Err(CatalogError::Invalid("operation actor/request key is invalid".into())); }
+    pub fn prepare_v2_operation(
+        &self,
+        input: &V2OperationInput,
+        now: UnixMillis,
+    ) -> CatalogResult<V2Operation> {
+        if input.actor_key.is_empty()
+            || input.request_key.is_empty()
+            || input.request_key.len() > 128
+        {
+            return Err(CatalogError::Invalid(
+                "operation actor/request key is invalid".into(),
+            ));
+        }
         validate_digest(&input.request_digest, "request digest")?;
         validate_json(&input.plan_json, "operation plan", 65_536)?;
         let (document_id, account_id) = input.scope.sql_values();
@@ -894,7 +1639,7 @@ impl Catalog {
                 return Ok(V2Operation { id: OperationId::new(id).map_err(|e| CatalogError::Invalid(e.to_string()))?, scope: input.scope.clone(), actor_key: actor, request_key: key, kind, state, request_digest: digest, writer_generation: generation });
             }
             let issued = crate::util::request_key_timestamp(&input.request_key)
-                .ok_or_else(|| CatalogError::Invalid("request key must be v2.<issued-seconds>.<nonce32>".into()))?;
+                .ok_or_else(|| CatalogError::Invalid("request key must be v2.<issued-milliseconds>.<nonce32>".into()))?;
             if issued > now.0.saturating_add(60_000)
                 || now.0.saturating_sub(issued) > 15 * 60_000
             {
@@ -907,7 +1652,13 @@ impl Catalog {
         })
     }
 
-    pub fn finish_v2_operation(&self, operation_id: &OperationId, result_json: &str, committed: bool, now: UnixMillis) -> CatalogResult<()> {
+    pub(crate) fn finish_v2_operation(
+        &self,
+        operation_id: &OperationId,
+        result_json: &str,
+        committed: bool,
+        now: UnixMillis,
+    ) -> CatalogResult<()> {
         validate_json(result_json, "operation result", 65_536)?;
         self.immediate(|tx| {
             let (state, kind, operation_generation): (String,String,String) = tx.query_row("SELECT state,kind,writer_generation FROM operations WHERE id=?1", [operation_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(CatalogError::from)?;

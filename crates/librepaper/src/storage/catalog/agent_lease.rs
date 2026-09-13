@@ -21,26 +21,42 @@ impl Catalog {
         }
         let epoch = hex::encode(crate::auth::random_bytes(24));
         self.immediate(|tx| {
-            let document_id: String = tx.query_row(
-                "SELECT id FROM documents WHERE slug=?1 AND status='active'", [slug], |row| row.get(0),
-            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            let document_id: String = tx
+                .query_row(
+                    "SELECT id FROM documents WHERE slug=?1 AND status='active'",
+                    [slug],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(CatalogError::from)?
+                .ok_or(CatalogError::NotFound)?;
             let now = unix_millis();
-            let expiry = now.checked_add(LEASE_SECONDS * 1_000)
+            let expiry = now
+                .checked_add(LEASE_SECONDS * 1_000)
                 .ok_or_else(|| CatalogError::Invalid("execution lease expiry overflow".into()))?;
             let operation_id = hex::encode(crate::auth::random_bytes(16));
             let request_key = format!("v2.{}.{}", now, hex::encode(crate::auth::random_bytes(16)));
             let request_digest = hex::encode(sha2::Sha256::digest(
                 format!("agent-execution\0{slug}\0{conversation_id}\0{epoch}").as_bytes(),
             ));
-            let writer_generation: String = tx.query_row(
-                "SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0),
-            ).map_err(CatalogError::from)?;
+            let writer_generation: String = tx
+                .query_row(
+                    "SELECT writer_generation FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
             tx.execute(
                 "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,
                     receipt_expires_at=?2,updated_at=?2
                  WHERE document_id=?3 AND kind='agent_execution' AND conversation_id=?4
                    AND state='prepared'",
-                params![r#"{"version":2,"reason":"superseded"}"#, now, document_id, conversation_id],
+                params![
+                    r#"{"version":2,"reason":"superseded"}"#,
+                    now,
+                    document_id,
+                    conversation_id
+                ],
             )
             .map_err(CatalogError::from)?;
             tx.execute(
@@ -48,10 +64,21 @@ impl Catalog {
                     state,writer_generation,conversation_id,execution_epoch,plan_json,
                     created_at,updated_at,work_expires_at)
                  VALUES(?1,?2,?3,?4,'agent_execution',?5,'prepared',?6,?7,?8,?9,?10,?10,?11)",
-                params![operation_id, document_id, format!("runner:{conversation_id}"), request_key,
-                    request_digest, writer_generation, conversation_id, epoch,
-                    r#"{"version":2,"lease":true}"#, now, expiry],
-            ).map_err(CatalogError::from)?;
+                params![
+                    operation_id,
+                    document_id,
+                    format!("runner:{conversation_id}"),
+                    request_key,
+                    request_digest,
+                    writer_generation,
+                    conversation_id,
+                    epoch,
+                    r#"{"version":2,"lease":true}"#,
+                    now,
+                    expiry
+                ],
+            )
+            .map_err(CatalogError::from)?;
             Ok(epoch)
         })
     }
@@ -78,8 +105,14 @@ impl Catalog {
                  WHERE document_id=(SELECT id FROM documents WHERE slug=?1)
                    AND conversation_id=?2 AND execution_epoch=?3 AND kind='agent_execution'
                    AND state='prepared'",
-                params![slug, conversation_id, execution_epoch,
-                    r#"{"version":2,"reason":"revoked"}"#, unix_millis(), unix_millis().saturating_add(3_600_000)],
+                params![
+                    slug,
+                    conversation_id,
+                    execution_epoch,
+                    r#"{"version":2,"reason":"revoked"}"#,
+                    unix_millis(),
+                    unix_millis().saturating_add(3_600_000)
+                ],
             )?;
             Ok(changed == 1)
         })
@@ -93,7 +126,8 @@ impl Catalog {
     ) -> CatalogResult<bool> {
         let changed = self.immediate(|tx| {
             let now = unix_millis();
-            let expiry = now.checked_add(LEASE_SECONDS * 1_000)
+            let expiry = now
+                .checked_add(LEASE_SECONDS * 1_000)
                 .ok_or_else(|| CatalogError::Invalid("execution lease expiry overflow".into()))?;
             Ok(tx.execute(
                 "UPDATE operations SET work_expires_at=?4,updated_at=?5
