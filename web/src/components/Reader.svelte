@@ -1231,12 +1231,20 @@
       localAppStatus.state === "connected" && localQuarto.calepinAvailable(),
   );
 
+  async function localPreviewTreeNow() {
+    const tree = treeNow();
+    if (!Object.keys(tree.digests || {}).length) return tree;
+    const { held, missing } = await gatherFigures(tree.digests);
+    if (missing.length) throw new Error(`Local preview is missing ${missing.join(", ")}`);
+    return { ...tree, assets: held.assets };
+  }
+
   const quartoPreviewController = createLocalPreview({
     local: localQuarto,
     engine: "quarto",
     label: "Quarto",
     publish: (payload) => framePreview.publish(payload),
-    treeNow,
+    treeNow: localPreviewTreeNow,
     entrypointOf: (tree) => tree.main,
     optionsOf: (tree) => {
       const context = quartoRenderContext(tree);
@@ -1264,7 +1272,7 @@
     label: "Calepin",
     publish: (payload) => framePreview.publish(payload),
     onError: (message) => (calepinPreviewError = message),
-    treeNow,
+    treeNow: localPreviewTreeNow,
     entrypointOf: (tree) => tree.main,
     optionsOf: () => ({ format: "pdf" }),
     jobOf: () => ({ binding: localQuarto.HOSTED_BINDING }),

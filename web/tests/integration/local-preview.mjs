@@ -61,12 +61,12 @@ function notRendered(rendering) {
     localPreviewStatus: async () => ({ state: "running" }),
     localPreviewPage: async () => ({ rendering: false }),
   };
-  const tree = { main: "main.qmd" };
+  const tree = { main: "main.qmd", assets: { "figure.png": new Uint8Array([1, 2, 3]) } };
   const running = [];
   const ctl = createLocalPreview({
     local, engine: "quarto",
     publish: () => {}, say: () => {},
-    treeNow: () => tree, entrypointOf: (t) => t.main,
+    treeNow: async () => tree, entrypointOf: (t) => t.main,
     optionsOf: () => ({ format: "html" }), jobOf: () => ({ binding: "hosted" }),
     onRunningChange: (session) => running.push(session),
     setTimer, clearTimer,
@@ -75,6 +75,7 @@ function notRendered(rendering) {
   assert.equal(syncs.length, 0);
   await ctl.start();
   assert.equal(syncs.length, 1);
+  assert.deepEqual(syncs[0].assets["figure.png"], new Uint8Array([1, 2, 3]));
   assert.equal(started.length, 1);
   assert.equal(started[0].engine, "quarto");
   assert.equal(started[0].options.entrypoint, "main.qmd");

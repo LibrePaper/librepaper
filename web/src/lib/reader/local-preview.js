@@ -181,7 +181,7 @@ export function createLocalPreview({
     onError?.("");
     setStarting(true);
     try {
-      const tree = treeNow();
+      const tree = await Promise.resolve(treeNow());
       await local.syncWorkspace({ tree });
       if (cancelled()) return;
       const options = { entrypoint: entrypointOf(tree), ...optionsOf(tree) };
@@ -239,7 +239,7 @@ export function createLocalPreview({
     }
     syncBusy = true;
     try {
-      await local.syncWorkspace({ tree: treeNow() });
+      await local.syncWorkspace({ tree: await Promise.resolve(treeNow()) });
     } catch (error) {
       if (!errorShown) {
         onError?.(error.message || `${label} preview could not sync`);

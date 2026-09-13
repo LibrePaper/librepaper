@@ -19,6 +19,12 @@ pub(crate) struct QuartoWatch {
     kind: ArtifactKind,
 }
 
+fn require_embedded_html(command: &mut Command, kind: ArtifactKind) {
+    if kind == ArtifactKind::Html {
+        command.arg("--embed-resources");
+    }
+}
+
 impl Watch for QuartoWatch {
     fn rendering_started(&self, line: &str) -> bool {
         line.contains("processing file:")
@@ -154,9 +160,7 @@ pub(crate) fn plan(
     }
     // HTML must be one self-contained file because the preview endpoint
     // serves one artifact. PDF already has that property.
-    if kind == ArtifactKind::Html {
-        command.arg("-M").arg("embed-resources:true");
-    }
+    require_embedded_html(&mut command, kind);
     // Pairing is the trust boundary for local execution. Keep the inherited
     // environment so Quarto sees the same runtimes and packages as it does
     // when the user invokes it from a terminal.
@@ -189,6 +193,18 @@ mod tests {
     use super::*;
     use crate::local::preview::Previews;
     use crate::local::protocol::{ManifestEntry, QuartoJobOptions};
+
+    #[test]
+    fn html_preview_uses_quartos_embedding_flag() {
+        let mut command = Command::new("quarto");
+        require_embedded_html(&mut command, ArtifactKind::Html);
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["--embed-resources"]);
+    }
 
     #[test]
     fn rendered_page_uses_the_artifact_kind_and_stays_inside_the_root() {

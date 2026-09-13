@@ -348,6 +348,7 @@ console.log("quarto-local: localPreviewStatus/stopLocalPreview alias the existin
       buildPreferences: { output: "html", profile: null, parameters: {} },
       readerDisposed: false, navigationGeneration: 0,
       treeNow: () => ({ main: engine === "quarto" ? "main.qmd" : "main.typ", texts: { [engine === "quarto" ? "main.qmd" : "main.typ"]: "Hello" } }),
+      localPreviewTreeNow: async () => ({ main: engine === "quarto" ? "main.qmd" : "main.typ", texts: { [engine === "quarto" ? "main.qmd" : "main.typ"]: "Hello" } }),
       quartoRenderContext: () => ({ format: "html", profiles: [], parameters: {} }),
       createLocalPreview: options => createLocalPreview({ ...options,
         onError: message => errors.push(message), setTimer: () => ({}), clearTimer: () => {},
