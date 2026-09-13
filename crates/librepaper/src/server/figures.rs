@@ -162,37 +162,13 @@ impl Server {
             automation: who.automation,
             unowned_publisher: false,
         };
-        if let Err(error) = self
-            .store
-            .reserve_object_bytes(slug, size, Some(&mutation_actor))
-            .await
-        {
-            return match error {
-                PutError::Quota { status, message }
-                | PutError::Authorization { status, message } => {
-                    write_json(status, &json!({"error": message}))
-                }
-                PutError::Storage(message) => {
-                    eprintln!("could not reserve figure bytes for {slug}: {message}");
-                    write_json(503, &json!({"error": "storage temporarily unavailable"}))
-                }
-            };
-        }
         let stored = room
-            .put_asset(
+            .put_asset_authorized(
                 body.to_vec(),
                 (self.config.max_asset, self.config.max_assets),
+                &mutation_actor,
             )
             .await;
-        if let Err(error) = &stored {
-            // Whether the room refused before writing anything or storage
-            // failed part-way, this request's byte reservation is not ours to
-            // hold: an object that did land is the object ledger's to
-            // reconcile, and keeping the reservation as well would charge the
-            // owner twice for it.
-            self.store.release_object_bytes(slug, size).await;
-            debug_assert!(error.refused() || error.log_context().is_some());
-        }
         match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
             Err(error) => refused(&format!("could not store a figure for {slug}"), &error),

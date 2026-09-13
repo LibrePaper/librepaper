@@ -81,16 +81,26 @@ impl Room {
         body: Vec<u8>,
         ceilings: (i64, i64),
     ) -> Result<(String, i64), WriteError> {
-        self.put_asset_unlocked(body, ceilings).await
+        self.put_asset_inner(body, ceilings, None).await
+    }
+
+    pub(crate) async fn put_asset_authorized(
+        &self,
+        body: Vec<u8>,
+        ceilings: (i64, i64),
+        actor: &crate::document::store::MutationActor,
+    ) -> Result<(String, i64), WriteError> {
+        self.put_asset_inner(body, ceilings, Some(actor)).await
     }
 
     /// Asset staging used by a publication that already owns the mutation
     /// gate.  The public route wrapper above keeps standalone asset writes
     /// serialized with publications without deadlocking the replacement path.
-    pub(crate) async fn put_asset_unlocked(
+    async fn put_asset_inner(
         &self,
         body: Vec<u8>,
         ceilings: (i64, i64),
+        actor: Option<&crate::document::store::MutationActor>,
     ) -> Result<(String, i64), WriteError> {
         let (max_asset, max_assets) = ceilings;
         let size = body.len() as i64;
@@ -114,7 +124,12 @@ impl Room {
         let mut upload = {
             let _assets_writer = self.assets_write.lock().await;
             let state = self.state.lock().await;
-            if let Some(known) = state.session.asset_sizes.get(&sha) {
+            if let Some(known) = state
+                .session
+                .asset_sizes
+                .get(&sha)
+                .filter(|_| self.catalog.get().is_none())
+            {
                 // Already here. Nothing is written and nothing is charged: the
                 // same bytes under the same name are the same object.
                 return Ok((sha, *known));
@@ -124,7 +139,10 @@ impl Room {
                 .asset_uploads
                 .lock()
                 .map_err(|_| WriteError::Storage("asset admission is unavailable".into()))?;
-            if let Some((reserved_size, count)) = uploads.get_mut(&sha) {
+            let known = state.session.asset_sizes.contains_key(&sha);
+            if known {
+                // SQL still rechecks authority and physical availability for a reuse.
+            } else if let Some((reserved_size, count)) = uploads.get_mut(&sha) {
                 debug_assert_eq!(*reserved_size, size);
                 *count = count.saturating_add(1);
             } else {
@@ -140,10 +158,135 @@ impl Room {
             AssetUpload {
                 room: self,
                 sha: sha.clone(),
-                active: true,
+                active: !known,
             }
         };
-        if let Err(err) = self
+        if let Some(catalog) = self.catalog.get() {
+            let actor = actor
+                .ok_or_else(|| {
+                    WriteError::Invalid("catalog asset uploads require current authority".into())
+                })?
+                .clone();
+            let slug = self.slug.clone();
+            let digest = sha.clone();
+            let captured = slug.len()
+                + digest.len()
+                + actor.account_id.len()
+                + actor.session_generation.len()
+                + actor.link_hash.len()
+                + actor.owner_key.len()
+                + 256;
+            let admitted_actor = actor.clone();
+            let limits = crate::storage::catalog::V2AdmissionLimits {
+                owner_bytes: if self.config.storage.per_owner < 0 {
+                    i64::MAX
+                } else {
+                    self.config.storage.per_owner
+                },
+                deployment_bytes: if self.config.storage.total < 0 {
+                    i64::MAX
+                } else {
+                    self.config.storage.total
+                },
+                owner_documents: 0,
+            };
+            let admission = catalog
+                .execute_catalog(captured, move |catalog| {
+                    catalog.admit_source_asset(
+                        &slug,
+                        &digest,
+                        size,
+                        &admitted_actor,
+                        limits,
+                        crate::util::now_millis(),
+                    )
+                })
+                .await
+                .map_err(WriteError::from)?;
+            if let Some(operation) = admission.operation.clone() {
+                struct Heartbeat(tokio::task::JoinHandle<()>);
+                impl Drop for Heartbeat {
+                    fn drop(&mut self) {
+                        self.0.abort();
+                    }
+                }
+                let heartbeat_catalog = catalog.clone();
+                let document = admission.object.document_id.clone();
+                let ids = vec![admission.object.id.clone()];
+                let holder = admission.holder.clone();
+                let generation = admission.generation.clone();
+                let heartbeat = Heartbeat(tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                    loop {
+                        interval.tick().await;
+                        let document = document.clone();
+                        let ids = ids.clone();
+                        let holder = holder.clone();
+                        let generation = generation.clone();
+                        let operation = operation.clone();
+                        if heartbeat_catalog
+                            .execute_catalog(512, move |catalog| {
+                                let now = crate::util::now_millis();
+                                catalog.renew_v2_lease_set(
+                                    &document,
+                                    &ids,
+                                    &holder,
+                                    &operation,
+                                    &generation,
+                                    crate::storage::catalog::UnixMillis(
+                                        now.saturating_add(120_000),
+                                    ),
+                                    crate::storage::catalog::UnixMillis(now),
+                                )
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }));
+                crate::storage::v2_catalog::V2ObjectWriter::new(
+                    catalog.clone(),
+                    self.blobs.clone(),
+                )
+                .write_allocated(
+                    admission.object.document_id.as_str(),
+                    crate::storage::blob::ObjectId::parse(admission.object.id.as_str().to_owned())
+                        .map_err(|e| WriteError::Storage(e.to_string()))?,
+                    body,
+                    "application/octet-stream",
+                )
+                .await
+                .map_err(WriteError::Storage)?;
+                let slug = self.slug.clone();
+                catalog
+                    .execute_catalog(captured + 512, move |catalog| {
+                        catalog.finish_source_asset(
+                            &slug,
+                            &admission,
+                            &actor,
+                            crate::util::now_millis(),
+                        )
+                    })
+                    .await
+                    .map_err(WriteError::from)?;
+                drop(heartbeat);
+            } else {
+                let slug = self.slug.clone();
+                catalog
+                    .execute_catalog(captured + 512, move |catalog| {
+                        catalog.finish_source_asset(
+                            &slug,
+                            &admission,
+                            &actor,
+                            crate::util::now_millis(),
+                        )
+                    })
+                    .await
+                    .map_err(WriteError::from)?;
+            }
+        } else if let Err(err) = self
             .blobs
             .put(
                 &crate::storage::blob::asset_key(&self.storage_id, &sha),
@@ -174,7 +317,9 @@ impl Room {
         upload.release();
         // What the document costs has changed, and the index is what the
         // quota is decided from.
-        self.record_size_now(None, &format, &main).await;
+        if self.catalog.get().is_none() {
+            self.record_size_now(None, &format, &main).await;
+        }
         Ok((sha, size))
     }
 

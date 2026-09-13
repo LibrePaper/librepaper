@@ -40,6 +40,7 @@ mod read_objects;
 mod retention;
 mod room_edits;
 mod source_history;
+mod source_assets;
 mod v2;
 
 pub(crate) use v2::{V2CheckpointAdmissionInput, V2SourceAdmissionInput};
@@ -58,6 +59,7 @@ pub use read_objects::{
 pub use retention::RetentionPass;
 pub use room_edits::RoomEditReservation;
 pub use source_history::{SourceHistoryLease, SourceHistoryObject, SourceHistoryRecord};
+pub(crate) use source_assets::SourceAssetAdmission;
 pub use v2::{
     AccountKind, CheckpointCommit, CheckpointId, DocumentId, DocumentStatus, IdError, LeasePurpose,
     ObjectId, ObjectKind, ObjectState, OperationId, OperationKind, OperationScope, SourceFormat,

@@ -673,9 +673,14 @@ impl Server {
                 crate::document::paths::check(&self.config.paths(), path)
             {
                 let (sha, size) = match room
-                    .put_asset_unlocked(
+                    .put_asset_authorized(
                         raw.clone(),
                         (self.config.max_asset, self.config.max_assets),
+                        &crate::document::store::MutationActor {
+                            account_id: who.id.clone(), owner_key: who.key.clone(),
+                            session_generation: who.session_generation.clone(), link_hash: String::new(),
+                            policy_editor: true, automation: false, unowned_publisher: false,
+                        },
                     )
                     .await
                 {
