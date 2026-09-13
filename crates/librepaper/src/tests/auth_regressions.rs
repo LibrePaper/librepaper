@@ -52,7 +52,7 @@ async fn server_with_provider_status(status: u16) -> (TestServer, tokio::task::J
     let rooms = crate::room::RoomSet::new(blobs.clone(), config.clone());
     let journal = Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog)),
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog, config.persistence())),
             blobs,
             config.persistence(),
         )

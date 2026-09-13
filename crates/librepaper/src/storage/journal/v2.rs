@@ -109,6 +109,7 @@ pub struct JournalCompactionAdmission {
     pub document_id: String,
     pub captured_epoch: u64,
     pub captured_sequence: u64,
+    pub captured_source_generation: u64,
     pub writer_generation: String,
     pub base_allocation: JournalObjectAllocation,
 }
@@ -133,6 +134,7 @@ pub trait V2JournalCatalog: Send + Sync {
         document_id: &str,
         epoch: u64,
         after_sequence: u64,
+        after_object_id: &str,
         limit: usize,
     ) -> Result<Vec<JournalObjectRef>, String>;
     async fn prepare_compaction(
@@ -225,12 +227,12 @@ where
         if first_sequence == 0 || last_sequence < first_sequence {
             return Err(JournalError::Invalid("invalid journal recovery range".into()));
         }
-        let mut after = 0;
+        let mut after = (first_sequence.saturating_sub(1), String::new());
         let mut bodies = Vec::new();
         loop {
             let page = self
                 .catalog
-                .journal_objects(document_id, epoch, after, 128)
+                .journal_objects(document_id, epoch, after.0, &after.1, 128)
                 .await
                 .map_err(JournalError::CatalogText)?;
             if page.is_empty() {
@@ -239,7 +241,7 @@ where
             if page.len() > 128 {
                 return Err(JournalError::Corrupt("journal descriptor page exceeded bound".into()));
             }
-            let previous_after = after;
+            let previous_after = after.clone();
             for object in &page {
                 if object.epoch != epoch {
                     return Err(JournalError::Corrupt("journal object epoch mismatch".into()));
@@ -254,12 +256,15 @@ where
                     .map_err(|error| JournalError::Storage(error.to_string()))?;
                 verify_object_bytes(object, &bytes)?;
                 bodies.push(bytes);
-                after = after.max(object.last_sequence);
+                after = (object.last_sequence, object.object_id.clone());
             }
             if after <= previous_after {
                 return Err(JournalError::Corrupt("journal descriptor cursor did not advance".into()));
             }
-            if page.last().is_some_and(|object| object.last_sequence >= last_sequence) {
+            if page.last().is_some_and(|object| object.last_sequence > last_sequence)
+                || (page.len() < 128
+                    && page.last().is_some_and(|object| object.last_sequence == last_sequence))
+            {
                 break;
             }
         }
@@ -277,7 +282,7 @@ where
         let base_body = crate::storage::journal::RecoveryBaseBody {
             format_version: super::SEGMENT_FORMAT,
             storage_id: document_id.to_owned(),
-            epoch: expected_epoch,
+            epoch: expected_epoch.saturating_add(1),
             sequence: expected_sequence,
             digest: hex::encode(Sha256::digest(&base)),
             payload: base,
@@ -335,7 +340,8 @@ where
         if head.sequence == 0 && head.base.is_none() {
             return Ok(None);
         }
-        let mut base = None;
+        let document = crate::document::session::new_doc();
+        let mut has_state = false;
         if let Some(reference) = &head.base {
             if reference.epoch > head.epoch
                 || reference.last_sequence != head.base_sequence
@@ -343,6 +349,12 @@ where
             {
                 return Err(JournalError::Corrupt("journal base does not match document head".into()));
             }
+            let expected_bytes = usize::try_from(reference.byte_length)
+                .map_err(|_| JournalError::Limit("journal base length exceeds memory accounting".into()))?;
+            let permit = self
+                .memory
+                .acquire(crate::config::PersistenceLimits::staging_cost(expected_bytes))
+                .await?;
             let bytes = self
                 .blobs
                 .get(&reference.storage_key)
@@ -356,17 +368,126 @@ where
             {
                 return Err(JournalError::Corrupt("journal base identity does not match catalog".into()));
             }
-            base = Some(decoded.payload);
+            crate::document::session::apply_update(&document, &decoded.payload)
+                .map_err(|error| JournalError::Corrupt(format!("journal base update is invalid: {error}")))?;
+            drop(permit);
+            has_state = true;
         }
         if head.sequence == head.base_sequence {
-            return replay_complete_state(base, Vec::new());
+            return if has_state {
+                Ok(Some(crate::document::session::encode_state(&document)))
+            } else {
+                Err(JournalError::Corrupt("journal head range has no state".into()))
+            };
         }
         let first = head.base_sequence.saturating_add(1).max(1);
-        let records = self
-            .recover(document_id, head.epoch, first, head.sequence)
+        self.recover_into_document(document_id, head.epoch, first, head.sequence, &document)
             .await?;
-        replay_complete_state(base, records)
+        if !has_state && first > head.sequence {
+            return Err(JournalError::Corrupt("journal head range has no state".into()));
+        }
+        Ok(Some(crate::document::session::encode_state(&document)))
     }
+
+}
+
+impl<C> V2JournalRuntime<C>
+where
+    C: V2JournalCatalog + 'static,
+{
+    /// Stream acknowledged segments into the CRDT document. The descriptor
+    /// cursor is `(last_sequence, object_id)`, so fragments sharing a sequence
+    /// cannot disappear when a page boundary cuts through that sequence. Only
+    /// one physical object and the final fragment group are retained at once.
+    async fn recover_into_document(
+        &self,
+        document_id: &str,
+        epoch: u64,
+        first_sequence: u64,
+        last_sequence: u64,
+        document: &yrs::Doc,
+    ) -> JournalResult<()> {
+        let mut cursor = (first_sequence.saturating_sub(1), String::new());
+        let mut pending = BTreeMap::<u64, Vec<JournalRecord>>::new();
+        let mut next_sequence = first_sequence;
+        loop {
+            let page = self
+                .catalog
+                .journal_objects(document_id, epoch, cursor.0, &cursor.1, 128)
+                .await
+                .map_err(JournalError::CatalogText)?;
+            if page.is_empty() {
+                break;
+            }
+            for reference in &page {
+                if reference.epoch != epoch
+                    || reference.last_sequence < first_sequence
+                    || reference.first_sequence > last_sequence
+                    || reference.last_sequence > last_sequence
+                {
+                    return Err(JournalError::Corrupt("journal object lies outside acknowledged range".into()));
+                }
+                let expected_bytes = usize::try_from(reference.byte_length)
+                    .map_err(|_| JournalError::Limit("journal object length exceeds memory accounting".into()))?;
+                let permit = self
+                    .memory
+                    .acquire(crate::config::PersistenceLimits::staging_cost(expected_bytes))
+                    .await?;
+                let bytes = self
+                    .blobs
+                    .get(&reference.storage_key)
+                    .await
+                    .map_err(|error| JournalError::Storage(error.to_string()))?;
+                verify_object_bytes(reference, &bytes)?;
+                let decoded = decode_segment(&bytes, document_id, epoch)?;
+                drop(permit);
+                for record in decoded.segment.records {
+                    if record.sequence < first_sequence || record.sequence > last_sequence {
+                        return Err(JournalError::Corrupt("journal record lies outside acknowledged range".into()));
+                    }
+                    pending.entry(record.sequence).or_default().push(record);
+                }
+            }
+            let terminal = page.last().map(|reference| reference.last_sequence).unwrap_or(0);
+            let flush_through = if page.len() < 128 { terminal } else { terminal.saturating_sub(1) };
+            flush_recovered_records(
+                &mut pending,
+                flush_through,
+                document_id,
+                epoch,
+                &mut next_sequence,
+                document,
+            )?;
+            let last = page.last().expect("nonempty page");
+            let next_cursor = (last.last_sequence, last.object_id.clone());
+            if next_cursor <= cursor {
+                return Err(JournalError::Corrupt("journal descriptor cursor did not advance".into()));
+            }
+            cursor = next_cursor;
+            if terminal >= last_sequence && page.len() < 128 {
+                break;
+            }
+        }
+        flush_recovered_records(
+            &mut pending,
+            last_sequence,
+            document_id,
+            epoch,
+            &mut next_sequence,
+            document,
+        )?;
+        if next_sequence != last_sequence.saturating_add(1) || !pending.is_empty() {
+            return Err(JournalError::Corrupt("acknowledged journal range is missing".into()));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl<C> DocumentJournal for V2JournalRuntime<C>
+where
+    C: V2JournalCatalog + 'static,
+{
 
     async fn append(&self, document_id: &str, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
         if body.len() > self.max_encoded_snapshot_bytes {
@@ -462,6 +583,61 @@ where
     fn memory(&self) -> Arc<crate::storage::journal::MemoryBudget> {
         Arc::clone(&self.memory)
     }
+}
+
+fn flush_recovered_records(
+    pending: &mut BTreeMap<u64, Vec<JournalRecord>>,
+    through: u64,
+    document_id: &str,
+    epoch: u64,
+    next_sequence: &mut u64,
+    document: &yrs::Doc,
+) -> JournalResult<()> {
+    let sequences = pending
+        .range(..=through)
+        .map(|(&sequence, _)| sequence)
+        .collect::<Vec<_>>();
+    for sequence in sequences {
+        let parts = pending
+            .remove(&sequence)
+            .ok_or_else(|| JournalError::Corrupt("journal fragment group disappeared".into()))?;
+        if sequence != *next_sequence {
+            return Err(JournalError::Corrupt("journal sequence gap".into()));
+        }
+        let first = parts
+            .first()
+            .ok_or_else(|| JournalError::Corrupt("empty journal fragment group".into()))?;
+        let count = first.fragment_count;
+        let retry_id = first.retry_id.clone();
+        let digest = first.digest.clone();
+        if parts.len() != count as usize
+            || parts.iter().any(|part| {
+                part.fragment_count != count
+                    || part.retry_id != retry_id
+                    || part.digest != digest
+                    || part.epoch != epoch
+            })
+        {
+            return Err(JournalError::Corrupt("incomplete journal record fragments".into()));
+        }
+        let mut parts = parts;
+        parts.sort_by_key(|part| part.fragment_index);
+        if parts.iter().enumerate().any(|(index, part)| part.fragment_index as usize != index) {
+            return Err(JournalError::Corrupt("journal fragment index gap".into()));
+        }
+        let payload = parts
+            .iter()
+            .flat_map(|part| part.payload.iter().copied())
+            .collect::<Vec<_>>();
+        if hex::encode(Sha256::digest(&payload)) != digest {
+            return Err(JournalError::Corrupt("complete journal record digest mismatch".into()));
+        }
+        let record = JournalRecord::new(document_id, sequence, retry_id, epoch, payload)?;
+        crate::document::session::apply_update(document, &record.payload)
+            .map_err(|error| JournalError::Corrupt(format!("journal update {sequence} is invalid: {error}")))?;
+        *next_sequence = (*next_sequence).saturating_add(1);
+    }
+    Ok(())
 }
 
 fn replay_complete_state(
@@ -769,7 +945,7 @@ mod tests {
 
     #[test]
     fn recovery_composes_base_and_every_committed_update() {
-        use yrs::{Text, Transact};
+        use yrs::{GetString, Text, Transact};
 
         let document = crate::document::session::new_doc();
         let text = document.get_or_insert_text("body");

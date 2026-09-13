@@ -971,7 +971,7 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
         .unwrap();
     let runtime = Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone())),
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), config.persistence())),
             blobs.clone(),
             config.persistence(),
         )
@@ -987,7 +987,7 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
     let segments: i64 = catalog
         .with_connection(|connection| {
             connection
-                .query_row("SELECT COUNT(*) FROM journal_segments", [], |row| {
+                .query_row("SELECT COUNT(*) FROM objects WHERE kind='journal_segment' AND state='available'", [], |row| {
                     row.get(0)
                 })
                 .map_err(crate::storage::catalog::CatalogError::from)
@@ -1008,7 +1008,7 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
         .unwrap();
     let recovered_runtime = Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone())),
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), config.persistence())),
             blobs.clone(),
             config.persistence(),
         )
@@ -1734,7 +1734,7 @@ async fn journal_scheduled_saves_obey_floor_and_dirty_deadline() {
         .unwrap();
     let journal = Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog)),
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog, config.persistence())),
             blobs.clone(),
             config.persistence(),
         )

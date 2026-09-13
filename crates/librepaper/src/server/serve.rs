@@ -310,7 +310,7 @@ pub async fn serve(options: ServeOptions) {
         .await
         .unwrap_or_else(|err| die(format!("publication accounting recovery failed: {err}")));
     if let Some(catalog) = instance.store.catalog.clone() {
-        let journal_catalog = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog));
+        let journal_catalog = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits_and_quota(catalog, config.persistence(), config.storage.per_owner, config.storage.total));
         let journal = Arc::new(
             crate::storage::journal::V2JournalRuntime::with_persistence(
                 journal_catalog,

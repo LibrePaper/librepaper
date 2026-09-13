@@ -341,7 +341,7 @@ async fn accumulated_update_quota(journaled: bool) {
     if journaled {
         rooms.attach_journal(Arc::new(
             crate::storage::journal::V2JournalRuntime::with_persistence(
-                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone())),
+                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), config.persistence())),
                 blobs,
                 config.persistence(),
             )

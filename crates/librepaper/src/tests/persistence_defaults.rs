@@ -62,7 +62,7 @@ async fn persistence_default_limits_refuse_without_discarding_dirty_rooms() {
     let limits = config.persistence();
     let journal = Arc::new(
         journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog)),
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog, limits)),
             objects,
             limits,
         )

@@ -353,7 +353,7 @@ async fn seed_with_store(
     let rooms = RoomSet::new(blobs.clone(), config.clone());
     rooms.attach_store(store.clone());
     if let Some(catalog) = &store.catalog {
-        let journal_catalog = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone()));
+        let journal_catalog = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits_and_quota(catalog.clone(), config.persistence(), config.storage.per_owner, config.storage.total));
         let journal = Arc::new(
             crate::storage::journal::V2JournalRuntime::with_persistence(
                 journal_catalog,

@@ -267,7 +267,7 @@ async fn build_test_server(
     server.listing = listing;
     let journal = Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog)),
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog, persistence)),
             blobs,
             persistence,
         )
@@ -346,7 +346,7 @@ pub async fn server_over(path: &std::path::Path, config: Configuration) -> (Stri
     instance.accounts = Arc::new(TestAccounts);
     instance.rooms.attach_journal(Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog)),
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog, persistence)),
             blobs,
             persistence,
         )

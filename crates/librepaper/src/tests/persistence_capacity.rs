@@ -159,7 +159,7 @@ async fn open_deployment(root: &Path, config: Arc<Configuration>) -> Deployment 
     let limits = config.persistence();
     let journal = Arc::new(
         journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone())),
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), limits)),
             objects.clone(),
             limits,
         )
@@ -362,8 +362,8 @@ async fn persistence_capacity_workload() {
     );
     reopened.attach_store(store);
     let limits = config2.persistence();
-    let reopened_adapter = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone()));
-    crate::storage::maintenance_v2::recover_v2_startup(reopened_adapter.as_ref(), objects.as_ref())
+    let reopened_adapter = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), limits));
+    crate::storage::maintenance_v2::recover_v2_startup(catalog.as_ref(), objects.as_ref())
         .await
         .expect("v2 journal recovery");
     let reopened_journal = Arc::new(

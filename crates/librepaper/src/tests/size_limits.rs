@@ -163,7 +163,7 @@ mod room_fixture {
         rooms.attach_store(store.clone());
         let runtime = Arc::new(
             journal::V2JournalRuntime::with_persistence(
-                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone())),
+                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), persistence)),
                 blobs.clone(),
                 persistence,
             )
@@ -186,7 +186,7 @@ mod room_fixture {
         let persistence = fixture.config.persistence();
         let runtime = Arc::new(
             journal::V2JournalRuntime::with_persistence(
-                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(fixture.catalog.clone())),
+                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(fixture.catalog.clone(), persistence)),
                 fixture.blobs.clone(),
                 persistence,
             )
