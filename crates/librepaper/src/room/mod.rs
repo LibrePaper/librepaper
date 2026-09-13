@@ -1677,9 +1677,47 @@ impl Room {
             }
         };
 
-        let seed = match &stored {
-            Some(_) => None,
-            None => self.published_source(entry.as_ref()).await,
+        // A catalog checkpoint is the authoritative cold-start source when
+        // there is no newer durable journal/session snapshot.  Resolve its
+        // complete physical closure before touching the live Y.Doc; falling
+        // back to a rendered publication page would collapse a multifile
+        // source tree into one HTML file.
+        let checkpoint_point = manifest.latest().cloned();
+        let use_v2_checkpoint =
+            stored.is_none() && self.catalog.is_some() && checkpoint_point.is_some();
+        let checkpoint_seed = if use_v2_checkpoint {
+            let catalog = self
+                .catalog
+                .get()
+                .expect("v2 checkpoint mode has a catalogue");
+            let point = checkpoint_point
+                .as_ref()
+                .expect("v2 checkpoint mode has a point");
+            match self
+                .checkpoint_cache
+                .load_checkpoint_v2(self.blobs.as_ref(), catalog, &self.slug, point)
+                .await
+            {
+                Ok(seed) => Some(seed),
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not load v2 checkpoint {} for {}: {error}",
+                        point.sha, self.slug
+                    );
+                    self.fence(FenceReason::UnreadableState);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let seed = if use_v2_checkpoint {
+            None
+        } else {
+            match &stored {
+                Some(_) => None,
+                None => self.published_source(entry.as_ref()).await,
+            }
         };
 
         let mut state = self.state.lock().await;
@@ -1766,7 +1804,21 @@ impl Room {
                 }
             }
             None => {
-                if let Some((source, format)) = seed {
+                if let Some((tree, bodies)) = checkpoint_seed {
+                    if let Some(point_format) = checkpoint_point
+                        .as_ref()
+                        .map(|point| point.source_format.as_str())
+                        .filter(|format| {
+                            matches!(*format, "markdown" | "html" | "typst" | "latex" | "quarto")
+                        })
+                    {
+                        state.session.format = point_format.to_owned();
+                    }
+                    session::restore(&state.session.doc, &tree, &bodies);
+                    state.session.last_tree = Some(tree);
+                    state.session.dirty = false;
+                    state.session.pending_checkpoint_since = 0;
+                } else if let Some((source, format)) = seed {
                     state.session.format = format.clone();
                     session::replace_text(
                         &state.session.doc,
