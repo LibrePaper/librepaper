@@ -942,7 +942,11 @@ async fn publish_seed_display(
     })
     .map_err(|error| error.to_string())?;
     let manifest = crate::server::publication::PublicationManifest {
-        publication_id: crate::storage::catalog::ObjectId::random().to_string(),
+        publication_id: crate::storage::catalog::ObjectId::new(hex::encode(
+            crate::auth::random_bytes(16),
+        ))
+        .expect("random publication id is valid")
+        .to_string(),
         bundle_sha256: crate::document::store::digest_of_bytes(&bundle),
         source_sha256: crate::document::store::digest_of(source),
         render_config_sha256: crate::document::store::digest_of(format),
