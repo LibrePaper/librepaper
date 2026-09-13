@@ -24,6 +24,8 @@ pub(super) struct Candidate {
     pub patches: Vec<Patch>,
     pub dependencies: Vec<agent::Dependency>,
     pub operation: OperationKey,
+    #[serde(default)]
+    pub parent_request_id: String,
     pub digest: String,
     pub validation: String,
     pub publish: String,
@@ -36,21 +38,6 @@ pub(super) struct Candidate {
 #[derive(Serialize, Deserialize)]
 struct Admission {
     digest: String,
-}
-
-fn batch_parent(key: &OperationKey) -> String {
-    let Some((parent, index)) = key.id.rsplit_once('-') else {
-        return String::new();
-    };
-    if parent.len() == 70
-        && parent.starts_with("agent-")
-        && parent[6..].bytes().all(|b| b.is_ascii_hexdigit())
-        && index.parse::<usize>().is_ok_and(|index| index < 100)
-    {
-        parent.to_owned()
-    } else {
-        String::new()
-    }
 }
 
 pub(super) fn failure(error: agent::AgentError) -> Failure {
@@ -165,16 +152,11 @@ impl Server {
         let Some(catalog) = &self.store.catalog else {
             return Ok(result);
         };
-        let parent = key.scoped_request_id(actor);
         let keys = (0..100)
             .map(|index| {
                 (
                     index,
-                    OperationKey {
-                        epoch: key.epoch.clone(),
-                        id: format!("{parent}-{index}"),
-                    }
-                    .scoped_request_id(actor),
+                    key.batch_child(actor, index).scoped_request_id(actor),
                 )
             })
             .collect::<Vec<_>>();
@@ -213,6 +195,7 @@ impl Server {
         result: &Value,
         who: &Viewer,
         headers: &HeaderMap,
+        parent_request_id: &str,
     ) -> Result<Value, Failure> {
         let catalog = self
             .store
@@ -225,7 +208,7 @@ impl Server {
             link_hash: who.link.clone(),
             policy_comment: who.at_least(Role::Commenter),
             require_editor: false,
-            parent_request_id: batch_parent(key),
+            parent_request_id: parent_request_id.to_owned(),
             execution_epoch: runner_execution_epoch(headers),
         };
         let (slug, request_id, digest, receipt) = (
@@ -354,6 +337,22 @@ impl Server {
         name: &str,
         args: &Value,
     ) -> Result<Value, Failure> {
+        self.mcp_operation_inner(slug, actor, who, headers, arrival, peer, name, args, "").await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn mcp_operation_inner(
+        &self,
+        slug: &str,
+        actor: &str,
+        who: &Viewer,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        peer: SocketAddr,
+        name: &str,
+        args: &Value,
+        parent_request_id: &str,
+    ) -> Result<Value, Failure> {
         if name == "document_result" {
             return self
                 .mcp_result(slug, actor, headers, arrival, peer, args)
@@ -361,6 +360,7 @@ impl Server {
         }
         let key: OperationKey = serde_json::from_value(args["operation"].clone())
             .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
+        key.validate().map_err(failure)?;
         let digest = hex::encode(Sha256::digest(
             json!({"tool":name,"arguments":args}).to_string(),
         ));
@@ -390,9 +390,10 @@ impl Server {
                         child["batch"] = json!("atomic");
                         child["patches"] = json!([patch]);
                         child["operation"]["id"] =
-                            json!(format!("{}-{index}", key.scoped_request_id(actor)));
-                        let outcome = Box::pin(self.mcp_operation(
+                            json!(key.batch_child(actor, index).id);
+                        let outcome = Box::pin(self.mcp_operation_inner(
                             slug, actor, &current, headers, arrival, peer, name, &child,
+                            &key.scoped_request_id(actor),
                         ))
                         .await;
                         items.push(match outcome {Ok(result)=>json!({"index":index,"status":result["status"],"candidate_id":result["candidate_id"],"effects":result["effects"]}),Err(error)=>json!({"index":index,"error":{"code":error.code,"message":error.message}})});
@@ -400,11 +401,11 @@ impl Server {
                     let result = json!({"operation":key,"status":"committed","batch":"independent","items":items,"replay":false});
                     let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
                     return self
-                        .mcp_private_receipt(slug, actor, &key, &digest, &result, &current, headers)
+                        .mcp_private_receipt(slug, actor, &key, &digest, &result, &current, headers, parent_request_id)
                         .await;
                 }
                 self.mcp_propose(
-                    slug, actor, &current, headers, arrival, peer, args, key, digest,
+                    slug, actor, &current, headers, arrival, peer, args, key, digest, parent_request_id,
                 )
                 .await
             }
@@ -723,6 +724,7 @@ impl Server {
         args: &Value,
         key: OperationKey,
         digest: String,
+        parent_request_id: &str,
     ) -> Result<Value, Failure> {
         let publish = args["publish"].as_str().unwrap_or("suggestions");
         if publish == "suggestions" && !who.at_least(Role::Commenter) {
@@ -822,6 +824,7 @@ impl Server {
             patches,
             dependencies,
             operation: key.clone(),
+            parent_request_id: parent_request_id.to_owned(),
             digest: digest.clone(),
             validation: args["validation"].as_str().unwrap_or("source").to_string(),
             expires_at: view.expires_at,
@@ -994,7 +997,7 @@ impl Server {
                         link_hash: who.link.clone(),
                         policy_comment: true,
                         require_editor: false,
-                        parent_request_id: batch_parent(key),
+                        parent_request_id: candidate.parent_request_id.clone(),
                         execution_epoch: runner_execution_epoch(headers),
                     },
                 )
@@ -1002,7 +1005,7 @@ impl Server {
                 .map_err(|e| Failure::new("conflict", e));
         }
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
-        self.mcp_private_receipt(slug, actor, key, &digest, &result, &current, headers)
+        self.mcp_private_receipt(slug, actor, key, &digest, &result, &current, headers, &candidate.parent_request_id)
             .await
     }
 

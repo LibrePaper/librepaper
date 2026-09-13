@@ -49,6 +49,19 @@ impl OperationKey {
         Ok(())
     }
 
+    /// Derive a stable child retry identity without extending the wire format.
+    /// The parent's issue time remains authoritative for first-seen admission.
+    pub fn batch_child(&self, scope: &str, index: usize) -> Self {
+        let mut binding = b"librepaper-agent-batch-child-v2\0".to_vec();
+        binding.extend_from_slice(self.scoped_request_id(scope).as_bytes());
+        binding.extend_from_slice(&(index as u64).to_be_bytes());
+        let issued = crate::util::request_key_timestamp(&self.id).unwrap_or(0);
+        Self {
+            epoch: self.epoch.clone(),
+            id: format!("v2.{issued}.{}", &hex::encode(Sha256::digest(binding))[..32]),
+        }
+    }
+
     /// The catalogue's existing idempotency key has one bounded string column.
     /// Hashing avoids delimiter ambiguity while preserving the original pair
     /// in the intent and receipt.

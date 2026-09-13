@@ -336,3 +336,18 @@ fn checkpoint_read_leases_survive_checkpoint_removal_until_reader_finishes() {
         .unwrap());
     assert!(catalog.audit_v2_counters().unwrap());
 }
+
+#[test]
+fn independent_batch_children_keep_retry_format_and_parent_issue_time() {
+    let parent = crate::room::agent::OperationKey {
+        epoch: "epoch".into(),
+        id: "v2.1770000000123.0123456789abcdef0123456789abcdef".into(),
+    };
+    let child = parent.batch_child("actor", 0);
+    child.validate().unwrap();
+    assert_eq!(crate::util::request_key_timestamp(&child.id), Some(1770000000123));
+    assert_eq!(child, parent.batch_child("actor", 0));
+    assert_ne!(child, parent.batch_child("actor", 1));
+    assert_ne!(child, parent.batch_child("other-actor", 0));
+    assert_ne!(child, parent);
+}
