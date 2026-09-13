@@ -2478,6 +2478,33 @@ impl V2ObjectWriter {
         .map_err(|error| format!("physical writer task failed: {error}"))?
     }
 
+    /// Variant for callers holding a bounded memory reservation. The
+    /// reservation belongs to the detached task, so cancellation of the
+    /// request future cannot release it while the physical PUT is still live.
+    pub async fn write_allocated_with_memory_permit(
+        &self,
+        document_id: &str,
+        object_id: ObjectId,
+        body: Vec<u8>,
+        content_type: &str,
+        memory_permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> Result<WrittenObject, String> {
+        let writer = Self {
+            catalog: Arc::clone(&self.catalog),
+            blobs: Arc::clone(&self.blobs),
+        };
+        let document_id = document_id.to_owned();
+        let content_type = content_type.to_owned();
+        tokio::spawn(async move {
+            let _memory_permit = memory_permit;
+            writer
+                .write_allocated_inner(&document_id, object_id, body, &content_type)
+                .await
+        })
+        .await
+        .map_err(|error| format!("physical writer task failed: {error}"))?
+    }
+
     async fn write_allocated_inner(
         &self,
         document_id: &str,

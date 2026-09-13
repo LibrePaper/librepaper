@@ -80,8 +80,20 @@ impl std::io::Write for BoundedJsonWriter {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "JSON payload exceeds limit"));
         }
         let new_len = self.bytes.len().saturating_add(bytes.len());
-        if new_len > self.charged {
-            let additional = new_len - self.charged;
+        if new_len > self.bytes.capacity() {
+            let mut target_capacity = self.bytes.capacity().max(1);
+            while target_capacity < new_len {
+                target_capacity = target_capacity
+                    .saturating_mul(2)
+                    .min(self.limit);
+                if target_capacity == self.limit {
+                    break;
+                }
+            }
+            if target_capacity < new_len {
+                target_capacity = new_len;
+            }
+            let additional = target_capacity.saturating_sub(self.charged);
             let permit = self
                 .budget
                 .clone()
@@ -100,11 +112,12 @@ impl std::io::Write for BoundedJsonWriter {
                 self.permit = Some(permit);
             }
             // Charge the bounded target capacity before asking Vec to grow;
-            // reserve_exact avoids an uncharged geometric capacity jump.
+            // reserve_exact avoids a second geometric capacity jump. Its
+            // argument is relative to the current length, not capacity.
             self.bytes
-                .try_reserve_exact(new_len.saturating_sub(self.bytes.capacity()))
+                .try_reserve_exact(target_capacity.saturating_sub(self.bytes.len()))
                 .map_err(|_| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "payload buffer allocation failed"))?;
-            self.charged = new_len;
+            self.charged = target_capacity;
         }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -522,11 +535,13 @@ impl Server {
             };
         }
         let writer = V2ObjectWriter::new(Arc::clone(catalog), Arc::clone(&self.store.blobs));
-        writer.write_allocated(
+        let memory_permit = memory_permit
+            .ok_or_else(|| Failure::new("internal", "encoded payload has no memory reservation"))?;
+        writer.write_allocated_with_memory_permit(
             admitted.document_id.as_str(), crate::storage::blob::ObjectId::parse(admitted.object_id.as_str()).map_err(|error| Failure::new("internal", error.to_string()))?, bytes,
             "application/vnd.librepaper.agent-payload+zlib",
+            memory_permit,
         ).await.map_err(|error| Failure::new("unavailable", error))?;
-        drop(memory_permit);
         let result_json = serde_json::json!({
             "version": 2,
             "object_id": admitted.object_id.as_str(),
