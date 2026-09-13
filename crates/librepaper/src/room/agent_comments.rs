@@ -123,26 +123,25 @@ impl Room {
         let catalog = self.catalog.get().ok_or("durable catalog required")?;
         let authority_check = authority.clone();
         let authority_slug = self.slug.clone();
-        catalog
-            .execute_catalog(256, move |c| {
-                c.agent_annotation_authorized(&authority_slug, &authority_check)
-            })
-            .await
-            .map_err(|e| e.to_string())?;
         let key = batch.request_id.clone();
-        let storage_id = self.storage_id.clone();
-        if let Some(old) = catalog
-            .execute_catalog(256, move |c| c.operation(&storage_id, &key))
+        let digest = batch.digest.clone();
+        let receipt_bytes = 256
+            + authority_slug.len()
+            + key.len()
+            + digest.len()
+            + authority.account_id.len()
+            + authority.generation.len()
+            + authority.link_hash.len()
+            + authority.parent_request_id.len()
+            + authority.execution_epoch.len();
+        if let Some(receipt) = catalog
+            .execute_catalog(receipt_bytes, move |c| {
+                c.agent_annotation_receipt(&authority_slug, &key, &digest, &authority_check)
+            })
             .await
             .map_err(|e| e.to_string())?
         {
-            if old.kind != "agent_annotations"
-                || old.status != "committed"
-                || old.request_digest != batch.digest
-            {
-                return Err("operation key reused".into());
-            }
-            return serde_json::from_str(&old.result).map_err(|e| format!("invalid receipt: {e}"));
+            return serde_json::from_str(&receipt).map_err(|e| format!("invalid receipt: {e}"));
         }
         let mut state = self.state.lock().await;
         if let Some(revision) = &batch.base_revision {
@@ -209,6 +208,20 @@ impl Room {
             .iter()
             .map(|c| json!(c).to_string().len())
             .sum::<usize>()
+            + batch
+                .replies
+                .iter()
+                .map(|(id, reply)| id.len() + json!(reply).to_string().len())
+                .sum::<usize>()
+            + batch.deletes.iter().map(String::len).sum::<usize>()
+            + authority.account_id.len()
+            + authority.generation.len()
+            + authority.link_hash.len()
+            + authority.parent_request_id.len()
+            + authority.execution_epoch.len()
+            + batch.request_id.len()
+            + batch.digest.len()
+            + slug.len()
             + receipt.len()
             + 1024;
         let (request_id, digest, deletes) = (batch.request_id, batch.digest, batch.deletes.clone());

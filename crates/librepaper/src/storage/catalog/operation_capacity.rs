@@ -69,3 +69,32 @@ impl Catalog {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepared_slots_reserve_capacity_for_cleanup_and_release_on_settlement() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        catalog.upsert_account(&super::super::tests::account()).unwrap();
+        catalog.create_document(&super::super::tests::document()).unwrap();
+        for index in 0..PREPARED_ROWS {
+            catalog.immediate(|tx| {
+                if index >= PREPARED_ROWS - PREPARED_RECOVERY_RESERVE {
+                    assert!(matches!(Catalog::admit_operation_slot(tx, Some("storage-1"), "agent_annotations"), Err(CatalogError::Busy)));
+                }
+                Catalog::admit_operation_slot(tx, Some("storage-1"), if index < PREPARED_ROWS-PREPARED_RECOVERY_RESERVE { "agent_annotations" } else { "agent_cancel" })?;
+                tx.execute("INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,created_at,updated_at,work_expires_at)
+                    VALUES(?1,'storage-1','account:acct-1',?1,'agent_annotations',?2,'prepared','initial',0,0,1000)", params![format!("operation-{index}"),"a".repeat(64)])?;
+                Ok(())
+            }).unwrap();
+        }
+        catalog.immediate(|tx| {
+            assert!(matches!(Catalog::admit_operation_slot(tx, Some("storage-1"), "erase_document"), Err(CatalogError::Busy)));
+            tx.execute("UPDATE operations SET state='committed',completed_at=1,receipt_expires_at=1000,result_json='{}'", [])?;
+            Catalog::admit_operation_slot(tx, Some("storage-1"), "agent_annotations")?;
+            Ok(())
+        }).unwrap();
+    }
+}

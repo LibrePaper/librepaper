@@ -123,6 +123,7 @@ impl Catalog {
                 let id = hex::encode(crate::auth::random_bytes(16));
                 let request_key = crate::util::new_request_key();
                 let digest = hex::encode(sha2::Sha256::digest(format!("rotate_links:{}:{}",plan.source_key,destination).as_bytes()));
+                Self::admit_operation_slot(tx, None, "rotate_links")?;
                 tx.execute("INSERT INTO operations(id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at)
                     VALUES(?1,'system:link-rotation',?2,'rotate_links',?3,'prepared',?4,?5,?6,?6)",
                     params![id,request_key,digest,generation,serde_json::to_string(&plan).map_err(|error|CatalogError::Invalid(error.to_string()))?,now])?;

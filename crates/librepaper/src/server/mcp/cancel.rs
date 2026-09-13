@@ -17,6 +17,7 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         target: &OperationKey,
     ) -> Result<Option<Value>, Failure> {
         let Some(catalog) = &self.store.catalog else {
@@ -25,9 +26,24 @@ impl Server {
         let target_request_id = target.scoped_request_id(actor);
         let slug_owned = slug.to_owned();
         let target_owned = target_request_id.clone();
+        let account_id = who.id.id.clone();
+        let generation = who.id.session_generation.clone();
+        let link_hash = who.link.clone();
+        let input_bytes = 256
+            + account_id.len()
+            + generation.len()
+            + link_hash.len()
+            + slug_owned.len()
+            + target_owned.len();
         let cancellation = catalog
-            .execute_catalog(256, move |catalog| {
-                catalog.agent_cancellation(&slug_owned, &target_owned)
+            .execute_catalog(input_bytes, move |catalog| {
+                catalog.agent_cancellation(
+                    &slug_owned,
+                    &target_owned,
+                    &account_id,
+                    &generation,
+                    &link_hash,
+                )
             })
             .await
             .map_err(|error| Failure::new("unavailable", error.to_string()))?;
@@ -99,11 +115,27 @@ impl Server {
         // A retry must remain readable after the cancellation epoch expires.
         // It is still bound to this actor through the scoped request id and
         // the outer MCP handler has already rechecked current authority.
+        let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
+        let account_id = who.id.id.clone();
+        let generation = who.id.session_generation.clone();
+        let link_hash = who.link.clone();
         let existing_slug = slug.to_owned();
         let existing_id = cancel_request_id.clone();
+        let input_bytes = 256
+            + account_id.len()
+            + generation.len()
+            + link_hash.len()
+            + existing_slug.len()
+            + existing_id.len();
         let existing = catalog
-            .execute_catalog(256, move |catalog| {
-                catalog.agent_cancellation_by_request(&existing_slug, &existing_id)
+            .execute_catalog(input_bytes, move |catalog| {
+                catalog.agent_cancellation_by_request(
+                    &existing_slug,
+                    &existing_id,
+                    &account_id,
+                    &generation,
+                    &link_hash,
+                )
             })
             .await
             .map_err(|error| Failure::new("unavailable", error.to_string()))?;
@@ -145,8 +177,19 @@ impl Server {
         let account_id = who.id.id.clone();
         let generation = who.id.session_generation.clone();
         let link_hash = who.link.clone();
+        let input_bytes = 512
+            + cancel_slug.len()
+            + cancel_target.len()
+            + cancel_id.len()
+            + cancel_digest.len()
+            + cancel_kind.len()
+            + cancel_target_id.len()
+            + cancel_committed.as_deref().map_or(0, str::len)
+            + account_id.len()
+            + generation.len()
+            + link_hash.len();
         let cancellation = catalog
-            .execute_catalog(512, move |catalog| {
+            .execute_catalog(input_bytes, move |catalog| {
                 catalog.cancel_agent_operation(
                     &cancel_slug,
                     &cancel_target,
@@ -158,7 +201,7 @@ impl Server {
                     &account_id,
                     &generation,
                     &link_hash,
-                    now_unix(),
+                    crate::util::now_millis(),
                 )
             })
             .await

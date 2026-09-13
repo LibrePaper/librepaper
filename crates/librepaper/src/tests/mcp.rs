@@ -742,7 +742,7 @@ async fn mcp_retention_expires_terminal_receipts_but_preserves_unresolved_eviden
         .unwrap()
         .is_some());
     assert!(catalog
-        .agent_cancellation(&slug, "old-pending")
+        .agent_cancellation(&slug, "old-pending", "test-actor", "", "")
         .unwrap()
         .is_some());
 }

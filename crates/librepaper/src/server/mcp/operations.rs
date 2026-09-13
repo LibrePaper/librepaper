@@ -371,7 +371,7 @@ impl Server {
         }
         // Cancellation of uncommitted work precedes fresh admission. A
         // retained terminal receipt above remains the authoritative outcome.
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &key).await? {
+        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, &key).await? {
             return Ok(cancellation);
         }
         self.mcp_admit(slug, actor, &key, &digest).await?;
@@ -382,7 +382,7 @@ impl Server {
                     for (index, patch) in
                         args["patches"].as_array().into_iter().flatten().enumerate()
                     {
-                        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &key).await?
+                        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, &key).await?
                         {
                             return Ok(cancellation);
                         }
@@ -425,7 +425,7 @@ impl Server {
                     )
                     .await?;
                 if let Some(cancellation) = self
-                    .mcp_cancellation(slug, actor, &candidate.operation)
+                    .mcp_cancellation(slug, actor, &who, &candidate.operation)
                     .await?
                 {
                     return Ok(cancellation);
@@ -663,7 +663,7 @@ impl Server {
                 "editor access is required to checkpoint",
             ));
         }
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, key).await? {
+        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, key).await? {
             return Ok(cancellation);
         }
         let view: View = self
@@ -883,7 +883,7 @@ impl Server {
         view: &View,
     ) -> Result<Value, Failure> {
         let key = &candidate.operation;
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, key).await? {
+        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, key).await? {
             return Ok(cancellation);
         }
         let digest = candidate.digest.clone();
@@ -1018,7 +1018,7 @@ impl Server {
         peer: SocketAddr,
         args: &Value,
     ) -> Result<Value, Failure> {
-        self.mcp_recheck(slug, headers, arrival, actor).await?;
+        let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
         if args["action"] == "cancel" {
             return self.mcp_cancel(slug, actor, headers, arrival, args).await;
         }
@@ -1031,7 +1031,7 @@ impl Server {
                         .unwrap_or(Value::Null),
                 )
                 .map_err(|_| Failure::new("invalid_params", "operation identity required"))?;
-                if let Some(cancellation) = self.mcp_cancellation(slug, actor, &key).await? {
+                if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, &key).await? {
                     return Ok(cancellation);
                 }
                 let result = self
@@ -1080,7 +1080,7 @@ impl Server {
                     .await?;
                 if args["kind"] == "render" {
                     if let Some(cancellation) = self
-                        .mcp_cancellation(slug, actor, &candidate.operation)
+                        .mcp_cancellation(slug, actor, &who, &candidate.operation)
                         .await?
                     {
                         return Ok(cancellation);
@@ -1110,7 +1110,7 @@ impl Server {
                         .await;
                 }
                 if let Some(cancellation) = self
-                    .mcp_cancellation(slug, actor, &candidate.operation)
+                    .mcp_cancellation(slug, actor, &who, &candidate.operation)
                     .await?
                 {
                     return Ok(cancellation);

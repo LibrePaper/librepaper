@@ -23,7 +23,7 @@ impl Catalog {
         self.immediate(|tx| {
             let document_id: String = tx
                 .query_row(
-                    "SELECT id FROM documents WHERE slug=?1 AND status='active'",
+                    "SELECT d.id FROM documents d JOIN accounts a ON a.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND a.status='active'",
                     [slug],
                     |row| row.get(0),
                 )
@@ -60,6 +60,7 @@ impl Catalog {
                 ],
             )
             .map_err(CatalogError::from)?;
+            Self::admit_operation_slot(tx, Some(&document_id), "agent_execution")?;
             tx.execute(
                 "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,
                     state,writer_generation,conversation_id,execution_epoch,plan_json,
@@ -103,7 +104,7 @@ impl Catalog {
             let changed = tx.execute(
                 "UPDATE operations SET state='aborted',result_json=?4,completed_at=?5,
                     receipt_expires_at=?6,updated_at=?5
-                 WHERE document_id=(SELECT id FROM documents WHERE slug=?1)
+                 WHERE document_id=(SELECT d.id FROM documents d JOIN accounts a ON a.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND a.status='active')
                    AND conversation_id=?2 AND execution_epoch=?3 AND kind='agent_execution'
                    AND state='prepared'",
                 params![
@@ -132,7 +133,7 @@ impl Catalog {
                 .ok_or_else(|| CatalogError::Invalid("execution lease expiry overflow".into()))?;
             Ok(tx.execute(
                 "UPDATE operations SET work_expires_at=?4,updated_at=?5
-                 WHERE document_id=(SELECT id FROM documents WHERE slug=?1)
+                 WHERE document_id=(SELECT d.id FROM documents d JOIN accounts a ON a.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND a.status='active')
                    AND conversation_id=?2 AND execution_epoch=?3 AND kind='agent_execution'
                    AND state='prepared' AND work_expires_at>?5
                    AND writer_generation=(SELECT writer_generation FROM server_state WHERE id=1)",
@@ -153,7 +154,7 @@ impl Catalog {
         tx.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM operations o JOIN documents d ON d.id=o.document_id
-                 WHERE d.slug=?1 AND o.kind='agent_execution' AND o.execution_epoch=?2
+                 WHERE d.status='active' AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=d.owner_id AND a.status='active') AND d.slug=?1 AND o.kind='agent_execution' AND o.execution_epoch=?2
                    AND o.state='prepared' AND o.work_expires_at>?3
                    AND o.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1))",
             params![slug, execution_epoch, unix_millis()],
@@ -172,7 +173,7 @@ impl Catalog {
         db.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM operations o JOIN documents d ON d.id=o.document_id
-                 WHERE d.slug=?1 AND o.conversation_id=?2 AND o.execution_epoch=?3
+                 WHERE d.status='active' AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=d.owner_id AND a.status='active') AND d.slug=?1 AND o.conversation_id=?2 AND o.execution_epoch=?3
                    AND o.kind='agent_execution' AND o.state='prepared'
                    AND o.work_expires_at>?4
                    AND o.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1))",
@@ -194,9 +195,9 @@ mod tests {
             storage_id: "lease-storage".into(),
             title: "Lease".into(),
             sha: "sha".into(),
-            created_at: "".into(),
-            published_at: "".into(),
-            updated_at: "".into(),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            published_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
             example: false,
             owner_key: "owner".into(),
             owner_id: None,

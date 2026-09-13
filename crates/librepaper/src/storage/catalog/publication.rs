@@ -278,6 +278,7 @@ impl Catalog {
                 if current.as_deref().unwrap_or("") != expected {
                     return Err(CatalogError::Conflict("publication head changed".into()));
                 }
+                Self::admit_operation_slot(tx, Some(first.document_id.as_str()), "display_publish")?;
                 tx.execute(
                     "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,
                         state,writer_generation,expected_document_generation,plan_json,

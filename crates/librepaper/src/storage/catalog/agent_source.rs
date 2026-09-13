@@ -133,7 +133,7 @@ impl Catalog {
             if operation.status != "prepared" {
                 return Err(CatalogError::Conflict("operation was aborted".into()));
             }
-            if Self::agent_cancellation_active_tx(tx, storage_id, request_id)? {
+            if Self::agent_cancellation_active_tx(tx, storage_id, request_id, &requested_actor)? {
                 return Err(CatalogError::Conflict(
                     "agent operation was cancelled".into(),
                 ));
@@ -198,14 +198,15 @@ impl Catalog {
                 "UPDATE operations
                     SET state='committed',result_json=?1,completed_at=?2,
                         receipt_expires_at=?3,updated_at=?2
-                  WHERE document_id=?4 AND request_key=?5
+                  WHERE document_id=?4 AND request_key=?5 AND actor_key=?6 AND account_id IS NULL
                     AND kind='agent_apply' AND state='prepared'",
                 params![
                     result_json,
                     completed,
                     completed.saturating_add(AGENT_RECEIPT_RETENTION_MS),
                     storage_id,
-                    request_id
+                    request_id,
+                    requested_actor.as_str()
                 ],
             )
             .map_err(CatalogError::from)?;
