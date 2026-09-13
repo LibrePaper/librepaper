@@ -2790,7 +2790,14 @@ impl Room {
                 .iter()
                 .find(|candidate| candidate.sha == base_sha)
                 .cloned()
-                .ok_or_else(|| "restore base checkpoint was shed".to_string())?
+        };
+        let base_point = match base_point {
+            Some(point) => point,
+            None => self
+                .checkpoint_by_sha(&base_sha)
+                .await
+                .map_err(WriteError::Storage)?
+                .ok_or_else(|| "restore base checkpoint was shed".to_string())?,
         };
         let (base_tree, base_bodies) = self.checkpoint_texts(&base_point).await?;
         if self.read_only() || !self.hold().await {
