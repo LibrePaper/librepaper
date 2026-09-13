@@ -1767,7 +1767,16 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
                 .collect::<Vec<_>>())
         })
         .unwrap();
-    for plan in plans {
+    // Grant visibility starts from the account-scoped grant index and may
+    // sort only that bounded candidate page.  Open and example visibility
+    // must use the covering document indexes and therefore cannot spill to a
+    // temporary tree or scan the document table.
+    assert!(
+        plans[0].iter().all(|detail| !detail.contains("SCAN documents")),
+        "grant plan: {:?}",
+        plans[0]
+    );
+    for plan in plans.iter().skip(1) {
         assert!(
             plan.iter().all(|detail| !detail.contains("TEMP B-TREE")),
             "{plan:?}"
