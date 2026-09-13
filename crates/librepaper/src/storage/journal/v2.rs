@@ -63,6 +63,18 @@ pub struct JournalAppendRequest {
     pub first_sequence: u64,
     pub last_sequence: u64,
     pub parts: Vec<JournalPartAdmission>,
+    /// Already admitted immutable source/asset objects referenced by this
+    /// append. They become live roots in the same transaction that
+    /// acknowledges the journal append.
+    pub dependencies: Vec<JournalDependency>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalDependency {
+    pub object_id: ObjectId,
+    pub kind: String,
+    pub digest: String,
+    pub byte_length: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -561,6 +573,7 @@ where
                 first_sequence: sequence,
                 last_sequence: sequence,
                 parts: Vec::new(),
+                dependencies: Vec::new(),
             };
             self.append(request, &[segment]).await.map(|_| ())
         }

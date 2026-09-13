@@ -1526,6 +1526,28 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
                 || u64::try_from(current_sequence).ok() != Some(request.first_sequence.saturating_sub(1))
                 || u64::try_from(source_generation).ok() != Some(request.expected_source_generation)
             { return Err(crate::storage::catalog::CatalogError::Conflict("journal head changed".into())); }
+            for dependency in &request.dependencies {
+                if dependency.byte_length > 16 * 1024 * 1024
+                    || !matches!(dependency.kind.as_str(), "source_chunk" | "source_recipe" | "source_tree" | "asset")
+                {
+                    return Err(crate::storage::catalog::CatalogError::Invalid(
+                        "invalid journal dependency descriptor".into(),
+                    ));
+                }
+                let bytes = i64::try_from(dependency.byte_length).map_err(|_| {
+                    crate::storage::catalog::CatalogError::Invalid("dependency length exceeds SQL range".into())
+                })?;
+                let found: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM objects WHERE document_id=?1 AND id=?2 AND kind=?3 AND state='available' AND digest=?4 AND byte_length=?5)",
+                    params![request.document_id, dependency.object_id.as_str(), dependency.kind, dependency.digest, bytes],
+                    |row| row.get(0),
+                ).map_err(crate::storage::catalog::CatalogError::from)?;
+                if !found {
+                    return Err(crate::storage::catalog::CatalogError::Conflict(
+                        "journal dependency is not an available exact physical object".into(),
+                    ));
+                }
+            }
             let admitted_i64 = i64::try_from(total_bytes).map_err(|_| crate::storage::catalog::CatalogError::Invalid("journal reservation exceeds SQL range".into()))?;
             let owner_ram = reservations.owner_bytes.get(&owner_id).copied().unwrap_or(0);
             let owner_after = owner_stored.checked_add(owner_reserved).and_then(|value| value.checked_add(owner_ram)).and_then(|value| value.checked_add(admitted_i64)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("owner quota accounting overflow".into()))?;
@@ -1537,7 +1559,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             let operation_id = journal_operation_id();
             let now = now_millis();
             Catalog::admit_operation_slot(tx, Some(&request.document_id), "journal_append")?;
-            let mut plan = serde_json::json!({"version":1,"epoch":request.epoch,"first_sequence":request.first_sequence,"last_sequence":request.last_sequence,"parts":request.parts.iter().map(|part| serde_json::json!({"first":part.first_sequence,"last":part.last_sequence,"digest":part.digest,"bytes":part.byte_length})).collect::<Vec<_>>()});
+            let mut plan = serde_json::json!({"version":1,"epoch":request.epoch,"first_sequence":request.first_sequence,"last_sequence":request.last_sequence,"parts":request.parts.iter().map(|part| serde_json::json!({"first":part.first_sequence,"last":part.last_sequence,"digest":part.digest,"bytes":part.byte_length})).collect::<Vec<_>>(),"dependencies":request.dependencies.iter().map(|dependency| serde_json::json!({"id":dependency.object_id.as_str(),"kind":dependency.kind,"digest":dependency.digest,"bytes":dependency.byte_length})).collect::<Vec<_>>()});
             tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,?3,?4,'journal_append',?5,'prepared',?6,?7,?8,?9,?9,?10)", params![operation_id,request.document_id,request.actor_key,request.request_key,journal_request_digest(&request),writer_generation,source_generation,plan.to_string(),now,now.saturating_add(3_600_000)]).map_err(crate::storage::catalog::CatalogError::from)?;
             let mut allocations = Vec::with_capacity(request.parts.len());
             let mut reserved = 0i64;
@@ -1548,6 +1570,12 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
                 reserved = reserved.checked_add(bytes).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("journal reservation overflow".into()))?;
                 tx.execute("INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,journal_epoch,first_sequence,last_sequence) VALUES(?1,?2,?3,'journal_segment','allocated',?4,1,NULL,?5,?6,?7,?8,?9,?10)", params![request.document_id,object_id.as_str(),storage_key,part.digest,bytes,operation_id,now,part.epoch,part.first_sequence,part.last_sequence]).map_err(crate::storage::catalog::CatalogError::from)?;
                 allocations.push(JournalObjectAllocation { object_id, storage_key, epoch: part.epoch, first_sequence: part.first_sequence, last_sequence: part.last_sequence });
+            }
+            for dependency in &request.dependencies {
+                tx.execute(
+                    "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,?3,'stage',?4,?5,?6,?7)",
+                    params![request.document_id, dependency.object_id.as_str(), format!("journal-stage-{}", operation_id), operation_id, writer_generation, now, now.saturating_add(3_600_000)],
+                ).map_err(crate::storage::catalog::CatalogError::from)?;
             }
             plan["objects"] = serde_json::Value::Array(
                 allocations
@@ -1639,6 +1667,31 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
                 stored_delta = stored_delta.checked_add(if old_state == "allocated" { bytes } else { 0 }).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("journal stored counter overflow".into()))?;
                 tx.execute("UPDATE objects SET state='available',byte_length=COALESCE(byte_length,?1),reserved_bytes=0,allocation_operation_id=NULL,live_root=1 WHERE document_id=?2 AND id=?3 AND state IN ('allocated','available')", params![bytes,admission.document_id,allocation.object_id.as_str()]).map_err(crate::storage::catalog::CatalogError::from)?;
             }
+            let plan: serde_json::Value = serde_json::from_str(&plan_json)
+                .map_err(|_| crate::storage::catalog::CatalogError::Invalid("journal operation plan is invalid".into()))?;
+            for dependency in plan.get("dependencies").and_then(serde_json::Value::as_array).into_iter().flatten() {
+                let object_id = dependency.get("id").and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal dependency plan is incomplete".into()))?;
+                let kind = dependency.get("kind").and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal dependency plan is incomplete".into()))?;
+                let digest = dependency.get("digest").and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal dependency plan is incomplete".into()))?;
+                let bytes = dependency.get("bytes").and_then(serde_json::Value::as_i64)
+                    .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal dependency plan is incomplete".into()))?;
+                let changed = tx.execute(
+                    "UPDATE objects SET live_root=1 WHERE document_id=?1 AND id=?2 AND kind=?3 AND digest=?4 AND byte_length=?5 AND state='available'",
+                    params![admission.document_id, object_id, kind, digest, bytes],
+                ).map_err(crate::storage::catalog::CatalogError::from)?;
+                if changed != 1 {
+                    return Err(crate::storage::catalog::CatalogError::Conflict(
+                        "journal dependency changed before acknowledgement".into(),
+                    ));
+                }
+            }
+            tx.execute(
+                "DELETE FROM object_leases WHERE operation_id=?1 AND purpose='stage'",
+                [admission.operation_id.as_str()],
+            ).map_err(crate::storage::catalog::CatalogError::from)?;
             let last = i64::try_from(admission.expected_last_sequence).map_err(|_| crate::storage::catalog::CatalogError::Invalid("journal sequence exceeds SQL range".into()))?;
             tx.execute("UPDATE documents SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,journal_sequence=?3,source_generation=source_generation+1,updated_at=?4 WHERE id=?5 AND journal_sequence=?6", params![stored_delta,reserved,last,now,admission.document_id,current_sequence]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute("UPDATE accounts SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2 WHERE id=(SELECT owner_id FROM documents WHERE id=?3)", params![stored_delta,reserved,admission.document_id]).map_err(crate::storage::catalog::CatalogError::from)?;
@@ -2968,6 +3021,7 @@ mod journal_commit_race_tests {
                 digest: digest.clone(),
                 byte_length: encoded.len() as u64,
             }],
+            dependencies: Vec::new(),
         };
         let admission = journal.prepare_append(request).await.expect("append admission");
         let allocation = admission.allocations[0].clone();
