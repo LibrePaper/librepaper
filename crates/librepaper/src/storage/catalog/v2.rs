@@ -2455,6 +2455,111 @@ impl Catalog {
         })
     }
 
+    /// Remove the empty document and its still-prepared initial operation
+    /// after admission rejects the first physical closure. This is only
+    /// valid before any object, checkpoint, or lease exists; replacements
+    /// retain their aborted receipt through `finish_v2_operation` instead.
+    pub(crate) fn discard_v2_creation(
+        &self,
+        document_id: &DocumentId,
+        operation_id: &OperationId,
+    ) -> CatalogResult<()> {
+        self.immediate(|tx| {
+            let (status, owner_id, checkpoint_refs): (String, String, i64) = tx
+                .query_row(
+                    "SELECT status,owner_id,checkpoint_ref_count FROM documents WHERE id=?1",
+                    [document_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(CatalogError::from)?;
+            if status != "creating" || checkpoint_refs != 0 {
+                return Err(CatalogError::Conflict(
+                    "only an empty creating document can be discarded".into(),
+                ));
+            }
+            let prepared: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM operations
+                     WHERE id=?1 AND document_id=?2 AND state='prepared'",
+                    params![operation_id.as_str(), document_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if prepared != 1 {
+                return Err(CatalogError::Conflict(
+                    "initial document operation is no longer prepared".into(),
+                ));
+            }
+            let object_count: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM objects WHERE document_id=?1",
+                    [document_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if object_count != 0 {
+                return Err(CatalogError::Conflict(
+                    "cannot discard a document with allocated objects".into(),
+                ));
+            }
+            let lease_count: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM object_leases WHERE document_id=?1",
+                    [document_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if lease_count != 0 {
+                return Err(CatalogError::Conflict(
+                    "cannot discard a document with object leases".into(),
+                ));
+            }
+            tx.execute(
+                "DELETE FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared'",
+                params![operation_id.as_str(), document_id.as_str()],
+            )
+            .map_err(CatalogError::from)?;
+            let deleted = tx
+                .execute(
+                    "DELETE FROM documents WHERE id=?1 AND status='creating'",
+                    [document_id.as_str()],
+                )
+                .map_err(CatalogError::from)?;
+            if deleted != 1 {
+                return Err(CatalogError::Conflict(
+                    "initial document changed during allocation refusal".into(),
+                ));
+            }
+            if tx
+                .execute(
+                    "UPDATE accounts SET document_count=document_count-1
+                     WHERE id=?1 AND document_count>=1",
+                    [owner_id.as_str()],
+                )
+                .map_err(CatalogError::from)?
+                != 1
+            {
+                return Err(CatalogError::Invalid(
+                    "owner document counter underflow during discard".into(),
+                ));
+            }
+            if tx
+                .execute(
+                    "UPDATE server_state SET document_count=document_count-1,
+                     catalog_revision=catalog_revision+1 WHERE id=1 AND document_count>=1",
+                    [],
+                )
+                .map_err(CatalogError::from)?
+                != 1
+            {
+                return Err(CatalogError::Invalid(
+                    "server document counter underflow during discard".into(),
+                ));
+            }
+            Ok(())
+        })
+    }
+
     pub(crate) fn finish_v2_operation(
         &self,
         operation_id: &OperationId,

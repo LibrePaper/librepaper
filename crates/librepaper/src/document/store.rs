@@ -1716,19 +1716,30 @@ impl Store {
             })
             .await
         {
-            let _ = catalog
+            let operation_id = operation.id.clone();
+            let cleanup = catalog
                 .execute_catalog(STORE_JOB_BYTES, {
-                    let operation_id = operation.id.clone();
+                    let document_id = document_id.clone();
+                    let operation_id = operation_id.clone();
                     move |catalog| {
-                        catalog.finish_v2_operation(
-                            &operation_id,
-                            "{\"version\":2,\"error\":\"allocation_refused\"}",
-                            false,
-                            UnixMillis::new(crate::util::now_millis())?,
-                        )
+                        if existing.is_none() {
+                            catalog.discard_v2_creation(&document_id, &operation_id)
+                        } else {
+                            catalog.finish_v2_operation(
+                                &operation_id,
+                                "{\"version\":2,\"error\":\"allocation_refused\"}",
+                                false,
+                                UnixMillis::new(crate::util::now_millis())?,
+                            )
+                        }
                     }
                 })
                 .await;
+            if let Err(cleanup_error) = cleanup {
+                return Err(PutError::Storage(format!(
+                    "allocation refused and cleanup failed: {cleanup_error}"
+                )));
+            }
             return Err(PutError::Storage(error.to_string()));
         }
         let (_, writer_generation, _) = catalog
