@@ -453,7 +453,7 @@ impl DeletionWorker {
                     // bytes are reclaimed by the GC pass after checkpoint and
                     // annotation roots have been removed.
                     if let Err(error) = catalog.erase_document_batch(&slug, 250, now) {
-                        if !matches!(error, CatalogError::Conflict(_)) {
+                        if !matches!(&error, CatalogError::Conflict(_)) {
                             return Err(error);
                         }
                     }
