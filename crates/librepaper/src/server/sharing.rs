@@ -134,7 +134,7 @@ impl Server {
     pub(super) async fn mint_read_link(
         &self,
         slug: &str,
-        viewer: &Viewer,
+        caller: &Caller,
     ) -> Result<String, ModifyError> {
         let key = mint_link_key();
         let link = LinkGrant {
@@ -145,13 +145,13 @@ impl Server {
             ..Default::default()
         };
         let actor = crate::document::store::MutationActor {
-            account_id: viewer.id.id.clone(),
-            owner_key: viewer.key.clone(),
-            session_generation: viewer.id.session_generation.clone(),
-            link_hash: viewer.link.clone(),
+            account_id: caller.id.clone(),
+            owner_key: caller.key.clone(),
+            session_generation: caller.session_generation.clone(),
+            link_hash: String::new(),
             policy_editor: true,
-            automation: viewer.automation,
-            unowned_publisher: viewer.id.id.is_empty(),
+            automation: false,
+            unowned_publisher: caller.id.is_empty(),
         };
         self.store
             .modify_as_owner(slug, &actor, |entry| {

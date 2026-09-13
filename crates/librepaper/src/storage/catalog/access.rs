@@ -125,11 +125,11 @@ fn visibility_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
         storage_id: row.get(1)?,
         title: row.get(2)?,
         sha: String::new(),
-        created_at: row.get::<_, i64>(3)?.to_string(),
+        created_at: crate::util::format_unix_millis(row.get(3)?),
         published_at: row
             .get::<_, Option<i64>>(4)?
-            .map_or_else(String::new, |value| value.to_string()),
-        updated_at: row.get::<_, i64>(5)?.to_string(),
+            .map_or_else(|| String::new(), crate::util::format_unix_millis),
+        updated_at: crate::util::format_unix_millis(row.get(5)?),
         example: row.get::<_, String>(6)? == "example",
         owner_key: String::new(),
         owner_id: row.get(7)?,
@@ -163,6 +163,29 @@ fn visibility_page(
         result.push(visibility_document(row).map_err(CatalogError::from)?);
     }
     Ok(result)
+}
+
+fn bump_document_updated_at(
+    tx: &rusqlite::Transaction<'_>,
+    document_id: &str,
+) -> CatalogResult<()> {
+    let current: i64 = tx
+        .query_row(
+            "SELECT updated_at FROM documents WHERE id=?1",
+            [document_id],
+            |row| row.get(0),
+        )
+        .map_err(CatalogError::from)?;
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| CatalogError::Invalid("document timestamp overflow".into()))?
+        .max(unix_millis());
+    tx.execute(
+        "UPDATE documents SET updated_at=?1 WHERE id=?2",
+        params![next, document_id],
+    )
+    .map_err(CatalogError::from)?;
+    Ok(())
 }
 
 impl Catalog {
@@ -529,8 +552,16 @@ impl Catalog {
                 "a document may have at most three links".into(),
             ));
         }
+        if grants.len() > 1_000 {
+            return Err(CatalogError::Invalid("grant page is too large".into()));
+        }
         let expected_updated_at = link_time(&document.updated_at)?;
         let slug = document.slug.clone();
+        let keys = self
+            .link_sealing_keys
+            .read()
+            .map_err(|_| CatalogError::Busy)?
+            .clone();
         self.immediate(|tx| {
             let (document_id, current_updated_at, current_status, current_mode, owner_id):
                 (String, i64, String, String, String) = tx
@@ -545,6 +576,13 @@ impl Catalog {
             if current_status != "active" {
                 return Err(CatalogError::Conflict("document is not active".into()));
             }
+            if document.storage_id != document_id
+                || document.owner_id.as_deref() != Some(owner_id.as_str())
+            {
+                return Err(CatalogError::Conflict(
+                    "document identity or owner changed while sharing".into(),
+                ));
+            }
             if current_updated_at != expected_updated_at {
                 return Err(CatalogError::Conflict(
                     "document changed while sharing; reload and retry".into(),
@@ -557,23 +595,33 @@ impl Catalog {
                 } else {
                     account_id == owner_id
                 };
-                owner_match
-                    && Self::mutation_authorized_in_tx(
-                    tx,
-                    &slug,
-                    MutationAuthority {
-                        account_id,
-                        owner_key,
-                        generation,
-                        link_hash: "",
-                        policy_editor: true,
-                        automation: false,
-                        unowned_publisher: false,
-                        execution_epoch: "",
-                        agent_checkpoint: None,
-                    },
-                    "editor",
-                    )?
+                if account_id.is_empty() && owner_match {
+                    tx.query_row(
+                        "SELECT status='active' AND session_generation=?2
+                         FROM accounts WHERE id=?1",
+                        params![owner_id, generation],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(CatalogError::from)?
+                } else {
+                    owner_match
+                        && Self::mutation_authorized_in_tx(
+                            tx,
+                            &slug,
+                            MutationAuthority {
+                                account_id,
+                                owner_key,
+                                generation,
+                                link_hash: "",
+                                policy_editor: true,
+                                automation: false,
+                                unowned_publisher: false,
+                                execution_epoch: "",
+                                agent_checkpoint: None,
+                            },
+                            "editor",
+                        )?
+                }
             } else {
                 tx.query_row(
                     "SELECT a.status='active' AND d.status='active'
@@ -608,12 +656,11 @@ impl Catalog {
                 if expires_at.is_some_and(|until| until < created_at) {
                     return Err(CatalogError::Invalid("link expiry precedes creation".into()));
                 }
-                let keys = self.link_sealing_keys.read().map_err(|_| CatalogError::Busy)?;
                 if keys.is_empty()
                     || !keys.iter().any(|(_, key)| {
                         open_link_envelope(
                             key,
-                            &document.storage_id,
+                            &document_id,
                             &link.role,
                             &link.hash,
                             &link.sealed,
@@ -633,8 +680,8 @@ impl Catalog {
                        token_hash=excluded.token_hash,sealed_token=excluded.sealed_token,
                        sealing_key_id=excluded.sealing_key_id,label=excluded.label,
                        budget=excluded.budget,expires_at=excluded.expires_at,
-                       credential_generation=links.credential_generation+
-                         CASE WHEN links.token_hash<>excluded.token_hash THEN 1 ELSE 0 END",
+                       credential_generation=credential_generation+
+                         CASE WHEN token_hash<>excluded.token_hash THEN 1 ELSE 0 END",
                     params![
                         document_id,
                         format!("{}-{}", link.role, hex::encode(crate::auth::random_bytes(8))),
@@ -676,6 +723,40 @@ impl Catalog {
                     || !matches!(grant.role.as_str(), "reader" | "commenter" | "editor")
                 {
                     return Err(CatalogError::Invalid("invalid grant".into()));
+                }
+                let active: bool = tx
+                    .query_row(
+                        "SELECT status='active' FROM accounts WHERE id=?1",
+                        [&grant.account_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(CatalogError::from)?
+                    .unwrap_or(false);
+                if !active {
+                    return Err(CatalogError::Conflict("grantee is not active".into()));
+                }
+                let exists: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM grants
+                         WHERE document_id=?1 AND account_id=?2)",
+                        params![document_id, grant.account_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if !exists {
+                    let count: i64 = tx
+                        .query_row(
+                            "SELECT COUNT(DISTINCT document_id) FROM grants WHERE account_id=?1",
+                            [&grant.account_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(CatalogError::from)?;
+                    if count >= MAX_RECIPIENT_DOCUMENTS {
+                        return Err(CatalogError::Conflict(
+                            "recipient document capacity exceeded".into(),
+                        ));
+                    }
                 }
                 tx.execute(
                     "INSERT INTO grants(document_id,account_id,role,created_at)
@@ -764,11 +845,7 @@ impl Catalog {
                 params![document_id, role, account_id, link_time(since)?],
             )
             .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE documents SET updated_at=max(updated_at,?2) WHERE id=?1",
-                params![document_id, unix_millis().saturating_add(1)],
-            )
-            .map_err(CatalogError::from)?;
+            bump_document_updated_at(tx, &document_id)?;
             Ok(Grant {
                 slug: slug.into(),
                 role: role.into(),
@@ -795,11 +872,7 @@ impl Catalog {
                 )
                 .map_err(CatalogError::from)?;
             if n == 1 {
-                tx.execute(
-                    "UPDATE documents SET updated_at=max(updated_at,?2) WHERE id=?1",
-                    params![document_id, unix_millis().saturating_add(1)],
-                )
-                .map_err(CatalogError::from)?;
+                bump_document_updated_at(tx, &document_id)?;
             }
             Ok(n == 1)
         })
@@ -857,10 +930,14 @@ impl Catalog {
                 "invalid link expiry or budget".into(),
             ));
         }
+        let keys = self
+            .link_sealing_keys
+            .read()
+            .map_err(|_| CatalogError::Busy)?
+            .clone();
         self.immediate(|tx| {
             let (document_id, storage_id): (String, String) = tx.query_row("SELECT d.id,d.id FROM documents d JOIN accounts a ON a.id=d.owner_id
-                WHERE d.slug=?1 AND d.status='active' AND a.status='active'", [&link.slug], |row| row.get(0)).map_err(CatalogError::from)?;
-            let keys = self.link_sealing_keys.read().map_err(|_| CatalogError::Busy)?;
+                WHERE d.slug=?1 AND d.status='active' AND a.status='active'", [&link.slug], |row| Ok((row.get(0)?, row.get(1)?))).map_err(CatalogError::from)?;
             if keys.is_empty()
                 || !keys.iter().any(|(_, key)| {
                     open_link_envelope(
@@ -885,14 +962,10 @@ impl Catalog {
                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
                 ON CONFLICT(document_id,role) DO UPDATE SET token_hash=excluded.token_hash,sealed_token=excluded.sealed_token,
                 label=excluded.label,budget=excluded.budget,expires_at=excluded.expires_at,sealing_key_id=excluded.sealing_key_id,
-                credential_generation=links.credential_generation+
-                    CASE WHEN links.token_hash<>excluded.token_hash THEN 1 ELSE 0 END",
+                credential_generation=credential_generation+
+                    CASE WHEN token_hash<>excluded.token_hash THEN 1 ELSE 0 END",
                 params![document_id, format!("{}-{}", link.role, hex::encode(crate::auth::random_bytes(8))), link.role, link.hash, link.sealed, key_id, link.label, link.budget, created_at, expires_at]).map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE documents SET updated_at=max(updated_at,?2) WHERE id=?1",
-                params![document_id, unix_millis().saturating_add(1)],
-            )
-            .map_err(CatalogError::from)?;
+            bump_document_updated_at(tx, &document_id)?;
             Ok(link.clone())
         })
     }
@@ -911,11 +984,7 @@ impl Catalog {
                 )
                 .map_err(CatalogError::from)?;
             if n == 1 {
-                tx.execute(
-                    "UPDATE documents SET updated_at=max(updated_at,?2) WHERE id=?1",
-                    params![document_id, unix_millis().saturating_add(1)],
-                )
-                .map_err(CatalogError::from)?;
+                bump_document_updated_at(tx, &document_id)?;
             }
             Ok(n == 1)
         })
@@ -945,7 +1014,13 @@ impl Catalog {
             let (document_id,link_id,generation): (String,String,i64) = tx.query_row("SELECT d.id,l.id,l.credential_generation FROM documents d JOIN accounts a ON a.id=d.owner_id JOIN links l ON l.document_id=d.id WHERE d.slug=?1 AND d.status='active' AND a.status='active' AND l.token_hash=?2 AND (l.expires_at IS NULL OR l.expires_at>?3)", params![guest.slug,guest.link_hash,unix_millis()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
             let payload: String = tx.query_row("SELECT bookmarks_json FROM accounts WHERE id=?1", [&guest.account_id], |r| r.get(0)).map_err(CatalogError::from)?;
             let mut json: serde_json::Value = serde_json::from_str(&payload).map_err(|e| CatalogError::Invalid(format!("invalid bookmarks: {e}")))?;
+            if json.get("version").and_then(serde_json::Value::as_i64) != Some(1) {
+                return Err(CatalogError::Invalid("bookmarks_json has unsupported version".into()));
+            }
             let items = json.get_mut("items").and_then(serde_json::Value::as_array_mut).ok_or_else(|| CatalogError::Invalid("bookmarks_json has invalid shape".into()))?;
+            if items.len() > 1_000 {
+                return Err(CatalogError::Invalid("bookmarks_json has too many items".into()));
+            }
             items.retain(|item| item.get("document_id").and_then(serde_json::Value::as_str) != Some(document_id.as_str()));
             if items.len() >= 1_000 { return Err(CatalogError::refused(CatalogRefusal::Other,"bookmark limit exceeded")); }
             items.push(serde_json::json!({"document_id":document_id,"link_id":link_id,"credential_generation":generation,"pinned_at":guest.since}));
@@ -986,10 +1061,20 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             let mut json: serde_json::Value =
                 serde_json::from_str(&payload).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            if json.get("version").and_then(serde_json::Value::as_i64) != Some(1) {
+                return Err(CatalogError::Invalid(
+                    "bookmarks_json has unsupported version".into(),
+                ));
+            }
             let items = json
                 .get_mut("items")
                 .and_then(serde_json::Value::as_array_mut)
                 .ok_or_else(|| CatalogError::Invalid("bookmarks_json has invalid shape".into()))?;
+            if items.len() > 1_000 {
+                return Err(CatalogError::Invalid(
+                    "bookmarks_json has too many items".into(),
+                ));
+            }
             let before = items.len();
             let link_id: Option<String> = tx
                 .query_row(
@@ -1043,7 +1128,7 @@ impl Catalog {
         let limit = limit.clamp(1, 200);
         let cursor_time = cursor
             .map(|value| {
-                value.0.parse::<i64>().map_err(|_| {
+                crate::util::parse_timestamp_millis(value.0).ok_or_else(|| {
                     CatalogError::Invalid("visibility cursor has an invalid timestamp".into())
                 })
             })
@@ -1054,11 +1139,24 @@ impl Catalog {
         let (documents, stale_bookmarks) = self.with_connection(|connection| {
             let page_limit = i64::from(limit);
             let mut documents = Vec::new();
+            let account_active = if account.is_empty() {
+                false
+            } else {
+                connection
+                    .query_row(
+                        "SELECT status='active' FROM accounts WHERE id=?1",
+                        [account],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .optional()
+                    .map_err(CatalogError::from)?
+                    .unwrap_or(false)
+            };
             let mut page = |sql: &str, params: Vec<&dyn rusqlite::ToSql>| -> CatalogResult<()> {
                 documents.extend(visibility_page(connection, sql, &params)?);
                 Ok(())
             };
-            if !account.is_empty() {
+            if account_active {
                 page(
                     "SELECT d.slug,d.id,d.title,d.created_at,d.published_at,d.updated_at,
                             d.ownership_mode,d.owner_id,d.status,d.stored_bytes,d.reserved_bytes,
@@ -1106,7 +1204,7 @@ impl Catalog {
             drop(page);
 
             let mut stale = Vec::new();
-            if !account.is_empty() {
+            if account_active {
                 let payload: Option<String> = connection
                     .query_row(
                         "SELECT bookmarks_json FROM accounts WHERE id=?1 AND status='active'",
@@ -1118,6 +1216,9 @@ impl Catalog {
                 if let Some(payload) = payload {
                     let mut bookmarks: serde_json::Value = serde_json::from_str(&payload)
                         .map_err(|e| CatalogError::Invalid(format!("invalid bookmarks: {e}")))?;
+                    if bookmarks.get("version").and_then(serde_json::Value::as_i64) != Some(1) {
+                        return Err(CatalogError::Invalid("bookmarks_json has unsupported version".into()));
+                    }
                     let items = bookmarks
                         .get_mut("items")
                         .and_then(serde_json::Value::as_array_mut)
@@ -1147,7 +1248,8 @@ impl Catalog {
                             .map_err(CatalogError::from)?;
                         if let Some(document) = live {
                             if cursor_time.is_none_or(|at| {
-                                let updated = document.updated_at.parse::<i64>().unwrap_or_default();
+                                let updated = crate::util::parse_timestamp_millis(&document.updated_at)
+                                    .unwrap_or_default();
                                 updated < at || (updated == at && cursor_slug.is_some_and(|slug| document.slug.as_str() < slug))
                             }) {
                                 documents.push(document);
@@ -1201,11 +1303,9 @@ impl Catalog {
         }
         let mut documents: Vec<_> = by_slug.into_values().collect();
         documents.sort_by(|left, right| {
-            right
-                .updated_at
-                .parse::<i64>()
+            crate::util::parse_timestamp_millis(&right.updated_at)
                 .unwrap_or_default()
-                .cmp(&left.updated_at.parse::<i64>().unwrap_or_default())
+                .cmp(&crate::util::parse_timestamp_millis(&left.updated_at).unwrap_or_default())
                 .then_with(|| right.slug.cmp(&left.slug))
         });
         documents.truncate(limit as usize);
