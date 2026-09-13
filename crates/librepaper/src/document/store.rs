@@ -562,14 +562,17 @@ fn source_put_error(error: CatalogError) -> PutError {
                 message: "request receipt has expired",
             }
         }
-        CatalogError::Refused(
-            crate::storage::catalog::CatalogRefusal::OwnerBytes
-            | crate::storage::catalog::CatalogRefusal::DeploymentBytes
-            | crate::storage::catalog::CatalogRefusal::OwnerDocuments,
-            _,
-        ) => PutError::Quota {
+        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::OwnerBytes, _) => PutError::Quota {
             status: 507,
-            message: "storage quota is used up; delete a document first",
+            message: "your storage quota is used up; delete a document first",
+        },
+        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::DeploymentBytes, _) => PutError::Quota {
+            status: 507,
+            message: "this deployment has no room left",
+        },
+        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::OwnerDocuments, _) => PutError::Quota {
+            status: 507,
+            message: "you have reached the document limit; delete one first",
         },
         CatalogError::Refused(crate::storage::catalog::CatalogRefusal::UploadRate, _) => {
             PutError::Quota {
@@ -580,6 +583,14 @@ fn source_put_error(error: CatalogError) -> PutError {
         CatalogError::NotFound => PutError::Authorization {
             status: 404,
             message: "not found",
+        },
+        CatalogError::Conflict(message) => PutError::Authorization {
+            status: 409,
+            message: if message == "A project with this name already exists. Choose a different name." {
+                "A project with this name already exists. Choose a different name."
+            } else {
+                "the document changed; reload it before retrying"
+            },
         },
         other => PutError::Storage(other.to_string()),
     }

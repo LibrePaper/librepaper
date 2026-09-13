@@ -665,24 +665,48 @@ async fn a_boundary_snapshot_appends_acknowledges_compacts_and_recovers() {
     let acknowledgement = acknowledged.expect("the boundary snapshot is acknowledged");
     assert!(acknowledgement.contains("\"seq\":7"), "{acknowledgement}");
 
-    // A restart over the same storage, with the session object gone, so the
-    // content has to come back through the journal.
+    let entry = fixture.store.get("boundary").await.unwrap();
+    let document_id = crate::storage::catalog::DocumentId::new(entry.storage_id.clone()).unwrap();
+    let (epoch, sequence) = fixture
+        .catalog
+        .v2_document_journal_head(&document_id)
+        .unwrap();
+    let (snapshot, vector) = {
+        let state = room.state.lock().await;
+        (
+            crate::document::session::encode_state(&state.session.doc),
+            crate::document::session::encode_vector(&state.session.doc),
+        )
+    };
     fixture
-        .blobs
-        .delete(&[crate::storage::blob::session_key("boundary")])
+        .journal
+        .compact(&entry.storage_id, epoch as u64, sequence as u64, snapshot)
         .await
-        .expect("the session object is removed");
-    fixture
-        .blobs
-        .delete(&[crate::storage::blob::room_lock_key("boundary")])
-        .await
-        .expect("the room lock is removed");
+        .expect("the acknowledged snapshot compacts");
+    let base: Option<String> = fixture
+        .catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT journal_base_object_id FROM documents WHERE id=?1",
+                    [&entry.storage_id],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert!(base.is_some(), "compaction installs a durable base");
     let restarted = room_fixture::reopen(&fixture).await;
     let recovered = restarted.get("boundary").await;
     assert_eq!(
         recovered.source().await,
         body,
         "the recovered document must be byte-identical"
+    );
+    assert_eq!(
+        crate::document::session::encode_vector(&recovered.state.lock().await.session.doc),
+        vector,
+        "compacted recovery preserves CRDT identities for reconnecting clients"
     );
 }
 
