@@ -490,6 +490,38 @@ async fn seed_with_store(
             .await
             .unwrap_or_else(|err| die(format!("could not store {}: {err}", document.file)));
 
+        // A named seed owner is anonymous at the request boundary, but v2
+        // persists that stable owner key as an anonymous account. Resolve the
+        // account and its live generation before any catalog-backed asset or
+        // checkpoint mutation. Carrying the original owner key as authority
+        // would make those writes look like an unauthenticated caller.
+        let catalog_actor = if store.catalog.is_some() && seed_actor.account_id.is_empty() {
+            let catalog = store
+                .catalog
+                .as_ref()
+                .expect("catalog actor resolution requires a catalogue");
+            let owner_id = catalog
+                .document(&slug)
+                .unwrap_or_else(|error| die(format!("could not read seeded owner: {error}")))
+                .and_then(|document| document.owner_id)
+                .unwrap_or_else(|| die("seeded anonymous document has no owner account"));
+            let account = catalog
+                .account(&owner_id)
+                .unwrap_or_else(|error| die(format!("could not read seeded owner account: {error}")))
+                .unwrap_or_else(|| die("seeded anonymous owner account disappeared"));
+            crate::document::store::MutationActor {
+                account_id: account.id,
+                owner_key: String::new(),
+                session_generation: account.session_generation,
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            }
+        } else {
+            seed_actor.clone()
+        };
+
         let text = visible_text(&raw);
         let room = rooms.get(&slug).await;
         // A seed that could not write its source has nothing to checkpoint;
@@ -508,7 +540,11 @@ async fn seed_with_store(
         let assets = seed_assets(document);
         for (path, bytes) in &assets {
             let (sha, _) = room
-                .put_asset(bytes.clone(), (config.max_asset, config.max_assets))
+                .put_asset_authorized(
+                    bytes.clone(),
+                    (config.max_asset, config.max_assets),
+                    &catalog_actor,
+                )
                 .await
                 .unwrap_or_else(|err| die(format!("could not store {path}: {err}")));
             room.name_asset(&path, &sha)
@@ -519,13 +555,13 @@ async fn seed_with_store(
         // them: the operator ran a command. There is no account to record,
         // and the empty display name is the one this path has always written.
         let checkpoint_authority = crate::storage::catalog::MutationAuthority {
-            account_id: &seed_actor.account_id,
-            owner_key: &seed_actor.owner_key,
-            generation: &seed_actor.session_generation,
-            link_hash: &seed_actor.link_hash,
-            policy_editor: seed_actor.policy_editor,
-            automation: seed_actor.automation,
-            unowned_publisher: seed_actor.unowned_publisher,
+            account_id: &catalog_actor.account_id,
+            owner_key: &catalog_actor.owner_key,
+            generation: &catalog_actor.session_generation,
+            link_hash: &catalog_actor.link_hash,
+            policy_editor: catalog_actor.policy_editor,
+            automation: catalog_actor.automation,
+            unowned_publisher: catalog_actor.unowned_publisher,
             execution_epoch: "",
             agent_checkpoint: None,
         };
@@ -540,7 +576,7 @@ async fn seed_with_store(
             .checkpoint_now_with_authority(
                 "cli",
                 crate::room::Attribution::account(
-                    &seed_actor.account_id,
+                    &catalog_actor.account_id,
                     checkpoint_display,
                 ),
                 checkpoint_authority,
@@ -555,7 +591,7 @@ async fn seed_with_store(
             publish_seed_display(
                 &store,
                 &entry.storage_id,
-                &seed_actor,
+                &catalog_actor,
                 &source,
                 &format,
                 &raw,
