@@ -59,8 +59,8 @@ pub use v2::{
     AccountKind, CheckpointCommit, CheckpointId, DocumentId, DocumentStatus, IdError, LeasePurpose,
     ObjectId, ObjectKind, ObjectState, OperationId, OperationKind, OperationScope, SourceFormat,
     UnixMillis, V2AccountInput, V2AdmissionLimits, V2DocumentInput, V2Object, V2ObjectAllocation,
-    V2Operation, V2OperationInput, VerifiedCheckpointClosure, VerifiedPublicationBundle,
-    MAX_CHECKPOINT_OBJECTS,
+    V2Operation, V2OperationInput, V2SourceAdmissionInput, VerifiedCheckpointClosure,
+    VerifiedPublicationBundle, MAX_CHECKPOINT_OBJECTS,
 };
 
 /// One durable physical asset reference carried by a checkpoint.

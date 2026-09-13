@@ -6,13 +6,13 @@
 
 use super::*;
 
-fn normalized_title(title: &str) -> String {
+pub(super) fn normalized_title(title: &str) -> String {
     unicode_normalization::UnicodeNormalization::nfc(title.trim())
         .collect::<String>()
         .to_lowercase()
 }
 
-fn document_time_ms(value: &str) -> CatalogResult<i64> {
+pub(super) fn document_time_ms(value: &str) -> CatalogResult<i64> {
     if let Ok(number) = value.parse::<i64>() {
         if number < 0 {
             return Err(CatalogError::Invalid(
@@ -32,7 +32,7 @@ fn document_time_ms(value: &str) -> CatalogResult<i64> {
         .filter(|value| *value >= 0)
         .ok_or_else(|| CatalogError::Invalid("document timestamp is invalid".into()))
 }
-fn ensure_owner_account_in_tx(
+pub(super) fn ensure_owner_account_in_tx(
     tx: &Transaction<'_>,
     document: &NewDocument,
     created_at: i64,
@@ -84,7 +84,7 @@ fn ensure_owner_account_in_tx(
 }
 
 impl Catalog {
-    fn unique_project_title_in_tx(
+    pub(super) fn unique_project_title_in_tx(
         tx: &Transaction<'_>,
         slug: &str,
         title: &str,

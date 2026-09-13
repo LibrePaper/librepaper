@@ -29,6 +29,21 @@ pub struct V2AdmissionLimits {
     pub owner_documents: i64,
 }
 
+/// Inputs for the initial source write. The document row, prepared operation,
+/// physical allocations, quota counters, and stage leases are admitted under
+/// one SQLite write transaction.
+pub(crate) struct V2SourceAdmissionInput {
+    pub document: super::NewDocument,
+    pub create_document: bool,
+    pub operation_id: OperationId,
+    pub operation: V2OperationInput,
+    pub allocations: Vec<V2ObjectAllocation>,
+    pub lease_holder: String,
+    pub lease_expires_at: UnixMillis,
+    pub limits: V2AdmissionLimits,
+    pub now: UnixMillis,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IdError(pub String);
 
@@ -1546,6 +1561,393 @@ impl Catalog {
         })
     }
 
+    /// Admit the first source closure as one transaction. Filesystem writes
+    /// happen only after this returns: at that point the document, operation,
+    /// reservations, and every stage lease already share one live fence.
+    pub(crate) fn admit_v2_source(
+        &self,
+        input: V2SourceAdmissionInput,
+    ) -> CatalogResult<(V2Operation, String)> {
+        let document = &input.document;
+        let operation_input = &input.operation;
+        if input.create_document && operation_input.expected_document_generation.is_some() {
+            return Err(CatalogError::Invalid(
+                "new source documents cannot carry a stale generation".into(),
+            ));
+        }
+        self.validate_document_input(document)?;
+        if document.size != 0 || document.counted_size != 0 || document.maintenance_reserved != 0 {
+            return Err(CatalogError::Invalid(
+                "source admission requires zero document counters".into(),
+            ));
+        }
+        if input.allocations.is_empty() || input.lease_holder.is_empty() {
+            return Err(CatalogError::Invalid("source admission is empty".into()));
+        }
+        if input.limits.owner_bytes < 0
+            || input.limits.deployment_bytes < 0
+            || input.limits.owner_documents <= 0
+        {
+            return Err(CatalogError::Invalid(
+                "invalid source admission limits".into(),
+            ));
+        }
+        validate_digest(&operation_input.request_digest, "request digest")?;
+        validate_json(&operation_input.plan_json, "operation plan", 65_536)?;
+        if operation_input.actor_key.is_empty()
+            || operation_input.request_key.is_empty()
+            || operation_input.request_key.len() > 128
+            || operation_input.kind != OperationKind::SourcePublish
+        {
+            return Err(CatalogError::Invalid(
+                "invalid source operation admission".into(),
+            ));
+        }
+        let expected_document = match &operation_input.scope {
+            OperationScope::Document(id) => id,
+            _ => {
+                return Err(CatalogError::Invalid(
+                    "source operation must target a document".into(),
+                ))
+            }
+        };
+        if expected_document.as_str() != document.storage_id {
+            return Err(CatalogError::Invalid(
+                "source operation document does not match input".into(),
+            ));
+        }
+        let mut total = 0i64;
+        let mut agent_bytes = 0i64;
+        let mut agent_count = 0i64;
+        let mut ids = HashSet::with_capacity(input.allocations.len());
+        for allocation in &input.allocations {
+            validate_digest(&allocation.digest, "object digest")?;
+            if let Some(logical) = allocation.logical_digest.as_deref() {
+                validate_digest(logical, "logical digest")?;
+            }
+            if allocation.document_id != *expected_document
+                || allocation.operation_id != input.operation_id
+                || allocation.reserved_bytes < 0
+                || allocation.encoding_version < 1
+                || !ids.insert(&allocation.id)
+            {
+                return Err(CatalogError::Invalid(
+                    "source allocations have inconsistent identity".into(),
+                ));
+            }
+            let expected_key = format!(
+                "v2/documents/{}/objects/{}",
+                allocation.document_id, allocation.id
+            );
+            if allocation.storage_key != expected_key {
+                return Err(CatalogError::Invalid(
+                    "invalid source allocation key".into(),
+                ));
+            }
+            total = checked_add(total, allocation.reserved_bytes, "source reservation")?;
+            if allocation.kind == ObjectKind::AgentPayload {
+                agent_bytes = checked_add(agent_bytes, allocation.reserved_bytes, "agent bytes")?;
+                agent_count = checked_add(agent_count, 1, "agent count")?;
+            }
+        }
+        let lease_ids: HashSet<&ObjectId> = input.allocations.iter().map(|item| &item.id).collect();
+        if lease_ids.len() != input.allocations.len() {
+            return Err(CatalogError::Invalid(
+                "source lease set contains duplicates".into(),
+            ));
+        }
+        let guard = self
+            .room_reservations
+            .lock()
+            .map_err(|_| CatalogError::Busy)?;
+        self.immediate(|tx| {
+            let owner_id: String;
+            let source_generation: i64;
+            if input.create_document {
+                let created_at = super::documents::document_time_ms(&document.created_at)?;
+                if !matches!(document.status.as_str(), "creating" | "active")
+                    || !matches!(document.source_format.as_str(), "markdown" | "html" | "typst" | "latex" | "quarto")
+                {
+                    return Err(CatalogError::Invalid("invalid source document metadata".into()));
+                }
+                owner_id = super::documents::ensure_owner_account_in_tx(tx, document, created_at)?;
+                let (owner_bytes, owner_documents): (i64, i64) = tx
+                    .query_row(
+                        "SELECT stored_bytes+reserved_bytes,document_count FROM accounts WHERE id=?1",
+                        [&owner_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(CatalogError::from)?;
+                if owner_documents >= input.limits.owner_documents {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::OwnerDocuments,
+                        "owner document limit exceeded",
+                    ));
+                }
+                if owner_bytes > input.limits.owner_bytes {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::OwnerBytes,
+                        "owner storage limit is already exceeded",
+                    ));
+                }
+                let deployment: i64 = tx
+                    .query_row(
+                        "SELECT stored_bytes+reserved_bytes FROM server_state WHERE id=1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if deployment > input.limits.deployment_bytes {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::DeploymentBytes,
+                        "deployment storage limit is already exceeded",
+                    ));
+                }
+                super::documents::unique_project_title_in_tx(
+                    tx,
+                    &document.slug,
+                    &document.title,
+                    Some(&owner_id),
+                    "",
+                )?;
+                super::documents::insert_document_in_tx(
+                    tx,
+                    document,
+                    &owner_id,
+                    created_at,
+                    document.status.as_str(),
+                )?;
+                source_generation = 0;
+            } else {
+                let current = Catalog::document_in_tx(tx, &document.slug)?;
+                owner_id = current
+                    .owner_id
+                    .ok_or_else(|| CatalogError::Invalid("source document has no owner".into()))?;
+                if owner_id != document.owner_id.as_deref().unwrap_or("") {
+                    return Err(CatalogError::Conflict(
+                        "source replacement cannot change ownership".into(),
+                    ));
+                }
+                super::documents::unique_project_title_in_tx(
+                    tx,
+                    &document.slug,
+                    &document.title,
+                    Some(&owner_id),
+                    "",
+                )?;
+                tx.execute(
+                    "UPDATE documents SET title=?1,title_key=?2,updated_at=?3,
+                     source_format=?4,main_path=?5 WHERE id=?6 AND status<>'deleting'",
+                    params![
+                        document.title,
+                        super::documents::normalized_title(&document.title),
+                        input.now.0,
+                        document.source_format,
+                        document.main,
+                        document.storage_id
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+                source_generation = tx
+                    .query_row(
+                        "SELECT source_generation FROM documents WHERE id=?1 AND status<>'deleting'",
+                        [document.storage_id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+            }
+            let current_generation: String = tx
+                .query_row(
+                    "SELECT writer_generation FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            let work_expires = operation_input
+                .work_expires_at
+                .ok_or_else(|| CatalogError::Invalid("source operation needs a deadline".into()))?;
+            if work_expires <= input.now {
+                return Err(CatalogError::Invalid("source operation deadline expired".into()));
+            }
+            let issued = crate::util::request_key_timestamp(&operation_input.request_key)
+                .ok_or_else(|| CatalogError::Invalid("invalid v2 request key".into()))?;
+            if issued > input.now.0.saturating_add(60_000)
+                || input.now.0.saturating_sub(issued) > 15 * 60_000
+            {
+                return Err(CatalogError::Invalid(
+                    "source request key is outside its admission window".into(),
+                ));
+            }
+            let operation_id = input.operation_id.as_str();
+            let duplicate: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM operations WHERE id=?1",
+                    [operation_id],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if duplicate != 0 {
+                return Err(CatalogError::Conflict("source operation id already exists".into()));
+            }
+            tx.execute(
+                "INSERT INTO operations
+                 (id,document_id,account_id,actor_key,request_key,kind,request_digest,state,
+                  writer_generation,expected_document_generation,target_operation_id,target_request_key,
+                  conversation_id,execution_epoch,plan_json,created_at,updated_at,work_expires_at)
+                 VALUES(?1,?2,NULL,?3,?4,?5,?6,'prepared',?7,?8,NULL,NULL,?9,?10,?11,?12,?12,?13)",
+                params![
+                    operation_id,
+                    document.storage_id,
+                    operation_input.actor_key,
+                    operation_input.request_key,
+                    operation_input.kind.as_str(),
+                    operation_input.request_digest,
+                    current_generation,
+                    source_generation,
+                    operation_input.conversation_id,
+                    operation_input.execution_epoch,
+                    operation_input.plan_json,
+                    input.now.0,
+                    work_expires.0
+                ],
+            )
+            .map_err(CatalogError::from)?;
+            operation_authorized_in_tx(
+                tx,
+                document.storage_id.as_str(),
+                &operation_input.actor_key,
+                &operation_input.plan_json,
+                "editor",
+            )?;
+            let (owner_stored, owner_reserved): (i64, i64) = tx
+                .query_row(
+                    "SELECT stored_bytes,reserved_bytes FROM accounts WHERE id=?1 AND status='active'",
+                    [&owner_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(CatalogError::from)?;
+            let (server_stored, server_reserved, server_agent_bytes, server_agent_count): (i64, i64, i64, i64) = tx
+                .query_row(
+                    "SELECT stored_bytes,reserved_bytes,agent_payload_bytes,agent_payload_count FROM server_state WHERE id=1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(CatalogError::from)?;
+            let new_owner_reserved = checked_add(owner_reserved, total, "owner reserved")?;
+            let new_server_reserved = checked_add(server_reserved, total, "server reserved")?;
+            let process_owner = guard.owner_bytes.get(&owner_id).copied().unwrap_or(0);
+            let process_total = guard.deployment_bytes;
+            if owner_stored
+                .checked_add(new_owner_reserved)
+                .and_then(|value| value.checked_add(process_owner))
+                .ok_or_else(|| CatalogError::Invalid("owner accounting overflow".into()))?
+                > input.limits.owner_bytes
+            {
+                return Err(CatalogError::refused(
+                    CatalogRefusal::OwnerBytes,
+                    "source closure exceeds owner quota",
+                ));
+            }
+            if server_stored
+                .checked_add(new_server_reserved)
+                .and_then(|value| value.checked_add(process_total))
+                .ok_or_else(|| CatalogError::Invalid("deployment accounting overflow".into()))?
+                > input.limits.deployment_bytes
+            {
+                return Err(CatalogError::refused(
+                    CatalogRefusal::DeploymentBytes,
+                    "source closure exceeds deployment quota",
+                ));
+            }
+            let new_agent_bytes = checked_add(server_agent_bytes, agent_bytes, "agent bytes")?;
+            let new_agent_count = checked_add(server_agent_count, agent_count, "agent count")?;
+            if new_agent_bytes > 134_217_728 || new_agent_count > 16_384 {
+                return Err(CatalogError::refused(
+                    CatalogRefusal::OwnerBytes,
+                    "agent staging capacity exceeded",
+                ));
+            }
+            let lease_deadline = input
+                .lease_expires_at
+                .0
+                .min(input.now.0.saturating_add(120_000))
+                .min(work_expires.0);
+            if lease_deadline <= input.now.0 {
+                return Err(CatalogError::Invalid("source lease deadline expired".into()));
+            }
+            for allocation in &input.allocations {
+                tx.execute(
+                    "INSERT INTO objects
+                     (document_id,id,storage_key,kind,state,digest,logical_digest,encoding_version,
+                      byte_length,reserved_bytes,allocation_operation_id,created_at)
+                     VALUES(?1,?2,?3,?4,'allocated',?5,?6,?7,NULL,?8,?9,?10)",
+                    params![
+                        allocation.document_id.as_str(),
+                        allocation.id.as_str(),
+                        allocation.storage_key,
+                        allocation.kind.as_str(),
+                        allocation.digest,
+                        allocation.logical_digest,
+                        allocation.encoding_version,
+                        allocation.reserved_bytes,
+                        operation_id,
+                        input.now.0
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+                tx.execute(
+                    "INSERT INTO object_leases
+                     (document_id,object_id,holder_id,purpose,operation_id,writer_generation,
+                      created_at,expires_at)
+                     VALUES(?1,?2,?3,'stage',?4,?5,?6,?7)",
+                    params![
+                        allocation.document_id.as_str(),
+                        allocation.id.as_str(),
+                        input.lease_holder,
+                        operation_id,
+                        current_generation,
+                        input.now.0,
+                        lease_deadline
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+            }
+            tx.execute(
+                "UPDATE documents SET reserved_bytes=reserved_bytes+?1,
+                 agent_payload_bytes=agent_payload_bytes+?2,
+                 agent_payload_count=agent_payload_count+?3,
+                 updated_at=max(updated_at,?4) WHERE id=?5",
+                params![total, agent_bytes, agent_count, input.now.0, document.storage_id],
+            )
+            .map_err(CatalogError::from)?;
+            tx.execute(
+                "UPDATE accounts SET reserved_bytes=reserved_bytes+?1 WHERE id=?2",
+                params![total, owner_id],
+            )
+            .map_err(CatalogError::from)?;
+            tx.execute(
+                "UPDATE server_state SET reserved_bytes=reserved_bytes+?1,
+                 agent_payload_bytes=?2,agent_payload_count=?3,
+                 catalog_revision=catalog_revision+1,updated_at=?4 WHERE id=1",
+                params![new_server_reserved, new_agent_bytes, new_agent_count, input.now.0],
+            )
+            .map_err(CatalogError::from)?;
+            Ok((
+                V2Operation {
+                    id: input.operation_id.clone(),
+                    scope: operation_input.scope.clone(),
+                    actor_key: operation_input.actor_key.clone(),
+                    request_key: operation_input.request_key.clone(),
+                    kind: operation_input.kind.as_str().into(),
+                    state: "prepared".into(),
+                    request_digest: operation_input.request_digest.clone(),
+                    writer_generation: current_generation.clone(),
+                },
+                current_generation,
+            ))
+        })
+    }
+
     /// Settle a local PUT after its guarded filesystem task has completed.
     pub fn settle_v2_object(
         &self,
@@ -1604,11 +2006,56 @@ impl Catalog {
             let state: String = tx.query_row("SELECT state FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if state == "deleting" { return Err(CatalogError::Conflict("deleting object cannot acquire a lease".into())); }
             if purpose == LeasePurpose::Read && state != "available" { return Err(CatalogError::Conflict("read lease requires an available object".into())); }
-            if let Some(operation_id) = operation_id {
-                let valid: i64 = tx.query_row("SELECT count(*) FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared' AND writer_generation=?3 AND (work_expires_at IS NULL OR work_expires_at>?4)", params![operation_id.as_str(),document_id.as_str(),writer_generation,now.0], |row| row.get(0)).map_err(CatalogError::from)?;
-                if valid != 1 { return Err(CatalogError::Conflict("lease operation is not prepared for this document".into())); }
+            let owner_live: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM documents d JOIN accounts a ON a.id=d.owner_id
+                     JOIN server_state s ON s.id=1
+                     WHERE d.id=?1 AND d.status<>'deleting' AND a.status='active'
+                       AND s.writer_generation=?2",
+                    params![document_id.as_str(), writer_generation],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if owner_live != 1 {
+                return Err(CatalogError::Conflict(
+                    "lease document owner is inactive or writer-fenced".into(),
+                ));
             }
-            tx.execute("INSERT INTO object_leases (document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)", params![document_id.as_str(),object_id.as_str(),holder_id,purpose.as_str(),operation_id.map(OperationId::as_str),writer_generation,now.0,expires_at.0]).map_err(CatalogError::from)?;
+            let mut bounded_expiry = expires_at.0.min(now.0.saturating_add(120_000));
+            if let Some(operation_id) = operation_id {
+                let (valid, work_expires): (i64, Option<i64>) = tx
+                    .query_row(
+                        "SELECT count(*),max(work_expires_at) FROM operations
+                         WHERE id=?1 AND document_id=?2 AND state='prepared'
+                           AND writer_generation=?3
+                           AND writer_generation=(SELECT writer_generation FROM server_state WHERE id=1)
+                           AND (work_expires_at IS NULL OR work_expires_at>?4)",
+                        params![operation_id.as_str(), document_id.as_str(), writer_generation, now.0],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(CatalogError::from)?;
+                if valid != 1 { return Err(CatalogError::Conflict("lease operation is not prepared for this document".into())); }
+                if let Some(deadline) = work_expires {
+                    bounded_expiry = bounded_expiry.min(deadline);
+                }
+                let owned_allocation: i64 = tx
+                    .query_row(
+                        "SELECT count(*) FROM objects WHERE document_id=?1 AND id=?2
+                         AND state='allocated' AND allocation_operation_id=?3",
+                        params![document_id.as_str(), object_id.as_str(), operation_id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if owned_allocation != 1 {
+                    return Err(CatalogError::Conflict(
+                        "operation lease object is not its allocation".into(),
+                    ));
+                }
+            }
+            if bounded_expiry <= now.0 {
+                return Err(CatalogError::Conflict("lease deadline has expired".into()));
+            }
+            tx.execute("INSERT INTO object_leases (document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)", params![document_id.as_str(),object_id.as_str(),holder_id,purpose.as_str(),operation_id.map(OperationId::as_str),writer_generation,now.0,bounded_expiry]).map_err(CatalogError::from)?;
             Ok(())
         })
     }
@@ -1661,8 +2108,13 @@ impl Catalog {
                 let available: i64 = tx
                     .query_row(
                         "SELECT count(*) FROM objects
-                         WHERE document_id=?1 AND id=?2 AND state='allocated'",
-                        params![document_id.as_str(), object_id.as_str()],
+                         WHERE document_id=?1 AND id=?2 AND state='allocated'
+                           AND allocation_operation_id=?3",
+                        params![
+                            document_id.as_str(),
+                            object_id.as_str(),
+                            operation_id.as_str()
+                        ],
                         |row| row.get(0),
                     )
                     .map_err(CatalogError::from)?;
@@ -1713,13 +2165,27 @@ impl Catalog {
         self.immediate(|tx| {
             let changed = tx
                 .execute(
-                    "UPDATE object_leases SET expires_at=?1
+                    "UPDATE object_leases SET expires_at=MIN(?1,?7+120000,
+                         COALESCE((SELECT work_expires_at FROM operations
+                           WHERE id=?5 AND document_id=?2),?1))
                      WHERE document_id=?2 AND object_id=?3 AND holder_id=?4
                        AND purpose='stage' AND operation_id=?5
                        AND writer_generation=?6 AND expires_at>?7
+                       AND MIN(?1,?7+120000,
+                         COALESCE((SELECT work_expires_at FROM operations
+                           WHERE id=?5 AND document_id=?2),?1))>?7
+                       AND EXISTS(SELECT 1 FROM objects o JOIN documents d
+                           ON d.id=o.document_id JOIN accounts a ON a.id=d.owner_id
+                           JOIN server_state s ON s.id=1
+                           WHERE o.document_id=?2 AND o.id=?3
+                             AND (o.state='available' OR
+                                  (o.state='allocated' AND o.allocation_operation_id=?5))
+                             AND d.status<>'deleting' AND a.status='active'
+                             AND s.writer_generation=?6)
                        AND EXISTS(SELECT 1 FROM operations
                            WHERE id=?5 AND document_id=?2 AND state='prepared'
                              AND writer_generation=?6
+                             AND writer_generation=(SELECT writer_generation FROM server_state WHERE id=1)
                              AND (work_expires_at IS NULL OR work_expires_at>?7))",
                     params![
                         expires_at.0,
@@ -2021,8 +2487,10 @@ impl Catalog {
                     let expected_logical = recipe_locator.logical_digest.map(hex::encode);
                     if kind != ObjectKind::SourceRecipe.as_str()
                         || digest != hex::encode(Sha256::digest(recipe_bytes))
+                        || digest != hex::encode(recipe_locator.object_digest)
                         || logical.as_deref() != expected_logical.as_deref()
                         || byte_length != Some(recipe_bytes.len() as i64)
+                        || byte_length != i64::try_from(recipe_locator.byte_length).ok()
                     {
                         return Err(CatalogError::Conflict(
                             "settled source recipe bytes do not match envelope".into(),
@@ -2452,111 +2920,6 @@ impl Catalog {
             let writer_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)?;
             tx.execute("INSERT INTO operations (id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,target_operation_id,target_request_key,conversation_id,execution_epoch,plan_json,created_at,updated_at,work_expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'prepared',?8,?9,NULL,NULL,?10,?11,?12,?13,?13,?14)", params![operation_id,document_id,account_id,input.actor_key,input.request_key,input.kind.as_str(),input.request_digest,writer_generation,input.expected_document_generation,input.conversation_id,input.execution_epoch,input.plan_json,now.0,input.work_expires_at.map(|v| v.0)]).map_err(CatalogError::from)?;
             Ok(V2Operation { id: OperationId::new(operation_id).map_err(|e| CatalogError::Invalid(e.to_string()))?, scope: input.scope.clone(), actor_key: input.actor_key.clone(), request_key: input.request_key.clone(), kind: input.kind.as_str().into(), state: "prepared".into(), request_digest: input.request_digest.clone(), writer_generation })
-        })
-    }
-
-    /// Remove the empty document and its still-prepared initial operation
-    /// after admission rejects the first physical closure. This is only
-    /// valid before any object, checkpoint, or lease exists; replacements
-    /// retain their aborted receipt through `finish_v2_operation` instead.
-    pub(crate) fn discard_v2_creation(
-        &self,
-        document_id: &DocumentId,
-        operation_id: &OperationId,
-    ) -> CatalogResult<()> {
-        self.immediate(|tx| {
-            let (status, owner_id, checkpoint_refs): (String, String, i64) = tx
-                .query_row(
-                    "SELECT status,owner_id,checkpoint_ref_count FROM documents WHERE id=?1",
-                    [document_id.as_str()],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .map_err(CatalogError::from)?;
-            if status != "creating" || checkpoint_refs != 0 {
-                return Err(CatalogError::Conflict(
-                    "only an empty creating document can be discarded".into(),
-                ));
-            }
-            let prepared: i64 = tx
-                .query_row(
-                    "SELECT count(*) FROM operations
-                     WHERE id=?1 AND document_id=?2 AND state='prepared'",
-                    params![operation_id.as_str(), document_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if prepared != 1 {
-                return Err(CatalogError::Conflict(
-                    "initial document operation is no longer prepared".into(),
-                ));
-            }
-            let object_count: i64 = tx
-                .query_row(
-                    "SELECT count(*) FROM objects WHERE document_id=?1",
-                    [document_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if object_count != 0 {
-                return Err(CatalogError::Conflict(
-                    "cannot discard a document with allocated objects".into(),
-                ));
-            }
-            let lease_count: i64 = tx
-                .query_row(
-                    "SELECT count(*) FROM object_leases WHERE document_id=?1",
-                    [document_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if lease_count != 0 {
-                return Err(CatalogError::Conflict(
-                    "cannot discard a document with object leases".into(),
-                ));
-            }
-            tx.execute(
-                "DELETE FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared'",
-                params![operation_id.as_str(), document_id.as_str()],
-            )
-            .map_err(CatalogError::from)?;
-            let deleted = tx
-                .execute(
-                    "DELETE FROM documents WHERE id=?1 AND status='creating'",
-                    [document_id.as_str()],
-                )
-                .map_err(CatalogError::from)?;
-            if deleted != 1 {
-                return Err(CatalogError::Conflict(
-                    "initial document changed during allocation refusal".into(),
-                ));
-            }
-            if tx
-                .execute(
-                    "UPDATE accounts SET document_count=document_count-1
-                     WHERE id=?1 AND document_count>=1",
-                    [owner_id.as_str()],
-                )
-                .map_err(CatalogError::from)?
-                != 1
-            {
-                return Err(CatalogError::Invalid(
-                    "owner document counter underflow during discard".into(),
-                ));
-            }
-            if tx
-                .execute(
-                    "UPDATE server_state SET document_count=document_count-1,
-                     catalog_revision=catalog_revision+1 WHERE id=1 AND document_count>=1",
-                    [],
-                )
-                .map_err(CatalogError::from)?
-                != 1
-            {
-                return Err(CatalogError::Invalid(
-                    "server document counter underflow during discard".into(),
-                ));
-            }
-            Ok(())
         })
     }
 

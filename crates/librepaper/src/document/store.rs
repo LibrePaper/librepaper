@@ -36,9 +36,9 @@ use crate::storage::blob::{
     source_prefix, BlobError, BlobStore, BlobVersion, ObjectId as BlobObjectId, INDEX_KEY,
 };
 use crate::storage::catalog::{
-    Account, Catalog, CatalogError, CheckpointCommit, CheckpointId, DocumentId, LeasePurpose,
-    ObjectId, ObjectKind, OperationActor, OperationKind, OperationRequest, SourceFormat,
-    UnixMillis, V2AdmissionLimits, V2ObjectAllocation, V2OperationInput,
+    Account, Catalog, CatalogError, CheckpointCommit, CheckpointId, DocumentId, ObjectId,
+    ObjectKind, OperationActor, OperationKind, OperationRequest, SourceFormat, UnixMillis,
+    V2AdmissionLimits, V2ObjectAllocation, V2OperationInput, V2SourceAdmissionInput,
 };
 use crate::util::new_id;
 use crate::util::{now_unix, parse_timestamp, timestamp};
@@ -1578,82 +1578,10 @@ impl Store {
             main: main.clone(),
         };
         let limits = self.config.storage;
-        if existing.is_none() {
-            catalog
-                .execute_catalog(STORE_JOB_BYTES + v.slug.len(), {
-                    let document_input = document_input.clone();
-                    move |catalog| {
-                        catalog.create_document_admitted(
-                            &document_input,
-                            limits.per_owner,
-                            limits.total,
-                            limits.documents_per_owner,
-                            limits.uploads_per_hour,
-                        )
-                    }
-                })
-                .await
-                .map_err(|error| PutError::Storage(error.to_string()))?;
-        } else {
-            catalog
-                .execute_catalog(STORE_JOB_BYTES + v.slug.len(), {
-                    let document_input = document_input.clone();
-                    move |catalog| {
-                        catalog.replace_document_admitted(
-                            &document_input,
-                            limits.per_owner,
-                            limits.total,
-                            limits.uploads_per_hour,
-                        )
-                    }
-                })
-                .await
-                .map_err(|error| PutError::Storage(error.to_string()))?;
-        }
-        let document = document_row(catalog, &v.slug)
-            .await
-            .map_err(|error| PutError::Storage(error.to_string()))?
-            .ok_or_else(|| PutError::Storage("catalogue document disappeared".into()))?;
-        let document_id = DocumentId::new(document.storage_id.clone())
+        let document_id = DocumentId::new(storage_id.clone())
             .map_err(|error| PutError::Storage(error.to_string()))?;
-        let expected_generation = catalog
-            .execute_catalog(STORE_JOB_BYTES, {
-                let document_id = document_id.clone();
-                move |catalog| catalog.v2_document_source_generation(&document_id)
-            })
-            .await
+        let operation_id = crate::storage::catalog::OperationId::new(random_storage_id())
             .map_err(|error| PutError::Storage(error.to_string()))?;
-        let operation = catalog
-            .execute_catalog(STORE_JOB_BYTES + plan_json.len(), {
-                let document_id = document_id.clone();
-                let actor_key = format!("account:{}", actor.account_id);
-                let request_key = request_key.clone();
-                let request_digest = request_digest.clone();
-                let plan_json = plan_json.clone();
-                let operation_expires = now_ms
-                    .checked_add(3_600_000)
-                    .ok_or_else(|| PutError::Storage("operation expiry overflow".into()))?;
-                move |catalog| {
-                    catalog.prepare_v2_operation(
-                        &V2OperationInput {
-                            scope: crate::storage::catalog::OperationScope::Document(document_id),
-                            actor_key,
-                            request_key,
-                            kind: OperationKind::SourcePublish,
-                            request_digest,
-                            plan_json,
-                            expected_document_generation: Some(expected_generation),
-                            conversation_id: None,
-                            execution_epoch: None,
-                            work_expires_at: Some(UnixMillis::new(operation_expires)?),
-                        },
-                        UnixMillis::new(now_ms)?,
-                    )
-                }
-            })
-            .await
-            .map_err(|error| PutError::Storage(error.to_string()))?;
-
         let physical = {
             let mut objects = vec![
                 (
@@ -1685,6 +1613,15 @@ impl Store {
             }));
             objects
         };
+        let operation_expires = now_ms
+            .checked_add(3_600_000)
+            .ok_or_else(|| PutError::Storage("operation expiry overflow".into()))?;
+        let lease_expires = UnixMillis::new(
+            now_ms
+                .checked_add(120_000)
+                .ok_or_else(|| PutError::Storage("lease expiry overflow".into()))?,
+        )
+        .map_err(|error| PutError::Storage(error.to_string()))?;
         let allocations = physical
             .iter()
             .map(|(id, kind, digest, logical_digest, bytes, _)| {
@@ -1698,7 +1635,7 @@ impl Store {
                     encoding_version: 1,
                     reserved_bytes: i64::try_from(bytes.len())
                         .map_err(|_| PutError::Storage("source object is too large".into()))?,
-                    operation_id: operation.id.clone(),
+                    operation_id: operation_id.clone(),
                     now: UnixMillis::new(now_ms)
                         .map_err(|error| PutError::Storage(error.to_string()))?,
                 })
@@ -1709,72 +1646,42 @@ impl Store {
             deployment_bytes: limits.total,
             owner_documents: limits.documents_per_owner as i64,
         };
-        if let Err(error) = catalog
-            .execute_catalog(STORE_JOB_BYTES, {
+        let holder = format!("source:{}", operation_id.as_str());
+        let operation = catalog
+            .execute_catalog(STORE_JOB_BYTES + plan_json.len() + physical.len() * 128, {
+                let operation_id = operation_id.clone();
+                let operation = V2OperationInput {
+                    scope: crate::storage::catalog::OperationScope::Document(document_id.clone()),
+                    actor_key: format!("account:{}", actor.account_id),
+                    request_key,
+                    kind: OperationKind::SourcePublish,
+                    request_digest,
+                    plan_json,
+                    expected_document_generation: None,
+                    conversation_id: None,
+                    execution_epoch: None,
+                    work_expires_at: Some(UnixMillis::new(operation_expires)?),
+                };
+                let document = document_input.clone();
                 let allocations = allocations.clone();
-                move |catalog| catalog.allocate_v2_objects_with_limits(&allocations, admission)
-            })
-            .await
-        {
-            let operation_id = operation.id.clone();
-            let cleanup = catalog
-                .execute_catalog(STORE_JOB_BYTES, {
-                    let document_id = document_id.clone();
-                    let operation_id = operation_id.clone();
-                    move |catalog| {
-                        if existing.is_none() {
-                            catalog.discard_v2_creation(&document_id, &operation_id)
-                        } else {
-                            catalog.finish_v2_operation(
-                                &operation_id,
-                                "{\"version\":2,\"error\":\"allocation_refused\"}",
-                                false,
-                                UnixMillis::new(crate::util::now_millis())?,
-                            )
-                        }
-                    }
-                })
-                .await;
-            if let Err(cleanup_error) = cleanup {
-                return Err(PutError::Storage(format!(
-                    "allocation refused and cleanup failed: {cleanup_error}"
-                )));
-            }
-            return Err(PutError::Storage(error.to_string()));
-        }
-        let (_, writer_generation, _) = catalog
-            .execute_catalog(STORE_JOB_BYTES, |catalog| catalog.v2_server_state())
-            .await
-            .map_err(|error| PutError::Storage(error.to_string()))?;
-        let lease_expires = UnixMillis::new(
-            now_ms
-                .checked_add(120_000)
-                .ok_or_else(|| PutError::Storage("lease expiry overflow".into()))?,
-        )
-        .map_err(|error| PutError::Storage(error.to_string()))?;
-        let holder = format!("source:{}", operation.id.as_str());
-        catalog
-            .execute_catalog(STORE_JOB_BYTES, {
-                let document_id = document_id.clone();
-                let object_ids = object_ids.clone();
-                let operation_id = operation.id.clone();
                 let holder = holder.clone();
-                let writer_generation = writer_generation.clone();
                 move |catalog| {
-                    catalog.acquire_v2_leases(
-                        &document_id,
-                        &object_ids,
-                        &holder,
-                        LeasePurpose::Stage,
-                        &operation_id,
-                        &writer_generation,
-                        lease_expires,
-                        UnixMillis::new(now_ms)?,
-                    )
+                    catalog.admit_v2_source(V2SourceAdmissionInput {
+                        document,
+                        create_document: existing.is_none(),
+                        operation_id,
+                        operation,
+                        allocations,
+                        lease_holder: holder,
+                        lease_expires_at: lease_expires,
+                        limits: admission,
+                        now: UnixMillis::new(now_ms)?,
+                    })
                 }
             })
             .await
             .map_err(|error| PutError::Storage(error.to_string()))?;
+        let (operation, writer_generation) = operation;
         let writer = crate::storage::v2_catalog::V2ObjectWriter::new(
             Arc::clone(catalog),
             Arc::clone(&self.blobs),
@@ -1787,27 +1694,29 @@ impl Store {
                     .ok_or_else(|| PutError::Storage("lease renewal overflow".into()))?,
             )
             .map_err(|error| PutError::Storage(error.to_string()))?;
-            catalog
-                .execute_catalog(STORE_JOB_BYTES, {
-                    let document_id = document_id.clone();
-                    let object_id = object_id.clone();
-                    let holder = holder.clone();
-                    let operation_id = operation.id.clone();
-                    let writer_generation = writer_generation.clone();
-                    move |catalog| {
-                        catalog.renew_v2_lease(
-                            &document_id,
-                            &object_id,
-                            &holder,
-                            &operation_id,
-                            &writer_generation,
-                            renewal_expiry,
-                            UnixMillis::new(renewal_now)?,
-                        )
-                    }
-                })
-                .await
-                .map_err(|error| PutError::Storage(error.to_string()))?;
+            for lease_object_id in &object_ids {
+                catalog
+                    .execute_catalog(STORE_JOB_BYTES, {
+                        let document_id = document_id.clone();
+                        let lease_object_id = lease_object_id.clone();
+                        let holder = holder.clone();
+                        let operation_id = operation.id.clone();
+                        let writer_generation = writer_generation.clone();
+                        move |catalog| {
+                            catalog.renew_v2_lease(
+                                &document_id,
+                                &lease_object_id,
+                                &holder,
+                                &operation_id,
+                                &writer_generation,
+                                renewal_expiry,
+                                UnixMillis::new(renewal_now)?,
+                            )
+                        }
+                    })
+                    .await
+                    .map_err(|error| PutError::Storage(error.to_string()))?;
+            }
             let blob_id = BlobObjectId::parse(object_id.as_str().to_owned())
                 .map_err(|error| PutError::Storage(error.to_string()))?;
             writer
