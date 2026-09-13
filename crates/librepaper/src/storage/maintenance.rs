@@ -15,6 +15,7 @@ use crate::storage::blob::{
     source_prefix, BlobStore,
 };
 use crate::storage::catalog::{Catalog, CatalogError};
+#[cfg(test)]
 use crate::storage::journal::{finalize_manifest_shard, ManifestShard, Segment};
 
 #[derive(Clone, Debug)]
@@ -939,6 +940,7 @@ impl DeletionWorker {
 /// Queue and clean shared segments.  This table has no document foreign key;
 /// therefore per-document cleanup cannot accidentally remove a segment still
 /// needed by another document.
+#[cfg(test)]
 pub fn enqueue_journal_retirement(
     catalog: &Catalog,
     object_key: &str,
@@ -976,6 +978,7 @@ pub fn enqueue_journal_retirement(
 }
 
 #[cfg(test)]
+#[cfg(test)]
 pub struct JournalRetirementWorker {
     catalog: Arc<Catalog>,
     blobs: Arc<dyn BlobStore>,
@@ -983,6 +986,7 @@ pub struct JournalRetirementWorker {
     retirement_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
+#[cfg(test)]
 #[cfg(test)]
 impl JournalRetirementWorker {
     pub fn new(
