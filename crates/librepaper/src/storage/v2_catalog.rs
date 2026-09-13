@@ -2489,6 +2489,21 @@ impl V2ObjectWriter {
         content_type: &str,
         memory_permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Result<WrittenObject, String> {
+        self.write_allocated_with_guard(document_id, object_id, body, content_type, memory_permit)
+            .await
+    }
+
+    /// General form for callers whose staging budget uses a custom owned
+    /// guard. Any `Send + 'static` guard is moved into the detached writer and
+    /// therefore remains charged through admission, PUT, and settlement.
+    pub async fn write_allocated_with_guard<G: Send + 'static>(
+        &self,
+        document_id: &str,
+        object_id: ObjectId,
+        body: Vec<u8>,
+        content_type: &str,
+        guard: G,
+    ) -> Result<WrittenObject, String> {
         let writer = Self {
             catalog: Arc::clone(&self.catalog),
             blobs: Arc::clone(&self.blobs),
@@ -2496,7 +2511,7 @@ impl V2ObjectWriter {
         let document_id = document_id.to_owned();
         let content_type = content_type.to_owned();
         tokio::spawn(async move {
-            let _memory_permit = memory_permit;
+            let _guard = guard;
             writer
                 .write_allocated_inner(&document_id, object_id, body, &content_type)
                 .await
