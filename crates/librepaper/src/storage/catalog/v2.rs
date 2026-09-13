@@ -47,6 +47,20 @@ pub(crate) struct V2SourceAdmissionInput {
     pub now: UnixMillis,
 }
 
+/// Admission for a checkpoint whose document already exists. The operation,
+/// every physical allocation, counters, and stage leases are installed by one
+/// immediate transaction before any object-store write begins.
+pub(crate) struct V2CheckpointAdmissionInput {
+    pub document_id: DocumentId,
+    pub operation_id: OperationId,
+    pub operation: V2OperationInput,
+    pub allocations: Vec<V2ObjectAllocation>,
+    pub lease_holder: String,
+    pub lease_expires_at: UnixMillis,
+    pub limits: V2AdmissionLimits,
+    pub now: UnixMillis,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IdError(pub String);
 
@@ -1373,6 +1387,204 @@ impl Catalog {
     /// Admit the first source closure as one transaction. Filesystem writes
     /// happen only after this returns: at that point the document, operation,
     /// reservations, and every stage lease already share one live fence.
+    pub(crate) fn admit_v2_checkpoint(
+        &self,
+        input: V2CheckpointAdmissionInput,
+    ) -> CatalogResult<(V2Operation, String)> {
+        let expected_document = match &input.operation.scope {
+            OperationScope::Document(document) if document == &input.document_id => document,
+            _ => {
+                return Err(CatalogError::Invalid(
+                    "checkpoint operation document mismatch".into(),
+                ))
+            }
+        };
+        if input.allocations.is_empty()
+            || input.allocations.len() > MAX_CHECKPOINT_OBJECTS
+            || input.lease_holder.is_empty()
+            || input.limits.owner_bytes < 0
+            || input.limits.deployment_bytes < 0
+            || input.operation.kind != OperationKind::Checkpoint
+            || input.operation.actor_key.is_empty()
+            || input.operation.request_key.is_empty()
+            || input
+                .operation
+                .work_expires_at
+                .is_none_or(|expiry| expiry <= input.now)
+        {
+            return Err(CatalogError::Invalid("invalid checkpoint admission".into()));
+        }
+        validate_digest(&input.operation.request_digest, "checkpoint request digest")?;
+        validate_json(
+            &input.operation.plan_json,
+            "checkpoint operation plan",
+            65_536,
+        )?;
+        let mut total = 0i64;
+        let mut ids = HashSet::with_capacity(input.allocations.len());
+        for allocation in &input.allocations {
+            if allocation.document_id != *expected_document
+                || allocation.operation_id.as_str() != input.operation_id.as_str()
+                || allocation.reserved_bytes < 0
+                || allocation.encoding_version < 1
+                || !ids.insert(&allocation.id)
+                || allocation.storage_key
+                    != format!(
+                        "v2/documents/{}/objects/{}",
+                        allocation.document_id, allocation.id
+                    )
+            {
+                return Err(CatalogError::Invalid(
+                    "checkpoint allocation identity mismatch".into(),
+                ));
+            }
+            validate_digest(&allocation.digest, "checkpoint object digest")?;
+            if let Some(logical) = allocation.logical_digest.as_deref() {
+                validate_digest(logical, "checkpoint logical digest")?;
+            }
+            total = checked_add(total, allocation.reserved_bytes, "checkpoint reservation")?;
+        }
+        let guard = self
+            .room_reservations
+            .lock()
+            .map_err(|_| CatalogError::Busy)?;
+        self.immediate(|tx| {
+            let (owner_id, source_generation): (String, i64) = tx
+                .query_row(
+                    "SELECT owner_id,source_generation FROM documents
+                      WHERE id=?1 AND status <> 'deleting'",
+                    [input.document_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(CatalogError::from)?;
+            if input.operation.expected_document_generation != Some(source_generation) {
+                return Err(CatalogError::Conflict("checkpoint document generation changed".into()));
+            }
+            operation_authorized_in_tx(
+                tx,
+                input.document_id.as_str(),
+                &input.operation.actor_key,
+                &input.operation.plan_json,
+                "editor",
+            )?;
+            let writer_generation: String = tx
+                .query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0))
+                .map_err(CatalogError::from)?;
+            let duplicate: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM operations
+                      WHERE document_id=?1 AND actor_key=?2 AND request_key=?3)",
+                    params![input.document_id.as_str(), input.operation.actor_key, input.operation.request_key],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if duplicate {
+                return Err(CatalogError::Conflict("checkpoint request key already exists".into()));
+            }
+            Self::admit_operation_slot(tx, Some(input.document_id.as_str()), input.operation.kind.as_str())?;
+            let (owner_stored, owner_reserved): (i64, i64) = tx
+                .query_row("SELECT stored_bytes,reserved_bytes FROM accounts WHERE id=?1 AND status='active'", [&owner_id], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(CatalogError::from)?;
+            let (server_stored, server_reserved): (i64, i64) = tx
+                .query_row("SELECT stored_bytes,reserved_bytes FROM server_state WHERE id=1", [], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(CatalogError::from)?;
+            let process_owner = guard.owner_bytes.get(&owner_id).copied().unwrap_or(0);
+            let owner_total = owner_stored
+                .checked_add(owner_reserved)
+                .and_then(|value| value.checked_add(total))
+                .and_then(|value| value.checked_add(process_owner))
+                .ok_or_else(|| CatalogError::Invalid("checkpoint owner accounting overflow".into()))?;
+            let process_total = guard.deployment_bytes;
+            let deployment_total = server_stored
+                .checked_add(server_reserved)
+                .and_then(|value| value.checked_add(total))
+                .and_then(|value| value.checked_add(process_total))
+                .ok_or_else(|| CatalogError::Invalid("checkpoint deployment accounting overflow".into()))?;
+            if owner_total > input.limits.owner_bytes {
+                return Err(CatalogError::refused(CatalogRefusal::OwnerBytes, "checkpoint exceeds owner quota"));
+            }
+            if deployment_total > input.limits.deployment_bytes {
+                return Err(CatalogError::refused(CatalogRefusal::DeploymentBytes, "checkpoint exceeds deployment quota"));
+            }
+            let operation_id = input.operation_id.clone();
+            tx.execute(
+                "INSERT INTO operations
+                 (id,document_id,account_id,actor_key,request_key,kind,request_digest,state,
+                  writer_generation,expected_document_generation,conversation_id,execution_epoch,
+                  plan_json,created_at,updated_at,work_expires_at)
+                 VALUES(?1,?2,NULL,?3,?4,?5,?6,'prepared',?7,?8,?9,?10,?11,?12,?12,?13)",
+                params![
+                    operation_id.as_str(),
+                    input.document_id.as_str(),
+                    input.operation.actor_key,
+                    input.operation.request_key,
+                    input.operation.kind.as_str(),
+                    input.operation.request_digest,
+                    writer_generation.clone(),
+                    source_generation,
+                    input.operation.conversation_id,
+                    input.operation.execution_epoch,
+                    input.operation.plan_json,
+                    input.now.0,
+                    input.operation.work_expires_at.map(|value| value.0),
+                ],
+            )
+            .map_err(CatalogError::from)?;
+            for allocation in &input.allocations {
+                tx.execute(
+                    "INSERT INTO objects
+                     (document_id,id,storage_key,kind,state,digest,logical_digest,
+                      encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at)
+                     VALUES(?1,?2,?3,?4,'allocated',?5,?6,?7,NULL,?8,?9,?10)",
+                    params![
+                        allocation.document_id.as_str(),
+                        allocation.id.as_str(),
+                        allocation.storage_key,
+                        allocation.kind.as_str(),
+                        allocation.digest,
+                        allocation.logical_digest,
+                        allocation.encoding_version,
+                        allocation.reserved_bytes,
+                        operation_id.as_str(),
+                        input.now.0,
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+                tx.execute(
+                    "INSERT INTO object_leases
+                     (document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at)
+                     VALUES(?1,?2,?3,'stage',?4,?5,?6,?7)",
+                    params![
+                        allocation.document_id.as_str(),
+                        allocation.id.as_str(),
+                        input.lease_holder,
+                        operation_id.as_str(),
+                        writer_generation,
+                        input.now.0,
+                        input.lease_expires_at.0,
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+            }
+            tx.execute("UPDATE documents SET reserved_bytes=reserved_bytes+?1,updated_at=max(updated_at,?2) WHERE id=?3", params![total, input.now.0, input.document_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![total, owner_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET reserved_bytes=reserved_bytes+?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1", params![total, input.now.0]).map_err(CatalogError::from)?;
+            Ok((
+                V2Operation {
+                    id: operation_id,
+                    scope: input.operation.scope.clone(),
+                    actor_key: input.operation.actor_key.clone(),
+                    request_key: input.operation.request_key.clone(),
+                    kind: input.operation.kind.as_str().to_owned(),
+                    state: "prepared".into(),
+                    request_digest: input.operation.request_digest.clone(),
+                    writer_generation: writer_generation.clone(),
+                },
+                writer_generation,
+            ))
+        })
+    }
+
     pub(crate) fn admit_v2_source(
         &self,
         input: V2SourceAdmissionInput,
