@@ -21,6 +21,30 @@ fn source_encoding_pool() -> &'static crate::storage::encoding::EncodingPool {
     })
 }
 
+/// Owns the closure heartbeat for the whole physical write and final
+/// verification/commit. Dropping a cancelled checkpoint aborts the task, so
+/// no detached renewal can keep leases alive after its request is gone.
+struct CheckpointHeartbeat {
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl CheckpointHeartbeat {
+    async fn stop(mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+}
+
+impl Drop for CheckpointHeartbeat {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
 /// Who a checkpoint is attributed to.
 ///
 /// `display` is the mutable string the timeline shows: a handle, an owner
@@ -480,26 +504,69 @@ impl Room {
         // authenticated MutationAuthority to carry into the final SQL fence.
         if !duplicate {
             if let (Some(catalog), Some(actor)) = (self.catalog.get(), actor.as_ref()) {
-                if actor.agent_checkpoint.is_some() {
-                    // Agent acceptance carries an additional receipt that
-                    // must be settled by the established acceptance
-                    // transaction below; the generic v2 checkpoint commit
-                    // cannot silently drop that proof.
-                } else {
-                    return self
-                        .checkpoint_v2_canonical(
-                            catalog,
-                            why,
-                            by,
-                            &tree,
-                            &bodies,
-                            &format,
-                            &last,
-                            tree_generation,
-                            actor,
-                        )
-                        .await;
-                }
+                return self
+                    .checkpoint_v2_canonical(
+                        catalog,
+                        why,
+                        by,
+                        &tree,
+                        &bodies,
+                        &format,
+                        &last,
+                        tree_generation,
+                        actor,
+                        snapshot_source_generation,
+                        snapshot_journal,
+                        actor.agent_checkpoint,
+                    )
+                    .await;
+            }
+            if let Some(catalog) = self.catalog.get() {
+                // Timer/importer checkpoints still need a real catalogue
+                // identity.  Resolve the document's active owner account;
+                // never manufacture an actor from the slug or an empty key.
+                let document = read_catalog_document(catalog, &self.slug)
+                    .await
+                    .map_err(WriteError::from)?
+                    .ok_or(WriteError::NotFound)?;
+                let owner_id = document.owner_id.ok_or_else(|| {
+                    WriteError::Storage("document has no checkpoint owner".into())
+                })?;
+                let account = catalog
+                    .execute_catalog(256, {
+                        let owner_id = owner_id.clone();
+                        move |catalog| catalog.account(&owner_id)
+                    })
+                    .await
+                    .map_err(WriteError::from)?
+                    .ok_or(WriteError::NotFound)?;
+                let system_actor = crate::storage::catalog::MutationAuthority {
+                    account_id: &account.id,
+                    owner_key: "",
+                    generation: &account.session_generation,
+                    link_hash: "",
+                    policy_editor: true,
+                    automation: true,
+                    unowned_publisher: false,
+                    execution_epoch: "",
+                    agent_checkpoint: None,
+                };
+                return self
+                    .checkpoint_v2_canonical(
+                        catalog,
+                        why,
+                        by,
+                        &tree,
+                        &bodies,
+                        &format,
+                        &last,
+                        tree_generation,
+                        &system_actor,
+                        snapshot_source_generation,
+                        snapshot_journal,
+                        None,
+                    )
+                    .await;
             }
         }
         if !duplicate && budget_token.is_none() {
@@ -1167,6 +1234,9 @@ impl Room {
         parent: &str,
         tree_generation: u64,
         actor: &crate::storage::catalog::MutationAuthority<'_>,
+        source_generation: i64,
+        journal: (i64, i64),
+        agent_checkpoint: Option<&crate::storage::catalog::AgentCheckpointCommit>,
     ) -> Result<Option<String>, WriteError> {
         use crate::storage::blob::ObjectId as BlobObjectId;
         use crate::storage::catalog::{
@@ -1188,13 +1258,7 @@ impl Room {
         let now_ms = crate::util::now_millis();
         let now =
             UnixMillis::new(now_ms).map_err(|error| WriteError::Storage(error.to_string()))?;
-        let (journal_epoch, journal_sequence) = catalog
-            .execute_catalog(256, {
-                let document_id = document_id.clone();
-                move |catalog| catalog.v2_document_journal_head(&document_id)
-            })
-            .await
-            .map_err(WriteError::from)?;
+        let (journal_epoch, journal_sequence) = journal;
         let operation_id = OperationId::new(hex::encode(crate::auth::random_bytes(16)))
             .map_err(|error| WriteError::Storage(error.to_string()))?;
         let checkpoint_id =
@@ -1222,6 +1286,22 @@ impl Room {
                 ceiling: self.config.persistence().max_encoded_snapshot_bytes,
             }));
         }
+        // The logical tree is copied into encoded chunks, recipe envelopes,
+        // and the final tree envelope. Hold the shared journal budget for the
+        // entire closure so concurrent rooms cannot all pass this estimate
+        // and exhaust process memory during encoding and verification.
+        let _memory_permit = self
+            .journal
+            .get()
+            .map(|journal| {
+                journal
+                    .memory()
+                    .try_acquire(crate::config::PersistenceLimits::staging_cost(
+                        estimated_logical_bytes,
+                    ))
+                    .map_err(|_| WriteError::ServerBusy)
+            })
+            .transpose()?;
 
         struct PhysicalObject {
             id: ObjectId,
@@ -1336,14 +1416,54 @@ impl Room {
                 let asset_key = v2_asset
                     .as_ref()
                     .map(|object| object.storage_key.clone())
-                    .unwrap_or_else(|| {
-                        crate::storage::blob::asset_key(&self.storage_id, &entry.sha)
-                    });
-                let bytes = self
-                    .blobs
-                    .get(&asset_key)
-                    .await
-                    .map_err(|error| WriteError::Storage(error.to_string()))?;
+                    .ok_or_else(|| {
+                        WriteError::Storage("asset is absent from the v2 object graph".into())
+                    })?;
+                let read_lease = if let Some(asset) = v2_asset.as_ref() {
+                    let (_, writer_generation, _) = catalog
+                        .execute_catalog(256, |catalog| catalog.v2_server_state())
+                        .await
+                        .map_err(WriteError::from)?;
+                    let read_holder = format!("checkpoint-read:{}:{}", operation_id, asset.id);
+                    let lease_now = UnixMillis::new(crate::util::now_millis())
+                        .map_err(|error| WriteError::Storage(error.to_string()))?;
+                    let lease_expiry =
+                        UnixMillis::new(lease_now.0.checked_add(120_000).ok_or_else(|| {
+                            WriteError::Storage("asset read lease overflow".into())
+                        })?)
+                        .map_err(|error| WriteError::Storage(error.to_string()))?;
+                    let document = document_id.clone();
+                    let object = asset.id.clone();
+                    let holder = read_holder.clone();
+                    let generation = writer_generation.clone();
+                    catalog
+                        .execute_catalog(512, move |catalog| {
+                            catalog.acquire_v2_read_set(
+                                &document,
+                                std::slice::from_ref(&object),
+                                &holder,
+                                &generation,
+                                lease_expiry,
+                                lease_now,
+                            )
+                        })
+                        .await
+                        .map_err(WriteError::from)?;
+                    Some((asset.id.clone(), read_holder))
+                } else {
+                    None
+                };
+                let bytes_result = self.blobs.get(&asset_key).await;
+                if let (Some(object_id), holder) = read_lease {
+                    let document = document_id.clone();
+                    let holder = holder.clone();
+                    let _ = catalog
+                        .execute_catalog(256, move |catalog| {
+                            catalog.release_v2_lease(&document, &object_id, &holder)
+                        })
+                        .await;
+                }
+                let bytes = bytes_result.map_err(|error| WriteError::Storage(error.to_string()))?;
                 let digest = hex::encode(Sha256::digest(&bytes));
                 if digest != entry.sha || entry.size < 0 || bytes.len() as i64 != entry.size {
                     return Err(WriteError::Storage(
@@ -1438,6 +1558,8 @@ impl Room {
             "automation": actor.automation,
             "unowned_publisher": actor.unowned_publisher,
             "execution_epoch": actor.execution_epoch,
+            "agent_source_revision": agent_checkpoint
+                .map(|proof| proof.source_revision.as_str()),
         });
         let plan_json = serde_json::json!({
             "version": 2,
@@ -1474,13 +1596,6 @@ impl Room {
         let operation_expires = now_ms
             .checked_add(120_000)
             .ok_or_else(|| WriteError::Storage("operation expiry overflow".into()))?;
-        let expected_source_generation = catalog
-            .execute_catalog(256, {
-                let document_id = document_id.clone();
-                move |catalog| catalog.v2_document_source_generation(&document_id)
-            })
-            .await
-            .map_err(WriteError::from)?;
         let operation = V2OperationInput {
             scope: OperationScope::Document(document_id.clone()),
             actor_key,
@@ -1488,7 +1603,7 @@ impl Room {
             kind: OperationKind::Checkpoint,
             request_digest,
             plan_json,
-            expected_document_generation: Some(expected_source_generation),
+            expected_document_generation: Some(source_generation),
             conversation_id: None,
             execution_epoch: (!actor.execution_epoch.is_empty())
                 .then(|| actor.execution_epoch.to_owned()),
@@ -1552,6 +1667,48 @@ impl Room {
             .await
             .map_err(WriteError::from)?;
 
+        // A request-key replay is returned by admission before any new
+        // allocation is written. Reuse its durable receipt instead of
+        // generating a second physical closure. A prepared replay cannot be
+        // safely resumed with fresh IDs, so leave it for the original fenced
+        // writer to finish and make the caller retry with a new key.
+        if admitted_operation.id != operation_id {
+            if admitted_operation.state == "committed" {
+                let document = document_id.clone();
+                let replay_id = admitted_operation.id.clone();
+                let result = catalog
+                    .execute_catalog(512, move |catalog| {
+                        catalog.v2_operation_result(&document, &replay_id)
+                    })
+                    .await
+                    .map_err(WriteError::from)?;
+                let Some((state, result_json)) = result else {
+                    return Err(WriteError::Storage(
+                        "checkpoint replay receipt is missing".into(),
+                    ));
+                };
+                if state != "committed" {
+                    return Err(WriteError::Conflict(
+                        "checkpoint replay is no longer committed".into(),
+                    ));
+                }
+                let value: serde_json::Value = serde_json::from_str(&result_json)
+                    .map_err(|_| WriteError::Storage("invalid checkpoint replay receipt".into()))?;
+                let checkpoint_id = value
+                    .get("checkpoint_id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        WriteError::Storage("checkpoint replay receipt has no checkpoint id".into())
+                    })?
+                    .to_owned();
+                return Ok(Some(checkpoint_id));
+            }
+            return Err(WriteError::Conflict(
+                "checkpoint request is already being prepared; retry after it settles".into(),
+            ));
+        }
+
         let writer = crate::storage::v2_catalog::V2ObjectWriter::new(
             Arc::clone(catalog),
             Arc::clone(&self.blobs),
@@ -1564,57 +1721,59 @@ impl Room {
         let heartbeat_operation = admitted_operation.id.clone();
         let heartbeat_generation = writer_generation.clone();
         let heartbeat_error_slot = Arc::clone(&heartbeat_error);
-        let heartbeat = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-            loop {
-                interval.tick().await;
-                let current_ms = crate::util::now_millis();
-                let current = match UnixMillis::new(current_ms) {
-                    Ok(value) => value,
-                    Err(error) => {
+        let heartbeat = CheckpointHeartbeat {
+            handle: Some(tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    let current_ms = crate::util::now_millis();
+                    let current = match UnixMillis::new(current_ms) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            if let Ok(mut slot) = heartbeat_error_slot.lock() {
+                                *slot = Some(error.to_string());
+                            }
+                            break;
+                        }
+                    };
+                    let expiry = match UnixMillis::new(current_ms.saturating_add(120_000)) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            if let Ok(mut slot) = heartbeat_error_slot.lock() {
+                                *slot = Some(error.to_string());
+                            }
+                            break;
+                        }
+                    };
+                    let result = heartbeat_catalog
+                        .execute_catalog(heartbeat_ids.len() * 64 + 256, {
+                            let document = heartbeat_document.clone();
+                            let ids = heartbeat_ids.clone();
+                            let holder = heartbeat_holder.clone();
+                            let operation = heartbeat_operation.clone();
+                            let generation = heartbeat_generation.clone();
+                            move |catalog| {
+                                catalog.renew_v2_lease_set(
+                                    &document,
+                                    &ids,
+                                    &holder,
+                                    &operation,
+                                    &generation,
+                                    expiry,
+                                    current,
+                                )
+                            }
+                        })
+                        .await;
+                    if let Err(error) = result {
                         if let Ok(mut slot) = heartbeat_error_slot.lock() {
                             *slot = Some(error.to_string());
                         }
                         break;
                     }
-                };
-                let expiry = match UnixMillis::new(current_ms.saturating_add(120_000)) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        if let Ok(mut slot) = heartbeat_error_slot.lock() {
-                            *slot = Some(error.to_string());
-                        }
-                        break;
-                    }
-                };
-                let result = heartbeat_catalog
-                    .execute_catalog(heartbeat_ids.len() * 64 + 256, {
-                        let document = heartbeat_document.clone();
-                        let ids = heartbeat_ids.clone();
-                        let holder = heartbeat_holder.clone();
-                        let operation = heartbeat_operation.clone();
-                        let generation = heartbeat_generation.clone();
-                        move |catalog| {
-                            catalog.renew_v2_lease_set(
-                                &document,
-                                &ids,
-                                &holder,
-                                &operation,
-                                &generation,
-                                expiry,
-                                current,
-                            )
-                        }
-                    })
-                    .await;
-                if let Err(error) = result {
-                    if let Ok(mut slot) = heartbeat_error_slot.lock() {
-                        *slot = Some(error.to_string());
-                    }
-                    break;
                 }
-            }
-        });
+            })),
+        };
         for object in &physical {
             let blob_id = BlobObjectId::parse(object.id.as_str().to_owned())
                 .map_err(|error| WriteError::Storage(error.to_string()))?;
@@ -1628,15 +1787,15 @@ impl Room {
                 .await
                 .map_err(WriteError::Storage);
             if let Err(error) = write_result {
-                heartbeat.abort();
-                let _ = heartbeat.await;
+                heartbeat.stop().await;
                 return Err(error);
             }
         }
-        heartbeat.abort();
-        let _ = heartbeat.await;
         if let Ok(slot) = heartbeat_error.lock() {
             if let Some(error) = slot.as_ref() {
+                let error = error.clone();
+                drop(slot);
+                heartbeat.stop().await;
                 return Err(WriteError::Storage(format!(
                     "checkpoint closure heartbeat failed: {error}"
                 )));
@@ -1677,16 +1836,27 @@ impl Room {
             .map_err(WriteError::from)?;
         let checkpoint_id = checkpoint.id.as_str().to_string();
         let checkpoint_for_commit = checkpoint.clone();
+        let agent_checkpoint_for_commit = agent_checkpoint.cloned();
         catalog
             .execute_catalog(checkpoint.object_ids.len() * 128 + 512, move |catalog| {
-                catalog.commit_v2_checkpoint_verified(
+                catalog.commit_v2_checkpoint_verified_with_agent(
                     &proof,
                     &checkpoint_for_commit,
                     &serde_json::json!({"version": 2, "effect": "checkpoint", "checkpoint_id": checkpoint_id}).to_string(),
+                    agent_checkpoint_for_commit.as_ref(),
                 )
             })
             .await
             .map_err(WriteError::from)?;
+        // Keep the lease heartbeat alive through closure verification and the
+        // atomic head/receipt commit. Only after that transaction succeeds is
+        // it safe to stop renewing the stage leases.
+        heartbeat.stop().await;
+        if let Ok(slot) = heartbeat_error.lock() {
+            if let Some(error) = slot.as_ref() {
+                eprintln!("warning: checkpoint heartbeat failed after commit: {error}");
+            }
+        }
         if let Err(error) = catalog
             .execute_catalog(checkpoint.object_ids.len() * 64 + 256, {
                 let document = document_id.clone();

@@ -19,13 +19,27 @@ fn checkpoint_time_ms(value: &str) -> CatalogResult<i64> {
             Ok(number)
         };
     }
-    crate::util::parse_timestamp(value)
-        .and_then(|seconds| seconds.checked_mul(1_000))
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .and_then(|value| {
+            i64::try_from(value.unix_timestamp_nanos() / 1_000_000).ok()
+        })
         .ok_or_else(|| CatalogError::Invalid("checkpoint timestamp is invalid".into()))
 }
 
+fn format_checkpoint_time_ms(value: i64) -> String {
+    let Ok(value) = time::OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(value).saturating_mul(1_000_000),
+    ) else {
+        return String::new();
+    };
+    value
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
+
 const CHECKPOINT_SELECT: &str = "SELECT d.slug,c.id,c.seq,c.journal_sequence,c.tree_digest,
-            COALESCE(c.parent_id,''),CAST(c.created_at AS TEXT),c.author_label,
+            COALESCE(c.parent_id,''),c.created_at,c.author_label,
             c.reason,c.source_format,c.logical_bytes,COALESCE(c.label,''),
             COALESCE(json_extract(c.metadata_json,'$.gitCommit'),''),
             COALESCE(json_extract(c.metadata_json,'$.dirty'),0),
@@ -795,6 +809,7 @@ impl Catalog {
     }
 
     pub(super) fn read_checkpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<Checkpoint> {
+        let created_at_ms: i64 = row.get(6)?;
         Ok(Checkpoint {
             slug: row.get(0)?,
             sha: row.get(1)?,
@@ -802,7 +817,7 @@ impl Catalog {
             durable_seq: row.get(3)?,
             tree_sha: row.get(4)?,
             parent: row.get(5)?,
-            at: row.get(6)?,
+            at: format_checkpoint_time_ms(created_at_ms),
             by: row.get(7)?,
             why: row.get(8)?,
             source_format: row.get(9)?,

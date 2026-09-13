@@ -2562,6 +2562,27 @@ impl Catalog {
         })
     }
 
+    /// Read the durable result of a request-key replay while retaining the
+    /// document scope. Callers use this before allocating any new physical
+    /// IDs, so a committed retry cannot create an unreferenced closure.
+    pub(crate) fn v2_operation_result(
+        &self,
+        document_id: &DocumentId,
+        operation_id: &OperationId,
+    ) -> CatalogResult<Option<(String, String)>> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT state,COALESCE(result_json,'') FROM operations
+                     WHERE document_id=?1 AND id=?2 AND kind='checkpoint'",
+                    params![document_id.as_str(), operation_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(CatalogError::from)
+        })
+    }
+
     pub fn release_v2_lease(
         &self,
         document_id: &DocumentId,
@@ -2911,6 +2932,19 @@ impl Catalog {
         checkpoint: &CheckpointCommit,
         result_json: &str,
     ) -> CatalogResult<i64> {
+        self.commit_v2_checkpoint_verified_with_agent(proof, checkpoint, result_json, None)
+    }
+
+    /// Commit a checkpoint while rechecking a previously prepared agent
+    /// receipt in the same transaction.  The agent proof is optional for
+    /// ordinary Room checkpoints and is never copied into the operation key.
+    pub(crate) fn commit_v2_checkpoint_verified_with_agent(
+        &self,
+        proof: &VerifiedCheckpointClosure,
+        checkpoint: &CheckpointCommit,
+        result_json: &str,
+        agent: Option<&super::AgentCheckpointCommit>,
+    ) -> CatalogResult<i64> {
         if proof.document_id != checkpoint.document_id
             || proof.tree_object_id != checkpoint.tree_object_id
             || proof.object_ids != checkpoint.object_ids
@@ -2934,7 +2968,7 @@ impl Catalog {
                 "checkpoint closure proof is stale".into(),
             ));
         }
-        self.commit_v2_checkpoint_for_operation(&proof.operation_id, checkpoint, result_json)
+        self.commit_v2_checkpoint_for_operation(&proof.operation_id, checkpoint, result_json, agent)
     }
 
     /// Commit a source publication and its complete verified closure in the
@@ -2948,6 +2982,7 @@ impl Catalog {
         operation_id: &OperationId,
         checkpoint: &CheckpointCommit,
         result_json: &str,
+        agent: Option<&super::AgentCheckpointCommit>,
     ) -> CatalogResult<i64> {
         validate_json(result_json, "checkpoint result", 65_536)?;
         validate_digest(&checkpoint.tree_digest, "tree digest")?;
@@ -2979,6 +3014,39 @@ impl Catalog {
             let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
             if generation != current_generation { return Err(CatalogError::Conflict("source operation belongs to an obsolete writer generation".into())); }
             operation_authorized_in_tx(tx, checkpoint.document_id.as_str(), &actor_key, &plan_json, "editor")?;
+            if let Some(agent) = agent {
+                let receipt: Option<(String, String)> = tx
+                    .query_row(
+                        "SELECT request_digest,state FROM operations
+                         WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'",
+                        params![checkpoint.document_id.as_str(), agent.request_id.as_str()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(CatalogError::from)?;
+                let Some((agent_digest, agent_state)) = receipt else {
+                    return Err(CatalogError::Conflict(
+                        "agent checkpoint receipt is missing".into(),
+                    ));
+                };
+                if agent_digest != agent.digest || agent_state != "committed" {
+                    return Err(CatalogError::Conflict(
+                        "agent checkpoint receipt is not committed for this actor".into(),
+                    ));
+                }
+                let planned_revision = serde_json::from_str::<serde_json::Value>(&plan_json)
+                    .ok()
+                    .and_then(|plan| {
+                        plan.get("agent_source_revision")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    });
+                if planned_revision.as_deref() != Some(agent.source_revision.as_str()) {
+                    return Err(CatalogError::Conflict(
+                        "agent checkpoint source revision changed".into(),
+                    ));
+                }
+            }
             let (source_generation, next, doc_refs): (i64,i64,i64) = tx.query_row(
                 "SELECT source_generation,next_checkpoint_seq,checkpoint_ref_count FROM documents WHERE id=?1 AND status<>'deleting'",
                 [checkpoint.document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
