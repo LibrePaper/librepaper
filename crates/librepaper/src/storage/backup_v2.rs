@@ -631,14 +631,19 @@ async fn put_new_destination(
     }
     let key = key.to_owned();
     let content_type = content_type.to_owned();
+    let expected_length = body.len() as u64;
+    let expected_digest = hex::encode(Sha256::digest(&body));
+    let destination_for_put = Arc::clone(&destination);
+    let key_for_put = key.clone();
     tokio::spawn(async move {
-        destination
-            .put(&key, body, &content_type)
+        destination_for_put
+            .put(&key_for_put, body, &content_type)
             .await
             .map_err(|error| BackupV2Error::Storage(error.to_string()))
     })
     .await
-    .map_err(|error| BackupV2Error::Storage(format!("backup object task failed: {error}")))?
+    .map_err(|error| BackupV2Error::Storage(format!("backup object task failed: {error}")))??;
+    verify_destination_file(destination, &key, expected_length, &expected_digest).await
 }
 
 async fn put_new_file_destination(
@@ -1682,12 +1687,10 @@ mod tests {
         }
 
         async fn length(&self, key: &str) -> crate::storage::blob::BlobResult<u64> {
-            self.files
-                .lock()
-                .unwrap()
-                .get(key)
-                .copied()
-                .ok_or(crate::storage::blob::BlobError::NotFound)
+            if let Some(length) = self.files.lock().unwrap().get(key).copied() {
+                return Ok(length);
+            }
+            self.inner.length(key).await
         }
 
         async fn get_range(
@@ -1695,6 +1698,9 @@ mod tests {
             key: &str,
             range: std::ops::Range<u64>,
         ) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            if !self.files.lock().unwrap().contains_key(key) {
+                return self.inner.get_range(key, range).await;
+            }
             let length = self.length(key).await?;
             if range.start > range.end || range.end > length || range.end - range.start > 64 * 1024 {
                 return Err(crate::storage::blob::BlobError::Other("invalid test range".into()));
