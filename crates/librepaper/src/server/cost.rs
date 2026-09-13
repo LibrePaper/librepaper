@@ -48,11 +48,18 @@ struct Durable {
 fn decode_durable(saved: &str) -> Result<Durable, String> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
-    struct Envelope { version: u32, state: Option<Durable> }
+    struct Envelope {
+        version: u32,
+        state: Option<Durable>,
+    }
     let envelope: Envelope = serde_json::from_str(saved).map_err(|error| error.to_string())?;
-    if envelope.version != 2 { return Err("unsupported cost state version".into()); }
+    if envelope.version != 2 {
+        return Err("unsupported cost state version".into());
+    }
     let durable = envelope.state.unwrap_or_default();
-    if durable.minutes.len() > 1442 { return Err("cost state exceeds its rolling window bound".into()); }
+    if durable.minutes.len() > 1442 {
+        return Err("cost state exceeds its rolling window bound".into());
+    }
     Ok(durable)
 }
 
@@ -128,13 +135,22 @@ impl CostMeter {
         config: &Arc<Configuration>,
         catalog: Option<Arc<crate::storage::catalog::Catalog>>,
     ) -> Self {
-        let loaded = catalog.as_ref().map(|catalog| {
-            catalog.cost_state_json().map_err(|error| error.to_string()).and_then(|saved| decode_durable(&saved))
-        }).transpose();
+        let loaded = catalog
+            .as_ref()
+            .map(|catalog| {
+                catalog
+                    .cost_state_json()
+                    .map_err(|error| error.to_string())
+                    .and_then(|saved| decode_durable(&saved))
+            })
+            .transpose();
         let (durable, unavailable) = match loaded {
             Ok(Some(value)) => (value, false),
             Ok(None) => (Durable::default(), true),
-            Err(error) => { eprintln!("warning: cannot recover transfer budget: {error}"); (Durable::default(), true) }
+            Err(error) => {
+                eprintln!("warning: cannot recover transfer budget: {error}");
+                (Durable::default(), true)
+            }
         };
         Self {
             config: config.clone(),
@@ -354,10 +370,15 @@ impl CostMeter {
             Self::expire(&mut state, now_unix());
             self.refresh_mode(&mut state);
             state.durable.policy = self.config.effective_policy();
-            serde_json::to_string(&json!({"version":2,"state":state.durable})).map_err(|e| e.to_string())?
+            serde_json::to_string(&json!({"version":2,"state":state.durable}))
+                .map_err(|e| e.to_string())?
         };
-        catalog.execute_catalog(saved.len(), move |catalog| catalog.save_cost_state_json(&saved))
-            .await.map_err(|error| error.to_string())
+        catalog
+            .execute_catalog(saved.len(), move |catalog| {
+                catalog.save_cost_state_json(&saved)
+            })
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub fn snapshot(&self) -> Value {

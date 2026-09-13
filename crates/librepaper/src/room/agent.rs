@@ -37,7 +37,7 @@ impl OperationKey {
     pub fn validate(&self) -> Result<(), AgentError> {
         if self.epoch.is_empty()
             || self.epoch.len() > MAX_OPERATION_EPOCH
-            || self.id.is_empty()
+            || crate::util::request_key_timestamp(&self.id).is_none()
             || self.id.len() > MAX_OPERATION_ID
             || !self.epoch.is_ascii()
             || !self.id.is_ascii()
@@ -61,13 +61,14 @@ impl OperationKey {
     /// Room mutations always pass the authenticated scope.
     pub fn scoped_request_id(&self, scope: &str) -> String {
         let mut binding = Vec::with_capacity(self.epoch.len() + self.id.len() + 32);
-        binding.extend_from_slice(b"librepaper-agent-operation-v1\0");
+        binding.extend_from_slice(b"librepaper-agent-operation-v2\0");
         binding.extend_from_slice(scope.as_bytes());
         binding.push(0);
         binding.extend_from_slice(self.epoch.as_bytes());
         binding.push(0);
         binding.extend_from_slice(self.id.as_bytes());
-        format!("agent-{}", hex::encode(Sha256::digest(binding)))
+        let issued = crate::util::request_key_timestamp(&self.id).unwrap_or(0);
+        format!("v2.{issued}.{}", &hex::encode(Sha256::digest(binding))[..32])
     }
 }
 

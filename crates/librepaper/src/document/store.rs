@@ -25,7 +25,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
@@ -37,8 +36,7 @@ use crate::storage::blob::{
     source_prefix, BlobError, BlobStore, BlobVersion, INDEX_KEY,
 };
 use crate::storage::catalog::{
-    Account, Catalog, CatalogError, CheckpointAssetRef, OperationActor, OperationRequest,
-    SourceHistoryRecord,
+    Account, Catalog, CatalogError, OperationActor, OperationRequest,
 };
 use crate::util::new_id;
 use crate::util::{now_unix, parse_timestamp, timestamp};
@@ -46,157 +44,6 @@ use crate::util::{now_unix, parse_timestamp, timestamp};
 const MAX_LINKS_PER_RESULT: i64 = 16;
 const MAX_GUESTS_PER_RESULT: i64 = 256;
 const CATALOG_PAGE_SIZE: u32 = 200;
-
-/// Validate a native source-history receipt before startup rolls it forward.
-/// Unlike the normal read API this deliberately never falls back to a legacy
-/// whole-file object: a receipt that names the new recipe/chunk graph must
-/// prove that graph is complete, or remain pending for later reconciliation.
-async fn validate_staged_source_graph(
-    blobs: &dyn BlobStore,
-    storage_id: &str,
-    tree_bytes: &[u8],
-    tree_sha: &str,
-    sources: &[SourceHistoryRecord],
-    assets: Option<&[CheckpointAssetRef]>,
-) -> bool {
-    let tree: crate::document::history::Tree = match serde_json::from_slice(tree_bytes) {
-        Ok(tree) => tree,
-        Err(_) => return false,
-    };
-    if hex::encode(Sha256::digest(tree_bytes)) != tree_sha {
-        return false;
-    }
-    if tree.files.values().any(|entry| {
-        entry.kind == "text"
-            && !sources.iter().any(|source| {
-                source.file_digest == entry.sha && source.uncompressed_bytes == entry.size
-            })
-    }) {
-        return false;
-    }
-    let has_tree_assets = tree.files.values().any(|entry| entry.kind == "asset");
-    let tree_assets = tree.files.values().filter(|entry| entry.kind == "asset");
-    let staged_assets = match assets {
-        Some(assets) => assets,
-        // A native staged graph with asset entries must carry the immutable
-        // asset root set. Treat an absent property as incomplete rather than
-        // allowing startup to commit a checkpoint that GC cannot protect.
-        None if has_tree_assets => return false,
-        None => &[],
-    };
-    for entry in tree_assets {
-        if entry.sha.is_empty() || entry.size < 0 {
-            return false;
-        }
-        let key = crate::storage::blob::asset_key(storage_id, &entry.sha);
-        let Some(asset) = staged_assets.iter().find(|asset| asset.object_key == key) else {
-            return false;
-        };
-        if asset.bytes != entry.size {
-            return false;
-        }
-        let bytes = match blobs.get(&key).await {
-            Ok(bytes) => bytes,
-            Err(_) => return false,
-        };
-        if bytes.len() as i64 != asset.bytes {
-            return false;
-        }
-        let expected = entry.sha.clone();
-        if !tokio::task::spawn_blocking(move || hex::encode(Sha256::digest(&bytes)) == expected)
-            .await
-            .unwrap_or(false)
-        {
-            return false;
-        }
-    }
-    if staged_assets.iter().any(|asset| {
-        !tree.files.values().any(|entry| {
-            entry.kind == "asset"
-                && entry.sha
-                    == asset
-                        .object_key
-                        .strip_prefix(&crate::storage::blob::asset_prefix(storage_id))
-                        .unwrap_or_default()
-                && entry.size == asset.bytes
-        })
-    }) {
-        return false;
-    }
-    for source in sources {
-        let expected_file_digest = match hex::decode(&source.file_digest) {
-            Ok(bytes) if bytes.len() == 32 => bytes,
-            _ => return false,
-        };
-        if source.recipe_key
-            != crate::storage::blob::content_recipe_key(storage_id, &source.file_digest)
-            || source.recipe_digest.is_empty()
-        {
-            return false;
-        }
-        if !tree
-            .files
-            .values()
-            .any(|entry| entry.sha == source.file_digest)
-        {
-            return false;
-        }
-        let recipe_bytes = match blobs.get(&source.recipe_key).await {
-            Ok(bytes) => bytes,
-            Err(_) => return false,
-        };
-        let recipe = match crate::storage::encoding::Recipe::from_bytes(&recipe_bytes) {
-            Ok(recipe) => recipe,
-            Err(_) => return false,
-        };
-        if recipe.file_digest.as_slice() != expected_file_digest.as_slice()
-            || hex::encode(recipe.digest()) != source.recipe_digest
-            || recipe_bytes.len() as i64 != source.recipe_bytes
-            || recipe.uncompressed_len != source.uncompressed_bytes as u64
-            || recipe.codec as i64 != source.codec
-        {
-            return false;
-        }
-        let mut objects = HashMap::with_capacity(recipe.chunks.len());
-        for reference in &recipe.chunks {
-            let key =
-                crate::storage::blob::content_chunk_key(storage_id, &hex::encode(reference.digest));
-            let bytes = match blobs.get(&key).await {
-                Ok(bytes) => bytes,
-                Err(_) => return false,
-            };
-            objects.insert(reference.digest, bytes);
-        }
-        // Check every descriptor too, including reused chunks, so a partial
-        // graph cannot be rescued by an unrelated legacy source object.
-        for object in &source.objects {
-            let bytes = match blobs.get(&object.object_key).await {
-                Ok(bytes) => bytes,
-                Err(_) => return false,
-            };
-            if object.bytes > 0 && bytes.len() as i64 != object.bytes {
-                return false;
-            }
-        }
-        // Reconstruction verifies both chunk and complete-file digests. Keep
-        // recovery decompression off the asynchronous runtime as well.
-        let verified = tokio::task::spawn_blocking(move || {
-            crate::storage::encoding::reconstruct(&recipe, |digest| {
-                objects.get(digest).cloned().ok_or_else(|| {
-                    crate::storage::encoding::EncodingError::Integrity(
-                        "recipe object is missing".into(),
-                    )
-                })
-            })
-            .map(|_| ())
-        })
-        .await;
-        if !matches!(verified, Ok(Ok(()))) {
-            return false;
-        }
-    }
-    true
-}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct IndexEntry {
@@ -868,216 +715,8 @@ impl Store {
         config: Arc<Configuration>,
         catalog: Arc<Catalog>,
     ) -> Result<Store, String> {
-        // Publications interrupted after prepare are invisible. On restart,
-        // roll forward only when both the staged catalogue checkpoint and its
-        // immutable tree object exist; otherwise abort, and discard a never-
-        // activated creation so it cannot consume quota forever.
-        for pending in catalog
-            .execute_catalog(STORE_JOB_BYTES, |catalog| {
-                catalog.pending_publications(1000)
-            })
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            let operation = {
-                let storage_id = pending.storage_id.clone();
-                let request_id = pending.request_id.clone();
-                catalog
-                    .execute_catalog(STORE_JOB_BYTES, move |catalog| {
-                        catalog.operation(&storage_id, &request_id)
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?
-            };
-            let staged_sha = operation.as_ref().and_then(|operation| {
-                serde_json::from_str::<serde_json::Value>(&operation.intent)
-                    .ok()
-                    .and_then(|intent| {
-                        intent
-                            .get("checkpoint")
-                            .and_then(|checkpoint| checkpoint.get("sha"))
-                            .and_then(|sha| sha.as_str())
-                            .map(str::to_owned)
-                    })
-            });
-            let (
-                staged_tree_sha,
-                staged_sources,
-                staged_assets,
-                staged_assets_valid,
-                native_source_graph,
-            ): (
-                String,
-                Option<Vec<SourceHistoryRecord>>,
-                Option<Vec<CheckpointAssetRef>>,
-                bool,
-                bool,
-            ) = operation
-                .as_ref()
-                .and_then(|operation| {
-                    let intent =
-                        serde_json::from_str::<serde_json::Value>(&operation.intent).ok()?;
-                    let tree_sha = intent
-                        .get("checkpoint")
-                        .and_then(|checkpoint| checkpoint.get("tree_sha"))
-                        .and_then(|sha| sha.as_str())
-                        .unwrap_or_default()
-                        .to_owned();
-                    let asset_property = intent.get("checkpoint_assets");
-                    let assets_valid = asset_property.is_none_or(|value| {
-                        serde_json::from_value::<Vec<CheckpointAssetRef>>(value.clone()).is_ok()
-                    });
-                    let assets =
-                        asset_property.and_then(|value| serde_json::from_value(value.clone()).ok());
-                    let sources = if let Some(value) = intent.get("source_history") {
-                        serde_json::from_value(value.clone()).ok()
-                    } else if intent.get("checkpoint_assets").is_some() {
-                        // Asset-only trees have no source-history records, but
-                        // the presence of the asset property still opts the
-                        // receipt into strict native graph validation.
-                        Some(Vec::new())
-                    } else {
-                        None
-                    };
-                    let native = intent.get("source_history").is_some()
-                        || intent.get("checkpoint_assets").is_some();
-                    Some((tree_sha, sources, assets, assets_valid, native))
-                })
-                .unwrap_or_default();
-            // Agent source operations are coupled to a Yjs marker in the
-            // durable session, rather than a staged checkpoint object. The
-            // room recovery path must inspect that marker; treating this row
-            // as an incomplete publication would abort a successfully saved
-            // source effect before its receipt can be reconciled.
-            if operation
-                .as_ref()
-                .is_some_and(|operation| operation.kind == "agent_apply")
-            {
-                continue;
-            }
-            let mut staged = if let Some(sha) = staged_sha.as_deref().filter(|sha| !sha.is_empty())
-            {
-                match blobs
-                    .get(&crate::storage::blob::checkpoint_key(
-                        &pending.storage_id,
-                        sha,
-                    ))
-                    .await
-                {
-                    Ok(tree_bytes) => {
-                        if native_source_graph {
-                            staged_sources.as_deref().is_some_and(|sources| {
-                                // This async validation is performed below;
-                                // keep the tree read here so legacy receipts
-                                // retain their original recovery behavior.
-                                !sources.is_empty()
-                            })
-                        } else if !staged_tree_sha.is_empty() {
-                            match serde_json::from_slice::<crate::document::history::Tree>(
-                                &tree_bytes,
-                            ) {
-                                Ok(_) => {
-                                    hex::encode(Sha256::digest(&tree_bytes)) == staged_tree_sha
-                                }
-                                Err(_) => true,
-                            }
-                        } else {
-                            true
-                        }
-                    }
-                    Err(BlobError::NotFound) => false,
-                    Err(error) => {
-                        // A transient storage error -- a timeout, a hiccup --
-                        // is not proof the checkpoint is missing. Treating it
-                        // as missing would abort, and for a creation discard,
-                        // a publication that may well be complete, the
-                        // instant the object store it lives in has a bad
-                        // moment. Leave it pending and let a later check of
-                        // this same slug decide once storage actually answers.
-                        eprintln!(
-                            "warning: could not check staged publication for {}: {error}; leaving it pending",
-                            pending.slug
-                        );
-                        continue;
-                    }
-                }
-            } else {
-                false
-            };
-            if native_source_graph {
-                if !staged_assets_valid {
-                    continue;
-                }
-                let Some(sha) = staged_sha.as_deref().filter(|sha| !sha.is_empty()) else {
-                    continue;
-                };
-                let tree_bytes = match blobs
-                    .get(&crate::storage::blob::checkpoint_key(
-                        &pending.storage_id,
-                        sha,
-                    ))
-                    .await
-                {
-                    Ok(bytes) => bytes,
-                    Err(_) => continue,
-                };
-                let Some(sources) = staged_sources.as_deref() else {
-                    continue;
-                };
-                if !validate_staged_source_graph(
-                    blobs.as_ref(),
-                    &pending.storage_id,
-                    &tree_bytes,
-                    &staged_tree_sha,
-                    sources,
-                    staged_assets.as_deref(),
-                )
-                .await
-                {
-                    continue;
-                }
-                staged = true;
-            }
-            let storage_id = pending.storage_id.clone();
-            let request_id = pending.request_id.clone();
-            if staged {
-                let sha = staged_sha
-                    .as_deref()
-                    .expect("staged publication SHA")
-                    .to_string();
-                let owner_limit = config.storage.per_owner;
-                let total_limit = config.storage.total;
-                catalog
-                    .execute_catalog(STORE_JOB_BYTES, move |catalog| {
-                        catalog.commit_operation_with_quota(
-                            &storage_id,
-                            &request_id,
-                            &sha,
-                            &sha,
-                            Some((owner_limit, total_limit)),
-                        )
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?;
-            } else {
-                let lifecycle_slug = pending.slug.clone();
-                let creating = pending.lifecycle == "creating";
-                catalog
-                    .execute_catalog(STORE_JOB_BYTES, move |catalog| {
-                        catalog.abort_operation(
-                            &storage_id,
-                            &request_id,
-                            "startup discarded incomplete publication",
-                        )?;
-                        if creating {
-                            catalog.discard_aborted_creation(&lifecycle_slug)?;
-                        }
-                        Ok(())
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-        }
+        // Startup recovery is owned by the deployment's v2 recovery worker.
+        // A prepared user operation never authorizes activation after restart.
         Ok(Store {
             blobs,
             config,
@@ -1526,7 +1165,7 @@ impl Store {
             }
             return Ok(request_id);
         }
-        let request_id = new_id();
+        let request_id = crate::util::new_request_key();
         let intent_slug = slug.to_string();
         let kind = kind.to_string();
         let storage_id = document.storage_id.clone();
@@ -2916,94 +2555,27 @@ fn load_catalog_entry_sql(
     let Some(document) = catalog.document(slug)? else {
         return Ok(None);
     };
-    if document.status != "active" || document.pending_publication.is_some() {
+    if document.status != "active" {
         return Ok(None);
     }
     let mut entry = IndexEntry::from_catalog(document);
-    // Sealed envelopes come out of SQL here and are opened below, outside the
-    // connection.
-    #[allow(clippy::type_complexity)]
-    let mut sealed_links: Vec<(String, String, Vec<u8>, String, Option<i64>, String, String)> =
-        Vec::new();
-    catalog.with_connection(|connection| {
-        if let Some(owner_id) = (!entry.publisher_id.is_empty()).then_some(&entry.publisher_id) {
-            if let Some((handle, name)) = connection
-                .query_row(
-                    "SELECT handle,name FROM accounts WHERE id = ?1",
-                    [owner_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?
-            {
-                entry.publisher = handle;
-                entry.publisher_name = name;
-            }
+    if !entry.publisher_id.is_empty() {
+        if let Some(owner) = catalog.account(&entry.publisher_id)? {
+            entry.publisher = owner.handle;
+            entry.publisher_name = owner.name;
         }
-        if decrypt_links {
-            let mut links = connection.prepare(
-                "SELECT role, hash, sealed, label, budget, since, until
-                 FROM links WHERE slug = ?1 ORDER BY role LIMIT ?2",
-            )?;
-            sealed_links = links
-                .query_map(rusqlite::params![slug, MAX_LINKS_PER_RESULT], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<i64>>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, String>(6)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-        } else {
-            let mut links = connection.prepare(
-                "SELECT role, hash, label, budget, since, until
-                 FROM links WHERE slug = ?1 ORDER BY role LIMIT ?2",
-            )?;
-            entry.links = links
-                .query_map(rusqlite::params![slug, MAX_LINKS_PER_RESULT], |row| {
-                    Ok(LinkGrant {
-                        role: row.get(0)?,
-                        hash: row.get(1)?,
-                        key: String::new(),
-                        label: row.get(2)?,
-                        budget: row.get(3)?,
-                        since: row.get(4)?,
-                        until: row.get(5)?,
-                    })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
+    }
+    for link in catalog.links(slug)?.into_iter().take(MAX_LINKS_PER_RESULT as usize) {
+        let key = if decrypt_links {
+            catalog.open_link_key(&entry.storage_id, &link.role, &link.hash, &link.sealed)?
+        } else { String::new() };
+        entry.links.push(LinkGrant { role: link.role, hash: link.hash, key,
+            label: link.label, budget: link.budget, since: link.since, until: link.until });
+    }
+    for guest in catalog.guests(slug, MAX_GUESTS_PER_RESULT as u32)? {
+        if let Some(account) = catalog.account(&guest.account_id)? {
+            entry.guests.push(Guest { id: guest.account_id, name: account.name, since: guest.since, link: guest.link_hash });
         }
-        let mut guests = connection.prepare(
-            "SELECT ge.account_id, a.name, ge.since, ge.link_hash
-             FROM guests ge JOIN accounts a ON a.id = ge.account_id
-             WHERE ge.slug = ?1 ORDER BY ge.account_id LIMIT ?2",
-        )?;
-        entry.guests = guests
-            .query_map(rusqlite::params![slug, MAX_GUESTS_PER_RESULT], |row| {
-                Ok(Guest {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    since: row.get(2)?,
-                    link: row.get(3)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(())
-    })?;
-    for (role, hash, sealed, label, budget, since, until) in sealed_links {
-        let key = catalog.open_link_key(&entry.storage_id, &role, &hash, &sealed)?;
-        entry.links.push(LinkGrant {
-            role,
-            hash,
-            key,
-            label,
-            budget,
-            since,
-            until,
-        });
     }
     Ok(Some(entry))
 }

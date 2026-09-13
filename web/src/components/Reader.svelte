@@ -1,4 +1,5 @@
 <script>
+  import { newRequestKey } from "../lib/request-key.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { anchorAll, anchorAllSources, anchorOne, flatten } from "../lib/anchor.js";
@@ -821,7 +822,7 @@
   function decideSuggestion(comment, action) {
     suggestions.beginDeciding(comment, action);
     comments = comments;
-    const request_id = crypto.randomUUID();
+    const request_id = newRequestKey();
     const promise = new Promise((resolve, reject) => suggestionDecisions.set(request_id, { commentId: comment.id, resolve, reject }));
     let sent;
     try { sent = collaboration?.send({ type: action, comment_id: comment.id, request_id }); }
@@ -859,7 +860,7 @@
   async function rejectConfirmed(comment) {
     const response = await fetch(`/api/documents/${SLUG}/comments`, {
       method: "POST", headers: authHeaders(KEY, "application/json"),
-      body: JSON.stringify({ type: "reject", comment_id: comment.id, request_id: crypto.randomUUID() }),
+      body: JSON.stringify({ type: "reject", comment_id: comment.id, request_id: newRequestKey() }),
       signal: AbortSignal.timeout(15000),
     });
     const result = await response.json();

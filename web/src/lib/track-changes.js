@@ -1,3 +1,4 @@
+import { newRequestKey } from "./request-key.js";
 /* Live tracked edits. Revision records share the Y.Doc with source text. */
 import * as Y from "yjs";
 
@@ -376,7 +377,7 @@ export function createRevisionController({
   const revisionObserver = () => emit();
   revisions.observe(revisionObserver);
 
-  function decide(revisionId, action, requestId = id()) {
+  function decide(revisionId, action, requestId = newRequestKey()) {
     if (!revisionId || !["accept", "reject", "undo"].includes(action)) return Promise.reject(new Error("invalid revision decision"));
     if (pendingDecisions.has(requestId)) return pendingDecisions.get(requestId).promise;
     let resolve;
@@ -426,7 +427,7 @@ export function createRevisionController({
       emit();
     },
     onChange(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    decide, undo: (revisionId, requestId = id()) => decide(revisionId, "undo", requestId), receive,
+    decide, undo: (revisionId, requestId = newRequestKey()) => decide(revisionId, "undo", requestId), receive,
     locate(record) { return { file_id: record?.file_id, offset: decodePosition(textOf?.(record?.file_id), record?.start) }; },
     position(record) { return decodePosition(textOf?.(record?.file_id), record?.start); },
     range(record) {

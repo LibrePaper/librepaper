@@ -1,20 +1,33 @@
 //! Account storage counters and simple, advisory retention previews.
 use super::*;
-use crate::document::quota::{effective_retention, select_retained, QuotaPreferences, RetentionBounds};
+use crate::document::quota::{
+    effective_retention, select_retained, QuotaPreferences, RetentionBounds,
+};
 use crate::storage::catalog::{AccountStorageUsage, QuotaPreferencesRecord};
 use std::collections::BTreeMap;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PreferenceRequest { revision: i64, preferences: QuotaPreferences }
+struct PreferenceRequest {
+    revision: i64,
+    preferences: QuotaPreferences,
+}
 
 fn bounds(server: &Server) -> RetentionBounds {
-    RetentionBounds { hard_quota: server.config.storage.per_owner, ..RetentionBounds::default() }
+    RetentionBounds {
+        hard_quota: server.config.storage.per_owner,
+        ..RetentionBounds::default()
+    }
 }
 fn default_record(account_id: &str) -> QuotaPreferencesRecord {
-    QuotaPreferencesRecord { account_id: account_id.into(), revision: 0,
-        payload: serde_json::to_string(&QuotaPreferences::default()).expect("preferences serialize"),
-        policy_generation: String::new(), updated_at: 0 }
+    QuotaPreferencesRecord {
+        account_id: account_id.into(),
+        revision: 0,
+        payload: serde_json::to_string(&QuotaPreferences::default())
+            .expect("preferences serialize"),
+        policy_generation: String::new(),
+        updated_at: 0,
+    }
 }
 fn decode_preferences(record: &QuotaPreferencesRecord) -> (QuotaPreferences, bool) {
     match serde_json::from_str::<QuotaPreferences>(&record.payload) {
@@ -94,67 +107,160 @@ impl Server {
             .map_err(|error| write_json(503, &json!({"error": error.to_string()})))
     }
 
-    pub(super) async fn handle_quota_storage(&self, request: Request<Body>, arrival: &Arrival) -> Reply {
-        let account_id = match self.quota_account(request.headers(), arrival).await { Ok(id) => id, Err(reply) => return reply };
-        let record = match self.quota_record(&account_id).await { Ok(record) => record, Err(reply) => return reply };
-        let usage = match self.quota_usage(&account_id).await { Ok(usage) => usage, Err(reply) => return reply };
+    pub(super) async fn handle_quota_storage(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+    ) -> Reply {
+        let account_id = match self.quota_account(request.headers(), arrival).await {
+            Ok(id) => id,
+            Err(reply) => return reply,
+        };
+        let record = match self.quota_record(&account_id).await {
+            Ok(record) => record,
+            Err(reply) => return reply,
+        };
+        let usage = match self.quota_usage(&account_id).await {
+            Ok(usage) => usage,
+            Err(reply) => return reply,
+        };
         let (preferences, incompatible) = decode_preferences(&record);
-        let mut response = write_json(200, &json!({
-            "canManage": !incompatible, "revision": record.revision, "preferences": preferences,
-            "effective": { "retention": effective_retention(&preferences, &bounds(self)), "incompatible": incompatible },
-            "constraints": { "hardQuotaBytes": self.config.storage.per_owner, "maxCheckpointCount": 4096,
-                "graceMs": 86_400_000, "physicalAccounting": true },
-            "usage": usage_json(&usage), "profiles": ["default", "manual", "custom"]
-        }));
-        set(&mut response, "cache-control", "private, no-store"); response
+        let mut response = write_json(
+            200,
+            &json!({
+                "canManage": !incompatible, "revision": record.revision, "preferences": preferences,
+                "effective": { "retention": effective_retention(&preferences, &bounds(self)), "incompatible": incompatible },
+                "constraints": { "hardQuotaBytes": self.config.storage.per_owner, "maxCheckpointCount": 4096,
+                    "graceMs": 86_400_000, "physicalAccounting": true },
+                "usage": usage_json(&usage), "profiles": ["default", "manual", "custom"]
+            }),
+        );
+        set(&mut response, "cache-control", "private, no-store");
+        response
     }
-    pub(super) async fn handle_quota_preview(&self, request: Request<Body>, arrival: &Arrival) -> Reply {
-        let account_id = match self.quota_account(request.headers(), arrival).await { Ok(id) => id, Err(reply) => return reply };
-        let body = match to_bytes(request.into_body(), 65_536).await { Ok(body) => body, Err(_) => return write_json(413, &json!({"error":"preference request too large"})) };
-        let asked: PreferenceRequest = match serde_json::from_slice(&body) { Ok(value) => value, Err(error) => return write_json(400, &json!({"error":error.to_string()})) };
-        if let Err(error) = asked.preferences.validate() { return write_json(400, &json!({"error":error})); }
-        let record = match self.quota_record(&account_id).await { Ok(record) => record, Err(reply) => return reply };
-        if record.revision != asked.revision { return write_json(409, &json!({"error":"preference revision is stale","revision":record.revision})); }
-        let Some(catalog) = &self.store.catalog else { return write_json(503, &json!({"error":"catalog unavailable"})); };
+    pub(super) async fn handle_quota_preview(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+    ) -> Reply {
+        let account_id = match self.quota_account(request.headers(), arrival).await {
+            Ok(id) => id,
+            Err(reply) => return reply,
+        };
+        let body = match to_bytes(request.into_body(), 65_536).await {
+            Ok(body) => body,
+            Err(_) => return write_json(413, &json!({"error":"preference request too large"})),
+        };
+        let asked: PreferenceRequest = match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(error) => return write_json(400, &json!({"error":error.to_string()})),
+        };
+        if let Err(error) = asked.preferences.validate() {
+            return write_json(400, &json!({"error":error}));
+        }
+        let record = match self.quota_record(&account_id).await {
+            Ok(record) => record,
+            Err(reply) => return reply,
+        };
+        if record.revision != asked.revision {
+            return write_json(
+                409,
+                &json!({"error":"preference revision is stale","revision":record.revision}),
+            );
+        }
+        let Some(catalog) = &self.store.catalog else {
+            return write_json(503, &json!({"error":"catalog unavailable"}));
+        };
         let policy_bounds = bounds(self);
         let effective = effective_retention(&asked.preferences, &policy_bounds);
         let now = crate::util::now_millis();
-        let preview = catalog.execute_catalog(SERVER_JOB_BYTES + account_id.len(), move |catalog| {
-            let points = catalog.account_checkpoints(&account_id)?;
-            let references = catalog.account_open_annotation_references(&account_id)?;
-            let mut grouped = BTreeMap::<String, Vec<_>>::new();
-            for point in points { grouped.entry(point.slug.clone()).or_default().push(point); }
-            let mut removed = 0usize; let mut protected = 0usize;
-            for (slug, points) in grouped {
-                let manifest = crate::document::history::Manifest::from_catalog_rows(points)
-                    .map_err(crate::storage::catalog::CatalogError::Invalid)?;
-                let refs = references.get(&slug).cloned().unwrap_or_default();
-                let selected = select_retained(&manifest.checkpoints, now, &asked.preferences, &policy_bounds, &refs);
-                removed += selected.removed.len(); protected += selected.protected.len();
-            }
-            Ok((removed, protected))
-        }).await;
+        let preview = catalog
+            .execute_catalog(SERVER_JOB_BYTES + account_id.len(), move |catalog| {
+                let points = catalog.account_checkpoints(&account_id)?;
+                let references = catalog.account_open_annotation_references(&account_id)?;
+                let mut grouped = BTreeMap::<String, Vec<_>>::new();
+                for point in points {
+                    grouped.entry(point.slug.clone()).or_default().push(point);
+                }
+                let mut removed = 0usize;
+                let mut protected = 0usize;
+                for (slug, points) in grouped {
+                    let manifest = crate::document::history::Manifest::from_catalog_rows(points)
+                        .map_err(crate::storage::catalog::CatalogError::Invalid)?;
+                    let refs = references.get(&slug).cloned().unwrap_or_default();
+                    let selected = select_retained(
+                        &manifest.checkpoints,
+                        now,
+                        &asked.preferences,
+                        &policy_bounds,
+                        &refs,
+                    );
+                    removed += selected.removed.len();
+                    protected += selected.protected.len();
+                }
+                Ok((removed, protected))
+            })
+            .await;
         match preview {
-            Ok((removed, protected)) => write_json(200, &json!({"revision": record.revision, "evaluatedAt": now,
+            Ok((removed, protected)) => write_json(
+                200,
+                &json!({"revision": record.revision, "evaluatedAt": now,
                 "affectedCount": removed, "protectedCount": protected, "estimate": true,
-                "graceMs": 86_400_000, "effective": effective})),
+                "graceMs": 86_400_000, "effective": effective}),
+            ),
             Err(error) => write_json(503, &json!({"error":error.to_string()})),
         }
     }
-    pub(super) async fn handle_quota_apply(&self, request: Request<Body>, arrival: &Arrival) -> Reply {
-        let account_id = match self.quota_account(request.headers(), arrival).await { Ok(id) => id, Err(reply) => return reply };
-        let body = match to_bytes(request.into_body(), 65_536).await { Ok(body) => body, Err(_) => return write_json(413, &json!({"error":"preference request too large"})) };
-        let asked: PreferenceRequest = match serde_json::from_slice(&body) { Ok(value) => value, Err(error) => return write_json(400, &json!({"error":error.to_string()})) };
-        if let Err(error) = asked.preferences.validate() { return write_json(400, &json!({"error":error})); }
-        let payload = match serde_json::to_string(&asked.preferences) { Ok(payload) => payload, Err(error) => return write_json(400, &json!({"error":error.to_string()})) };
-        let Some(catalog) = &self.store.catalog else { return write_json(503, &json!({"error":"catalog unavailable"})); };
+    pub(super) async fn handle_quota_apply(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+    ) -> Reply {
+        let account_id = match self.quota_account(request.headers(), arrival).await {
+            Ok(id) => id,
+            Err(reply) => return reply,
+        };
+        let body = match to_bytes(request.into_body(), 65_536).await {
+            Ok(body) => body,
+            Err(_) => return write_json(413, &json!({"error":"preference request too large"})),
+        };
+        let asked: PreferenceRequest = match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(error) => return write_json(400, &json!({"error":error.to_string()})),
+        };
+        if let Err(error) = asked.preferences.validate() {
+            return write_json(400, &json!({"error":error}));
+        }
+        let payload = match serde_json::to_string(&asked.preferences) {
+            Ok(payload) => payload,
+            Err(error) => return write_json(400, &json!({"error":error.to_string()})),
+        };
+        let Some(catalog) = &self.store.catalog else {
+            return write_json(503, &json!({"error":"catalog unavailable"}));
+        };
         let generation = crate::util::new_request_key();
-        let saved = catalog.execute_catalog(SERVER_JOB_BYTES + account_id.len() + payload.len(), move |catalog| {
-            catalog.save_quota_preferences(&account_id, asked.revision, &payload, &generation, crate::util::now_millis())
-        }).await;
+        let saved = catalog
+            .execute_catalog(
+                SERVER_JOB_BYTES + account_id.len() + payload.len(),
+                move |catalog| {
+                    catalog.save_quota_preferences(
+                        &account_id,
+                        asked.revision,
+                        &payload,
+                        &generation,
+                        crate::util::now_millis(),
+                    )
+                },
+            )
+            .await;
         match saved {
-            Ok(record) => write_json(200, &json!({"status":"saved", "revision":record.revision, "graceMs":86_400_000})),
-            Err(crate::storage::catalog::CatalogExecError::Catalog(crate::storage::catalog::CatalogError::Conflict(error))) => write_json(409, &json!({"error":error})),
+            Ok(record) => write_json(
+                200,
+                &json!({"status":"saved", "revision":record.revision, "graceMs":86_400_000}),
+            ),
+            Err(crate::storage::catalog::CatalogExecError::Catalog(
+                crate::storage::catalog::CatalogError::Conflict(error),
+            )) => write_json(409, &json!({"error":error})),
             Err(error) => write_json(503, &json!({"error":error.to_string()})),
         }
     }

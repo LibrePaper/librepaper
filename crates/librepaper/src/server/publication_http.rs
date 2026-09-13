@@ -97,13 +97,7 @@ impl Server {
         let Some(request_id) = headers
             .get("idempotency-key")
             .and_then(|v| v.to_str().ok())
-            .filter(|id| {
-                !id.is_empty()
-                    && id.len() <= 128
-                    && id
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-            })
+            .filter(|id| crate::util::request_key_timestamp(id).is_some())
             .map(str::to_owned)
         else {
             return plain(400, "a valid Idempotency-Key is required");
