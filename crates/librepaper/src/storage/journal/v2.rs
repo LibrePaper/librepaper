@@ -318,12 +318,11 @@ where
     }
 }
 
-#[async_trait::async_trait]
-impl<C> DocumentJournal for V2JournalRuntime<C>
+impl<C> V2JournalRuntime<C>
 where
     C: V2JournalCatalog + 'static,
 {
-    async fn latest_sequence(&self, document_id: &str, _epoch: u64) -> JournalResult<u64> {
+    async fn latest_sequence_v2(&self, document_id: &str) -> JournalResult<u64> {
         self.catalog
             .journal_head(document_id)
             .await
@@ -331,7 +330,7 @@ where
             .map_err(JournalError::CatalogText)
     }
 
-    async fn recover_latest(&self, document_id: &str) -> JournalResult<Option<Vec<u8>>> {
+    async fn recover_latest_v2(&self, document_id: &str) -> JournalResult<Option<Vec<u8>>> {
         let head = self
             .catalog
             .journal_head(document_id)
@@ -488,6 +487,13 @@ impl<C> DocumentJournal for V2JournalRuntime<C>
 where
     C: V2JournalCatalog + 'static,
 {
+    async fn latest_sequence(&self, document_id: &str, _epoch: u64) -> JournalResult<u64> {
+        self.latest_sequence_v2(document_id).await
+    }
+
+    async fn recover_latest(&self, document_id: &str) -> JournalResult<Option<Vec<u8>>> {
+        self.recover_latest_v2(document_id).await
+    }
 
     async fn append(&self, document_id: &str, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
         if body.len() > self.max_encoded_snapshot_bytes {

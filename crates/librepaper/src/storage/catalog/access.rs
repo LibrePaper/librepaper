@@ -233,7 +233,7 @@ impl Catalog {
                 AND a.status='active' AND a.session_generation=?3
                 AND (d.owner_id=?2 OR (?4=1 AND EXISTS(
                     SELECT 1 FROM grants g WHERE g.document_id=d.id
-                      AND g.account_id=?2 AND (g.role=?5 OR g.role='editor'))) OR (?6=1 AND ?7=1))",
+                      AND g.account_id=?2 AND (g.role=?5 OR g.role='editor'))) OR (?6=1 AND ?7=1)))",
             params![
                 slug,
                 actor.account_id,
