@@ -2717,7 +2717,7 @@ mod aborted_inflight_tests {
     use crate::storage::maintenance_v2::run_gc_pass;
     use std::time::Duration;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use tokio::sync::Notify;
+    use tokio::sync::{Notify, Semaphore};
 
     #[derive(Clone, Copy)]
     enum FailureMode {
@@ -3077,6 +3077,89 @@ mod aborted_inflight_tests {
                 .is_err(),
             "pre-admission guard must prevent a physical PUT"
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_writer_keeps_owned_memory_until_physical_put_settles() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("v2 catalog"));
+        let document_id = "memory-cancel-document";
+        let account_id = "memory-cancel-account";
+        let operation_id = "memory-cancel-operation";
+        let object_id = ObjectId::parse("22222222222222222222222222222222").expect("object id");
+        let body = b"memory reserved physical payload".to_vec();
+        insert_failed_put_fixture(
+            catalog.as_ref(),
+            document_id,
+            account_id,
+            operation_id,
+            &object_id,
+            &body,
+        )
+        .expect("admitted allocation");
+
+        let root = tempfile::tempdir().expect("object root");
+        let inner = Arc::new(FsStore::new(root.path(), false));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let finished = Arc::new(Notify::new());
+        let blobs: Arc<dyn BlobStore> = Arc::new(DelayedStore {
+            inner,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            finished: Arc::clone(&finished),
+            failure_mode: FailureMode::Success,
+            probe_failures: Arc::new(AtomicUsize::new(0)),
+            put_entered: Arc::new(AtomicBool::new(false)),
+        });
+        let memory = Arc::new(Semaphore::new(1));
+        let permit = Arc::clone(&memory)
+            .acquire_owned()
+            .await
+            .expect("memory permit");
+        let writer = V2ObjectWriter::new(Arc::clone(&catalog), Arc::clone(&blobs));
+        let delayed_document = document_id.to_owned();
+        let delayed_object = object_id.clone();
+        let delayed_body = body.clone();
+        let mut request = tokio::spawn(async move {
+            writer
+                .write_allocated_with_memory_permit(
+                    &delayed_document,
+                    delayed_object,
+                    delayed_body,
+                    "application/octet-stream",
+                    permit,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                _ = started.notified() => Ok::<(), String>(()),
+                result = &mut request => Err(format!("writer exited before physical PUT: {result:?}")),
+            }
+        })
+        .await
+        .expect("physical PUT did not start")
+        .expect("writer admission failed");
+        request.abort();
+
+        assert!(
+            Arc::clone(&memory).try_acquire_owned().is_err(),
+            "request cancellation must not release memory while PUT is live"
+        );
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), finished.notified())
+            .await
+            .expect("physical PUT did not finish");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if Arc::clone(&memory).try_acquire_owned().is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detached writer retained memory after settlement");
     }
 
     #[tokio::test]
