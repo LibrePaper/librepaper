@@ -438,14 +438,46 @@ impl DeletionWorker {
     pub async fn run_v2_once(
         &self,
         now: i64,
-    ) -> Result<crate::storage::maintenance_v2::GcReport, crate::storage::maintenance_v2::GcError> {
+    ) -> Result<crate::storage::maintenance_v2::GcReport, crate::storage::maintenance_v2::GcError>
+    {
+        if now < 0 {
+            return Err(crate::storage::maintenance_v2::GcError::Invalid(
+                "negative maintenance time".into(),
+            ));
+        }
+        let deletion_catalog = Arc::clone(&self.catalog);
+        deletion_catalog
+            .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
+                for slug in catalog.deleting_documents_page(64)? {
+                    // Each invocation is capped at 250 logical rows. Object
+                    // bytes are reclaimed by the GC pass after checkpoint and
+                    // annotation roots have been removed.
+                    let _ = catalog.erase_document_batch(&slug, 250, now)?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|error| crate::storage::maintenance_v2::GcError::Catalog(error.to_string()))?;
         let adapter = crate::storage::v2_catalog::V2GcCatalogAdapter::new(self.catalog.clone());
-        crate::storage::maintenance_v2::run_gc_pass(
+        let report = crate::storage::maintenance_v2::run_gc_pass(
             &adapter,
             self.blobs.as_ref(),
             now,
         )
-        .await
+        .await?;
+        let finish_catalog = Arc::clone(&self.catalog);
+        finish_catalog
+            .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
+                for slug in catalog.deleting_documents_page(64)? {
+                    // A conflict means physical GC or a lease still fences
+                    // finalization; the next maintenance pass retries it.
+                    let _ = catalog.finish_delete(&slug);
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|error| crate::storage::maintenance_v2::GcError::Catalog(error.to_string()))?;
+        Ok(report)
     }
 
     /// Reconcile guarded v2 allocations and prepared work after the process
@@ -454,6 +486,7 @@ impl DeletionWorker {
         &self,
     ) -> Result<crate::storage::maintenance_v2::RecoveryReport, crate::storage::maintenance_v2::GcError> {
         let adapter = crate::storage::v2_catalog::V2GcCatalogAdapter::new(self.catalog.clone());
+
         crate::storage::maintenance_v2::recover_v2_startup(
             &adapter,
             self.blobs.as_ref(),

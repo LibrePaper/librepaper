@@ -754,7 +754,9 @@ impl Catalog {
                     for document_id in rows.drain(..) {
                         let updated = tx.execute(
                             "UPDATE documents SET status='deleting', publication_id=NULL,
-                             publication_object_id=NULL, published_at=NULL
+                             publication_object_id=NULL, published_at=NULL,
+                             current_checkpoint_id=NULL, journal_base_object_id=NULL,
+                             journal_base_sequence=0
                              WHERE id=?1 AND owner_id=?2 AND status IN ('active','creating')",
                             params![document_id, id],
                         )?;
@@ -762,6 +764,12 @@ impl Catalog {
                         if updated == 0 {
                             continue;
                         }
+                        tx.execute(
+                            "UPDATE objects SET live_root=0,publication_root=0,
+                             gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END
+                             WHERE document_id=?2",
+                            params![super::unix_millis().saturating_add(900_000), document_id],
+                        )?;
                         // The v2 deletion worker settles this durable
                         // erase_document receipt after object/journal
                         // reclamation. Keep it distinct from ordinary
@@ -789,7 +797,9 @@ impl Catalog {
                             )?;
                             let now = super::unix_millis();
                             let plan = serde_json::json!({
-                                "version": 1,
+                                "version": 2,
+                                "stage": "replies",
+                                "cursor": null,
                                 "reason": "account_erasure",
                                 "document_id": document_id,
                             })
