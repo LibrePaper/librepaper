@@ -120,6 +120,67 @@ fn document_id_connection(connection: &rusqlite::Connection, slug: &str) -> Cata
         .map_err(CatalogError::from)?
         .ok_or(CatalogError::NotFound)
 }
+
+type AcceptanceOperation = (String, String, String, String);
+
+/// Resolve a suggestion receipt only when the natural request identity names
+/// one operation.  Request keys are actor-scoped in the schema, so a lookup
+/// that omits the actor must fail closed if two actors reused the same key;
+/// selecting whichever row SQLite happens to return could expose or mutate a
+/// different actor's receipt.
+fn unique_acceptance_operation_tx(
+    tx: &Transaction<'_>,
+    document_id: &str,
+    request_id: &str,
+    comment_id: &str,
+) -> CatalogResult<Option<AcceptanceOperation>> {
+    let mut statement = tx.prepare(
+        "SELECT id,state,request_digest,actor_key
+         FROM operations
+         WHERE document_id=?1 AND request_key=?2
+           AND kind='agent_annotations'
+           AND json_extract(plan_json,'$.commentId')=?3
+         ORDER BY id
+         LIMIT 2",
+    )?;
+    let mut rows = statement.query(params![document_id, request_id, comment_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let first = (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+    if rows.next()?.is_some() {
+        return Err(CatalogError::Conflict(
+            "suggestion acceptance request is ambiguous across actors".into(),
+        ));
+    }
+    Ok(Some(first))
+}
+
+fn unique_acceptance_operation_connection(
+    connection: &rusqlite::Connection,
+    document_id: &str,
+    request_id: &str,
+) -> CatalogResult<Option<AcceptanceOperation>> {
+    let mut statement = connection.prepare(
+        "SELECT id,state,request_digest,actor_key
+         FROM operations
+         WHERE document_id=?1 AND request_key=?2
+           AND kind='agent_annotations'
+         ORDER BY id
+         LIMIT 2",
+    )?;
+    let mut rows = statement.query(params![document_id, request_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let first = (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+    if rows.next()?.is_some() {
+        return Err(CatalogError::Conflict(
+            "suggestion acceptance request is ambiguous across actors".into(),
+        ));
+    }
+    Ok(Some(first))
+}
 fn annotation_account_authorized(
     tx: &Transaction<'_>,
     document_id: &str,
@@ -753,7 +814,38 @@ impl Catalog {
         resolved_in: &str,
         resolved_at: &str,
     ) -> CatalogResult<()> {
-        self.immediate(|tx|{let doc=document_id(tx,slug)?;let result=serde_json::json!({"version":1,"commentId":comment_id,"resolvedIn":resolved_in,"resolvedAt":resolved_at}).to_string();let n=tx.execute("UPDATE operations SET result_json=?1,updated_at=max(updated_at,?2) WHERE document_id=?3 AND request_key=?4 AND request_digest=?5 AND kind='agent_annotations' AND state='prepared' AND json_extract(plan_json,'$.commentId')=?6",params![result,unix_millis(),doc,request_id,request_digest,comment_id]).map_err(CatalogError::from)?;if n==1{Ok(())}else{Err(CatalogError::Conflict("suggestion acceptance receipt is no longer prepared".into()))}})
+        self.immediate(|tx| {
+            let doc = document_id(tx, slug)?;
+            let Some((operation_id, state, digest, _actor)) =
+                unique_acceptance_operation_tx(tx, &doc, request_id, comment_id)?
+            else {
+                return Err(CatalogError::NotFound);
+            };
+            if digest != request_digest {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance receipt does not match".into(),
+                ));
+            }
+            if state != "prepared" {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance receipt is no longer prepared".into(),
+                ));
+            }
+            let result = serde_json::json!({
+                "version": 1,
+                "commentId": comment_id,
+                "resolvedIn": resolved_in,
+                "resolvedAt": resolved_at,
+            })
+            .to_string();
+            tx.execute(
+                "UPDATE operations SET result_json=?1,updated_at=max(updated_at,?2)
+                 WHERE id=?3 AND state='prepared'",
+                params![result, unix_millis(), operation_id],
+            )
+            .map_err(CatalogError::from)?;
+            Ok(())
+        })
     }
     pub fn stage_suggestion_accept_update(
         &self,
@@ -792,7 +884,42 @@ impl Catalog {
         request_id: &str,
         request_digest: &str,
     ) -> CatalogResult<Option<Vec<u8>>> {
-        self.with_connection(|c|{let doc=document_id_connection(c,slug)?;let plan:Option<String>=c.query_row("SELECT plan_json FROM operations WHERE document_id=?1 AND request_key=?2 AND request_digest=?3 AND kind='agent_annotations' AND state='prepared'",params![doc,request_id,request_digest],|r|r.get(0)).optional().map_err(CatalogError::from)?;let Some(plan)=plan else{return Ok(None)};let v:serde_json::Value=serde_json::from_str(&plan).map_err(|_|CatalogError::Invalid("invalid acceptance plan".into()))?;v.get("update").and_then(|v|v.as_str()).map(hex::decode).transpose().map_err(|e|CatalogError::Invalid(format!("invalid acceptance update: {e}")))})
+        self.with_connection(|connection| {
+            let doc = document_id_connection(connection, slug)?;
+            let Some((_id, state, digest, _actor)) =
+                unique_acceptance_operation_connection(connection, &doc, request_id)?
+            else {
+                return Ok(None);
+            };
+            if digest != request_digest {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance receipt does not match".into(),
+                ));
+            }
+            if state != "prepared" {
+                return Ok(None);
+            }
+            let plan: String = connection
+                .query_row(
+                    "SELECT plan_json FROM operations
+                     WHERE document_id=?1 AND request_key=?2
+                       AND request_digest=?3 AND kind='agent_annotations'
+                       AND state='prepared'",
+                    params![doc, request_id, request_digest],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            let value: serde_json::Value = serde_json::from_str(&plan)
+                .map_err(|_| CatalogError::Invalid("invalid acceptance plan".into()))?;
+            value
+                .get("update")
+                .and_then(|value| value.as_str())
+                .map(hex::decode)
+                .transpose()
+                .map_err(|error| {
+                    CatalogError::Invalid(format!("invalid acceptance update: {error}"))
+                })
+        })
     }
     pub fn pending_suggestion_accept(&self, slug: &str, comment_id: &str) -> CatalogResult<bool> {
         self.with_connection(|c|{let doc=document_id_connection(c,slug)?;c.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE document_id=?1 AND kind='agent_annotations' AND state='prepared' AND json_extract(plan_json,'$.commentId')=?2)",params![doc,comment_id],|r|r.get(0)).map_err(CatalogError::from)})
@@ -803,7 +930,51 @@ impl Catalog {
         request_id: &str,
         request_digest: &str,
     ) -> CatalogResult<Option<(String, String, String)>> {
-        self.with_connection(|c|{let doc=document_id_connection(c,slug)?;let result:Option<String>=c.query_row("SELECT result_json FROM operations WHERE document_id=?1 AND request_key=?2 AND request_digest=?3 AND kind='agent_annotations' AND state='prepared'",params![doc,request_id,request_digest],|r|r.get(0)).optional().map_err(CatalogError::from)?;let Some(result)=result else{return Ok(None)};let v:serde_json::Value=serde_json::from_str(&result).map_err(|_|CatalogError::Invalid("invalid acceptance result".into()))?;Ok(Some((v.get("commentId").and_then(|v|v.as_str()).unwrap_or_default().into(),v.get("resolvedIn").and_then(|v|v.as_str()).unwrap_or_default().into(),v.get("resolvedAt").and_then(|v|v.as_str()).unwrap_or_default().into())))})
+        self.with_connection(|connection| {
+            let doc = document_id_connection(connection, slug)?;
+            let Some((operation_id, state, digest, _actor)) =
+                unique_acceptance_operation_connection(connection, &doc, request_id)?
+            else {
+                return Ok(None);
+            };
+            if digest != request_digest {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance receipt does not match".into(),
+                ));
+            }
+            if state != "prepared" {
+                return Ok(None);
+            }
+            let result: String = connection
+                .query_row(
+                    "SELECT COALESCE(result_json,'') FROM operations WHERE id=?1",
+                    [operation_id],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if result.is_empty() {
+                return Ok(None);
+            }
+            let value: serde_json::Value = serde_json::from_str(&result)
+                .map_err(|_| CatalogError::Invalid("invalid acceptance result".into()))?;
+            Ok(Some((
+                value
+                    .get("commentId")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .into(),
+                value
+                    .get("resolvedIn")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .into(),
+                value
+                    .get("resolvedAt")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .into(),
+            )))
+        })
     }
     pub fn finish_suggestion_accept(
         &self,
@@ -814,7 +985,62 @@ impl Catalog {
         resolved_in: &str,
         resolved_at: &str,
     ) -> CatalogResult<Comment> {
-        self.immediate(|tx|{let doc=document_id(tx,slug)?;let op:Option<(String,String,String)>=tx.query_row("SELECT id,state,request_digest FROM operations WHERE document_id=?1 AND request_key=?2 AND kind='agent_annotations' AND json_extract(plan_json,'$.commentId')=?3",params![doc,request_id,comment_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?;let Some((op,state,digest))=op else{return Err(CatalogError::NotFound)};if digest!=request_digest{return Err(CatalogError::Conflict("suggestion acceptance receipt does not match".into()))}if state=="committed"{return Self::comment_in_tx(tx,slug,comment_id)}if state!="prepared"{return Err(CatalogError::Conflict("suggestion acceptance was aborted".into()))}let at=millis(resolved_at);let n=tx.execute("UPDATE annotations SET protected_checkpoint_id=NULL,suggestion_state='accepted',acceptance_operation_id=?1,resolution_revision=?2,resolved_at=?3,updated_at=?3 WHERE document_id=?4 AND id=?5 AND kind='suggestion'",params![op,resolved_in,at,doc,comment_id]).map_err(CatalogError::from)?;if n!=1{return Err(CatalogError::NotFound)}tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=?1",[doc.as_str()])?;let done=unix_millis();let result=serde_json::json!({"version":1,"commentId":comment_id,"resolvedIn":resolved_in,"resolvedAt":resolved_at}).to_string();tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'",params![result,done,done.saturating_add(7*24*60*60*1000),op]).map_err(CatalogError::from)?;Self::comment_in_tx(tx,slug,comment_id)})
+        self.immediate(|tx| {
+            let doc = document_id(tx, slug)?;
+            let Some((operation_id, state, digest, _actor)) =
+                unique_acceptance_operation_tx(tx, &doc, request_id, comment_id)?
+            else {
+                return Err(CatalogError::NotFound);
+            };
+            if digest != request_digest {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance receipt does not match".into(),
+                ));
+            }
+            if state == "committed" {
+                return Self::comment_in_tx(tx, slug, comment_id);
+            }
+            if state != "prepared" {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance was aborted".into(),
+                ));
+            }
+            let at = millis(resolved_at);
+            let changed = tx
+                .execute(
+                    "UPDATE annotations SET protected_checkpoint_id=NULL,
+                     suggestion_state='accepted',acceptance_operation_id=?1,
+                     resolution_revision=?2,resolved_at=?3,updated_at=?3
+                     WHERE document_id=?4 AND id=?5 AND kind='suggestion'",
+                    params![operation_id, resolved_in, at, doc, comment_id],
+                )
+                .map_err(CatalogError::from)?;
+            if changed != 1 {
+                return Err(CatalogError::NotFound);
+            }
+            tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=?1", [doc.as_str()])?;
+            let done = unix_millis();
+            let result = serde_json::json!({
+                "version": 1,
+                "commentId": comment_id,
+                "resolvedIn": resolved_in,
+                "resolvedAt": resolved_at,
+            })
+            .to_string();
+            tx.execute(
+                "UPDATE operations SET state='committed',result_json=?1,
+                 completed_at=?2,receipt_expires_at=?3,updated_at=?2
+                 WHERE id=?4 AND state='prepared'",
+                params![
+                    result,
+                    done,
+                    done.saturating_add(7 * 24 * 60 * 60 * 1000),
+                    operation_id
+                ],
+            )
+            .map_err(CatalogError::from)?;
+            Self::comment_in_tx(tx, slug, comment_id)
+        })
     }
 
     pub fn delete_comment(&self, slug: &str, id: &str) -> CatalogResult<bool> {

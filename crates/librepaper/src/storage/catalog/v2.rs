@@ -47,6 +47,25 @@ pub(crate) struct V2SourceAdmissionInput {
     pub now: UnixMillis,
 }
 
+type SourcePhysicalDescriptor = (String, String, i64, Option<String>);
+
+fn record_source_physical(
+    physical: &mut HashMap<String, SourcePhysicalDescriptor>,
+    object_id: &str,
+    descriptor: SourcePhysicalDescriptor,
+) -> CatalogResult<()> {
+    if let Some(existing) = physical.get(object_id) {
+        if existing != &descriptor {
+            return Err(CatalogError::Conflict(
+                "source closure reuses an object id with conflicting physical identity".into(),
+            ));
+        }
+        return Ok(());
+    }
+    physical.insert(object_id.to_owned(), descriptor);
+    Ok(())
+}
+
 /// Admission for a checkpoint whose document already exists. The operation,
 /// every physical allocation, counters, and stage leases are installed by one
 /// immediate transaction before any object-store write begins.
@@ -3036,7 +3055,7 @@ impl Catalog {
             }
         }
         let mut expected = vec![checkpoint.tree_object_id.clone()];
-        let mut physical = HashMap::<String, (String, String, i64, Option<String>)>::new();
+        let mut physical = HashMap::<String, SourcePhysicalDescriptor>::new();
         for file in tree.files.values() {
             match file.kind.as_str() {
                 "text" => {
@@ -3059,8 +3078,9 @@ impl Catalog {
                     let recipe_object_id = ObjectId::new(locator.object_id.as_str().to_owned())
                         .map_err(|error| CatalogError::Invalid(error.to_string()))?;
                     expected.push(recipe_object_id);
-                    physical.insert(
-                        locator.object_id.as_str().to_owned(),
+                    record_source_physical(
+                        &mut physical,
+                        locator.object_id.as_str(),
                         (
                             ObjectKind::SourceRecipe.as_str().into(),
                             hex::encode(locator.object_digest),
@@ -3069,13 +3089,14 @@ impl Catalog {
                             })?,
                             locator.logical_digest.map(hex::encode),
                         ),
-                    );
+                    )?;
                     for chunk in &recipe.chunk_locators {
                         let chunk_id = ObjectId::new(chunk.object_id.as_str().to_owned())
                             .map_err(|error| CatalogError::Invalid(error.to_string()))?;
                         expected.push(chunk_id);
-                        physical.insert(
-                            chunk.object_id.as_str().to_owned(),
+                        record_source_physical(
+                            &mut physical,
+                            chunk.object_id.as_str(),
                             (
                                 ObjectKind::SourceChunk.as_str().into(),
                                 hex::encode(chunk.object_digest),
@@ -3084,7 +3105,7 @@ impl Catalog {
                                 })?,
                                 chunk.logical_digest.map(hex::encode),
                             ),
-                        );
+                        )?;
                     }
                 }
                 "asset" => {
@@ -3101,8 +3122,9 @@ impl Catalog {
                     let asset_id = ObjectId::new(locator.object_id.as_str().to_owned())
                         .map_err(|error| CatalogError::Invalid(error.to_string()))?;
                     expected.push(asset_id);
-                    physical.insert(
-                        locator.object_id.as_str().to_owned(),
+                    record_source_physical(
+                        &mut physical,
+                        locator.object_id.as_str(),
                         (
                             ObjectKind::Asset.as_str().into(),
                             hex::encode(locator.object_digest),
@@ -3110,7 +3132,7 @@ impl Catalog {
                                 .map_err(|_| CatalogError::Invalid("asset is too large".into()))?,
                             locator.logical_digest.map(hex::encode),
                         ),
-                    );
+                    )?;
                 }
                 _ => {
                     return Err(CatalogError::Invalid(

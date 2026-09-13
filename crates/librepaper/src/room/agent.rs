@@ -1217,9 +1217,9 @@ impl Room {
         let _publication = self.publication_write.lock().await;
         let storage_id = self.storage_id.clone();
         let operation_request_id = request_id.clone();
+        let actor_key = operation_actor_key(&authority);
         let operation = catalog
             .execute_catalog(storage_id.len() + request_id.len() + 256, move |catalog| {
-                let actor_key = operation_actor_key(&authority);
                 catalog.operation_for_actor(&storage_id, &operation_request_id, &actor_key)
             })
             .await

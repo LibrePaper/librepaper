@@ -1423,8 +1423,7 @@ impl Store {
         v: Publication,
         actor: MutationActor,
     ) -> Result<IndexEntry, PutError> {
-        let files = vec![(v.main.clone(), v.source.as_bytes().to_vec())];
-        self.put_catalog_files(v, files, actor).await
+        self.put_catalog_files(v, Vec::new(), actor).await
     }
 
     async fn put_catalog_files(
@@ -2025,24 +2024,27 @@ impl Store {
             .filter(|(_, kind, _, _, _, _)| *kind == ObjectKind::SourceRecipe)
             .map(|(id, _, _, _, bytes, _)| (id.as_str().to_owned(), bytes.clone()))
             .collect::<Vec<_>>();
+        let proof_input_bytes = tree_bytes.len().saturating_add(
+            recipe_objects
+                .iter()
+                .map(|(_, bytes)| bytes.len())
+                .sum::<usize>(),
+        );
         let proof = catalog
-            .execute_catalog(
-                STORE_JOB_BYTES + tree_bytes.len() + recipe_objects.len() * 256,
-                {
-                    let operation_id = operation.id.clone();
-                    let checkpoint = checkpoint.clone();
-                    let tree_bytes = tree_bytes.clone();
-                    let recipe_objects = recipe_objects.clone();
-                    move |catalog| {
-                        catalog.verify_v2_source_closure_bundle(
-                            &operation_id,
-                            &checkpoint,
-                            &tree_bytes,
-                            &recipe_objects,
-                        )
-                    }
-                },
-            )
+            .execute_catalog(STORE_JOB_BYTES.saturating_add(proof_input_bytes), {
+                let operation_id = operation.id.clone();
+                let checkpoint = checkpoint.clone();
+                let tree_bytes = tree_bytes.clone();
+                let recipe_objects = recipe_objects.clone();
+                move |catalog| {
+                    catalog.verify_v2_source_closure_bundle(
+                        &operation_id,
+                        &checkpoint,
+                        &tree_bytes,
+                        &recipe_objects,
+                    )
+                }
+            })
             .await
             .map_err(|error| PutError::Storage(error.to_string()))?;
         catalog

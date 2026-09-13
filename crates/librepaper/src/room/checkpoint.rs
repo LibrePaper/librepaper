@@ -1937,15 +1937,12 @@ impl Room {
                 return Err(error);
             }
         }
-        if let Ok(slot) = heartbeat_error.lock() {
-            if let Some(error) = slot.as_ref() {
-                let error = error.clone();
-                drop(slot);
-                heartbeat.stop().await;
-                return Err(WriteError::Storage(format!(
-                    "checkpoint closure heartbeat failed: {error}"
-                )));
-            }
+        let heartbeat_failure = heartbeat_error.lock().ok().and_then(|slot| slot.clone());
+        if let Some(error) = heartbeat_failure {
+            heartbeat.stop().await;
+            return Err(WriteError::Storage(format!(
+                "checkpoint closure heartbeat failed: {error}"
+            )));
         }
         let checkpoint = CheckpointCommit {
             document_id: document_id.clone(),
@@ -1998,10 +1995,9 @@ impl Room {
         // atomic head/receipt commit. Only after that transaction succeeds is
         // it safe to stop renewing the stage leases.
         heartbeat.stop().await;
-        if let Ok(slot) = heartbeat_error.lock() {
-            if let Some(error) = slot.as_ref() {
-                eprintln!("warning: checkpoint heartbeat failed after commit: {error}");
-            }
+        let heartbeat_failure = heartbeat_error.lock().ok().and_then(|slot| slot.clone());
+        if let Some(error) = heartbeat_failure {
+            eprintln!("warning: checkpoint heartbeat failed after commit: {error}");
         }
         if let Err(error) = catalog
             .execute_catalog(checkpoint.object_ids.len() * 64 + 256, {
