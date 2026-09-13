@@ -384,7 +384,7 @@ impl FsStore {
     }
 
     /// Publish a v2 object under a fresh allocation identity. The final
-    /// filesystem name is created with `create_new`, so a retry can never
+    /// filesystem name is linked with a no-replace operation, so a retry can never
     /// overwrite an existing immutable object, even if two writers race.
     pub async fn put_new_object(
         &self,
@@ -1136,8 +1136,8 @@ pub fn write_file_atomically(name: &Path, body: &[u8], durable: bool) -> std::io
 }
 
 /// Write and publish a file without replacing an existing name. The temporary
-/// file is private and same-directory; the final `create_new` is the commit
-/// point. A pre-existing final name is reported as a conflict by callers.
+/// file is private and same-directory; the final no-replace hard link is the
+/// commit point. A pre-existing final name is reported as a conflict by callers.
 fn write_file_immutable(name: &Path, body: &[u8], durable: bool) -> std::io::Result<()> {
     if let Some(parent) = name.parent() {
         durable_create_dir_all(parent, durable)?;
