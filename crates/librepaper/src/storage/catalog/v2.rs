@@ -643,6 +643,11 @@ impl Catalog {
             .get("bytes")
             .and_then(serde_json::Value::as_i64)
             .ok_or_else(|| CatalogError::Invalid("publication html length is missing".into()))?;
+        if html_bytes < 0 {
+            return Err(CatalogError::Invalid(
+                "publication html length is negative".into(),
+            ));
+        }
         let mut object_ids = vec![
             manifest_object_id.clone(),
             ObjectId::new(html_id.to_owned()).map_err(|e| CatalogError::Invalid(e.to_string()))?,
@@ -711,6 +716,9 @@ impl Catalog {
                     .get("bytes")
                     .and_then(serde_json::Value::as_i64)
                     .ok_or_else(|| CatalogError::Invalid("publication asset length is missing".into()))?;
+                if bytes < 0 {
+                    return Err(CatalogError::Invalid("publication asset length is negative".into()));
+                }
                 let object_id = object_ids.get(index + 2).ok_or(CatalogError::NotFound)?;
                 let (kind, actual_digest, actual_bytes): (String, String, Option<i64>) = connection
                     .query_row(
@@ -971,7 +979,7 @@ impl Catalog {
         object_id: &ObjectId,
     ) -> CatalogResult<Option<V2Object>> {
         self.with_connection(|connection| {
-            connection.query_row("SELECT document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,allocation_operation_id FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),object_id.as_str()], |row| Ok(V2Object { document_id:DocumentId::new(row.get::<_,String>(0)?).map_err(|_| rusqlite::Error::InvalidQuery)?, id:ObjectId::new(row.get::<_,String>(1)?).map_err(|_| rusqlite::Error::InvalidQuery)?, storage_key:row.get(2)?,kind:row.get(3)?,state:row.get(4)?,digest:row.get(5)?,byte_length:row.get(6)?,reserved_bytes:row.get(7)?,allocation_operation_id:row.get::<_,Option<String>>(8)?.map(|id| OperationId::new(id).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()? })).optional().map_err(CatalogError::from)
+            connection.query_row("SELECT o.document_id,o.id,o.storage_key,o.kind,o.state,o.digest,o.byte_length,o.reserved_bytes,o.allocation_operation_id FROM objects o JOIN documents d ON d.id=o.document_id JOIN accounts a ON a.id=d.owner_id WHERE o.document_id=?1 AND o.id=?2 AND o.state='available' AND d.status='active' AND a.status='active'", params![document_id.as_str(),object_id.as_str()], |row| Ok(V2Object { document_id:DocumentId::new(row.get::<_,String>(0)?).map_err(|_| rusqlite::Error::InvalidQuery)?, id:ObjectId::new(row.get::<_,String>(1)?).map_err(|_| rusqlite::Error::InvalidQuery)?, storage_key:row.get(2)?,kind:row.get(3)?,state:row.get(4)?,digest:row.get(5)?,byte_length:row.get(6)?,reserved_bytes:row.get(7)?,allocation_operation_id:row.get::<_,Option<String>>(8)?.map(|id| OperationId::new(id).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()? })).optional().map_err(CatalogError::from)
         })
     }
 
@@ -1001,7 +1009,7 @@ impl Catalog {
         checkpoint_id: &str,
     ) -> CatalogResult<Option<V2Object>> {
         let row: Option<(String,String)> = self.with_connection(|connection| {
-            connection.query_row("SELECT c.document_id,c.tree_object_id FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.slug=?1 AND c.id=?2", params![slug,checkpoint_id], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(CatalogError::from)
+            connection.query_row("SELECT c.document_id,c.tree_object_id FROM checkpoints c JOIN documents d ON d.id=c.document_id JOIN accounts a ON a.id=d.owner_id WHERE d.slug=?1 AND c.id=?2 AND d.status='active' AND a.status='active'", params![slug,checkpoint_id], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(CatalogError::from)
         })?;
         let Some((document_id, object_id)) = row else {
             return Ok(None);
@@ -1013,7 +1021,7 @@ impl Catalog {
     }
 
     pub fn current_tree_object(&self, slug: &str) -> CatalogResult<Option<V2Object>> {
-        let row: Option<(String,String)> = self.with_connection(|connection| connection.query_row("SELECT d.id,c.tree_object_id FROM documents d JOIN checkpoints c ON c.document_id=d.id AND c.id=d.current_checkpoint_id WHERE d.slug=?1", [slug], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(CatalogError::from))?;
+        let row: Option<(String,String)> = self.with_connection(|connection| connection.query_row("SELECT d.id,c.tree_object_id FROM documents d JOIN accounts a ON a.id=d.owner_id JOIN checkpoints c ON c.document_id=d.id AND c.id=d.current_checkpoint_id WHERE d.slug=?1 AND d.status='active' AND a.status='active'", [slug], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(CatalogError::from))?;
         let Some((document_id, object_id)) = row else {
             return Ok(None);
         };
