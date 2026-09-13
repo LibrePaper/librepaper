@@ -1514,14 +1514,33 @@ pub(super) async fn suggestion_accept_checkpoint(
     slug: &str,
     request_id: &str,
     digest: &str,
+    actor: crate::document::store::MutationActor,
 ) -> Result<Option<(String, String, String)>, String> {
     let slug = slug.to_string();
     let request_id = request_id.to_string();
     let digest = digest.to_string();
-    let input_bytes = slug.len() + request_id.len() + digest.len() + DESCRIPTOR_BYTES;
+    let input_bytes = slug.len()
+        + request_id.len()
+        + digest.len()
+        + actor.account_id.len()
+        + actor.session_generation.len()
+        + DESCRIPTOR_BYTES;
     catalog
         .execute_catalog(input_bytes, move |catalog| {
-            catalog.suggestion_accept_checkpoint(&slug, &request_id, &digest)
+            catalog.suggestion_accept_checkpoint_authorized(
+                &slug,
+                &request_id,
+                &digest,
+                crate::storage::catalog::AnnotationAuthority {
+                    account_id: &actor.account_id,
+                    author_key: &actor.owner_key,
+                    generation: &actor.session_generation,
+                    link_hash: &actor.link_hash,
+                    policy_comment: actor.policy_editor,
+                    automation: actor.automation,
+                    require_editor: true,
+                },
+            )
         })
         .await
         .map_err(|error| error.to_string())
@@ -1532,14 +1551,33 @@ pub(super) async fn suggestion_accept_update(
     slug: &str,
     request_id: &str,
     digest: &str,
+    actor: crate::document::store::MutationActor,
 ) -> Result<Option<Vec<u8>>, String> {
     let slug = slug.to_string();
     let request_id = request_id.to_string();
     let digest = digest.to_string();
-    let input_bytes = slug.len() + request_id.len() + digest.len() + DESCRIPTOR_BYTES;
+    let input_bytes = slug.len()
+        + request_id.len()
+        + digest.len()
+        + actor.account_id.len()
+        + actor.session_generation.len()
+        + DESCRIPTOR_BYTES;
     catalog
         .execute_catalog(input_bytes, move |catalog| {
-            catalog.suggestion_accept_update(&slug, &request_id, &digest)
+            catalog.suggestion_accept_update_authorized(
+                &slug,
+                &request_id,
+                &digest,
+                crate::storage::catalog::AnnotationAuthority {
+                    account_id: &actor.account_id,
+                    author_key: &actor.owner_key,
+                    generation: &actor.session_generation,
+                    link_hash: &actor.link_hash,
+                    policy_comment: actor.policy_editor,
+                    automation: actor.automation,
+                    require_editor: true,
+                },
+            )
         })
         .await
         .map_err(|error| error.to_string())
@@ -1608,6 +1646,7 @@ pub(super) async fn record_and_finish_suggestion_accept(
     digest: &str,
     sha: &str,
     resolved_at: &str,
+    actor: crate::document::store::MutationActor,
 ) -> Result<(), String> {
     let slug = slug.to_string();
     let comment_id = comment_id.to_string();
@@ -1621,25 +1660,38 @@ pub(super) async fn record_and_finish_suggestion_accept(
         + digest.len()
         + sha.len()
         + resolved_at.len()
+        + actor.account_id.len()
+        + actor.session_generation.len()
         + DESCRIPTOR_BYTES;
     catalog
         .execute_catalog(input_bytes, move |catalog| {
-            catalog.record_suggestion_accept_checkpoint(
+            let authority = crate::storage::catalog::AnnotationAuthority {
+                account_id: &actor.account_id,
+                author_key: &actor.owner_key,
+                generation: &actor.session_generation,
+                link_hash: &actor.link_hash,
+                policy_comment: actor.policy_editor,
+                automation: actor.automation,
+                require_editor: true,
+            };
+            catalog.record_suggestion_accept_checkpoint_authorized(
                 &slug,
                 &comment_id,
                 &request_id,
                 &digest,
                 &sha,
                 &resolved_at,
+                authority,
             )?;
             catalog
-                .finish_suggestion_accept(
+                .finish_suggestion_accept_authorized(
                     &slug,
                     &comment_id,
                     &request_id,
                     &digest,
                     &sha,
                     &resolved_at,
+                    authority,
                 )
                 .map(|_| ())
         })
@@ -1655,6 +1707,7 @@ pub(super) async fn finish_suggestion_accept(
     digest: &str,
     sha: &str,
     resolved_at: &str,
+    actor: crate::document::store::MutationActor,
 ) -> Result<(), String> {
     let slug = slug.to_string();
     let comment_id = comment_id.to_string();
@@ -1668,17 +1721,28 @@ pub(super) async fn finish_suggestion_accept(
         + digest.len()
         + sha.len()
         + resolved_at.len()
+        + actor.account_id.len()
+        + actor.session_generation.len()
         + DESCRIPTOR_BYTES;
     catalog
         .execute_catalog(input_bytes, move |catalog| {
             catalog
-                .finish_suggestion_accept(
+                .finish_suggestion_accept_authorized(
                     &slug,
                     &comment_id,
                     &request_id,
                     &digest,
                     &sha,
                     &resolved_at,
+                    crate::storage::catalog::AnnotationAuthority {
+                        account_id: &actor.account_id,
+                        author_key: &actor.owner_key,
+                        generation: &actor.session_generation,
+                        link_hash: &actor.link_hash,
+                        policy_comment: actor.policy_editor,
+                        automation: actor.automation,
+                        require_editor: true,
+                    },
                 )
                 .map(|_| ())
         })

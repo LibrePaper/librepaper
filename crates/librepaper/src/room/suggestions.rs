@@ -274,88 +274,95 @@ impl Room {
             "by": by.display(),
             "proposed": comment.proposed.clone(),
         }));
-        let staged_update = if let (Some(catalog), false) =
-            (self.catalog.get(), request_id.is_empty())
-        {
-            match begin_suggestion_accept(
-                catalog,
-                &self.slug,
-                comment_id,
-                request_id,
-                &acceptance_digest,
-                now_unix(),
-                mutation_actor.clone(),
-            )
-            .await
-            .map_err(AcceptError::Failed)?
-            {
-                Some(done) => {
-                    let resolved_at = done.resolved_at.clone().unwrap_or_default();
-                    let mut state = self.state.lock().await;
-                    if let Some(index) =
-                        state.comments.iter().position(|item| item.id == comment_id)
-                    {
-                        state.comments[index].resolved = true;
-                        state.comments[index].resolved_at = Some(resolved_at.clone());
-                        state.comments[index].resolved_in = done.resolved_in.clone();
-                        state.comments[index].outcome = "accepted".to_string();
-                        state.comments[index].accept_request = request_id.to_string();
-                    }
-                    drop(state);
-                    self.broadcast_current_state().await;
-                    return Ok(Accepted::Noop {
-                        sha: done.resolved_in,
-                        resolved_at,
-                    });
-                }
-                None => {
-                    if let Some((recorded_id, sha, resolved_at)) = suggestion_accept_checkpoint(
-                        catalog,
-                        &self.slug,
-                        request_id,
-                        &acceptance_digest,
-                    )
-                    .await
-                    .map_err(AcceptError::Failed)?
-                    {
-                        if recorded_id != comment_id {
-                            return Err(AcceptError::Failed(
-                                "suggestion acceptance receipt names another comment".into(),
-                            ));
-                        }
-                        finish_suggestion_accept(
-                            catalog,
-                            &self.slug,
-                            comment_id,
-                            request_id,
-                            &acceptance_digest,
-                            &sha,
-                            &resolved_at,
-                        )
-                        .await
-                        .map_err(AcceptError::Failed)?;
+        let staged_update =
+            if let (Some(catalog), false) = (self.catalog.get(), request_id.is_empty()) {
+                match begin_suggestion_accept(
+                    catalog,
+                    &self.slug,
+                    comment_id,
+                    request_id,
+                    &acceptance_digest,
+                    now_unix(),
+                    mutation_actor.clone(),
+                )
+                .await
+                .map_err(AcceptError::Failed)?
+                {
+                    Some(done) => {
+                        let resolved_at = done.resolved_at.clone().unwrap_or_default();
                         let mut state = self.state.lock().await;
                         if let Some(index) =
                             state.comments.iter().position(|item| item.id == comment_id)
                         {
                             state.comments[index].resolved = true;
                             state.comments[index].resolved_at = Some(resolved_at.clone());
-                            state.comments[index].resolved_in = sha.clone();
+                            state.comments[index].resolved_in = done.resolved_in.clone();
                             state.comments[index].outcome = "accepted".to_string();
                             state.comments[index].accept_request = request_id.to_string();
                         }
                         drop(state);
                         self.broadcast_current_state().await;
-                        return Ok(Accepted::Noop { sha, resolved_at });
+                        return Ok(Accepted::Noop {
+                            sha: done.resolved_in,
+                            resolved_at,
+                        });
                     }
-                    suggestion_accept_update(catalog, &self.slug, request_id, &acceptance_digest)
+                    None => {
+                        if let Some((recorded_id, sha, resolved_at)) = suggestion_accept_checkpoint(
+                            catalog,
+                            &self.slug,
+                            request_id,
+                            &acceptance_digest,
+                            mutation_actor.clone(),
+                        )
                         .await
                         .map_err(AcceptError::Failed)?
+                        {
+                            if recorded_id != comment_id {
+                                return Err(AcceptError::Failed(
+                                    "suggestion acceptance receipt names another comment".into(),
+                                ));
+                            }
+                            finish_suggestion_accept(
+                                catalog,
+                                &self.slug,
+                                comment_id,
+                                request_id,
+                                &acceptance_digest,
+                                &sha,
+                                &resolved_at,
+                                mutation_actor.clone(),
+                            )
+                            .await
+                            .map_err(AcceptError::Failed)?;
+                            let mut state = self.state.lock().await;
+                            if let Some(index) =
+                                state.comments.iter().position(|item| item.id == comment_id)
+                            {
+                                state.comments[index].resolved = true;
+                                state.comments[index].resolved_at = Some(resolved_at.clone());
+                                state.comments[index].resolved_in = sha.clone();
+                                state.comments[index].outcome = "accepted".to_string();
+                                state.comments[index].accept_request = request_id.to_string();
+                            }
+                            drop(state);
+                            self.broadcast_current_state().await;
+                            return Ok(Accepted::Noop { sha, resolved_at });
+                        }
+                        suggestion_accept_update(
+                            catalog,
+                            &self.slug,
+                            request_id,
+                            &acceptance_digest,
+                            mutation_actor.clone(),
+                        )
+                        .await
+                        .map_err(AcceptError::Failed)?
+                    }
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
 
         // Step 2 of the spec: the passage as the live text has it now. A
         // first look, without the lock held across the storage read below:
@@ -615,6 +622,7 @@ impl Room {
                     &acceptance_digest,
                     &sha,
                     &resolved_at,
+                    mutation_actor.clone(),
                 )
                 .await
                 {

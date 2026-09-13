@@ -133,17 +133,19 @@ fn unique_acceptance_operation_tx(
     document_id: &str,
     request_id: &str,
     comment_id: &str,
+    actor: &str,
 ) -> CatalogResult<Option<AcceptanceOperation>> {
     let mut statement = tx.prepare(
         "SELECT id,state,request_digest,actor_key
          FROM operations
          WHERE document_id=?1 AND request_key=?2
            AND kind='agent_annotations'
-           AND json_extract(plan_json,'$.commentId')=?3
+           AND actor_key=?3
+           AND json_extract(plan_json,'$.commentId')=?4
          ORDER BY id
          LIMIT 2",
     )?;
-    let mut rows = statement.query(params![document_id, request_id, comment_id])?;
+    let mut rows = statement.query(params![document_id, request_id, actor, comment_id])?;
     let Some(row) = rows.next()? else {
         return Ok(None);
     };
@@ -160,16 +162,17 @@ fn unique_acceptance_operation_connection(
     connection: &rusqlite::Connection,
     document_id: &str,
     request_id: &str,
+    actor: &str,
 ) -> CatalogResult<Option<AcceptanceOperation>> {
     let mut statement = connection.prepare(
         "SELECT id,state,request_digest,actor_key
          FROM operations
          WHERE document_id=?1 AND request_key=?2
-           AND kind='agent_annotations'
+           AND kind='agent_annotations' AND actor_key=?3
          ORDER BY id
          LIMIT 2",
     )?;
-    let mut rows = statement.query(params![document_id, request_id])?;
+    let mut rows = statement.query(params![document_id, request_id, actor])?;
     let Some(row) = rows.next()? else {
         return Ok(None);
     };
@@ -821,10 +824,32 @@ impl Catalog {
         resolved_in: &str,
         resolved_at: &str,
     ) -> CatalogResult<()> {
+        self.record_suggestion_accept_checkpoint_authorized(
+            slug,
+            comment_id,
+            request_id,
+            request_digest,
+            resolved_in,
+            resolved_at,
+            AnnotationAuthority::default(),
+        )
+    }
+
+    pub fn record_suggestion_accept_checkpoint_authorized(
+        &self,
+        slug: &str,
+        comment_id: &str,
+        request_id: &str,
+        request_digest: &str,
+        resolved_in: &str,
+        resolved_at: &str,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<()> {
         self.immediate(|tx| {
             let doc = document_id(tx, slug)?;
+            let actor = annotation_actor(authority);
             let Some((operation_id, state, digest, _actor)) =
-                unique_acceptance_operation_tx(tx, &doc, request_id, comment_id)?
+                unique_acceptance_operation_tx(tx, &doc, request_id, comment_id, &actor)?
             else {
                 return Err(CatalogError::NotFound);
             };
@@ -873,17 +898,64 @@ impl Catalog {
     }
     pub fn stage_suggestion_accept_update_authorized(
         &self,
-        _slug: &str,
-        _comment_id: &str,
-        _request_id: &str,
-        _request_digest: &str,
+        slug: &str,
+        comment_id: &str,
+        request_id: &str,
+        request_digest: &str,
         update: &[u8],
-        _authority: AnnotationAuthority<'_>,
+        authority: AnnotationAuthority<'_>,
     ) -> CatalogResult<()> {
         if update.is_empty() {
             return Err(CatalogError::Invalid("suggestion update is empty".into()));
         }
-        Err(CatalogError::Invalid("suggestion CRDT updates must be staged as agent_payload objects before the receipt can be committed".into()))
+        self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
+            let doc = document_id(tx, slug)?;
+            annotation_account_authorized(tx, &doc, authority)?;
+            let actor = annotation_actor(authority);
+            let Some((operation_id, state, digest, _actor)) =
+                unique_acceptance_operation_tx(tx, &doc, request_id, comment_id, &actor)?
+            else {
+                return Err(CatalogError::NotFound);
+            };
+            if digest != request_digest {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance receipt does not match".into(),
+                ));
+            }
+            if state != "prepared" {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance receipt is no longer prepared".into(),
+                ));
+            }
+            let plan: String = tx
+                .query_row(
+                    "SELECT plan_json FROM operations WHERE id=?1 AND state='prepared'",
+                    [operation_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            let mut value: serde_json::Value = serde_json::from_str(&plan)
+                .map_err(|_| CatalogError::Invalid("invalid acceptance plan".into()))?;
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| CatalogError::Invalid("acceptance plan is not an object".into()))?;
+            object.insert(
+                "update".into(),
+                serde_json::Value::String(hex::encode(update)),
+            );
+            let encoded = serde_json::to_string(&value).map_err(|error| {
+                CatalogError::Invalid(format!("invalid acceptance plan: {error}"))
+            })?;
+            validate_json(&encoded, "acceptance plan", 65_536)?;
+            tx.execute(
+                "UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2)
+                 WHERE id=?3 AND state='prepared'",
+                params![encoded, unix_millis(), operation_id],
+            )
+            .map_err(CatalogError::from)?;
+            Ok(())
+        })
     }
     pub fn suggestion_accept_update(
         &self,
@@ -891,10 +963,26 @@ impl Catalog {
         request_id: &str,
         request_digest: &str,
     ) -> CatalogResult<Option<Vec<u8>>> {
+        self.suggestion_accept_update_authorized(
+            slug,
+            request_id,
+            request_digest,
+            AnnotationAuthority::default(),
+        )
+    }
+
+    pub fn suggestion_accept_update_authorized(
+        &self,
+        slug: &str,
+        request_id: &str,
+        request_digest: &str,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Option<Vec<u8>>> {
         self.with_connection(|connection| {
             let doc = document_id_connection(connection, slug)?;
+            let actor = annotation_actor(authority);
             let Some((_id, state, digest, _actor)) =
-                unique_acceptance_operation_connection(connection, &doc, request_id)?
+                unique_acceptance_operation_connection(connection, &doc, request_id, &actor)?
             else {
                 return Ok(None);
             };
@@ -937,10 +1025,26 @@ impl Catalog {
         request_id: &str,
         request_digest: &str,
     ) -> CatalogResult<Option<(String, String, String)>> {
+        self.suggestion_accept_checkpoint_authorized(
+            slug,
+            request_id,
+            request_digest,
+            AnnotationAuthority::default(),
+        )
+    }
+
+    pub fn suggestion_accept_checkpoint_authorized(
+        &self,
+        slug: &str,
+        request_id: &str,
+        request_digest: &str,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Option<(String, String, String)>> {
         self.with_connection(|connection| {
             let doc = document_id_connection(connection, slug)?;
+            let actor = annotation_actor(authority);
             let Some((operation_id, state, digest, _actor)) =
-                unique_acceptance_operation_connection(connection, &doc, request_id)?
+                unique_acceptance_operation_connection(connection, &doc, request_id, &actor)?
             else {
                 return Ok(None);
             };
@@ -992,10 +1096,32 @@ impl Catalog {
         resolved_in: &str,
         resolved_at: &str,
     ) -> CatalogResult<Comment> {
+        self.finish_suggestion_accept_authorized(
+            slug,
+            comment_id,
+            request_id,
+            request_digest,
+            resolved_in,
+            resolved_at,
+            AnnotationAuthority::default(),
+        )
+    }
+
+    pub fn finish_suggestion_accept_authorized(
+        &self,
+        slug: &str,
+        comment_id: &str,
+        request_id: &str,
+        request_digest: &str,
+        resolved_in: &str,
+        resolved_at: &str,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Comment> {
         self.immediate(|tx| {
             let doc = document_id(tx, slug)?;
+            let actor = annotation_actor(authority);
             let Some((operation_id, state, digest, _actor)) =
-                unique_acceptance_operation_tx(tx, &doc, request_id, comment_id)?
+                unique_acceptance_operation_tx(tx, &doc, request_id, comment_id, &actor)?
             else {
                 return Err(CatalogError::NotFound);
             };
