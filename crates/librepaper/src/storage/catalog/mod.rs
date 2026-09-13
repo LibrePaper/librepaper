@@ -1010,6 +1010,31 @@ mod identity_tests {
         assert!(Catalog::open_with_identity(&path, false, &"b".repeat(64), &key_id).is_err());
         assert!(Catalog::open_with_identity(&path, false, &deployment_id, &"c".repeat(16)).is_err());
     }
+
+    #[test]
+    fn account_only_root_is_nonempty_when_secret_files_are_missing() {
+        let root = tempfile::tempdir().expect("catalog root");
+        let path = root.path().join("catalog.db");
+        let deployment_id = "d".repeat(64);
+        let key_id = hex::encode(Sha256::digest([9u8; 32]))[..16].to_string();
+        let catalog = Catalog::open_with_identity(&path, false, &deployment_id, &key_id)
+            .expect("fresh identity");
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,status,session_generation,plan,created_at,last_seen_at) VALUES('account-only','registered','test','account-only','account-only','Account Only','active','session','test',1,1)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("account");
+        drop(catalog);
+        assert!(Catalog::path_is_nonempty(&path).expect("account-only root"));
+        let secrets = root.path().join("secrets");
+        std::fs::create_dir_all(&secrets).expect("secrets directory");
+        assert!(crate::auth::session_key_file(&secrets.join("session.key"), true).is_err());
+        assert!(crate::auth::link_sealing_keyring_file(&secrets.join("links.key"), true).is_err());
+    }
 }
 
 #[cfg(test)]
