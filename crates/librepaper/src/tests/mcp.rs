@@ -396,6 +396,15 @@ async fn mcp_accept_and_checkpoint_replay_retained_effects() {
         after["results"][1]["thread"]["outcome"], "accepted",
         "{after}"
     );
+    let retained = tool(
+        &server.url,
+        &slug,
+        &key,
+        "document_comment",
+        json!({"action":"checkpoint","view_id":after["view_id"],"operation":{"epoch":after["operation_epoch"],"id":operation_key("retained-checkpoint")}}),
+    )
+    .await;
+    assert_eq!(retained["status"], "committed", "{retained}");
     // Leave the accepted view dirty before asking MCP to checkpoint it. This
     // exercises first admission of the agent checkpoint operation; the retry
     // below must replay its single durable receipt rather than insert a
@@ -450,20 +459,38 @@ async fn mcp_accept_and_checkpoint_replay_retained_effects() {
     catalog
         .set_link_sealing_key(TEST_KEY)
         .expect("reopen test link sealing");
+    let config = std::sync::Arc::new(crate::config::Configuration::default());
     let store = std::sync::Arc::new(
         crate::document::store::Store::open_with_catalog(
             blobs.clone(),
-            std::sync::Arc::new(crate::config::Configuration::default()),
-            catalog,
+            config.clone(),
+            catalog.clone(),
         )
         .await
         .expect("reopen checkpoint store"),
     );
+    let persistence = config.persistence();
+    crate::storage::maintenance_v2::recover_v2_startup(catalog.as_ref(), blobs.as_ref())
+        .await
+        .expect("recover v2 checkpoint state");
     let rooms = crate::room::RoomSet::new(
         blobs,
-        std::sync::Arc::new(crate::config::Configuration::default()),
+        config,
     );
     rooms.attach_store(store);
+    rooms.attach_journal(std::sync::Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            std::sync::Arc::new(
+                crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                    catalog,
+                    persistence,
+                ),
+            ),
+            rooms.blobs.clone(),
+            persistence,
+        )
+        .expect("reopen v2 journal runtime"),
+    ));
     let reopened = rooms.get(&slug).await;
     assert_eq!(
         reopened.source().await,

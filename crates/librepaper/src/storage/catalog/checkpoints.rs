@@ -103,12 +103,6 @@ impl Catalog {
                 .checked_add(120_000)
                 .ok_or_else(|| CatalogError::Invalid("checkpoint deadline overflow".into()))?,
         )?;
-        if issued > now.0.saturating_add(60_000) || now.0.saturating_sub(issued) > 15 * 60_000 {
-            return Err(CatalogError::refused(
-                CatalogRefusal::RequestExpired,
-                "checkpoint request is outside its admission window",
-            ));
-        }
         self.immediate(|tx| {
             let slug: String = tx
                 .query_row(
@@ -190,11 +184,6 @@ impl Catalog {
                         "checkpoint key was reused with different content".into(),
                     ));
                 }
-                if generation != writer_generation {
-                    return Err(CatalogError::Conflict(
-                        "checkpoint operation belongs to an obsolete writer generation".into(),
-                    ));
-                }
                 if state == "committed" {
                     if receipt_expiry.is_none_or(|expiry| expiry <= now.0) {
                         return Err(CatalogError::refused(
@@ -203,6 +192,11 @@ impl Catalog {
                         ));
                     }
                 } else if state == "prepared" {
+                    if generation != writer_generation {
+                        return Err(CatalogError::Conflict(
+                            "checkpoint operation belongs to an obsolete writer generation".into(),
+                        ));
+                    }
                     if work_deadline.is_none_or(|deadline| deadline <= now.0) {
                         return Err(CatalogError::refused(
                             CatalogRefusal::RequestExpired,
@@ -225,6 +219,12 @@ impl Catalog {
                     request_digest: digest,
                     writer_generation: generation,
                 });
+            }
+            if issued > now.0.saturating_add(60_000) || now.0.saturating_sub(issued) > 15 * 60_000 {
+                return Err(CatalogError::refused(
+                    CatalogRefusal::RequestExpired,
+                    "checkpoint request is outside its admission window",
+                ));
             }
             Self::admit_operation_slot(
                 tx,
