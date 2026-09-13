@@ -1239,7 +1239,13 @@ impl Catalog {
             for row in rows {
                 let (digest, size) = row.map_err(CatalogError::from)?;
                 if let Some(size) = size {
-                    sizes.insert(digest, size);
+                    if let Some(previous) = sizes.insert(digest, size) {
+                        if previous != size {
+                            return Err(CatalogError::Invalid(
+                                "canonical asset digest has conflicting sizes".into(),
+                            ));
+                        }
+                    }
                 }
             }
             Ok(sizes)
