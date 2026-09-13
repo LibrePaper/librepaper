@@ -12,6 +12,77 @@ fn normalized_title(title: &str) -> String {
         .to_lowercase()
 }
 
+fn document_time_ms(value: &str) -> CatalogResult<i64> {
+    if let Ok(number) = value.parse::<i64>() {
+        if number < 0 {
+            return Err(CatalogError::Invalid(
+                "document timestamp cannot be negative".into(),
+            ));
+        }
+        return if number < 10_000_000_000 {
+            number
+                .checked_mul(1_000)
+                .ok_or_else(|| CatalogError::Invalid("document timestamp overflow".into()))
+        } else {
+            Ok(number)
+        };
+    }
+    crate::util::parse_timestamp(value)
+        .and_then(|seconds| seconds.checked_mul(1_000))
+        .filter(|value| *value >= 0)
+        .ok_or_else(|| CatalogError::Invalid("document timestamp is invalid".into()))
+}
+fn ensure_owner_account_in_tx(
+    tx: &Transaction<'_>,
+    document: &NewDocument,
+    created_at: i64,
+) -> CatalogResult<String> {
+    if let Some(owner_id) = document.owner_id.as_deref() {
+        let active: bool = tx
+            .query_row(
+                "SELECT status='active' FROM accounts WHERE id=?1",
+                [owner_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(CatalogError::from)?
+            .unwrap_or(false);
+        if !active {
+            return Err(CatalogError::Conflict("owner account is not active".into()));
+        }
+        return Ok(owner_id.to_owned());
+    }
+    let owner_key = if document.owner_key.is_empty() {
+        format!("anonymous:{}", document.slug)
+    } else {
+        document.owner_key.clone()
+    };
+    let digest = sha2::Sha256::digest(owner_key.as_bytes());
+    let owner_id = format!("anonymous:{}", hex::encode(digest));
+    let session_generation = hex::encode(crate::auth::random_bytes(16));
+    tx.execute(
+        "INSERT OR IGNORE INTO accounts(
+            id,kind,provider,provider_subject,handle,display_name,email,status,
+            session_generation,plan,created_at,last_seen_at
+         ) VALUES(?1,'anonymous',NULL,NULL,'anonymous','Anonymous',NULL,'active',?2,'default',?3,?3)",
+        params![owner_id, session_generation, created_at],
+    )
+    .map_err(CatalogError::from)?;
+    let active: bool = tx
+        .query_row(
+            "SELECT status='active' FROM accounts WHERE id=?1",
+            [&owner_id],
+            |row| row.get(0),
+        )
+        .map_err(CatalogError::from)?;
+    if !active {
+        return Err(CatalogError::Conflict(
+            "anonymous owner account is not active".into(),
+        ));
+    }
+    Ok(owner_id)
+}
+
 impl Catalog {
     fn unique_project_title_in_tx(
         tx: &Transaction<'_>,
@@ -69,10 +140,12 @@ impl Catalog {
                 .optional()
                 .map_err(CatalogError::from)?
                 .ok_or(CatalogError::NotFound)?;
-            let execution_engine = crate::results::ExecutionEngine::parse(&source_format)
-                .map_err(CatalogError::Invalid)?;
-            let draft_format = crate::results::DraftFormat::parse(&source_format)
-                .map_err(CatalogError::Invalid)?;
+            let execution_engine = if source_format == "quarto" {
+                crate::results::ExecutionEngine::Quarto
+            } else {
+                crate::results::ExecutionEngine::None
+            };
+            let draft_format = crate::results::DraftFormat::from_source_format(&source_format);
             Ok(crate::results::DocumentMetadata {
                 execution_engine,
                 draft_format,
@@ -98,15 +171,16 @@ impl Catalog {
     }
 
     pub fn create_document(&self, document: &NewDocument) -> CatalogResult<Document> {
+        self.create_document_inner(document, None)
+    }
+
+    fn create_document_inner(
+        &self,
+        document: &NewDocument,
+        limits: Option<(i64, i64, usize)>,
+    ) -> CatalogResult<Document> {
         self.validate_document_input(document)?;
-        let owner_id = document
-            .owner_id
-            .as_deref()
-            .ok_or_else(|| CatalogError::Invalid("v2 documents require an owner account".into()))?;
-        let created_at = document
-            .created_at
-            .parse::<i64>()
-            .unwrap_or_else(|_| super::unix_millis());
+        let created_at = document_time_ms(&document.created_at)?;
         let status = match document.status.as_str() {
             "creating" | "active" | "deleting" => document.status.as_str(),
             _ => return Err(CatalogError::Invalid("invalid document status".into())),
@@ -118,15 +192,53 @@ impl Catalog {
             return Err(CatalogError::Invalid("invalid source format".into()));
         }
         self.immediate(|tx| {
+            let owner_id = ensure_owner_account_in_tx(tx, document, created_at)?;
+            if let Some((owner_limit, total_limit, documents_limit)) = limits {
+                let owner = tx
+                    .query_row(
+                        "SELECT stored_bytes + reserved_bytes,document_count
+                         FROM accounts WHERE id=?1",
+                        [&owner_id],
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                    )
+                    .map_err(CatalogError::from)?;
+                if owner.1
+                    >= i64::try_from(documents_limit)
+                        .map_err(|_| CatalogError::Invalid("document limit overflow".into()))?
+                {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::OwnerDocuments,
+                        "owner document limit exceeded",
+                    ));
+                }
+                if owner.0 > owner_limit {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::OwnerBytes,
+                        "owner storage limit is already exceeded",
+                    ));
+                }
+                let deployment: i64 = tx
+                    .query_row(
+                        "SELECT stored_bytes + reserved_bytes FROM server_state WHERE id=1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if deployment > total_limit {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::DeploymentBytes,
+                        "deployment storage limit is already exceeded",
+                    ));
+                }
+            }
             Self::unique_project_title_in_tx(
                 tx,
                 &document.slug,
                 &document.title,
-                Some(owner_id),
+                Some(&owner_id),
                 "",
             )?;
-            self.validate_owner_in_tx(tx, Some(owner_id))?;
-            Self::insert_document_in_tx(tx, document, created_at, status)?;
+            Self::insert_document_in_tx(tx, document, &owner_id, created_at, status)?;
             Self::document_in_tx(tx, &document.slug)
         })
     }
@@ -142,14 +254,14 @@ impl Catalog {
         if owner_limit < 0 || total_limit < 0 || documents_limit == 0 {
             return Err(CatalogError::Invalid("invalid document limits".into()));
         }
-        // A document row cannot carry an unbacked reservation.  Callers must
+        // A document row cannot carry an unbacked reservation. Callers must
         // allocate objects through the operation admission protocol first.
         if document.size != 0 || document.counted_size != 0 || document.maintenance_reserved != 0 {
             return Err(CatalogError::Invalid(
                 "document bytes require v2 object admission".into(),
             ));
         }
-        self.create_document(document)
+        self.create_document_inner(document, Some((owner_limit, total_limit, documents_limit)))
     }
 
     pub fn replace_document_admitted(
@@ -221,6 +333,7 @@ impl Catalog {
     pub(super) fn insert_document_in_tx(
         tx: &Transaction<'_>,
         document: &NewDocument,
+        owner_id: &str,
         created_at: i64,
         status: &str,
     ) -> CatalogResult<()> {
@@ -233,7 +346,7 @@ impl Catalog {
                 params![
                     document.storage_id,
                     document.slug,
-                    document.owner_id.as_deref(),
+                    owner_id,
                     if document.example { "example" } else { "owned" },
                     document.title,
                     normalized_title(&document.title),
@@ -249,7 +362,7 @@ impl Catalog {
         }
         tx.execute(
             "UPDATE accounts SET document_count=document_count+1 WHERE id=?1",
-            [document.owner_id.as_deref().unwrap_or_default()],
+            [owner_id],
         )
         .map_err(CatalogError::from)?;
         tx.execute(
@@ -421,9 +534,15 @@ impl Catalog {
                 "slug and storage_id are required".into(),
             ));
         }
-        if document.owner_id.is_none() || !document.owner_key.is_empty() {
+        if document.owner_id.is_some() && !document.owner_key.is_empty() {
             return Err(CatalogError::Invalid(
-                "v2 documents require an owner account and no owner key".into(),
+                "account-owned documents cannot carry a legacy owner key".into(),
+            ));
+        }
+        if document.owner_id.is_none() && document.owner_key.is_empty() && document.slug.is_empty()
+        {
+            return Err(CatalogError::Invalid(
+                "anonymous documents require a stable identity".into(),
             ));
         }
         if document.title.is_empty() || document.title.len() > 4096 {
