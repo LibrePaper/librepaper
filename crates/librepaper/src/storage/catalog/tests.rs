@@ -3515,3 +3515,41 @@ fn v2_document_worker_bounds_checkpoint_edges_and_repeated_begin() {
     assert_eq!(pinned_rows, (1, 1));
 
 }
+
+#[test]
+fn replacement_receipt_uses_v2_display_publish_kind() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let operation = catalog
+        .prepare_operation(&OperationRequest {
+            storage_id: "storage-1",
+            request_id: &crate::util::new_request_key(),
+            kind: "replace",
+            request_digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            intent: "{}",
+            created_at: crate::util::now_millis(),
+            actor: None,
+        })
+        .unwrap();
+    assert_eq!(operation.kind, "display_publish");
+}
+
+#[test]
+fn internal_checkpoint_fence_requires_a_live_document_owner() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .require_internal_checkpoint_authority("doc")
+        .unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute("UPDATE accounts SET status='erasing' WHERE id='acct-1'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(catalog
+        .require_internal_checkpoint_authority("doc")
+        .is_err());
+}
