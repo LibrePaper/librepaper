@@ -25,8 +25,7 @@ use crate::storage::journal::{
 };
 use crate::storage::maintenance_v2::{
     GcCandidate, PreparedAllocation, PreparedKind, PreparedOperation, V2GcCatalog,
-    V2RecoveryCatalog, READ_LEASE_MS, STAGE_HEARTBEAT_DUE_MS, STAGE_HEARTBEAT_MAX_PAGES,
-    STAGE_HEARTBEAT_PAGE_SIZE,
+    V2RecoveryCatalog, READ_LEASE_MS, STAGE_HEARTBEAT_DUE_MS, STAGE_HEARTBEAT_PAGE_SIZE,
 };
 use crate::storage::catalog::Catalog;
 
@@ -932,7 +931,7 @@ async fn heartbeat_stage_leases_pages(
     let page_size = requested_limit.min(STAGE_HEARTBEAT_PAGE_SIZE);
     let mut cursor = None;
     let mut renewed = 0usize;
-    for _ in 0..STAGE_HEARTBEAT_MAX_PAGES {
+    loop {
         let page = heartbeat_stage_leases_page(catalog, now, cursor, page_size).await?;
         renewed = renewed.saturating_add(page.renewed);
         cursor = page.next;
@@ -941,7 +940,6 @@ async fn heartbeat_stage_leases_pages(
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    Err("stage-lease heartbeat capacity exceeded during bounded maintenance pass".into())
 }
 
 async fn bounded_catalog_call<T, F, Fut>(
@@ -3488,6 +3486,37 @@ mod stage_heartbeat_tests {
                     "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,?3,'stage',?4,'old-generation',?5,?6)",
                     params![document_id, object_id, operation_id, operation_id, now - 100_000, now + 70_000],
                 )?;
+
+                // Several maximum-size publication bundles can exceed the
+                // old 64-page heartbeat prefix. The production cursor must
+                // drain every due lease before the scheduler pass completes.
+                let many = STAGE_HEARTBEAT_PAGE_SIZE * 65 + 1;
+                let account_id = "heartbeat-account-many";
+                let document_id = "heartbeat-document-many";
+                connection.execute(
+                    "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at) VALUES(?1,'registered','heartbeat',?1,?2,?2,'heartbeat@example.test','active','session','test',?3,?3)",
+                    params![account_id, account_id, now - 100_000],
+                )?;
+                connection.execute(
+                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,?2,?3,'owned',?2,?2,'active',?4,?4,'markdown','index.md')",
+                    params![document_id, document_id, account_id, now - 100_000],
+                )?;
+                for item in 0..many {
+                    let object_id = format!("{:032x}", 200_000_u64 + item as u64);
+                    let operation_id = format!("{:032x}", 300_000_u64 + item as u64);
+                    connection.execute(
+                        "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,'heartbeat',?3,'display_publish',?4,'prepared',?5,0,'{\"version\":1}',?6,?6,?7)",
+                        params![operation_id, document_id, format!("heartbeat-many-{item}"), "a".repeat(64), current_generation, now - 100_000, now + 600_000],
+                    )?;
+                    connection.execute(
+                        "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,created_at) VALUES(?1,?2,?3,'publication_asset','available',?4,1,1,0,?5)",
+                        params![document_id, object_id, format!("v2/documents/{document_id}/objects/{object_id}"), "b".repeat(64), now - 100_000],
+                    )?;
+                    connection.execute(
+                        "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,?3,'stage',?4,?5,?6,?7)",
+                        params![document_id, object_id, operation_id, operation_id, current_generation, now - 100_000, now + 70_000],
+                    )?;
+                }
                 Ok(())
             })
             .expect("heartbeat fixture");
@@ -3496,7 +3525,7 @@ mod stage_heartbeat_tests {
         let renewed = V2GcCatalog::heartbeat_stage_leases(&adapter, now, STAGE_HEARTBEAT_PAGE_SIZE)
             .await
             .expect("all bounded pages renew");
-        assert_eq!(renewed, 600);
+        assert_eq!(renewed, 600 + STAGE_HEARTBEAT_PAGE_SIZE * 65 + 1);
 
         let values: (i64, i64, i64) = catalog
             .with_connection(|connection| {

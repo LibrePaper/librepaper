@@ -20,12 +20,11 @@ pub const READ_LEASE_HEARTBEAT_MS: i64 = 30 * 1000;
 /// lease.  The strict lower bound in the catalogue query prevents a worker
 /// from touching already expired leases.
 pub const STAGE_HEARTBEAT_DUE_MS: i64 = 90 * 1000;
-/// Heartbeats use bounded cursor pages. At most 64 pages are processed per
-/// scheduler pass (16,384 rows); expired rows are never resurrected. The
-/// publication admission path must keep the live stage set within this
-/// throughput bound or surface the worker's explicit capacity error.
+/// Heartbeats use bounded cursor pages. The scheduler drains the due cursor
+/// completely; expired rows are never resurrected. Each page is a separate
+/// catalog job so a large live stage set cannot turn one SQL transaction into
+/// an unbounded operation.
 pub const STAGE_HEARTBEAT_PAGE_SIZE: usize = 256;
-pub const STAGE_HEARTBEAT_MAX_PAGES: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GcCandidate {

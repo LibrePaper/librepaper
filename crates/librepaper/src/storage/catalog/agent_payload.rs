@@ -166,37 +166,61 @@ impl Catalog {
                 }
                 let plan: serde_json::Value = serde_json::from_str(&existing.5)
                     .map_err(|_| CatalogError::Invalid("stored agent payload plan is invalid".into()))?;
-                let object_id = plan.get("object_id").and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| CatalogError::Invalid("stored agent payload plan lacks object id".into()))?;
+                let object_id = match plan.get("object_id").and_then(serde_json::Value::as_str) {
+                    Some(object_id) => object_id,
+                    None if existing.1 != "prepared" => {
+                        return Err(CatalogError::Conflict(
+                            "agent payload retry is already terminal".into(),
+                        ));
+                    }
+                    None => {
+                        return Err(CatalogError::Invalid(
+                            "stored agent payload plan lacks object id".into(),
+                        ));
+                    }
+                };
                 let object_id = ObjectId::new(object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-                let (storage_key, object_state, object_digest, object_length, object_reserved, allocation): (String, String, String, Option<i64>, i64, Option<String>) = tx.query_row(
+                let object: Option<(String, String, String, Option<i64>, i64, Option<String>)> = tx.query_row(
                     "SELECT storage_key,state,digest,byte_length,reserved_bytes,allocation_operation_id FROM objects WHERE document_id=?1 AND id=?2 AND kind='agent_payload'",
                     params![document_id, object_id.as_str()],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
-                ).map_err(CatalogError::from)?;
+                ).optional().map_err(CatalogError::from)?;
                 let stage_lease: Option<(i64, String)> = tx.query_row(
                     "SELECT expires_at,writer_generation FROM object_leases WHERE document_id=?1 AND object_id=?2 AND operation_id=?3 AND purpose='stage'",
                     params![document_id, object_id.as_str(), existing.0.as_str()],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 ).optional().map_err(CatalogError::from)?;
-                let replay_state: String = if existing.1 == "prepared" {
-                    let staged = existing.4.is_some_and(|deadline| deadline > now.0)
-                        && object_state == "available"
-                        && object_digest == input.physical_digest
-                        && object_length == Some(input.reserved_bytes)
-                        && object_reserved == 0
-                        && allocation.is_none()
-                        && stage_lease.as_ref().is_some_and(|(expires_at, generation)| {
-                            *expires_at > now.0 && generation == &current_generation
-                        });
-                    if staged {
-                        "staged".into()
-                    } else {
-                        existing.1.clone()
-                    }
+                let staged = existing.1 == "prepared"
+                    && existing.4.is_some_and(|deadline| deadline > now.0)
+                    && object.as_ref().is_some_and(|(_, state, digest, length, reserved, allocation)| {
+                        state == "available"
+                            && digest == &input.physical_digest
+                            && *length == Some(input.reserved_bytes)
+                            && *reserved == 0
+                            && allocation.is_none()
+                    })
+                    && stage_lease.as_ref().is_some_and(|(expires_at, generation)| {
+                        *expires_at > now.0 && generation == &current_generation
+                    });
+                let replay_state = if existing.1 == "prepared" && !staged {
+                    // An expired stage is no longer resumable.  Fence the
+                    // natural-key operation before returning its terminal
+                    // replay; any still-allocated object remains for the
+                    // physical writer/recovery guard to settle.
+                    tx.execute(
+                        r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',plan_json='{}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE id=?3 AND state='prepared'"#,
+                        params![now.0, now.0.saturating_add(AGENT_PAYLOAD_MAX_DEADLINE_MS), existing.0.as_str()],
+                    ).map_err(CatalogError::from)?;
+                    "aborted".to_owned()
+                } else if staged {
+                    "staged".to_owned()
                 } else {
                     existing.1.clone()
                 };
+                let storage_key = object
+                    .as_ref()
+                    .map(|row| row.0.clone())
+                    .unwrap_or_else(|| format!("v2/documents/{}/objects/{}", document_id, object_id.as_str()));
                 return Ok(AgentPayloadAdmission {
                     document_id: DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?,
                     object_id,
@@ -350,6 +374,19 @@ impl Catalog {
             }
             if now.0 >= work_expires_at {
                 return Err(CatalogError::Conflict("agent payload work deadline has expired".into()));
+            }
+            let stage_lease: Option<(i64, String)> = tx
+                .query_row(
+                    "SELECT expires_at,writer_generation FROM object_leases WHERE document_id=?1 AND object_id=json_extract(?2,'$.object_id') AND operation_id=?3 AND purpose='stage'",
+                    params![document_id, plan_json, operation_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            if !stage_lease.is_some_and(|(expires_at, lease_generation)| {
+                expires_at > now.0 && lease_generation == current_generation
+            }) {
+                return Err(CatalogError::Conflict("agent payload stage lease has expired".into()));
             }
             let expected_actor_key = if !authority.account_id.is_empty() {
                 format!("account:{}", authority.account_id)
@@ -613,9 +650,74 @@ mod tests {
             )?;
             Ok(())
         }).expect("expire stage lease");
+        let expired_finish = catalog.finish_agent_payload(
+            &admitted.operation_id,
+            &authority,
+            r#"{"version":2}"#,
+            UnixMillis(3),
+        );
+        assert!(matches!(expired_finish, Err(CatalogError::Conflict(message)) if message.contains("stage lease")));
         let expired_read = catalog.acquire_agent_payload_read(
             "payload-doc", &authority, "stable-id", "view", "expired-holder", UnixMillis(3),
         ).expect("expired stage read");
         assert!(expired_read.is_none());
+    }
+
+    #[test]
+    fn expired_stage_replay_is_terminal_and_cannot_re_admit() {
+        let catalog = fixture();
+        let request = input();
+        let authority = authority();
+        let admitted = catalog
+            .admit_agent_payload(
+                &request,
+                &authority,
+                V2AdmissionLimits {
+                    owner_bytes: i64::MAX,
+                    deployment_bytes: i64::MAX,
+                    owner_documents: i64::MAX,
+                },
+                UnixMillis(1),
+            )
+            .expect("admission");
+        catalog
+            .settle_v2_object(&admitted.document_id, &admitted.object_id, 128, UnixMillis(2))
+            .expect("settled physical object");
+        catalog
+            .with_connection(|db| {
+                db.execute(
+                    "UPDATE object_leases SET expires_at=2 WHERE operation_id=?1 AND purpose='stage'",
+                    [admitted.operation_id.as_str()],
+                )?;
+                Ok(())
+            })
+            .expect("expired stage lease");
+
+        let replay = catalog
+            .admit_agent_payload(
+                &request,
+                &authority,
+                V2AdmissionLimits {
+                    owner_bytes: i64::MAX,
+                    deployment_bytes: i64::MAX,
+                    owner_documents: i64::MAX,
+                },
+                UnixMillis(3),
+            )
+            .expect("expired replay is returned as a terminal receipt");
+        assert!(replay.replay);
+        assert_eq!(replay.state, "aborted");
+
+        let second = catalog.admit_agent_payload(
+            &request,
+            &authority,
+            V2AdmissionLimits {
+                owner_bytes: i64::MAX,
+                deployment_bytes: i64::MAX,
+                owner_documents: i64::MAX,
+            },
+            UnixMillis(4),
+        );
+        assert!(matches!(second, Err(CatalogError::Conflict(message)) if message.contains("terminal")));
     }
 }
