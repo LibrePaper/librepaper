@@ -2248,6 +2248,31 @@ impl Room {
             })
             .await
             .map_err(WriteError::from)?;
+        // The v2 catalogue is authoritative, but the resident manifest is
+        // still the merge-base index used by restore while this room remains
+        // open.  Add the committed event immediately; otherwise
+        // `last_checkpoint` names a valid SQL row that the in-memory manifest
+        // treats as shed and restore refuses its base.
+        let committed_point = catalog
+            .execute_catalog(checkpoint.id.as_str().len() + self.slug.len() + 256, {
+                let slug = self.slug.clone();
+                let checkpoint_id = checkpoint.id.as_str().to_owned();
+                move |catalog| {
+                    let row = catalog.checkpoint(&slug, &checkpoint_id)?;
+                    row.map(|row| {
+                        let manifest = Manifest::from_catalog_rows(vec![row])
+                            .map_err(crate::storage::catalog::CatalogError::Invalid)?;
+                        manifest.checkpoints.into_iter().next().ok_or_else(|| {
+                            crate::storage::catalog::CatalogError::Invalid(
+                                "committed checkpoint row did not decode".into(),
+                            )
+                        })
+                    })
+                    .transpose()
+                }
+            })
+            .await
+            .map_err(WriteError::from)?;
         owner_rate.commit();
         deployment_rate.commit();
         // Keep the lease heartbeat alive through closure verification and the
@@ -2274,6 +2299,21 @@ impl Room {
         }
 
         let mut state = self.state.lock().await;
+        if let Some(point) = committed_point {
+            state
+                .manifest
+                .checkpoints
+                .retain(|existing| existing.sha != point.sha);
+            state.manifest.checkpoints.push(point);
+            let excess = state
+                .manifest
+                .checkpoints
+                .len()
+                .saturating_sub(RESIDENT_CATALOG_HISTORY as usize);
+            if excess > 0 {
+                state.manifest.checkpoints.drain(..excess);
+            }
+        }
         state.session.last_tree = Some(tree.clone());
         state.session.last_checkpoint = checkpoint.id.as_str().to_string();
         state.session.last_checkpoint_at = now_unix();
