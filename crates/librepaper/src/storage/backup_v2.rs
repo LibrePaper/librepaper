@@ -294,3 +294,39 @@ async fn put_new_destination(
 fn is_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn digest() -> String {
+        "a".repeat(64)
+    }
+
+    #[test]
+    fn manifest_rejects_duplicate_source_objects() {
+        let entry = BackupObjectEntry {
+            document_id: "doc".into(),
+            object_id: "0123456789abcdef0123456789abcdef".into(),
+            source_key: "v2/documents/doc/objects/0123456789abcdef0123456789abcdef".into(),
+            backup_key: "recovery/v2/backup/objects/doc/0123456789abcdef0123456789abcdef".into(),
+            digest: digest(),
+            byte_length: 0,
+        };
+        let mut manifest = BackupManifestV2 {
+            format_version: BACKUP_FORMAT_V2,
+            operation_id: "operation".into(),
+            deployment_id: "deployment".into(),
+            snapshot_revision: 1,
+            created_at: 2,
+            catalog_digest: digest(),
+            catalog_length: 0,
+            secret_versions: Vec::new(),
+            objects: vec![entry.clone(), entry],
+            complete: true,
+        };
+        assert!(manifest.validate().is_err());
+        manifest.objects.truncate(1);
+        assert!(manifest.validate().is_ok());
+    }
+}
