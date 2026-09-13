@@ -1312,68 +1312,6 @@ impl Catalog {
         })
     }
 
-    /// Reserve exact object bytes before writing them. The reservation is
-    /// charged in the same transaction as both owner/deployment ceiling
-    /// checks; callers release it if object storage fails.
-    pub fn reserve_document_bytes(
-        &self,
-        slug: &str,
-        bytes: i64,
-        owner_limit: i64,
-        total_limit: i64,
-        actor: Option<(&str, &str, &str)>,
-    ) -> CatalogResult<()> {
-        self.reserve_document_bytes_with_authority(
-            slug,
-            bytes,
-            owner_limit,
-            total_limit,
-            actor.map(|(account_id, owner_key, generation)| MutationAuthority {
-                account_id,
-                owner_key,
-                generation,
-                link_hash: "",
-                policy_editor: true,
-                automation: false,
-                unowned_publisher: account_id.is_empty(),
-                execution_epoch: "",
-                agent_checkpoint: None,
-            }),
-        )
-    }
-
-    pub fn reserve_document_bytes_with_authority(
-        &self,
-        slug: &str,
-        bytes: i64,
-        owner_limit: i64,
-        total_limit: i64,
-        actor: Option<MutationAuthority<'_>>,
-    ) -> CatalogResult<()> {
-        if let Some(actor) = actor {
-            self.require_mutation_authority(slug, actor)?;
-        }
-        let _ = (bytes, owner_limit, total_limit);
-        Err(CatalogError::Invalid("standalone document reservation is obsolete in catalog v2; allocate an object with its operation reservation".into()))
-    }
-
-    pub fn release_document_bytes(&self, slug: &str, bytes: i64) -> CatalogResult<()> {
-        if bytes < 0 {
-            return Err(CatalogError::Invalid("negative byte release".into()));
-        }
-        self.immediate(|tx| {
-            let (document_id, owner_id, reserved): (String, String, i64) = tx.query_row(
-                "SELECT id,owner_id,reserved_bytes FROM documents WHERE slug=?1", [slug],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
-            let released = bytes.min(reserved);
-            tx.execute("UPDATE documents SET reserved_bytes=reserved_bytes-?1,updated_at=max(updated_at,?2) WHERE id=?3", params![released,unix_millis(),document_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE accounts SET reserved_bytes=reserved_bytes-?1 WHERE id=?2 AND reserved_bytes>=?1", params![released,owner_id]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE server_state SET reserved_bytes=reserved_bytes-?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1 AND reserved_bytes>=?1", params![released,unix_millis()]).map_err(CatalogError::from)?;
-            Ok(())
-        })
-    }
-
     /// Reserve an exact object replacement delta. Replacing a 10-byte session
     /// with a 12-byte session reserves two bytes, not another twelve.
     pub fn reserve_object_change(

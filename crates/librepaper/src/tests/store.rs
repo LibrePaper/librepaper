@@ -355,7 +355,12 @@ async fn catalog_source_receipt_retries_after_reopen() {
                 expected_document_generation: None,
                 conversation_id: None,
                 execution_epoch: None,
-                work_expires_at: None,
+                work_expires_at: Some(
+                    crate::storage::catalog::UnixMillis::new(
+                        crate::util::now_millis().saturating_add(120_000),
+                    )
+                    .unwrap(),
+                ),
             },
             crate::storage::catalog::UnixMillis::now(),
         )
@@ -883,8 +888,8 @@ async fn a_sealed_link_is_opened_outside_the_connection_closure() {
                 key: secret.clone(),
                 label: String::new(),
                 budget: None,
-                since: String::new(),
-                until: String::new(),
+                since: "2026-01-01T00:00:00.000Z".into(),
+                until: "2027-01-01T00:00:00.000Z".into(),
             });
             Ok(())
         })

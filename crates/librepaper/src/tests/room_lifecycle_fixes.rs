@@ -56,9 +56,35 @@ fn pending_edits_share_quota_with_other_rooms_and_uploads() {
     catalog.create_document(&quota_document("two")).unwrap();
     catalog.reserve_room_edit("one", 80, 100, 100).unwrap();
     assert!(catalog.reserve_room_edit("two", 21, 100, 100).is_err());
-    assert!(catalog
-        .reserve_document_bytes("two", 21, 100, 100, None)
-        .is_err());
+    // Source bytes are admitted as allocations owned by a typed v2
+    // operation. Exercise that lifecycle instead of the removed standalone
+    // byte reservation, which had no object or receipt to settle.
+    let now = crate::storage::catalog::UnixMillis::now();
+    let operation = catalog
+        .prepare_v2_operation(
+            &crate::storage::catalog::V2OperationInput {
+                scope: crate::storage::catalog::OperationScope::Document(
+                    crate::storage::catalog::DocumentId::new("two").unwrap(),
+                ),
+                actor_key: "account:acct-1".into(),
+                request_key: crate::util::new_request_key(),
+                kind: crate::storage::catalog::OperationKind::SourcePublish,
+                request_digest: "a".repeat(64),
+                plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(
+                    crate::storage::catalog::UnixMillis::new(now.0 + 120_000).unwrap(),
+                ),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(operation.state, "prepared");
+    catalog
+        .finish_v2_operation(&operation.id, r#"{"version":2}"#, false, now)
+        .unwrap();
     let mut incoming = quota_document("three");
     incoming.counted_size = 21;
     assert!(catalog
@@ -352,6 +378,7 @@ async fn accumulated_update_quota(journaled: bool) {
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    seed_account(&catalog);
     let mut config = Configuration::default();
     config.storage.per_owner = 100_000;
     let config = Arc::new(config);
@@ -378,14 +405,26 @@ async fn accumulated_update_quota(journaled: bool) {
         ));
     }
     store
-        .put(store::Publication {
-            slug: "quota-edit".into(),
-            source: "A".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            peak_bytes: Some(8192),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "quota-edit".into(),
+                source: "A".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                owner_id: "acct-1".into(),
+                peak_bytes: Some(8192),
+                ..Default::default()
+            },
+            store::MutationActor {
+                account_id: "acct-1".into(),
+                owner_key: "alice".into(),
+                session_generation: "generation-1".into(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
         .await
         .unwrap();
     let room = rooms.get("quota-edit").await;

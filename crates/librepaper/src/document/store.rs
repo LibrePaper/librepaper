@@ -602,110 +602,6 @@ fn source_put_error(error: CatalogError) -> PutError {
 const STORE_JOB_BYTES: usize = 512;
 
 impl Store {
-    /// Take a document-bytes reservation before an object is written.
-    ///
-    /// A caller cancelled after dispatch leaves the reservation taken. That is
-    /// the conservative outcome the lifecycle rules ask for and it is the
-    /// behaviour that already existed: the reservation is refunded by
-    /// `release_object_bytes` on the write path's own error handling, and a
-    /// reservation no write ever consumes is reconciled by the object ledger,
-    /// never by re-running the mutation.
-    pub async fn reserve_object_bytes(
-        &self,
-        slug: &str,
-        bytes: i64,
-        actor: Option<&MutationActor>,
-    ) -> Result<(), PutError> {
-        let Some(catalog) = &self.catalog else {
-            return Ok(());
-        };
-        let slug = slug.to_string();
-        let actor = actor.cloned();
-        let per_owner = self.config.storage.per_owner;
-        let total = self.config.storage.total;
-        let hard_count =
-            (self.config.session.history_max > 0).then(|| self.config.session.history_max as u32);
-        catalog
-            .execute_catalog(STORE_JOB_BYTES + slug.len(), move |catalog| {
-                let result = catalog.reserve_document_bytes_with_authority(
-                    &slug,
-                    bytes,
-                    per_owner,
-                    total,
-                    actor
-                        .as_ref()
-                        .map(|actor| crate::storage::catalog::MutationAuthority {
-                            account_id: actor.account_id.as_str(),
-                            owner_key: actor.owner_key.as_str(),
-                            generation: actor.session_generation.as_str(),
-                            link_hash: actor.link_hash.as_str(),
-                            policy_editor: actor.policy_editor,
-                            automation: actor.automation,
-                            unowned_publisher: actor.unowned_publisher,
-                            execution_epoch: "",
-                            agent_checkpoint: None,
-                        }),
-                );
-                // A failed reservation is not permission to evict history
-                // synchronously. When the owner is already over its hard
-                // quota, recheck the live pressure decision for diagnostics.
-                // This never creates a durable pressure plan; the retention
-                // worker independently recalculates document eligibility.
-                // A refusal caused only by this prospective write is a no-op
-                // while current usage fits.
-                if matches!(
-                    &result,
-                    Err(crate::storage::catalog::CatalogError::Refused(
-                        crate::storage::catalog::CatalogRefusal::OwnerBytes
-                            | crate::storage::catalog::CatalogRefusal::DeploymentBytes,
-                        _
-                    ))
-                ) {
-                    let _ = catalog.check_hard_pressure_for_slug_for_growth_with_limits(
-                        &slug,
-                        per_owner,
-                        bytes,
-                        hard_count,
-                        crate::util::now_unix(),
-                    );
-                }
-                result
-            })
-            .await
-            .map_err(crate::storage::catalog::CatalogError::from)
-            .map_err(|error| match error {
-                crate::storage::catalog::CatalogError::Refused(
-                    crate::storage::catalog::CatalogRefusal::ActorRights,
-                    _,
-                ) => PutError::Authorization {
-                    status: 403,
-                    message: "edit access changed",
-                },
-                crate::storage::catalog::CatalogError::NotFound => PutError::Authorization {
-                    status: 404,
-                    message: "not found",
-                },
-                crate::storage::catalog::CatalogError::Refused(kind, _)
-                    if matches!(
-                        kind,
-                        crate::storage::catalog::CatalogRefusal::OwnerBytes
-                            | crate::storage::catalog::CatalogRefusal::DeploymentBytes
-                    ) =>
-                {
-                    PutError::Quota {
-                        status: 507,
-                        message: if kind == crate::storage::catalog::CatalogRefusal::DeploymentBytes
-                        {
-                            "this deployment has no room left"
-                        } else {
-                            "your storage quota is used up; delete a document first"
-                        },
-                    }
-                }
-                other => PutError::Storage(other.to_string()),
-            })
-    }
-
     pub async fn admit_replacement_upload(&self, slug: &str) -> Result<(), PutError> {
         let Some(catalog) = &self.catalog else {
             return Ok(());
@@ -730,23 +626,6 @@ impl Store {
             })
     }
 
-    /// Refund a document-bytes reservation the caller did not use.
-    ///
-    /// Once dispatched this runs whether or not the caller is still there,
-    /// which is the point: the refund is the cleanup for a failed object
-    /// write, and losing it to a cancelled request would leave the document
-    /// charged for bytes it never stored.
-    pub async fn release_object_bytes(&self, slug: &str, bytes: i64) {
-        if let Some(catalog) = &self.catalog {
-            let slug = slug.to_string();
-            let _ = catalog
-                .execute_catalog(STORE_JOB_BYTES + slug.len(), move |catalog| {
-                    catalog.release_document_bytes(&slug, bytes)
-                })
-                .await;
-        }
-    }
-
     pub async fn begin_delete(&self, slug: &str) -> Result<Option<String>, String> {
         let Some(catalog) = &self.catalog else {
             return Ok(None);
@@ -761,6 +640,7 @@ impl Store {
             .map_err(|err| err.to_string())
     }
 
+    #[cfg(test)]
     pub async fn open(
         blobs: Arc<dyn BlobStore>,
         config: Arc<Configuration>,

@@ -170,8 +170,15 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
         )
         .await
         .unwrap();
-    let request_id = "accept-request";
-    let digest = "accept-digest";
+    let request_id = crate::util::new_request_key();
+    let digest = "a".repeat(64);
+    let authority = crate::storage::catalog::AnnotationAuthority {
+        account_id: "github:alice",
+        generation: "suggestion-fixture-generation",
+        policy_comment: true,
+        require_editor: true,
+        ..Default::default()
+    };
     catalog
         .insert_comment(&crate::storage::catalog::Comment {
             slug: "accept-receipt".into(),
@@ -208,14 +215,28 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
         })
         .unwrap();
     catalog
-        .begin_suggestion_accept("accept-receipt", "comment-1", request_id, digest, 1)
+        .begin_suggestion_accept_authorized(
+            "accept-receipt",
+            "comment-1",
+            &request_id,
+            &digest,
+            crate::util::now_millis(),
+            authority,
+        )
         .unwrap();
     let update = vec![1, 2, 3, 4];
     catalog
-        .stage_suggestion_accept_update("accept-receipt", "comment-1", request_id, digest, &update)
+        .stage_suggestion_accept_update_authorized(
+            "accept-receipt",
+            "comment-1",
+            &request_id,
+            &digest,
+            &update,
+            authority,
+        )
         .unwrap();
     let replay = catalog
-        .suggestion_accept_update("accept-receipt", request_id, digest)
+        .suggestion_accept_update_authorized("accept-receipt", &request_id, &digest, authority)
         .unwrap()
         .unwrap();
     assert_eq!(replay, update);
