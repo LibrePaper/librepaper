@@ -518,6 +518,37 @@ impl Room {
                     Vec::new(),
                 )
             } else {
+                let snapshot_ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+                let snapshot_estimate = if needs_recovery_snapshot {
+                    state
+                        .session
+                        .encoded_bound
+                        .unwrap_or(snapshot_ceiling)
+                        .max(1)
+                } else {
+                    0
+                };
+                if needs_recovery_snapshot && snapshot_estimate > snapshot_ceiling {
+                    return Err(WriteError::Size(crate::config::SizeRefusal::Encoded {
+                        bytes: snapshot_estimate,
+                        ceiling: snapshot_ceiling,
+                    }));
+                }
+                let snapshot_permit = if needs_recovery_snapshot {
+                    self.journal
+                        .get()
+                        .map(|journal| {
+                            journal
+                                .memory()
+                                .try_acquire(crate::config::PersistenceLimits::staging_cost(
+                                    snapshot_estimate,
+                                ))
+                                .map_err(|_| WriteError::ServerBusy)
+                        })
+                        .transpose()?
+                } else {
+                    None
+                };
                 let (tree, bodies) = tree_of(&state.session.doc, &state.session.asset_sizes);
                 // The main file can change by paths this room does not itself
                 // mediate through a dedicated setter -- an applied CRDT
@@ -534,43 +565,13 @@ impl Room {
                 } else {
                     state.session.format.clone()
                 };
-                let snapshot_estimate = if needs_recovery_snapshot {
-                    state
-                        .session
-                        .encoded_bound
-                        .unwrap_or(tree.files.values().try_fold(0usize, |total, file| {
-                            total
-                                .checked_add(usize::try_from(file.size.max(0)).map_err(|_| {
-                                    WriteError::Storage("snapshot size overflow".into())
-                                })?)
-                                .ok_or_else(|| WriteError::Storage("snapshot size overflow".into()))
-                        })?)
-                } else {
-                    0
-                };
-                let snapshot_permit = if needs_recovery_snapshot {
-                    self.journal
-                        .get()
-                        .map(|journal| {
-                            journal
-                                .memory()
-                                .try_acquire(crate::config::PersistenceLimits::staging_cost(
-                                    snapshot_estimate,
-                                ))
-                                .map_err(|_| WriteError::ServerBusy)
-                        })
-                        .transpose()?
-                } else {
-                    None
-                };
                 let snapshot =
                     needs_recovery_snapshot.then(|| session::encode_state(&state.session.doc));
                 if let Some(snapshot) = snapshot.as_ref() {
-                    let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-                    if snapshot.len() > ceiling {
+                    if snapshot.len() > snapshot_ceiling {
                         return Err(WriteError::Size(crate::config::SizeRefusal::Encoded {
                             bytes: snapshot.len(),
-                            ceiling,
+                            ceiling: snapshot_ceiling,
                         }));
                     }
                 }
