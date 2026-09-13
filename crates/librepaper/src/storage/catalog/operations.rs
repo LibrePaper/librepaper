@@ -176,7 +176,8 @@ impl Catalog {
                 replies,
                 grants,
                 links,
-            ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = tx
+                bookmarks,
+            ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = tx
                 .query_row(
                     "SELECT
                         (SELECT count(*) FROM objects WHERE document_id=?1),
@@ -191,7 +192,9 @@ impl Catalog {
                         (SELECT count(*) FROM annotations WHERE document_id=?1),
                         (SELECT count(*) FROM replies WHERE document_id=?1),
                         (SELECT count(*) FROM grants WHERE document_id=?1),
-                        (SELECT count(*) FROM links WHERE document_id=?1)
+                        (SELECT count(*) FROM links WHERE document_id=?1),
+                        (SELECT count(*) FROM accounts a, json_each(a.bookmarks_json, '$.items') item
+                         WHERE json_extract(item.value, '$.document_id')=?1)
                      FROM documents WHERE id=?1",
                     [&document_id],
                     |row| {
@@ -208,6 +211,7 @@ impl Catalog {
                             row.get(9)?,
                             row.get(10)?,
                             row.get(11)?,
+                            row.get(12)?,
                         ))
                     },
                 )
@@ -224,6 +228,7 @@ impl Catalog {
                 || replies != 0
                 || grants != 0
                 || links != 0
+                || bookmarks != 0
             {
                 return Err(CatalogError::Conflict(
                     "document teardown or charges remain".into(),
@@ -440,10 +445,57 @@ impl Catalog {
                             )?;
                         }
                         if ids.len() < remaining as usize {
-                            stage = "grants".into();
+                            stage = "bookmarks".into();
                             plan["cursor"] = serde_json::Value::Null;
                         }
                         ids.len() as i64
+                    }
+                    "bookmarks" => {
+                        let mut statement = tx.prepare(
+                            "SELECT a.id,a.bookmarks_json FROM accounts a
+                             WHERE EXISTS (
+                               SELECT 1 FROM json_each(a.bookmarks_json, '$.items') item
+                               WHERE json_extract(item.value, '$.document_id')=?1
+                             )
+                             ORDER BY a.id LIMIT ?2",
+                        )?;
+                        let accounts: Vec<(String, String)> = statement
+                            .query_map(params![document_id, remaining], |row| {
+                                Ok((row.get(0)?, row.get(1)?))
+                            })?
+                            .collect::<rusqlite::Result<Vec<_>>>()?;
+                        for (account_id, payload) in &accounts {
+                            let mut json: serde_json::Value = serde_json::from_str(payload)
+                                .map_err(|error| {
+                                    CatalogError::Invalid(format!(
+                                        "invalid account bookmarks during document deletion: {error}"
+                                    ))
+                                })?;
+                            let items = json
+                                .get_mut("items")
+                                .and_then(serde_json::Value::as_array_mut)
+                                .ok_or_else(|| {
+                                    CatalogError::Invalid(
+                                        "account bookmarks have invalid item shape".into(),
+                                    )
+                                })?;
+                            items.retain(|item| {
+                                item.get("document_id")
+                                    .and_then(serde_json::Value::as_str)
+                                    != Some(document_id.as_str())
+                            });
+                            let encoded = serde_json::to_string(&json)
+                                .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+                            tx.execute(
+                                "UPDATE accounts SET bookmarks_json=?1 WHERE id=?2",
+                                params![encoded, account_id],
+                            )?;
+                        }
+                        if accounts.len() < remaining as usize {
+                            stage = "grants".into();
+                            plan["cursor"] = serde_json::Value::Null;
+                        }
+                        accounts.len() as i64
                     }
                     "grants" => {
                         let mut statement = tx.prepare(
