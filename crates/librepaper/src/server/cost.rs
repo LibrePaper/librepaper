@@ -45,6 +45,17 @@ struct Durable {
     response_size_histogram: [[u64; 7]; CLASSES],
 }
 
+fn decode_durable(saved: &str) -> Result<Durable, String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Envelope { version: u32, state: Option<Durable> }
+    let envelope: Envelope = serde_json::from_str(saved).map_err(|error| error.to_string())?;
+    if envelope.version != 2 { return Err("unsupported cost state version".into()); }
+    let durable = envelope.state.unwrap_or_default();
+    if durable.minutes.len() > 1442 { return Err("cost state exceeds its rolling window bound".into()); }
+    Ok(durable)
+}
+
 struct RequestBucket {
     tokens: f64,
     sampled: std::time::Instant,
@@ -105,6 +116,7 @@ pub struct CostMeter {
     config: Arc<Configuration>,
     catalog: Option<Arc<crate::storage::catalog::Catalog>>,
     state: Mutex<State>,
+    checkpoint_gate: tokio::sync::Mutex<()>,
     pub transfers: Arc<tokio::sync::Semaphore>,
     work: Arc<tokio::sync::Semaphore>,
     emergency_work: Arc<tokio::sync::Semaphore>,
@@ -116,22 +128,18 @@ impl CostMeter {
         config: &Arc<Configuration>,
         catalog: Option<Arc<crate::storage::catalog::Catalog>>,
     ) -> Self {
-        let loaded = catalog.as_ref().map(|catalog| catalog.with_connection(|db| {
-            db.execute_batch("CREATE TABLE IF NOT EXISTS cost_state (id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL)")?;
-            use rusqlite::OptionalExtension;
-            let saved: Option<String> = db.query_row("SELECT state FROM cost_state WHERE id=1", [], |row| row.get(0)).optional()?;
-            saved.map(|saved| serde_json::from_str::<Durable>(&saved).map_err(|err| crate::storage::catalog::CatalogError::Invalid(err.to_string()))).transpose()
-        })).transpose();
+        let loaded = catalog.as_ref().map(|catalog| {
+            catalog.cost_state_json().map_err(|error| error.to_string()).and_then(|saved| decode_durable(&saved))
+        }).transpose();
         let (durable, unavailable) = match loaded {
-            Ok(value) => (value.flatten().unwrap_or_default(), false),
-            Err(error) => {
-                eprintln!("warning: cannot recover transfer budget: {error}");
-                (Durable::default(), true)
-            }
+            Ok(Some(value)) => (value, false),
+            Ok(None) => (Durable::default(), true),
+            Err(error) => { eprintln!("warning: cannot recover transfer budget: {error}"); (Durable::default(), true) }
         };
         Self {
             config: config.clone(),
             catalog,
+            checkpoint_gate: tokio::sync::Mutex::new(()),
             transfers: Arc::new(tokio::sync::Semaphore::new(config.cost.artifact_transfers)),
             work: Arc::new(tokio::sync::Semaphore::new(config.cost.work_concurrency)),
             emergency_work: Arc::new(tokio::sync::Semaphore::new(16)),
@@ -337,6 +345,7 @@ impl CostMeter {
     }
 
     pub async fn checkpoint(&self) -> Result<(), String> {
+        let _checkpoint = self.checkpoint_gate.lock().await;
         let Some(catalog) = &self.catalog else {
             return Ok(());
         };
@@ -345,12 +354,10 @@ impl CostMeter {
             Self::expire(&mut state, now_unix());
             self.refresh_mode(&mut state);
             state.durable.policy = self.config.effective_policy();
-            serde_json::to_string(&state.durable).map_err(|e| e.to_string())?
+            serde_json::to_string(&json!({"version":2,"state":state.durable})).map_err(|e| e.to_string())?
         };
-        catalog.execute_catalog(saved.len(), move |catalog| catalog.with_connection(|db| {
-            db.execute("INSERT INTO cost_state(id,state) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET state=excluded.state", [&saved])?;
-            Ok(())
-        })).await.map_err(|e| e.to_string())
+        catalog.execute_catalog(saved.len(), move |catalog| catalog.save_cost_state_json(&saved))
+            .await.map_err(|error| error.to_string())
     }
 
     pub fn snapshot(&self) -> Value {
@@ -416,11 +423,11 @@ pub fn offline_status(path: &std::path::Path) -> Result<Value, String> {
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| error.to_string())?;
     let saved: String = db
-        .query_row("SELECT state FROM cost_state WHERE id=1", [], |row| {
+        .query_row("SELECT cost_json FROM server_state WHERE id=1", [], |row| {
             row.get(0)
         })
         .map_err(|error| error.to_string())?;
-    let durable: Durable = serde_json::from_str(&saved).map_err(|error| error.to_string())?;
+    let durable = decode_durable(&saved)?;
     let used = durable
         .minutes
         .iter()
@@ -481,12 +488,8 @@ impl Server {
             snapshot["catalog_work"] = json!({"queued":work.queued,"executing":work.executing,"queued_bytes":work.queued_bytes,"waiting_producers":work.waiting_producers,"completed":work.completed,"failed":work.failed,"saturated":work.saturated,"queue_wait_micros_total":work.queue_wait_micros_total,"queue_wait_micros_max":work.queue_wait_micros_max,"execution_micros_total":work.execution_micros_total,"execution_micros_max":work.execution_micros_max});
             snapshot["storage"] = catalog.execute_catalog(0, |catalog| {
                 let (charged, documents) = catalog.totals()?;
-                catalog.with_connection(|connection| {
-                    let (page_count, page_size): (u64,u64) = (
-                        connection.query_row("PRAGMA page_count", [], |r| r.get(0))?,
-                        connection.query_row("PRAGMA page_size", [], |r| r.get(0))?);
-                    Ok(json!({"charged_bytes":charged,"documents":documents,"catalog_allocated_bytes":page_count.saturating_mul(page_size)}))
-                })
+                let allocated = catalog.catalog_allocated_bytes()?;
+                Ok(json!({"charged_bytes":charged,"documents":documents,"catalog_allocated_bytes":allocated}))
             }).await.unwrap_or(Value::Null);
         }
         snapshot

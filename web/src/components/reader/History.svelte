@@ -327,7 +327,7 @@
   {#if durability?.history_checkpoint === "pending"}
     <p class="panel-muted px-2 py-1 text-xs" role="status">Historical checkpoint pending; live-save status is separate.</p>
   {/if}
-  <p class="panel-muted px-2 py-1 text-xs">Edits are saved promptly. History keeps selected recovery points; older routine versions become sparser. Name important versions to request milestone protection, subject to storage limits. Times shown in {timezone}.</p>
+  <p class="panel-muted px-2 py-1 text-xs">Edits are saved promptly. History follows your retention policy. The latest version, named versions, and versions referenced by unresolved comments or suggestions remain protected. Times shown in {timezone}.</p>
 
   {#if checkpoints.length > 0}
     <label class="history-switch label px-2 py-1">

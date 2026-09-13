@@ -1,3 +1,4 @@
+import { newRequestKey } from "./request-key.js";
 import { authHeaders } from "./api.js";
 
 const encoder = new TextEncoder();
@@ -61,7 +62,7 @@ export function createPublicationPublisher({ slug, key = "", fetcher = globalThi
     headers: { ...authHeaders(key, options.body ? "application/json" : ""), ...(options.headers || {}) },
   }).then(json);
 
-  async function publish({ html, assets = [], sourceRevision, renderConfig, expectedPublicationId = null, idempotencyKey = crypto.randomUUID(), onProgress = () => {} }) {
+  async function publish({ html, assets = [], sourceRevision, renderConfig, expectedPublicationId = null, idempotencyKey = newRequestKey(), onProgress = () => {} }) {
     const bundle = await digestPublication({ html, assets });
     const sourceSha = sourceRevision || await sha256("");
     const renderConfigSha = await sha256(JSON.stringify(renderConfig || {}));

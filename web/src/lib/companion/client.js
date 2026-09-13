@@ -1,3 +1,4 @@
+import { newRequestKey } from "../request-key.js";
 // The local LibrePaper app, as a browser client.
 //
 // The browser can discover a reachable local service; it cannot enumerate
@@ -1116,7 +1117,7 @@ export async function runBuild({ job = {}, tree, builder, engine, output = "pdf"
 // command line, executable path, or arbitrary environment from the browser.
 export async function runQuarto({ job = {}, tree, options = {} }, { signal, onProgress, onLog } = {}) {
   const pairing = requirePairing();
-  const stableKey = String(job.idempotencyKey || job.id || globalThis.crypto?.randomUUID?.() || `quarto-${deps.now()}`);
+  const stableKey = String(job.idempotencyKey || job.id || newRequestKey(deps.now()));
   const stableJob = { ...job, id: job.id || stableKey, idempotencyKey: job.idempotencyKey || stableKey };
   onProgress?.({ done: 0, total: 1, scope: "local Quarto render", stage: "preparing" });
   const form = await buildQuartoForm({ job: stableJob, tree, options });

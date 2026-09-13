@@ -52,6 +52,17 @@ pub fn now_unix() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
 }
 
+/// Unix milliseconds for all persisted v2 deadlines and timestamps.
+pub fn now_millis() -> i64 {
+    i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+        .expect("current time fits in Unix milliseconds")
+}
+
+/// A first-seen mutation key. Call once per user intent and retain across retries.
+pub fn new_request_key() -> String {
+    format!("v2.{}.{}", now_millis(), hex::encode(crate::auth::random_bytes(16)))
+}
+
 pub fn timestamp() -> String {
     format_unix(now_unix())
 }
