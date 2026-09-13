@@ -1569,7 +1569,7 @@ impl Catalog {
     /// closure is compared byte-for-byte with the caller's set under the
     /// SQLite write lock, so a late writer cannot acknowledge a different
     /// tree or source generation.
-    pub(crate) fn commit_v2_checkpoint_for_operation(
+    fn commit_v2_checkpoint_for_operation(
         &self,
         operation_id: &OperationId,
         checkpoint: &CheckpointCommit,
