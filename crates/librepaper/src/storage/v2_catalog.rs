@@ -877,14 +877,25 @@ impl V2ObjectWriter {
             })
             .await
             .map_err(|error| error.to_string())?;
-        let written = write_v2_object_with_id(
-            self.blobs.as_ref(),
-            document_id,
-            object_id,
-            body,
-            content_type,
-        )
+        // Keep the immutable PUT alive when the request future is cancelled.
+        // Recovery must be able to inspect and settle an admitted allocation;
+        // dropping the caller future cannot silently cancel the physical
+        // write after admission.
+        let blobs = Arc::clone(&self.blobs);
+        let document_for_write = document_id.to_owned();
+        let content_type_for_write = content_type.to_owned();
+        let written = tokio::spawn(async move {
+            write_v2_object_with_id(
+                blobs.as_ref(),
+                &document_for_write,
+                object_id,
+                body,
+                &content_type_for_write,
+            )
+            .await
+        })
         .await
+        .map_err(|error| format!("physical object task failed: {error}"))?
         .map_err(|error| error.to_string())?;
         let written_for_settle = written.clone();
         let document_for_settle = document_id.to_owned();
