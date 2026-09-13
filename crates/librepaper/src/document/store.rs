@@ -1448,16 +1448,20 @@ impl Store {
                 });
             }
             let account_id = actor.account_id.clone();
+            let generation = actor.session_generation.clone();
             let kind = catalog
-                .with_connection(|connection| {
-                    connection
-                        .query_row(
-                            "SELECT kind FROM accounts WHERE id=?1 AND status='active' AND session_generation=?2",
-                            rusqlite::params![account_id, actor.session_generation],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .map_err(CatalogError::from)
+                .execute_catalog(STORE_JOB_BYTES + account_id.len() + generation.len(), move |catalog| {
+                    catalog.with_connection(|connection| {
+                        connection
+                            .query_row(
+                                "SELECT kind FROM accounts WHERE id=?1 AND status='active' AND session_generation=?2",
+                                rusqlite::params![account_id, generation],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .map_err(CatalogError::from)
+                    })
                 })
+                .await
                 .map_err(|error| PutError::Storage(error.to_string()))?;
             if kind != "system" {
                 return Err(PutError::Authorization {

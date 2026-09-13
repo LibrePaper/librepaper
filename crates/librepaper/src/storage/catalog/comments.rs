@@ -544,24 +544,26 @@ impl Catalog {
         let doc = document_id(tx, &comment.slug)?;
         authorize_annotation_change(tx, &doc, &comment.id, authority)?;
         let updated = millis(&comment.created);
-        let protected = annotation_protection(tx, &doc, comment)?;
+        let protected: Option<String> = if comment.resolved {
+            None
+        } else {
+            tx.query_row(
+                "SELECT protected_checkpoint_id FROM annotations WHERE document_id=?1 AND id=?2",
+                params![doc, comment.id],
+                |row| row.get(0),
+            )?
+        };
         let changed = tx
             .execute(
-                "UPDATE annotations SET body=?3,author_key=?4,author_label=?5,via=?6,
-                    updated_at=max(updated_at,?7),publication_id=?8,source_revision=?9,
-                    selector_json=?10,context_json=?11,protected_checkpoint_id=?12,
-                    proposed_text=?13,suggestion_state=?14,resolution_revision=?15,
-                    resolved_at=?16 WHERE document_id=?1 AND id=?2 AND seq=?17",
+                "UPDATE annotations SET body=?3,updated_at=max(updated_at,?4),
+                    selector_json=?5,context_json=?6,protected_checkpoint_id=?7,
+                    proposed_text=?8,suggestion_state=?9,resolution_revision=?10,
+                    resolved_at=?11 WHERE document_id=?1 AND id=?2 AND seq=?12",
                 params![
                     doc,
                     comment.id,
                     comment.body,
-                    comment.author,
-                    comment.creator,
-                    comment.via,
                     updated,
-                    (!comment.publication_id.is_empty()).then_some(comment.publication_id.as_str()),
-                    (!comment.revision.is_empty()).then_some(comment.revision.as_str()),
                     selector(comment),
                     context(comment),
                     protected,
@@ -1137,15 +1139,13 @@ impl Catalog {
             let at = millis(&reply.created);
             let changed = tx
                 .execute(
-                    "UPDATE replies SET body=?4,author_key=?5,author_label=?6,updated_at=?7
+                    "UPDATE replies SET body=?4,updated_at=?5
                      WHERE document_id=?1 AND annotation_id=?2 AND id=?3",
                     params![
                         doc,
                         reply.comment_id,
                         reply.id,
                         reply.body,
-                        reply.author,
-                        reply.creator,
                         at
                     ],
                 )
@@ -1157,7 +1157,23 @@ impl Catalog {
                 "UPDATE documents SET retention_due_at=0 WHERE id=?1",
                 [doc.as_str()],
             )?;
-            Ok(reply.clone())
+            tx.query_row(
+                "SELECT ?1,annotation_id,id,body,author_label,author_key,created_at
+                 FROM replies WHERE document_id=?2 AND annotation_id=?3 AND id=?4",
+                params![reply.slug, doc, reply.comment_id, reply.id],
+                |row| {
+                    Ok(Reply {
+                        slug: row.get(0)?,
+                        comment_id: row.get(1)?,
+                        id: row.get(2)?,
+                        body: row.get(3)?,
+                        creator: row.get(4)?,
+                        author: row.get(5)?,
+                        created: timestamp(row.get::<_, i64>(6)?),
+                    })
+                },
+            )
+            .map_err(CatalogError::from)
         })
     }
     pub fn replies(&self, slug: &str, comment_id: &str, limit: u32) -> CatalogResult<Vec<Reply>> {

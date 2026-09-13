@@ -217,6 +217,94 @@ fn annotation_writes_recheck_the_account_session_generation() {
 }
 
 #[test]
+fn reply_edit_and_delete_require_author_or_editor_and_keep_attribution() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    let mut editor = account();
+    editor.id = "acct-2".into();
+    editor.handle = "editor".into();
+    editor.name = "Editor".into();
+    editor.session_generation = "generation-2".into();
+    catalog.upsert_account(&editor).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .grant("doc", "commenter", "acct-2", "2026-01-01T00:00:00.000Z")
+        .unwrap();
+
+    let owner = AnnotationAuthority {
+        account_id: "acct-1",
+        generation: "generation-1",
+        policy_comment: true,
+        ..Default::default()
+    };
+    let comment = catalog
+        .insert_comment_authorized(&annotation("reply-auth", "commenting"), owner)
+        .unwrap();
+    let reply = Reply {
+        slug: "doc".into(),
+        comment_id: comment.id.clone(),
+        id: "reply-auth".into(),
+        body: "original body".into(),
+        creator: "Opaque display".into(),
+        author: "visitor:opaque-author".into(),
+        created: "2026-01-01T00:00:01.000Z".into(),
+    };
+    let request = crate::util::new_request_key();
+    let digest = "d".repeat(64);
+    catalog
+        .insert_reply_request_authorized(
+            &reply,
+            &request,
+            &digest,
+            crate::util::now_millis(),
+            owner,
+        )
+        .unwrap();
+    let commenter = AnnotationAuthority {
+        account_id: "acct-2",
+        generation: "generation-2",
+        policy_comment: true,
+        ..Default::default()
+    };
+    let mut forged = reply.clone();
+    forged.body = "forged body".into();
+    forged.creator = "Forged display".into();
+    forged.author = "forged-author".into();
+    assert!(catalog.update_reply_authorized(&forged, commenter).is_err());
+    assert!(catalog
+        .delete_reply_authorized("doc", &reply.comment_id, &reply.id, commenter)
+        .is_err());
+
+    let mut edited = reply.clone();
+    edited.body = "edited body".into();
+    edited.creator = "Changed display must not win".into();
+    edited.author = "changed opaque key".into();
+    catalog.update_reply_authorized(&edited, owner).unwrap();
+    let stored = catalog.replies("doc", &comment.id, 10).unwrap().remove(0);
+    assert_eq!(stored.body, "edited body");
+    assert_eq!(stored.creator, "Opaque display");
+    assert_eq!(stored.author, "visitor:opaque-author");
+    catalog
+        .delete_reply_authorized("doc", &reply.comment_id, &reply.id, owner)
+        .unwrap();
+
+    catalog
+        .grant("doc", "editor", "acct-2", "2026-01-01T00:00:02.000Z")
+        .unwrap();
+    let mut forged_comment = comment.clone();
+    forged_comment.body = "editor body".into();
+    forged_comment.creator = "Erased display must stay erased".into();
+    forged_comment.author = "erased-author-must-stay-erased".into();
+    catalog
+        .update_comment_authorized(&forged_comment, commenter)
+        .unwrap();
+    let stored_comment = catalog.comment("doc", &comment.id).unwrap();
+    assert_eq!(stored_comment.body, "editor body");
+    assert_eq!(stored_comment.creator, "Alice");
+    assert_eq!(stored_comment.author, "acct-1");
+}
+
+#[test]
 fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();

@@ -510,7 +510,7 @@ async fn seed_with_store(
         // Seeded and imported documents have no authenticated caller behind
         // them: the operator ran a command. There is no account to record,
         // and the empty display name is the one this path has always written.
-        match room
+        let checkpoint = match room
             .checkpoint("cli", crate::room::Attribution::system())
             .await
         {
@@ -518,6 +518,10 @@ async fn seed_with_store(
             Ok(None) => room.tree().await.digest(),
             Err(err) => die(format!("could not store {}: {err}", document.file)),
         };
+        store
+            .commit_publication(&slug, &checkpoint)
+            .await
+            .unwrap_or_else(|error| die(format!("could not publish {}: {error}", document.file)));
         let (placed, missed) =
             seed_annotations(&room, &document.annotations, &text, &source, &main).await;
         seeded.push(slug.clone());
@@ -828,6 +832,108 @@ pub async fn seed_annotations(
         placed += 1;
     }
     (placed, missed)
+}
+
+#[cfg(test)]
+mod catalog_seed_tests {
+    use super::*;
+
+    fn document(file: &std::path::Path) -> SeedDocument {
+        SeedDocument {
+            file: file.display().to_string(),
+            files: Vec::new(),
+            assets: Vec::new(),
+            title: "Catalog seed fixture",
+            annotations: vec![SeedAnnotation {
+                motivation: "commenting",
+                exact: "seed phrase",
+                body: "seed comment",
+                creator: "Seed display",
+                replies: vec!["seed reply"],
+                ..SeedAnnotation::default()
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_seed_uses_system_owner_and_publishes_typed_annotations() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("example.html");
+        std::fs::write(&source, "<p>seed phrase</p>").unwrap();
+        let catalog = Arc::new(
+            crate::storage::catalog::Catalog::open(root.path().join("catalog.db")).unwrap(),
+        );
+        let blobs = Arc::new(crate::storage::blob::FsStore::new(root.path(), true));
+        seed_with_store(
+            blobs,
+            Arc::new(Configuration::default()),
+            "",
+            &[document(&source)],
+            Some(catalog.clone()),
+        )
+        .await;
+        let slug = format!(
+            "catalog-seed-fixture-{}",
+            example_suffix("catalog-seed-fixture", &Configuration::default())
+        );
+        let row = catalog.document(&slug).unwrap().unwrap();
+        assert_eq!(row.owner_id.as_deref(), Some("system:examples"));
+        assert!(row.example);
+        assert_eq!(row.status, "active");
+        let comment = catalog.comments(&slug, None, 10).unwrap().remove(0);
+        assert_eq!(comment.creator, "Seed display");
+        assert_eq!(catalog.replies(&slug, &comment.id, 10).unwrap().len(), 1);
+        let kind: String = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT kind FROM accounts WHERE id='system:examples'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .unwrap();
+        assert_eq!(kind, "system");
+    }
+
+    #[tokio::test]
+    async fn catalog_seed_with_owner_keeps_anonymous_owner_kind() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("owned.html");
+        std::fs::write(&source, "<p>seed phrase</p>").unwrap();
+        let catalog = Arc::new(
+            crate::storage::catalog::Catalog::open(root.path().join("catalog.db")).unwrap(),
+        );
+        let blobs = Arc::new(crate::storage::blob::FsStore::new(root.path(), true));
+        seed_with_store(
+            blobs,
+            Arc::new(Configuration::default()),
+            "Alice",
+            &[document(&source)],
+            Some(catalog.clone()),
+        )
+        .await;
+        let slug = format!(
+            "catalog-seed-fixture-{}",
+            example_suffix("catalog-seed-fixture", &Configuration::default())
+        );
+        let row = catalog.document(&slug).unwrap().unwrap();
+        let owner_id = row.owner_id.clone().unwrap();
+        let kind: String = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT kind FROM accounts WHERE id=?1",
+                        [&owner_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .unwrap();
+        assert_eq!(kind, "anonymous");
+        assert!(!row.example);
+    }
 }
 
 /// What the reader would anchor against: the document with its markup,
