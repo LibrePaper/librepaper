@@ -3165,6 +3165,25 @@ fn v2_erasure_reopens_with_revocation_and_250_row_cursor() {
     let catalog = Catalog::open(&path).unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog
+        .with_connection(|connection| {
+            for index in 0..251 {
+                let document_id = format!("document-{index:03}");
+                connection.execute(
+                    "INSERT INTO documents
+                     (id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path)
+                     VALUES(?1,?2,'acct-1','owned',?2,?2,'active',0,0,'markdown','README.md')",
+                    rusqlite::params![document_id, format!("slug-{index:03}")],
+                )?;
+                connection.execute(
+                    "INSERT INTO grants(document_id,account_id,role,created_at)
+                     VALUES(?1,'acct-1','reader',0)",
+                    [&document_id],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    catalog
         .begin_erasure("acct-1", "generation-erasing")
         .unwrap();
     let (status, generation, operation_id): (String, String, String) = catalog
@@ -3191,26 +3210,6 @@ fn v2_erasure_reopens_with_revocation_and_250_row_cursor() {
         reopened.erasure_stage("acct-1").unwrap().as_deref(),
         Some("owned_documents")
     );
-
-    reopened
-        .with_connection(|connection| {
-            for index in 0..251 {
-                let document_id = format!("document-{index:03}");
-                connection.execute(
-                    "INSERT INTO documents
-                     (id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path)
-                     VALUES(?1,?2,'acct-1','owned',?2,?2,'active',0,0,'markdown','README.md')",
-                    rusqlite::params![document_id, format!("slug-{index:03}")],
-                )?;
-                connection.execute(
-                    "INSERT INTO grants(document_id,account_id,role,created_at)
-                     VALUES(?1,'acct-1','reader',0)",
-                    [&document_id],
-                )?;
-            }
-            Ok(())
-        })
-        .unwrap();
     assert_eq!(
         reopened
             .erase_account_batch("acct-1", "owned_documents", None, 1, 1000)
