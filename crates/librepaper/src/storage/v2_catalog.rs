@@ -6,7 +6,7 @@
 //! every GC transition is conditional on the row still being in the expected
 //! state.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -48,11 +48,22 @@ struct InflightPut {
 }
 
 static INFLIGHT_PUTS: OnceLock<Mutex<HashMap<(usize, String, String), InflightPut>>> = OnceLock::new();
+static INFLIGHT_ORDER: OnceLock<Mutex<BTreeMap<(usize, u64), (String, String)>>> = OnceLock::new();
+static FAILED_INFLIGHT_ORDER: OnceLock<Mutex<BTreeMap<(usize, u64), (String, String)>>> =
+    OnceLock::new();
 static INFLIGHT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static FAILED_INFLIGHT_CURSORS: OnceLock<Mutex<HashMap<usize, u64>>> = OnceLock::new();
 
 fn inflight_puts() -> &'static Mutex<HashMap<(usize, String, String), InflightPut>> {
     INFLIGHT_PUTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn inflight_order() -> &'static Mutex<BTreeMap<(usize, u64), (String, String)>> {
+    INFLIGHT_ORDER.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn failed_inflight_order() -> &'static Mutex<BTreeMap<(usize, u64), (String, String)>> {
+    FAILED_INFLIGHT_ORDER.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 fn failed_inflight_cursors() -> &'static Mutex<HashMap<usize, u64>> {
@@ -91,7 +102,13 @@ fn register_inflight(
     if guards.contains_key(&key) {
         return false;
     }
+    let sequence = record.sequence;
     guards.insert(key, record);
+    drop(guards);
+    inflight_order()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert((namespace, sequence), (document_id.to_owned(), object_id.to_owned()));
     true
 }
 
@@ -139,12 +156,21 @@ pub(crate) fn complete_physical_guard(namespace: usize, document_id: &str, writt
 }
 
 fn fail_inflight(namespace: usize, document_id: &str, object_id: &str, error: String) {
-    if let Some(record) = inflight_puts()
+    let sequence = if let Some(record) = inflight_puts()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get_mut(&(namespace, document_id.to_owned(), object_id.to_owned()))
     {
         record.failure = Some(error);
+        Some(record.sequence)
+    } else {
+        None
+    };
+    if let Some(sequence) = sequence {
+        failed_inflight_order()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert((namespace, sequence), (document_id.to_owned(), object_id.to_owned()));
     }
 }
 
@@ -162,10 +188,20 @@ fn complete_inflight(namespace: usize, written: WrittenObject, document_id: &str
 }
 
 pub(crate) fn remove_physical_guard(namespace: usize, document_id: &str, object_id: &str) {
-    inflight_puts()
+    let removed = inflight_puts()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(&(namespace, document_id.to_owned(), object_id.to_owned()));
+    if let Some(record) = removed {
+        inflight_order()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(namespace, record.sequence));
+        failed_inflight_order()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(namespace, record.sequence));
+    }
 }
 
 fn remove_inflight(namespace: usize, document_id: &str, object_id: &str) {
@@ -191,38 +227,42 @@ fn completed_inflight(namespace: usize, limit: usize) -> Vec<InflightPut> {
 }
 
 fn failed_inflight(namespace: usize, limit: usize) -> (Vec<InflightPut>, Option<u64>) {
-    let guards = inflight_puts()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        ;
+    if limit == 0 {
+        return (Vec::new(), None);
+    }
     let mut cursors = failed_inflight_cursors()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let cursor = cursors.get(&namespace).copied().unwrap_or(0);
     let select = |after: u64| {
-        let mut page = Vec::with_capacity(limit);
-        for record in guards.values().filter(|record| {
-            record.namespace == namespace
-                && record.failure.is_some()
-                && record.written.is_none()
-                && record.sequence > after
-        }) {
-            if page.len() < limit {
-                page.push(record.clone());
-                continue;
-            }
-            if let Some((largest, largest_index)) = page
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, value)| value.sequence)
-            {
-                if record.sequence < largest.sequence {
-                    page[largest_index] = record.clone();
-                }
-            }
-        }
-        page.sort_by_key(|record| record.sequence);
-        page
+        // The ordered index bounds both the registry work and the number of
+        // records cloned for one maintenance pass.  The old implementation
+        // scanned every namespace entry and then retained the smallest page,
+        // which made a large failed-write registry an unbounded GC operation.
+        let keys: Vec<(u64, String, String)> = failed_inflight_order()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .range((namespace, after.saturating_add(1))..=(namespace, u64::MAX))
+            .take(limit)
+            .map(|((_, sequence), (document_id, object_id))| {
+                (*sequence, document_id.clone(), object_id.clone())
+            })
+            .collect();
+        let guards = inflight_puts()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        keys.into_iter()
+            .filter_map(|(sequence, document_id, object_id)| {
+                guards
+                    .get(&(namespace, document_id, object_id))
+                    .filter(|record| {
+                        record.sequence == sequence
+                            && record.failure.is_some()
+                            && record.written.is_none()
+                    })
+                    .cloned()
+            })
+            .collect()
     };
     let mut page = select(cursor);
     if page.is_empty() && cursor != 0 {
@@ -241,6 +281,10 @@ fn set_failed_record_written(record: &InflightPut, written: WrittenObject) {
     {
         current.written = Some(written);
     }
+    failed_inflight_order()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&(record.namespace, record.sequence));
 }
 
 async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Result<(), String> {
@@ -495,14 +539,14 @@ fn abort_failed_allocation(catalog: &Catalog, record: &InflightPut) -> Result<()
             if operation_state.as_deref() == Some("prepared") {
                 transaction
                     .execute(
-                        "UPDATE operations
+                        r#"UPDATE operations
                             SET state='aborted',
                                 result_json='{"version":2,"aborted":true,"reason":"physical_absence"}',
                                 completed_at=MAX(COALESCE(completed_at,0),?1),
                                 receipt_expires_at=MAX(COALESCE(receipt_expires_at,0),?2),
                                 work_expires_at=MAX(COALESCE(work_expires_at,0),?1),
                                 updated_at=MAX(updated_at,?1)
-                          WHERE id=?3 AND state='prepared'",
+                          WHERE id=?3 AND state='prepared'"#,
                         params![now, now.saturating_add(RECEIPT_RETENTION_MS), operation_id],
                     )
                     .map_err(crate::storage::catalog::CatalogError::from)?;
@@ -1388,6 +1432,9 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
                             "id": allocation.object_id.as_str(),
                             "digest": part.digest,
                             "bytes": part.byte_length,
+                            "epoch": part.epoch,
+                            "first": part.first_sequence,
+                            "last": part.last_sequence,
                         })
                     })
                     .collect(),
@@ -1445,10 +1492,16 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
                 if object.object_id != allocation.object_id || object.storage_key != allocation.storage_key || object.epoch != allocation.epoch || object.first_sequence != allocation.first_sequence || object.last_sequence != allocation.last_sequence {
                     return Err(crate::storage::catalog::CatalogError::Conflict("journal completion does not match allocation".into()));
                 }
-                let (old_reserved, expected_digest, old_state, allocation_operation, old_length, kind): (i64,String,String,Option<String>,Option<i64>,String) = tx.query_row("SELECT reserved_bytes,digest,state,allocation_operation_id,byte_length,kind FROM objects WHERE document_id=?1 AND id=?2", params![admission.document_id,allocation.object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).map_err(crate::storage::catalog::CatalogError::from)?;
+                let (old_reserved, expected_digest, old_state, allocation_operation, old_length, kind, old_epoch, old_first, old_last): (i64,String,String,Option<String>,Option<i64>,String,i64,i64,i64) = tx.query_row("SELECT reserved_bytes,digest,state,allocation_operation_id,byte_length,kind,journal_epoch,first_sequence,last_sequence FROM objects WHERE document_id=?1 AND id=?2", params![admission.document_id,allocation.object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?))).map_err(crate::storage::catalog::CatalogError::from)?;
                 let measured_length = i64::try_from(object.byte_length).map_err(|_| crate::storage::catalog::CatalogError::Invalid("journal object length exceeds SQL range".into()))?;
-                let plan_bound = journal_plan_contains_object(&plan_json, allocation.object_id.as_str(), &object.digest, object.byte_length);
-                if kind != "journal_segment" || !plan_bound || expected_digest != object.digest || (old_state == "allocated" && (allocation_operation.as_deref() != Some(admission.operation_id.as_str()) || object.byte_length > old_reserved as u64)) || (old_state == "available" && (allocation_operation.is_some() || old_length != Some(measured_length))) || (old_state != "allocated" && old_state != "available") {
+                let plan_bound = journal_plan_contains_object(&plan_json, allocation.object_id.as_str(), &object.digest, object.byte_length, allocation.epoch, allocation.first_sequence, allocation.last_sequence);
+                let descriptor_bound = old_epoch == i64::try_from(allocation.epoch).unwrap_or(-1)
+                    && old_first == i64::try_from(allocation.first_sequence).unwrap_or(-1)
+                    && old_last == i64::try_from(allocation.last_sequence).unwrap_or(-1)
+                    && object.epoch == allocation.epoch
+                    && object.first_sequence == allocation.first_sequence
+                    && object.last_sequence == allocation.last_sequence;
+                if kind != "journal_segment" || !plan_bound || !descriptor_bound || expected_digest != object.digest || (old_state == "allocated" && (allocation_operation.as_deref() != Some(admission.operation_id.as_str()) || object.byte_length > old_reserved as u64)) || (old_state == "available" && (allocation_operation.is_some() || old_length != Some(measured_length))) || (old_state != "allocated" && old_state != "available") {
                     return Err(crate::storage::catalog::CatalogError::Conflict("journal object settlement does not match admission".into()));
                 }
                 let bytes = measured_length;
@@ -1522,12 +1575,12 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             let operation_id = journal_operation_id();
             let now = now_millis();
             let initial_plan = serde_json::json!({"version":1,"epoch":expected_epoch,"sequence":expected_sequence,"digest":digest,"bytes":byte_length}).to_string();
-            tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,'room',?3,'journal_compact',?4,'prepared',?5,?6,?7,?8,?8,NULL)", params![operation_id,document_id,format!("compact-{expected_epoch}-{expected_sequence}"),digest,writer_generation,generation,initial_plan,now]).map_err(crate::storage::catalog::CatalogError::from)?;
+            tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,'room',?3,'journal_compact',?4,'prepared',?5,?6,?7,?8,?8,?9)", params![operation_id,document_id,format!("compact-{expected_epoch}-{expected_sequence}"),digest,writer_generation,generation,initial_plan,now,now.saturating_add(3_600_000)]).map_err(crate::storage::catalog::CatalogError::from)?;
             let object_id = ObjectId::random();
             let storage_key = crate::storage::blob::v2_object_key(&document_id, &object_id).map_err(|error| crate::storage::catalog::CatalogError::Invalid(error.to_string()))?;
             let bytes = bytes_i64;
             let new_epoch = expected_epoch.saturating_add(1);
-            let plan = serde_json::json!({"version":1,"epoch":expected_epoch,"sequence":expected_sequence,"digest":digest,"bytes":byte_length,"objects":[{"id":object_id.as_str(),"digest":digest,"bytes":byte_length}]}).to_string();
+            let plan = serde_json::json!({"version":1,"epoch":expected_epoch,"sequence":expected_sequence,"digest":digest,"bytes":byte_length,"objects":[{"id":object_id.as_str(),"digest":digest,"bytes":byte_length,"epoch":new_epoch,"first":expected_sequence,"last":expected_sequence}]}).to_string();
             tx.execute("UPDATE operations SET plan_json=?1 WHERE id=?2 AND state='prepared'", params![plan, operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute("INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,journal_epoch,first_sequence,last_sequence) VALUES(?1,?2,?3,'journal_base','allocated',?4,1,NULL,?5,?6,?7,?8,?9,?9)", params![document_id,object_id.as_str(),storage_key,digest,bytes,operation_id,now,new_epoch,expected_sequence]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute("UPDATE documents SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![bytes,document_id]).map_err(crate::storage::catalog::CatalogError::from)?;
@@ -1558,9 +1611,14 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             let (state,operation_generation,expected_generation,current_generation,current_source_generation,current_epoch,current_sequence,owner_id,plan_json): (String,String,i64,String,i64,i64,i64,String,String) = tx.query_row("SELECT o.state,o.writer_generation,o.expected_document_generation,s.writer_generation,d.source_generation,d.journal_epoch,d.journal_sequence,d.owner_id,o.plan_json FROM operations o JOIN server_state s JOIN documents d ON d.id=o.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE o.id=?1 AND o.document_id=?2 AND d.status='active'", params![admission.operation_id,admission.document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?))).map_err(crate::storage::catalog::CatalogError::from)?;
             if state != "prepared" || operation_generation != admission.writer_generation || operation_generation != current_generation || u64::try_from(expected_generation).ok() != Some(admission.captured_source_generation) || u64::try_from(current_source_generation).ok() != Some(admission.captured_source_generation) || u64::try_from(current_epoch).ok() != Some(admission.captured_epoch) || u64::try_from(current_sequence).ok() != Some(admission.captured_sequence) || new_sequence != admission.captured_sequence || new_epoch != admission.base_allocation.epoch { return Err(crate::storage::catalog::CatalogError::Conflict("journal compaction fence changed".into())); }
             let measured = i64::try_from(base.byte_length).map_err(|_| crate::storage::catalog::CatalogError::Invalid("journal base length exceeds SQL range".into()))?;
-            let (reserved,expected_digest,old_state,allocation_operation,old_length,kind): (i64,String,String,Option<String>,Option<i64>,String) = tx.query_row("SELECT reserved_bytes,digest,state,allocation_operation_id,byte_length,kind FROM objects WHERE document_id=?1 AND id=?2", params![admission.document_id,admission.base_allocation.object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).map_err(crate::storage::catalog::CatalogError::from)?;
-            let plan_bound = journal_plan_contains_object(&plan_json, admission.base_allocation.object_id.as_str(), &base.digest, base.byte_length);
-            if kind != "journal_base" || !plan_bound || expected_digest != base.digest || (old_state == "allocated" && (allocation_operation.as_deref() != Some(admission.operation_id.as_str()) || measured > reserved)) || (old_state == "available" && (allocation_operation.is_some() || old_length != Some(measured))) || (old_state != "allocated" && old_state != "available") { return Err(crate::storage::catalog::CatalogError::Conflict("journal base settlement does not match admission".into())); }
+            let (reserved,expected_digest,old_state,allocation_operation,old_length,kind,old_epoch,old_first,old_last): (i64,String,String,Option<String>,Option<i64>,String,i64,i64,i64) = tx.query_row("SELECT reserved_bytes,digest,state,allocation_operation_id,byte_length,kind,journal_epoch,first_sequence,last_sequence FROM objects WHERE document_id=?1 AND id=?2", params![admission.document_id,admission.base_allocation.object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?))).map_err(crate::storage::catalog::CatalogError::from)?;
+            let plan_bound = journal_plan_contains_object(&plan_json, admission.base_allocation.object_id.as_str(), &base.digest, base.byte_length, admission.base_allocation.epoch, admission.base_allocation.first_sequence, admission.base_allocation.last_sequence);
+            let descriptor_bound = old_epoch == i64::try_from(admission.base_allocation.epoch).unwrap_or(-1)
+                && old_first == i64::try_from(admission.base_allocation.first_sequence).unwrap_or(-1)
+                && old_last == i64::try_from(admission.base_allocation.last_sequence).unwrap_or(-1)
+                && new_epoch == admission.base_allocation.epoch
+                && new_sequence == admission.base_allocation.last_sequence;
+            if kind != "journal_base" || !plan_bound || !descriptor_bound || expected_digest != base.digest || (old_state == "allocated" && (allocation_operation.as_deref() != Some(admission.operation_id.as_str()) || measured > reserved)) || (old_state == "available" && (allocation_operation.is_some() || old_length != Some(measured))) || (old_state != "allocated" && old_state != "available") { return Err(crate::storage::catalog::CatalogError::Conflict("journal base settlement does not match admission".into())); }
             let stored_delta = if old_state == "allocated" { measured } else { 0 };
             let reserved_delta = if old_state == "allocated" { reserved } else { 0 };
             let now = now_millis();
@@ -1617,16 +1675,22 @@ fn journal_plan_contains_object(
     object_id: &str,
     digest: &str,
     byte_length: u64,
+    epoch: u64,
+    first_sequence: u64,
+    last_sequence: u64,
 ) -> bool {
     serde_json::from_str::<serde_json::Value>(plan_json)
         .ok()
         .and_then(|plan| plan.get("objects").and_then(serde_json::Value::as_array).cloned())
         .is_some_and(|objects| {
             objects.iter().any(|object| {
-                object.get("id").and_then(serde_json::Value::as_str) == Some(object_id)
-                    && object.get("digest").and_then(serde_json::Value::as_str) == Some(digest)
-                    && object.get("bytes").and_then(serde_json::Value::as_u64) == Some(byte_length)
-            })
+                    object.get("id").and_then(serde_json::Value::as_str) == Some(object_id)
+                        && object.get("digest").and_then(serde_json::Value::as_str) == Some(digest)
+                        && object.get("bytes").and_then(serde_json::Value::as_u64) == Some(byte_length)
+                        && object.get("epoch").and_then(serde_json::Value::as_u64) == Some(epoch)
+                        && object.get("first").and_then(serde_json::Value::as_u64) == Some(first_sequence)
+                        && object.get("last").and_then(serde_json::Value::as_u64) == Some(last_sequence)
+                })
         })
 }
 
@@ -1833,7 +1897,36 @@ impl V2ObjectWriter {
         Self { catalog, blobs }
     }
 
+    /// Start the complete admission-and-PUT workflow in a detached task.
+    ///
+    /// The caller may cancel its request future after this method returns or
+    /// while admission is waiting for the catalog executor.  The owned task
+    /// keeps the pre-admission guard and the physical write paired, so a
+    /// cancellation cannot leave an allocation permanently hidden from
+    /// maintenance.
     pub async fn write_allocated(
+        &self,
+        document_id: &str,
+        object_id: ObjectId,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<WrittenObject, String> {
+        let writer = Self {
+            catalog: Arc::clone(&self.catalog),
+            blobs: Arc::clone(&self.blobs),
+        };
+        let document_id = document_id.to_owned();
+        let content_type = content_type.to_owned();
+        tokio::spawn(async move {
+            writer
+                .write_allocated_inner(&document_id, object_id, body, &content_type)
+                .await
+        })
+        .await
+        .map_err(|error| format!("physical writer task failed: {error}"))?
+    }
+
+    async fn write_allocated_inner(
         &self,
         document_id: &str,
         object_id: ObjectId,
@@ -2309,20 +2402,29 @@ mod aborted_inflight_tests {
             put_entered: Arc::new(AtomicBool::new(false)),
         });
         let blocker_started = Arc::new(Notify::new());
+        let blocker_release = Arc::new(AtomicBool::new(false));
         let blocker_catalog = Arc::clone(&catalog);
         let blocker_signal = Arc::clone(&blocker_started);
+        let blocker_release_signal = Arc::clone(&blocker_release);
         let blocker = tokio::spawn(async move {
             blocker_catalog
                 .execute(64, move |_| {
                     blocker_signal.notify_one();
-                    std::thread::sleep(Duration::from_millis(50));
+                    while !blocker_release_signal.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
                     Ok::<(), crate::storage::catalog::CatalogError>(())
                 })
                 .await
         });
         blocker_started.notified().await;
         let abort_catalog = Arc::clone(&catalog);
+        let abort_submitted = Arc::new(Notify::new());
+        let abort_submitted_signal = Arc::clone(&abort_submitted);
+        let abort_finished = Arc::new(Notify::new());
+        let abort_finished_signal = Arc::clone(&abort_finished);
         let abort_task = tokio::spawn(async move {
+            abort_submitted_signal.notify_one();
             abort_catalog
                 .execute(128, move |connection| {
                     let now = now_millis();
@@ -2330,32 +2432,59 @@ mod aborted_inflight_tests {
                         "UPDATE operations SET state='aborted',result_json='{\"version\":1,\"aborted\":true}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE id=?3",
                         params![now, now.saturating_add(RECEIPT_RETENTION_MS), operation_id],
                     )?;
+                    abort_finished_signal.notify_one();
                     Ok(())
                 })
                 .await
         });
-        tokio::task::yield_now().await;
+        abort_submitted.notified().await;
         let writer = V2ObjectWriter::new(Arc::clone(&catalog), Arc::clone(&blobs));
         let writer_task = tokio::spawn(async move {
             writer
                 .write_allocated(&document_id, object_id, body, "application/octet-stream")
                 .await
         });
-        let result = writer_task.await.expect("writer task");
-        assert!(result.is_err(), "aborted admission must not start a PUT");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if inflight_active(
+                    Arc::as_ptr(&catalog) as usize,
+                    "paused-admission-document",
+                    "11111111111111111111111111111111",
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("writer did not register its admission guard");
+        // Cancelling the caller future must leave the detached admission task
+        // alive until the abort fence has been observed.
+        writer_task.abort();
+        blocker_release.store(true, Ordering::Release);
+        abort_finished.notified().await;
+        abort_task.await.expect("abort task").expect("abort SQL");
+        blocker.await.expect("blocker task").expect("blocker SQL");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !inflight_active(
+                    Arc::as_ptr(&catalog) as usize,
+                    "paused-admission-document",
+                    "11111111111111111111111111111111",
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detached admission did not settle after cancellation");
         assert!(
             tokio::time::timeout(Duration::from_millis(20), started.notified())
                 .await
                 .is_err(),
             "pre-admission guard must prevent a physical PUT"
         );
-        abort_task.await.expect("abort task").expect("abort SQL");
-        blocker.await.expect("blocker task").expect("blocker SQL");
-        assert!(!inflight_active(
-            Arc::as_ptr(&catalog) as usize,
-            "paused-admission-document",
-            "11111111111111111111111111111111"
-        ));
     }
 
     #[tokio::test]

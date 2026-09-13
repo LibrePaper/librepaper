@@ -230,8 +230,20 @@ where
         if first_sequence == 0 || last_sequence < first_sequence {
             return Err(JournalError::Invalid("invalid journal recovery range".into()));
         }
+        // Keep one aggregate permit for every compressed body and decoded
+        // fragment retained by this recovery.  A per-object permit released
+        // before inserting records into `bodies` would account only the I/O
+        // buffer while allowing the acknowledged range to grow without a
+        // process-wide memory charge.
+        let _recovery_permit = self
+            .memory
+            .acquire(crate::config::PersistenceLimits::staging_cost(
+                self.max_encoded_snapshot_bytes,
+            ))
+            .await?;
         let mut after = (first_sequence.saturating_sub(1), String::new());
         let mut bodies = Vec::new();
+        let mut body_bytes = 0usize;
         loop {
             let page = self
                 .catalog
@@ -258,6 +270,12 @@ where
                     .await
                     .map_err(|error| JournalError::Storage(error.to_string()))?;
                 verify_object_bytes(object, &bytes)?;
+                body_bytes = body_bytes.saturating_add(bytes.len());
+                if body_bytes > self.max_encoded_snapshot_bytes {
+                    return Err(JournalError::Limit(
+                        "journal recovery exceeds the configured encoded ceiling".into(),
+                    ));
+                }
                 bodies.push(bytes);
                 after = (object.last_sequence, object.object_id.clone());
             }
@@ -414,6 +432,15 @@ where
         let mut pending = BTreeMap::<u64, Vec<JournalRecord>>::new();
         let mut pending_bytes = 0usize;
         let mut next_sequence = first_sequence;
+        // Retain the aggregate permit until every decoded fragment has either
+        // been applied or the recovery returns.  This covers pending groups
+        // between descriptor pages as well as the current decoded segment.
+        let _recovery_permit = self
+            .memory
+            .acquire(crate::config::PersistenceLimits::staging_cost(
+                self.max_encoded_snapshot_bytes,
+            ))
+            .await?;
         loop {
             let page = self
                 .catalog
@@ -431,12 +458,6 @@ where
                 {
                     return Err(JournalError::Corrupt("journal object lies outside acknowledged range".into()));
                 }
-                let expected_bytes = usize::try_from(reference.byte_length)
-                    .map_err(|_| JournalError::Limit("journal object length exceeds memory accounting".into()))?;
-                let permit = self
-                    .memory
-                    .acquire(crate::config::PersistenceLimits::staging_cost(expected_bytes))
-                    .await?;
                 let bytes = self
                     .blobs
                     .get(&reference.storage_key)
@@ -449,7 +470,6 @@ where
                 {
                     return Err(JournalError::Corrupt("journal descriptor range does not match its object".into()));
                 }
-                drop(permit);
                 for record in decoded.segment.records {
                     if record.sequence < first_sequence || record.sequence > last_sequence {
                         return Err(JournalError::Corrupt("journal record lies outside acknowledged range".into()));
