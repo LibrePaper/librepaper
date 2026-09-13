@@ -351,6 +351,7 @@ impl Catalog {
                 .unwrap_or("roots")
                 .to_owned();
             let mut changed = 0i64;
+            let mut yield_stage = false;
             loop {
                 let remaining = limit - changed;
                 if remaining == 0 {
@@ -499,7 +500,12 @@ impl Catalog {
                         let mut edge_total = 0i64;
                         let mut edge_limited = false;
                         for (checkpoint_id, edge_count) in candidates {
-                            if edge_count > 32_768 || edge_total.saturating_add(edge_count) > 32_768 {
+                            if edge_count > 32_768 {
+                                return Err(CatalogError::Conflict(
+                                    "checkpoint edge set exceeds one deletion batch".into(),
+                                ));
+                            }
+                            if edge_total.saturating_add(edge_count) > 32_768 {
                                 edge_limited = true;
                                 break;
                             }
@@ -540,6 +546,9 @@ impl Catalog {
                         {
                             stage = "operations".into();
                             plan["cursor"] = serde_json::Value::Null;
+                        }
+                        if edge_limited && ids.is_empty() {
+                            yield_stage = true;
                         }
                         ids.len() as i64
                     }
@@ -592,9 +601,7 @@ impl Catalog {
                             plan["cursor"] = serde_json::Value::Null;
                         }
                         if changed_rows == 0 && pinned {
-                            return Err(CatalogError::Conflict(
-                                "document operation remains pinned".into(),
-                            ));
+                            yield_stage = true;
                         }
                         changed_rows
                     }
@@ -606,7 +613,7 @@ impl Catalog {
                     }
                 };
                 changed += deleted;
-                if deleted != 0 {
+                if deleted != 0 || yield_stage {
                     break;
                 }
             }

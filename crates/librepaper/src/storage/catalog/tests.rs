@@ -3022,9 +3022,6 @@ fn v2_document_worker_bounds_checkpoint_edges_and_repeated_begin() {
         })
         .unwrap();
     assert_eq!(remaining_edges, 1024);
-    assert!(matches!(
-        catalog.erase_document_batch("doc", 250, 1_000),
-        Err(CatalogError::Conflict(_))
+    assert_eq!(catalog.erase_document_batch("doc", 250, 1_000).unwrap(), 0);
 
-    ));
 }
