@@ -474,10 +474,17 @@ impl Room {
             } else {
                 (0, (0, 0))
             };
-        let needs_agent_snapshot = actor
-            .as_ref()
-            .and_then(|authority| authority.agent_checkpoint.as_ref())
-            .is_some();
+        // A catalogue checkpoint is also the durable boundary for the live
+        // CRDT state.  Keep an encoded recovery base in the same physical
+        // closure as the source tree so a restart cannot replay an older
+        // journal tail over a successfully committed checkpoint.  Agent
+        // effects use the same path; the distinction is the parent operation
+        // they reuse, not whether the base is needed.
+        let needs_agent_snapshot = self.catalog.get().is_some()
+            || actor
+                .as_ref()
+                .and_then(|authority| authority.agent_checkpoint.as_ref())
+                .is_some();
         let (
             tree,
             bodies,
@@ -1720,11 +1727,12 @@ impl Room {
             write: true,
         });
 
-        // Agent effects need the same encoded recovery base used by the v2
-        // journal runtime. It is allocated under the parent agent operation
-        // and promoted with the checkpoint, so a crash before the ordinary
-        // journal flush still reopens the exact post-effect CRDT state.
-        let journal_base = if agent_checkpoint.is_some() {
+        // Every catalogue checkpoint carries the same encoded recovery base
+        // used by the v2 journal runtime.  It is allocated under the ordinary
+        // checkpoint operation or the parent agent operation and promoted
+        // with the checkpoint, so a crash before a journal flush still
+        // reopens the exact state captured by this checkpoint.
+        let journal_base = if self.catalog.get().is_some() || agent_checkpoint.is_some() {
             let payload = snapshot_state.to_vec();
             let base_epoch = journal_epoch
                 .checked_add(1)
