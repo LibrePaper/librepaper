@@ -119,6 +119,10 @@ pub struct JournalPartAdmission {
     pub first_sequence: u64,
     pub last_sequence: u64,
     pub digest: String,
+    /// Bytes of CRDT payload represented by this physical segment. Framing
+    /// bytes are charged separately as physical storage but do not consume
+    /// the logical encoded-snapshot ceiling.
+    pub payload_byte_length: u64,
     pub byte_length: u64,
 }
 
@@ -194,6 +198,7 @@ pub trait V2JournalCatalog: Send + Sync {
         document_id: &str,
         expected_epoch: u64,
         expected_sequence: u64,
+        payload_byte_length: u64,
         byte_length: u64,
         digest: String,
         dependencies: Vec<JournalDependencyHint>,
@@ -370,6 +375,7 @@ where
         content_type: &str,
         dependencies: Vec<JournalDependencyHint>,
     ) -> JournalResult<WrittenObject> {
+        let payload_byte_length = base.len() as u64;
         let base_body = crate::storage::journal::RecoveryBaseBody {
             format_version: super::SEGMENT_FORMAT,
             storage_id: document_id.to_owned(),
@@ -382,7 +388,7 @@ where
         let digest = hex::encode(Sha256::digest(&encoded_base));
         let admission = self
             .catalog
-            .prepare_compaction(document_id, expected_epoch, expected_sequence, encoded_base.len() as u64, digest, dependencies)
+            .prepare_compaction(document_id, expected_epoch, expected_sequence, payload_byte_length, encoded_base.len() as u64, digest, dependencies)
             .await
             .map_err(JournalError::CatalogText)?;
         let written = match guarded_write_v2_object(
@@ -832,6 +838,7 @@ pub async fn append_segments(
             last_sequence: object.last_sequence,
             digest: digest.clone(),
             byte_length: body.len() as u64,
+            payload_byte_length: object.segment.records.iter().map(|record| record.payload.len() as u64).sum(),
         })
         .collect();
     let admission = catalog

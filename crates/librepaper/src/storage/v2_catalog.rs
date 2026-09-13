@@ -1004,7 +1004,7 @@ fn journal_request_admission_bytes(request: &JournalAppendRequest) -> usize {
         .saturating_add(request.parts.iter().fold(0usize, |total, part| {
             total
                 .saturating_add(part.digest.len())
-                .saturating_add(48)
+                .saturating_add(64)
         }))
         .saturating_add(request.dependency_hints.iter().fold(0usize, |total, hint| {
             total
@@ -1658,7 +1658,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             return Err("negative storage quota is invalid".into());
         }
         let mut expected_sequence = request.first_sequence;
-        let total_bytes = request.parts.iter().try_fold(0usize, |total, part| {
+        let (total_bytes, total_payload_bytes) = request.parts.iter().try_fold((0usize, 0usize), |(total, payload), part| {
             if part.epoch != request.epoch
                 || part.first_sequence != expected_sequence
                 || part.last_sequence < part.first_sequence
@@ -1668,18 +1668,25 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             }
             expected_sequence = part.last_sequence.saturating_add(1);
             let bytes = usize::try_from(part.byte_length).map_err(|_| "journal object is too large")?;
+            let payload_bytes = usize::try_from(part.payload_byte_length).map_err(|_| "journal payload is too large")?;
+            if payload_bytes > bytes {
+                return Err("journal payload exceeds its framed segment length");
+            }
             if bytes > crate::storage::journal::MAX_SEGMENT_BYTES {
                 return Err("journal segment exceeds the physical object limit");
             }
-            total.checked_add(bytes).ok_or("journal payload size overflow")
+            Ok((
+                total.checked_add(bytes).ok_or("journal physical size overflow")?,
+                payload.checked_add(payload_bytes).ok_or("journal payload size overflow")?,
+            ))
         })?;
         if expected_sequence != request.last_sequence.saturating_add(1) {
             return Err("journal parts do not cover the admitted range".into());
         }
-        if total_bytes > self.limits.max_encoded_snapshot_bytes {
+        if total_payload_bytes > self.limits.max_encoded_snapshot_bytes {
             return Err("journal append exceeds the configured encoded snapshot limit".into());
         }
-        if total_bytes > self.limits.max_queued_payload_bytes {
+        if total_payload_bytes > self.limits.max_queued_payload_bytes {
             return Err("journal append exceeds the configured queue limit".into());
         }
         let input_bytes = journal_request_admission_bytes(&request);
@@ -1959,13 +1966,16 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         })).await.map_err(|error| error.to_string())
     }
 
-    async fn prepare_compaction(&self, document_id: &str, expected_epoch: u64, expected_sequence: u64, byte_length: u64, digest: String, dependencies: Vec<JournalDependencyHint>) -> Result<JournalCompactionAdmission, String> {
+    async fn prepare_compaction(&self, document_id: &str, expected_epoch: u64, expected_sequence: u64, payload_byte_length: u64, byte_length: u64, digest: String, dependencies: Vec<JournalDependencyHint>) -> Result<JournalCompactionAdmission, String> {
         if byte_length == 0 || !is_sha256(&digest) { return Err("invalid journal base descriptor".into()); }
         if self.owner_limit < 0 || self.deployment_limit < 0 {
             return Err("negative storage quota is invalid".into());
         }
-        if byte_length as usize > self.limits.max_encoded_snapshot_bytes {
-            return Err("journal base exceeds the configured encoded snapshot limit".into());
+        if payload_byte_length as usize > self.limits.max_encoded_snapshot_bytes {
+            return Err("journal base payload exceeds the configured encoded snapshot limit".into());
+        }
+        if byte_length > (crate::storage::journal::MAX_RECOVERY_BASE_PAYLOAD_BYTES as u64).saturating_add(128) {
+            return Err("journal base physical envelope exceeds the recovery limit".into());
         }
         let owner_limit = self.owner_limit;
         let deployment_limit = self.deployment_limit;
@@ -1978,7 +1988,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             request_digest_bytes.extend_from_slice(&dependency.byte_length.to_le_bytes());
         }
         let request_digest = hex::encode(Sha256::digest(request_digest_bytes));
-        let input_bytes = document_id.len().saturating_add(digest.len()).saturating_add(96)
+        let input_bytes = document_id.len().saturating_add(digest.len()).saturating_add(112)
             .saturating_add(dependencies.iter().map(|dependency| dependency.kind.len().saturating_add(dependency.digest.len()).saturating_add(16)).sum::<usize>());
         catalog.execute_catalog(input_bytes, move |catalog| {
             let mut reservations = catalog
@@ -3503,6 +3513,7 @@ mod journal_commit_race_tests {
                 first_sequence: 1,
                 last_sequence: 1,
                 digest: digest.clone(),
+                payload_byte_length: b"one update".len() as u64,
                 byte_length: encoded.len() as u64,
             }],
             dependencies: Vec::new(),
