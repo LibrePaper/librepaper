@@ -342,7 +342,7 @@ async fn catalog_publication_receipt_retries_and_commits_after_reopen() {
         .unwrap();
     let digest = "a".repeat(64);
     let request_id = store
-        .prepare_publication("receipt", &digest, "publish", None)
+        .prepare_publication("receipt", &digest, "source_publish", None)
         .await
         .unwrap();
     assert!(store.get("receipt").await.is_none());
@@ -411,7 +411,7 @@ async fn catalog_reopen_keeps_native_publication_pending_when_chunk_missing() {
         .await
         .unwrap();
     store
-        .prepare_publication("native-missing", &"a".repeat(64), "publish", None)
+        .prepare_publication("native-missing", &"a".repeat(64), "source_publish", None)
         .await
         .unwrap();
     let source = "native source history\n".repeat(4096);
@@ -488,7 +488,7 @@ async fn catalog_replacement_receipt_hides_old_head_until_commit() {
         .await
         .unwrap();
     store
-        .prepare_publication("replace-receipt", &store::digest_of("old"), "publish", None)
+        .prepare_publication("replace-receipt", &store::digest_of("old"), "source_publish", None)
         .await
         .unwrap();
     let old_head = stage_room_publication(
@@ -505,7 +505,7 @@ async fn catalog_replacement_receipt_hides_old_head_until_commit() {
         .unwrap();
     assert!(store.get("replace-receipt").await.is_some());
     let request_id = store
-        .prepare_publication("replace-receipt", &"b".repeat(64), "replace", None)
+        .prepare_publication("replace-receipt", &"b".repeat(64), "source_publish", None)
         .await
         .unwrap();
     store
@@ -534,8 +534,12 @@ async fn catalog_replacement_receipt_hides_old_head_until_commit() {
 async fn catalog_concurrent_admission_is_atomic() {
     let dir = tempfile::tempdir().unwrap();
     let mut limits = Configuration::default();
-    limits.storage.total = 5;
-    limits.storage.per_owner = 5;
+    // Each source is deliberately just over half the deployment ceiling.
+    // The physical v2 closure (tree plus source chunks) therefore admits one
+    // concurrent request and rejects the other, without relying on legacy
+    // source-byte accounting.
+    limits.storage.total = 1_000_000;
+    limits.storage.per_owner = 1_000_000;
     let config = Arc::new(limits);
     let (blobs, catalog) = local_catalog_store(&dir);
     let first_catalog =
@@ -554,7 +558,7 @@ async fn catalog_concurrent_admission_is_atomic() {
         store::Publication {
             slug: "left".into(),
             title: "left".into(),
-            source: "12345".into(),
+            source: "12345".repeat(120_000),
             owner: "alice".into(),
             ..Default::default()
         },
@@ -564,7 +568,7 @@ async fn catalog_concurrent_admission_is_atomic() {
         store::Publication {
             slug: "right".into(),
             title: "right".into(),
-            source: "12345".into(),
+            source: "12345".repeat(120_000),
             owner: "alice".into(),
             ..Default::default()
         },
@@ -584,8 +588,8 @@ async fn catalog_concurrent_admission_is_atomic() {
 async fn catalog_replacement_preserves_accounting_on_quota_failure() {
     let dir = tempfile::tempdir().unwrap();
     let mut limits = Configuration::default();
-    limits.storage.total = 8;
-    limits.storage.per_owner = 8;
+    limits.storage.total = 4096;
+    limits.storage.per_owner = 4096;
     let config = Arc::new(limits);
     let (blobs, catalog) = local_catalog_store(&dir);
     let store = store::Store::open_with_catalog(blobs, config, catalog.clone())
@@ -615,12 +619,14 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
         )
         .await
         .unwrap();
-    assert_eq!(catalog.totals().unwrap(), (8, 1));
+    let settled = catalog.document("replace").unwrap().unwrap();
+    assert_eq!(settled.size, 8);
+    assert_eq!(catalog.totals().unwrap(), (settled.counted_size, 1));
     let refused = store
         .put_as_actor(
             store::Publication {
                 slug: "replace".into(),
-                source: "123456789".into(),
+                source: "123456789".repeat(2048),
                 owner: "alice".into(),
                 ..Default::default()
             },
@@ -633,8 +639,8 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
     ));
     let document = catalog.document("replace").unwrap().unwrap();
     assert_eq!(document.size, 8);
-    assert_eq!(document.counted_size, 8);
-    assert_eq!(catalog.totals().unwrap(), (8, 1));
+    assert_eq!(document.counted_size, settled.counted_size);
+    assert_eq!(catalog.totals().unwrap(), (settled.counted_size, 1));
 }
 
 /// The v2 deletion worker resumes a document teardown after the process
@@ -711,8 +717,8 @@ async fn catalog_removal_worker_resumes_after_reopen() {
 async fn room_for_charges_uncached_catalog_documents() {
     let dir = tempfile::tempdir().unwrap();
     let mut limits = Configuration::default();
-    limits.storage.total = 1000;
-    limits.storage.per_owner = 1000;
+    limits.storage.total = 1 << 20;
+    limits.storage.per_owner = 1 << 20;
     let config = Arc::new(limits);
     let (blobs, catalog) = local_catalog_store(&dir);
     let store = store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
@@ -773,7 +779,7 @@ async fn room_for_charges_uncached_catalog_documents() {
         .unwrap()
         .expect("second is present")
         .counted_size;
-    assert_eq!(room, 1000 - first_size - second_size);
+    assert_eq!(room, (1 << 20) - first_size - second_size);
 }
 
 /// A listing entry with a sealed link: the link key is unsealed after the

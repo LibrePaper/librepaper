@@ -714,14 +714,25 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
         200
     );
 
-    // Reopen the catalog before invoking startup recovery. This models the
-    // deployment writer boundary and prevents a live request path from
-    // racing allocation settlement.
-    let (_restarted_url, restarted) = server_over(server.dir.path(), Configuration::default()).await;
-    let catalog = restarted.store.catalog.as_ref().unwrap().clone();
+    // Stop the serving process before reopening the deployment.  Opening a
+    // second listener over the live TestServer would leave the original
+    // writer lock and request task active while recovery mutates the same
+    // catalogue.
+    let server_dir = server.stop().await;
+    let _writer_lock = crate::server::serve::acquire_writer_lock(
+        &server_dir.path().join("state/writer.lock"),
+    )
+    .expect("recovery owns the deployment writer lock");
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+        Arc::new(crate::storage::blob::FsStore::new(server_dir.path().join("objects"), true));
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(server_dir.path().join("catalog.sqlite"))
+            .unwrap(),
+    );
+    catalog.set_link_sealing_key(TEST_KEY).unwrap();
     let worker = crate::storage::maintenance::DeletionWorker::new(
         catalog.clone(),
-        restarted.store.blobs.clone(),
+        blobs.clone(),
         crate::storage::maintenance::DeletionLimits::default(),
     )
     .unwrap();
@@ -756,9 +767,7 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
     assert_eq!(remaining, 0);
 
     // Physical absence is confirmed before releasing the settled object row.
-    restarted
-        .store
-        .blobs
+    blobs
         .delete(std::slice::from_ref(&key))
         .await
         .unwrap();
@@ -1018,11 +1027,21 @@ async fn recovery_aborts_a_current_swap_that_never_reached_blob_cas() {
         .0,
         200
     );
-    let (restarted_url, restarted) = server_over(server.dir.path(), Configuration::default()).await;
-    let catalog = restarted.store.catalog.as_ref().unwrap().clone();
+    let server_dir = server.stop().await;
+    let _writer_lock = crate::server::serve::acquire_writer_lock(
+        &server_dir.path().join("state/writer.lock"),
+    )
+    .expect("recovery owns the deployment writer lock");
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+        Arc::new(crate::storage::blob::FsStore::new(server_dir.path().join("objects"), true));
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(server_dir.path().join("catalog.sqlite"))
+            .unwrap(),
+    );
+    catalog.set_link_sealing_key(TEST_KEY).unwrap();
     let worker = crate::storage::maintenance::DeletionWorker::new(
         catalog.clone(),
-        restarted.store.blobs.clone(),
+        blobs,
         crate::storage::maintenance::DeletionLimits::default(),
     )
     .unwrap();
@@ -1043,6 +1062,7 @@ async fn recovery_aborts_a_current_swap_that_never_reached_blob_cas() {
         })
         .unwrap();
     assert_eq!(remaining, 0, "missing publication bytes stayed allocated");
+    let (restarted_url, _restarted) = server_over(server_dir.path(), Configuration::default()).await;
     let current: Value = client()
         .get(format!("{restarted_url}/api/documents/{slug}/publication"))
         .header("cookie", &owner)
@@ -1085,11 +1105,21 @@ async fn recovery_sweeps_publication_allocations_after_the_first_page() {
         .0,
         200
     );
-    let (_restarted_url, restarted) = server_over(server.dir.path(), Configuration::default()).await;
-    let catalog = restarted.store.catalog.as_ref().unwrap().clone();
+    let server_dir = server.stop().await;
+    let _writer_lock = crate::server::serve::acquire_writer_lock(
+        &server_dir.path().join("state/writer.lock"),
+    )
+    .expect("recovery owns the deployment writer lock");
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+        Arc::new(crate::storage::blob::FsStore::new(server_dir.path().join("objects"), true));
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(server_dir.path().join("catalog.sqlite"))
+            .unwrap(),
+    );
+    catalog.set_link_sealing_key(TEST_KEY).unwrap();
     let worker = crate::storage::maintenance::DeletionWorker::new(
         catalog.clone(),
-        restarted.store.blobs.clone(),
+        blobs,
         crate::storage::maintenance::DeletionLimits::default(),
     )
     .unwrap();

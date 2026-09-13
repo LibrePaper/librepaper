@@ -58,8 +58,21 @@ async fn restricted_links_cannot_reconstruct_the_source_project() {
     // Directory upload already rejects source maps. An editable source
     // session can still contain one, so exercise that stronger boundary.
     let room = server.instance.rooms.get(&slug).await;
+    let catalog_actor = crate::document::store::MutationActor {
+        account_id: format!("github:{TEST_PUBLISHER}"),
+        owner_key: TEST_PUBLISHER.into(),
+        session_generation: "test-session-generation".into(),
+        link_hash: String::new(),
+        policy_editor: true,
+        automation: false,
+        unowned_publisher: false,
+    };
     let (map_sha, _) = room
-        .put_asset(map_secret.as_bytes().to_vec(), (8 << 20, 32 << 20))
+        .put_asset_authorized(
+            map_secret.as_bytes().to_vec(),
+            (8 << 20, 32 << 20),
+            &catalog_actor,
+        )
         .await
         .unwrap();
     room.name_asset("main.js.map", &map_sha).await.unwrap();

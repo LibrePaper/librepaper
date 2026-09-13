@@ -32,6 +32,27 @@ pub struct TestServer {
     /// so it has to outlive the server that writes to it.
     #[allow(dead_code)]
     pub dir: tempfile::TempDir,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    server_task: tokio::task::JoinHandle<()>,
+}
+
+impl TestServer {
+    /// Stop the listener and release the deployment writer before a fixture
+    /// reopens the same directory as a new process.  Recovery tests must use
+    /// this boundary instead of starting a second listener over a live store.
+    pub async fn stop(self) -> tempfile::TempDir {
+        let TestServer {
+            instance,
+            dir,
+            shutdown,
+            server_task,
+            ..
+        } = self;
+        let _ = shutdown.send(());
+        let _ = server_task.await;
+        drop(instance);
+        dir
+    }
 }
 
 /// The account directory the tests use in place of GitHub, which they have no
@@ -291,11 +312,15 @@ pub async fn serve_instance(instance: Arc<Server>, dir: tempfile::TempDir) -> Te
         .expect("a free port");
     let address = listener.local_addr().expect("an address");
     let router = instance.clone().router();
-    tokio::spawn(async move {
+    let (shutdown, shutdown_signal) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(async move {
         axum::serve(
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_signal.await;
+        })
         .await
         .expect("serve");
     });
@@ -303,6 +328,8 @@ pub async fn serve_instance(instance: Arc<Server>, dir: tempfile::TempDir) -> Te
         url: format!("http://{address}"),
         instance,
         dir,
+        shutdown,
+        server_task,
     }
 }
 

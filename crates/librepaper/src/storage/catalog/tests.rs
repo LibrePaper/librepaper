@@ -120,6 +120,16 @@ fn annotation_writes_recheck_the_account_session_generation() {
             current,
         )
         .unwrap();
+    catalog
+        .record_suggestion_accept_checkpoint(
+            "doc",
+            "suggestion-1",
+            &accept_request,
+            &accept_digest,
+            "checkpoint-sha",
+            "2026-01-01T00:00:03.000Z",
+        )
+        .unwrap();
     catalog.revoke_sessions("acct-1", "generation-2").unwrap();
 
     let stale = AnnotationAuthority {
@@ -203,16 +213,6 @@ fn annotation_writes_recheck_the_account_session_generation() {
     // Authorization belongs to preparing and staging the operation. Once its
     // document edit has landed, the service must be able to settle that
     // durable receipt even if the initiating session has since been revoked.
-    catalog
-        .record_suggestion_accept_checkpoint(
-            "doc",
-            "suggestion-1",
-            &accept_request,
-            &accept_digest,
-            "checkpoint-sha",
-            "2026-01-01T00:00:03.000Z",
-        )
-        .unwrap();
     let accepted = catalog
         .finish_suggestion_accept(
             "doc",
@@ -1371,7 +1371,8 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
                 published_at: format!("2026-01-01T00:{:02}:00Z", index % 60),
                 updated_at: format!("2026-01-01T00:{:02}:00Z", index % 60),
                 example: false,
-                owner_key: "owner".into(),
+        // Account-owned v2 rows do not carry the legacy opaque owner key.
+        owner_key: String::new(),
                 owner_id: Some("acct-1".into()),
                 status: "active".into(),
                 size: 1,
@@ -1393,7 +1394,7 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
             published_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             example: true,
-            owner_key: "example:example-0000".into(),
+            owner_key: String::new(),
             owner_id: Some("acct-1".into()),
             status: "active".into(),
             size: 1,
@@ -1427,8 +1428,8 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
             let mut statement = connection
                 .prepare(
                     "EXPLAIN QUERY PLAN SELECT d.slug FROM documents d
-                     WHERE d.status='active' AND d.pending_publication IS NULL
-                       AND d.owner_id IS NULL AND d.owner_key='owner'
+                     JOIN accounts a ON a.id=d.owner_id AND a.status='active'
+                     WHERE d.status='active' AND d.owner_id='acct-1'
                      ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
                 )
                 .unwrap();
@@ -2903,7 +2904,7 @@ fn erasure_follows_the_account_not_the_handle() {
     );
     let kept = catalog.checkpoint("doc", "mine").unwrap().unwrap();
     assert_eq!(kept.tree_sha, fixture_tree_digest("mine"));
-    assert_eq!(kept.at, "2026-02-02T00:00:00Z");
+    assert_eq!(kept.at, "2026-02-02T00:00:00.000Z");
     assert_eq!(kept.size, 7);
     assert_eq!(kept.why, "cli");
     catalog.finish_erasure("acct-writer").unwrap();
