@@ -213,7 +213,7 @@ impl Server {
         // this request or arrives after the waiter has timed out.
         if kind == "render" && cancellation.status == "cancel_requested" {
             if let Ok(candidate) = self
-                .mcp_load::<Candidate>(slug, actor, target_id, "candidate")
+                .mcp_load::<Candidate>(slug, actor, &who, target_id, "candidate")
                 .await
             {
                 let id = render_request_id(target_id, &candidate.source_revision);

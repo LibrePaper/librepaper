@@ -106,6 +106,7 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         key: &OperationKey,
         digest: &str,
     ) -> Result<(), Failure> {
@@ -115,6 +116,7 @@ impl Server {
             .mcp_store(
                 slug,
                 actor,
+                who,
                 &id,
                 "admission",
                 &Admission {
@@ -125,7 +127,7 @@ impl Server {
             .await
         {
             if self
-                .mcp_load::<Admission>(slug, actor, &id, "admission")
+                .mcp_load::<Admission>(slug, actor, who, &id, "admission")
                 .await
                 .is_ok_and(|old| old.digest != digest)
             {
@@ -391,7 +393,7 @@ impl Server {
         if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, &key).await? {
             return Ok(cancellation);
         }
-        self.mcp_admit(slug, actor, &key, &digest).await?;
+        self.mcp_admit(slug, actor, who, &key, &digest).await?;
         match name {
             "document_propose" => {
                 if args["batch"] == "independent" {
@@ -462,6 +464,7 @@ impl Server {
                     .mcp_load(
                         slug,
                         actor,
+                        who,
                         args["candidate_id"].as_str().unwrap_or_default(),
                         "candidate",
                     )
@@ -576,6 +579,7 @@ impl Server {
             .mcp_load(
                 slug,
                 actor,
+                who,
                 args["view_id"]
                     .as_str()
                     .ok_or_else(|| Failure::new("invalid_params", "accept requires view_id"))?,
@@ -712,6 +716,7 @@ impl Server {
             .mcp_load(
                 slug,
                 actor,
+                who,
                 args["view_id"]
                     .as_str()
                     .ok_or_else(|| Failure::new("invalid_params", "checkpoint requires view_id"))?,
@@ -776,7 +781,7 @@ impl Server {
             ));
         }
         let view_id = args["view_id"].as_str().unwrap_or_default();
-        let view: View = self.mcp_load(slug, actor, view_id, "view").await?;
+        let view: View = self.mcp_load(slug, actor, who, view_id, "view").await?;
         let tree = tree_of_view(&view)?;
         let mut patches = Vec::new();
         let mut dependencies = Vec::new();
@@ -891,6 +896,7 @@ impl Server {
         self.mcp_store(
             slug,
             actor,
+            who,
             &candidate_id,
             "candidate",
             &candidate,
@@ -1125,6 +1131,7 @@ impl Server {
                     .mcp_load(
                         slug,
                         actor,
+                        who,
                         args["id"].as_str().unwrap_or_default(),
                         "candidate",
                     )

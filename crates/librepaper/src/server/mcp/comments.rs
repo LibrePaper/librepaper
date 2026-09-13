@@ -152,7 +152,7 @@ impl Server {
         let view = if view_id.is_empty() {
             None
         } else {
-            Some(self.mcp_load::<View>(slug, actor, view_id, "view").await?)
+            Some(self.mcp_load::<View>(slug, actor, who, view_id, "view").await?)
         };
         let source =
             if let (Some(view), Some(range_id)) = (view.as_ref(), args["range_id"].as_str()) {

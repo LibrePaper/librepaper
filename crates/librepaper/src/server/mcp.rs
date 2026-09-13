@@ -2,7 +2,7 @@
 use super::*;
 use crate::agent_query::{QueryBudget, QuerySnapshot};
 use hmac::{Hmac, Mac};
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use std::io::{Read, Write};
 
@@ -138,6 +138,39 @@ fn actor_scope(slug: &str, who: &Viewer, author: &str) -> String {
         "{slug}\0{author}\0{}\0{}\0{}\0{}\0{:?}",
         who.id.id, who.key, who.link, who.id.session_generation, who.role
     )))
+}
+
+fn live_agent_authorized(
+    connection: &Connection,
+    slug: &str,
+    account_id: &str,
+    generation: &str,
+    link_hash: &str,
+    automation: bool,
+) -> crate::storage::catalog::CatalogResult<bool> {
+    let account_ok: bool = if account_id.is_empty() {
+        false
+    } else {
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts owner ON owner.id=d.owner_id JOIN accounts a ON a.id=?2 WHERE d.slug=?1 AND d.status='active' AND owner.status='active' AND a.status='active' AND a.session_generation=?3 AND (d.owner_id=?2 OR EXISTS(SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=?2 AND g.role='editor')))",
+                rusqlite::params![slug, account_id, generation],
+                |row| row.get(0),
+            )
+            .map_err(crate::storage::catalog::CatalogError::from)?
+    };
+    let link_ok: bool = if link_hash.is_empty() {
+        false
+    } else {
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts owner ON owner.id=d.owner_id JOIN links l ON l.document_id=d.id WHERE d.slug=?1 AND d.status='active' AND owner.status='active' AND l.token_hash=?2 AND l.role='editor' AND (l.expires_at IS NULL OR l.expires_at>?3))",
+                rusqlite::params![slug, link_hash, crate::util::now_millis()],
+                |row| row.get(0),
+            )
+            .map_err(crate::storage::catalog::CatalogError::from)?
+    };
+    Ok(if automation { link_ok && account_ok } else { account_ok || link_ok })
 }
 
 impl Server {
@@ -342,6 +375,7 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         id: &str,
         kind: &str,
         object: &T,
@@ -349,7 +383,7 @@ impl Server {
     ) -> Result<(), Failure> {
         let raw =
             serde_json::to_vec(object).map_err(|e| Failure::new("internal", e.to_string()))?;
-        if raw.len() > 32 * 1024 * 1024 {
+        if raw.len() > 16 * 1024 * 1024 {
             return Err(Failure::new(
                 "budget_exceeded",
                 "retained object exceeds its decoded size limit",
@@ -378,17 +412,30 @@ impl Server {
         let expires_at = expiry
             .checked_mul(1_000)
             .ok_or_else(|| Failure::new("invalid_params", "agent object expiry overflows"))?;
-        if expires_at <= now {
+        if expires_at <= now || expires_at > now.saturating_add(60 * 60 * 1_000) {
             return Err(Failure::new("expired_epoch", "agent object expiry has passed"));
         }
+        let actor_key = if !who.link.is_empty() {
+            format!("link:{}", who.link)
+        } else if !who.id.id.is_empty() {
+            format!("account:{}", who.id.id)
+        } else {
+            return Err(Failure::new("permission_changed", "a live account or link is required"));
+        };
+        let account_id = who.id.id.clone();
+        let generation = who.id.session_generation.clone();
+        let link_hash = who.link.clone();
         let slug_owned = slug.to_owned();
+        let admission_account_id = account_id.clone();
+        let admission_generation = generation.clone();
+        let admission_link_hash = link_hash.clone();
         let document_id = catalog
             .execute_catalog(slug_owned.len().saturating_add(128), move |catalog| {
                 catalog.with_connection(|connection| {
                     connection
                         .query_row(
-                            "SELECT d.id FROM documents d JOIN accounts a ON a.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND a.status='active'",
-                            [slug_owned],
+                            "SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND owner.status='active' AND ((?2 <> '' AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=?2 AND a.status='active' AND a.session_generation=?3) AND (?2=d.owner_id OR EXISTS(SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=?2 AND g.role='editor'))) OR (?4 <> '' AND EXISTS(SELECT 1 FROM links l WHERE l.document_id=d.id AND l.token_hash=?4 AND l.role='editor' AND (l.expires_at IS NULL OR l.expires_at>?5))))",
+                            rusqlite::params![slug_owned, admission_account_id, admission_generation, admission_link_hash, crate::util::now_millis()],
                             |row| row.get::<_, String>(0),
                         )
                         .map_err(crate::storage::catalog::CatalogError::from)
@@ -402,20 +449,26 @@ impl Server {
         let storage_key = crate::storage::blob::v2_object_key(&document_id, &object_id)
             .map_err(|error| Failure::new("internal", error.to_string()))?;
         let physical_digest = hex::encode(Sha256::digest(&bytes));
+        let request_key = format!(
+            "v2.{}.{}",
+            now.saturating_sub(now.rem_euclid(60_000)),
+            hex::encode(Sha256::digest(
+                format!("{}\0{}\0{}", actor_key, id, kind).as_bytes(),
+            ))
+        );
         let existing = catalog
             .execute_catalog(
                 actor.len().saturating_add(id.len()).saturating_add(kind.len()).saturating_add(document_id.as_str().len()).saturating_add(160),
                 {
-                    let actor = actor.to_owned();
-                    let id = id.to_owned();
-                    let kind = kind.to_owned();
+                    let actor_key = actor_key.clone();
+                    let request_key = request_key.clone();
                     let document_id = document_id.as_str().to_owned();
                     move |catalog| {
                         catalog.with_connection(|connection| {
                             connection
                                 .query_row(
-                                    "SELECT op.state,json_extract(op.plan_json,'$.physical_digest') FROM operations op WHERE op.document_id=?1 AND op.kind='agent_stage' AND op.state IN ('prepared','committed') AND json_extract(op.plan_json,'$.actor')=?2 AND json_extract(op.plan_json,'$.agent_id')=?3 AND json_extract(op.plan_json,'$.agent_kind')=?4 AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?5 ORDER BY op.completed_at DESC,op.id DESC LIMIT 1",
-                                    rusqlite::params![document_id, actor, id, kind, now],
+                                    "SELECT op.state,json_extract(op.plan_json,'$.physical_digest') FROM operations op WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state IN ('prepared','committed')",
+                                    rusqlite::params![document_id, actor_key, request_key],
                                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                                 )
                                 .optional()
@@ -449,6 +502,7 @@ impl Server {
             "agent_id": id,
             "agent_kind": kind,
             "actor": actor,
+            "actor_key": actor_key,
             "logical_digest": logical_digest,
             "physical_digest": physical_digest,
             "object_id": object_id.as_str(),
@@ -457,8 +511,8 @@ impl Server {
         .to_string();
         let input = V2OperationInput {
             scope: OperationScope::Document(document_id.clone()),
-            actor_key: actor.to_owned(),
-            request_key: crate::util::new_request_key(),
+            actor_key: actor_key.clone(),
+            request_key: request_key.clone(),
             kind: OperationKind::AgentStage,
             request_digest,
             plan_json: plan_json.clone(),
@@ -486,6 +540,15 @@ impl Server {
             deployment_bytes: self.store.config.storage.total,
             owner_documents: self.store.config.storage.documents_per_owner as i64,
         };
+        if limits.owner_bytes < 0
+            || limits.deployment_bytes < 0
+            || limits.owner_documents < 0
+        {
+            return Err(Failure::new(
+                "invalid_config",
+                "storage admission limits cannot be negative",
+            ));
+        }
         let input_bytes = bytes
             .len()
             .saturating_add(plan_json.len())
@@ -501,6 +564,16 @@ impl Server {
                     ..allocation_template
                 };
                 catalog.allocate_v2_object_with_limits(&allocation, limits)?;
+                catalog.acquire_v2_lease(
+                    &allocation.document_id,
+                    &allocation.id,
+                    &format!("mcp-stage-{}", operation.id.as_str()),
+                    crate::storage::catalog::LeasePurpose::Stage,
+                    Some(&operation.id),
+                    &operation.writer_generation,
+                    UnixMillis(expires_at),
+                    UnixMillis(now),
+                )?;
                 Ok((operation, allocation))
             })
             .await
@@ -523,43 +596,66 @@ impl Server {
         .to_string();
         catalog
             .execute_catalog(
-                result_json.len().saturating_add(operation.id.as_str().len()),
+                result_json.len().saturating_add(operation.id.as_str().len())
+                    .saturating_add(who.id.id.len())
+                    .saturating_add(who.link.len()),
+                {
+                    let account_id = who.id.id.clone();
+                    let generation = who.id.session_generation.clone();
+                    let link_hash = who.link.clone();
+                    let automation = who.automation;
+                    let slug = slug.to_owned();
                 move |catalog| {
-                    catalog.finish_v2_operation(
-                        &operation.id,
-                        &result_json,
-                        true,
-                        UnixMillis(crate::util::now_millis()),
-                    )
+                    let live = catalog.with_connection(|connection| {
+                        let tx = connection
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        let live: bool = tx
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts owner ON owner.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND owner.status='active' AND ((?2 <> '' AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=?2 AND a.status='active' AND a.session_generation=?3) AND (?2=d.owner_id OR EXISTS(SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=?2 AND g.role='editor'))) OR (?4 <> '' AND EXISTS(SELECT 1 FROM links l WHERE l.document_id=d.id AND l.token_hash=?4 AND l.role='editor' AND (l.expires_at IS NULL OR l.expires_at>?5))))",
+                                rusqlite::params![slug, account_id, generation, link_hash, crate::util::now_millis()],
+                                |row| row.get(0),
+                            )
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        if !live || automation && (account_id.is_empty() || link_hash.is_empty()) {
+                            return Err(crate::storage::catalog::CatalogError::Conflict(
+                                "agent authority was revoked during object I/O".into(),
+                            ));
+                        }
+                        let current_generation: String = tx
+                            .query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0))
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        let operation_generation: String = tx
+                            .query_row("SELECT writer_generation FROM operations WHERE id=?1 AND state='prepared'", [&operation.id.as_str()], |row| row.get(0))
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        if operation_generation != current_generation {
+                            return Err(crate::storage::catalog::CatalogError::Conflict(
+                                "agent operation belongs to an obsolete writer generation".into(),
+                            ));
+                        }
+                        let receipt_expires = crate::util::now_millis().saturating_add(60 * 60 * 1_000);
+                        tx.execute(
+                            "UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=max(updated_at,?2) WHERE id=?4 AND state='prepared'",
+                            rusqlite::params![result_json, crate::util::now_millis(), receipt_expires, operation.id.as_str()],
+                        )
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                        tx.commit().map_err(crate::storage::catalog::CatalogError::from)?;
+                        Ok(())
+                    })?;
+                    Ok(())
+                },
                 },
             )
             .await
             .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        let object_document = document_id.as_str().to_owned();
-        let object_id = allocation.id.as_str().to_owned();
-        catalog
-            .execute_catalog(
-                object_document.len().saturating_add(object_id.len()).saturating_add(64),
-                move |catalog| {
-                    catalog.with_connection(|connection| {
-                        connection
-                            .execute(
-                                "UPDATE objects SET gc_after=?1 WHERE document_id=?2 AND id=?3 AND state='available' AND live_root=0 AND publication_root=0",
-                                rusqlite::params![expires_at, object_document, object_id],
-                            )
-                            .map_err(crate::storage::catalog::CatalogError::from)?;
-                        Ok(())
-                    })
-                },
-            )
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))
+        Ok(())
     }
 
     async fn mcp_load<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         id: &str,
         kind: &str,
     ) -> Result<T, Failure> {
@@ -572,6 +668,15 @@ impl Server {
         let now = crate::util::now_millis();
         let slug_owned = slug.to_owned();
         let actor_owned = actor.to_owned();
+        let actor_key = if !who.link.is_empty() {
+            format!("link:{}", who.link)
+        } else {
+            format!("account:{}", who.id.id)
+        };
+        let account_id = who.id.id.clone();
+        let generation = who.id.session_generation.clone();
+        let link_hash = who.link.clone();
+        let automation = who.automation;
         let id_owned = id.to_owned();
         let kind_owned = kind.to_owned();
         let holder = format!("mcp-agent-read-{}", hex::encode(crate::auth::random_bytes(8)));
@@ -586,10 +691,13 @@ impl Server {
                     .saturating_add(256),
                 move |catalog| {
                     let row: Option<(String, String, String, String, i64)> = catalog.with_connection(|connection| {
+                        if !live_agent_authorized(connection, &slug_owned, &account_id, &generation, &link_hash, automation)? {
+                            return Ok(None);
+                        }
                         connection
                             .query_row(
-                                "SELECT d.id,o.id,json_extract(op.plan_json,'$.logical_digest'),s.writer_generation,CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER) FROM operations op JOIN documents d ON d.id=op.document_id JOIN accounts a ON a.id=d.owner_id JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE d.slug=?1 AND d.status='active' AND a.status='active' AND op.kind='agent_stage' AND op.state='committed' AND json_extract(op.plan_json,'$.actor')=?2 AND json_extract(op.plan_json,'$.agent_id')=?3 AND json_extract(op.plan_json,'$.agent_kind')=?4 AND o.kind='agent_payload' AND o.state='available' AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?5 ORDER BY op.completed_at DESC,op.id DESC LIMIT 1",
-                                rusqlite::params![slug_owned, actor_owned, id_owned, kind_owned, now],
+                                "SELECT d.id,o.id,json_extract(op.plan_json,'$.logical_digest'),s.writer_generation,CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER) FROM operations op JOIN documents d ON d.id=op.document_id JOIN accounts a ON a.id=d.owner_id JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE d.slug=?1 AND d.status='active' AND a.status='active' AND op.kind='agent_stage' AND op.state='committed' AND op.actor_key=?2 AND op.request_key=?3 AND o.kind='agent_payload' AND o.state='available' AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?4 LIMIT 1",
+                                rusqlite::params![slug_owned, actor_key, format!("v2.{}.{}", now.saturating_sub(now.rem_euclid(60_000)), hex::encode(Sha256::digest(format!("{}\0{}\0{}", actor_key, id_owned, kind_owned).as_bytes()))), now],
                                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
                             )
                             .optional()
@@ -631,6 +739,8 @@ impl Server {
             .get(&descriptor.storage_key)
             .await
             .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        let _ = catalog
+            .release_v2_lease(&descriptor.document_id, &descriptor.id, &holder);
         if descriptor.byte_length != i64::try_from(raw.len()).ok()
             || hex::encode(Sha256::digest(&raw)) != descriptor.digest
         {
@@ -638,12 +748,12 @@ impl Server {
         }
         tokio::task::spawn_blocking(move || {
             let mut decoder =
-                flate2::read::ZlibDecoder::new(raw.as_slice()).take(32 * 1024 * 1024 + 1);
+                flate2::read::ZlibDecoder::new(raw.as_slice()).take(16 * 1024 * 1024 + 1);
             let mut decoded = Vec::new();
             decoder
                 .read_to_end(&mut decoded)
                 .map_err(|e| Failure::new("internal", e.to_string()))?;
-            if decoded.len() > 32 * 1024 * 1024 {
+            if decoded.len() > 16 * 1024 * 1024 {
                 return Err(Failure::new("budget_exceeded", "object decode limit"));
             }
             if hex::encode(Sha256::digest(&decoded)) != logical_digest {
@@ -748,7 +858,7 @@ impl Server {
         let (view_id, view) = if let Some(id) = args["snapshot"]["view_id"].as_str() {
             (
                 id.to_string(),
-                self.mcp_load::<View>(slug, actor, id, "view").await?,
+                self.mcp_load::<View>(slug, actor, who, id, "view").await?,
             )
         } else {
             let room = self
@@ -764,7 +874,7 @@ impl Server {
             let bytes = serde_json::to_vec(&snapshot)
                 .map_err(|e| Failure::new("internal", e.to_string()))?;
             let id = format!("view_{}", hex::encode(Sha256::digest(&bytes)));
-            match self.mcp_load::<View>(slug, actor, &id, "view").await {
+            match self.mcp_load::<View>(slug, actor, who, &id, "view").await {
                 Ok(view) => (id, view),
                 Err(error) if error.code == "view_expired" => {
                     let expiry = now_unix() + 3600;
@@ -776,11 +886,11 @@ impl Server {
                         operation_epoch: epoch,
                     };
                     match self
-                        .mcp_store(slug, actor, &id, "view", &view, expiry)
+                        .mcp_store(slug, actor, who, &id, "view", &view, expiry)
                         .await
                     {
                         Ok(()) => (id, view),
-                        Err(error) => match self.mcp_load::<View>(slug, actor, &id, "view").await {
+                        Err(error) => match self.mcp_load::<View>(slug, actor, who, &id, "view").await {
                             // A concurrent capture may have stored this same
                             // immutable snapshot with its own epoch first.
                             Ok(existing) => (id, existing),
@@ -895,7 +1005,7 @@ impl Server {
                 let id = query["id"].as_str().ok_or_else(|| {
                     Failure::new("invalid_query", "render queries require the candidate id")
                 })?;
-                let receipt = self.load_render_receipt(slug, actor, id).await?;
+                let receipt = self.load_render_receipt(slug, actor, who, id).await?;
                 if query["revision"]
                     .as_str()
                     .is_some_and(|revision| revision != receipt.source_revision)
@@ -918,7 +1028,7 @@ impl Server {
                         "changes requires a previous view_id in revision",
                     )
                 })?;
-                let before = self.mcp_load::<View>(slug, actor, previous, "view").await?;
+                let before = self.mcp_load::<View>(slug, actor, who, previous, "view").await?;
                 let old = before.snapshot.tree["files"]
                     .as_object()
                     .ok_or_else(|| Failure::new("internal", "missing prior manifest"))?;

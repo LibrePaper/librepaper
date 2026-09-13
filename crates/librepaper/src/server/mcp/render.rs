@@ -105,7 +105,7 @@ async fn load_candidate(
         .unwrap_or("");
     let (actor, expiry) = candidate_actor(server, slug, candidate_id, token)?;
     let candidate = server
-        .mcp_load::<Candidate>(slug, &actor, candidate_id, "candidate")
+        .mcp_load::<Candidate>(slug, &actor, &who, candidate_id, "candidate")
         .await
         .map_err(|_| boxed_error(404, "candidate not found"))?;
     if candidate.expires_at <= now_unix() || expiry > candidate.expires_at {
@@ -113,10 +113,10 @@ async fn load_candidate(
     }
     recheck_issuer(server, slug, &candidate).await?;
     let view = server
-        .mcp_load::<View>(slug, &actor, &candidate.view_id, "view")
+        .mcp_load::<View>(slug, &actor, &who, &candidate.view_id, "view")
         .await
         .map_err(|_| boxed_error(404, "candidate not found"))?;
-    Ok((candidate, view, actor))
+    Ok((candidate, view, actor, who))
 }
 
 async fn recheck_renderer(
@@ -356,6 +356,7 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
         candidate_id: &str,
@@ -399,7 +400,7 @@ impl Server {
             .map_err(|(_, message)| Failure::new("renderer_unavailable", message))?;
         let receipt = Self::render_receipt(candidate_id, &candidate.source_revision, &result)?;
         self.mcp_recheck(slug, headers, arrival, actor).await?;
-        self.store_render_receipt(slug, actor, candidate, receipt.clone())
+        self.store_render_receipt(slug, actor, who, candidate, receipt.clone())
             .await?;
         Ok(receipt)
     }
@@ -422,7 +423,7 @@ impl Server {
             .find(|(key, _)| key == "path")
             .map(|(_, value)| value.into_owned());
         let headers = request.headers().clone();
-        let (candidate, view, _actor) =
+        let (candidate, view, _actor, _who) =
             match load_candidate(self, slug, &headers, arrival, candidate_id).await {
                 Ok(value) => value,
                 Err(reply) => return *reply,
@@ -468,6 +469,7 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         candidate: &Candidate,
         receipt: RenderReceipt,
     ) -> Result<(), Failure> {
@@ -487,6 +489,7 @@ impl Server {
         self.mcp_store(
             slug,
             actor,
+            who,
             &receipt.candidate_id,
             "render",
             &receipt,
@@ -499,8 +502,9 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         candidate_id: &str,
     ) -> Result<RenderReceipt, Failure> {
-        self.mcp_load(slug, actor, candidate_id, "render").await
+        self.mcp_load(slug, actor, who, candidate_id, "render").await
     }
 }
