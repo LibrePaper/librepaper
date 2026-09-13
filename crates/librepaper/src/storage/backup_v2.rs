@@ -1804,6 +1804,16 @@ mod tests {
             Ok(())
         }
 
+        async fn put_file(
+            &self,
+            key: &str,
+            path: &Path,
+            content_type: &str,
+        ) -> crate::storage::blob::BlobResult<()> {
+            let body = std::fs::read(path).map_err(crate::storage::blob::BlobError::from)?;
+            self.put(key, body, content_type).await
+        }
+
         async fn put_new(
             &self,
             key: &str,
@@ -2234,7 +2244,7 @@ mod tests {
         .await
         .expect("streamed large catalog backup");
         assert_eq!(manifest.catalog_length, byte_length);
-        assert_eq!(lengths.lock().unwrap().as_slice(), &[byte_length]);
+        assert_eq!(lengths.lock().unwrap().as_slice(), &[byte_length, 0]);
     }
 
     #[tokio::test]

@@ -339,7 +339,12 @@ async fn v2_gc_delete_failure_keeps_charge_for_a_later_retry() {
         inner: FsStore::new(directory.path(), false),
     };
     let adapter = V2GcCatalogAdapter::new(Arc::clone(&catalog));
-    assert!(run_gc_pass(&adapter, &refusing, now).await.is_err());
+    let deferred = run_gc_pass(&adapter, &refusing, now)
+        .await
+        .expect("uncertain delete is deferred for retry");
+    assert_eq!(deferred.candidates_claimed, 1);
+    assert_eq!(deferred.objects_deleted, 0);
+    assert_eq!(deferred.objects_deferred, 1);
     let state: (String, i64, i64) = catalog
         .with_connection(|connection| {
             Ok(connection.query_row(
