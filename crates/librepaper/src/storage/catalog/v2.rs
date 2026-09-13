@@ -1718,12 +1718,16 @@ impl Catalog {
                 |row| row.get::<_, Option<i64>>(0),
             ).optional().map_err(CatalogError::from)?.flatten();
             if due.is_none_or(|deadline| deadline > now.0) { return Ok(false); }
-            let (retention_json, account_revision, document_revision): (String, i64, i64) = tx.query_row(
-                "SELECT d.retention_json,a.preferences_revision,d.retention_revision
+            let (retention_json, account_revision, document_revision, retention_due_at): (String, i64, i64, i64) = tx.query_row(
+                "SELECT d.retention_json,a.preferences_revision,d.retention_revision,d.retention_due_at
                  FROM documents d JOIN accounts a ON a.id=d.owner_id WHERE d.id=?1",
                 [document_id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             ).map_err(CatalogError::from)?;
+            // Zero invalidates the last evaluation even when the account
+            // policy itself has not changed (for example, another point was
+            // labelled or an annotation released its protection).
+            if retention_due_at == 0 || retention_due_at > now.0 { return Ok(false); }
             let evaluated = serde_json::from_str::<serde_json::Value>(&retention_json)
                 .ok()
                 .and_then(|value| value.get("evaluation").cloned());

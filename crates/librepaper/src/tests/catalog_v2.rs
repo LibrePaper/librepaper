@@ -564,7 +564,7 @@ fn retention_releases_only_the_deleted_closure_and_preserves_shared_objects() {
                 db.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES('retention',?1,?2)",rusqlite::params![id,object])?;
             }
         }
-        db.execute_batch(r#"UPDATE documents SET status='active',current_checkpoint_id='current',stored_bytes=4,checkpoint_ref_count=4,
+        db.execute_batch(r#"UPDATE documents SET status='active',current_checkpoint_id='current',stored_bytes=4,checkpoint_ref_count=4,retention_due_at=1,
             retention_json='{"version":1,"evaluation":{"accountRevision":0,"documentRevision":0}}' WHERE id='retention';
             UPDATE accounts SET stored_bytes=4 WHERE id='owner';
             UPDATE server_state SET stored_bytes=4,checkpoint_ref_count=4 WHERE id=1;"#)?;
@@ -572,6 +572,15 @@ fn retention_releases_only_the_deleted_closure_and_preserves_shared_objects() {
     }).unwrap();
     let doc = DocumentId::new("retention").unwrap();
     assert!(!catalog.delete_v2_checkpoint(&doc,&CheckpointId::new("current").unwrap(),UnixMillis::new(100).unwrap()).unwrap());
+    catalog.with_connection(|db| {
+        db.execute("UPDATE documents SET retention_due_at=0 WHERE id='retention'", [])?;
+        Ok(())
+    }).unwrap();
+    assert!(!catalog.delete_v2_checkpoint(&doc,&CheckpointId::new("old").unwrap(),UnixMillis::new(100).unwrap()).unwrap(), "invalidated evaluation must not authorize deletion");
+    catalog.with_connection(|db| {
+        db.execute("UPDATE documents SET retention_due_at=1 WHERE id='retention'", [])?;
+        Ok(())
+    }).unwrap();
     assert!(catalog.delete_v2_checkpoint(&doc,&CheckpointId::new("old").unwrap(),UnixMillis::new(100).unwrap()).unwrap());
     catalog.with_connection(|db| {
         let grace = |id: &str| db.query_row("SELECT gc_after FROM objects WHERE document_id='retention' AND id=?1",[id],|row|row.get::<_,Option<i64>>(0));
