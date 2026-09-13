@@ -597,14 +597,16 @@ struct CostDurable {
     response_size_histogram: [[u64; 7]; 8],
 }
 
+const V2_DEFAULT_PREFERENCES: &str = r#"{"version":2,"retentionProfile":"default","retentionPolicyVersion":2,"customRetention":null,"displayTimezone":"UTC","warningThresholds":[75,90]}"#;
+
 fn validate_secret_material(source_root: &Path, source: &Connection, active: &str) -> Result<()> {
     let secrets = source_root.join("secrets");
     if !secrets.exists() {
-        if has_table(source, "links")?
-            && source.query_row("SELECT COUNT(*) FROM links", [], |row| row.get::<_, i64>(0))? > 0
-        {
+        let has_links = has_table(source, "links")?
+            && source.query_row("SELECT COUNT(*) FROM links", [], |row| row.get::<_, i64>(0))? > 0;
+        if has_links || active != "legacy" {
             return Err(Error::Invalid(
-                "source has encrypted links but no secrets directory".into(),
+                "source has link-key state but no secrets directory".into(),
             ));
         }
         return Ok(());
@@ -1516,7 +1518,7 @@ fn account_kind(provider: &str) -> &'static str {
 }
 
 fn ensure_system_account(tx: &Transaction<'_>, target_id: &str) -> Result<()> {
-    tx.execute("INSERT OR IGNORE INTO accounts(id,kind,handle,display_name,status,session_generation,plan,created_at,last_seen_at,preferences_json,bookmarks_json,onboarding_json) VALUES('system','system','system','System','active',?1,'system',0,0,'{\"version\":1}','{\"version\":1,\"items\":[]}','{\"version\":1,\"items\":[]}')", [deterministic_id("session-generation", &format!("{target_id}:system"))])?;
+    tx.execute("INSERT OR IGNORE INTO accounts(id,kind,handle,display_name,status,session_generation,plan,created_at,last_seen_at,preferences_json,bookmarks_json,onboarding_json) VALUES('system','system','system','System','active',?1,'system',0,0,?2,'{\"version\":1,\"items\":[]}','{\"version\":1,\"items\":[]}')", params![deterministic_id("session-generation", &format!("{target_id}:system")), V2_DEFAULT_PREFERENCES])?;
     Ok(())
 }
 
@@ -1590,13 +1592,7 @@ fn insert_accounts(
                 "account {id} has a negative preferences revision"
             )));
         }
-        let parsed: Value = serde_json::from_str(&preferences)
-            .map_err(|e| Error::Invalid(format!("account {id} has invalid preferences: {e}")))?;
-        if parsed.get("version").and_then(Value::as_i64) != Some(1) {
-            return Err(Error::Invalid(format!(
-                "account {id} has unsupported preferences version"
-            )));
-        }
+        let preferences = convert_quota_preferences(&preferences, &id)?;
         let first_ms = parse_time(&first, "accounts.first_seen")?;
         let last_ms = parse_time(&last, "accounts.last_seen")?;
         let session_generation =
@@ -1615,7 +1611,7 @@ fn insert_accounts(
     for doc in docs {
         if doc.owner_id.is_none() && !doc.owner_key.is_empty() {
             let id = deterministic_id("anonymous-account", &doc.owner_key);
-            tx.execute("INSERT OR IGNORE INTO accounts(id,kind,handle,display_name,status,session_generation,plan,created_at,last_seen_at,preferences_json,bookmarks_json,onboarding_json) VALUES(?1,'anonymous',?2,'Anonymous','active',?3,'free',0,0,'{\"version\":1}','{\"version\":1,\"items\":[]}','{\"version\":1,\"items\":[]}')", params![id, doc.owner_key, deterministic_id("session-generation", &format!("{target_id}:{id}"))])?;
+            tx.execute("INSERT OR IGNORE INTO accounts(id,kind,handle,display_name,status,session_generation,plan,created_at,last_seen_at,preferences_json,bookmarks_json,onboarding_json) VALUES(?1,'anonymous',?2,'Anonymous','active',?3,'free',0,0,?4,'{\"version\":1,\"items\":[]}','{\"version\":1,\"items\":[]}')", params![id, doc.owner_key, deterministic_id("session-generation", &format!("{target_id}:{id}")), V2_DEFAULT_PREFERENCES])?;
         }
     }
     if has_table(source, "account_examples")? {
@@ -1672,6 +1668,176 @@ fn document_owner(doc: &SourceDocument) -> String {
     } else {
         deterministic_id("anonymous-account", &doc.owner_key)
     }
+}
+
+/// Translate the v1 retention preference envelope into the exact v2
+/// `QuotaPreferences` shape consumed by the runtime decoder. The v1 history
+/// budget, milestone toggles, document override map, and tier bucket widths
+/// have no v2 fields; retention count/age are retained where v2 can represent
+/// them and unsupported v1 profile presets use the safe v2 default profile.
+fn convert_quota_preferences(payload: &str, account_id: &str) -> Result<String> {
+    let value: Value = serde_json::from_str(payload).map_err(|error| {
+        Error::Invalid(format!(
+            "account {account_id} has invalid preferences: {error}"
+        ))
+    })?;
+    if value.get("version").and_then(Value::as_i64) != Some(1) {
+        return Err(Error::Invalid(format!(
+            "account {account_id} has unsupported preferences version"
+        )));
+    }
+    let profile = value
+        .get("retention_profile")
+        .and_then(Value::as_str)
+        .unwrap_or("balanced");
+    let profile = match profile {
+        "custom" => "custom",
+        "balanced"
+        | "moreRecoveryPoints"
+        | "more-recovery-points"
+        | "useLessStorage"
+        | "use-less-storage" => "default",
+        other => {
+            return Err(Error::Invalid(format!(
+                "account {account_id} has unsupported retention profile {other}"
+            )))
+        }
+    };
+    let timezone = value
+        .get("display_timezone")
+        .and_then(Value::as_str)
+        .unwrap_or("UTC");
+    if timezone.is_empty() || timezone.len() > 128 || timezone.parse::<chrono_tz::Tz>().is_err() {
+        return Err(Error::Invalid(format!(
+            "account {account_id} has invalid display timezone"
+        )));
+    }
+    let warning_thresholds = value
+        .get("warning_thresholds")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .map(|item| {
+                    let number = item.as_u64().ok_or_else(|| {
+                        Error::Invalid(format!(
+                            "account {account_id} has a non-integer warning threshold"
+                        ))
+                    })?;
+                    u8::try_from(number).map_err(|_| {
+                        Error::Invalid(format!(
+                            "account {account_id} has an out-of-range warning threshold"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_else(|| vec![75, 90]);
+    if warning_thresholds.is_empty()
+        || warning_thresholds.len() > 4
+        || warning_thresholds
+            .iter()
+            .any(|value| *value == 0 || *value > 100)
+        || warning_thresholds.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(Error::Invalid(format!(
+            "account {account_id} has invalid warning thresholds"
+        )));
+    }
+    let custom = if profile == "custom" {
+        let custom = value.get("custom_retention").ok_or_else(|| {
+            Error::Invalid(format!(
+                "account {account_id} custom profile has no custom retention"
+            ))
+        })?;
+        let custom = custom.as_object().ok_or_else(|| {
+            Error::Invalid(format!(
+                "account {account_id} custom retention is not an object"
+            ))
+        })?;
+        let max_routine_count = match custom.get("max_routine_count") {
+            Some(value) if value.is_null() => None,
+            Some(value) => Some(value.as_u64().ok_or_else(|| {
+                Error::Invalid(format!(
+                    "account {account_id} custom routine count is not an integer"
+                ))
+            })?),
+            None => None,
+        };
+        if max_routine_count.is_some_and(|count| count > 4096) {
+            return Err(Error::Invalid(format!(
+                "account {account_id} custom routine count exceeds v2 bound"
+            )));
+        }
+        let max_age_ms = if let Some(value) = custom.get("max_age_ms") {
+            if value.is_null() {
+                None
+            } else {
+                Some(value.as_i64().ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "account {account_id} custom max age is not an integer"
+                    ))
+                })?)
+            }
+        } else if let Some(seconds) = custom
+            .get("tiers")
+            .and_then(Value::as_array)
+            .and_then(|tiers| tiers.last())
+            .map(|tier| {
+                tier.get("max_age_seconds")
+                    .ok_or_else(|| {
+                        Error::Invalid(format!(
+                            "account {account_id} custom tier has no maximum age"
+                        ))
+                    })?
+                    .as_i64()
+                    .ok_or_else(|| {
+                        Error::Invalid(format!(
+                            "account {account_id} custom tier maximum age is not an integer"
+                        ))
+                    })
+            })
+        {
+            Some(seconds?.checked_mul(1_000).ok_or_else(|| {
+                Error::Invalid(format!(
+                    "account {account_id} custom max age overflows milliseconds"
+                ))
+            })?)
+        } else {
+            None
+        };
+        if max_age_ms.is_some_and(|age| age < 0) {
+            return Err(Error::Invalid(format!(
+                "account {account_id} custom max age is negative"
+            )));
+        }
+        Some(json!({
+            "max_routine_count": max_routine_count,
+            "max_age_ms": max_age_ms,
+        }))
+    } else {
+        None
+    };
+    json_text(
+        &json!({
+            "version": 2,
+            "retentionProfile": profile,
+            "retentionPolicyVersion": 2,
+            "customRetention": custom.map(|value| {
+                json!({
+                    "maxRoutineCount": value
+                        .get("max_routine_count")
+                        .and_then(Value::as_u64),
+                    "maxAgeMs": value.get("max_age_ms").and_then(Value::as_i64),
+                })
+            }),
+            "displayTimezone": timezone,
+            "warningThresholds": warning_thresholds,
+        }),
+        65_536,
+        "account preferences",
+    )
 }
 
 fn insert_documents(
@@ -1827,6 +1993,106 @@ struct V2TreeEnvelope {
     settings_json: String,
     logical_digest: [u8; 32],
     files: BTreeMap<String, V2TreeFileLocator>,
+}
+
+fn validate_v2_recipe_envelope(envelope: &V2RecipeEnvelope) -> Result<()> {
+    if envelope.version != 1
+        || envelope.recipe.version != 1
+        || envelope.chunk_locators.len() != envelope.recipe.chunks.len()
+        || envelope
+            .chunk_locators
+            .iter()
+            .any(|locator| locator.encoding_version == 0)
+    {
+        return Err(Error::Invalid("invalid v2 source recipe envelope".into()));
+    }
+    let mut total = 0u64;
+    for (reference, locator) in envelope.recipe.chunks.iter().zip(&envelope.chunk_locators) {
+        total = total
+            .checked_add(reference.length as u64)
+            .ok_or_else(|| Error::Invalid("v2 source recipe length overflow".into()))?;
+        if locator.logical_digest != Some(reference.digest)
+            || locator.logical_length != reference.length as u64
+        {
+            return Err(Error::Invalid(
+                "v2 source recipe locator does not match its chunk".into(),
+            ));
+        }
+    }
+    if total != envelope.recipe.uncompressed_len
+        || (matches!(envelope.recipe.codec, V2Codec::WholeZstd)
+            && envelope.recipe.chunks.len() != 1)
+        || (envelope.recipe.chunks.is_empty() && envelope.recipe.uncompressed_len != 0)
+    {
+        return Err(Error::Invalid(
+            "v2 source recipe lengths are inconsistent".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_v2_tree_envelope(envelope: &V2TreeEnvelope) -> Result<()> {
+    if envelope.version != 1
+        || envelope.main_path.is_empty()
+        || envelope.source_format.is_empty()
+        || envelope.files.is_empty()
+        || !envelope.files.contains_key(&envelope.main_path)
+        || serde_json::from_str::<Value>(&envelope.settings_json).is_err()
+    {
+        return Err(Error::Invalid("invalid v2 source tree envelope".into()));
+    }
+    for (path, file) in &envelope.files {
+        if path.starts_with('/')
+            || path.contains('\0')
+            || path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(Error::Invalid(
+                "v2 source tree contains an invalid path".into(),
+            ));
+        }
+        if file.logical_length > i64::MAX as u64 {
+            return Err(Error::Invalid(
+                "v2 source tree file is too large for SQL".into(),
+            ));
+        }
+        match file.kind.as_str() {
+            "text" => {
+                let recipe = file
+                    .recipe
+                    .as_ref()
+                    .ok_or_else(|| Error::Invalid("v2 text file has no recipe locator".into()))?;
+                if file.asset.is_some()
+                    || recipe.logical_digest != Some(file.logical_digest)
+                    || recipe.logical_length != file.logical_length
+                {
+                    return Err(Error::Invalid(
+                        "v2 text locator is not bound to its logical bytes".into(),
+                    ));
+                }
+            }
+            "asset" => {
+                let asset = file
+                    .asset
+                    .as_ref()
+                    .ok_or_else(|| Error::Invalid("v2 asset file has no asset locator".into()))?;
+                if file.recipe.is_some()
+                    || file.logical_digest != asset.object_digest
+                    || file.logical_length != asset.byte_length
+                    || asset
+                        .logical_digest
+                        .is_some_and(|digest| digest != file.logical_digest)
+                {
+                    return Err(Error::Invalid(
+                        "v2 asset locator is not bound to its logical bytes".into(),
+                    ));
+                }
+            }
+            _ => return Err(Error::Invalid("v2 tree file has an unknown kind".into())),
+        }
+    }
+    Ok(())
 }
 
 fn digest_array(hex_digest: &str, field: &str) -> Result<[u8; 32]> {
@@ -2317,7 +2583,64 @@ fn convert_checkpoint(
         &point.source_format,
         Some(source),
     )?;
+    if has_table(source, "source_history_checkpoint_files")? {
+        let tree_digests: HashSet<String> =
+            tree.files.iter().map(|file| file.sha.clone()).collect();
+        let mut seen = HashSet::new();
+        let mut refs = source.prepare(
+            "SELECT file_digest FROM source_history_checkpoint_files
+             WHERE storage_id=?1 AND checkpoint_sha=?2 ORDER BY file_digest",
+        )?;
+        for row in refs.query_map(params![doc.storage_id, point.id], |row| {
+            row.get::<_, String>(0)
+        })? {
+            let digest = row?;
+            if !seen.insert(digest.clone()) || !tree_digests.contains(&digest) {
+                return Err(Error::Invalid(format!(
+                    "checkpoint {} has a source-history file outside its tree closure",
+                    point.id
+                )));
+            }
+            let exists: bool = source.query_row(
+                "SELECT EXISTS(SELECT 1 FROM source_history_encodings
+                               WHERE storage_id=?1 AND file_digest=?2)",
+                params![doc.storage_id, digest],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(Error::Invalid(format!(
+                    "checkpoint {} references missing source-history encoding",
+                    point.id
+                )));
+            }
+        }
+        let mut expected = HashSet::new();
+        for file in tree.files.iter().filter(|file| file.kind != "asset") {
+            let encoded: bool = source.query_row(
+                "SELECT EXISTS(SELECT 1 FROM source_history_encodings
+                               WHERE storage_id=?1 AND file_digest=?2)",
+                params![doc.storage_id, file.sha],
+                |row| row.get(0),
+            )?;
+            if encoded {
+                expected.insert(file.sha.clone());
+            }
+        }
+        if seen != expected {
+            return Err(Error::Invalid(format!(
+                "checkpoint {} source-history closure is incomplete",
+                point.id
+            )));
+        }
+    }
     if has_table(source, "checkpoint_asset_refs")? {
+        let tree_assets: HashSet<(String, i64)> = tree
+            .files
+            .iter()
+            .filter(|file| file.kind == "asset")
+            .map(|file| (file.sha.clone(), file.size))
+            .collect();
+        let mut referenced_assets = HashSet::new();
         let mut refs = source.prepare("SELECT object_key,bytes FROM checkpoint_asset_refs WHERE storage_id=?1 AND checkpoint_sha=?2 ORDER BY object_key")?;
         for row in refs.query_map(params![doc.storage_id, point.id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
@@ -2332,14 +2655,19 @@ fn convert_checkpoint(
                 )));
             }
             let digest = sha256(&bytes);
-            if !tree.files.iter().any(|file| {
-                file.kind == "asset" && file.sha == digest && file.size == declared_bytes
-            }) {
+            referenced_assets.insert((digest.clone(), declared_bytes));
+            if !tree_assets.contains(&(digest, declared_bytes)) {
                 return Err(Error::Invalid(format!(
                     "checkpoint {} asset reference {} is absent from its tree",
                     point.id, key
                 )));
             }
+        }
+        if referenced_assets != tree_assets {
+            return Err(Error::Invalid(format!(
+                "checkpoint {} asset closure is incomplete",
+                point.id
+            )));
         }
     }
     if has_table(source, "checkpoint_asset_sets")? {
@@ -2416,7 +2744,10 @@ fn convert_checkpoint(
         logical_files.insert(
             file.path.clone(),
             LogicalFile {
-                kind: if kind == "asset" { "asset" } else { "source" }.into(),
+                // The v2 reader calls source files `text` in both the tree
+                // locator and its logical digest input. `source` is a v1
+                // description and would make every imported tree unreadable.
+                kind: if kind == "asset" { "asset" } else { "text" }.into(),
                 id: file.id.clone(),
                 sha: file.sha.clone(),
                 size: file.size,
@@ -2463,6 +2794,7 @@ fn convert_checkpoint(
                 recipe,
                 chunk_locators,
             };
+            validate_v2_recipe_envelope(&recipe_wire)?;
             let recipe_body = serde_json::to_vec(&recipe_wire)?;
             if recipe_body.len() > 64 * 1024 * 1024 {
                 return Err(Error::Invalid("source recipe exceeds 64 MiB".into()));
@@ -2491,7 +2823,7 @@ fn convert_checkpoint(
             tree_files.insert(
                 file.path.clone(),
                 V2TreeFileLocator {
-                    kind: "source".into(),
+                    kind: "text".into(),
                     file_id: file.id,
                     logical_digest,
                     logical_length: file.size as u64,
@@ -2535,6 +2867,7 @@ fn convert_checkpoint(
         logical_digest,
         files: tree_files,
     };
+    validate_v2_tree_envelope(&tree_envelope)?;
     let tree_bytes = serde_json::to_vec(&tree_envelope)?;
     if tree_bytes.len() > 16 * 1024 * 1024 {
         return Err(Error::Invalid("source tree envelope exceeds 16 MiB".into()));
@@ -3774,7 +4107,9 @@ fn source_keyring_json(source: &Connection) -> Result<String> {
     })? {
         let (key_id, status, created_at, retired_at) = row?;
         keys.push(json!({
-            "key_id": key_id,
+            // Runtime catalog metadata and the links.key file both call this
+            // field `id`; `key_id` is the v1 SQL column name only.
+            "id": key_id,
             "status": status,
             "created_at": created_at,
             "retired_at": retired_at,
@@ -4161,6 +4496,29 @@ mod tests {
     fn timestamps_are_milliseconds_and_reject_invalid_values() {
         assert_eq!(parse_time("1", "t").expect("seconds"), 1_000);
         assert!(parse_time("not-a-time", "t").is_err());
+    }
+
+    #[test]
+    fn quota_preferences_use_the_v2_runtime_wire_shape() {
+        let payload = convert_quota_preferences(
+            r#"{
+                "version": 1,
+                "retention_profile": "custom",
+                "custom_retention": {"max_routine_count": 12, "max_age_ms": 86400000},
+                "display_timezone": "America/Toronto",
+                "warning_thresholds": [70, 90]
+            }"#,
+            "account",
+        )
+        .expect("v1 preferences convert");
+        let value: Value = serde_json::from_str(&payload).expect("v2 preferences JSON");
+        assert_eq!(value["version"], json!(2));
+        assert_eq!(value["retentionProfile"], json!("custom"));
+        assert_eq!(value["retentionPolicyVersion"], json!(2));
+        assert_eq!(value["customRetention"]["maxRoutineCount"], json!(12));
+        assert_eq!(value["customRetention"]["maxAgeMs"], json!(86_400_000));
+        assert_eq!(value["displayTimezone"], json!("America/Toronto"));
+        assert!(value.get("retention_profile").is_none());
     }
 
     #[test]
@@ -4720,6 +5078,18 @@ mod tests {
             session_secret
         );
         let target_db = Connection::open(target_root.join("catalog.db")).expect("target catalog");
+        let keyring_json: Value = serde_json::from_str(
+            &target_db
+                .query_row::<String, _, _>(
+                    "SELECT keyring_json FROM server_state WHERE id=1",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("keyring json"),
+        )
+        .expect("valid keyring json");
+        assert_eq!(keyring_json["keys"][0]["id"], json!(link_id));
+        assert!(keyring_json["keys"][0].get("key_id").is_none());
         let cost_json: Value = serde_json::from_str(
             &target_db
                 .query_row::<String, _, _>(

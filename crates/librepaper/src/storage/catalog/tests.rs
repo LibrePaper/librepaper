@@ -943,31 +943,46 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
 #[test]
 fn fresh_schema_enables_foreign_keys_and_creates_all_tables() {
     let catalog = Catalog::open_in_memory().unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 1);
+    assert_eq!(catalog.schema_version().unwrap(), 2);
     assert_eq!(catalog.totals().unwrap(), (0, 0));
-    let names = catalog
+    let tables = catalog
         .with_connection(|connection| {
             let mut statement = connection
-                .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+                .prepare(
+                    "SELECT name,sql FROM sqlite_master
+                     WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                     ORDER BY name",
+                )
                 .unwrap();
             let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .unwrap();
             Ok(rows.map(Result::unwrap).collect::<Vec<_>>())
         })
         .unwrap();
-    for required in [
+    let expected = [
         "accounts",
         "documents",
-        "totals",
-        "catalog_operations",
-        "journal_state",
-    ] {
-        assert!(
-            names.iter().any(|name| name == required),
-            "missing {required}"
-        );
-    }
+        "grants",
+        "links",
+        "annotations",
+        "replies",
+        "checkpoints",
+        "objects",
+        "checkpoint_objects",
+        "object_leases",
+        "operations",
+        "server_state",
+    ];
+    let actual = tables
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+    assert_eq!(tables.len(), 12);
+    assert!(tables.iter().all(|(_, sql)| sql.contains("STRICT")));
     catalog
         .with_connection(|connection| {
             assert_eq!(
@@ -975,6 +990,12 @@ fn fresh_schema_enables_foreign_keys_and_creates_all_tables() {
                     .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
                     .unwrap(),
                 1
+            );
+            assert_eq!(
+                connection
+                    .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                    .unwrap(),
+                "ok"
             );
             Ok(())
         })
@@ -2435,7 +2456,7 @@ fn vacuum_backup_preserves_the_identity_distinction() {
         })
         .unwrap();
     let restored = Catalog::open(&snapshot).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 1);
+    assert_eq!(restored.schema_version().unwrap(), 2);
     assert_eq!(
         attribution_of(&restored, "stable"),
         ("alice".to_string(), Some("acct-writer".to_string()))
