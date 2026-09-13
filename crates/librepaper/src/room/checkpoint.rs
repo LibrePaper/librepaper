@@ -494,6 +494,7 @@ impl Room {
             tree_generation,
             snapshot_state,
             snapshot_permit,
+            snapshot_estimate,
             captured_socket_sequences,
         ) = {
             let mut state = self.state.lock().await;
@@ -515,6 +516,7 @@ impl Room {
                     0,
                     None,
                     None,
+                    0,
                     Vec::new(),
                 )
             } else {
@@ -593,6 +595,7 @@ impl Room {
                     state.session.generation,
                     snapshot,
                     snapshot_permit,
+                    snapshot_estimate,
                     captured_socket_sequences,
                 )
             }
@@ -639,6 +642,7 @@ impl Room {
                         actor.agent_checkpoint,
                         snapshot_state.as_deref().unwrap_or_default(),
                         snapshot_permit,
+                        snapshot_estimate,
                         &captured_socket_sequences,
                     )
                     .await;
@@ -689,6 +693,7 @@ impl Room {
                         None,
                         snapshot_state.as_deref().unwrap_or_default(),
                         snapshot_permit,
+                        snapshot_estimate,
                         &captured_socket_sequences,
                     )
                     .await;
@@ -1382,6 +1387,7 @@ impl Room {
         agent_checkpoint: Option<&crate::storage::catalog::AgentCheckpointCommit>,
         snapshot_state: &[u8],
         snapshot_permit: Option<crate::storage::journal::MemoryPermit>,
+        snapshot_estimate: usize,
         captured_socket_sequences: &[(u64, i64)],
     ) -> Result<Option<String>, WriteError> {
         use crate::storage::blob::ObjectId as BlobObjectId;
@@ -1442,6 +1448,12 @@ impl Room {
             _ => return Err(WriteError::Storage("invalid source format".into())),
         };
         let snapshot_ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+        if snapshot_state.len() > snapshot_estimate {
+            return Err(WriteError::Size(crate::config::SizeRefusal::Encoded {
+                bytes: snapshot_state.len(),
+                ceiling: snapshot_estimate,
+            }));
+        }
         if snapshot_state.len() > snapshot_ceiling {
             return Err(WriteError::Size(crate::config::SizeRefusal::Encoded {
                 bytes: snapshot_state.len(),
