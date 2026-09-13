@@ -27,6 +27,7 @@ mod recovery;
 mod runtime;
 mod segment;
 mod store;
+mod v2;
 
 pub use budget::*;
 pub use coordinator::*;
@@ -34,10 +35,12 @@ pub use recovery::*;
 pub use runtime::*;
 pub use segment::*;
 pub use store::*;
+pub use v2::*;
 
 #[derive(Debug)]
 pub enum JournalError {
     Invalid(String),
+    Conflict(String),
     Corrupt(String),
     /// A permanent size refusal: the work is past a ceiling this journal
     /// format supports, and no retry of the same work can succeed.
@@ -54,7 +57,7 @@ pub enum JournalError {
 impl JournalError {
     /// Whether retrying the identical request is pointless.
     pub fn is_permanent(&self) -> bool {
-        matches!(self, Self::Limit(_) | Self::Invalid(_) | Self::Corrupt(_))
+        matches!(self, Self::Limit(_) | Self::Invalid(_) | Self::Corrupt(_) | Self::Conflict(_))
     }
 
     /// Whether the same request may succeed once capacity frees up.
@@ -67,6 +70,7 @@ impl fmt::Display for JournalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(message) => write!(f, "invalid journal request: {message}"),
+            Self::Conflict(message) => write!(f, "journal conflict: {message}"),
             Self::Corrupt(message) => write!(f, "corrupt journal segment: {message}"),
             Self::Limit(message) => write!(f, "journal limit exceeded: {message}"),
             Self::Busy(message) => write!(f, "journal capacity is full: {message}"),

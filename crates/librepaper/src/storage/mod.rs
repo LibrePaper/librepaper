@@ -5,11 +5,13 @@
 //! default, because that is what running it on your own machine should mean.
 
 pub mod backup;
+pub mod backup_v2;
 pub mod blob;
 pub mod catalog;
 pub mod encoding;
 pub mod journal;
 pub mod maintenance;
+pub mod maintenance_v2;
 
 use std::path::PathBuf;
 use std::sync::Arc;

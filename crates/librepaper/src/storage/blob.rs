@@ -40,6 +40,72 @@ use crate::util::{parse_timestamp, timestamp};
 /// An object's ETag, or "" for one that is not there.
 pub type BlobVersion = String;
 
+/// A v2 physical object identifier. Object IDs identify allocations, rather
+/// than content, and are therefore never derived from a digest or a slug.
+/// The wire/storage representation is always 32 lowercase hexadecimal bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ObjectId(String);
+
+impl ObjectId {
+    pub fn random() -> Self {
+        Self(hex::encode(rand::random::<[u8; 16]>()))
+    }
+
+    pub fn parse(value: impl Into<String>) -> BlobResult<Self> {
+        let value = value.into();
+        if value.len() != 32
+            || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || value.bytes().any(|byte| byte.is_ascii_uppercase())
+        {
+            return Err(BlobError::Other("object id must be 32 lowercase hex digits".into()));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The only physical key layout accepted for application objects in v2.
+/// Mutable document slugs never occur in this key.
+pub fn v2_object_key(document_id: &str, object_id: &ObjectId) -> BlobResult<String> {
+    validate_document_id(document_id)?;
+    Ok(format!("v2/documents/{document_id}/objects/{}", object_id.as_str()))
+}
+
+pub fn validate_document_id(document_id: &str) -> BlobResult<()> {
+    if document_id.is_empty()
+        || document_id.len() > 128
+        || document_id.contains('/')
+        || document_id.contains('\\')
+        || document_id.contains('\0')
+        || document_id == "."
+        || document_id == ".."
+    {
+        return Err(BlobError::Other("invalid document id".into()));
+    }
+    Ok(())
+}
+
+pub fn validate_v2_object_key(key: &str) -> BlobResult<()> {
+    let mut components = key.split('/');
+    if components.next() != Some("v2")
+        || components.next() != Some("documents")
+        || components.next().is_none()
+        || components.next() != Some("objects")
+    {
+        return Err(BlobError::Other("object key is outside the v2 namespace".into()));
+    }
+    let document_id = key.split('/').nth(2).unwrap_or_default();
+    let object_id = key.split('/').nth(4).unwrap_or_default();
+    if components.next().is_some() {
+        return Err(BlobError::Other("object key has unexpected components".into()));
+    }
+    validate_document_id(document_id)?;
+    ObjectId::parse(object_id.to_owned()).map(|_| ())
+}
+
 /// One object in a listing. Size is what the quotas are summed from when an
 /// index has to be rebuilt, and version is what a conditional write would be
 /// made against; a caller that only wants names ignores both.
@@ -157,6 +223,16 @@ pub trait BlobStore: Send + Sync {
         }
     }
     async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()>;
+    /// Publish an immutable v2 object. Implementations with an atomic
+    /// no-replace primitive should override this; the default remains useful
+    /// for small test stores and detects an already registered key before PUT.
+    async fn put_new(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
+        validate_v2_object_key(key)?;
+        if self.exists(key).await? {
+            return Err(BlobError::Conflict);
+        }
+        self.put(key, body, content_type).await
+    }
     /// Removes keys; ones that are not there are not an error, because the
     /// outcome asked for is the outcome either way. Fails if any key's
     /// removal is not confirmed, which is what the callers that only care
@@ -279,6 +355,35 @@ impl FsStore {
             blocking: Arc::new(Semaphore::new(FS_BLOCKING_CONCURRENCY)),
             reserved_space: Arc::new(Mutex::new(FsSpaceState::default())),
         }
+    }
+
+    /// Publish a v2 object under a fresh allocation identity. The final
+    /// filesystem name is created with `create_new`, so a retry can never
+    /// overwrite an existing immutable object, even if two writers race.
+    pub async fn put_new_object(
+        &self,
+        document_id: &str,
+        object_id: &ObjectId,
+        body: Vec<u8>,
+        _content_type: &str,
+    ) -> BlobResult<String> {
+        let key = v2_object_key(document_id, object_id)?;
+        let path = self.path_for(&key)?;
+        let durable = self.durable;
+        let capacity_root = self.dir.clone();
+        let reserved_space = Arc::clone(&self.reserved_space);
+        self.blocking(move || {
+            let _space = reserve_fs_space(&path, &capacity_root, &reserved_space, body.len())?;
+            match write_file_immutable(&path, &body, durable) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(BlobError::Conflict)
+                }
+                Err(error) => return Err(error.into()),
+            }
+            Ok(key)
+        })
+        .await
     }
 
     /// Maps a key to a file. Keys are slash-separated and come from this
@@ -543,6 +648,17 @@ impl BlobStore for FsStore {
             Ok(())
         })
         .await
+    }
+
+    async fn put_new(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
+        validate_v2_object_key(key)?;
+        let document_id = key.split('/').nth(2).unwrap_or_default().to_owned();
+        let object_id = ObjectId::parse(key.split('/').nth(4).unwrap_or_default().to_owned())?;
+        let published = self
+            .put_new_object(&document_id, &object_id, body, content_type)
+            .await?;
+        debug_assert_eq!(published, key);
+        Ok(())
     }
 
     async fn delete(&self, keys: &[String]) -> BlobResult<()> {
@@ -987,6 +1103,40 @@ pub fn write_file_atomically(name: &Path, body: &[u8], durable: bool) -> std::io
             }
             Ok(())
         });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// Write and publish a file without replacing an existing name. The temporary
+/// file is private and same-directory; the final `create_new` is the commit
+/// point. A pre-existing final name is reported as a conflict by callers.
+fn write_file_immutable(name: &Path, body: &[u8], durable: bool) -> std::io::Result<()> {
+    if let Some(parent) = name.parent() {
+        durable_create_dir_all(parent, durable)?;
+    }
+    static TEMPORARY: AtomicU64 = AtomicU64::new(0);
+    let serial = TEMPORARY.fetch_add(1, Ordering::Relaxed);
+    let basename = name
+        .file_name()
+        .map(|part| part.to_string_lossy())
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("object"));
+    let temporary = name.with_file_name(format!(".{basename}.tmp-{}-{serial}", std::process::id()));
+    let result = write_private_file(&temporary, body, durable).and_then(|_| {
+        // A hard link is the atomic no-replace publication primitive on local
+        // filesystems: it fails if another allocation already claimed name.
+        std::fs::hard_link(&temporary, name)?;
+        std::fs::remove_file(&temporary)?;
+        if durable {
+            let file = OpenOptions::new().read(true).open(name)?;
+            file.sync_all()?;
+        }
+        if let Some(parent) = name.parent() {
+            sync_directory(parent, durable)?;
+        }
+        Ok(())
+    });
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
