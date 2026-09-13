@@ -2,15 +2,11 @@
 use super::*;
 use crate::agent_query::{QueryBudget, QuerySnapshot};
 use hmac::{Hmac, Mac};
-use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use std::io::{Read, Write};
 
 use crate::storage::blob::BlobStore;
-use crate::storage::catalog::{
-    DocumentId, ObjectId, ObjectKind, OperationId, OperationKind, OperationScope, UnixMillis,
-    V2AdmissionLimits, V2ObjectAllocation, V2OperationInput,
-};
+use crate::storage::catalog::{UnixMillis, V2AdmissionLimits};
 use crate::storage::v2_catalog::V2ObjectWriter;
 
 mod cancel;
@@ -138,39 +134,6 @@ fn actor_scope(slug: &str, who: &Viewer, author: &str) -> String {
         "{slug}\0{author}\0{}\0{}\0{}\0{}\0{:?}",
         who.id.id, who.key, who.link, who.id.session_generation, who.role
     )))
-}
-
-fn live_agent_authorized(
-    connection: &Connection,
-    slug: &str,
-    account_id: &str,
-    generation: &str,
-    link_hash: &str,
-    automation: bool,
-) -> crate::storage::catalog::CatalogResult<bool> {
-    let account_ok: bool = if account_id.is_empty() {
-        false
-    } else {
-        connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts owner ON owner.id=d.owner_id JOIN accounts a ON a.id=?2 WHERE d.slug=?1 AND d.status='active' AND owner.status='active' AND a.status='active' AND a.session_generation=?3 AND (d.owner_id=?2 OR EXISTS(SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=?2 AND g.role='editor')))",
-                rusqlite::params![slug, account_id, generation],
-                |row| row.get(0),
-            )
-            .map_err(crate::storage::catalog::CatalogError::from)?
-    };
-    let link_ok: bool = if link_hash.is_empty() {
-        false
-    } else {
-        connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts owner ON owner.id=d.owner_id JOIN links l ON l.document_id=d.id WHERE d.slug=?1 AND d.status='active' AND owner.status='active' AND l.token_hash=?2 AND l.role='editor' AND (l.expires_at IS NULL OR l.expires_at>?3))",
-                rusqlite::params![slug, link_hash, crate::util::now_millis()],
-                |row| row.get(0),
-            )
-            .map_err(crate::storage::catalog::CatalogError::from)?
-    };
-    Ok(if automation { link_ok && account_ok } else { account_ok || link_ok })
 }
 
 impl Server {
@@ -381,121 +344,43 @@ impl Server {
         object: &T,
         expiry: i64,
     ) -> Result<(), Failure> {
-        let raw =
-            serde_json::to_vec(object).map_err(|e| Failure::new("internal", e.to_string()))?;
+        let raw = serde_json::to_vec(object)
+            .map_err(|e| Failure::new("internal", e.to_string()))?;
         if raw.len() > 16 * 1024 * 1024 {
-            return Err(Failure::new(
-                "budget_exceeded",
-                "retained object exceeds its decoded size limit",
-            ));
+            return Err(Failure::new("budget_exceeded", "retained object exceeds its decoded size limit"));
         }
-        let logical_digest = hex::encode(Sha256::digest(&raw));
-        let bytes = tokio::task::spawn_blocking(move || {
-            let mut encoder =
-                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-            encoder.write_all(&raw)?;
-            encoder.finish()
-        })
-        .await
-        .map_err(|e| Failure::new("unavailable", e.to_string()))?
-        .map_err(|e| Failure::new("internal", e.to_string()))?;
-        let Some(catalog) = &self.store.catalog else {
-            return Err(Failure::new(
-                "unavailable",
-                "durable catalog required for MCP",
-            ));
-        };
         if id.is_empty() || id.len() > 256 || kind.is_empty() || kind.len() > 128 {
             return Err(Failure::new("invalid_params", "agent object identity is invalid"));
         }
         let now = crate::util::now_millis();
-        let expires_at = expiry
-            .checked_mul(1_000)
+        let expires_at = expiry.checked_mul(1_000)
             .ok_or_else(|| Failure::new("invalid_params", "agent object expiry overflows"))?;
         if expires_at <= now || expires_at > now.saturating_add(60 * 60 * 1_000) {
-            return Err(Failure::new("expired_epoch", "agent object expiry has passed"));
+            return Err(Failure::new("expired_epoch", "agent object expiry is invalid"));
         }
-        let actor_key = if !who.link.is_empty() {
-            format!("link:{}", who.link)
-        } else if !who.id.id.is_empty() {
+        let actor_key = if !who.id.id.is_empty() {
             format!("account:{}", who.id.id)
+        } else if !who.link.is_empty() {
+            format!("link:{}", who.link)
         } else {
             return Err(Failure::new("permission_changed", "a live account or link is required"));
         };
-        let account_id = who.id.id.clone();
-        let generation = who.id.session_generation.clone();
-        let link_hash = who.link.clone();
-        let slug_owned = slug.to_owned();
-        let admission_account_id = account_id.clone();
-        let admission_generation = generation.clone();
-        let admission_link_hash = link_hash.clone();
-        let document_id = catalog
-            .execute_catalog(slug_owned.len().saturating_add(128), move |catalog| {
-                catalog.with_connection(|connection| {
-                    connection
-                        .query_row(
-                            "SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND owner.status='active' AND ((?2 <> '' AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=?2 AND a.status='active' AND a.session_generation=?3) AND (?2=d.owner_id OR EXISTS(SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=?2 AND g.role='editor'))) OR (?4 <> '' AND EXISTS(SELECT 1 FROM links l WHERE l.document_id=d.id AND l.token_hash=?4 AND l.role='editor' AND (l.expires_at IS NULL OR l.expires_at>?5))))",
-                            rusqlite::params![slug_owned, admission_account_id, admission_generation, admission_link_hash, crate::util::now_millis()],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .map_err(crate::storage::catalog::CatalogError::from)
-                })
-            })
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        let document_id = DocumentId::new(document_id)
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        let object_id = ObjectId::random();
-        let storage_key = crate::storage::blob::v2_object_key(&document_id, &object_id)
-            .map_err(|error| Failure::new("internal", error.to_string()))?;
-        let physical_digest = hex::encode(Sha256::digest(&bytes));
-        let request_key = format!(
-            "v2.{}.{}",
-            now.saturating_sub(now.rem_euclid(60_000)),
-            hex::encode(Sha256::digest(
-                format!("{}\0{}\0{}", actor_key, id, kind).as_bytes(),
-            ))
-        );
-        let existing = catalog
-            .execute_catalog(
-                actor.len().saturating_add(id.len()).saturating_add(kind.len()).saturating_add(document_id.as_str().len()).saturating_add(160),
-                {
-                    let actor_key = actor_key.clone();
-                    let request_key = request_key.clone();
-                    let document_id = document_id.as_str().to_owned();
-                    move |catalog| {
-                        catalog.with_connection(|connection| {
-                            connection
-                                .query_row(
-                                    "SELECT op.state,json_extract(op.plan_json,'$.physical_digest') FROM operations op WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state IN ('prepared','committed')",
-                                    rusqlite::params![document_id, actor_key, request_key],
-                                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                                )
-                                .optional()
-                                .map_err(crate::storage::catalog::CatalogError::from)
-                        })
-                    }
-                },
-            )
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        if let Some((state, existing_digest)) = existing {
-            if existing_digest != physical_digest {
-                return Err(Failure::new(
-                    "operation_key_reused",
-                    "agent object identity already names different bytes",
-                ));
-            }
-            if state == "committed" {
-                return Ok(());
-            }
-            return Err(Failure::new(
-                "unavailable",
-                "agent object write is still being staged",
-            ));
+        let logical_digest = hex::encode(Sha256::digest(&raw));
+        let bytes = tokio::task::spawn_blocking(move || {
+            let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(&raw)?;
+            encoder.finish()
+        }).await.map_err(|e| Failure::new("unavailable", e.to_string()))?
+          .map_err(|e| Failure::new("internal", e.to_string()))?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(Failure::new("budget_exceeded", "encoded object exceeds its size limit"));
         }
+        let Some(catalog) = &self.store.catalog else {
+            return Err(Failure::new("unavailable", "durable catalog required for MCP"));
+        };
+        let physical_digest = hex::encode(Sha256::digest(&bytes));
         let request_digest = hex::encode(Sha256::digest(
-            format!("{actor}\0{id}\0{kind}\0{logical_digest}\0{expires_at}").as_bytes(),
+            format!("{}\0{}\0{}\0{}\0{}", actor_key, id, kind, logical_digest, expires_at).as_bytes(),
         ));
         let plan_json = serde_json::json!({
             "version": 2,
@@ -505,152 +390,67 @@ impl Server {
             "actor_key": actor_key,
             "logical_digest": logical_digest,
             "physical_digest": physical_digest,
-            "object_id": object_id.as_str(),
             "expires_at": expires_at,
-        })
-        .to_string();
-        let input = V2OperationInput {
-            scope: OperationScope::Document(document_id.clone()),
-            actor_key: actor_key.clone(),
-            request_key: request_key.clone(),
-            kind: OperationKind::AgentStage,
-            request_digest,
-            plan_json: plan_json.clone(),
-            expected_document_generation: None,
-            conversation_id: None,
-            execution_epoch: None,
-            work_expires_at: Some(UnixMillis(expires_at)),
+        }).to_string();
+        let authority = crate::storage::catalog::AgentPayloadAuthority {
+            account_id: who.id.id.clone(),
+            generation: who.id.session_generation.clone(),
+            link_hash: who.link.clone(),
+            automation: who.automation,
         };
-        let allocation_template = V2ObjectAllocation {
-            document_id: document_id.clone(),
-            id: object_id.clone(),
-            storage_key,
-            kind: ObjectKind::AgentPayload,
-            digest: physical_digest,
-            logical_digest: Some(logical_digest),
-            encoding_version: 1,
+        let input = crate::storage::catalog::AgentPayloadInput {
+            slug: slug.to_owned(),
+            actor_key,
+            agent_id: id.to_owned(),
+            agent_kind: kind.to_owned(),
+            logical_digest,
+            physical_digest,
             reserved_bytes: i64::try_from(bytes.len())
-                .map_err(|_| Failure::new("budget_exceeded", "agent object is too large"))?,
-            operation_id: OperationId::new("00000000000000000000000000000000")
-                .map_err(|error| Failure::new("internal", error.to_string()))?,
-            now: UnixMillis(now),
+                .map_err(|_| Failure::new("budget_exceeded", "encoded object is too large"))?,
+            plan_json,
+            request_digest,
+            expires_at: UnixMillis(expires_at),
         };
         let limits = V2AdmissionLimits {
             owner_bytes: self.store.config.storage.per_owner,
             deployment_bytes: self.store.config.storage.total,
             owner_documents: self.store.config.storage.documents_per_owner as i64,
         };
-        if limits.owner_bytes < 0
-            || limits.deployment_bytes < 0
-            || limits.owner_documents < 0
-        {
-            return Err(Failure::new(
-                "invalid_config",
-                "storage admission limits cannot be negative",
-            ));
+        let admitted = catalog.execute_catalog(
+            bytes.len().saturating_add(input.plan_json.len()).saturating_add(1024),
+            move |catalog| catalog.admit_agent_payload(&input, &authority, limits, UnixMillis(now)),
+        ).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        if admitted.replay {
+            return match admitted.state.as_str() {
+                "committed" => Ok(()),
+                "prepared" => Err(Failure::new("unavailable", "agent object write is still being staged")),
+                _ => Err(Failure::new("operation_key_reused", "agent object operation is terminal")),
+            };
         }
-        let input_bytes = bytes
-            .len()
-            .saturating_add(plan_json.len())
-            .saturating_add(actor.len())
-            .saturating_add(id.len())
-            .saturating_add(kind.len())
-            .saturating_add(256);
-        let (operation, allocation) = catalog
-            .execute_catalog(input_bytes, move |catalog| {
-                let operation = catalog.prepare_v2_operation(&input, UnixMillis(now))?;
-                let allocation = V2ObjectAllocation {
-                    operation_id: operation.id.clone(),
-                    ..allocation_template
-                };
-                catalog.allocate_v2_object_with_limits(&allocation, limits)?;
-                catalog.acquire_v2_lease(
-                    &allocation.document_id,
-                    &allocation.id,
-                    &format!("mcp-stage-{}", operation.id.as_str()),
-                    crate::storage::catalog::LeasePurpose::Stage,
-                    Some(&operation.id),
-                    &operation.writer_generation,
-                    UnixMillis(expires_at),
-                    UnixMillis(now),
-                )?;
-                Ok((operation, allocation))
-            })
-            .await
-            .map_err(|error| Failure::new("budget_exceeded", error.to_string()))?;
         let writer = V2ObjectWriter::new(Arc::clone(catalog), Arc::clone(&self.store.blobs));
-        writer
-            .write_allocated(
-                document_id.as_str(),
-                object_id,
-                bytes,
-                "application/vnd.librepaper.agent-payload+zlib",
-            )
-            .await
-            .map_err(|error| Failure::new("unavailable", error))?;
+        writer.write_allocated(
+            admitted.document_id.as_str(), admitted.object_id.clone(), bytes,
+            "application/vnd.librepaper.agent-payload+zlib",
+        ).await.map_err(|error| Failure::new("unavailable", error))?;
         let result_json = serde_json::json!({
             "version": 2,
-            "object_id": allocation.id.as_str(),
+            "object_id": admitted.object_id.as_str(),
             "expires_at": expires_at,
-        })
-        .to_string();
-        catalog
-            .execute_catalog(
-                result_json.len().saturating_add(operation.id.as_str().len())
-                    .saturating_add(who.id.id.len())
-                    .saturating_add(who.link.len()),
-                {
-                    let account_id = who.id.id.clone();
-                    let generation = who.id.session_generation.clone();
-                    let link_hash = who.link.clone();
-                    let automation = who.automation;
-                    let slug = slug.to_owned();
-                move |catalog| {
-                    let live = catalog.with_connection(|connection| {
-                        let tx = connection
-                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                            .map_err(crate::storage::catalog::CatalogError::from)?;
-                        let live: bool = tx
-                            .query_row(
-                                "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts owner ON owner.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND owner.status='active' AND ((?2 <> '' AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=?2 AND a.status='active' AND a.session_generation=?3) AND (?2=d.owner_id OR EXISTS(SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=?2 AND g.role='editor'))) OR (?4 <> '' AND EXISTS(SELECT 1 FROM links l WHERE l.document_id=d.id AND l.token_hash=?4 AND l.role='editor' AND (l.expires_at IS NULL OR l.expires_at>?5))))",
-                                rusqlite::params![slug, account_id, generation, link_hash, crate::util::now_millis()],
-                                |row| row.get(0),
-                            )
-                            .map_err(crate::storage::catalog::CatalogError::from)?;
-                        if !live || automation && (account_id.is_empty() || link_hash.is_empty()) {
-                            return Err(crate::storage::catalog::CatalogError::Conflict(
-                                "agent authority was revoked during object I/O".into(),
-                            ));
-                        }
-                        let current_generation: String = tx
-                            .query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0))
-                            .map_err(crate::storage::catalog::CatalogError::from)?;
-                        let operation_generation: String = tx
-                            .query_row("SELECT writer_generation FROM operations WHERE id=?1 AND state='prepared'", [&operation.id.as_str()], |row| row.get(0))
-                            .map_err(crate::storage::catalog::CatalogError::from)?;
-                        if operation_generation != current_generation {
-                            return Err(crate::storage::catalog::CatalogError::Conflict(
-                                "agent operation belongs to an obsolete writer generation".into(),
-                            ));
-                        }
-                        let receipt_expires = crate::util::now_millis().saturating_add(60 * 60 * 1_000);
-                        tx.execute(
-                            "UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=max(updated_at,?2) WHERE id=?4 AND state='prepared'",
-                            rusqlite::params![result_json, crate::util::now_millis(), receipt_expires, operation.id.as_str()],
-                        )
-                        .map_err(crate::storage::catalog::CatalogError::from)?;
-                        tx.commit().map_err(crate::storage::catalog::CatalogError::from)?;
-                        Ok(())
-                    })?;
-                    Ok(())
-                },
-                },
-            )
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        Ok(())
+        }).to_string();
+        let authority = crate::storage::catalog::AgentPayloadAuthority {
+            account_id: who.id.id.clone(),
+            generation: who.id.session_generation.clone(),
+            link_hash: who.link.clone(),
+            automation: who.automation,
+        };
+        let operation_id = admitted.operation_id.clone();
+        catalog.execute_catalog(
+            result_json.len().saturating_add(operation_id.as_str().len()),
+            move |catalog| catalog.finish_agent_payload(
+                &operation_id, &authority, &result_json, UnixMillis(crate::util::now_millis()),
+            ),
+        ).await.map_err(|error| Failure::new("unavailable", error.to_string()))
     }
-
     async fn mcp_load<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
         slug: &str,
@@ -660,98 +460,72 @@ impl Server {
         kind: &str,
     ) -> Result<T, Failure> {
         let Some(catalog) = &self.store.catalog else {
-            return Err(Failure::new(
-                "unavailable",
-                "durable catalog required for MCP",
-            ));
+            return Err(Failure::new("unavailable", "durable catalog required for MCP"));
         };
         let now = crate::util::now_millis();
-        let slug_owned = slug.to_owned();
-        let actor_owned = actor.to_owned();
-        let actor_key = if !who.link.is_empty() {
-            format!("link:{}", who.link)
-        } else {
-            format!("account:{}", who.id.id)
+        let holder = format!("mcp-agent-read-{}", hex::encode(crate::auth::random_bytes(8)));
+        let authority = crate::storage::catalog::AgentPayloadAuthority {
+            account_id: who.id.id.clone(),
+            generation: who.id.session_generation.clone(),
+            link_hash: who.link.clone(),
+            automation: who.automation,
         };
-        let account_id = who.id.id.clone();
-        let generation = who.id.session_generation.clone();
-        let link_hash = who.link.clone();
-        let automation = who.automation;
+        let slug_owned = slug.to_owned();
         let id_owned = id.to_owned();
         let kind_owned = kind.to_owned();
-        let holder = format!("mcp-agent-read-{}", hex::encode(crate::auth::random_bytes(8)));
-        let read_lease = catalog
-            .execute_catalog(
-                slug_owned
-                    .len()
-                    .saturating_add(actor_owned.len())
-                    .saturating_add(id_owned.len())
-                    .saturating_add(kind_owned.len())
-                    .saturating_add(holder.len())
-                    .saturating_add(256),
-                move |catalog| {
-                    let row: Option<(String, String, String, String, i64)> = catalog.with_connection(|connection| {
-                        if !live_agent_authorized(connection, &slug_owned, &account_id, &generation, &link_hash, automation)? {
-                            return Ok(None);
-                        }
-                        connection
-                            .query_row(
-                                "SELECT d.id,o.id,json_extract(op.plan_json,'$.logical_digest'),s.writer_generation,CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER) FROM operations op JOIN documents d ON d.id=op.document_id JOIN accounts a ON a.id=d.owner_id JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE d.slug=?1 AND d.status='active' AND a.status='active' AND op.kind='agent_stage' AND op.state='committed' AND op.actor_key=?2 AND op.request_key=?3 AND o.kind='agent_payload' AND o.state='available' AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?4 LIMIT 1",
-                                rusqlite::params![slug_owned, actor_key, format!("v2.{}.{}", now.saturating_sub(now.rem_euclid(60_000)), hex::encode(Sha256::digest(format!("{}\0{}\0{}", actor_key, id_owned, kind_owned).as_bytes()))), now],
-                                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-                            )
-                            .optional()
-                            .map_err(crate::storage::catalog::CatalogError::from)
-                    })?;
-                    let Some((document_id, object_id, logical_digest, generation, expires_at)) = row else {
-                        return Ok(None);
-                    };
-                    let document_id = DocumentId::new(document_id)
-                        .map_err(|error| crate::storage::catalog::CatalogError::Invalid(error.to_string()))?;
-                    let object_id = ObjectId::new(object_id)
-                        .map_err(|error| crate::storage::catalog::CatalogError::Invalid(error.to_string()))?;
-                    let objects = catalog.acquire_v2_read_set(
-                        &document_id,
-                        std::slice::from_ref(&object_id),
-                        &holder,
-                        &generation,
-                        UnixMillis(now.saturating_add(60_000).min(expires_at)),
-                        UnixMillis(now),
-                    )?;
-                    let object = objects
-                        .into_iter()
-                        .next()
-                        .ok_or(crate::storage::catalog::CatalogError::NotFound)?;
-                    Ok(Some((object, logical_digest)))
-                },
-            )
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        let Some((descriptor, logical_digest)) = read_lease else {
-            return Err(Failure::new(
-                "view_expired",
-                "object is unavailable; capture a fresh view",
-            ));
+        let holder_owned = holder.clone();
+        let read = catalog.execute_catalog(
+            slug.len().saturating_add(id.len()).saturating_add(kind.len()).saturating_add(holder.len()).saturating_add(512),
+            move |catalog| catalog.acquire_agent_payload_read(
+                &slug_owned, &authority, &id_owned, &kind_owned, &holder_owned, UnixMillis(now),
+            ),
+        ).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        let Some(read) = read else {
+            return Err(Failure::new("view_expired", "object is unavailable; capture a fresh view"));
         };
-        let raw = self
-            .store
-            .blobs
-            .get(&descriptor.storage_key)
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        let _ = catalog
-            .release_v2_lease(&descriptor.document_id, &descriptor.id, &holder);
+        let descriptor = read.object;
+        let mut get = Box::pin(self.store.blobs.get(&descriptor.storage_key));
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+        let raw = loop {
+            tokio::select! {
+                result = &mut get => break match result {
+                    Ok(raw) => raw,
+                    Err(error) => {
+                        let _ = catalog.release_v2_lease(&descriptor.document_id, &descriptor.id, &holder);
+                        return Err(Failure::new("unavailable", error.to_string()));
+                    }
+                },
+                _ = heartbeat.tick() => {
+                    let renewed = catalog.execute_catalog(
+                        256,
+                        {
+                            let document_id = descriptor.document_id.clone();
+                            let object_id = descriptor.id.clone();
+                            let holder = holder.clone();
+                            let deadline = read.expires_at;
+                            move |catalog| catalog.renew_agent_payload_read(
+                                &document_id, &object_id, &holder, UnixMillis(crate::util::now_millis()), deadline,
+                            )
+                        },
+                    ).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
+                    if !renewed {
+                        let _ = catalog.release_v2_lease(&descriptor.document_id, &descriptor.id, &holder);
+                        return Err(Failure::new("view_expired", "agent read lease expired"));
+                    }
+                }
+            }
+        };
+        let _ = catalog.release_v2_lease(&descriptor.document_id, &descriptor.id, &holder);
         if descriptor.byte_length != i64::try_from(raw.len()).ok()
             || hex::encode(Sha256::digest(&raw)) != descriptor.digest
         {
             return Err(Failure::new("internal", "agent object integrity check failed"));
         }
+        let logical_digest = read.logical_digest;
         tokio::task::spawn_blocking(move || {
-            let mut decoder =
-                flate2::read::ZlibDecoder::new(raw.as_slice()).take(16 * 1024 * 1024 + 1);
+            let mut decoder = flate2::read::ZlibDecoder::new(raw.as_slice()).take(16 * 1024 * 1024 + 1);
             let mut decoded = Vec::new();
-            decoder
-                .read_to_end(&mut decoded)
+            decoder.read_to_end(&mut decoded)
                 .map_err(|e| Failure::new("internal", e.to_string()))?;
             if decoded.len() > 16 * 1024 * 1024 {
                 return Err(Failure::new("budget_exceeded", "object decode limit"));
@@ -760,11 +534,8 @@ impl Server {
                 return Err(Failure::new("internal", "agent object logical digest mismatch"));
             }
             serde_json::from_slice(&decoded).map_err(|e| Failure::new("internal", e.to_string()))
-        })
-        .await
-        .map_err(|e| Failure::new("unavailable", e.to_string()))?
+        }).await.map_err(|e| Failure::new("unavailable", e.to_string()))?
     }
-
     async fn mcp_recheck(
         &self,
         slug: &str,

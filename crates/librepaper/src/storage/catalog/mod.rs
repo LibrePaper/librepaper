@@ -22,6 +22,7 @@ mod access;
 mod accounts;
 mod agent_annotations;
 mod agent_cancel;
+mod agent_payload;
 mod agent_lease;
 mod agent_objects;
 mod agent_source;
@@ -46,6 +47,10 @@ mod v2;
 pub(crate) use v2::{V2CheckpointAdmissionInput, V2SourceAdmissionInput};
 
 pub use agent_annotations::AgentAnnotationAuthority;
+pub use agent_payload::{
+    AgentPayloadAdmission, AgentPayloadAuthority, AgentPayloadInput, AgentPayloadRead,
+    AGENT_PAYLOAD_MAX_BYTES,
+};
 pub use execution::{
     CatalogCompletion, CatalogExecError, CatalogExecutionSnapshot, CatalogOutcome,
     CatalogReservation, CatalogServiceCompletion, MAX_ADMITTED_REQUESTS, MAX_EXECUTING,
