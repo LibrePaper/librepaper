@@ -1,28 +1,11 @@
-//! The bytes LibrePaper keeps, addressed by key, in a directory on this
-//! machine.
-//!
-//! Keys are one layout, whichever store holds them:
+//! The immutable v2 application objects LibrePaper keeps in a deployment.
 //!
 //! ```text
-//! index.json
-//! sessions/<slug>              the live document, as one Yjs update
-//! history/<slug>/index.json    the manifest of its checkpoints
-//! history/<slug>/<sha>         one checkpoint: the source bytes
-//! content/<storage>/chunks/<sha>  compressed source-history chunks
-//! content/<storage>/recipes/<sha> complete-file chunk recipes
-//! rooms/<slug>.json
-//! rooms/<slug>.lock
+//! v2/documents/<document-id>/objects/<random-object-id>
 //! ```
 //!
-//! And two the layout before this one wrote, which are read while a deployment
-//! is migrated and never written again:
-//!
-//! ```text
-//! documents/<slug>/<sha>.html
-//! sources/<slug>/<sha>
-//! ```
-//!
-//! There is one interface, and two implementations of it.
+//! Deployment metadata and backup payloads use separate namespaces. Mutable
+//! slugs never occur in an application object key.
 
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
@@ -119,15 +102,14 @@ pub fn validate_v2_object_key(key: &str) -> BlobResult<()> {
 
 pub fn parse_v2_object_key(key: &str) -> BlobResult<(String, ObjectId)> {
     let mut components = key.split('/');
-    if components.next() != Some("v2")
-        || components.next() != Some("documents")
-        || components.next().is_none()
-        || components.next() != Some("objects")
-    {
+    if components.next() != Some("v2") || components.next() != Some("documents") {
         return Err(BlobError::Other("object key is outside the v2 namespace".into()));
     }
-    let document_id = key.split('/').nth(2).unwrap_or_default();
-    let object_id = key.split('/').nth(4).unwrap_or_default();
+    let document_id = components.next().unwrap_or_default();
+    if components.next() != Some("objects") {
+        return Err(BlobError::Other("object key is outside the v2 namespace".into()));
+    }
+    let object_id = components.next().unwrap_or_default();
     if components.next().is_some() {
         return Err(BlobError::Other("object key has unexpected components".into()));
     }

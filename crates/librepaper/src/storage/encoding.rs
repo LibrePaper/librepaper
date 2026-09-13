@@ -179,10 +179,12 @@ impl SourceRecipeEnvelope {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TreeFileLocator {
+    pub kind: String,
     pub file_id: String,
     pub logical_digest: [u8; 32],
     pub logical_length: u64,
-    pub recipe: PhysicalLocator,
+    pub recipe: Option<PhysicalLocator>,
+    pub asset: Option<PhysicalLocator>,
 }
 
 /// Canonical immutable source tree. Paths and metadata are logical; physical
@@ -216,6 +218,15 @@ impl TreeEnvelope {
                 return Err(EncodingError::InvalidRecipe("tree contains an invalid path".into()));
             }
         }
+        for file in self.files.values() {
+            let is_asset = file.kind == "asset";
+            if file.kind.is_empty()
+                || (is_asset && (file.asset.is_none() || file.recipe.is_some()))
+                || (!is_asset && (file.recipe.is_none() || file.asset.is_some()))
+            {
+                return Err(EncodingError::InvalidRecipe("tree file locator kind is incomplete".into()));
+            }
+        }
         Ok(())
     }
 
@@ -223,6 +234,7 @@ impl TreeEnvelope {
         self.validate()?;
         #[derive(Serialize)]
         struct LogicalFile<'a> {
+            kind: &'a str,
             file_id: &'a str,
             logical_digest: [u8; 32],
             logical_length: u64,
@@ -234,6 +246,7 @@ impl TreeEnvelope {
                 (
                     path,
                     LogicalFile {
+                        kind: &file.kind,
                         file_id: &file.file_id,
                         logical_digest: file.logical_digest,
                         logical_length: file.logical_length,
@@ -415,8 +428,18 @@ pub async fn write_encoded_source(
     blobs: &dyn crate::storage::blob::BlobStore,
     document_id: &str,
     source: &EncodedSource,
+    allocations: &HashMap<[u8; 32], ObjectId>,
+    recipe_object_id: ObjectId,
 ) -> Result<StagedSourceObjects, EncodingError> {
-    write_encoded_source_with_existing(blobs, document_id, source, &HashMap::new()).await
+    write_encoded_source_with_existing(
+        blobs,
+        document_id,
+        source,
+        &HashMap::new(),
+        allocations,
+        recipe_object_id,
+    )
+    .await
 }
 
 pub async fn write_encoded_source_with_existing(
@@ -424,13 +447,19 @@ pub async fn write_encoded_source_with_existing(
     document_id: &str,
     source: &EncodedSource,
     existing: &HashMap<[u8; 32], PhysicalLocator>,
+    allocations: &HashMap<[u8; 32], ObjectId>,
+    recipe_object_id: ObjectId,
 ) -> Result<StagedSourceObjects, EncodingError> {
     let mut chunk_objects = Vec::with_capacity(source.objects.len());
     let mut by_digest = HashMap::<[u8; 32], PhysicalLocator>::new();
     for object in &source.objects {
-        let written = crate::storage::blob::write_v2_object(
+        let object_id = allocations.get(&object.digest).ok_or_else(|| {
+            EncodingError::Integrity("missing admitted allocation for source chunk".into())
+        })?;
+        let written = crate::storage::blob::write_v2_object_with_id(
             blobs,
             document_id,
+            object_id.clone(),
             object.encoded.clone(),
             "application/vnd.librepaper.source-chunk",
         )
@@ -476,9 +505,10 @@ pub async fn write_encoded_source_with_existing(
         chunk_locators,
     };
     let recipe_bytes = recipe.to_bytes()?;
-    let recipe_object = crate::storage::blob::write_v2_object(
+    let recipe_object = crate::storage::blob::write_v2_object_with_id(
         blobs,
         document_id,
+        recipe_object_id,
         recipe_bytes,
         "application/vnd.librepaper.source-recipe",
     )
@@ -1344,10 +1374,12 @@ mod tests {
         files.insert(
             "main.md".to_string(),
             TreeFileLocator {
+                kind: "source".into(),
                 file_id: "file-1".into(),
                 logical_digest: digest,
                 logical_length: 8,
-                recipe: recipe.clone(),
+                recipe: Some(recipe.clone()),
+                asset: None,
             },
         );
         let first = TreeEnvelope {
@@ -1359,8 +1391,14 @@ mod tests {
             files,
         };
         let mut second = first.clone();
-        second.files.get_mut("main.md").expect("file").recipe.object_id =
-            ObjectId::parse("fedcba9876543210fedcba9876543210").expect("object id");
+        second
+            .files
+            .get_mut("main.md")
+            .expect("file")
+            .recipe
+            .as_mut()
+            .expect("recipe")
+            .object_id = ObjectId::parse("fedcba9876543210fedcba9876543210").expect("object id");
         assert_eq!(
             first.logical_bytes().expect("logical bytes"),
             second.logical_bytes().expect("logical bytes")
