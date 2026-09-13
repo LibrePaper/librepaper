@@ -30,7 +30,8 @@ const CHECKPOINT_SELECT: &str = "SELECT d.slug,c.id,c.seq,c.journal_sequence,c.t
             COALESCE(json_extract(c.metadata_json,'$.gitCommit'),''),
             COALESCE(json_extract(c.metadata_json,'$.dirty'),0),
             json_extract(c.metadata_json,'$.changed'),c.author_account_id
-     FROM checkpoints c JOIN documents d ON d.id=c.document_id";
+     FROM checkpoints c JOIN documents d ON d.id=c.document_id
+     JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'";
 
 impl Catalog {
     pub fn insert_checkpoint(&self, checkpoint: &Checkpoint) -> CatalogResult<Checkpoint> {
@@ -137,7 +138,7 @@ impl Catalog {
             let first = checkpoints.first().ok_or(CatalogError::NotFound)?;
             let document_id: String = tx
                 .query_row(
-                    "SELECT id FROM documents WHERE slug=?1 AND status<>'deleting'",
+                    "SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1 AND d.status<>'deleting'",
                     [&first.slug],
                     |row| row.get(0),
                 )
@@ -146,6 +147,37 @@ impl Catalog {
                 .ok_or(CatalogError::NotFound)?;
             if let Some(operation) = lease_operation {
                 Self::require_active_source_history_lease_tx(tx, &document_id, operation)?;
+            }
+            if owner_limit >= 0 {
+                let used: i64 = tx
+                    .query_row(
+                        "SELECT stored_bytes + reserved_bytes FROM accounts
+                         WHERE id=(SELECT owner_id FROM documents WHERE id=?1)",
+                        [&document_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if used > owner_limit {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::OwnerBytes,
+                        "owner storage limit is already exceeded",
+                    ));
+                }
+            }
+            if total_limit >= 0 {
+                let used: i64 = tx
+                    .query_row(
+                        "SELECT stored_bytes + reserved_bytes FROM server_state WHERE id=1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if used > total_limit {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::DeploymentBytes,
+                        "deployment storage limit is already exceeded",
+                    ));
+                }
             }
             if let Some(authority) = actor {
                 if !Self::mutation_authorized_in_tx(tx, &first.slug, authority, "editor")? {
@@ -194,7 +226,7 @@ impl Catalog {
         }
         let document_id: String = tx
             .query_row(
-                "SELECT id FROM documents WHERE slug=?1 AND status<>'deleting'",
+                "SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1 AND d.status<>'deleting'",
                 [&checkpoint.slug],
                 |row| row.get(0),
             )
@@ -212,6 +244,20 @@ impl Catalog {
             .ok_or_else(|| {
                 CatalogError::Conflict("checkpoint tree object is not available".into())
             })?;
+        if !checkpoint.parent.is_empty() {
+            let parent_exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM checkpoints WHERE document_id=?1 AND id=?2)",
+                    params![document_id, checkpoint.parent],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if !parent_exists {
+                return Err(CatalogError::Conflict(
+                    "checkpoint parent is not in this document".into(),
+                ));
+            }
+        }
         let exists: bool = tx
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM checkpoints WHERE document_id=?1 AND id=?2)",
@@ -304,12 +350,15 @@ impl Catalog {
             params![document_id, checkpoint.sha, tree_object_id],
         )
         .map_err(CatalogError::from)?;
+        let next_seq = seq
+            .checked_add(1)
+            .ok_or_else(|| CatalogError::Invalid("checkpoint sequence overflow".into()))?;
         tx.execute(
             "UPDATE documents SET next_checkpoint_seq=MAX(next_checkpoint_seq,?1),
              checkpoint_ref_count=checkpoint_ref_count+1,last_checkpoint_at=?2,
              current_checkpoint_id=?3,updated_at=MAX(updated_at,?2)
              WHERE id=?4",
-            params![seq + 1, created_at, checkpoint.sha, document_id],
+            params![next_seq, created_at, checkpoint.sha, document_id],
         )
         .map_err(CatalogError::from)?;
         tx.execute(
@@ -485,7 +534,7 @@ impl Catalog {
         self.with_connection(|connection| {
             let (count, bytes): (i64, i64) = connection
                 .query_row(
-                    "SELECT COUNT(DISTINCT c.id),COALESCE(SUM(DISTINCT o.byte_length),0)
+                    "SELECT COUNT(DISTINCT c.id),COALESCE(SUM(o.byte_length),0)
                      FROM checkpoints c JOIN documents d ON d.id=c.document_id
                      LEFT JOIN checkpoint_objects co ON co.document_id=c.document_id AND co.checkpoint_id=c.id
                      LEFT JOIN objects o ON o.document_id=co.document_id AND o.id=co.object_id
@@ -525,7 +574,7 @@ impl Catalog {
             }
             let document_id = self.with_connection(|connection| {
                 connection
-                    .query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| {
+                    .query_row("SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1", [slug], |row| {
                         row.get::<_, String>(0)
                     })
                     .map_err(CatalogError::from)
@@ -608,7 +657,7 @@ impl Catalog {
             return Err(CatalogError::Invalid("checkpoint label is too long".into()));
         }
         self.immediate(|tx| {
-            let changed = tx.execute("UPDATE checkpoints SET label=?3 WHERE document_id=(SELECT id FROM documents WHERE slug=?1) AND id=?2", params![slug, sha, if label.is_empty() { None } else { Some(label) }]).map_err(CatalogError::from)?;
+            let changed = tx.execute("UPDATE checkpoints SET label=?3 WHERE document_id=(SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1) AND id=?2", params![slug, sha, if label.is_empty() { None } else { Some(label) }]).map_err(CatalogError::from)?;
             if changed != 1 { return Err(CatalogError::NotFound); }
             Self::checkpoint_in_tx(tx, slug, sha)
         })
@@ -653,7 +702,7 @@ impl Catalog {
             if !Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {
                 return Err(CatalogError::refused(CatalogRefusal::ActorRights, "actor rights or session generation changed"));
             }
-            let changed = tx.execute("UPDATE checkpoints SET label=?3 WHERE document_id=(SELECT id FROM documents WHERE slug=?1) AND id=?2", params![slug, sha, if label.is_empty() { None } else { Some(label) }]).map_err(CatalogError::from)?;
+            let changed = tx.execute("UPDATE checkpoints SET label=?3 WHERE document_id=(SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1) AND id=?2", params![slug, sha, if label.is_empty() { None } else { Some(label) }]).map_err(CatalogError::from)?;
             if changed != 1 { return Err(CatalogError::NotFound); }
             Self::checkpoint_in_tx(tx, slug, sha)
         })
@@ -662,7 +711,7 @@ impl Catalog {
     pub fn delete_checkpoint(&self, slug: &str, sha: &str) -> CatalogResult<bool> {
         let document_id = self.with_connection(|connection| {
             connection
-                .query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| {
+                .query_row("SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1", [slug], |row| {
                     row.get::<_, String>(0)
                 })
                 .map_err(CatalogError::from)
