@@ -71,7 +71,7 @@ fn validate_receipt_window(
     }
     let expired: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM operations
-         WHERE COALESCE(document_id,'')=?1 AND COALESCE(account_id,'')=''
+         WHERE document_id=?1 AND account_id IS NULL
            AND actor_key=?2 AND request_key=?3
            AND ((state<>'prepared' AND receipt_expires_at<=?4)
              OR (state='prepared' AND work_expires_at<=?4)))",
@@ -336,7 +336,7 @@ impl Catalog {
                 .query_row(
                     "SELECT id,state,request_digest,plan_json
                      FROM operations
-                     WHERE COALESCE(document_id,'')=?1 AND COALESCE(account_id,'')=''
+                     WHERE document_id=?1 AND account_id IS NULL
                        AND actor_key=?2 AND request_key=?3
                        AND kind='agent_annotations'",
                     params![document_id, actor, request_id],
@@ -524,7 +524,7 @@ impl Catalog {
                 .query_row(
                     "SELECT id,state,request_digest,plan_json
                      FROM operations
-                     WHERE COALESCE(document_id,'')=?1 AND COALESCE(account_id,'')=''
+                     WHERE document_id=?1 AND account_id IS NULL
                        AND actor_key=?2 AND request_key=?3
                        AND kind='agent_annotations'",
                     params![doc, actor, request_id],
@@ -854,7 +854,7 @@ impl Catalog {
                 .query_row(
                     "SELECT id,state,request_digest,plan_json
                      FROM operations
-                     WHERE COALESCE(document_id,'')=?1 AND COALESCE(account_id,'')=''
+                     WHERE document_id=?1 AND account_id IS NULL
                        AND actor_key=?2 AND request_key=?3
                        AND kind='agent_annotations'",
                     params![document_id, actor, request_id],
