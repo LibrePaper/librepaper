@@ -478,6 +478,32 @@ impl Room {
                 )
             }
         };
+        // Capture the durable fences immediately after taking the immutable
+        // room snapshot. The checkpoint gate excludes another checkpoint, and
+        // the CAS in the final transaction rejects a journal/source change
+        // that races this capture; reading these values before the snapshot
+        // could attach a newer tree to an older durability watermark.
+        let (snapshot_source_generation, snapshot_journal) =
+            if let Some(catalog) = self.catalog.get() {
+                let document_id = crate::storage::catalog::DocumentId::new(self.storage_id.clone())
+                    .map_err(|error| WriteError::Storage(error.to_string()))?;
+                let source_generation = catalog
+                    .execute_catalog(256, {
+                        let document_id = document_id.clone();
+                        move |catalog| catalog.v2_document_source_generation(&document_id)
+                    })
+                    .await
+                    .map_err(WriteError::from)?;
+                let journal = catalog
+                    .execute_catalog(256, move |catalog| {
+                        catalog.v2_document_journal_head(&document_id)
+                    })
+                    .await
+                    .map_err(WriteError::from)?;
+                (source_generation, journal)
+            } else {
+                (0, (0, 0))
+            };
         if deferred {
             return Ok(None);
         }
@@ -532,7 +558,7 @@ impl Room {
                 let owner_id = document.owner_id.ok_or_else(|| {
                     WriteError::Storage("document has no checkpoint owner".into())
                 })?;
-                let account = catalog
+                catalog
                     .execute_catalog(256, {
                         let owner_id = owner_id.clone();
                         move |catalog| catalog.account(&owner_id)
@@ -541,13 +567,13 @@ impl Room {
                     .map_err(WriteError::from)?
                     .ok_or(WriteError::NotFound)?;
                 let system_actor = crate::storage::catalog::MutationAuthority {
-                    account_id: &account.id,
+                    account_id: "",
                     owner_key: "",
-                    generation: &account.session_generation,
+                    generation: "",
                     link_hash: "",
-                    policy_editor: true,
-                    automation: true,
-                    unowned_publisher: false,
+                    policy_editor: false,
+                    automation: false,
+                    unowned_publisher: true,
                     execution_epoch: "",
                     agent_checkpoint: None,
                 };
@@ -672,13 +698,21 @@ impl Room {
                     // strict staged commit has the same coverage proof as a
                     // newly written tree.
                     if let Some(catalog) = self.catalog.get() {
-                        stage_existing_publication_checkpoint(
-                            catalog,
-                            &self.slug,
-                            &existing,
-                            actor.map(|actor| crate::room::catalog::OwnedAuthority::new(&actor)),
-                        )
-                        .await?;
+                        let pending_publication = read_catalog_document(catalog, &self.slug)
+                            .await
+                            .map_err(WriteError::from)?
+                            .and_then(|document| document.pending_publication)
+                            .is_some();
+                        if pending_publication {
+                            stage_existing_publication_checkpoint(
+                                catalog,
+                                &self.slug,
+                                &existing,
+                                actor
+                                    .map(|actor| crate::room::catalog::OwnedAuthority::new(&actor)),
+                            )
+                            .await?;
+                        }
                     }
                     if moved {
                         self.record_size_now(Some(&existing), &format, &main).await;
@@ -1588,6 +1622,8 @@ impl Room {
             format!("account:{}", actor.account_id)
         } else if !actor.link_hash.is_empty() {
             format!("link:{}", actor.link_hash)
+        } else if actor.unowned_publisher {
+            "internal".to_string()
         } else {
             return Err(WriteError::Storage(
                 "checkpoint actor has no accountable identity".into(),
@@ -1969,14 +2005,19 @@ impl Room {
     pub(super) async fn parent_tree(&self) -> Option<crate::document::history::Tree> {
         let (held, point) = {
             let state = self.state.lock().await;
-            (state.session.last_tree.clone(), state.manifest.latest().cloned())
+            (
+                state.session.last_tree.clone(),
+                state.manifest.latest().cloned(),
+            )
         };
-        if held.is_some() { return held; }
+        if held.is_some() {
+            return held;
+        }
         let point = point?;
         let catalog = self.catalog.get()?;
         crate::document::history::load_tree(self.blobs.as_ref(), catalog, &self.slug, &point)
-        .await
-        .ok()
+            .await
+            .ok()
     }
 
     /// What one checkpoint said: its tree, and the text of every file in it by
@@ -1989,7 +2030,9 @@ impl Room {
         point: &Checkpoint,
     ) -> Result<(crate::document::history::Tree, HashMap<String, String>), String> {
         let catalog = self.catalog.get().ok_or("durable catalog required")?;
-        self.checkpoint_cache.load_checkpoint_v2(self.blobs.as_ref(), catalog, &self.slug, point).await
+        self.checkpoint_cache
+            .load_checkpoint_v2(self.blobs.as_ref(), catalog, &self.slug, point)
+            .await
     }
 
     /// Look up one checkpoint without requiring the bounded resident history
@@ -2107,7 +2150,12 @@ impl Room {
         // rather than the (empty) document.
         let (tree, bodies) = self
             .checkpoint_cache
-            .load_checkpoint_v2(self.blobs.as_ref(), self.catalog.get().ok_or("durable catalog required")?, &self.slug, &point)
+            .load_checkpoint_v2(
+                self.blobs.as_ref(),
+                self.catalog.get().ok_or("durable catalog required")?,
+                &self.slug,
+                &point,
+            )
             .await?;
         session::restore(doc, &tree, &bodies);
         Ok(())
@@ -2123,15 +2171,22 @@ impl Room {
         point: &Checkpoint,
         tree: &history::Tree,
     ) -> Result<Option<crate::storage::catalog::CheckpointReadLease>, WriteError> {
-        let catalog = self.catalog.get().ok_or_else(|| WriteError::Storage("durable catalog required".into()))?;
+        let catalog = self
+            .catalog
+            .get()
+            .ok_or_else(|| WriteError::Storage("durable catalog required".into()))?;
         let owner = catalog.clone();
         let slug = self.slug.clone();
         let event = point.sha.clone();
-        let lease = catalog.execute_catalog(4096, move |_| {
-            owner.acquire_checkpoint_read(&slug, Some(&event), crate::util::now_millis())
-        }).await?;
+        let lease = catalog
+            .execute_catalog(4096, move |_| {
+                owner.acquire_checkpoint_read(&slug, Some(&event), crate::util::now_millis())
+            })
+            .await?;
         if hex::encode(sha2::Sha256::digest(tree.to_bytes())) != lease.set.tree_digest {
-            return Err(WriteError::Storage("restore tree does not match checkpoint closure".into()));
+            return Err(WriteError::Storage(
+                "restore tree does not match checkpoint closure".into(),
+            ));
         }
         Ok(Some(lease))
     }

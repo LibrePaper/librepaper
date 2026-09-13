@@ -589,6 +589,12 @@ fn operation_authorized_in_tx(
         format!("account:{account_id}")
     } else if !link_hash.is_empty() {
         format!("link:{link_hash}")
+    } else if authorization
+        .get("unowned_publisher")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        "internal".to_owned()
     } else {
         owner_key.to_owned()
     };
@@ -601,6 +607,30 @@ fn operation_authorized_in_tx(
             CatalogRefusal::ActorRights,
             "operation actor proof changed",
         ));
+    }
+    if actor_key == "internal"
+        && authorization
+            .get("unowned_publisher")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    {
+        let trusted_document: bool = tx
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM documents d JOIN accounts owner ON owner.id=d.owner_id
+                    WHERE d.id=?1 AND d.status IN ('active','creating')
+                      AND owner.status='active')",
+                [document_id],
+                |row| row.get(0),
+            )
+            .map_err(CatalogError::from)?;
+        if !trusted_document {
+            return Err(CatalogError::refused(
+                CatalogRefusal::ActorRights,
+                "internal checkpoint document is not active",
+            ));
+        }
+        return Ok(());
     }
     let slug: String = tx
         .query_row(
@@ -3015,25 +3045,49 @@ impl Catalog {
             if generation != current_generation { return Err(CatalogError::Conflict("source operation belongs to an obsolete writer generation".into())); }
             operation_authorized_in_tx(tx, checkpoint.document_id.as_str(), &actor_key, &plan_json, "editor")?;
             if let Some(agent) = agent {
-                let receipt: Option<(String, String)> = tx
+                let agent_row: Option<(String, String, String, String, Option<i64>)> = tx
                     .query_row(
-                        "SELECT request_digest,state FROM operations
-                         WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'",
+                        "SELECT request_digest,state,plan_json,actor_key,work_expires_at
+                           FROM operations
+                          WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'",
                         params![checkpoint.document_id.as_str(), agent.request_id.as_str()],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
                     )
                     .optional()
                     .map_err(CatalogError::from)?;
-                let Some((agent_digest, agent_state)) = receipt else {
+                let Some((agent_digest, agent_state, agent_plan_json, agent_actor, agent_deadline)) =
+                    agent_row
+                else {
                     return Err(CatalogError::Conflict(
-                        "agent checkpoint receipt is missing".into(),
+                        "prepared agent source operation is missing".into(),
                     ));
                 };
-                if agent_digest != agent.digest || agent_state != "committed" {
+                if agent_digest != agent.digest || agent_actor != actor_key {
                     return Err(CatalogError::Conflict(
-                        "agent checkpoint receipt is not committed for this actor".into(),
+                        "agent source operation actor or digest changed".into(),
                     ));
                 }
+                if agent_deadline.is_some_and(|deadline| deadline <= checkpoint.now.0) {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::RequestExpired,
+                        "agent source operation has expired",
+                    ));
+                }
+                if !matches!(agent_state.as_str(), "prepared" | "committed") {
+                    return Err(CatalogError::Conflict(
+                        "agent source operation is not committable".into(),
+                    ));
+                }
+                let agent_plan = serde_json::from_str::<serde_json::Value>(&agent_plan_json)
+                    .map_err(|_| CatalogError::Invalid("invalid agent source plan".into()))?;
                 let planned_revision = serde_json::from_str::<serde_json::Value>(&plan_json)
                     .ok()
                     .and_then(|plan| {
@@ -3045,6 +3099,107 @@ impl Catalog {
                     return Err(CatalogError::Conflict(
                         "agent checkpoint source revision changed".into(),
                     ));
+                }
+                if agent_plan
+                    .get("after_tree")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(agent.source_revision.as_str())
+                {
+                    return Err(CatalogError::Conflict(
+                        "agent source CAS revision changed".into(),
+                    ));
+                }
+                let checkpoint_authority = serde_json::from_str::<serde_json::Value>(&plan_json)
+                    .ok()
+                    .and_then(|plan| plan.get("authority").cloned())
+                    .unwrap_or_default();
+                let expected_epoch = checkpoint_authority
+                    .get("execution_epoch")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let agent_epoch = agent_plan
+                    .get("actor")
+                    .and_then(|actor| actor.get("execution_epoch"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if expected_epoch != agent_epoch {
+                    return Err(CatalogError::Conflict(
+                        "agent execution epoch changed".into(),
+                    ));
+                }
+                let cancelled: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM operations
+                           WHERE document_id=?1 AND kind='agent_cancel'
+                             AND target_request_key=?2 AND state='committed')",
+                        params![checkpoint.document_id.as_str(), agent.request_id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if cancelled {
+                    return Err(CatalogError::Conflict(
+                        "agent source operation was cancelled".into(),
+                    ));
+                }
+                if agent_state == "prepared" {
+                    if let Some(acceptance) = agent_plan.get("acceptance").filter(|value| !value.is_null()) {
+                        let comment_id = acceptance
+                            .get("comment_id")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|value| !value.is_empty())
+                            .ok_or_else(|| CatalogError::Invalid("agent acceptance comment is missing".into()))?;
+                        let expected_seq = acceptance
+                            .get("expected_seq")
+                            .and_then(serde_json::Value::as_i64)
+                            .ok_or_else(|| CatalogError::Invalid("agent acceptance sequence is missing".into()))?;
+                        let changed = tx
+                            .execute(
+                                "UPDATE annotations
+                                    SET protected_checkpoint_id=NULL,
+                                        suggestion_state='accepted',
+                                        acceptance_operation_id=(SELECT id FROM operations WHERE document_id=?1 AND request_key=?2 AND kind='agent_apply'),
+                                        resolution_revision=?3,
+                                        resolved_at=?4,
+                                        updated_at=max(updated_at,?4)
+                                  WHERE document_id=?1 AND id=?5 AND seq=?6
+                                    AND kind='suggestion' AND suggestion_state='proposed'",
+                                params![
+                                    checkpoint.document_id.as_str(),
+                                    agent.request_id.as_str(),
+                                    checkpoint.id.as_str(),
+                                    checkpoint.now.0,
+                                    comment_id,
+                                    expected_seq,
+                                ],
+                            )
+                            .map_err(CatalogError::from)?;
+                        if changed != 1 {
+                            return Err(CatalogError::Conflict(
+                                "agent suggestion changed before checkpoint commit".into(),
+                            ));
+                        }
+                    }
+                    let agent_result = serde_json::json!({
+                        "version": 2,
+                        "operation": agent.request_id,
+                        "source_revision": agent.source_revision,
+                        "checkpoint_id": checkpoint.id.as_str(),
+                    })
+                    .to_string();
+                    tx.execute(
+                        "UPDATE operations SET state='committed',result_json=?1,
+                                completed_at=?2,receipt_expires_at=?3,updated_at=?2
+                          WHERE document_id=?4 AND request_key=?5
+                            AND kind='agent_apply' AND state='prepared'",
+                        params![
+                            agent_result,
+                            checkpoint.now.0,
+                            checkpoint.now.0.saturating_add(7 * 24 * 60 * 60 * 1_000),
+                            checkpoint.document_id.as_str(),
+                            agent.request_id.as_str(),
+                        ],
+                    )
+                    .map_err(CatalogError::from)?;
                 }
             }
             let (source_generation, next, doc_refs): (i64,i64,i64) = tx.query_row(
