@@ -387,6 +387,13 @@ fn publication_reader_keeps_superseded_bundle_until_release() {
     }).unwrap();
     let lease = catalog.acquire_publication_read("doc", 1).unwrap().unwrap();
     assert_eq!(lease.objects.len(), 2);
+    // Erasure withdraws reads as soon as the account changes lifecycle, even
+    // before the bounded worker has reached its owned document rows.
+    catalog.with_connection(|db| {
+        db.execute("UPDATE accounts SET status='erasing' WHERE id='owner'", [])?;
+        Ok(())
+    }).unwrap();
+    assert!(catalog.acquire_publication_read("doc", 2).unwrap().is_none());
     catalog.with_connection(|db| {
         db.execute("UPDATE documents SET publication_id=NULL,publication_object_id=NULL,published_at=NULL WHERE id='doc'",[])?;
         db.execute("UPDATE objects SET publication_root=0,gc_after=1 WHERE document_id='doc'",[])?;

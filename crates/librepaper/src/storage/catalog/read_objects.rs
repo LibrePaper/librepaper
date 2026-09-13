@@ -131,7 +131,7 @@ impl Catalog {
         let expires_at = deadline(now)?;
         let holder = hex::encode(crate::auth::random_bytes(16));
         let (generation,set)=self.immediate(|tx| {
-            let head:Option<(String,String,String,String)>=tx.query_row("SELECT d.id,c.id,c.tree_object_id,c.tree_digest FROM documents d JOIN checkpoints c ON c.document_id=d.id AND c.id=COALESCE(?2,d.current_checkpoint_id) WHERE d.slug=?1 AND d.status='active'",params![slug,checkpoint],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
+            let head:Option<(String,String,String,String)>=tx.query_row("SELECT d.id,c.id,c.tree_object_id,c.tree_digest FROM documents d JOIN accounts a ON a.id=d.owner_id JOIN checkpoints c ON c.document_id=d.id AND c.id=COALESCE(?2,d.current_checkpoint_id) WHERE d.slug=?1 AND d.status='active' AND a.status='active'",params![slug,checkpoint],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
             let (document,checkpoint_id,tree_id,tree_digest)=head.ok_or(CatalogError::NotFound)?;
             let document_id=DocumentId::new(document.clone()).map_err(|e|CatalogError::Invalid(e.to_string()))?;
             let tree_object_id=ObjectId::new(tree_id).map_err(|e|CatalogError::Invalid(e.to_string()))?;
@@ -176,7 +176,7 @@ impl Catalog {
         let holder = hex::encode(crate::auth::random_bytes(16));
         let value = self.immediate(|tx| {
             let head: Option<(String,String)> = tx.query_row(
-                "SELECT publication_id,publication_object_id FROM documents WHERE id=?1 AND status='active' AND publication_object_id IS NOT NULL",
+                "SELECT d.publication_id,d.publication_object_id FROM documents d JOIN accounts a ON a.id=d.owner_id WHERE d.id=?1 AND d.status='active' AND a.status='active' AND d.publication_object_id IS NOT NULL",
                 [document], |row| Ok((row.get(0)?,row.get(1)?)),
             ).optional()?;
             let Some((publication_id,manifest)) = head else { return Ok(None); };
