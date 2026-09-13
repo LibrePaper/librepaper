@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-use crate::storage::blob::{v2_object_key, write_v2_object, BlobError, BlobStore, ObjectId, WrittenObject};
+use crate::storage::blob::{v2_object_key, write_v2_object_with_id, BlobError, BlobStore, ObjectId, WrittenObject};
 
 use super::{JournalError, JournalRecord, JournalResult, Segment};
 
@@ -50,6 +50,7 @@ pub struct JournalAppendAdmission {
     pub expected_last_sequence: u64,
     pub source_generation: u64,
     pub writer_generation: String,
+    pub allocations: Vec<JournalObjectAllocation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +59,25 @@ pub struct JournalAppendRequest {
     pub actor_key: String,
     pub request_key: String,
     pub expected_source_generation: u64,
+    pub epoch: u64,
+    pub first_sequence: u64,
+    pub last_sequence: u64,
+    pub parts: Vec<JournalPartAdmission>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalPartAdmission {
+    pub epoch: u64,
+    pub first_sequence: u64,
+    pub last_sequence: u64,
+    pub digest: String,
+    pub byte_length: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalObjectAllocation {
+    pub object_id: ObjectId,
+    pub storage_key: String,
     pub epoch: u64,
     pub first_sequence: u64,
     pub last_sequence: u64,
@@ -90,6 +110,7 @@ pub struct JournalCompactionAdmission {
     pub captured_epoch: u64,
     pub captured_sequence: u64,
     pub writer_generation: String,
+    pub base_allocation: JournalObjectAllocation,
 }
 
 /// SQL-side hooks for the v2 append protocol. The implementation must use an
@@ -119,6 +140,8 @@ pub trait V2JournalCatalog: Send + Sync {
         document_id: &str,
         expected_epoch: u64,
         expected_sequence: u64,
+        byte_length: u64,
+        digest: String,
     ) -> Result<JournalCompactionAdmission, String>;
     async fn commit_compaction(
         &self,
@@ -228,12 +251,19 @@ where
         base: Vec<u8>,
         content_type: &str,
     ) -> JournalResult<WrittenObject> {
+        let digest = hex::encode(Sha256::digest(&base));
         let admission = self
             .catalog
-            .prepare_compaction(document_id, expected_epoch, expected_sequence)
+            .prepare_compaction(document_id, expected_epoch, expected_sequence, base.len() as u64, digest)
             .await
             .map_err(JournalError::CatalogText)?;
-        let written = match write_v2_object(self.blobs.as_ref(), document_id, base, content_type).await {
+        let written = match write_v2_object_with_id(
+            self.blobs.as_ref(),
+            document_id,
+            admission.base_allocation.object_id.clone(),
+            base,
+            content_type,
+        ).await {
             Ok(written) => written,
             Err(error) => {
                 let _ = self.catalog.abort_compaction(&admission.operation_id).await;
@@ -401,11 +431,31 @@ pub async fn append_segments(
     request: JournalAppendRequest,
     segments: &[Segment],
 ) -> JournalResult<Vec<WrittenJournalObject>> {
+    let encoded = segments
+        .iter()
+        .map(|segment| {
+            let object = DocumentSegment::new(request.document_id.clone(), request.epoch, segment.clone())?;
+            let body = object.encode()?;
+            let digest = hex::encode(Sha256::digest(&body));
+            Ok((object, body, digest))
+        })
+        .collect::<JournalResult<Vec<_>>>()?;
+    let mut request = request;
+    request.parts = encoded
+        .iter()
+        .map(|(object, body, digest)| JournalPartAdmission {
+            epoch: object.epoch,
+            first_sequence: object.first_sequence,
+            last_sequence: object.last_sequence,
+            digest: digest.clone(),
+            byte_length: body.len() as u64,
+        })
+        .collect();
     let admission = catalog
         .prepare_append(request)
         .await
         .map_err(JournalError::CatalogText)?;
-    let written = match write_segments(blobs, &admission.document_id, admission.epoch, segments).await {
+    let written = match write_encoded_segments(blobs, &admission, encoded).await {
         Ok(written) => written,
         Err(error) => {
             let _ = catalog.abort_append(&admission.operation_id).await;
@@ -514,6 +564,42 @@ pub async fn write_segments(
             digest,
             byte_length: body.len() as u64,
             epoch,
+            first_sequence: object.first_sequence,
+            last_sequence: object.last_sequence,
+        });
+    }
+    Ok(written)
+}
+
+async fn write_encoded_segments(
+    blobs: &dyn BlobStore,
+    admission: &JournalAppendAdmission,
+    encoded: Vec<(DocumentSegment, Vec<u8>, String)>,
+) -> JournalResult<Vec<WrittenJournalObject>> {
+    if encoded.len() != admission.allocations.len() {
+        return Err(JournalError::Conflict("catalog returned the wrong journal allocation count".into()));
+    }
+    let mut written = Vec::with_capacity(encoded.len());
+    for ((object, body, digest), allocation) in encoded.into_iter().zip(&admission.allocations) {
+        if allocation.epoch != object.epoch
+            || allocation.first_sequence != object.first_sequence
+            || allocation.last_sequence != object.last_sequence
+        {
+            return Err(JournalError::Conflict("journal allocation range does not match encoded segment".into()));
+        }
+        blobs
+            .put_new(&allocation.storage_key, body.clone(), JOURNAL_OBJECT_CONTENT_TYPE)
+            .await
+            .map_err(|error| match error {
+                BlobError::Conflict => JournalError::Conflict("journal allocation id reused".into()),
+                other => JournalError::Storage(other.to_string()),
+            })?;
+        written.push(WrittenJournalObject {
+            object_id: allocation.object_id.clone(),
+            storage_key: allocation.storage_key.clone(),
+            digest,
+            byte_length: body.len() as u64,
+            epoch: object.epoch,
             first_sequence: object.first_sequence,
             last_sequence: object.last_sequence,
         });
