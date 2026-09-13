@@ -7,6 +7,8 @@
 
 use async_trait::async_trait;
 
+use sha2::{Digest, Sha256};
+
 use crate::storage::blob::{validate_v2_object_key, BlobStore};
 
 pub const GC_PAGE_SIZE: usize = 256;
@@ -30,6 +32,50 @@ pub struct GcReport {
     pub objects_deferred: usize,
     pub bytes_released: i64,
     pub lease_rows_expired: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparedKind {
+    SourcePublish,
+    DisplayPublish,
+    Checkpoint,
+    JournalAppend,
+    JournalCompact,
+    AgentApply,
+    AgentAnnotations,
+    AgentCancel,
+    AgentExecution,
+    AgentStage,
+    EraseAccount,
+    EraseDocument,
+    RotateLinks,
+    Backup,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedOperation {
+    pub operation_id: String,
+    pub kind: PreparedKind,
+    pub document_id: Option<String>,
+    pub writer_generation: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedAllocation {
+    pub operation_id: String,
+    pub document_id: String,
+    pub object_id: String,
+    pub storage_key: String,
+    pub expected_digest: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecoveryReport {
+    pub allocations_settled: usize,
+    pub allocations_aborted: usize,
+    pub operations_aborted: usize,
+    pub operations_resumed: usize,
+    pub operations_deferred: usize,
 }
 
 #[derive(Debug)]
@@ -66,6 +112,147 @@ pub trait V2GcCatalog: Send + Sync {
         confirmed: bool,
         retry_at: i64,
     ) -> Result<i64, String>;
+}
+
+/// Startup recovery boundary. Implementations perform every mutation in an
+/// immediate transaction and retain the allocation charge whenever the object
+/// store cannot prove absence or a verified digest/length.
+#[async_trait]
+pub trait V2RecoveryCatalog: Send + Sync {
+    async fn establish_writer_generation(&self) -> Result<String, String>;
+    async fn prepared_allocations_page(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PreparedAllocation>, String>;
+    async fn settle_allocation(
+        &self,
+        allocation: &PreparedAllocation,
+        byte_length: u64,
+        digest: &str,
+    ) -> Result<(), String>;
+    async fn abort_absent_allocation(&self, allocation: &PreparedAllocation) -> Result<(), String>;
+    async fn prepared_operations_page(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PreparedOperation>, String>;
+    async fn abort_unacknowledged_operation(&self, operation_id: &str) -> Result<(), String>;
+    async fn adopt_internal_operation(&self, operation: &PreparedOperation) -> Result<(), String>;
+    async fn defer_uncertain_operation(&self, operation_id: &str) -> Result<(), String>;
+}
+
+pub async fn recover_v2_startup(
+    catalog: &dyn V2RecoveryCatalog,
+    blobs: &dyn BlobStore,
+) -> Result<RecoveryReport, GcError> {
+    // This call must happen after the deployment OS writer lock is held and
+    // before any room/document traffic is admitted.
+    catalog
+        .establish_writer_generation()
+        .await
+        .map_err(GcError::Catalog)?;
+    let mut report = RecoveryReport::default();
+    let mut after = None;
+    loop {
+        let page = catalog
+            .prepared_allocations_page(after.as_deref(), 256)
+            .await
+            .map_err(GcError::Catalog)?;
+        if page.is_empty() {
+            break;
+        }
+        if page.len() > 256 {
+            return Err(GcError::Invalid("allocation recovery page exceeded bound".into()));
+        }
+        let previous = after.clone();
+        for allocation in &page {
+            validate_v2_object_key(&allocation.storage_key)
+                .map_err(|error| GcError::Invalid(error.to_string()))?;
+            match blobs.get(&allocation.storage_key).await {
+                Ok(body) => {
+                    let digest = hex::encode(Sha256::digest(&body));
+                    if digest == allocation.expected_digest {
+                        catalog
+                            .settle_allocation(allocation, body.len() as u64, &digest)
+                            .await
+                            .map_err(GcError::Catalog)?;
+                        report.allocations_settled += 1;
+                    } else {
+                        // A mismatched immutable allocation is not absent and
+                        // must remain charged for operator reconciliation.
+                        report.operations_deferred += 1;
+                    }
+                }
+                Err(crate::storage::blob::BlobError::NotFound) => {
+                    catalog
+                        .abort_absent_allocation(allocation)
+                        .await
+                        .map_err(GcError::Catalog)?;
+                    report.allocations_aborted += 1;
+                }
+                Err(_) => report.operations_deferred += 1,
+            }
+            after = Some(allocation.storage_key.clone());
+        }
+        if after == previous {
+            return Err(GcError::Invalid("allocation recovery cursor did not advance".into()));
+        }
+    }
+    let mut operation_after = None;
+    loop {
+        let page = catalog
+            .prepared_operations_page(operation_after.as_deref(), 128)
+            .await
+            .map_err(GcError::Catalog)?;
+        if page.is_empty() {
+            break;
+        }
+        if page.len() > 128 {
+            return Err(GcError::Invalid("operation recovery page exceeded bound".into()));
+        }
+        let previous = operation_after.clone();
+        for operation in &page {
+            let internal = matches!(
+                operation.kind,
+                PreparedKind::JournalCompact
+                    | PreparedKind::EraseAccount
+                    | PreparedKind::EraseDocument
+                    | PreparedKind::RotateLinks
+                    | PreparedKind::Backup
+            );
+            if matches!(operation.kind, PreparedKind::AgentExecution) {
+                catalog
+                    .abort_unacknowledged_operation(&operation.operation_id)
+                    .await
+                    .map_err(GcError::Catalog)?;
+                report.operations_aborted += 1;
+            } else if internal {
+                catalog
+                    .adopt_internal_operation(operation)
+                    .await
+                    .map_err(GcError::Catalog)?;
+                report.operations_resumed += 1;
+            } else if matches!(operation.kind, PreparedKind::DisplayPublish | PreparedKind::AgentStage) {
+                catalog
+                    .defer_uncertain_operation(&operation.operation_id)
+                    .await
+                    .map_err(GcError::Catalog)?;
+                report.operations_deferred += 1;
+            } else {
+                catalog
+                    .abort_unacknowledged_operation(&operation.operation_id)
+                    .await
+                    .map_err(GcError::Catalog)?;
+                report.operations_aborted += 1;
+            }
+            operation_after = Some(operation.operation_id.clone());
+        }
+        if operation_after == previous {
+            return Err(GcError::Invalid("operation recovery cursor did not advance".into()));
+        }
+    }
+    Ok(report)
 }
 
 pub async fn run_gc_pass(

@@ -138,7 +138,6 @@ pub struct PhysicalLocator {
 pub struct SourceRecipeEnvelope {
     pub version: u16,
     pub recipe: Recipe,
-    pub recipe_locator: PhysicalLocator,
     pub chunk_locators: Vec<PhysicalLocator>,
 }
 
@@ -147,8 +146,6 @@ impl SourceRecipeEnvelope {
         if self.version != SOURCE_ENVELOPE_VERSION
             || self.recipe.version != RECIPE_VERSION
             || self.chunk_locators.len() != self.recipe.chunks.len()
-            || self.recipe_locator.encoding_version == 0
-            || self.recipe_locator.logical_digest != Some(self.recipe.file_digest)
             || self.chunk_locators.iter().any(|locator| locator.encoding_version == 0)
         {
             return Err(EncodingError::InvalidRecipe("invalid source recipe envelope".into()));
@@ -400,6 +397,67 @@ pub struct EncodedSource {
     pub recipe: Recipe,
     pub recipe_bytes: Vec<u8>,
     pub objects: Vec<EncodedObject>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StagedSourceObjects {
+    pub recipe: SourceRecipeEnvelope,
+    pub recipe_object: crate::storage::blob::WrittenObject,
+    pub chunk_objects: Vec<crate::storage::blob::WrittenObject>,
+}
+
+/// Publish the immutable physical objects for an encoded source. The caller
+/// must have admitted matching `objects` reservations first and must settle
+/// the returned descriptors transactionally; this function never advances a
+/// document head or acknowledges a checkpoint.
+pub async fn write_encoded_source(
+    blobs: &dyn crate::storage::blob::BlobStore,
+    document_id: &str,
+    source: &EncodedSource,
+) -> Result<StagedSourceObjects, EncodingError> {
+    let mut chunk_objects = Vec::with_capacity(source.objects.len());
+    let mut by_digest = HashMap::<[u8; 32], crate::storage::blob::WrittenObject>::new();
+    for object in &source.objects {
+        let written = crate::storage::blob::write_v2_object(
+            blobs,
+            document_id,
+            object.encoded.clone(),
+            "application/vnd.librepaper.source-chunk",
+        )
+        .await
+        .map_err(|error| EncodingError::Worker(error.to_string()))?;
+        by_digest.insert(object.digest, written.clone());
+        chunk_objects.push(written);
+    }
+    let mut chunk_locators = Vec::with_capacity(source.recipe.chunks.len());
+    for reference in &source.recipe.chunks {
+        let object = by_digest.get(&reference.digest).ok_or_else(|| {
+            EncodingError::Integrity("encoded source omitted a required chunk".into())
+        })?;
+        let object_digest = decode_digest(&object.digest)?;
+        chunk_locators.push(PhysicalLocator {
+            object_id: object.object_id.clone(),
+            object_digest,
+            logical_digest: Some(reference.digest),
+            byte_length: object.byte_length,
+            encoding_version: 1,
+        });
+    }
+    let recipe = SourceRecipeEnvelope {
+        version: SOURCE_ENVELOPE_VERSION,
+        recipe: source.recipe.clone(),
+        chunk_locators,
+    };
+    let recipe_bytes = recipe.to_bytes()?;
+    let recipe_object = crate::storage::blob::write_v2_object(
+        blobs,
+        document_id,
+        recipe_bytes,
+        "application/vnd.librepaper.source-recipe",
+    )
+    .await
+    .map_err(|error| EncodingError::Worker(error.to_string()))?;
+    Ok(StagedSourceObjects { recipe, recipe_object, chunk_objects })
 }
 
 /// The digest/cut pass of encoding, separated from compression so a caller

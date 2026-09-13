@@ -73,6 +73,25 @@ impl std::fmt::Display for ObjectId {
     }
 }
 
+impl serde::Serialize for ObjectId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ObjectId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
+    }
+}
+
 /// The only physical key layout accepted for application objects in v2.
 /// Mutable document slugs never occur in this key.
 pub fn v2_object_key(document_id: &str, object_id: &ObjectId) -> BlobResult<String> {
@@ -135,6 +154,16 @@ pub async fn write_v2_object(
     content_type: &str,
 ) -> BlobResult<WrittenObject> {
     let object_id = ObjectId::random();
+    write_v2_object_with_id(blobs, document_id, object_id, body, content_type).await
+}
+
+pub async fn write_v2_object_with_id(
+    blobs: &dyn BlobStore,
+    document_id: &str,
+    object_id: ObjectId,
+    body: Vec<u8>,
+    content_type: &str,
+) -> BlobResult<WrittenObject> {
     let storage_key = v2_object_key(document_id, &object_id)?;
     let digest = hex::encode(Sha256::digest(&body));
     let byte_length = body.len() as u64;
