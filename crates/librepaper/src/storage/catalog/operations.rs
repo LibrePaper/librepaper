@@ -974,6 +974,12 @@ impl Catalog {
                         "agent actor session generation changed",
                     ));
                 }
+                if supplied_generation.is_empty() && !account_id.starts_with("anonymous:") {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::ActorRights,
+                        "agent actor session generation is missing",
+                    ));
+                }
                 actor.insert("account_id".into(), serde_json::Value::String(account_id));
                 actor.insert(
                     "generation".into(),

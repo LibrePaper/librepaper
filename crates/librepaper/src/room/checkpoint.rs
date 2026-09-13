@@ -1656,6 +1656,11 @@ impl Room {
                     "checkpoint actor session generation changed".into(),
                 ));
             }
+            if actor.generation.is_empty() && !authority_account.starts_with("anonymous:") {
+                return Err(WriteError::Conflict(
+                    "checkpoint actor session generation is missing".into(),
+                ));
+            }
             account.session_generation
         } else {
             String::new()
