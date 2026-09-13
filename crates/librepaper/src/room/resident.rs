@@ -190,9 +190,10 @@ mod tests {
     use super::*;
     use crate::config::Configuration;
     use crate::document::history::Checkpoint;
-    use crate::document::store::{self, Store};
+    use crate::document::store::{self, MutationActor, Store};
     use crate::room::{Command, Comment, Room, RoomSet, SourceAnchor};
     use crate::storage::blob::{BlobStore, FsStore};
+    use crate::storage::catalog::{AccountKind, Catalog, UnixMillis, V2AccountInput};
 
     use std::sync::Arc;
 
@@ -201,17 +202,66 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
         let config = Arc::new(config);
-        let store = Arc::new(Store::open(blobs.clone(), config.clone()).await.unwrap());
+        let catalog = Arc::new(Catalog::open(directory.path().join("catalog.db")).unwrap());
+        catalog
+            .create_v2_account(
+                &V2AccountInput {
+                    id: "alice".into(),
+                    kind: AccountKind::Registered,
+                    provider: Some("github".into()),
+                    provider_subject: Some("resident-fixture".into()),
+                    handle: "alice".into(),
+                    display_name: "Alice".into(),
+                    email: None,
+                    plan: "default".into(),
+                    session_generation: "resident-fixture-session".into(),
+                    preferences_json: r#"{"version":2}"#.into(),
+                    bookmarks_json: r#"{"version":1}"#.into(),
+                    onboarding_json: r#"{"version":1}"#.into(),
+                },
+                UnixMillis::new(crate::util::now_millis()).unwrap(),
+            )
+            .unwrap();
+        let store = Arc::new(
+            Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+                .await
+                .unwrap(),
+        );
         let rooms = RoomSet::new(blobs, config);
         rooms.attach_store(store.clone());
+        rooms.attach_journal(Arc::new(
+            crate::storage::journal::V2JournalRuntime::with_persistence(
+                Arc::new(
+                    crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                        catalog.clone(),
+                        store.config.persistence(),
+                    ),
+                ),
+                store.blobs.clone(),
+                store.config.persistence(),
+            )
+            .unwrap(),
+        ));
         store
-            .put(store::Publication {
+            .put_as_actor(
+                store::Publication {
                 slug: "probe".into(),
                 source: "alpha".into(),
                 source_format: "markdown".into(),
                 owner: "alice".into(),
+                owner_id: "alice".into(),
                 ..Default::default()
-            })
+                },
+                MutationActor {
+                    account_id: "alice".into(),
+                    owner_key: String::new(),
+                    session_generation: "resident-fixture-session".into(),
+                    link_hash: String::new(),
+                    policy_editor: true,
+                    automation: false,
+                    unowned_publisher: false,
+                },
+            )
             .await
             .unwrap();
         let room = rooms.get("probe").await;
