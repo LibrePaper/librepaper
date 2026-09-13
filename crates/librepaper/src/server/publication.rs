@@ -1448,10 +1448,11 @@ impl PublicationStore {
         storage_id: &str,
     ) -> Result<Option<PublicationManifest>, PublicationError> {
         if self.store.is_some() {
-            return self
-                .current_leased(storage_id)
-                .await
-                .map(|value| value.map(|(_, manifest, _)| manifest));
+            let Some((lease, manifest, _)) = self.current_leased(storage_id).await? else {
+                return Ok(None);
+            };
+            let _ = lease.finish().await;
+            return Ok(Some(manifest));
         }
         match self.blobs.get(&Self::manifest_key(storage_id)).await {
             Ok(body) => serde_json::from_slice(&body)
@@ -1518,6 +1519,9 @@ impl PublicationStore {
             return Err(PublicationError::Storage(
                 "publication object failed validation".into(),
             ));
+        }
+        if let Some((lease, _, _)) = current {
+            let _ = lease.finish().await;
         }
         Ok((object, bytes))
     }

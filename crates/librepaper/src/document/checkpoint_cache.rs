@@ -305,6 +305,7 @@ impl CheckpointCache {
                 return Err("checkpoint read lease expired".into());
             }
         }
+        let _ = lease.finish().await;
         Ok((tree, bodies))
     }
 

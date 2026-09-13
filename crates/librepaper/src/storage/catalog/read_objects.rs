@@ -44,17 +44,31 @@ impl ObjectReadLease {
     pub fn valid_at(&self, now: i64) -> bool {
         now >= 0 && now < self.expires_at
     }
+    /// Explicit synchronous release, for callers already on the catalog
+    /// executor. Cancellation otherwise leaves the durable expiry as fallback.
+    pub fn release(&mut self) -> CatalogResult<()> {
+        if self.object_ids.is_empty() {
+            return Ok(());
+        }
+        self.catalog.immediate(|tx| {
+            for object_id in &self.object_ids {
+                tx.execute("DELETE FROM object_leases WHERE document_id=?1 AND object_id=?2 AND holder_id=?3", params![self.document_id.as_str(), object_id.as_str(), self.holder])?;
+            }
+            Ok(())
+        })?;
+        self.object_ids.clear();
+        self.expires_at = 0;
+        Ok(())
+    }
 }
 impl Drop for ObjectReadLease {
     fn drop(&mut self) {
-        // Best-effort early release. Expiry remains the durable fallback if the
-        // executor has already closed; failure never marks an object deletable.
-        let _=self.catalog.immediate(|tx| {
-            for object_id in &self.object_ids {
-                tx.execute("DELETE FROM object_leases WHERE document_id=?1 AND object_id=?2 AND holder_id=?3",params![self.document_id.as_str(),object_id.as_str(),self.holder])?;
-            }
-            Ok(())
-        });
+        // A cancelled async read must not block a Tokio worker on SQLite or
+        // create an unbounded cleanup task. Normal reads explicitly finish on
+        // the catalog executor; abandoned leases expire durably.
+        if tokio::runtime::Handle::try_current().is_err() {
+            let _ = self.release();
+        }
     }
 }
 pub struct CheckpointReadLease {
@@ -71,12 +85,11 @@ impl CheckpointReadLease {
             })
             .await
     }
-    pub async fn finish(self) -> Result<(), super::CatalogExecError> {
+    pub async fn finish(mut self) -> Result<(), super::CatalogExecError> {
         let catalog = self.guard.catalog.clone();
         catalog
             .execute_catalog(4096, move |_| {
-                drop(self);
-                Ok(())
+                self.guard.release()
             })
             .await
     }
@@ -99,6 +112,12 @@ pub struct PublicationReadLease {
     pub publication_id: String,
     pub manifest_object_id: ObjectId,
     pub objects: Vec<V2Object>,
+}
+impl PublicationReadLease {
+    pub async fn finish(mut self) -> Result<(), super::CatalogExecError> {
+        let catalog = self.guard.catalog.clone();
+        catalog.execute_catalog(4096, move |_| self.guard.release()).await
+    }
 }
 impl std::ops::Deref for PublicationReadLease {
     type Target = ObjectReadLease;

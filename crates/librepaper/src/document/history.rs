@@ -434,7 +434,9 @@ pub async fn load_tree(
         })
         .await
         .map_err(|error| error.to_string())?;
-    load_tree_envelope(blobs, &lease).await.map(|(tree, _)| tree)
+    let result = load_tree_envelope(blobs, &lease).await.map(|(tree, _)| tree);
+    let _ = lease.finish().await;
+    result
 }
 
 pub(crate) async fn load_tree_envelope(
