@@ -237,6 +237,16 @@ impl CheckpointCache {
             .await
             .map_err(|error| error.to_string())?;
         let (tree, envelope) = crate::document::history::load_tree_envelope(blobs, &lease).await?;
+        // A cached reconstruction is valid only for the same complete leased
+        // closure. Removing a dependency must force validation again even if
+        // the recipe allocation and logical text digest have not changed.
+        let mut closure_hash = sha2::Sha256::new();
+        for object in &lease.set.objects {
+            closure_hash.update(object.id.as_str().as_bytes());
+            closure_hash.update(object.digest.as_bytes());
+            closure_hash.update(object.byte_length.unwrap_or(-1).to_be_bytes());
+        }
+        let closure_key = hex::encode(closure_hash.finalize());
         let mut bodies = HashMap::new();
         for file in envelope.files.values() {
             lease = lease
@@ -245,7 +255,7 @@ impl CheckpointCache {
                 .map_err(|error| error.to_string())?;
             if let Some(recipe) = &file.recipe {
                 let key = format!(
-                    "decoded:{}:{}:{}",
+                    "decoded:{}:{}:{}:{closure_key}",
                     lease.set.document_id,
                     recipe.object_id,
                     hex::encode(recipe.object_digest)
