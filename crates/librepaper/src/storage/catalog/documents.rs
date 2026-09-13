@@ -557,7 +557,11 @@ impl Catalog {
     pub fn document(&self, slug: &str) -> CatalogResult<Option<Document>> {
         self.with_connection(|connection| {
             connection
-                .query_row(Self::DOCUMENT_SELECT, [slug], Self::read_document)
+                .query_row(
+                    &format!("{} WHERE d.slug=?1", Self::DOCUMENT_SELECT),
+                    [slug],
+                    Self::read_document,
+                )
                 .optional()
                 .map_err(CatalogError::from)
         })

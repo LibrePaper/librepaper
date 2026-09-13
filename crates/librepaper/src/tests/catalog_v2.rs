@@ -43,6 +43,21 @@ fn document(catalog: &Catalog, id: &str, title: &str) {
         .unwrap();
 }
 #[test]
+fn v2_document_lookup_selects_requested_slug_and_hides_erased_owner() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    account(&catalog);
+    document(&catalog, "first", "First");
+    document(&catalog, "second", "Second");
+    assert_eq!(catalog.document("second").unwrap().unwrap().title, "Second");
+    assert!(catalog.document("absent").unwrap().is_none());
+    catalog.with_connection(|db| {
+        db.execute("UPDATE accounts SET status='erasing' WHERE id='owner'", [])?;
+        Ok(())
+    }).unwrap();
+    assert!(catalog.document("first").unwrap().is_none());
+}
+
+#[test]
 fn v2_reopens_with_exact_inventory_and_preserves_singleton() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("catalog.db");
