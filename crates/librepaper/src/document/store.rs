@@ -1670,38 +1670,50 @@ impl Store {
                     }
                     let recipe_id = ObjectId::new(random_storage_id())
                         .map_err(|error| PutError::Storage(error.to_string()))?;
-                    let chunk_ids = encoded
-                        .objects
-                        .iter()
-                        .map(|_| {
-                            ObjectId::new(random_storage_id())
-                                .map_err(|error| PutError::Storage(error.to_string()))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let mut locators_by_digest =
+                        std::collections::HashMap::with_capacity(encoded.objects.len());
+                    encoded.objects.iter().try_for_each(|object| {
+                        let object_id = ObjectId::new(random_storage_id())
+                            .map_err(|error| PutError::Storage(error.to_string()))?;
+                        let object_digest = Sha256::digest(&object.encoded).into();
+                        physical.push((
+                            object_id.clone(),
+                            ObjectKind::SourceChunk,
+                            hex::encode(object_digest),
+                            Some(hex::encode(object.digest)),
+                            object.encoded.clone(),
+                            "application/vnd.librepaper.source-chunk",
+                        ));
+                        object_ids.push(object_id.clone());
+                        let locator = crate::storage::encoding::PhysicalLocator {
+                            object_id: BlobObjectId::parse(object_id.as_str().to_owned())
+                                .map_err(|error| PutError::Storage(error.to_string()))?,
+                            object_digest,
+                            logical_digest: Some(object.digest),
+                            logical_length: object.uncompressed_len as u64,
+                            byte_length: object.encoded.len() as u64,
+                            encoding_version: 1,
+                        };
+                        locators_by_digest.insert(object.digest, locator);
+                        Ok::<(), PutError>(())
+                    })?;
                     let chunk_locators = encoded
-                        .objects
+                        .recipe
+                        .chunks
                         .iter()
-                        .zip(&chunk_ids)
-                        .map(|(object, object_id)| {
-                            let object_digest = Sha256::digest(&object.encoded).into();
-                            physical.push((
-                                object_id.clone(),
-                                ObjectKind::SourceChunk,
-                                hex::encode(object_digest),
-                                Some(hex::encode(object.digest)),
-                                object.encoded.clone(),
-                                "application/vnd.librepaper.source-chunk",
-                            ));
-                            object_ids.push(object_id.clone());
-                            Ok(crate::storage::encoding::PhysicalLocator {
-                                object_id: BlobObjectId::parse(object_id.as_str().to_owned())
-                                    .map_err(|error| PutError::Storage(error.to_string()))?,
-                                object_digest,
-                                logical_digest: Some(object.digest),
-                                logical_length: object.uncompressed_len as u64,
-                                byte_length: object.encoded.len() as u64,
-                                encoding_version: 1,
-                            })
+                        .map(|chunk| {
+                            let locator =
+                                locators_by_digest.get(&chunk.digest).ok_or_else(|| {
+                                    PutError::Storage(
+                                        "source recipe references an absent chunk".into(),
+                                    )
+                                })?;
+                            if locator.logical_length != u64::from(chunk.length) {
+                                return Err(PutError::Storage(
+                                    "source recipe chunk length differs from encoded object".into(),
+                                ));
+                            }
+                            Ok(locator.clone())
                         })
                         .collect::<Result<Vec<_>, PutError>>()?;
                     let recipe_envelope = crate::storage::encoding::SourceRecipeEnvelope {

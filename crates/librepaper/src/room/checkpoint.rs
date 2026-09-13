@@ -1400,12 +1400,13 @@ impl Room {
                         "checkpoint source digest differs from tree".into(),
                     ));
                 }
-                let mut chunk_locators = Vec::with_capacity(encoded.objects.len());
+                let mut locators_by_digest =
+                    std::collections::HashMap::with_capacity(encoded.objects.len());
                 for object in &encoded.objects {
                     let id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
                         .map_err(|error| WriteError::Storage(error.to_string()))?;
                     let object_digest: [u8; 32] = Sha256::digest(&object.encoded).into();
-                    chunk_locators.push(PhysicalLocator {
+                    let locator = PhysicalLocator {
                         object_id: BlobObjectId::parse(id.as_str().to_owned())
                             .map_err(|error| WriteError::Storage(error.to_string()))?,
                         object_digest,
@@ -1413,7 +1414,8 @@ impl Room {
                         logical_length: object.uncompressed_len as u64,
                         byte_length: object.encoded.len() as u64,
                         encoding_version: 1,
-                    });
+                    };
+                    locators_by_digest.insert(object.digest, locator);
                     physical.push(PhysicalObject {
                         id,
                         kind: ObjectKind::SourceChunk,
@@ -1424,6 +1426,22 @@ impl Room {
                         write: true,
                     });
                 }
+                let chunk_locators = encoded
+                    .recipe
+                    .chunks
+                    .iter()
+                    .map(|chunk| {
+                        let locator = locators_by_digest.get(&chunk.digest).ok_or_else(|| {
+                            WriteError::Storage("source recipe references an absent chunk".into())
+                        })?;
+                        if locator.logical_length != u64::from(chunk.length) {
+                            return Err(WriteError::Storage(
+                                "source recipe chunk length differs from encoded object".into(),
+                            ));
+                        }
+                        Ok(locator.clone())
+                    })
+                    .collect::<Result<Vec<_>, WriteError>>()?;
                 let recipe_envelope = SourceRecipeEnvelope {
                     version: SOURCE_ENVELOPE_VERSION,
                     recipe: encoded.recipe.clone(),
