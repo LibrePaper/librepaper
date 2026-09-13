@@ -2179,6 +2179,18 @@ mod tests {
         assert!(paths_overlap(&root, &backup));
     }
 
+    #[test]
+    fn restore_publication_never_replaces_an_existing_file() {
+        let root = tempfile::tempdir().expect("publication directory");
+        let temporary = root.path().join("temporary");
+        let destination = root.path().join("destination");
+        fs::write(&temporary, b"new").expect("temporary");
+        fs::write(&destination, b"old").expect("destination");
+        assert!(publish_noreplace(&temporary, &destination).is_err());
+        assert_eq!(fs::read(&destination).expect("existing destination"), b"old");
+        assert_eq!(fs::read(&temporary).expect("temporary remains"), b"new");
+    }
+
     #[tokio::test]
     async fn local_backup_restore_round_trip_uses_real_catalog_and_files() {
         let source_root = tempfile::tempdir().expect("source deployment");
