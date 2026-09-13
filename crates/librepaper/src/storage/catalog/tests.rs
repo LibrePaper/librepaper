@@ -1096,7 +1096,7 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
     };
     let commit = super::AgentCheckpointCommit {
         request_id: crate::util::new_request_key(),
-        digest: "payload-digest".into(),
+        digest: "a".repeat(64),
         operation: serde_json::json!({"epoch":"epoch","id":"checkpoint"}),
         source_revision: "tree".into(),
     };
@@ -1188,12 +1188,13 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
     catalog.create_document(&document()).unwrap();
     let request_id = crate::util::new_request_key();
     let now = crate::util::now_millis();
+    let operation_digest = "b".repeat(64);
     catalog
         .prepare_operation(&OperationRequest {
             storage_id: "storage-1",
             request_id: &request_id,
-            kind: "replace",
-            request_digest: "digest",
+            kind: "source_publish",
+            request_digest: &operation_digest,
             intent: "{}",
             created_at: now,
             actor: None,
@@ -1211,7 +1212,7 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
         "aborted"
     );
     assert!(catalog
-        .commit_operation("storage-1", &request_id, "result", "head")
+        .commit_operation("storage-1", &request_id, "{}", "head")
         .is_err());
     catalog.finish_delete("doc").unwrap();
     assert_eq!(catalog.totals().unwrap(), (0, 0));
@@ -1595,12 +1596,13 @@ fn deleting_document_cannot_commit_a_prepared_publication() {
     catalog.create_document(&document()).unwrap();
     let request_id = crate::util::new_request_key();
     let now = crate::util::now_millis();
+    let operation_digest = "c".repeat(64);
     catalog
         .prepare_operation(&OperationRequest {
             storage_id: "storage-1",
             request_id: &request_id,
-            kind: "publish",
-            request_digest: "digest",
+            kind: "source_publish",
+            request_digest: &operation_digest,
             intent: "{}",
             created_at: now,
             actor: None,
