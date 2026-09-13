@@ -448,11 +448,15 @@ impl DeletionWorker {
         let deletion_catalog = Arc::clone(&self.catalog);
         deletion_catalog
             .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
-                for slug in catalog.deleting_documents_page(64)? {
+                for slug in catalog.deleting_documents_page(64, false)? {
                     // Each invocation is capped at 250 logical rows. Object
                     // bytes are reclaimed by the GC pass after checkpoint and
                     // annotation roots have been removed.
-                    let _ = catalog.erase_document_batch(&slug, 250, now)?;
+                    if let Err(error) = catalog.erase_document_batch(&slug, 250, now) {
+                        if !matches!(error, CatalogError::Conflict(_)) {
+                            return Err(error);
+                        }
+                    }
                 }
                 Ok(())
             })
@@ -468,7 +472,7 @@ impl DeletionWorker {
         let finish_catalog = Arc::clone(&self.catalog);
         finish_catalog
             .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
-                for slug in catalog.deleting_documents_page(64)? {
+                for slug in catalog.deleting_documents_page(64, true)? {
                     // A conflict means physical GC or a lease still fences
                     // finalization; the next maintenance pass retries it.
                     let _ = catalog.finish_delete(&slug);

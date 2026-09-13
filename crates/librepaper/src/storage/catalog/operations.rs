@@ -66,7 +66,8 @@ impl Catalog {
                     |r| r.get(0),
                 )
                 .map_err(CatalogError::from)?;
-            if status != "deleting" {
+            let was_deleting = status == "deleting";
+            if !was_deleting {
                 if !matches!(status.as_str(), "creating" | "active") {
                     return Err(CatalogError::Conflict("document is not deletable".into()));
                 }
@@ -80,11 +81,23 @@ impl Catalog {
                 )
                 .map_err(CatalogError::from)?;
             }
+            // The public request only changes lifecycle state.  Ordinary
+            // operation withdrawal, root removal, and physical teardown are
+            // durable worker stages so a large document can never turn this
+            // request into an unbounded transaction.  A repeated request is
+            // therefore intentionally a status-only read.
+            if was_deleting {
+                return Self::document_in_tx(tx, slug);
+            }
             let now = unix_millis();
             tx.execute(
                 "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,
                     receipt_expires_at=?3,updated_at=?2
-                 WHERE document_id=?4 AND state='prepared' AND kind<>'erase_document'",
+                 WHERE id IN (
+                   SELECT id FROM operations
+                   WHERE document_id=?4 AND state='prepared' AND kind<>'erase_document'
+                   ORDER BY id LIMIT 250
+                 )",
                 params![
                     r#"{"version":2,"reason":"document_deleting"}"#,
                     now,
@@ -114,7 +127,7 @@ impl Catalog {
                     )
                     .map_err(CatalogError::from)?;
                 let plan =
-                    serde_json::json!({"version":2,"stage":"replies","cursor":null}).to_string();
+                    serde_json::json!({"version":2,"stage":"roots","cursor":null}).to_string();
                 tx.execute(
                     "INSERT INTO operations
                      (id,document_id,actor_key,request_key,kind,request_digest,state,
@@ -133,13 +146,6 @@ impl Catalog {
                 )
                 .map_err(CatalogError::from)?;
             }
-            tx.execute(
-                "UPDATE objects SET live_root=0,publication_root=0,
-                    gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END
-                 WHERE document_id=?2",
-                params![now.saturating_add(900_000), document_id],
-            )
-            .map_err(CatalogError::from)?;
             Self::document_in_tx(tx, slug)
         })
     }
@@ -166,7 +172,11 @@ impl Catalog {
                 other_operations,
                 stored,
                 reserved,
-            ): (i64, i64, i64, i64, i64, i64, i64, i64) = tx
+                annotations,
+                replies,
+                grants,
+                links,
+            ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = tx
                 .query_row(
                     "SELECT
                         (SELECT count(*) FROM objects WHERE document_id=?1),
@@ -177,7 +187,11 @@ impl Catalog {
                         (SELECT count(*) FROM operations
                          WHERE document_id=?1
                            AND NOT (kind='erase_document' AND state='prepared')),
-                        stored_bytes,reserved_bytes
+                        stored_bytes,reserved_bytes,
+                        (SELECT count(*) FROM annotations WHERE document_id=?1),
+                        (SELECT count(*) FROM replies WHERE document_id=?1),
+                        (SELECT count(*) FROM grants WHERE document_id=?1),
+                        (SELECT count(*) FROM links WHERE document_id=?1)
                      FROM documents WHERE id=?1",
                     [&document_id],
                     |row| {
@@ -190,6 +204,10 @@ impl Catalog {
                             row.get(5)?,
                             row.get(6)?,
                             row.get(7)?,
+                            row.get(8)?,
+                            row.get(9)?,
+                            row.get(10)?,
+                            row.get(11)?,
                         ))
                     },
                 )
@@ -202,6 +220,10 @@ impl Catalog {
                 || other_operations > 250
                 || stored != 0
                 || reserved != 0
+                || annotations != 0
+                || replies != 0
+                || grants != 0
+                || links != 0
             {
                 return Err(CatalogError::Conflict(
                     "document teardown or charges remain".into(),
@@ -293,18 +315,31 @@ impl Catalog {
         }
         let limit = i64::from(limit.min(250));
         self.immediate(|tx| {
-            let (document_id, operation_id, plan): (String, String, String) = tx
+            let (document_id, operation_id, plan, operation_generation):
+                (String, String, String, String) = tx
                 .query_row(
-                    "SELECT d.id,o.id,o.plan_json FROM documents d
+                    "SELECT d.id,o.id,o.plan_json,o.writer_generation FROM documents d
                      JOIN operations o ON o.document_id=d.id
                      WHERE d.slug=?1 AND d.status='deleting'
                        AND o.kind='erase_document' AND o.state='prepared'",
                     [slug],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()
                 .map_err(CatalogError::from)?
                 .ok_or_else(|| CatalogError::Conflict("document erase operation is missing".into()))?;
+            let current_generation: String = tx
+                .query_row(
+                    "SELECT writer_generation FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if operation_generation != current_generation {
+                return Err(CatalogError::Conflict(
+                    "document erase operation belongs to an obsolete writer generation".into(),
+                ));
+            }
             let mut plan: serde_json::Value = serde_json::from_str(&plan)
                 .map_err(|error| CatalogError::Invalid(format!("invalid erase plan: {error}")))?;
             if plan.get("version").and_then(serde_json::Value::as_i64) != Some(2) {
@@ -313,7 +348,7 @@ impl Catalog {
             let mut stage = plan
                 .get("stage")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or("replies")
+                .unwrap_or("roots")
                 .to_owned();
             let mut changed = 0i64;
             loop {
@@ -322,6 +357,40 @@ impl Catalog {
                     break;
                 }
                 let deleted = match stage.as_str() {
+                    "roots" => {
+                        // Clear document pointers and root flags in a small
+                        // stage.  COALESCE deliberately never moves an
+                        // existing grace deadline forward on a retry.
+                        tx.execute(
+                            "UPDATE documents SET publication_id=NULL,
+                             publication_object_id=NULL,published_at=NULL,
+                             current_checkpoint_id=NULL,journal_base_object_id=NULL,
+                             journal_base_sequence=0 WHERE id=?1 AND status='deleting'",
+                            [&document_id],
+                        )?;
+                        let mut statement = tx.prepare(
+                            "SELECT id FROM objects
+                             WHERE document_id=?1 AND (live_root=1 OR publication_root=1)
+                             ORDER BY id LIMIT ?2",
+                        )?;
+                        let ids: Vec<String> = statement
+                            .query_map(params![document_id, remaining], |row| row.get(0))?
+                            .collect::<rusqlite::Result<Vec<_>>>()?;
+                        let grace = now.saturating_add(900_000);
+                        for object_id in &ids {
+                            tx.execute(
+                                "UPDATE objects SET live_root=0,publication_root=0,
+                                 gc_after=COALESCE(gc_after,?1)
+                                 WHERE id=?2 AND document_id=?3",
+                                params![grace, object_id, document_id],
+                            )?;
+                        }
+                        if ids.len() < remaining as usize {
+                            stage = "replies".into();
+                            plan["cursor"] = serde_json::Value::Null;
+                        }
+                        ids.len() as i64
+                    }
                     "replies" => {
                         let mut statement = tx.prepare(
                             "SELECT annotation_id,id,document_id FROM replies
@@ -365,6 +434,46 @@ impl Catalog {
                             )?;
                         }
                         if ids.len() < remaining as usize {
+                            stage = "grants".into();
+                            plan["cursor"] = serde_json::Value::Null;
+                        }
+                        ids.len() as i64
+                    }
+                    "grants" => {
+                        let mut statement = tx.prepare(
+                            "SELECT account_id FROM grants
+                             WHERE document_id=?1 ORDER BY account_id LIMIT ?2",
+                        )?;
+                        let ids: Vec<String> = statement
+                            .query_map(params![document_id, remaining], |row| row.get(0))?
+                            .collect::<rusqlite::Result<Vec<_>>>()?;
+                        for account_id in &ids {
+                            tx.execute(
+                                "DELETE FROM grants WHERE document_id=?1 AND account_id=?2",
+                                params![document_id, account_id],
+                            )?;
+                        }
+                        if ids.len() < remaining as usize {
+                            stage = "links".into();
+                            plan["cursor"] = serde_json::Value::Null;
+                        }
+                        ids.len() as i64
+                    }
+                    "links" => {
+                        let mut statement = tx.prepare(
+                            "SELECT id FROM links
+                             WHERE document_id=?1 ORDER BY id LIMIT ?2",
+                        )?;
+                        let ids: Vec<String> = statement
+                            .query_map(params![document_id, remaining], |row| row.get(0))?
+                            .collect::<rusqlite::Result<Vec<_>>>()?;
+                        for link_id in &ids {
+                            tx.execute(
+                                "DELETE FROM links WHERE document_id=?1 AND id=?2",
+                                params![document_id, link_id],
+                            )?;
+                        }
+                        if ids.len() < remaining as usize {
                             stage = "checkpoints".into();
                             plan["cursor"] = serde_json::Value::Null;
                         }
@@ -372,19 +481,63 @@ impl Catalog {
                     }
                     "checkpoints" => {
                         let mut statement = tx.prepare(
-                            "SELECT id FROM checkpoints WHERE document_id=?1
-                             ORDER BY id LIMIT ?2",
+                            "SELECT c.id, count(co.object_id) FROM checkpoints c
+                             LEFT JOIN checkpoint_objects co ON co.checkpoint_id=c.id
+                             WHERE c.document_id=?1
+                             GROUP BY c.id
+                             ORDER BY c.id LIMIT ?2",
                         )?;
-                        let ids: Vec<String> = statement
-                            .query_map(params![document_id, remaining], |row| row.get(0))?
+                        let checkpoint_page_limit = remaining.min(32);
+                        let candidates: Vec<(String, i64)> = statement
+                            .query_map(params![document_id, checkpoint_page_limit], |row| {
+                                Ok((row.get(0)?, row.get(1)?))
+                            })?
                             .collect::<rusqlite::Result<Vec<_>>>()?;
+                        let full_checkpoint_page =
+                            candidates.len() as i64 == checkpoint_page_limit;
+                        let mut ids = Vec::new();
+                        let mut edge_total = 0i64;
+                        let mut edge_limited = false;
+                        for (checkpoint_id, edge_count) in candidates {
+                            if edge_count > 32_768 || edge_total.saturating_add(edge_count) > 32_768 {
+                                edge_limited = true;
+                                break;
+                            }
+                            edge_total = edge_total.saturating_add(edge_count);
+                            ids.push(checkpoint_id);
+                        }
                         for checkpoint_id in &ids {
                             tx.execute(
                                 "DELETE FROM checkpoints WHERE document_id=?1 AND id=?2",
                                 params![document_id, checkpoint_id],
                             )?;
                         }
-                        if ids.len() < remaining as usize {
+                        if edge_total != 0 {
+                            if tx.execute(
+                                "UPDATE documents SET checkpoint_ref_count=checkpoint_ref_count-?1
+                                 WHERE id=?2 AND checkpoint_ref_count>=?1",
+                                params![edge_total, document_id],
+                            )? != 1
+                            {
+                                return Err(CatalogError::Conflict(
+                                    "document checkpoint counter is inconsistent".into(),
+                                ));
+                            }
+                            if tx.execute(
+                                "UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count-?1
+                                 WHERE id=1 AND checkpoint_ref_count>=?1",
+                                [edge_total],
+                            )? != 1
+                            {
+                                return Err(CatalogError::Conflict(
+                                    "deployment checkpoint counter is inconsistent".into(),
+                                ));
+                            }
+                        }
+                        if ids.len() < remaining as usize
+                            && !edge_limited
+                            && !full_checkpoint_page
+                        {
                             stage = "operations".into();
                             plan["cursor"] = serde_json::Value::Null;
                         }
@@ -392,23 +545,58 @@ impl Catalog {
                     }
                     "operations" => {
                         let mut statement = tx.prepare(
-                            "SELECT id FROM operations WHERE document_id=?1
-                             AND id<>?2 AND state<>'prepared'
+                            "SELECT id,state FROM operations WHERE document_id=?1
+                             AND id<>?2
                              ORDER BY id LIMIT ?3",
                         )?;
-                        let ids: Vec<String> = statement
+                        let candidates: Vec<(String, String)> = statement
                             .query_map(params![document_id, operation_id, remaining], |row| {
-                                row.get(0)
+                                Ok((row.get(0)?, row.get(1)?))
                             })?
                             .collect::<rusqlite::Result<Vec<_>>>()?;
-                        for operation_id in &ids {
-                            tx.execute("DELETE FROM operations WHERE id=?1", [operation_id])?;
+                        let mut changed_rows = 0i64;
+                        let mut pinned = false;
+                        for (candidate_id, state) in &candidates {
+                            let blocked: i64 = tx.query_row(
+                                "SELECT
+                                   (SELECT count(*) FROM objects
+                                    WHERE allocation_operation_id=?1
+                                      AND state IN ('allocated','uploaded','committed'))
+                                   + (SELECT count(*) FROM object_leases
+                                      WHERE operation_id=?1)",
+                                [candidate_id],
+                                |row| row.get(0),
+                            )?;
+                            if blocked != 0 {
+                                // Keep pinned work in the durable stage.  A
+                                // later GC/recovery pass can release it; the
+                                // next invocation will inspect it again.
+                                pinned = true;
+                                continue;
+                            }
+                            if state == "prepared" {
+                                tx.execute(
+                                    r#"UPDATE operations SET state='aborted',
+                                     result_json='{"version":2,"reason":"document_deleting"}',
+                                     completed_at=?1,receipt_expires_at=?1,updated_at=?1
+                                     WHERE id=?2 AND state='prepared'"#,
+                                    params![now, candidate_id],
+                                )?;
+                            } else {
+                                tx.execute("DELETE FROM operations WHERE id=?1", [candidate_id])?;
+                            }
+                            changed_rows += 1;
                         }
-                        if ids.len() < remaining as usize {
+                        if candidates.is_empty() {
                             stage = "done".into();
                             plan["cursor"] = serde_json::Value::Null;
                         }
-                        ids.len() as i64
+                        if changed_rows == 0 && pinned {
+                            return Err(CatalogError::Conflict(
+                                "document operation remains pinned".into(),
+                            ));
+                        }
+                        changed_rows
                     }
                     "done" => break,
                     other => {
@@ -438,17 +626,28 @@ impl Catalog {
         })
     }
 
-    pub fn deleting_documents_page(&self, limit: u32) -> CatalogResult<Vec<String>> {
+    pub fn deleting_documents_page(
+        &self,
+        limit: u32,
+        include_done: bool,
+    ) -> CatalogResult<Vec<String>> {
         if limit == 0 {
             return Err(CatalogError::Invalid("empty document deletion page".into()));
         }
         self.with_connection(|connection| {
-            let mut statement = connection.prepare(
+            let sql = if include_done {
                 "SELECT d.slug FROM documents d
                  JOIN operations o ON o.document_id=d.id
                  WHERE d.status='deleting' AND o.kind='erase_document' AND o.state='prepared'
-                 ORDER BY d.id LIMIT ?1",
-            )?;
+                 ORDER BY o.updated_at,d.id LIMIT ?1"
+            } else {
+                "SELECT d.slug FROM documents d
+                 JOIN operations o ON o.document_id=d.id
+                 WHERE d.status='deleting' AND o.kind='erase_document' AND o.state='prepared'
+                   AND COALESCE(json_extract(o.plan_json,'$.stage'),'roots') <> 'done'
+                 ORDER BY o.updated_at,d.id LIMIT ?1"
+            };
+            let mut statement = connection.prepare(sql)?;
             statement
                 .query_map([i64::from(limit.min(64))], |row| row.get(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()

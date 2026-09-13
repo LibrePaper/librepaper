@@ -2902,3 +2902,129 @@ fn annotation_receipt_rechecks_live_link_and_preserves_seven_day_window() {
         Err(CatalogError::Refused(super::CatalogRefusal::ActorRights, _))
     ));
 }
+
+#[test]
+fn v2_document_worker_bounds_checkpoint_edges_and_repeated_begin() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .with_connection(|connection| {
+            let generation: String = connection.query_row(
+                "SELECT writer_generation FROM server_state WHERE id=1",
+                [],
+                |row| row.get(0),
+            )?;
+            connection.execute(
+                r#"INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,
+                  created_at,live_root,gc_after)
+                 VALUES('storage-1','tree-object','objects/tree','source_tree','available',
+                        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                        1,0,0,1,100)"#,
+                [],
+            )?;
+            for edge in 0..1024 {
+                connection.execute(
+                    r#"INSERT INTO objects
+                     (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,
+                      created_at)
+                     VALUES('storage-1',?1,?2,'source_chunk','available',
+                            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                            1,0,0)"#,
+                    rusqlite::params![
+                        format!("edge-{edge:04}"),
+                        format!("objects/edge-{edge:04}"),
+                    ],
+                )?;
+            }
+            for checkpoint in 0..33 {
+                let checkpoint_id = format!("checkpoint-{checkpoint:02}");
+                connection.execute(
+                    r#"INSERT INTO checkpoints
+                     (document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,
+                      author_account_id,author_label,reason,source_format,logical_bytes,
+                      label,journal_epoch,journal_sequence,metadata_json)
+                     VALUES('storage-1',?1,?2,'tree-object',
+                            'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                            NULL,0,'acct-1','Alice','manual','markdown',1,NULL,0,0,
+                            '{"version":1}')"#,
+                    rusqlite::params![checkpoint_id, i64::from(checkpoint + 1)],
+                )?;
+                for edge in 0..1024 {
+                    connection.execute(
+                        "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id)
+                         VALUES('storage-1',?1,?2)",
+                        rusqlite::params![
+                            checkpoint_id,
+                            format!("edge-{edge:04}"),
+                        ],
+                    )?;
+                }
+            }
+            connection.execute(
+                "UPDATE documents SET checkpoint_ref_count=33792 WHERE id='storage-1'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE server_state SET checkpoint_ref_count=33792 WHERE id=1",
+                [],
+            )?;
+            connection.execute(
+                r#"INSERT INTO operations
+                 (id,document_id,actor_key,request_key,kind,request_digest,state,
+                  writer_generation,result_json,created_at,updated_at,completed_at,receipt_expires_at)
+                 VALUES('operation-pinned','storage-1','acct-1','worker-request','source_publish',
+                        'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+                        'aborted',?1,'{"version":1}',0,0,0,0)"#,
+                [&generation],
+            )?;
+            connection.execute(
+                r#"INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,reserved_bytes,
+                  allocation_operation_id,created_at)
+                 VALUES('storage-1','allocated-object','objects/allocated','source_chunk','allocated',
+                        'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                        1,'operation-pinned',0)"#,
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    catalog.begin_delete("doc").unwrap();
+    catalog.begin_delete("doc").unwrap();
+    let gc_after: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT gc_after FROM objects WHERE id='tree-object'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(gc_after, 100);
+
+    catalog.erase_document_batch("doc", 250, 1_000).unwrap();
+    catalog.erase_document_batch("doc", 250, 1_000).unwrap();
+    catalog.erase_document_batch("doc", 250, 1_000).unwrap();
+    let remaining_edges: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM checkpoint_objects WHERE document_id='storage-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(remaining_edges, 1024);
+    assert!(matches!(
+        catalog.erase_document_batch("doc", 250, 1_000),
+        Err(CatalogError::Conflict(_))
+
+    ));
+}
