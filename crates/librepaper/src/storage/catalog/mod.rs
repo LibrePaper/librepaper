@@ -47,6 +47,7 @@ pub use execution::{
     MAX_QUEUED_BYTES, MAX_REQUEST_BYTES, MAX_WAITING_PRODUCERS, SMALL_REQUEST_BYTES,
 };
 pub use pressure::HardPressurePlan;
+pub(crate) use publication::{publication_actor_key, PublicationWork};
 pub use retention::{RetentionJob, RetentionPass};
 pub use room_edits::RoomEditReservation;
 pub use read_objects::{CheckpointReadLease, CheckpointReadSet, ObjectReadLease, PublicationReadLease};

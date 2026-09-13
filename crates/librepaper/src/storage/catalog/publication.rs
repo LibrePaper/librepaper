@@ -5,7 +5,120 @@
 
 use super::*;
 
+pub(crate) struct PublicationWork {
+    pub operation_id: OperationId,
+    pub state: String,
+    pub request_digest: String,
+    pub plan: serde_json::Value,
+    pub result: Option<serde_json::Value>,
+    pub objects: Vec<V2Object>,
+    pub lease_expires_at: i64,
+}
+
 impl Catalog {
+    /// Capture and renew the stage protection used by the next bounded upload
+    /// or verification read. A expired stage lease cannot be resurrected by a
+    /// retry; recovery must resolve that abandoned operation first.
+    pub(crate) fn publication_work(
+        &self,
+        document: &DocumentId,
+        request_key: &str,
+        actor: &crate::document::store::MutationActor,
+        now: UnixMillis,
+    ) -> CatalogResult<Option<PublicationWork>> {
+        let actor_key = publication_actor_key(actor)?;
+        self.immediate(|tx| {
+            let row: Option<(String, String, String, String, Option<String>, String, Option<i64>)> = tx.query_row(
+                "SELECT id,state,request_digest,plan_json,result_json,writer_generation,work_expires_at
+                   FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                    AND kind='display_publish'",
+                params![document.as_str(), actor_key, request_key],
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)),
+            ).optional()?;
+            let Some((id,state,request_digest,plan,result,generation,deadline)) = row else { return Ok(None); };
+            let slug: String = tx.query_row(
+                "SELECT d.slug FROM documents d JOIN accounts a ON a.id=d.owner_id
+                  WHERE d.id=?1 AND d.status='active' AND a.status='active'",
+                [document.as_str()], |r| r.get(0),
+            ).optional()?.ok_or(CatalogError::NotFound)?;
+            let authority = MutationAuthority {
+                account_id:&actor.account_id, owner_key:&actor.owner_key,
+                generation:&actor.session_generation, link_hash:&actor.link_hash,
+                policy_editor:actor.policy_editor, automation:actor.automation,
+                unowned_publisher:actor.unowned_publisher, execution_epoch:"", agent_checkpoint:None,
+            };
+            if !Self::mutation_authorized_in_tx(tx, &slug, authority, "editor")? {
+                return Err(CatalogError::refused(CatalogRefusal::ActorRights, "publication authority changed"));
+            }
+            let operation_id = OperationId::new(id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            let plan: serde_json::Value = serde_json::from_str(&plan).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            let result = result.map(|raw| serde_json::from_str(&raw).map_err(|e| CatalogError::Invalid(e.to_string()))).transpose()?;
+            if plan.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+                return Err(CatalogError::Invalid("unsupported publication plan version".into()));
+            }
+            let mut work = PublicationWork { operation_id, state, request_digest, plan, result,
+                objects:Vec::new(), lease_expires_at:0 };
+            if work.state != "prepared" { return Ok(Some(work)); }
+            let current_generation: String = tx.query_row(
+                "SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0),
+            )?;
+            let deadline = deadline.ok_or_else(|| CatalogError::Invalid("publication work deadline is missing".into()))?;
+            if generation != current_generation || now.0 >= deadline {
+                return Err(CatalogError::Conflict("publication work expired or writer changed".into()));
+            }
+            let expires = now.0.checked_add(120_000).map(|value| value.min(deadline))
+                .ok_or_else(|| CatalogError::Invalid("publication lease overflow".into()))?;
+            let mut statement = tx.prepare(
+                "SELECT o.id,o.storage_key,o.kind,o.state,o.digest,o.byte_length,o.reserved_bytes,
+                    o.allocation_operation_id,l.expires_at,l.writer_generation
+                   FROM object_leases l JOIN objects o ON o.document_id=l.document_id AND o.id=l.object_id
+                  WHERE l.operation_id=?1 AND l.document_id=?2 AND l.purpose='stage'
+                    AND l.holder_id=?1 ORDER BY o.id LIMIT 515",
+            )?;
+            let mut rows = statement.query(params![work.operation_id.as_str(), document.as_str()])?;
+            while let Some(row) = rows.next()? {
+                let state: String = row.get(3)?;
+                let kind: String = row.get(2)?;
+                if !matches!(state.as_str(), "allocated" | "available")
+                    || !matches!(kind.as_str(), "publication_manifest" | "publication_html" | "publication_asset")
+                    || row.get::<_,i64>(8)? <= now.0 || row.get::<_,String>(9)? != generation
+                {
+                    return Err(CatalogError::Conflict("publication stage protection was lost".into()));
+                }
+                let allocation: Option<String> = row.get(7)?;
+                if state == "allocated" && allocation.as_deref() != Some(work.operation_id.as_str()) {
+                    return Err(CatalogError::Conflict("publication allocation changed".into()));
+                }
+                work.objects.push(V2Object {
+                    document_id:document.clone(), id:ObjectId::new(row.get::<_,String>(0)?).map_err(|e| CatalogError::Invalid(e.to_string()))?,
+                    storage_key:row.get(1)?,kind,state,digest:row.get(4)?,byte_length:row.get(5)?,reserved_bytes:row.get(6)?,
+                    allocation_operation_id:allocation.map(OperationId::new).transpose().map_err(|e| CatalogError::Invalid(e.to_string()))?,
+                });
+            }
+            drop(rows);
+            drop(statement);
+            if work.objects.len() > 514 {
+                return Err(CatalogError::Invalid("publication stage exceeds object bound".into()));
+            }
+            if let Some(manifest) = work.plan.get("manifest_object_id").and_then(serde_json::Value::as_str) {
+                if !work.objects.iter().any(|object| object.id.as_str() == manifest && object.kind == "publication_manifest") {
+                    return Err(CatalogError::Conflict("publication manifest lost stage protection".into()));
+                }
+            }
+            for object in &work.objects {
+                let changed = tx.execute(
+                    "UPDATE object_leases SET expires_at=?1
+                      WHERE document_id=?2 AND object_id=?3 AND holder_id=?4 AND purpose='stage'
+                        AND writer_generation=?5 AND expires_at>?6",
+                    params![expires,document.as_str(),object.id.as_str(),work.operation_id.as_str(),generation,now.0],
+                )?;
+                if changed != 1 { return Err(CatalogError::Conflict("publication stage lease changed".into())); }
+            }
+            work.lease_expires_at = expires;
+            Ok(Some(work))
+        })
+    }
+
     /// Reserve the complete bundle before its first PUT. Every byte reserved
     /// here has a corresponding allocation row, including the manifest itself.
     /// The caller retains the operation handle for retry and expiry cleanup.
@@ -353,5 +466,22 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn publication_retry_renews_live_protection_but_cannot_revive_expired_leases() {
+        let (catalog, actor, allocations) = fixture();
+        catalog.reserve_publication_bundle(&allocations, &actor, limits(100)).unwrap();
+        let key = format!("v2.1.{}", "a".repeat(32));
+        let document = &allocations[0].document_id;
+        let work = catalog.publication_work(document, &key, &actor, UnixMillis(2)).unwrap().unwrap();
+        assert_eq!(work.objects.len(), 2);
+        assert_eq!(work.lease_expires_at, 120_002);
+        assert!(catalog.publication_work(document, &key, &actor, UnixMillis(120_003)).is_err());
+        catalog.with_connection(|db| {
+            assert_eq!(db.query_row("SELECT max(expires_at) FROM object_leases", [], |row| row.get::<_,i64>(0))?, 120_002);
+            Ok(())
+        }).unwrap();
+        assert!(catalog.audit_v2_counters().unwrap());
     }
 }
