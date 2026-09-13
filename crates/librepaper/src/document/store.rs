@@ -130,6 +130,11 @@ pub struct IndexEntry {
     /// guest of anything any more.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guests: Vec<Guest>,
+    /// The live role resolved from the requesting account's v2 bookmark.
+    /// This is populated only for a bounded listing page and is never
+    /// persisted or used as a reverse guest index.
+    #[serde(skip)]
+    pub bookmark_role: Option<Role>,
 }
 
 /// One account that opened a document through a link while signed in. `link`
@@ -925,10 +930,16 @@ impl Store {
                 for document in page {
                     // Listing rows need grants/guest roles, but never need to
                     // decrypt and expose link secrets for every document.
-                    entries.push(
-                        load_catalog_entry_sql(catalog, &document.slug, false)?
-                            .ok_or(CatalogError::NotFound)?,
-                    );
+                    let mut entry = load_catalog_entry_sql(catalog, &document.slug, false)?
+                        .ok_or(CatalogError::NotFound)?;
+                    if let Some(account_id) = account_id.as_deref() {
+                        if let Some((_hash, role)) =
+                            catalog.bookmark_link(&document.slug, account_id)?
+                        {
+                            entry.bookmark_role = Role::parse(&role);
+                        }
+                    }
+                    entries.push(entry);
                 }
                 Ok(entries)
             })

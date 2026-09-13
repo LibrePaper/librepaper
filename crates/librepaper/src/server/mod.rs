@@ -898,13 +898,15 @@ impl Server {
             .find(|guest| guest.id == who.id)
             .map(|guest| guest.link.clone())
             .unwrap_or_default();
-        let role = entry.role_of(
-            &who.key,
-            &who.id,
-            &link,
-            self.ceiling_for(&who.identity()),
-            now,
-        );
+        let role = entry.bookmark_role.unwrap_or_else(|| {
+            entry.role_of(
+                &who.key,
+                &who.id,
+                &link,
+                self.ceiling_for(&who.identity()),
+                now,
+            )
+        });
         let metadata = crate::results::document_metadata(&entry.source_format);
         json!({
             "slug": entry.slug,

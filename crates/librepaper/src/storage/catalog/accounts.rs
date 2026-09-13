@@ -415,6 +415,17 @@ impl Catalog {
                 params![account_id, revision, payload, updated_at],
             )
             .map_err(CatalogError::from)?;
+            // `last_seen_at` is the durable timestamp exposed by the record.
+            // It is monotonic because an older client timestamp must not move
+            // the account backwards, so return the value SQLite actually
+            // retained rather than echoing the request's timestamp.
+            let stored_updated_at: i64 = tx
+                .query_row(
+                    "SELECT last_seen_at FROM accounts WHERE id=?1",
+                    [account_id],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
             // Mark owned documents due for bounded policy evaluation. Their
             // previous evaluation revision no longer authorizes deletion.
             tx.execute(
@@ -434,7 +445,7 @@ impl Catalog {
                 account_id: account_id.to_string(),
                 revision,
                 payload: payload.to_string(),
-                updated_at,
+                updated_at: stored_updated_at,
             })
         })
     }

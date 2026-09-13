@@ -1028,6 +1028,89 @@ impl Catalog {
         })
     }
 
+    /// Resolve one account's live bookmark to the link that created it.  The
+    /// v2 catalogue deliberately has no reverse guest index: callers ask for
+    /// their own bookmark payload and this bounded join supplies the role for
+    /// that account's listing row without scanning other accounts.
+    pub fn bookmark_link(
+        &self,
+        slug: &str,
+        account_id: &str,
+    ) -> CatalogResult<Option<(String, String)>> {
+        if slug.is_empty() || account_id.is_empty() {
+            return Ok(None);
+        }
+        self.with_connection(|connection| {
+            let document_id: Option<String> = connection
+                .query_row(
+                    "SELECT id FROM documents WHERE slug=?1 AND status='active'",
+                    [slug],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            let Some(document_id) = document_id else {
+                return Ok(None);
+            };
+            let payload: String = connection
+                .query_row(
+                    "SELECT bookmarks_json FROM accounts WHERE id=?1 AND status='active'",
+                    [account_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(CatalogError::from)?
+                .unwrap_or_else(|| r#"{"version":1,"items":[]}"#.into());
+            let bookmarks: serde_json::Value = serde_json::from_str(&payload)
+                .map_err(|error| CatalogError::Invalid(format!("invalid bookmarks: {error}")))?;
+            if bookmarks.get("version").and_then(serde_json::Value::as_i64) != Some(1) {
+                return Err(CatalogError::Invalid(
+                    "bookmarks_json has unsupported version".into(),
+                ));
+            }
+            let Some(items) = bookmarks.get("items").and_then(serde_json::Value::as_array)
+            else {
+                return Err(CatalogError::Invalid(
+                    "bookmarks_json has invalid shape".into(),
+                ));
+            };
+            if items.len() > 1_000 {
+                return Err(CatalogError::Invalid(
+                    "bookmarks_json has too many items".into(),
+                ));
+            }
+            let now = unix_millis();
+            for item in items {
+                if item.get("document_id").and_then(serde_json::Value::as_str)
+                    != Some(document_id.as_str())
+                {
+                    continue;
+                }
+                let Some(link_id) = item.get("link_id").and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let Some(generation) = item
+                    .get("credential_generation")
+                    .and_then(serde_json::Value::as_i64)
+                else {
+                    continue;
+                };
+                return connection
+                    .query_row(
+                        "SELECT token_hash,role FROM links
+                         WHERE id=?1 AND document_id=?2 AND credential_generation=?3
+                           AND (expires_at IS NULL OR expires_at>?4)",
+                        params![link_id, document_id, generation, now],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(CatalogError::from);
+            }
+            Ok(None)
+        })
+    }
+
     pub fn guests(&self, slug: &str, limit: u32) -> CatalogResult<Vec<Guest>> {
         let _ = (slug, limit);
         // v2 bookmarks belong to each account and are never an access index;

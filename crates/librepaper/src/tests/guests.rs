@@ -1,8 +1,7 @@
 //! A guest is an account that opened a document through a link while signed
-//! in. A link names nobody by itself, so this is the only way an owner
-//! learns who is actually reading through one, and the only way that
-//! reader's own `/api/list` ever mentions a document nobody handed to them by
-//! name.
+//! in. In v2 the durable record is the visitor's own bookmark payload: a link
+//! names nobody by itself, so the catalogue must never build a reverse index
+//! of every account that has visited a document.
 
 use serde_json::json;
 
@@ -217,20 +216,25 @@ async fn a_second_open_does_not_duplicate_the_guest() {
         assert_eq!(status, 200);
     }
 
-    let entry = server
-        .instance
-        .store
-        .get(&slug)
-        .await
-        .expect("the document");
-    assert_eq!(
-        entry
-            .guests
-            .iter()
-            .filter(|guest| guest.name == "bob")
-            .count(),
-        1,
-        "opening twice recorded more than one guest row: {:?}",
-        entry.guests
-    );
+    let catalog = server.instance.store.catalog.as_ref().expect("catalogue");
+    let document_id = catalog.document(&slug).unwrap().expect("document").id;
+    let payload: String = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT bookmarks_json FROM accounts WHERE id='github:bob'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    let bookmarks: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    let count = bookmarks["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["document_id"].as_str() == Some(document_id.as_str()))
+        .count();
+    assert_eq!(count, 1, "opening twice duplicated the v2 bookmark: {bookmarks}");
 }

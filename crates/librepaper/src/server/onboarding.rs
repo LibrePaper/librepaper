@@ -79,6 +79,32 @@ impl Server {
             return Ok(());
         }
         let _guard = self.onboarding.lock().await;
+        // The caller can be an identity captured before the account row was
+        // refreshed. Read the live generation once and use it for every write
+        // in this provisioning pass; accepting an empty or stale generation
+        // would turn a valid authenticated retry into a 401.
+        let account_id = who.id.clone();
+        let account = catalog
+            .execute_catalog(
+                crate::server::SERVER_JOB_BYTES + account_id.len(),
+                move |catalog| catalog.account(&account_id),
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "account disappeared during onboarding".to_string())?;
+        // Account-example provisioning is an authenticated first-party write.
+        // `Store::put` deliberately refuses catalogue-backed writes because it
+        // has no request actor, so carry the identity that sign-in already
+        // authenticated through every catalogue admission and checkpoint.
+        let actor = crate::document::store::MutationActor {
+            account_id: account.id.clone(),
+            owner_key: account.handle.clone(),
+            session_generation: account.session_generation.clone(),
+            link_hash: String::new(),
+            policy_editor: self.publishers.allows(&account.handle),
+            automation: false,
+            unowned_publisher: false,
+        };
         for (position, slug) in pending_account_examples(catalog, &who.id)
             .await
             .map_err(|e| e.to_string())?
@@ -97,17 +123,20 @@ impl Server {
                 }
             } else {
                 self.store
-                    .put(Publication {
-                        slug: slug.clone(),
-                        title: starter.title.into(),
-                        source: starter.source.into(),
-                        source_format: starter.format.into(),
-                        main: starter.main.into(),
-                        owner: who.handle.clone(),
-                        owner_id: who.id.clone(),
-                        owner_name: who.name.clone(),
-                        ..Publication::default()
-                    })
+                    .put_as_actor(
+                        Publication {
+                            slug: slug.clone(),
+                            title: starter.title.into(),
+                            source: starter.source.into(),
+                            source_format: starter.format.into(),
+                            main: starter.main.into(),
+                            owner: who.handle.clone(),
+                            owner_id: who.id.clone(),
+                            owner_name: who.name.clone(),
+                            ..Publication::default()
+                        },
+                        actor.clone(),
+                    )
                     .await
                     .map_err(|e| e.to_string())?;
             }
@@ -128,7 +157,11 @@ impl Server {
                 )
                 .to_vec();
                 let (sha, _) = room
-                    .put_asset(icon, (self.config.max_asset, self.config.max_assets))
+                    .put_asset_authorized(
+                        icon,
+                        (self.config.max_asset, self.config.max_assets),
+                        &actor,
+                    )
                     .await
                     .map_err(|error| error.to_string())?;
                 room.name_asset("librepaper-icon.png", &sha)
@@ -140,12 +173,25 @@ impl Server {
                     .await
                     .map_err(|error| error.to_string())?;
             }
-            room
-                // First sign-in provisioning is the new account's own write.
-                .checkpoint(
-                    "onboarding",
-                    crate::room::Attribution::account(&who.id, &who.handle),
-                )
+            // First sign-in provisioning is the new account's own write. The
+            // final catalogue insertion rechecks the live account/session in
+            // the same transaction, so a revoked sign-in cannot finish a
+            // partially provisioned example.
+            room.checkpoint_now_with_authority(
+                "onboarding",
+                crate::room::Attribution::account(&who.id, &who.handle),
+                crate::storage::catalog::MutationAuthority {
+                    account_id: &actor.account_id,
+                    owner_key: &actor.owner_key,
+                    generation: &actor.session_generation,
+                    link_hash: &actor.link_hash,
+                    policy_editor: actor.policy_editor,
+                    automation: actor.automation,
+                    unowned_publisher: actor.unowned_publisher,
+                    execution_epoch: "",
+                    agent_checkpoint: None,
+                },
+            )
                 .await
                 .map_err(|e| e.to_string())?;
             // The starter document and its checkpoint are durable before this
