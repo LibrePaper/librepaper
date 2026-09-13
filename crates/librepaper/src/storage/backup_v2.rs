@@ -108,13 +108,16 @@ impl BackupManifestV2 {
 
     pub fn validate_for_backup(&self, backup_id: &str) -> Result<(), BackupV2Error> {
         self.validate()?;
-        if backup_id.is_empty() || backup_id.contains('/') {
+        if !valid_backup_id(backup_id) {
             return Err(BackupV2Error::Invalid("invalid backup identity".into()));
         }
         let prefix = format!("{BACKUP_PREFIX_V2}/{backup_id}/");
-        if !self.identity.backup_key.starts_with(&prefix)
-            || self.secrets.iter().any(|file| !file.backup_key.starts_with(&prefix))
-            || self.objects.iter().any(|object| !object.backup_key.starts_with(&prefix))
+        if self.identity.backup_key != format!("{prefix}{}", self.identity.relative)
+            || self.secrets.iter().any(|file| file.backup_key != format!("{prefix}{}", file.relative))
+            || self.objects.iter().any(|object| {
+                object.backup_key
+                    != format!("{prefix}objects/{}/{}", object.document_id, object.object_id)
+            })
         {
             return Err(BackupV2Error::Invalid("backup entry escapes its destination scope".into()));
         }
@@ -327,7 +330,7 @@ pub async fn restore_backup(
     target: &dyn BlobStore,
     backup_id: &str,
 ) -> Result<RestoreReport, BackupV2Error> {
-    if backup_id.is_empty() || backup_id.contains('/') {
+    if !valid_backup_id(backup_id) {
         return Err(BackupV2Error::Invalid("invalid backup identity".into()));
     }
     let manifest_key = backup_manifest_key(backup_id);
@@ -440,6 +443,13 @@ fn valid_backup_file(file: &BackupFileEntry) -> bool {
         && is_digest(&file.digest)
 }
 
+fn valid_backup_id(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
 fn is_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
@@ -484,5 +494,37 @@ mod tests {
         assert!(manifest.validate().is_err());
         manifest.objects.truncate(1);
         assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn manifest_rejects_entries_outside_exact_backup_scope() {
+        let object = BackupObjectEntry {
+            document_id: "doc".into(),
+            object_id: "0123456789abcdef0123456789abcdef".into(),
+            source_key: "v2/documents/doc/objects/0123456789abcdef0123456789abcdef".into(),
+            backup_key: "recovery/v2/backup/objects/doc/0123456789abcdef0123456789abcdef/extra".into(),
+            digest: digest(),
+            byte_length: 0,
+        };
+        let manifest = BackupManifestV2 {
+            format_version: BACKUP_FORMAT_V2,
+            operation_id: "operation".into(),
+            deployment_id: "deployment".into(),
+            snapshot_revision: 1,
+            created_at: 2,
+            catalog_digest: digest(),
+            catalog_length: 0,
+            identity: BackupFileEntry {
+                relative: "state/deployment.id".into(),
+                backup_key: "recovery/v2/backup/state/deployment.id".into(),
+                digest: digest(),
+                byte_length: 0,
+            },
+            secrets: Vec::new(),
+            secret_versions: Vec::new(),
+            objects: vec![object],
+            complete: true,
+        };
+        assert!(manifest.validate_for_backup("backup").is_err());
     }
 }
