@@ -62,7 +62,7 @@
   import DictationDownload from "./DictationDownload.svelte";
   import DictationPill from "./DictationPill.svelte";
   import Row from "./layout/Row.svelte";
-  import { done as toastDone, problem as toastProblem, said as toastSaid, unsay as toastUnsay } from "../lib/toast.svelte.js";
+  import { done as toastDone, problem as toastProblem, said as toastSaid } from "../lib/toast.svelte.js";
   import { availableDownloads, inlineBlobUrls, saveBlob } from "../lib/reader/downloads.js";
   import { getDictation } from "../lib/dictation/service.js";
   import { targetForActiveElement, textareaTarget } from "../lib/dictation/targets.js";
@@ -2455,24 +2455,6 @@
 
   /* ------------------------------------------------------- keeping in step */
 
-  // Said when the lock has nowhere to go: the words at the caret, and the words
-  // around them, are in neither the document nor the source. That is rare now
-  // that it looks beside the line as well as at it -- a formula, a blank line
-  // and a fenced block all resolve to the prose next to them -- so when it does
-  // happen it is worth one plain line rather than an alarm. Nothing is broken:
-  // the lock is on and the next move will try again.
-  const NO_MATCH = "nothing to jump to here";
-
-  function lost(yes) {
-    if (!yes) {
-      toastUnsay(`reader:${NO_MATCH}`);
-      return;
-    }
-    // Not a problem: the editor is in the state it was in, and the reader has
-    // lost nothing. It is a fact about where the caret happens to be.
-    say(NO_MATCH);
-  }
-
   let stepTimer = null;
   function outlineTextChanged() {
     // CodeMirror has applied the local or remote transaction by this point.
@@ -2497,21 +2479,14 @@
         const precise = activeSynctex.forward(path, synctexLineAt(editor.text(), editor.caret()));
         if (precise) {
           tell({ type: "synctex-locate", page: precise.page, x: precise.x, y: precise.y });
-          lost(false);
           return;
         }
       }
       const place = sync.documentPlaceFor(editor.text(), editor.caret(), docText, format);
       if (place) {
         tell({ type: "locate", start: place.at, length: place.length });
-        lost(false);
         return;
       }
-      // The words at the caret are not findable in the document: a formula, a
-      // table cell, a heading that renders as something else. Said rather than
-      // ignored, because a lock that silently does nothing is
-      // indistinguishable from one that is broken.
-      lost(true);
     }, 120);
   }
 
@@ -2527,11 +2502,7 @@
       open: session?.paths?.get(openFile) || "",
       formatOf: renderers.formatOf,
     });
-    if (!found) {
-      lost(true);
-      return;
-    }
-    lost(false);
+    if (!found) return;
     const id = session.idOf(found.path);
     if (id) {
       openFile = id;
@@ -2547,7 +2518,6 @@
     const precise = activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
     const id = precise && session.idOf(precise.path);
     if (!id) return false;
-    lost(false);
     openFile = id;
     editor.openAt(id, precise.line, 1);
     return true;
@@ -4008,10 +3978,7 @@
       {:else if sourceFormat === "typst" && compileBadge}
         <p>{compileBadge}</p>
       {/if}
-      {#if sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !quartoExecutionApproved}
-        <p>Quarto can execute arbitrary code from this document on your computer.</p>
-        <button class="btn btn-sm preset-filled-primary-500" onclick={() => void runQuartoLocally()}>Run Quarto locally</button>
-      {:else if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
+      {#if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
         <p>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Use Quarto on this computer to generate the full preview."}</p>
         <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void runQuartoLocally()}>
           {quartoNeedsLocalApp ? "Enable local rendering" : "Retry Quarto preview"}
@@ -4030,10 +3997,14 @@
     </div>
   {/snippet}
   {#snippet previewStatusControl()}
-    <PreviewStatus label={previewStatusLabel} busy={previewBusy}
-      tone={previewProblem ? "error" : "neutral"}>
-      {#snippet details()}{@render previewStatusDetails()}{/snippet}
-    </PreviewStatus>
+    {#if sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !quartoExecutionApproved}
+      <button class="btn btn-sm preset-filled-primary-500" title="Quarto can execute arbitrary code from this document on your computer" onclick={() => void runQuartoLocally()}>Run Quarto locally</button>
+    {:else}
+      <PreviewStatus label={previewStatusLabel} busy={previewBusy}
+        tone={previewProblem ? "error" : "neutral"}>
+        {#snippet details()}{@render previewStatusDetails()}{/snippet}
+      </PreviewStatus>
+    {/if}
   {/snippet}
   {#snippet previewOverlay()}
     {#if previewBusy}
