@@ -20,7 +20,6 @@ use std::time::{Duration, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-use super::confine;
 use super::protocol::{
     BuilderCapability, BuilderOperation, Capabilities, Confinement, Distribution, Tool, Tools,
 };
@@ -55,9 +54,6 @@ pub struct ToolPaths {
     /// sibling binary (e.g. `biber` beside `pdflatex`) resolves the same
     /// distribution rather than a stray one earlier on the real `PATH`.
     bin_dir: Option<PathBuf>,
-    /// The distribution's TEXMF root, when discovery could find one, for
-    /// confinement's read-only bind list.
-    texmf_root: Option<PathBuf>,
 }
 
 impl ToolPaths {
@@ -77,10 +73,6 @@ impl ToolPaths {
 
     pub fn bin_dir(&self) -> Option<&Path> {
         self.bin_dir.as_deref()
-    }
-
-    pub fn texmf_root(&self) -> Option<&Path> {
-        self.texmf_root.as_deref()
     }
 
     pub(crate) fn all(&self) -> BTreeMap<String, PathBuf> {
@@ -395,7 +387,7 @@ fn distribution_from(banner: &str, path: &Path) -> Option<Distribution> {
 }
 
 /// A TEXMF root, from `kpsewhich`, when one of the discovered tools can
-/// report it; used only for confinement's read-only bind list.
+/// report it; used when constructing native tool commands.
 async fn texmf_root_of(tool_path: &Path) -> Option<PathBuf> {
     let kpsewhich = tool_path.parent()?.join(exe_name("kpsewhich"));
     if !kpsewhich.is_file() {
@@ -420,7 +412,7 @@ fn platform_name() -> String {
 }
 
 /// Rebuilds the cache from scratch: searches, probes every tool, detects
-/// confinement, and writes the result.
+/// execution policy, and writes the result.
 async fn rediscover(configured: Vec<PathBuf>) -> Cache {
     let mut dirs = configured.clone();
     dirs.extend(fallback_search_dirs());
@@ -461,7 +453,11 @@ async fn rediscover(configured: Vec<PathBuf>) -> Cache {
     Cache {
         configured_paths: configured,
         tools,
-        confinement: confine::detect(),
+        confinement: Confinement {
+            available: false,
+            kind: "none".into(),
+            reason: "local execution is authorized by explicit user consent".into(),
+        },
         platform: platform_name(),
         distribution,
         bin_dir,
@@ -661,7 +657,6 @@ fn tool_paths_from(cache: &Cache) -> ToolPaths {
             })
             .collect(),
         bin_dir: cache.bin_dir.clone(),
-        texmf_root: cache.texmf_root.clone(),
     }
 }
 

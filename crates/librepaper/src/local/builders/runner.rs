@@ -1,6 +1,6 @@
 //! Bounded execution and artifact capture for typed local adapters.
 use super::{BuildRequest, CommandPlan, Output};
-use crate::local::{confine, discovery, native, presets, protocol};
+use crate::local::{discovery, native, presets, protocol};
 pub(crate) use native::RunOutcome as Outcome;
 use protocol::{JobOutcome, JobRequest, JobStatus, Workspace};
 use sha2::{Digest, Sha256};
@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, watch};
 
 pub(crate) async fn run_plan_logged(
     plan: &CommandPlan,
-    workspace: &Path,
+    _workspace: &Path,
     mut cancel: watch::Receiver<bool>,
     deadline: Instant,
 ) -> (Outcome, Vec<u8>) {
@@ -56,24 +56,6 @@ pub(crate) async fn run_plan_logged(
             .iter()
             .filter(|(key, _)| key.as_str() != "PATH"),
     );
-    if confine::detect().available {
-        if let Err(error) = confine::wrap(
-            &mut command,
-            &confine::Plan {
-                workspace: workspace.into(),
-                writable: vec![],
-                read_only: vec![plan.executable.clone()],
-                network: false,
-            },
-        ) {
-            return (
-                Outcome::SpawnFailed(format!("confinement required: {error}")),
-                Vec::new(),
-            );
-        }
-    }
-    // Wrapping replaces Command, so configure descriptors and the process
-    // group on the final command used for bounded capture and cancellation.
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -200,7 +182,7 @@ pub async fn run(
         engine: engine.unwrap_or_default(),
         preset: request.preset.clone(),
         snapshot: request.snapshot.clone(),
-        confinement: confine::detect().kind,
+        confinement: "none".into(),
         ..Default::default()
     };
     let _ = progress.send(status.clone());

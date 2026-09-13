@@ -1363,12 +1363,14 @@ fn handle_pair_page(request: &Request<Body>) -> Reply {
 <h1>Use this computer's tools?</h1>\
 <p><span class=\"site\">{site}</span> wants to render the document <code>{name}</code> \
 with the Quarto and TeX tools installed on this computer.</p>\
-<p>Allowing runs that document's code here whenever an editor of it asks. \
-Only allow sites you trust.</p>\
+<p><strong>Warning:</strong> Quarto documents can execute arbitrary code on this computer, \
+with your user account's access to files, installed packages, and the network. Pair only \
+with a site and document you trust. Pairing alone does not run the document; LibrePaper \
+will ask you to start Quarto separately.</p>\
 <form method=\"post\" action=\"{BASE_PATH}/pair\">\
 <input type=\"hidden\" name=\"origin\" value=\"{origin_attr}\">\
 <input type=\"hidden\" name=\"project\" value=\"{project_attr}\">{request_fields}\
-<div class=\"row\"><button type=\"submit\" class=\"allow\" autofocus>Allow</button>\
+<div class=\"row\"><button type=\"submit\" class=\"allow\">Allow local code execution</button>\
 <button type=\"button\" onclick=\"window.close()\">Cancel</button></div></form>\
 </body></html>"
     );

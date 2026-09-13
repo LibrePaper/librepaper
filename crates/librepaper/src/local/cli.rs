@@ -532,7 +532,7 @@ async fn doctor(tex_path: Vec<PathBuf>) {
                 capabilities.confinement.reason.as_str()
             }
         );
-        println!("  a native compile will run unconfined until this is addressed");
+        println!("  paired local builds run with the user's normal access");
     }
 }
 

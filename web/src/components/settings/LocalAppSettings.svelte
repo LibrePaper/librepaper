@@ -14,6 +14,7 @@
 
   let address = $state(localBridge.address());
   let pairingCode = $state("");
+  let acceptsCodeExecution = $state(false);
   let connecting = $state(false);
   let doctor = $state("");
   let choosingFolder = $state(false);
@@ -127,11 +128,15 @@
 {#if !connected}
   <details id="local-pairing" class="setting-advanced">
     <summary>Advanced connection options</summary>
+    <label class="setting-description">
+      <input type="checkbox" bind:checked={acceptsCodeExecution} />
+      I understand that paired Quarto documents can execute arbitrary code on this computer with my user account's access.
+    </label>
     <SettingRow title="Pairing code"
                 description="Enter the one-time code printed by the companion if the permission window cannot open.">
     <input class="input input-sm setting-input" type="text" inputmode="numeric" aria-label="Pairing code"
            bind:value={pairingCode} placeholder="Code from the local app" />
-    <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={connecting || !pairingCode} onclick={connect}>Connect</button>
+    <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={connecting || !pairingCode || !acceptsCodeExecution} onclick={connect}>Connect</button>
     </SettingRow>
   </details>
 {/if}

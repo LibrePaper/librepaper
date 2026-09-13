@@ -3,7 +3,7 @@
 //! This module contains no HTTP or browser-facing types.  Paths in a plan are
 //! resolved by the companion after authorization; callers cannot provide an
 //! executable or shell command.  The plan is intentionally data-only so the
-//! service can apply its existing cancellation and confinement machinery.
+//! service can apply its existing cancellation and deadline machinery.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

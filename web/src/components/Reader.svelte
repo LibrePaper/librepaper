@@ -200,6 +200,9 @@
   // draft, a Quarto document shows. One person's choice, remembered per
   // document, in this browser.
   let quartoPreviewMode = $state("quarto");
+  // Pairing grants the browser permission to ask, but never starts document
+  // code. Native Quarto execution begins only with this page-session gesture.
+  let quartoExecutionApproved = $state(false);
   // Which of the browser's own Typst rendering, or Calepin running the same
   // document's chunks on this computer through the local app, a Typst
   // document shows. Same shape of choice as Quarto's, remembered separately.
@@ -233,15 +236,18 @@
     setBuildPreferences(updateBuildPreferences(buildScope(), "quarto", { selection: "tool", backend: mode === "markdown" ? "browser" : "local", tool: mode === "markdown" ? "markdown" : "quarto", output: "html" }));
     navigationGeneration += 1;
     quartoPreviewMode = mode === "markdown" ? "markdown" : "quarto";
-    // A user gesture may open the pairing popup when the app is reachable
-    // but not yet paired; the mode's own effect starts the preview once it
-    // is connected.
-    if (quartoPreviewMode === "quarto") {
-      if (await ensureLocalApp() && quartoLiveActive) await quartoPreviewController.start();
-    } else {
+    if (quartoPreviewMode === "markdown") {
+      quartoExecutionApproved = false;
       await quartoPreviewController.stop();
       void paintPreview();
     }
+  }
+
+  async function runQuartoLocally() {
+    if (!await ensureLocalApp()) return;
+    quartoExecutionApproved = true;
+    quartoPreviewMode = "quarto";
+    if (quartoLiveActive) await quartoPreviewController.start();
   }
 
   async function setTypstPreviewMode(mode) {
@@ -1213,7 +1219,7 @@
   // pane) is not required -- an editor who has not opened it yet still gets
   // the live pane the moment they are able to edit.
   const quartoLiveActive = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !buildPreferences.preset && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && !viewing &&
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && quartoExecutionApproved && !buildPreferences.preset && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && !viewing &&
       localAppStatus.state === "connected",
   );
 
@@ -1989,7 +1995,7 @@
   // Quarto preview mode chosen, but not yet paired with the local app on
   // this computer: the pane shows the draft, and Diagnostics explains why.
   const quartoNeedsLocalApp = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && mayEdit && !viewing &&
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && quartoExecutionApproved && mayEdit && !viewing &&
       localAppStatus.state !== "connected",
   );
   // A read-only visitor cannot authorize the companion to receive a
@@ -2139,6 +2145,7 @@
     const snapshotViewing = viewing;
     const snapshotNavigation = navigationGeneration;
     const snapshotSource = sourceGeneration;
+    let snapshotIdentity = snapshotViewing?.sha || "";
     const format = renderers.formatOf(tree.main);
     try {
       if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: tree", tree.main, format, Object.keys(tree.texts || {}).length);
@@ -2188,7 +2195,7 @@
       }
       // Keep a transient source identity for diagnostics and race checks. It
       // is never sent to the server as a rendering name or persisted result.
-      const snapshotIdentity = snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}));
+      snapshotIdentity = snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}));
       try {
         if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: rendering", format, snapshotIdentity);
       } catch { /* diagnostics are optional */ }
@@ -2211,9 +2218,12 @@
         if (readerDisposed) return;
         const renderOptions = { ...(manual ? { manual: true } : {}) };
         if (htmlPreview) renderOptions.format = "html";
+        const selectedBuild = format === "quarto" && (typeof quartoExecutionApproved === "undefined" || !quartoExecutionApproved)
+          ? { selection: "tool", backend: "browser", tool: "markdown", output: "html" }
+          : buildPreferences;
         rendered = snapshotViewing
           ? await passages.renderTree(SLUG, { ...tree, label: title }, keyHeaders(KEY))
-          : await renderers.render(tree, title, { ...renderOptions, buildPreferences, project: SLUG });
+          : await renderers.render(tree, title, { ...renderOptions, buildPreferences: selectedBuild, project: SLUG });
         try {
           if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
         } catch { /* diagnostics are optional */ }
@@ -3998,9 +4008,12 @@
       {:else if sourceFormat === "typst" && compileBadge}
         <p>{compileBadge}</p>
       {/if}
-      {#if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
+      {#if sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !quartoExecutionApproved}
+        <p>Quarto can execute arbitrary code from this document on your computer.</p>
+        <button class="btn btn-sm preset-filled-primary-500" onclick={() => void runQuartoLocally()}>Run Quarto locally</button>
+      {:else if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
         <p>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Use Quarto on this computer to generate the full preview."}</p>
-        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void setQuartoPreviewMode("quarto")}>
+        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void runQuartoLocally()}>
           {quartoNeedsLocalApp ? "Enable local rendering" : "Retry Quarto preview"}
         </button>
         {#if quartoNeedsLocalApp}<button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => openSettings("local")}>Install or configure companion</button>{/if}

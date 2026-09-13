@@ -1,7 +1,6 @@
 //! The bounded native controller: runs a requested TeX engine (and, when
 //! the sources need it, BibTeX/Biber/makeindex) to convergence on a staged
-//! project, or a standalone Biber job, inside the confinement `confine.rs`
-//! provides.
+//! project, or a standalone Biber job, in the paired user's local environment.
 //!
 //! This module never requires `latexmk`: convergence is decided by reading
 //! the same log text and the same aux/bcf/idx files a human watching the
@@ -12,10 +11,8 @@
 //! code collaborators wrote.
 //!
 //! Every process this module starts is an explicit argument array against
-//! an app-resolved absolute path, with `-no-shell-escape`, a cleared
-//! environment and, where `confine::detect` found one available, the
-//! platform sandbox from `confine::wrap`. Cancellation and the deadline
-//! both kill the whole process group, never just the immediate child.
+//! an app-resolved absolute path, with `-no-shell-escape` and a cleared
+//! environment. Cancellation and the deadline kill the whole process group.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,7 +21,6 @@ use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch, Semaphore};
 
-use super::confine::{self, Plan};
 use super::discovery::{self, ToolPaths};
 use super::protocol::{
     safe_relative_path, JobOutcome, JobRequest, JobStatus, OutputEntry, Provenance, ToolVersions,
@@ -302,7 +298,7 @@ impl Ctx<'_> {
         env
     }
 
-    /// Builds, confines (when available) and runs one command, waiting for
+    /// Builds and runs one command, waiting for
     /// exit, the deadline, or cancellation, whichever comes first.
     async fn spawn(
         &mut self,
@@ -316,30 +312,6 @@ impl Ctx<'_> {
         for (key, value) in env {
             command.env(key, value);
         }
-        let confinement = confine::detect();
-        if confinement.available {
-            let plan = Plan {
-                workspace: self.workspace.root.clone(),
-                writable: vec![],
-                // Never `/` as a fallback: a read-only bind of the root,
-                // applied after the workspace bind, would sit on top of it
-                // and turn every output write into a refusal. Without a
-                // known TeX root the tool's own prefix binds in `confine`
-                // are what the engine reads from.
-                read_only: std::iter::once(self.workspace.project())
-                    .chain(self.tool_paths.texmf_root().map(Path::to_path_buf))
-                    .collect(),
-                network: false,
-            };
-            if let Err(message) = confine::wrap(&mut command, &plan) {
-                return RunOutcome::SpawnFailed(format!(
-                    "confinement required but unavailable: {message}"
-                ));
-            }
-        }
-
-        // Confinement reconstructs Command; restore the descriptors and group
-        // on the actual process we spawn, including for cancellation.
         command.stdin(std::process::Stdio::null());
         command.stdout(std::process::Stdio::null());
         command.stderr(std::process::Stdio::null());
@@ -896,13 +868,6 @@ impl Ctx<'_> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "main".to_string());
 
-        let confinement = confine::detect();
-        let confinement_word = if confinement.available {
-            confinement.kind.clone()
-        } else {
-            "none".to_string()
-        };
-
         let mut status = JobStatus {
             id: self.job_id.clone(),
             kind: self.request.kind.clone(),
@@ -912,7 +877,7 @@ impl Ctx<'_> {
             error: error.map(str::to_string),
             snapshot: self.request.snapshot.clone(),
             generation: self.request.generation,
-            provenance: self.provenance(engine, &confinement_word),
+            provenance: self.provenance(engine, "none"),
             incompatible,
             ..Default::default()
         };

@@ -148,7 +148,7 @@ pub struct QuartoCapabilities {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Confinement {
     pub available: bool,
-    /// `bwrap`, `sandbox-exec`, or `none`.
+    /// Retained for wire compatibility; trusted local execution reports `none`.
     pub kind: String,
     #[serde(default)]
     pub reason: String,
@@ -880,7 +880,7 @@ pub struct Provenance {
     pub snapshot: String,
     #[serde(default)]
     pub tools: ToolVersions,
-    /// `bwrap`, `sandbox-exec` or `none`.
+    /// Retained for wire compatibility; trusted local execution reports `none`.
     #[serde(default)]
     pub confinement: String,
 }

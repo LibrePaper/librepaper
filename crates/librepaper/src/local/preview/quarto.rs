@@ -157,9 +157,9 @@ pub(crate) fn plan(
     if kind == ArtifactKind::Html {
         command.arg("-M").arg("embed-resources:true");
     }
-    // The confined process receives only explicit environment variables.
-    // Keep runtime caches inside the writable Quarto project, rather than
-    // requiring access to the caller's home directory.
+    // Pairing is the trust boundary for local execution. Keep the inherited
+    // environment so Quarto sees the same runtimes and packages as it does
+    // when the user invokes it from a terminal.
     let cache = binding.root.join(".quarto").join("preview-cache");
     std::fs::create_dir_all(&cache).map_err(|error| error.to_string())?;
     command.env("DENO_DIR", cache.join("deno"));
@@ -172,25 +172,6 @@ pub(crate) fn plan(
             command.env("PATH", path);
         }
     }
-    let confinement = crate::local::confine::detect();
-    if !confinement.available {
-        return Err(format!(
-            "Quarto preview requires filesystem and network confinement: {}",
-            confinement.reason
-        ));
-    }
-    let confinement_plan = crate::local::confine::Plan {
-        workspace: binding.root.clone(),
-        writable: vec![],
-        read_only: quarto_installation_roots(command.as_std().get_program().as_ref()),
-        network: false,
-    };
-    if crate::local::confine::wrap(&mut command, &confinement_plan)?
-        == crate::local::confine::Applied::None
-    {
-        return Err("Quarto preview requires supported confinement".into());
-    }
-
     Ok(Plan {
         command,
         adapter: Box::new(QuartoWatch {
@@ -201,15 +182,6 @@ pub(crate) fn plan(
         root: binding.root,
         binding_id: options.binding_id.clone(),
     })
-}
-
-fn quarto_installation_roots(program: &Path) -> Vec<PathBuf> {
-    program
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .into_iter()
-        .collect()
 }
 
 #[cfg(test)]
