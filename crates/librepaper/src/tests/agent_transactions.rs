@@ -218,9 +218,6 @@ async fn prepare_durable_agent_effect(
             actor: None,
         })
         .expect("prepare operation");
-    catalog
-        .reserve_publication_peak("agent-room", 8192)
-        .expect("reserve operation peak");
     store
         .blobs
         .put(&backup, before_state.clone(), "application/octet-stream")
@@ -572,9 +569,6 @@ fn source_receipt_reopens_and_rejects_digest_reuse() {
             actor: None,
         })
         .expect("prepare");
-    catalog
-        .reserve_publication_peak("agent-doc", 128)
-        .expect("reserve peak");
     let authority = MutationAuthority {
         account_id: "acct-agent",
         owner_key: "",

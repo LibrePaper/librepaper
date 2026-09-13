@@ -9,6 +9,35 @@ use crate::document::session;
 use crate::document::store;
 use crate::room;
 use crate::storage::blob::{self, BlobStore};
+use crate::storage::catalog::Account;
+
+fn catalog_actor() -> store::MutationActor {
+    store::MutationActor {
+        account_id: "github:alice".into(),
+        owner_key: "alice".into(),
+        session_generation: "suggestion-fixture-generation".into(),
+        link_hash: String::new(),
+        policy_editor: true,
+        automation: false,
+        unowned_publisher: false,
+    }
+}
+
+fn catalog_account() -> Account {
+    Account {
+        id: "github:alice".into(),
+        provider: "github".into(),
+        handle: "alice".into(),
+        name: "Alice".into(),
+        email: "alice@example.test".into(),
+        first_seen: "2026-01-01T00:00:00.000Z".into(),
+        last_seen: "2026-01-01T00:00:00.000Z".into(),
+        plan: "free".into(),
+        status: "active".into(),
+        session_generation: "suggestion-fixture-generation".into(),
+        erasure_cursor: None,
+    }
+}
 
 fn source_anchor(exact: &str) -> room::SourceAnchor {
     room::SourceAnchor {
@@ -121,6 +150,7 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects, true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    catalog.upsert_account(&catalog_account()).unwrap();
     let config = Arc::new(Configuration::default());
     let store = Arc::new(
         store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
@@ -128,13 +158,16 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
             .unwrap(),
     );
     store
-        .put(store::Publication {
-            slug: "accept-receipt".into(),
-            source: "A".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "accept-receipt".into(),
+                source: "A".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_actor(),
+        )
         .await
         .unwrap();
     let request_id = "accept-request";
@@ -238,6 +271,7 @@ async fn catalog_fixture() -> (
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    catalog.upsert_account(&catalog_account()).unwrap();
     let config = Arc::new(Configuration::default());
     let store = Arc::new(
         store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
@@ -245,14 +279,17 @@ async fn catalog_fixture() -> (
             .unwrap(),
     );
     store
-        .put(store::Publication {
-            slug: "accept-probe".into(),
-            source: "A".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            peak_bytes: Some(8192),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "accept-probe".into(),
+                source: "A".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                peak_bytes: Some(8192),
+                ..Default::default()
+            },
+            catalog_actor(),
+        )
         .await
         .unwrap();
     store
@@ -291,6 +328,7 @@ async fn catalog_hook_fixture() -> (
     let hooked = HookStore::new(raw);
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    catalog.upsert_account(&catalog_account()).unwrap();
     let config = Arc::new(Configuration::default());
     let store = Arc::new(
         store::Store::open_with_catalog(hooked.clone(), config.clone(), catalog.clone())
@@ -298,14 +336,17 @@ async fn catalog_hook_fixture() -> (
             .unwrap(),
     );
     store
-        .put(store::Publication {
-            slug: "accept-crash".into(),
-            source: "A".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            peak_bytes: Some(8192),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "accept-crash".into(),
+                source: "A".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                peak_bytes: Some(8192),
+                ..Default::default()
+            },
+            catalog_actor(),
+        )
         .await
         .unwrap();
     store

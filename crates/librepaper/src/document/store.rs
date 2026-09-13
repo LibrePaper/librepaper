@@ -37,7 +37,7 @@ use crate::storage::blob::{
 };
 use crate::storage::catalog::{
     Account, Catalog, CatalogError, CheckpointCommit, CheckpointId, DocumentId, ObjectId,
-    ObjectKind, OperationActor, OperationKind, OperationRequest, SourceFormat, UnixMillis,
+    ObjectKind, OperationKind, SourceFormat, UnixMillis,
     V2AdmissionLimits, V2ObjectAllocation, V2OperationInput, V2SourceAdmissionInput,
 };
 use crate::util::new_id;
@@ -984,11 +984,30 @@ impl Store {
                 })
                 .await
                 .map_err(|error| BlobError::Other(error.to_string()))?;
-            let mut lease = Some(lease);
-            let result = async {
-                let (tree, envelope) = crate::document::history::load_tree_envelope(
-                    self.blobs.as_ref(),
-                    lease.as_ref().expect("source read lease exists"),
+            let read_set = lease.set.clone();
+            let (stop_heartbeat, mut stop_rx) = tokio::sync::oneshot::channel();
+            let mut heartbeat = tokio::spawn(async move {
+                let mut lease = lease;
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    tokio::select! {
+                        _ = &mut stop_rx => return Ok(lease),
+                        _ = interval.tick() => {
+                            lease = lease
+                                .renew_owned(crate::util::now_millis())
+                                .await
+                                .map_err(|error| BlobError::Other(error.to_string()))?;
+                        }
+                    }
+                }
+            });
+            let mut heartbeat_result = None;
+            let read_set_for_read = read_set.clone();
+            let blobs = self.blobs.clone();
+            let mut read = Box::pin(async move {
+                let (tree, envelope) = crate::document::history::load_tree_envelope_from_set(
+                    blobs.as_ref(),
+                    &read_set_for_read,
                 )
                 .await
                 .map_err(BlobError::Other)?;
@@ -999,42 +1018,16 @@ impl Store {
                 let recipe = file.recipe.as_ref().ok_or_else(|| {
                     BlobError::Other("current source main file has no recipe".into())
                 })?;
-                let document_id = lease
-                    .as_ref()
-                    .expect("source read lease exists")
-                    .set
-                    .document_id
-                    .to_string();
-                let recipe_id = recipe.object_id.clone();
-                let recipe_digest = recipe.object_digest;
-                let read_set = lease.as_ref().expect("source read lease exists").set.clone();
-                let blobs = self.blobs.clone();
-                let read = async move {
-                    crate::storage::encoding::read_file_v2(
-                        blobs.as_ref(),
-                        &document_id,
-                        &recipe_id,
-                        recipe_digest,
-                        &read_set.objects,
-                    )
-                    .await
-                    .map_err(|error| BlobError::Other(error.to_string()))
-                };
-                tokio::pin!(read);
-                let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
-                heartbeat.tick().await;
-                let bytes = loop {
-                    tokio::select! {
-                        result = &mut read => break result?,
-                        _ = heartbeat.tick() => {
-                            let current = lease.take().expect("source read lease exists");
-                            lease = Some(current
-                                .renew_owned(crate::util::now_millis())
-                                .await
-                                .map_err(|error| BlobError::Other(error.to_string()))?);
-                        }
-                    }
-                };
+                let document_id = read_set_for_read.document_id.to_string();
+                let bytes = crate::storage::encoding::read_file_v2(
+                    blobs.as_ref(),
+                    &document_id,
+                    &recipe.object_id,
+                    recipe.object_digest,
+                    &read_set_for_read.objects,
+                )
+                .await
+                .map_err(|error| BlobError::Other(error.to_string()))?;
                 if bytes.len() as u64 != file.logical_length
                     || Sha256::digest(&bytes).as_slice() != file.logical_digest
                 {
@@ -1042,20 +1035,39 @@ impl Store {
                         "current source logical integrity check failed".into(),
                     ));
                 }
-                if !lease
-                    .as_ref()
-                    .expect("source read lease exists")
-                    .valid_at(crate::util::now_millis())
-                {
-                    return Err(BlobError::Other("checkpoint read lease expired".into()));
-                }
                 let _ = tree;
                 Ok(bytes)
-            }
-            .await;
-            let released = lease.map(|lease| async move { lease.finish().await });
-            let released = match released {
-                Some(release) => Some(release.await),
+            });
+            let result = tokio::select! {
+                result = &mut read => result,
+                outcome = &mut heartbeat => {
+                    heartbeat_result = Some(outcome);
+                    Err(BlobError::Other("checkpoint read lease was lost".into()))
+                }
+            };
+            let _ = stop_heartbeat.send(());
+            let lease = match heartbeat_result {
+                None => match heartbeat.await {
+                    Ok(Ok(lease)) => Some(lease),
+                    Ok(Err(error)) => {
+                        if result.is_ok() { return Err(error); }
+                        None
+                    }
+                    Err(error) => {
+                        if result.is_ok() { return Err(BlobError::Other(error.to_string())); }
+                        None
+                    }
+                },
+                Some(Ok(Ok(lease))) => Some(lease),
+                Some(Ok(Err(_))) | Some(Err(_)) => None,
+            };
+            let released = match lease {
+                Some(mut lease) => {
+                    if result.is_ok() && !lease.valid_at(crate::util::now_millis()) {
+                        return Err(BlobError::Other("checkpoint read lease expired".into()));
+                    }
+                    Some(lease.finish().await)
+                }
                 None => None,
             };
             return match (result, released) {
@@ -1314,193 +1326,6 @@ impl Store {
         } else {
             self.put(v).await
         }
-    }
-
-    /// Authoritative publication path for local SQLite deployments.  The
-    /// compatibility `StoreState` is refreshed only for the single affected
-    /// slug after the catalogue transaction commits; it is never used for
-    /// quota admission and never rewritten as a whole index.
-    pub async fn prepare_publication(
-        &self,
-        slug: &str,
-        request_digest: &str,
-        kind: &str,
-        actor: Option<&MutationActor>,
-    ) -> Result<String, String> {
-        let catalog = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| "publication receipts require the local catalogue".to_string())?;
-        let document = document_row(catalog, slug)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "document not found".to_string())?;
-        if let Some(request_id) = document.pending_publication {
-            let storage_id = document.storage_id.clone();
-            let wanted = request_id.clone();
-            let operation = catalog
-                .execute_catalog(STORE_JOB_BYTES, move |catalog| {
-                    catalog.pending_operation(&storage_id, &wanted)
-                })
-                .await
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "publication receipt is missing".to_string())?;
-            if operation.request_digest != request_digest {
-                return Err("document has a different publication in progress".into());
-            }
-            return Ok(request_id);
-        }
-        let request_id = crate::util::new_request_key();
-        let intent_slug = slug.to_string();
-        let kind = kind.to_string();
-        let storage_id = document.storage_id.clone();
-        let expected_head = document.sha.clone();
-        let actor = actor.cloned();
-        let submit_request_id = request_id.clone();
-        let request_digest = request_digest.to_string();
-        catalog
-            .execute_catalog(STORE_JOB_BYTES + intent_slug.len(), move |catalog| {
-                let slug = intent_slug.as_str();
-                let kind = kind.as_str();
-                let document_sha = expected_head.as_str();
-                let actor = actor.as_ref();
-                catalog.prepare_operation(&OperationRequest {
-                    storage_id: &storage_id,
-                    request_id: &submit_request_id,
-                    kind,
-                    request_digest: &request_digest,
-                    // This is parsed back with serde_json -- by the startup
-                    // roll-forward above, and by `stage_publication_measurement`
-                    // and `stage_publication_checkpoint` in operations.rs -- so it
-                    // must actually be JSON. Rust's `Debug` escaping (the old
-                    // `format!("{:?}", ...)` this replaced) is not JSON escaping:
-                    // a control character in an owner key, say, becomes a `\u{7f}`
-                    // that no JSON parser accepts, and the whole receipt becomes
-                    // unreadable from then on.
-                    intent: &if let Some(actor) = actor {
-                        serde_json::json!({
-                            "slug": slug,
-                            "kind": kind,
-                            "staged_required": true,
-                            "expected_head": document_sha,
-                            "new_head": null,
-                            "durable_coverage": null,
-                            "reservations": [],
-                            "output_descriptors": [],
-                            "actor": {
-                                "account_id": actor.account_id,
-                                "owner_key": actor.owner_key,
-                                "generation": actor.session_generation,
-                            },
-                        })
-                        .to_string()
-                    } else {
-                        serde_json::json!({
-                            "slug": slug,
-                            "kind": kind,
-                            "staged_required": true,
-                            "expected_head": document_sha,
-                            "new_head": null,
-                            "durable_coverage": null,
-                            "reservations": [],
-                            "output_descriptors": [],
-                        })
-                        .to_string()
-                    },
-                    created_at: now_unix(),
-                    actor: actor.map(|actor| OperationActor {
-                        account_id: actor.account_id.as_str(),
-                        owner_key: actor.owner_key.as_str(),
-                        generation: actor.session_generation.as_str(),
-                        required_role: "editor",
-                    }),
-                })
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(request_id)
-    }
-
-    /// Reserve the publication peak before object I/O.
-    ///
-    /// A caller cancelled after dispatch leaves the reservation taken and the
-    /// pending receipt owning it; `commit_publication`/`abort_publication`
-    /// settle it by that receipt's request id, so the reservation is never
-    /// orphaned and the mutation is never repeated.
-    pub async fn reserve_publication_peak(&self, slug: &str, bytes: i64) -> Result<(), String> {
-        let Some(catalog) = &self.catalog else {
-            return Ok(());
-        };
-        let slug = slug.to_string();
-        catalog
-            .execute_catalog(STORE_JOB_BYTES + slug.len(), move |catalog| {
-                catalog.reserve_publication_peak(&slug, bytes)
-            })
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    pub async fn commit_publication(&self, slug: &str, result: &str) -> Result<(), String> {
-        self.commit_publication_checked(slug, result)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    /// Preserve the catalogue refusal type through final publication admission.
-    pub async fn commit_publication_checked(
-        &self,
-        slug: &str,
-        result: &str,
-    ) -> Result<(), crate::storage::catalog::CatalogExecError> {
-        let Some(catalog) = &self.catalog else {
-            return Ok(());
-        };
-        let document = document_row(catalog, slug)
-            .await?
-            .ok_or(CatalogError::NotFound)?;
-        let Some(request_id) = document.pending_publication else {
-            return Ok(());
-        };
-        let storage_id = document.storage_id.clone();
-        let result = result.to_string();
-        let owner_limit = self.config.storage.per_owner;
-        let total_limit = self.config.storage.total;
-        catalog
-            .execute_catalog(STORE_JOB_BYTES + result.len(), move |catalog| {
-                catalog.commit_operation_with_quota(
-                    &storage_id,
-                    &request_id,
-                    &result,
-                    &result,
-                    Some((owner_limit, total_limit)),
-                )
-            })
-            .await?;
-        Ok(())
-    }
-
-    pub async fn abort_publication(&self, slug: &str, result: &str) -> Result<(), String> {
-        let Some(catalog) = &self.catalog else {
-            return Ok(());
-        };
-        let Some(document) = document_row(catalog, slug)
-            .await
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(());
-        };
-        let Some(request_id) = document.pending_publication else {
-            return Ok(());
-        };
-        let storage_id = document.storage_id.clone();
-        let result = result.to_string();
-        catalog
-            .execute_catalog(STORE_JOB_BYTES + result.len(), move |catalog| {
-                catalog.abort_operation(&storage_id, &request_id, &result)
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(())
     }
 
     async fn put_catalog(

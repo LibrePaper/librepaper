@@ -16,7 +16,19 @@ use crate::config::Configuration;
 use crate::document::{session, store};
 use crate::room::{self, RoomSet};
 use crate::storage::blob::{self, BlobStore};
-use crate::storage::catalog::Catalog;
+use crate::storage::catalog::{Account, Catalog};
+
+fn fixture_actor() -> store::MutationActor {
+    store::MutationActor {
+        account_id: "github:alice".into(),
+        owner_key: "alice".into(),
+        session_generation: "fixture-generation".into(),
+        link_hash: String::new(),
+        policy_editor: true,
+        automation: false,
+        unowned_publisher: false,
+    }
+}
 
 /// A catalogue-backed deployment with one published room.
 async fn fixture(
@@ -32,6 +44,21 @@ async fn fixture(
     let dir = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let catalog = Arc::new(Catalog::open(dir.path().join("catalog.db")).unwrap());
+    catalog
+        .upsert_account(&Account {
+            id: "github:alice".into(),
+            provider: "github".into(),
+            handle: "alice".into(),
+            name: "Alice".into(),
+            email: "alice@example.test".into(),
+            first_seen: "2026-01-01T00:00:00.000Z".into(),
+            last_seen: "2026-01-01T00:00:00.000Z".into(),
+            plan: "free".into(),
+            status: "active".into(),
+            session_generation: "fixture-generation".into(),
+            erasure_cursor: None,
+        })
+        .unwrap();
     let config = Arc::new(config);
     let store = Arc::new(
         store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
@@ -41,14 +68,17 @@ async fn fixture(
     let rooms = RoomSet::new(blobs, config);
     rooms.attach_store(store.clone());
     store
-        .put(store::Publication {
-            slug: slug.into(),
-            source: "first".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            peak_bytes: Some(1 << 20),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: slug.into(),
+                source: "first".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                peak_bytes: Some(1 << 20),
+                ..Default::default()
+            },
+            fixture_actor(),
+        )
         .await
         .unwrap();
     // The publication receipt is completed through the room, exactly as

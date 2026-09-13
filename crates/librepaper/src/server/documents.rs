@@ -426,10 +426,6 @@ impl Server {
         let mut publication_token = match room.reserve_publication_checkpoint() {
             Ok(token) => token,
             Err(err) => {
-                let _ = self
-                    .store
-                    .abort_publication(&key, &format!("checkpoint admission failed: {err}"))
-                    .await;
                 if let Err(cleanup) = self.delete_document(&key).await {
                     eprintln!("warning: could not undo refused creation of {key}: {cleanup}");
                 }
@@ -446,10 +442,6 @@ impl Server {
             .set_main_file(&parsed.source, &parsed.source_format, &parsed.main)
             .await
         {
-            let _ = self
-                .store
-                .abort_publication(&key, &format!("source write refused: {error}"))
-                .await;
             if let Err(cleanup) = self.delete_document(&key).await {
                 eprintln!("warning: could not undo refused creation of {key}: {cleanup}");
             }
@@ -466,10 +458,6 @@ impl Server {
         if !parsed.files.is_empty() {
             if let Err(error) = self.fill_directory(&room, &parsed).await {
                 eprintln!("warning: could not store every file of {key}: {error}");
-                let _ = self
-                    .store
-                    .abort_publication(&key, &format!("directory fill failed: {error}"))
-                    .await;
                 if let Err(err) = self.delete_document(&key).await {
                     eprintln!("warning: could not undo the creation of {key}: {err}");
                 }
@@ -492,10 +480,6 @@ impl Server {
             Ok(None) => entry.sha.clone(),
             Err(error) => {
                 eprintln!("warning: could not checkpoint {key}: {error}");
-                let _ = self
-                    .store
-                    .abort_publication(&key, &format!("checkpoint failed: {error}"))
-                    .await;
                 if let Err(err) = self.delete_document(&key).await {
                     eprintln!("warning: could not undo the creation of {key}: {err}");
                 }
@@ -505,18 +489,6 @@ impl Server {
                 );
             }
         };
-        if let Err(err) = self.store.commit_publication_checked(&key, &sha).await {
-            let error = crate::room::WriteError::from(err);
-            eprintln!("warning: could not commit publication {key}: {error}");
-            let _ = self
-                .store
-                .abort_publication(&key, &format!("commit failed: {error}"))
-                .await;
-            if let Err(err) = self.delete_document(&key).await {
-                eprintln!("warning: could not undo the creation of {key}: {err}");
-            }
-            return refused("could not store the document", &error);
-        }
         publication_token.commit();
         // A document only its owner can open is not published in any useful
         // sense, so the upload mints the read link and hands it back beside

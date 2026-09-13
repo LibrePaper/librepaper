@@ -3111,6 +3111,23 @@ impl Room {
         bodies: &HashMap<String, String>,
         format: &str,
     ) -> Result<(), WriteError> {
+        self.rollback_publication_memory(tree, bodies, format)
+            .await?;
+        self.write_session_inner(false, false).await.map(|_| ())
+    }
+
+    /// Restore only the resident CRDT state.  A prepared v2 source operation
+    /// owns the document's source-writer slot, so persisting this state before
+    /// that operation is aborted would try to create a competing
+    /// `journal_append` row and violate the one-writer invariant.  Callers
+    /// that are compensating an operation must abort its row first, then use
+    /// `write_session_inner` once the slot is free.
+    pub(crate) async fn rollback_publication_memory(
+        &self,
+        tree: &crate::document::history::Tree,
+        bodies: &HashMap<String, String>,
+        format: &str,
+    ) -> Result<(), WriteError> {
         {
             let _assets_writer = self.assets_write.lock().await;
             let mut state = self.state.lock().await;
@@ -3135,7 +3152,7 @@ impl Room {
             state.session.mark_dirty(now_unix());
             state.session.updated_at = now_unix();
         }
-        self.write_session_inner(false, false).await.map(|_| ())
+        Ok(())
     }
 
     /// Puts a text at a path in the document, beside whatever is already

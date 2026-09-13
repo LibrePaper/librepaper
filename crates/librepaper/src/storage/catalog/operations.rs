@@ -1374,14 +1374,6 @@ impl Catalog {
         })
     }
 
-    /// Publication peaks are charged by object allocation in v2.
-    pub fn reserve_publication_peak(&self, _slug: &str, bytes: i64) -> CatalogResult<()> {
-        if bytes < 0 {
-            return Err(CatalogError::Invalid("negative publication peak".into()));
-        }
-        Err(CatalogError::Invalid("standalone publication peaks are obsolete in catalog v2; allocate publication objects under the operation".into()))
-    }
-
     /// Reserve an exact object replacement delta. Replacing a 10-byte session
     /// with a 12-byte session reserves two bytes, not another twelve.
     pub fn reserve_object_change(

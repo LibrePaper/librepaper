@@ -434,7 +434,9 @@ pub async fn load_tree(
         })
         .await
         .map_err(|error| error.to_string())?;
-    let result = load_tree_envelope(blobs, &lease).await.map(|(tree, _)| tree);
+    let result = load_tree_envelope(blobs, &lease)
+        .await
+        .map(|(tree, _)| tree);
     let _ = lease.finish().await;
     result
 }
@@ -443,19 +445,29 @@ pub(crate) async fn load_tree_envelope(
     blobs: &dyn BlobStore,
     lease: &crate::storage::catalog::CheckpointReadLease,
 ) -> Result<(Tree, crate::storage::encoding::TreeEnvelope), String> {
-    let object = lease
-        .set
+    let result = load_tree_envelope_from_set(blobs, &lease.set).await;
+    if result.is_ok() && !lease.valid_at(crate::util::now_millis()) {
+        return Err("checkpoint read lease expired".into());
+    }
+    result
+}
+
+/// Read a tree against a snapshot of the leased closure.  Callers that keep
+/// the lease alive in a background heartbeat use this form so the heartbeat
+/// can own and renew the lease while a slow object-store GET is in flight.
+pub(crate) async fn load_tree_envelope_from_set(
+    blobs: &dyn BlobStore,
+    set: &crate::storage::catalog::CheckpointReadSet,
+) -> Result<(Tree, crate::storage::encoding::TreeEnvelope), String> {
+    let object = set
         .objects
         .iter()
-        .find(|object| object.id == lease.set.tree_object_id)
+        .find(|object| object.id == set.tree_object_id)
         .ok_or("checkpoint tree is absent from its closure")?;
     let raw = blobs
         .get(&object.storage_key)
         .await
         .map_err(|error| error.to_string())?;
-    if !lease.valid_at(crate::util::now_millis()) {
-        return Err("checkpoint read lease expired".into());
-    }
     if object.byte_length != i64::try_from(raw.len()).ok()
         || hex::encode(Sha256::digest(&raw)) != object.digest
     {
@@ -467,7 +479,7 @@ pub(crate) async fn load_tree_envelope(
         .logical_bytes()
         .map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(&logical));
-    if digest != lease.set.tree_digest || digest != hex::encode(envelope.logical_digest) {
+    if digest != set.tree_digest || digest != hex::encode(envelope.logical_digest) {
         return Err("checkpoint logical tree digest mismatch".into());
     }
     for file in envelope.files.values() {
@@ -481,7 +493,7 @@ pub(crate) async fn load_tree_envelope(
         } else {
             "source_recipe"
         };
-        if !lease.set.objects.iter().any(|object| {
+        if !set.objects.iter().any(|object| {
             object.id.as_str() == locator.object_id.as_str()
                 && object.kind == kind
                 && object.digest == hex::encode(locator.object_digest)

@@ -46,23 +46,30 @@ async fn catalog_room(
             .await
             .unwrap(),
     );
+    catalog.upsert_account(&contributor("acct-1", "owner")).unwrap();
     let rooms = room::RoomSet::new(blobs.clone(), config);
     rooms.attach_store(store.clone());
     store
-        .put(store::Publication {
-            slug: slug.into(),
-            source: "start".into(),
-            source_format: "markdown".into(),
-            owner: "owner".into(),
-            peak_bytes: Some(1 << 20),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    // Finish the production publication receipt, so the document is active
-    // and the room's ordinary checkpoint path is admitted.
-    store
-        .prepare_publication(slug, &store::digest_of("start"), "publish", None)
+        .put_as_actor(
+            store::Publication {
+                slug: slug.into(),
+                source: "start".into(),
+                source_format: "markdown".into(),
+                owner: "owner".into(),
+                owner_id: "acct-1".into(),
+                peak_bytes: Some(1 << 20),
+                ..Default::default()
+            },
+            store::MutationActor {
+                account_id: "acct-1".into(),
+                owner_key: "owner".into(),
+                session_generation: "generation-1".into(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
         .await
         .unwrap();
     let room = rooms.get(slug).await;
@@ -75,7 +82,6 @@ async fn catalog_room(
         .await
         .unwrap()
         .unwrap();
-    store.commit_publication(slug, &sha).await.unwrap();
     token.commit();
     (dir, catalog, blobs, rooms)
 }

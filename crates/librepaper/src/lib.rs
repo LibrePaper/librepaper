@@ -37,7 +37,7 @@ pub use document::{paths, session};
 // The durable layer is reachable from outside so that what it exposes and
 // nothing yet calls -- restore, conversations, journal readers -- is API in
 // progress rather than dead code to the lint. Drop this line to see the list.
-pub use storage::{backup, catalog, journal, maintenance};
+pub use storage::{backup_v2, catalog, journal, maintenance};
 
 #[cfg(test)]
 mod tests;

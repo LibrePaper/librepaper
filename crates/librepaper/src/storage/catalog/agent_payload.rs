@@ -169,17 +169,27 @@ impl Catalog {
                 let object_id = plan.get("object_id").and_then(serde_json::Value::as_str)
                     .ok_or_else(|| CatalogError::Invalid("stored agent payload plan lacks object id".into()))?;
                 let object_id = ObjectId::new(object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-                let storage_key = tx.query_row(
-                    "SELECT storage_key FROM objects WHERE document_id=?1 AND id=?2",
-                    params![document_id, object_id.as_str()], |row| row.get(0),
+                let (storage_key, object_state, object_digest, object_length, object_reserved, allocation): (String, String, String, Option<i64>, i64, Option<String>) = tx.query_row(
+                    "SELECT storage_key,state,digest,byte_length,reserved_bytes,allocation_operation_id FROM objects WHERE document_id=?1 AND id=?2 AND kind='agent_payload'",
+                    params![document_id, object_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
                 ).map_err(CatalogError::from)?;
+                let stage_lease: Option<(i64, String)> = tx.query_row(
+                    "SELECT expires_at,writer_generation FROM object_leases WHERE document_id=?1 AND object_id=?2 AND operation_id=?3 AND purpose='stage'",
+                    params![document_id, object_id.as_str(), existing.0.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                ).optional().map_err(CatalogError::from)?;
                 let replay_state: String = if existing.1 == "prepared" {
-                    let object_state: Option<String> = tx.query_row(
-                        "SELECT state FROM objects WHERE document_id=?1 AND id=?2 AND kind='agent_payload'",
-                        params![document_id, object_id.as_str()],
-                        |row| row.get(0),
-                    ).optional().map_err(CatalogError::from)?;
-                    if object_state.as_deref() == Some("available") {
+                    let staged = existing.4.is_some_and(|deadline| deadline > now.0)
+                        && object_state == "available"
+                        && object_digest == input.physical_digest
+                        && object_length == Some(input.reserved_bytes)
+                        && object_reserved == 0
+                        && allocation.is_none()
+                        && stage_lease.as_ref().is_some_and(|(expires_at, generation)| {
+                            *expires_at > now.0 && generation == &current_generation
+                        });
+                    if staged {
                         "staged".into()
                     } else {
                         existing.1.clone()
@@ -569,7 +579,7 @@ mod tests {
                 "SELECT op.state,o.live_root,(SELECT count(*) FROM object_leases l WHERE l.operation_id=op.id AND l.purpose='stage') FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') WHERE op.id=?1",
                 [admitted.operation_id.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
+            ).map_err(CatalogError::from)
         }).expect("stage state");
         assert_eq!(state, "prepared");
         assert_eq!(live_root, 0);

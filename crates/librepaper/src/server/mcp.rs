@@ -682,7 +682,10 @@ impl Server {
         }
         let writer = V2ObjectWriter::new(Arc::clone(catalog), Arc::clone(&self.store.blobs));
         writer.write_allocated_with_memory_permit(
-            admitted.document_id.as_str(), admitted.object_id.clone(), bytes,
+            admitted.document_id.as_str(),
+            crate::storage::blob::ObjectId::parse(admitted.object_id.as_str())
+                .map_err(|error| Failure::new("internal", error.to_string()))?,
+            bytes,
             "application/vnd.librepaper.agent-payload+zlib",
             memory_permit,
         ).await.map_err(|error| Failure::new("unavailable", error))?;

@@ -29,10 +29,10 @@ use crate::room::{Comment, Message, Region, Reply, Room, RoomSet, SourceAnchor};
 use crate::storage::backup::verify_local_backup;
 use crate::storage::blob::{clear_storage_checked, release_room_locks};
 use crate::storage::{open_storage, StorageOptions};
-use crate::util::timestamp;
 #[cfg(not(test))]
 use crate::util::die;
 use crate::util::new_id;
+use crate::util::timestamp;
 
 #[cfg(test)]
 fn die(message: impl std::fmt::Display) -> ! {
@@ -412,9 +412,7 @@ async fn seed_with_store(
         Some(catalog) => Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
             .await
             .unwrap_or_else(|err| die(err)),
-        None => Store::open(blobs.clone(), config.clone())
-            .await
-            .unwrap_or_else(|err| die(err)),
+        None => die("catalog-backed seed requires the deployment catalogue"),
     };
     let store = Arc::new(store);
     let seed_actor = if let Some(owner_id) = &system_owner_id {
@@ -448,7 +446,14 @@ async fn seed_with_store(
     let rooms = RoomSet::new(blobs.clone(), config.clone());
     rooms.attach_store(store.clone());
     if let Some(catalog) = &store.catalog {
-        let journal_catalog = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits_and_quota(catalog.clone(), config.persistence(), config.storage.per_owner, config.storage.total));
+        let journal_catalog = Arc::new(
+            crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits_and_quota(
+                catalog.clone(),
+                config.persistence(),
+                config.storage.per_owner,
+                config.storage.total,
+            ),
+        );
         let journal = Arc::new(
             crate::storage::journal::V2JournalRuntime::with_persistence(
                 journal_catalog,
@@ -507,7 +512,9 @@ async fn seed_with_store(
                 .unwrap_or_else(|| die("seeded anonymous document has no owner account"));
             let account = catalog
                 .account(&owner_id)
-                .unwrap_or_else(|error| die(format!("could not read seeded owner account: {error}")))
+                .unwrap_or_else(|error| {
+                    die(format!("could not read seeded owner account: {error}"))
+                })
                 .unwrap_or_else(|| die("seeded anonymous owner account disappeared"));
             crate::document::store::MutationActor {
                 account_id: account.id,
@@ -575,16 +582,16 @@ async fn seed_with_store(
         let _checkpoint = match room
             .checkpoint_now_with_authority(
                 "cli",
-                crate::room::Attribution::account(
-                    &catalog_actor.account_id,
-                    checkpoint_display,
-                ),
+                crate::room::Attribution::account(&catalog_actor.account_id, checkpoint_display),
                 checkpoint_authority,
             )
             .await
         {
             Ok(Some(sha)) => sha,
-            Ok(None) => die(format!("could not store {}: checkpoint deferred", document.file)),
+            Ok(None) => die(format!(
+                "could not store {}: checkpoint deferred",
+                document.file
+            )),
             Err(err) => die(format!("could not store {}: {err}", document.file)),
         };
         if store.catalog.is_some() {
@@ -953,14 +960,16 @@ async fn publish_seed_display(
     let html_sha256 = crate::document::store::digest_of_bytes(&html);
     let mut publication_assets = assets
         .iter()
-        .map(|(path, bytes)| crate::server::publication::PublicationAsset {
-            path: path.clone(),
-            object: crate::server::publication::PublicationObject {
-                sha256: crate::document::store::digest_of_bytes(bytes),
-                bytes: bytes.len(),
-                mime: seed_publication_mime(path).into(),
+        .map(
+            |(path, bytes)| crate::server::publication::PublicationAsset {
+                path: path.clone(),
+                object: crate::server::publication::PublicationObject {
+                    sha256: crate::document::store::digest_of_bytes(bytes),
+                    bytes: bytes.len(),
+                    mime: seed_publication_mime(path).into(),
+                },
             },
-        })
+        )
         .collect::<Vec<_>>();
     publication_assets.sort_by(|left, right| left.path.cmp(&right.path));
     let bundle_assets = publication_assets
@@ -1168,9 +1177,13 @@ mod catalog_seed_tests {
         assert_eq!(comment.creator, "Seed display");
         assert_eq!(catalog.replies(&slug, &comment.id, 10).unwrap().len(), 1);
         let reader = Arc::new(
-            Store::open_with_catalog(blobs.clone(), Arc::new(Configuration::default()), catalog.clone())
-                .await
-                .unwrap(),
+            Store::open_with_catalog(
+                blobs.clone(),
+                Arc::new(Configuration::default()),
+                catalog.clone(),
+            )
+            .await
+            .unwrap(),
         );
         let publication = crate::server::publication::PublicationStore::for_store(reader);
         let manifest = publication
@@ -1181,16 +1194,25 @@ mod catalog_seed_tests {
         assert!(!manifest.publication_id.is_empty());
         assert_eq!(manifest.html.mime, "text/html");
         assert_eq!(manifest.assets.len(), 2);
-        let (_, html) = publication.deliver(&row.storage_id, "index.html").await.unwrap();
+        let (_, html) = publication
+            .deliver(&row.storage_id, "index.html")
+            .await
+            .unwrap();
         let html = String::from_utf8(html).unwrap();
         assert!(html.contains("seed phrase"));
         assert!(
             html.contains("<p>"),
             "seed served source markdown instead of rendered HTML: {html}"
         );
-        let (_, asset) = publication.deliver(&row.storage_id, "asset.txt").await.unwrap();
+        let (_, asset) = publication
+            .deliver(&row.storage_id, "asset.txt")
+            .await
+            .unwrap();
         assert_eq!(asset, b"seed asset");
-        let (_, stylesheet) = publication.deliver(&row.storage_id, "style.css").await.unwrap();
+        let (_, stylesheet) = publication
+            .deliver(&row.storage_id, "style.css")
+            .await
+            .unwrap();
         assert_eq!(stylesheet, b"body { color: red; }");
         let kind: String = catalog
             .with_connection(|connection| {

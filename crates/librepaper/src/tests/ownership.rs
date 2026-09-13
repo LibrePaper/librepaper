@@ -61,10 +61,16 @@ async fn listing_shows_only_your_own_uploads() {
     // authenticated fixture actor; the example flag below makes the first
     // visible to every account.
     let store = &server.instance.store;
+    let session_generation = store
+        .catalog
+        .as_ref()
+        .and_then(|catalog| catalog.account("github:alice").ok().flatten())
+        .expect("the signed-in fixture account exists")
+        .session_generation;
     let alice_actor = MutationActor {
         account_id: "github:alice".into(),
         owner_key: "alice".into(),
-        session_generation: "test-session-generation".into(),
+        session_generation,
         link_hash: String::new(),
         policy_editor: true,
         automation: false,

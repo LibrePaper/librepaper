@@ -1571,7 +1571,7 @@ impl Room {
                 let format = self.state.lock().await.session.format.clone();
                 drop(_checkpoint);
                 if let Err(rollback_error) = self
-                    .rollback_publication_inner(before, &bodies, &format)
+                    .rollback_publication_memory(before, &bodies, &format)
                     .await
                 {
                     self.fence(super::FenceReason::AgentRecoveryPending);
@@ -1596,6 +1596,12 @@ impl Room {
                     self.fence(super::FenceReason::AgentRecoveryPending);
                     return Err(AgentError::Storage(format!(
                         "receipt failed ({error}); abort failed ({abort_error})"
+                    )));
+                }
+                if let Err(persist_error) = self.write_session_inner(false, false).await {
+                    self.fence(super::FenceReason::AgentRecoveryPending);
+                    return Err(AgentError::Storage(format!(
+                        "receipt failed ({error}); rollback persistence failed ({persist_error})"
                     )));
                 }
                 return Err(AgentError::Conflict(

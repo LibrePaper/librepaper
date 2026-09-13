@@ -1368,10 +1368,22 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
         ..actor
     };
     let storage_id = catalog.document("doc").unwrap().unwrap().storage_id;
-    catalog.with_connection(|db| {
-        db.execute("INSERT INTO agent_cancellations VALUES(?1,'agent-checkpoint-operation','cancel','digest','operation','','cancel_requested','{}',0)", [&storage_id])?;
-        Ok(())
-    }).unwrap();
+    let cancel_request = crate::util::new_request_key();
+    catalog
+        .cancel_agent_operation(
+            "doc",
+            &commit.request_id,
+            &cancel_request,
+            &"b".repeat(64),
+            "agent_checkpoint",
+            "checkpoint",
+            None,
+            "acct-1",
+            "generation-1",
+            "",
+            crate::util::now_millis(),
+        )
+        .unwrap();
     assert!(catalog
         .insert_checkpoints_atomic_with_authority(std::slice::from_ref(&point), Some(actor))
         .is_err());
@@ -1380,8 +1392,11 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
         .unwrap()
         .is_none());
     catalog.with_connection(|db| {
-        db.execute("DELETE FROM agent_cancellations", [])?;
-        db.execute_batch("CREATE TRIGGER fail_agent_receipt BEFORE INSERT ON catalog_operations BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END;")?;
+        db.execute(
+            "DELETE FROM operations WHERE kind='agent_cancel' AND target_request_key=?1",
+            [&commit.request_id],
+        )?;
+        db.execute_batch("CREATE TRIGGER fail_agent_receipt BEFORE INSERT ON operations WHEN NEW.kind='agent_checkpoint' BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END;")?;
         Ok(())
     }).unwrap();
     assert!(catalog

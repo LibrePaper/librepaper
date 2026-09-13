@@ -14,12 +14,12 @@ fn quota_document(slug: &str) -> crate::storage::catalog::NewDocument {
         storage_id: slug.into(),
         title: slug.into(),
         sha: String::new(),
-        created_at: String::new(),
-        published_at: String::new(),
-        updated_at: String::new(),
+        created_at: "2026-01-01T00:00:00.000Z".into(),
+        published_at: "2026-01-01T00:00:00.000Z".into(),
+        updated_at: "2026-01-01T00:00:00.000Z".into(),
         example: false,
-        owner_key: "alice".into(),
-        owner_id: None,
+        owner_key: String::new(),
+        owner_id: Some("acct-1".into()),
         status: "active".into(),
         size: 0,
         counted_size: 0,
@@ -30,9 +30,28 @@ fn quota_document(slug: &str) -> crate::storage::catalog::NewDocument {
     }
 }
 
+fn seed_account(catalog: &crate::storage::catalog::Catalog) {
+    catalog
+        .upsert_account(&crate::storage::catalog::Account {
+            id: "acct-1".into(),
+            provider: "github".into(),
+            handle: "alice".into(),
+            name: "Alice".into(),
+            email: "alice@example.test".into(),
+            first_seen: "2026-01-01T00:00:00.000Z".into(),
+            last_seen: "2026-01-01T00:00:00.000Z".into(),
+            plan: "free".into(),
+            status: "active".into(),
+            session_generation: "generation-1".into(),
+            erasure_cursor: None,
+        })
+        .unwrap();
+}
+
 #[test]
 fn pending_edits_share_quota_with_other_rooms_and_uploads() {
     let catalog = crate::storage::catalog::Catalog::open_in_memory().unwrap();
+    seed_account(&catalog);
     catalog.create_document(&quota_document("one")).unwrap();
     catalog.create_document(&quota_document("two")).unwrap();
     catalog.reserve_room_edit("one", 80, 100, 100).unwrap();
@@ -52,6 +71,7 @@ fn pending_edits_share_quota_with_other_rooms_and_uploads() {
 #[test]
 fn failed_snapshot_keeps_quota_and_success_preserves_newer_pending_edits() {
     let catalog = crate::storage::catalog::Catalog::open_in_memory().unwrap();
+    seed_account(&catalog);
     catalog.create_document(&quota_document("one")).unwrap();
     catalog.create_document(&quota_document("two")).unwrap();
     catalog.reserve_room_edit("one", 60, 100, 100).unwrap();
@@ -73,10 +93,12 @@ fn process_local_edit_reservations_do_not_leak_across_restart() {
     let path = dir.path().join("quota.db");
     {
         let catalog = crate::storage::catalog::Catalog::open(&path).unwrap();
+        seed_account(&catalog);
         catalog.create_document(&quota_document("one")).unwrap();
         catalog.reserve_room_edit("one", 100, 100, 100).unwrap();
     }
     let catalog = crate::storage::catalog::Catalog::open(path).unwrap();
+    seed_account(&catalog);
     catalog.create_document(&quota_document("two")).unwrap();
     catalog.reserve_room_edit("two", 100, 100, 100).unwrap();
 }
@@ -86,6 +108,7 @@ async fn fenced_publication_refunds_its_reserved_checkpoint() {
     let dir = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
     let catalog = Arc::new(crate::storage::catalog::Catalog::open_in_memory().unwrap());
+    seed_account(&catalog);
     catalog.create_document(&quota_document("one")).unwrap();
     let mut config = Configuration::default();
     config.session.checkpoint_owner_per_hour = 1;
@@ -118,6 +141,7 @@ async fn recently_checkpointed_due_row_advances_the_automatic_clock() {
     let dir = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
     let catalog = Arc::new(crate::storage::catalog::Catalog::open_in_memory().unwrap());
+    seed_account(&catalog);
     catalog.create_document(&quota_document("one")).unwrap();
     let config = Arc::new(Configuration::default());
     let store = Arc::new(
@@ -341,7 +365,12 @@ async fn accumulated_update_quota(journaled: bool) {
     if journaled {
         rooms.attach_journal(Arc::new(
             crate::storage::journal::V2JournalRuntime::with_persistence(
-                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), config.persistence())),
+                Arc::new(
+                    crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                        catalog.clone(),
+                        config.persistence(),
+                    ),
+                ),
                 blobs,
                 config.persistence(),
             )
