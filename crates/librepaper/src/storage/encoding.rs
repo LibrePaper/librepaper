@@ -13,8 +13,11 @@ use std::io::Read;
 use std::sync::Arc;
 
 use fastcdc::v2020::{FastCDC, Normalization};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
+
+use crate::storage::blob::ObjectId;
 
 static RECONSTRUCTION_POOL: std::sync::OnceLock<Arc<Semaphore>> = std::sync::OnceLock::new();
 
@@ -77,7 +80,7 @@ impl EncodingProfile {
 
 /// Physical codec named by a recipe.  Both values use zstd; whole-file and
 /// chunked representation have distinct semantics for reuse and GC.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Codec {
     WholeZstd = 1,
@@ -95,14 +98,14 @@ impl Codec {
 }
 
 /// A raw SHA-256 object digest and its uncompressed length.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ChunkRef {
     pub digest: [u8; 32],
     pub length: u32,
 }
 
 /// A complete independently readable recipe for one source file.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Recipe {
     pub version: u16,
     pub profile_id: u16,
@@ -110,6 +113,159 @@ pub struct Recipe {
     pub uncompressed_len: u64,
     pub file_digest: [u8; 32],
     pub chunks: Vec<ChunkRef>,
+}
+
+pub const SOURCE_ENVELOPE_VERSION: u16 = 1;
+pub const TREE_ENVELOPE_VERSION: u16 = 1;
+pub const MAX_TREE_FILES: usize = 16_384;
+
+/// A physical locator paired with logical content identity. The digest is of
+/// the logical/uncompressed bytes; the object id names the immutable physical
+/// allocation and may change when encoding is replaced.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PhysicalLocator {
+    pub object_id: ObjectId,
+    pub digest: [u8; 32],
+    pub byte_length: u64,
+    pub encoding_version: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SourceRecipeEnvelope {
+    pub version: u16,
+    pub recipe: Recipe,
+    pub recipe_locator: PhysicalLocator,
+    pub chunk_locators: Vec<PhysicalLocator>,
+}
+
+impl SourceRecipeEnvelope {
+    pub fn validate(&self) -> Result<(), EncodingError> {
+        if self.version != SOURCE_ENVELOPE_VERSION
+            || self.recipe.version != RECIPE_VERSION
+            || self.chunk_locators.len() != self.recipe.chunks.len()
+            || self.recipe_locator.encoding_version == 0
+            || self.chunk_locators.iter().any(|locator| locator.encoding_version == 0)
+        {
+            return Err(EncodingError::InvalidRecipe("invalid source recipe envelope".into()));
+        }
+        for (reference, locator) in self.recipe.chunks.iter().zip(&self.chunk_locators) {
+            if reference.digest != locator.digest || reference.length as u64 != locator.byte_length {
+                return Err(EncodingError::Integrity("recipe locator does not match logical chunk".into()));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        self.validate()?;
+        serde_json::to_vec(self).map_err(|error| EncodingError::Worker(error.to_string()))
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncodingError> {
+        if bytes.len() > MAX_RECIPE_BYTES {
+            return Err(EncodingError::InvalidRecipe("source envelope is too large".into()));
+        }
+        let envelope: Self = serde_json::from_slice(bytes)
+            .map_err(|error| EncodingError::InvalidRecipe(format!("invalid source envelope: {error}")))?;
+        envelope.validate()?;
+        Ok(envelope)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TreeFileLocator {
+    pub file_id: String,
+    pub logical_digest: [u8; 32],
+    pub logical_length: u64,
+    pub recipe: PhysicalLocator,
+}
+
+/// Canonical immutable source tree. Paths and metadata are logical; physical
+/// object IDs are explicit locators and never participate in `logical_digest`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TreeEnvelope {
+    pub version: u16,
+    pub main_path: String,
+    pub source_format: String,
+    pub settings_json: String,
+    pub logical_digest: [u8; 32],
+    pub files: std::collections::BTreeMap<String, TreeFileLocator>,
+}
+
+impl TreeEnvelope {
+    pub fn validate(&self) -> Result<(), EncodingError> {
+        if self.version != TREE_ENVELOPE_VERSION
+            || self.main_path.is_empty()
+            || self.source_format.is_empty()
+            || self.files.is_empty()
+            || self.files.len() > MAX_TREE_FILES
+            || !self.files.contains_key(&self.main_path)
+        {
+            return Err(EncodingError::InvalidRecipe("invalid source tree envelope".into()));
+        }
+        if serde_json::from_str::<serde_json::Value>(&self.settings_json).is_err() {
+            return Err(EncodingError::InvalidRecipe("tree settings are not valid JSON".into()));
+        }
+        for path in self.files.keys() {
+            if path.starts_with('/') || path.contains('\0') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+                return Err(EncodingError::InvalidRecipe("tree contains an invalid path".into()));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn logical_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        self.validate()?;
+        #[derive(Serialize)]
+        struct LogicalFile<'a> {
+            file_id: &'a str,
+            logical_digest: [u8; 32],
+            logical_length: u64,
+        }
+        let files = self
+            .files
+            .iter()
+            .map(|(path, file)| {
+                (
+                    path,
+                    LogicalFile {
+                        file_id: &file.file_id,
+                        logical_digest: file.logical_digest,
+                        logical_length: file.logical_length,
+                    },
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        #[derive(Serialize)]
+        struct LogicalTree<'a> {
+            main_path: &'a str,
+            source_format: &'a str,
+            settings_json: &'a str,
+            files: std::collections::BTreeMap<&'a String, LogicalFile<'a>>,
+        }
+        serde_json::to_vec(&LogicalTree {
+            main_path: &self.main_path,
+            source_format: &self.source_format,
+            settings_json: &self.settings_json,
+            files,
+        })
+        .map_err(|error| EncodingError::Worker(error.to_string()))
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        self.validate()?;
+        serde_json::to_vec(self).map_err(|error| EncodingError::Worker(error.to_string()))
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncodingError> {
+        if bytes.len() > MAX_RECIPE_BYTES {
+            return Err(EncodingError::InvalidRecipe("source tree envelope is too large".into()));
+        }
+        let envelope: Self = serde_json::from_slice(bytes)
+            .map_err(|error| EncodingError::InvalidRecipe(format!("invalid source tree envelope: {error}")))?;
+        envelope.validate()?;
+        Ok(envelope)
+    }
 }
 
 impl Recipe {
@@ -1079,5 +1235,45 @@ mod tests {
                 vec![body]
             })
             .collect()
+    }
+
+    #[test]
+    fn tree_envelope_logical_bytes_ignore_physical_locator_ids() {
+        let digest = [7u8; 32];
+        let recipe = PhysicalLocator {
+            object_id: ObjectId::parse("0123456789abcdef0123456789abcdef").expect("object id"),
+            digest,
+            byte_length: 8,
+            encoding_version: 1,
+        };
+        let mut files = std::collections::BTreeMap::new();
+        files.insert(
+            "main.md".to_string(),
+            TreeFileLocator {
+                file_id: "file-1".into(),
+                logical_digest: digest,
+                logical_length: 8,
+                recipe: recipe.clone(),
+            },
+        );
+        let first = TreeEnvelope {
+            version: TREE_ENVELOPE_VERSION,
+            main_path: "main.md".into(),
+            source_format: "markdown".into(),
+            settings_json: "{\"version\":1}".into(),
+            logical_digest: digest,
+            files,
+        };
+        let mut second = first.clone();
+        second.files.get_mut("main.md").expect("file").recipe.object_id =
+            ObjectId::parse("fedcba9876543210fedcba9876543210").expect("object id");
+        assert_eq!(
+            first.logical_bytes().expect("logical bytes"),
+            second.logical_bytes().expect("logical bytes")
+        );
+        assert_ne!(
+            first.to_bytes().expect("physical bytes"),
+            second.to_bytes().expect("physical bytes")
+        );
     }
 }
