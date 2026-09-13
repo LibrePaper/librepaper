@@ -16,6 +16,7 @@ mod automation;
 mod blob;
 mod catalogue_room;
 mod catalog_v2;
+mod catalog_v2_randomized;
 mod checkpoint_attribution;
 mod commands;
 mod device;
