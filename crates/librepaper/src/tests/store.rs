@@ -52,6 +52,18 @@ fn catalog_fixture_actor() -> store::MutationActor {
     }
 }
 
+fn incompressible_source(bytes: usize) -> String {
+    let mut state = 0x9e37_79b9_u64;
+    let mut source = String::with_capacity(bytes);
+    for _ in 0..bytes {
+        state ^= state << 7;
+        state ^= state >> 9;
+        state ^= state << 8;
+        source.push((b'a' + (state as u8 % 26)) as char);
+    }
+    source
+}
+
 /// A blob store and a `Configuration`, shared by two `Store`s the way two
 /// server instances behind shared storage would each open their own.
 fn shared_blobs() -> (tempfile::TempDir, Arc<dyn BlobStore>, Arc<Configuration>) {
@@ -558,7 +570,7 @@ async fn catalog_concurrent_admission_is_atomic() {
         store::Publication {
             slug: "left".into(),
             title: "left".into(),
-            source: "12345".repeat(400_000),
+            source: incompressible_source(2_200_000),
             owner: "alice".into(),
             ..Default::default()
         },
@@ -568,7 +580,7 @@ async fn catalog_concurrent_admission_is_atomic() {
         store::Publication {
             slug: "right".into(),
             title: "right".into(),
-            source: "12345".repeat(400_000),
+            source: incompressible_source(2_200_000),
             owner: "alice".into(),
             ..Default::default()
         },
@@ -634,7 +646,7 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
         .put_as_actor(
             store::Publication {
                 slug: "replace".into(),
-                source: "123456789".repeat(256 << 10),
+                source: incompressible_source(300_000),
                 owner: "alice".into(),
                 ..Default::default()
             },
