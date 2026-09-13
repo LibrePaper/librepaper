@@ -1344,6 +1344,7 @@ impl Room {
             content_type: &'static str,
             digest: String,
             logical_digest: Option<String>,
+            write: bool,
         }
 
         let mut physical = Vec::<PhysicalObject>::new();
@@ -1391,6 +1392,7 @@ impl Room {
                         content_type: "application/vnd.librepaper.source-chunk",
                         digest: hex::encode(object_digest),
                         logical_digest: Some(hex::encode(object.digest)),
+                        write: true,
                     });
                 }
                 let recipe_envelope = SourceRecipeEnvelope {
@@ -1420,6 +1422,7 @@ impl Room {
                     content_type: "application/vnd.librepaper.source-recipe",
                     digest: hex::encode(recipe_digest),
                     logical_digest: Some(entry.sha.clone()),
+                    write: true,
                 });
                 files.insert(
                     path.clone(),
@@ -1499,19 +1502,41 @@ impl Room {
                 }
                 let bytes = bytes_result.map_err(|error| WriteError::Storage(error.to_string()))?;
                 let digest = hex::encode(Sha256::digest(&bytes));
-                if digest != entry.sha || entry.size < 0 || bytes.len() as i64 != entry.size {
+                let expected_physical_digest = v2_asset
+                    .as_ref()
+                    .map(|asset| asset.digest.as_str())
+                    .unwrap_or(entry.sha.as_str());
+                if digest != expected_physical_digest
+                    || entry.size < 0
+                    || bytes.len() as i64 != entry.size
+                {
                     return Err(WriteError::Storage(
                         "checkpoint asset bytes differ from tree".into(),
                     ));
                 }
-                let id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
-                    .map_err(|error| WriteError::Storage(error.to_string()))?;
-                let object_digest: [u8; 32] = Sha256::digest(&bytes).into();
+                let (id, object_digest, write) = if let Some(asset) = v2_asset.as_ref() {
+                    let digest = hex::decode(&asset.digest).map_err(|_| {
+                        WriteError::Storage("invalid canonical asset digest".into())
+                    })?;
+                    let object_digest: [u8; 32] = digest.try_into().map_err(|_| {
+                        WriteError::Storage("invalid canonical asset digest".into())
+                    })?;
+                    (asset.id.clone(), object_digest, false)
+                } else {
+                    let id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
+                        .map_err(|error| WriteError::Storage(error.to_string()))?;
+                    let object_digest: [u8; 32] = Sha256::digest(&bytes).into();
+                    (id, object_digest, true)
+                };
+                let logical_digest: [u8; 32] = hex::decode(&entry.sha)
+                    .map_err(|_| WriteError::Storage("invalid asset logical digest".into()))?
+                    .try_into()
+                    .map_err(|_| WriteError::Storage("invalid asset logical digest".into()))?;
                 let locator = PhysicalLocator {
                     object_id: BlobObjectId::parse(id.as_str().to_owned())
                         .map_err(|error| WriteError::Storage(error.to_string()))?,
                     object_digest,
-                    logical_digest: Some(object_digest),
+                    logical_digest: Some(logical_digest),
                     logical_length: bytes.len() as u64,
                     byte_length: bytes.len() as u64,
                     encoding_version: 1,
@@ -1522,14 +1547,15 @@ impl Room {
                     bytes,
                     content_type: "application/octet-stream",
                     digest: digest.clone(),
-                    logical_digest: Some(digest),
+                    logical_digest: Some(entry.sha.clone()),
+                    write,
                 });
                 files.insert(
                     path.clone(),
                     TreeFileLocator {
                         kind: "asset".into(),
                         file_id: String::new(),
-                        logical_digest: object_digest,
+                        logical_digest,
                         logical_length: entry.size as u64,
                         recipe: None,
                         asset: Some(locator),
@@ -1650,6 +1676,7 @@ impl Room {
         };
         let allocations = physical
             .iter()
+            .filter(|object| object.write)
             .map(|object| {
                 Ok::<_, WriteError>(V2ObjectAllocation {
                     document_id: document_id.clone(),
@@ -1667,6 +1694,11 @@ impl Room {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let reused_object_ids = physical
+            .iter()
+            .filter(|object| !object.write)
+            .map(|object| object.id.clone())
+            .collect::<Vec<_>>();
         let lease_expires = UnixMillis::new(
             now_ms
                 .checked_add(120_000)
@@ -1681,6 +1713,7 @@ impl Room {
                     operation_id: operation_id.clone(),
                     operation,
                     allocations,
+                    reused_object_ids,
                     lease_holder: holder.clone(),
                     lease_expires_at: lease_expires,
                     limits: V2AdmissionLimits {
@@ -1810,7 +1843,7 @@ impl Room {
                 }
             })),
         };
-        for object in &physical {
+        for object in physical.iter().filter(|object| object.write) {
             let blob_id = BlobObjectId::parse(object.id.as_str().to_owned())
                 .map_err(|error| WriteError::Storage(error.to_string()))?;
             let write_result = writer

@@ -55,6 +55,9 @@ pub(crate) struct V2CheckpointAdmissionInput {
     pub operation_id: OperationId,
     pub operation: V2OperationInput,
     pub allocations: Vec<V2ObjectAllocation>,
+    /// Existing available assets referenced by the new tree. They receive a
+    /// stage lease under this operation but are not charged or rewritten.
+    pub reused_object_ids: Vec<ObjectId>,
     pub lease_holder: String,
     pub lease_expires_at: UnixMillis,
     pub limits: V2AdmissionLimits,
@@ -1481,6 +1484,7 @@ impl Catalog {
         };
         if input.allocations.is_empty()
             || input.allocations.len() > MAX_CHECKPOINT_OBJECTS
+            || input.reused_object_ids.len() > MAX_CHECKPOINT_OBJECTS
             || input.lease_holder.is_empty()
             || input.limits.owner_bytes < 0
             || input.limits.deployment_bytes < 0
@@ -1501,7 +1505,8 @@ impl Catalog {
             65_536,
         )?;
         let mut total = 0i64;
-        let mut ids = HashSet::with_capacity(input.allocations.len());
+        let mut ids =
+            HashSet::with_capacity(input.allocations.len() + input.reused_object_ids.len());
         for allocation in &input.allocations {
             if allocation.document_id != *expected_document
                 || allocation.operation_id.as_str() != input.operation_id.as_str()
@@ -1523,6 +1528,13 @@ impl Catalog {
                 validate_digest(logical, "checkpoint logical digest")?;
             }
             total = checked_add(total, allocation.reserved_bytes, "checkpoint reservation")?;
+        }
+        for object_id in &input.reused_object_ids {
+            if !ids.insert(object_id) {
+                return Err(CatalogError::Invalid(
+                    "checkpoint closure contains duplicate object ids".into(),
+                ));
+            }
         }
         let guard = self
             .room_reservations
@@ -1674,6 +1686,50 @@ impl Catalog {
                     params![
                         allocation.document_id.as_str(),
                         allocation.id.as_str(),
+                        input.lease_holder,
+                        operation_id.as_str(),
+                        writer_generation,
+                        input.now.0,
+                        input.lease_expires_at.0,
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+            }
+            for object_id in &input.reused_object_ids {
+                let (kind, storage_key): (String, String) = tx
+                    .query_row(
+                        "SELECT kind,storage_key FROM objects
+                          WHERE document_id=?1 AND id=?2 AND state='available'",
+                        params![input.document_id.as_str(), object_id.as_str()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(CatalogError::from)?
+                    .ok_or_else(|| {
+                        CatalogError::Conflict("reused checkpoint object is unavailable".into())
+                    })?;
+                if kind != ObjectKind::Asset.as_str() {
+                    return Err(CatalogError::Invalid(
+                        "only canonical assets may be reused in a checkpoint".into(),
+                    ));
+                }
+                if storage_key
+                    != format!(
+                        "v2/documents/{}/objects/{}",
+                        input.document_id, object_id
+                    )
+                {
+                    return Err(CatalogError::Invalid(
+                        "reused checkpoint object has a noncanonical key".into(),
+                    ));
+                }
+                tx.execute(
+                    "INSERT INTO object_leases
+                     (document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at)
+                     VALUES(?1,?2,?3,'stage',?4,?5,?6,?7)",
+                    params![
+                        input.document_id.as_str(),
+                        object_id.as_str(),
                         input.lease_holder,
                         operation_id.as_str(),
                         writer_generation,
