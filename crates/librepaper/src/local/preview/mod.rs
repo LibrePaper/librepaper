@@ -119,6 +119,7 @@ pub(crate) struct Session {
     /// Set while a render is in flight, cleared whether or not that
     /// render's output passed `looks_complete`.
     pub rendering: Arc<AtomicBool>,
+    watch: Arc<SessionWatch>,
     child: Child,
 }
 
@@ -370,6 +371,10 @@ impl Previews {
             "calepin" => calepin::plan(&self.0, request, bindings)?,
             other => return Err(format!("unsupported preview engine: {other}")),
         };
+        // A retry or a reloaded browser replaces its own document watcher.
+        // Planning has already validated the replacement, so an invalid
+        // request cannot tear down a working preview.
+        self.stop_scope(&request.origin, &request.project).await;
         let mut command = plan.command;
         command
             .stdin(Stdio::null())
@@ -396,7 +401,7 @@ impl Previews {
         let stdout = child.stdout.take().ok_or("preview process has no stdout")?;
         let stderr = child.stderr.take().ok_or("preview process has no stderr")?;
         tokio::spawn(pump(stdout, watch.clone()));
-        tokio::spawn(pump(stderr, watch));
+        tokio::spawn(pump(stderr, watch.clone()));
         // Do not expose a dead session when the process rejects its
         // arguments or exits during initial startup. Longer initial renders
         // remain pending.
@@ -423,10 +428,27 @@ impl Previews {
                 log,
                 latest,
                 rendering,
+                watch,
                 child,
             },
         );
         Ok(id)
+    }
+
+    /// Recover the first completed artifact from disk if an engine version
+    /// did not emit the exact completion line its adapter recognizes. The
+    /// browser polls this endpoint already, so this is bounded to sessions
+    /// that have not published anything yet and adds no steady-state reads.
+    pub async fn recover_first_artifact(session: &Session) {
+        if session.latest.lock().await.is_none()
+            && session
+                .watch
+                .adapter
+                .output_path(&session.watch.root)
+                .is_some()
+        {
+            finish_render(&session.watch).await;
+        }
     }
 
     pub async fn stop(&mut self, id: &str) {

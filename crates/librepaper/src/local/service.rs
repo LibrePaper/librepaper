@@ -2804,6 +2804,7 @@ async fn handle_preview_page(
     else {
         return plain(404, "preview not found");
     };
+    preview::Previews::recover_first_artifact(preview).await;
     let rendering = preview.rendering.load(std::sync::atomic::Ordering::SeqCst);
     let rendering_header = if rendering { "true" } else { "false" };
     let latest = preview.latest.lock().await;

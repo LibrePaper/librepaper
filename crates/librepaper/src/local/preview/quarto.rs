@@ -98,16 +98,25 @@ pub(crate) fn plan(
     if options.policy != QuartoRenderPolicy::ProjectDefaults {
         return Err("managed preview uses project-default render policy".into());
     }
-    if existing.values().any(|p| p.binding == options.binding_id) {
+    let other_scope = |p: &&Session| p.origin != request.origin || p.project != request.project;
+    if existing
+        .values()
+        .filter(other_scope)
+        .any(|p| p.binding == options.binding_id)
+    {
         return Err("Stop the existing preview before starting another watcher.".into());
     }
-    if existing.len() >= 8 {
+    if existing.values().filter(other_scope).count() >= 8 {
         return Err("Too many active previews".into());
     }
     let binding = bindings
         .resolve_scoped(&options.binding_id, &request.origin, &request.project)
         .map_err(|_| "Preview binding is not authorized")?;
-    if existing.values().any(|p| p.root == binding.root) {
+    if existing
+        .values()
+        .filter(other_scope)
+        .any(|p| p.root == binding.root)
+    {
         return Err("Another managed preview already watches this project directory".into());
     }
     let hosted = BindingStore::is_hosted(&binding);

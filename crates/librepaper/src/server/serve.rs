@@ -479,6 +479,9 @@ pub async fn serve(options: ServeOptions) {
     .await;
     reporting_task.abort();
     let _ = reporting_task.await;
+    if let Some(local) = &local {
+        local.stop().await;
+    }
     if let Err(error) = closing_cost.checkpoint().await {
         eprintln!("warning: final transfer checkpoint failed: {error}");
     }
