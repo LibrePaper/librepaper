@@ -29,3 +29,47 @@ The crate is intentionally outside the production server crate. Add
 `tools/catalog-v1-import` to the workspace only when the root agent is ready to
 build the converter; this tool does not participate in server startup or v1
 writes.
+
+## Section 20 implementation checklist
+
+The converter's supported input contract is the checked-in `fixtures/catalog-v1.sql`
+plus the two reviewed runtime tables allowed by the schema fingerprint. It validates
+the complete normalized v1 schema, SQLite integrity/FKs, timestamps, path components,
+formats, title ownership, key metadata, and source identity before creating a target.
+The source writer lock is held for the whole operation. Every regular source file is
+hashed into `source_physical_digest` (alongside the catalog digest), so `--resume`
+rejects changed catalogs, object bytes, journal bytes, publications, or secrets.
+
+The conversion phases are represented by the external manifest: static accounts and
+sharing, per-document checkpoint/source closure and journal recovery, publications,
+annotations/replies, reconciliation, and final verification. Object writes use a
+same-directory temporary inode, fsync, and no-replace linking. A retry verifies an
+existing object byte-for-byte. Per-document mappings, counts, object bytes, checkpoint
+closures, account totals, server totals, target FKs, and target physical digests are
+checked before completion. The target receives fresh deterministic session generations;
+provider-qualified v1 account IDs are split at the matching `provider:` prefix while
+retaining the v1 account ID as the target account identity. Preferences revisions,
+bookmarks, onboarding entries, simple retention policy state, current publications,
+deduplicated publication assets, and secret files are copied with their integrity data.
+
+The journal decoder accepts only the reviewed framed KJBS/KJNL formats and v1 manifest
+descriptors. It validates descriptor and fragment checksums, sequence/epoch coverage,
+then applies the complete base plus every contiguous Yrs update before writing the
+self-contained v2 journal base. Source recipes are decoded only as LPREC001, each
+declared physical chunk is independently located, decompressed, sized, and hashed, and
+v2 recipes use the runtime FastCDC/Zstandard profile. Checkpoint asset references are
+matched against the actual tree before they are flattened into v2 closure rows.
+
+The converter refuses unresolved recovery, catalog, key-rotation, maintenance,
+deletion, erasure, publication, source-history, account-erasure, or unexpired-agent
+work; deleting documents require an explicit partial allowlist. It also refuses
+ambiguous active-key metadata without `--active-link-key`, malformed or unsupported
+selectors/policies, missing committed roots, incomplete journal ranges, symlink
+ancestors, oversized payloads, and onboarding entries that refer to excluded documents.
+Runtime-only v1 ledgers and derived totals are intentionally settled into v2 counters or
+removed after their inputs are verified; they are not copied as opaque rows. An
+explicit partial conversion records every excluded document and remains identifiable as
+partial in the completion manifest. The Rust tests in this crate cover the fixture
+conversion, CRDT replay, multi-chunk source history, publication/annotation/reply and
+secret conversion, dry-run, interrupted object staging, duplicate publication assets,
+and changed-source resume rejection; the root agent runs them centrally.

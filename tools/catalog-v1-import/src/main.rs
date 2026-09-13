@@ -22,13 +22,17 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use unicode_normalization::UnicodeNormalization;
 use yrs::updates::decoder::Decode;
-use yrs::{Doc, ReadTxn, Text, Transact, Update};
+use yrs::{Doc, GetString, ReadTxn, Text, Transact, Update};
 
 const CONVERTER_VERSION: &str = "catalog-v1-import/1";
 const MANIFEST_FILE: &str = "conversion-manifest.json";
 const V1_USER_VERSION: i64 = 1;
 const V2_USER_VERSION: i64 = 2;
 const MAX_JSON: usize = 262_144;
+const MAX_SOURCE_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CHECKPOINTS: usize = 4096;
+const MAX_TREE_FILES: usize = 16_384;
 
 #[derive(Parser, Debug)]
 #[command(name = "catalog-v1-import", about = "Offline v1 to v2 catalog converter")]
@@ -84,6 +88,11 @@ struct Manifest {
     source_root: String,
     source_identity: String,
     source_catalog_digest: String,
+    /// Digest of every regular source deployment file consumed by conversion.
+    /// This is deliberately broader than catalog.db so resume cannot silently
+    /// reuse a target after an object, journal, or secret changed.
+    #[serde(default)]
+    source_physical_digest: String,
     source_schema_fingerprint: String,
     target_root: String,
     target_identity: String,
@@ -375,6 +384,43 @@ fn sync_json(path: &Path, value: &Manifest) -> Result<()> {
 
 fn catalog_digest(path: &Path) -> Result<String> { Ok(sha256(&fs::read(path)?)) }
 
+fn source_physical_digest(root: &Path) -> Result<String> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        for entry in fs::read_dir(&directory)? {
+            let path = entry?.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() {
+                return Err(Error::Invalid(format!("source deployment contains a symlink: {}", path.display())));
+            }
+            if metadata.is_dir() {
+                stack.push(path);
+            } else if metadata.is_file() {
+                let relative = path.strip_prefix(root).map_err(|_| Error::Invalid("source file escaped deployment root".into()))?;
+                let bytes = fs::read(&path)?;
+                if bytes.len() as u64 > MAX_SOURCE_FILE_BYTES {
+                    return Err(Error::Invalid(format!("source file {} exceeds {} byte limit", relative.display(), MAX_SOURCE_FILE_BYTES)));
+                }
+                files.push((relative.to_string_lossy().replace('\\', "/"), bytes));
+            } else {
+                return Err(Error::Invalid(format!("source deployment entry is not a regular file or directory: {}", path.display())));
+            }
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut canonical = Vec::new();
+    for (relative, bytes) in files {
+        canonical.extend_from_slice(relative.as_bytes());
+        canonical.push(0);
+        canonical.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        canonical.push(0);
+        canonical.extend_from_slice(Sha256::digest(&bytes).as_slice());
+        canonical.push(b'\n');
+    }
+    Ok(sha256(&canonical))
+}
+
 fn open_source(path: &Path) -> Result<Connection> {
     let uri = format!("file:{}?mode=ro", path.to_string_lossy().replace('%', "%25").replace('?', "%3f"));
     let connection = Connection::open_with_flags(uri, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)?;
@@ -499,20 +545,28 @@ fn source_documents(connection: &Connection) -> Result<Vec<SourceDocument>> {
 
 fn active_key(connection: &Connection, explicit: Option<&str>) -> Result<String> {
     if !has_table(connection, "link_keyring")? {
-        return Ok(explicit.unwrap_or("legacy").to_string());
+        if explicit.is_some() { return Err(Error::Invalid("--active-link-key is accepted only when source key metadata is ambiguous".into())); }
+        return Ok("legacy".to_string());
     }
     let mut statement = connection.prepare("SELECT key_id FROM link_keyring WHERE status='primary' ORDER BY key_id")?;
     let candidates = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let available: Vec<String> = connection.prepare("SELECT key_id FROM link_keyring WHERE status <> 'retired' ORDER BY key_id")?
+        .query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let ambiguous = candidates.len() > 1 || (candidates.is_empty() && available.len() > 1);
     match explicit {
         Some(key) => {
+            if !ambiguous { return Err(Error::Invalid("--active-link-key is accepted only when source key metadata is ambiguous".into())); }
             let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM link_keyring WHERE key_id=?1 AND status <> 'retired')", [key], |row| row.get(0))?;
             if !exists { return Err(Error::Invalid(format!("--active-link-key {key} is not an available source key"))); }
             Ok(key.to_string())
         }
         None if candidates.len() == 1 => Ok(candidates[0].clone()),
         None if candidates.is_empty() => {
-            let fallback: Option<String> = connection.query_row("SELECT key_id FROM link_keyring WHERE status <> 'retired' ORDER BY key_id LIMIT 1", [], |row| row.get(0)).optional()?;
-            fallback.ok_or_else(|| Error::Invalid("source has no available link key; provide --active-link-key only when metadata identifies one".into()))
+            match available.as_slice() {
+                [only] => Ok(only.clone()),
+                [] => Err(Error::Invalid("source has no available link key".into())),
+                _ => Err(Error::Invalid("source link key metadata has no primary key and is ambiguous; provide --active-link-key".into())),
+            }
         }
         None => Err(Error::Invalid(format!("source link key metadata is ambiguous ({} primary keys); provide --active-link-key", candidates.len()))),
     }
@@ -531,6 +585,7 @@ fn inspect_unresolved(connection: &Connection) -> Result<Vec<String>> {
         ("pending_deletes", "SELECT COUNT(*) FROM pending_deletes", "pending object deletion"),
         ("journal_retirements", "SELECT COUNT(*) FROM journal_retirements WHERE retired_revision IS NULL", "unreconciled journal retirement"),
         ("deletion_discovery", "SELECT COUNT(*) FROM deletion_discovery WHERE done=0", "unfinished deletion discovery"),
+        ("accounts", "SELECT COUNT(*) FROM accounts WHERE status='erasing'", "account erasure in progress"),
     ];
     let mut checked = HashSet::new();
     for (table, sql, label) in checks {
@@ -543,6 +598,10 @@ fn inspect_unresolved(connection: &Connection) -> Result<Vec<String>> {
     if has_table(connection, "documents")? {
         let pending: i64 = connection.query_row("SELECT COUNT(*) FROM documents WHERE pending_publication IS NOT NULL AND pending_publication <> ''", [], |row| row.get(0))?;
         if pending > 0 { errors.push(format!("{pending} document publication preparation(s) are unresolved")); }
+    }
+    if has_table(connection, "agent_objects")? {
+        let count: i64 = connection.query_row("SELECT COUNT(*) FROM agent_objects WHERE expires_at > ?1", [now_ms()], |row| row.get(0))?;
+        if count > 0 { errors.push(format!("{count} unexpired agent object(s) must be settled before conversion")); }
     }
     Ok(errors)
 }
@@ -609,11 +668,11 @@ fn target_identity(root: &Path, source: &str) -> Result<String> {
     Ok(sha256(seed.as_bytes()))
 }
 
-fn new_manifest(source: &Path, target: &Path, source_id: String, source_digest: String, schema: String, target_id: String, plan: &Plan, allowlist: &[String]) -> Manifest {
+fn new_manifest(source: &Path, target: &Path, source_id: String, source_digest: String, physical_digest: String, schema: String, target_id: String, plan: &Plan, allowlist: &[String]) -> Manifest {
     let documents = plan.documents.iter().map(|doc| (doc.storage_id.clone(), DocumentProgress { slug: doc.slug.clone(), ..DocumentProgress::default() })).collect();
     Manifest {
         version: 1, converter_version: CONVERTER_VERSION.into(), source_root: source.display().to_string(), source_identity: source_id,
-        source_catalog_digest: source_digest, source_schema_fingerprint: schema, target_root: target.display().to_string(), target_identity: target_id,
+        source_catalog_digest: source_digest, source_physical_digest: physical_digest, source_schema_fingerprint: schema, target_root: target.display().to_string(), target_identity: target_id,
         created_at: now_ms(), updated_at: now_ms(), partial: !allowlist.is_empty(), allowlist: allowlist.to_vec(), active_link_key_id: plan.active_key.clone(),
         phase: "inspected".into(), complete: false, documents, counts: Counts::default(), errors: plan.errors.clone(), exclusions: plan.exclusions.clone(), verification: Verification::default(),
     }
@@ -659,37 +718,58 @@ fn open_target_existing(root: &Path, manifest: &Manifest) -> Result<Connection> 
 
 fn account_kind(provider: &str) -> &'static str { if provider.trim().is_empty() { "anonymous" } else { "registered" } }
 
-fn ensure_system_account(tx: &Transaction<'_>) -> Result<()> {
-    tx.execute("INSERT OR IGNORE INTO accounts(id,kind,handle,display_name,status,session_generation,plan,created_at,last_seen_at,preferences_json,bookmarks_json,onboarding_json) VALUES('system','system','system','System','active',?1,'system',0,0,'{\"version\":1}','{\"version\":1,\"items\":[]}','{\"version\":1,\"items\":[]}')", [deterministic_id("session", "system")])?;
+fn ensure_system_account(tx: &Transaction<'_>, target_id: &str) -> Result<()> {
+    tx.execute("INSERT OR IGNORE INTO accounts(id,kind,handle,display_name,status,session_generation,plan,created_at,last_seen_at,preferences_json,bookmarks_json,onboarding_json) VALUES('system','system','system','System','active',?1,'system',0,0,'{\"version\":1}','{\"version\":1,\"items\":[]}','{\"version\":1,\"items\":[]}')", [deterministic_id("session-generation", &format!("{target_id}:system"))])?;
     Ok(())
 }
 
-fn insert_accounts(source: &Connection, target: &mut Connection, docs: &[SourceDocument]) -> Result<()> {
+fn insert_accounts(source: &Connection, target: &mut Connection, docs: &[SourceDocument], target_id: &str) -> Result<()> {
     let tx = target.transaction()?;
-    ensure_system_account(&tx)?;
-    let account_rows: Vec<(String,String,String,String,String,String,String,String,String,String)> = {
-        let mut source_accounts = source.prepare("SELECT id,provider,handle,name,email,first_seen,last_seen,plan,status,session_generation FROM accounts ORDER BY id")?;
+    ensure_system_account(&tx,target_id)?;
+    let account_rows: Vec<(String,String,String,String,String,String,String,String,String)> = {
+        let mut source_accounts = source.prepare("SELECT id,provider,handle,name,email,first_seen,last_seen,plan,status FROM accounts ORDER BY id")?;
         let mut rows = source_accounts.query([])?; let mut values=Vec::new();
-        while let Some(row) = rows.next()? { values.push((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?)); }
+        while let Some(row) = rows.next()? { values.push((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?)); }
         values
     };
     let has_activity=has_table(source,"account_activity")?; let has_preferences=has_table(source,"account_quota_preferences")?;
-    for (id,provider,handle,name,email,first,last,plan,status,session_generation) in account_rows {
+    for (id,provider,handle,name,email,first,last,plan,status) in account_rows {
         let (last_active,): (Option<i64>,) = if has_activity {
             (source.query_row("SELECT last_qualified_at FROM account_activity WHERE account_id=?1", [&id], |r| r.get::<_, String>(0)).optional()?.map(|v| parse_time(&v, "account_activity.last_qualified_at")).transpose()?,)
         } else { (None,) };
-        let preferences = if has_preferences {
-            source.query_row("SELECT payload FROM account_quota_preferences WHERE account_id=?1", [&id], |r| r.get::<_, String>(0)).optional()?.unwrap_or_else(|| "{\"version\":1}".into())
-        } else { "{\"version\":1}".into() };
+        let (preferences, preferences_revision) = if has_preferences {
+            source.query_row("SELECT payload,revision FROM account_quota_preferences WHERE account_id=?1", [&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).optional()?.unwrap_or_else(|| ("{\"version\":1}".into(), 0))
+        } else { ("{\"version\":1}".into(), 0) };
+        if preferences_revision < 0 { return Err(Error::Invalid(format!("account {id} has a negative preferences revision"))); }
         let parsed: Value = serde_json::from_str(&preferences).map_err(|e| Error::Invalid(format!("account {id} has invalid preferences: {e}")))?;
         if parsed.get("version").and_then(Value::as_i64) != Some(1) { return Err(Error::Invalid(format!("account {id} has unsupported preferences version"))); }
         let first_ms = parse_time(&first, "accounts.first_seen")?; let last_ms = parse_time(&last, "accounts.last_seen")?;
-        tx.execute("INSERT OR IGNORE INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at,last_active_at,preferences_json,bookmarks_json,onboarding_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'{\"version\":1,\"items\":[]}', '{\"version\":1,\"items\":[]}')", params![id,account_kind(&provider),if provider.is_empty(){None::<String>}else{Some(provider.clone())},if provider.is_empty(){None::<String>}else{Some(id.clone())},handle,name,email,status,session_generation,plan,first_ms,last_ms,last_active,preferences])?;
+        let session_generation=deterministic_id("session-generation",&format!("{target_id}:{id}"));
+        let provider_subject = if provider.is_empty() { None } else { Some(id.strip_prefix(&format!("{provider}:")).unwrap_or(&id).to_string()) };
+        tx.execute("INSERT OR IGNORE INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at,last_active_at,preferences_revision,preferences_json,bookmarks_json,onboarding_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,'{\"version\":1,\"items\":[]}', '{\"version\":1,\"items\":[]}')", params![id,account_kind(&provider),if provider.is_empty(){None::<String>}else{Some(provider.clone())},provider_subject,handle,name,email,status,session_generation,plan,first_ms,last_ms,last_active,preferences_revision,preferences])?;
     }
     for doc in docs {
         if doc.owner_id.is_none() && !doc.owner_key.is_empty() {
             let id = deterministic_id("anonymous-account", &doc.owner_key);
-            tx.execute("INSERT OR IGNORE INTO accounts(id,kind,handle,display_name,status,session_generation,plan,created_at,last_seen_at,preferences_json,bookmarks_json,onboarding_json) VALUES(?1,'anonymous',?2,'Anonymous','active',?3,'free',0,0,'{\"version\":1}','{\"version\":1,\"items\":[]}','{\"version\":1,\"items\":[]}')", params![id, doc.owner_key, deterministic_id("session", &id)])?;
+            tx.execute("INSERT OR IGNORE INTO accounts(id,kind,handle,display_name,status,session_generation,plan,created_at,last_seen_at,preferences_json,bookmarks_json,onboarding_json) VALUES(?1,'anonymous',?2,'Anonymous','active',?3,'free',0,0,'{\"version\":1}','{\"version\":1,\"items\":[]}','{\"version\":1,\"items\":[]}')", params![id, doc.owner_key, deterministic_id("session-generation", &format!("{target_id}:{id}"))])?;
+        }
+    }
+    if has_table(source, "account_examples")? {
+        let document_ids: HashMap<String, String> = docs.iter().map(|doc| (doc.slug.clone(), doc.storage_id.clone())).collect();
+        let mut onboarding: HashMap<String, Vec<Value>> = HashMap::new();
+        let mut examples = source.prepare("SELECT account_id,position,slug,completed FROM account_examples ORDER BY account_id,position")?;
+        for row in examples.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)))? {
+            let (account_id, position, slug, completed) = row?;
+            let Some(document_id) = document_ids.get(&slug) else {
+                return Err(Error::Invalid(format!("account onboarding entry {account_id}/{position} references excluded document {slug}")));
+            };
+            if !(0..=4).contains(&position) || !(0..=1).contains(&completed) { return Err(Error::Invalid(format!("invalid account onboarding entry {account_id}/{position}"))); }
+            let _ = document_id;
+            onboarding.entry(account_id).or_default().push(json!({"position":position,"slug":slug,"completed":completed != 0}));
+        }
+        for (account_id, items) in onboarding {
+            let payload = json_text(&json!({"version":1,"items":items}), 16_384, "account onboarding")?;
+            tx.execute("UPDATE accounts SET onboarding_json=?2 WHERE id=?1", params![account_id, payload])?;
         }
     }
     tx.commit()?;
@@ -711,7 +791,15 @@ fn insert_documents(source: &Connection, target: &mut Connection, docs: &[Source
         }
         let mode = if doc.example { "example" } else { "owned" };
         let status = if doc.status == "active" { "active" } else { "creating" };
-        tx.execute("INSERT OR IGNORE INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,published_at,source_format,main_path,settings_json,retention_mode,retention_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'{\"version\":1}','balanced','{\"version\":1}')", params![doc.storage_id,doc.slug,owner,mode,doc.title,title_key_value,status,doc.created_at,doc.updated_at,doc.published_at,doc.source_format,doc.main_path])?;
+        let (retention_mode, retention_revision, retention_json) = if has_table(source, "document_retention_policy")? {
+            let policy: Option<(String, i64, i64, i64)> = source.query_row("SELECT mode,policy_version,enrolled_at,last_scheduled_at FROM document_retention_policy WHERE slug=?1", [&doc.slug], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
+            if let Some((source_mode, revision, enrolled_at, last_scheduled_at)) = policy {
+                let target_mode = match source_mode.as_str() { "balanced" => "balanced", "custom" => "manual", other => return Err(Error::Invalid(format!("document {} has unsupported retention mode {other}" , doc.storage_id))) };
+                let payload = json_text(&json!({"version":1,"source_mode":source_mode,"enrolled_at":enrolled_at,"last_scheduled_at":last_scheduled_at}), 16_384, "retention policy")?;
+                (target_mode.to_string(), revision, payload)
+            } else { ("balanced".into(), 0, "{\"version\":1}".into()) }
+        } else { ("balanced".into(), 0, "{\"version\":1}".into()) };
+        tx.execute("INSERT OR IGNORE INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,published_at,source_format,main_path,settings_json,retention_mode,retention_revision,retention_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'{\"version\":1}',?13,?14,?15)", params![doc.storage_id,doc.slug,owner,mode,doc.title,title_key_value,status,doc.created_at,doc.updated_at,doc.published_at,doc.source_format,doc.main_path,retention_mode,retention_revision,retention_json])?;
     }
     // A source-side unique title collision can be hidden by a resumed target;
     // verify every existing row still names the same document.
@@ -813,7 +901,7 @@ fn load_tree(source_root: &Path, doc: &SourceDocument, tree_sha: &str, source_fo
         files.push(SourceFile { path: path.clone(), kind: file_kind, id, sha, size });
     }
     files.sort_by(|a,b| a.path.cmp(&b.path));
-    if files.len() > 16_384 { return Err(Error::Invalid(format!("checkpoint {} has too many files", tree_sha))); }
+    if files.len() > MAX_TREE_FILES { return Err(Error::Invalid(format!("checkpoint {} has too many files", tree_sha))); }
     let _ = source_format;
     Ok(SourceTree { main, files, settings })
 }
@@ -883,6 +971,7 @@ fn source_checkpoint_rows(connection: &Connection, doc: &SourceDocument) -> Resu
         let at: String = row.get(4)?; let parent: String = row.get(3)?; let changed: Option<String> = row.get(12)?;
         let changed = changed.map(|v| serde_json::from_str(&v)).transpose()?.unwrap_or_default();
         out.push(SourceCheckpoint { id: row.get(0)?, seq: row.get(1)?, tree_sha: row.get(2)?, parent: if parent.is_empty(){None}else{Some(parent)}, at: parse_time(&at,"checkpoints.at")?, by: row.get(5)?, by_account: row.get(13)?, why: row.get(6)?, source_format: { let v: String = row.get(7)?; if v.is_empty(){doc.source_format.clone()}else{v} }, size: row.get(8)?, label: { let v: String = row.get(9)?; if v.is_empty(){None}else{Some(v)} }, commit: row.get(10)?, dirty: row.get::<_,i64>(11)? != 0, changed });
+        if out.len() > MAX_CHECKPOINTS { return Err(Error::Invalid(format!("document {} exceeds {} checkpoint limit", doc.storage_id, MAX_CHECKPOINTS))); }
     }
     Ok(out)
 }
@@ -893,6 +982,26 @@ fn object_record(doc: &SourceDocument, id: String, kind: &str, bytes: Vec<u8>, l
 
 fn convert_checkpoint(source_root: &Path, source: &Connection, doc: &SourceDocument, point: SourceCheckpoint) -> Result<ConvertedCheckpoint> {
     let tree = load_tree(source_root, doc, &point.tree_sha, &point.source_format, Some(source))?;
+    if has_table(source, "checkpoint_asset_refs")? {
+        let mut refs = source.prepare("SELECT object_key,bytes FROM checkpoint_asset_refs WHERE storage_id=?1 AND checkpoint_sha=?2 ORDER BY object_key")?;
+        for row in refs.query_map(params![doc.storage_id, point.id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+            let (key, declared_bytes) = row?;
+            validate_key(&key)?;
+            let bytes = read_object(source_root, &key)?;
+            if declared_bytes < 0 || bytes.len() as i64 != declared_bytes { return Err(Error::Invalid(format!("checkpoint {} asset reference {} has wrong length", point.id, key))); }
+            let digest = sha256(&bytes);
+            if !tree.files.iter().any(|file| file.kind == "asset" && file.sha == digest && file.size == declared_bytes) {
+                return Err(Error::Invalid(format!("checkpoint {} asset reference {} is absent from its tree", point.id, key)));
+            }
+        }
+    }
+    if has_table(source, "checkpoint_asset_sets")? {
+        let declared: Option<i64> = source.query_row("SELECT asset_count FROM checkpoint_asset_sets WHERE storage_id=?1 AND checkpoint_sha=?2", params![doc.storage_id, point.id], |r| r.get(0)).optional()?;
+        if let Some(count) = declared {
+            let actual = tree.files.iter().filter(|file| file.kind == "asset").count() as i64;
+            if count != actual { return Err(Error::Invalid(format!("checkpoint {} asset set count {count} does not match tree count {actual}", point.id))); }
+        }
+    }
     #[derive(Serialize)]
     struct LogicalFile { kind: String, #[serde(default, skip_serializing_if = "String::is_empty")] id: String, sha: String, size: i64 }
     #[derive(Serialize)]
@@ -904,6 +1013,7 @@ fn convert_checkpoint(source_root: &Path, source: &Connection, doc: &SourceDocum
         validate_key(&file.path)?;
         let kind = if file.kind == "asset" { "asset" } else { "text" };
         let bytes = read_file_bytes(source_root, doc, &file.sha, kind, &point.source_format, Some(source))?;
+        if bytes.len() > MAX_OBJECT_BYTES { return Err(Error::Invalid(format!("checkpoint {} file {} exceeds {} byte limit", point.id, file.path, MAX_OBJECT_BYTES))); }
         if bytes.len() as i64 != file.size || sha256(&bytes) != file.sha { return Err(Error::Invalid(format!("checkpoint {} file {} failed byte verification", point.id, file.path))); }
         logical_bytes = logical_bytes.checked_add(file.size).ok_or_else(|| Error::Invalid("checkpoint logical byte overflow".into()))?;
         let logical_digest = digest_array(&file.sha, "source file digest")?;
@@ -978,12 +1088,12 @@ fn decode_base(bytes: &[u8]) -> Result<(String, u64, u64, Vec<u8>)> {
     let mut c=Cursor::new(bytes); if c.take(4)? != b"KJBS" || c.u16()? != 1 { return Err(Error::Invalid("unsupported journal base format".into())); }
     if c.u16()? != 2 { return Err(Error::Invalid("unsupported journal base segment format".into())); }
     let storage=c.text()?; let epoch=c.u64()?; let sequence=c.u64()?; let n=c.u32()? as usize; let digest=c.text()?; let payload=c.take(n)?.to_vec();
-    if c.offset != bytes.len() || storage.is_empty() || sequence == 0 || digest != sha256(&payload) || payload.is_empty() { return Err(Error::Invalid("invalid journal base integrity".into())); }
+    if c.offset != bytes.len() || storage.is_empty() || sequence == 0 || payload.len() > MAX_OBJECT_BYTES || digest != sha256(&payload) || payload.is_empty() { return Err(Error::Invalid("invalid journal base integrity".into())); }
     Ok((storage,epoch,sequence,payload))
 }
 
 fn encode_recovery_base(storage_id: &str, epoch: u64, sequence: u64, payload: &[u8]) -> Result<Vec<u8>> {
-    if storage_id.is_empty() || storage_id.len() > u16::MAX as usize || sequence == 0 || payload.is_empty() || payload.len() > u32::MAX as usize {
+    if storage_id.is_empty() || storage_id.len() > u16::MAX as usize || sequence == 0 || payload.is_empty() || payload.len() > MAX_OBJECT_BYTES {
         return Err(Error::Invalid("invalid reconstructed journal base identity or size".into()));
     }
     let digest=sha256(payload);
@@ -1045,6 +1155,8 @@ fn journal_replay(source_root: &Path, source: &Connection, doc: &SourceDocument)
         let expected_fragments=first.fragment_count; let expected_digest=first.digest.clone();
         if parts.len()!=expected_fragments as usize || parts.iter().any(|p| p.fragment_count!=expected_fragments || p.digest!=expected_digest) { return Err(Error::Invalid(format!("journal sequence {sequence} has incomplete fragments"))); }
         let mut ordered=parts; ordered.sort_by_key(|p|p.fragment_index); if ordered.iter().enumerate().any(|(i,p)|p.fragment_index as usize!=i) { return Err(Error::Invalid(format!("journal sequence {sequence} has a fragment gap"))); }
+        let total = ordered.iter().try_fold(0usize, |sum, part| sum.checked_add(part.payload.len())).ok_or_else(|| Error::Invalid("journal update length overflow"))?;
+        if total > MAX_OBJECT_BYTES { return Err(Error::Invalid(format!("journal sequence {sequence} exceeds object size limit"))); }
         let payload=ordered.into_iter().flat_map(|p|p.payload).collect::<Vec<_>>(); if sha256(&payload)!=expected_digest { return Err(Error::Invalid(format!("journal sequence {sequence} digest mismatch"))); }
         updates.insert((epoch,sequence),payload);
     }
@@ -1102,7 +1214,11 @@ fn convert_document(source_root: &Path, target_root: &Path, source: &Connection,
         let author=target_account_exists(&tx,item.point.by_account.as_deref())?;
         let metadata=json_text(&json!({"version":1,"git_commit":item.point.commit,"dirty":item.point.dirty,"changed":item.point.changed,"original_parent":item.point.parent}),65536,"checkpoint metadata")?;
         tx.execute("INSERT OR IGNORE INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,0,?14,?15)",params![doc.storage_id,item.point.id,item.point.seq.max(1),item.tree_id,item.tree_digest,item.point.parent,item.point.at,author,item.point.by,item.point.why,item.point.source_format,item.logical_bytes,item.point.label,metadata,now_ms()+30*24*60*60*1000])?;
-        for object_id in &item.object_ids { tx.execute("INSERT OR IGNORE INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![doc.storage_id,item.point.id,object_id])?; closure_count+=1; }
+        for object_id in &item.object_ids {
+            closure_count = closure_count.checked_add(1).ok_or_else(|| Error::Invalid("checkpoint closure count overflow"))?;
+            if closure_count > 1_048_576 { return Err(Error::Invalid(format!("document {} exceeds checkpoint closure limit", doc.storage_id))); }
+            tx.execute("INSERT OR IGNORE INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![doc.storage_id,item.point.id,object_id])?;
+        }
         tx.execute("UPDATE checkpoints SET journal_epoch=0,journal_sequence=0 WHERE document_id=?1 AND id=?2",params![doc.storage_id,item.point.id])?;
     }
     let current=converted.last(); let current_id=current.map(|v|v.point.id.clone());
@@ -1111,7 +1227,8 @@ fn convert_document(source_root: &Path, target_root: &Path, source: &Connection,
     tx.execute("UPDATE documents SET current_checkpoint_id=?2,journal_base_object_id=?3,journal_epoch=COALESCE(?4,0),journal_sequence=COALESCE(?5,0),journal_base_sequence=COALESCE(?5,0),last_checkpoint_at=COALESCE((SELECT MAX(created_at) FROM checkpoints WHERE document_id=?1),0),next_checkpoint_seq=COALESCE((SELECT MAX(seq)+1 FROM checkpoints WHERE document_id=?1),1) WHERE id=?1",params![doc.storage_id,current_id,base_id,epoch,sequence])?;
     tx.commit()?;
     let mapping=converted.iter().flat_map(|item| std::iter::once(format!("checkpoint:{}:{}",item.point.id,item.tree_id)).chain(item.object_ids.iter().map(|id|format!("object:{id}")))).chain(std::iter::once(format!("journal:{}",journal.as_ref().map(|state|format!("{}:{}",state.epoch,state.sequence)).unwrap_or_default()))).collect::<Vec<_>>().join("\n");
-    progress.cursor="content-and-checkpoints".into(); progress.checkpoints=converted.len() as u64; progress.objects=all_objects.len() as u64; progress.bytes=all_objects.values().map(|o|o.bytes.len() as u64).sum(); progress.mapping_digest=sha256(mapping.as_bytes()); let _=closure_count;
+    if all_objects.len() > 1_048_576 { return Err(Error::Invalid(format!("document {} exceeds object inventory limit", doc.storage_id))); }
+    progress.cursor="content-and-checkpoints".into(); progress.checkpoints=converted.len() as u64; progress.objects=all_objects.len() as u64; progress.bytes=all_objects.values().map(|o|o.bytes.len() as u64).sum(); progress.mapping_digest=sha256(mapping.as_bytes());
     Ok(())
 }
 
@@ -1178,7 +1295,7 @@ fn convert_publication(source_root: &Path, _source: &Connection, target_root: &P
         return Ok(())
     };
     let publication: V1Publication=serde_json::from_slice(&manifest_bytes).map_err(|e|Error::Invalid(format!("publication manifest {} is invalid: {e}",doc.storage_id)))?; if publication.publication_id.is_empty(){return Err(Error::Invalid("publication ID is empty".into()));}
-    let mut records=Vec::new(); let mut record_ids=HashSet::new(); let html=read_object(source_root,&format!("publications/{}/objects/{}",doc.storage_id,publication.html.sha256))?; if html.len()!=publication.html.bytes || sha256(&html)!=publication.html.sha256{return Err(Error::Invalid(format!("publication HTML {} failed integrity",publication.html.sha256)));} let html_id=deterministic_id("publication-html",&format!("{}:{}",doc.storage_id,publication.html.sha256)); if record_ids.insert(html_id.clone()){records.push(object_record(doc,html_id.clone(),"publication_html",html,None));} let mut assets=Vec::new(); for asset in publication.assets {validate_key(&asset.path)?;let bytes=read_object(source_root,&format!("publications/{}/objects/{}",doc.storage_id,asset.object.sha256))?;if bytes.len()!=asset.object.bytes || sha256(&bytes)!=asset.object.sha256{return Err(Error::Invalid(format!("publication asset {} failed integrity",asset.path)));}let id=deterministic_id("publication-asset",&format!("{}:{}",doc.storage_id,asset.object.sha256));if record_ids.insert(id.clone()){records.push(object_record(doc,id.clone(),"publication_asset",bytes,None));}assets.push(json!({"path":asset.path,"sha256":asset.object.sha256,"bytes":asset.object.bytes,"mime":asset.object.mime,"object_id":id}));}
+    let mut records=Vec::new(); let mut record_ids=HashSet::new(); let html=read_object(source_root,&format!("publications/{}/objects/{}",doc.storage_id,publication.html.sha256))?; if html.len()>MAX_OBJECT_BYTES{return Err(Error::Invalid("publication HTML exceeds object size limit".into()));} if html.len()!=publication.html.bytes || sha256(&html)!=publication.html.sha256{return Err(Error::Invalid(format!("publication HTML {} failed integrity",publication.html.sha256)));} let html_id=deterministic_id("publication-html",&format!("{}:{}",doc.storage_id,publication.html.sha256)); if record_ids.insert(html_id.clone()){records.push(object_record(doc,html_id.clone(),"publication_html",html,None));} let mut assets=Vec::new(); for asset in publication.assets {validate_key(&asset.path)?;let bytes=read_object(source_root,&format!("publications/{}/objects/{}",doc.storage_id,asset.object.sha256))?;if bytes.len()>MAX_OBJECT_BYTES{return Err(Error::Invalid(format!("publication asset {} exceeds object size limit",asset.path)));}if bytes.len()!=asset.object.bytes || sha256(&bytes)!=asset.object.sha256{return Err(Error::Invalid(format!("publication asset {} failed integrity",asset.path)));}let id=deterministic_id("publication-asset",&format!("{}:{}",doc.storage_id,asset.object.sha256));if record_ids.insert(id.clone()){records.push(object_record(doc,id.clone(),"publication_asset",bytes,None));}assets.push(json!({"path":asset.path,"sha256":asset.object.sha256,"bytes":asset.object.bytes,"mime":asset.object.mime,"object_id":id}));}
     let envelope=json!({"version":1,"publication_id":publication.publication_id,"bundle_sha256":publication.bundle_sha256,"source_sha256":publication.source_sha256,"render_config_sha256":publication.render_config_sha256,"published_at":publication.published_at,"publisher":publication.publisher,"previous_publication_id":publication.previous_publication_id,"html":{"sha256":publication.html.sha256,"bytes":publication.html.bytes,"mime":publication.html.mime,"object_id":html_id},"assets":assets}); let body=json_text(&envelope,262144,"publication manifest")?.into_bytes(); let manifest_id=deterministic_id("publication-manifest",&format!("{}:{}",doc.storage_id,publication.publication_id)); if record_ids.insert(manifest_id.clone()){records.push(object_record(doc,manifest_id.clone(),"publication_manifest",body,None));} for record in &records{write_object(target_root,&record.key,&record.bytes)?;}
     let published_at=parse_time(&publication.published_at,"publication.published_at")?; let tx=target.transaction()?; for record in &records{insert_object(&tx,record,None)?;} tx.execute("UPDATE objects SET publication_root=1 WHERE document_id=?1 AND id IN (SELECT id FROM objects WHERE document_id=?1 AND kind IN ('publication_manifest','publication_html','publication_asset'))",[&doc.storage_id])?; tx.execute("UPDATE documents SET publication_id=?2,publication_object_id=?3,published_at=?4 WHERE id=?1",params![doc.storage_id,publication.publication_id,manifest_id,published_at])?; tx.commit()?; Ok(())
 }
@@ -1248,12 +1365,12 @@ fn print_plan(source_id:&str,schema:&str,plan:&Plan,manifest:Option<&Manifest>){
 
 fn run(args: Args) -> Result<()> {
     let source=canonical_root(&args.source_data)?; let target=canonical_root(&args.target_data)?; if overlaps(&source,&target){return Err(Error::Invalid("source and target paths overlap".into()));} reject_symlinks(&source)?; reject_symlinks(&target)?; let source_catalog=catalog_path(&source); if !source_catalog.is_file(){return Err(Error::Invalid(format!("source catalog is missing: {}",source_catalog.display())));} target_empty_or_resume(&target,args.resume)?;
-    let _source_lock=Lock::source(&read_lock_path(&source))?; let source_db=open_source(&source_catalog)?; let (schema,_integrity)=validate_source(&source_db)?; let source_digest=catalog_digest(&source_catalog)?; let source_id=source_identity(&source,&source_db,&source_digest)?; let plan=make_plan(&source_db,&args.documents,args.active_link_key.as_deref())?;
+    let _source_lock=Lock::source(&read_lock_path(&source))?; let source_db=open_source(&source_catalog)?; let (schema,_integrity)=validate_source(&source_db)?; let source_digest=catalog_digest(&source_catalog)?; let physical_digest=source_physical_digest(&source)?; let source_id=source_identity(&source,&source_db,&source_digest)?; let plan=make_plan(&source_db,&args.documents,args.active_link_key.as_deref())?;
     if args.dry_run {print_plan(&source_id,&schema,&plan,None);if !plan.errors.is_empty(){return Err(Error::Invalid(plan.errors.join("; ")));}return Ok(());}
     if !plan.errors.is_empty(){return Err(Error::Invalid(plan.errors.join("; ")));}
     fs::create_dir_all(&target)?; let _target_lock=Lock::target(&read_lock_path(&target))?; let manifest_path=target.join(MANIFEST_FILE); let target_id; let mut manifest;
-    let mut target_db=if args.resume { let bytes=fs::read(&manifest_path)?;manifest=serde_json::from_slice::<Manifest>(&bytes)?;if manifest.source_identity!=source_id||manifest.source_schema_fingerprint!=schema||manifest.source_catalog_digest!=source_digest{return Err(Error::Invalid("resume manifest does not match source identity/schema/catalog snapshot".into()));}target_id=manifest.target_identity.clone();open_target_existing(&target,&manifest)? } else {target_id=target_identity(&target,&source_id)?;manifest=new_manifest(&source,&target,source_id.clone(),source_digest.clone(),schema.clone(),target_id.clone(),&plan,&args.documents);let db=initialize_target(&target,&target_id)?;sync_json(&manifest_path,&manifest)?;db};
-    if target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM server_state WHERE id=1",[],|r|r.get(0))? != 1{return Err(Error::Invalid("target server_state singleton is missing".into()));} let _secret_count=copy_secrets(&source,&target)?; import_keyring(&source_db,&mut target_db,&plan.active_key)?; insert_accounts(&source_db,&mut target_db,&plan.documents)?; insert_documents(&source_db,&mut target_db,&plan.documents)?; import_sharing(&source_db,&mut target_db,&plan.documents)?; manifest.phase="static".into();manifest.updated_at=now_ms();sync_json(&manifest_path,&manifest)?;
+    let mut target_db=if args.resume { let bytes=fs::read(&manifest_path)?;manifest=serde_json::from_slice::<Manifest>(&bytes)?;if manifest.source_identity!=source_id||manifest.source_schema_fingerprint!=schema||manifest.source_catalog_digest!=source_digest||manifest.source_physical_digest!=physical_digest{return Err(Error::Invalid("resume manifest does not match source identity/schema/catalog/physical snapshot".into()));}target_id=manifest.target_identity.clone();open_target_existing(&target,&manifest)? } else {target_id=target_identity(&target,&source_id)?;manifest=new_manifest(&source,&target,source_id.clone(),source_digest.clone(),physical_digest.clone(),schema.clone(),target_id.clone(),&plan,&args.documents);let db=initialize_target(&target,&target_id)?;sync_json(&manifest_path,&manifest)?;db};
+    if target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM server_state WHERE id=1",[],|r|r.get(0))? != 1{return Err(Error::Invalid("target server_state singleton is missing".into()));} let _secret_count=copy_secrets(&source,&target)?; import_keyring(&source_db,&mut target_db,&plan.active_key)?; insert_accounts(&source_db,&mut target_db,&plan.documents,&target_id)?; insert_documents(&source_db,&mut target_db,&plan.documents)?; import_sharing(&source_db,&mut target_db,&plan.documents)?; manifest.phase="static".into();manifest.updated_at=now_ms();sync_json(&manifest_path,&manifest)?;
     let mut progress=HashMap::new(); for doc in &plan.documents {let p=manifest.documents.entry(doc.storage_id.clone()).or_default();if p.status=="complete"{continue;}if let Err(e)=convert_document(&source,&target,&source_db,&mut target_db,doc,p){p.status="error".into();p.error=Some(e.to_string());manifest.errors.push(format!("{}: {e}",doc.storage_id));sync_json(&manifest_path,&manifest)?;return Err(e);}p.status="complete".into();p.cursor="document-complete".into();manifest.updated_at=now_ms();sync_json(&manifest_path,&manifest)?;}
     for doc in &plan.documents {convert_publication(&source,&source_db,&target,&mut target_db,doc)?;}
     import_annotations(&source_db,&mut target_db,&plan.documents,&mut progress)?; for (doc_id,annotation_progress) in progress {if let Some(saved)=manifest.documents.get_mut(&doc_id){saved.annotations=annotation_progress.annotations;}} manifest.phase="reconciled".into();manifest.counts=recompute_counters(&mut target_db)?;manifest.verification=verify_target(&target,&target_db)?;manifest.verification.complete_manifest=true;manifest.complete=true;manifest.phase="complete".into();manifest.updated_at=now_ms();sync_json(&manifest_path,&manifest)?;println!("conversion complete: {}",manifest_path.display());Ok(())
@@ -1314,7 +1431,7 @@ mod tests {
         let ydoc=Doc::new(); let text=ydoc.get_or_insert_text("body"); {let mut txn=ydoc.transact_mut(); text.insert(&mut txn,0,"hello");} let base_payload=ydoc.transact().encode_state_as_update_v1(&yrs::StateVector::default()); let base_vector=ydoc.transact().state_vector(); {let mut txn=ydoc.transact_mut(); text.insert(&mut txn,5," world");} let update_payload=ydoc.transact().encode_state_as_update_v1(&base_vector); let base_bytes=encode_recovery_base("doc-1",0,1,&base_payload).expect("base envelope"); let base_key="journal/base"; std::fs::create_dir_all(source.path().join("objects/journal")).expect("journal dir"); std::fs::write(source.path().join("objects").join(base_key),&base_bytes).expect("base"); let mut segment=Vec::new(); segment.extend_from_slice(b"KJNL"); segment.extend_from_slice(&2u16.to_le_bytes()); segment.extend_from_slice(&1u32.to_le_bytes()); segment.extend_from_slice(&2u16.to_le_bytes()); segment.extend_from_slice(&("doc-1".len() as u16).to_le_bytes()); segment.extend_from_slice(b"doc-1"); segment.extend_from_slice(&2u64.to_le_bytes()); segment.extend_from_slice(&0u64.to_le_bytes()); segment.extend_from_slice(&0u32.to_le_bytes()); segment.extend_from_slice(&1u32.to_le_bytes()); let retry="fixture-retry"; segment.extend_from_slice(&(retry.len() as u16).to_le_bytes()); segment.extend_from_slice(retry.as_bytes()); let update_digest=sha256(&update_payload); segment.extend_from_slice(&(update_digest.len() as u16).to_le_bytes()); segment.extend_from_slice(update_digest.as_bytes()); segment.extend_from_slice(&(update_digest.len() as u16).to_le_bytes()); segment.extend_from_slice(update_digest.as_bytes()); segment.extend_from_slice(&(update_payload.len() as u32).to_le_bytes()); segment.extend_from_slice(&update_payload); let segment_key="journal/shared"; std::fs::write(source.path().join("objects").join(segment_key),&segment).expect("segment"); source_db.execute("INSERT INTO journal_bases(base_id,storage_id,epoch,sequence,object_key,digest,encoded_bytes,committed_at) VALUES('base-1','doc-1',0,1,?1,?2,?3,0)",params![base_key,sha256(&base_bytes),base_bytes.len() as i64]).expect("journal base"); source_db.execute("INSERT INTO journal_segments(segment_id,segment_seq,operation_id,object_key,digest,encoded_bytes,committed_at) VALUES('segment-1',1,'op-1',?1,?2,?3,0)",params![segment_key,sha256(&segment),segment.len() as i64]).expect("journal segment");
         let source_bytes=b"# hello\n"; let source_sha=sha256(source_bytes); std::fs::create_dir_all(source.path().join("objects/content/doc-1/blobs")).expect("source blob dir"); std::fs::write(source.path().join(format!("objects/content/doc-1/blobs/{source_sha}")),source_bytes).expect("source blob"); let tree=json!({"main":"paper.md","files":{"paper.md":{"kind":"text","id":"file-1","sha":source_sha,"size":source_bytes.len()}},"settings":{"engine":"markdown"}}); let tree_bytes=serde_json::to_vec(&tree).expect("tree"); let tree_sha=sha256(&tree_bytes); std::fs::create_dir_all(source.path().join("objects/content/doc-1/trees")).expect("source tree dir"); std::fs::write(source.path().join(format!("objects/content/doc-1/trees/{tree_sha}")),tree_bytes).expect("source tree"); source_db.execute("INSERT INTO checkpoints(slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,size,label,git_commit,dirty,changed,by_account) VALUES('paper','cp-1',1,1,?1,'','2026-01-01T00:00:00Z','Vincent','initial','markdown',?2,'','',0,'[]','acct')",params![tree_sha,source_bytes.len() as i64]).expect("checkpoint");
         let args=Args{source_data:source.path().to_path_buf(),target_data:target.path().join("v2"),dry_run:false,resume:false,documents:Vec::new(),active_link_key:None}; run(args).expect("conversion");
-        let target_db=Connection::open(target.path().join("v2/catalog.db")).expect("target catalog"); assert_eq!(target_db.query_row::<i64,_,_>("PRAGMA user_version",[],|r|r.get(0)).expect("version"),2); assert_eq!(target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM documents",[],|r|r.get(0)).expect("document"),1); assert!(target.path().join("v2/conversion-manifest.json").is_file()); let (tree_id,tree_digest):(String,String)=target_db.query_row("SELECT tree_object_id,tree_digest FROM checkpoints",[],|r|Ok((r.get(0)?,r.get(1)?))).expect("checkpoint"); let tree_key:String=target_db.query_row("SELECT storage_key FROM objects WHERE id=?1",[&tree_id],|r|r.get(0)).expect("tree object"); let tree_wire:V2TreeEnvelope=serde_json::from_slice(&read_target_object(&target.path().join("v2"),&tree_key).expect("tree bytes")).expect("v2 tree envelope"); assert_eq!(tree_wire.version,1); assert_eq!(tree_digest,hex::encode(tree_wire.logical_digest)); let source_file=tree_wire.files.get("paper.md").expect("main file"); let recipe=source_file.recipe.as_ref().expect("recipe locator"); let recipe_bytes=read_target_object(&target.path().join("v2"),&format!("v2/documents/doc-1/objects/{}",recipe.object_id)).expect("recipe bytes"); let recipe_wire:V2RecipeEnvelope=serde_json::from_slice(&recipe_bytes).expect("v2 recipe envelope"); assert_eq!(recipe_wire.recipe.file_digest,source_file.logical_digest); let journal_key:String=target_db.query_row("SELECT storage_key FROM objects WHERE kind='journal_base'",[],|r|r.get(0)).expect("journal base"); let journal=read_target_object(&target.path().join("v2"),&journal_key).expect("journal bytes"); let (_,epoch,sequence,payload)=decode_base(&journal).expect("recovery base envelope"); assert_eq!((epoch,sequence),(0,2)); let replay_doc=Doc::new(); replay_doc.transact_mut().apply_update(Update::decode_v1(&payload).expect("decoded replay")).expect("applied replay"); let replay_text=replay_doc.get_or_insert_text("body"); let replay_txn=replay_doc.transact(); assert_eq!(replay_text.to_string(&replay_txn),"hello world");
+        let target_db=Connection::open(target.path().join("v2/catalog.db")).expect("target catalog"); assert_eq!(target_db.query_row::<i64,_,_>("PRAGMA user_version",[],|r|r.get(0)).expect("version"),2); assert_eq!(target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM documents",[],|r|r.get(0)).expect("document"),1); assert!(target.path().join("v2/conversion-manifest.json").is_file()); let (tree_id,tree_digest):(String,String)=target_db.query_row("SELECT tree_object_id,tree_digest FROM checkpoints",[],|r|Ok((r.get(0)?,r.get(1)?))).expect("checkpoint"); let tree_key:String=target_db.query_row("SELECT storage_key FROM objects WHERE id=?1",[&tree_id],|r|r.get(0)).expect("tree object"); let tree_wire:V2TreeEnvelope=serde_json::from_slice(&read_target_object(&target.path().join("v2"),&tree_key).expect("tree bytes")).expect("v2 tree envelope"); assert_eq!(tree_wire.version,1); assert_eq!(tree_digest,hex::encode(tree_wire.logical_digest)); let source_file=tree_wire.files.get("paper.md").expect("main file"); let recipe=source_file.recipe.as_ref().expect("recipe locator"); let recipe_bytes=read_target_object(&target.path().join("v2"),&format!("v2/documents/doc-1/objects/{}",recipe.object_id)).expect("recipe bytes"); let recipe_wire:V2RecipeEnvelope=serde_json::from_slice(&recipe_bytes).expect("v2 recipe envelope"); assert_eq!(recipe_wire.recipe.file_digest,source_file.logical_digest); let journal_key:String=target_db.query_row("SELECT storage_key FROM objects WHERE kind='journal_base'",[],|r|r.get(0)).expect("journal base"); let journal=read_target_object(&target.path().join("v2"),&journal_key).expect("journal bytes"); let (_,epoch,sequence,payload)=decode_base(&journal).expect("recovery base envelope"); assert_eq!((epoch,sequence),(0,2)); let replay_doc=Doc::new(); replay_doc.transact_mut().apply_update(Update::decode_v1(&payload).expect("decoded replay")).expect("applied replay"); let replay_text=replay_doc.get_or_insert_text("body"); let replay_txn=replay_doc.transact(); assert_eq!(replay_text.get_string(&replay_txn),"hello world");
         let args=Args{source_data:source.path().to_path_buf(),target_data:target.path().join("v2"),dry_run:false,resume:true,documents:Vec::new(),active_link_key:None}; run(args).expect("resume"); assert_eq!(target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM objects",[],|r|r.get(0)).expect("objects"),4);
         source_db.execute("UPDATE documents SET title='Changed' WHERE slug='paper'",[]).expect("source mutation"); let args=Args{source_data:source.path().to_path_buf(),target_data:target.path().join("v2"),dry_run:false,resume:true,documents:Vec::new(),active_link_key:None}; assert!(run(args).is_err());
     }
