@@ -34,8 +34,7 @@ fn link_time(value: &str) -> CatalogResult<i64> {
             value
         });
     }
-    crate::util::parse_timestamp(value)
-        .map(|value| value.saturating_mul(1_000))
+    crate::util::parse_timestamp_millis(value)
         .ok_or_else(|| {
             CatalogError::Invalid("link time must be Unix milliseconds or RFC3339".into())
         })

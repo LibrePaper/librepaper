@@ -320,7 +320,7 @@ impl Catalog {
              (document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,
               author_account_id,author_label,reason,source_format,logical_bytes,label,
               journal_epoch,journal_sequence,metadata_json,eligible_after)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,?14,?15,?16,NULL)"#,
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,?14,?15,NULL)"#,
             params![
                 document_id,
                 checkpoint.sha,
@@ -343,7 +343,6 @@ impl Catalog {
                 } else {
                     Some(checkpoint.label.as_str())
                 },
-                checkpoint.durable_seq,
                 checkpoint.durable_seq,
                 metadata,
             ],

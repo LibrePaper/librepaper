@@ -408,6 +408,13 @@ impl Server {
             }
         };
         if self.store.catalog.is_some() {
+            let share_url = match self.mint_read_link(&key, &who).await {
+                Ok(url) => Value::String(url),
+                Err(error) => {
+                    eprintln!("warning: could not mint the read link of {key}: {error:?}");
+                    Value::Null
+                }
+            };
             return write_json(
                 201,
                 &json!({
@@ -417,7 +424,7 @@ impl Server {
                     "created_at": entry.created_at,
                     "updated_at": entry.updated_at,
                     "url": format!("/docs/{}", entry.slug),
-                    "share_url": Self::read_link_of(&entry),
+                    "share_url": share_url,
                 }),
             );
         }

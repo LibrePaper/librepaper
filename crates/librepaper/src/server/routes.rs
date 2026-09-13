@@ -629,7 +629,7 @@ pub(super) async fn dispatch(
                         .await
                         .map(|_| ())
                         .map_err(|error| {
-                            crate::storage::catalog::CatalogError::Invalid(error.to_string())
+                            crate::storage::catalog::CatalogError::Invalid(format!("{error:?}"))
                         })
                 };
                 if let Err(err) = result {
