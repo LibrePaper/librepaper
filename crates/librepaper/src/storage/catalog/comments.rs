@@ -248,6 +248,7 @@ impl Catalog {
         self.immediate(|tx| {
             annotation_session_active(tx, authority)?;
             let document_id = document_id(tx, &comment.slug)?;
+            annotation_account_authorized(tx, &document_id, authority)?;
             let actor = annotation_actor(authority);
             let existing: Option<(String, String, String, String)> = tx
                 .query_row(
@@ -268,7 +269,7 @@ impl Catalog {
                 }
                 let stored_id = serde_json::from_str::<serde_json::Value>(&plan_json)
                     .ok()
-                    .and_then(|plan| plan.get("commentId").and_then(serde_json::Value::as_str))
+                    .and_then(|plan| plan.get("commentId").and_then(serde_json::Value::as_str).map(str::to_owned))
                     .ok_or_else(|| {
                         CatalogError::Invalid("annotation receipt has no comment identity".into())
                     })?;
@@ -278,7 +279,7 @@ impl Catalog {
                     ));
                 }
                 if state == "committed" {
-                    return Self::comment_in_tx(tx, &comment.slug, stored_id);
+                    return Self::comment_in_tx(tx, &comment.slug, &stored_id);
                 }
                 return Err(CatalogError::Conflict(
                     "comment request is still prepared".into(),
@@ -338,7 +339,7 @@ impl Catalog {
                 params![
                     receipt,
                     completed,
-                    completed.saturating_add(3_600_000),
+                    completed.saturating_add(7 * 24 * 60 * 60 * 1000),
                     operation_id
                 ],
             )
@@ -864,7 +865,7 @@ impl Catalog {
                 params![
                     receipt,
                     completed,
-                    completed.saturating_add(3_600_000),
+                    completed.saturating_add(7 * 24 * 60 * 60 * 1000),
                     operation_id
                 ],
             )
