@@ -1,7 +1,7 @@
 // The typesetter, driven with a stand-in document: which spans it takes,
 // what it asks KaTeX for, and how it fetches KaTeX once and only when needed.
 import assert from "node:assert/strict";
-import { createMathTypesetter, typeset, untypeset } from "../../src/lib/math.js";
+import { createMathTypesetter, prepareQuartoMath, typeset, untypeset } from "../../src/lib/math.js";
 
 function span(style, tex, rendered = false) {
   return {
@@ -13,8 +13,23 @@ function span(style, tex, rendered = false) {
 
 function fakeDocument(spans) {
   const head = { children: [], appendChild(node) { this.children.push(node); return node; } };
-  const body = { querySelectorAll: (selector) => (selector === "span[data-math-style]" ? spans : []) };
+  const body = { querySelectorAll: (selector) => selector === "span[data-math-style]" ? spans : [] };
   return { head, body, createElement: (tag) => ({ tag }) };
+}
+
+// Quarto's inert MathJax input is stripped of its delimiters and handed to
+// the same safe KaTeX path as browser-rendered Markdown equations.
+{
+  const quarto = [
+    { dataset: {}, textContent: "\\(x^2\\)", firstElementChild: null, classList: { contains: (name) => name === "inline" } },
+    { dataset: {}, textContent: "\n\\[ SE = \\frac{s}{\\sqrt{n}}. \\]\n", firstElementChild: null, classList: { contains: (name) => name === "display" } },
+  ];
+  const root = { querySelectorAll: (selector) => selector.startsWith("span.math") ? quarto : [] };
+  assert.equal(prepareQuartoMath(root), 2);
+  assert.equal(quarto[0].dataset.mathStyle, "inline");
+  assert.equal(quarto[0].textContent, "x^2");
+  assert.equal(quarto[1].dataset.mathStyle, "display");
+  assert.equal(quarto[1].textContent, "SE = \\frac{s}{\\sqrt{n}}.");
 }
 
 // Only the renderer's spans, and only the ones still holding TeX.

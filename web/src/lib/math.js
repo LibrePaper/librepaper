@@ -18,6 +18,27 @@ export function untypeset(root) {
   );
 }
 
+// Quarto's self-contained HTML normally asks MathJax to replace these spans
+// at page load. Live preview HTML is inserted with innerHTML, deliberately
+// without executing its scripts, so translate the inert TeX spans into the
+// same marker the browser Markdown renderer uses and let KaTeX handle them.
+export function prepareQuartoMath(root) {
+  let prepared = 0;
+  for (const span of root.querySelectorAll("span.math:not([data-math-style])")) {
+    if (span.firstElementChild) continue;
+    let tex = String(span.textContent || "").trim();
+    const display = span.classList?.contains("display") || tex.startsWith("\\[");
+    const delimiters = display ? ["\\[", "\\]"] : ["\\(", "\\)"];
+    if (tex.startsWith(delimiters[0]) && tex.endsWith(delimiters[1])) {
+      tex = tex.slice(delimiters[0].length, -delimiters[1].length).trim();
+    }
+    span.dataset.mathStyle = display ? "display" : "inline";
+    span.textContent = tex;
+    prepared += 1;
+  }
+  return prepared;
+}
+
 /// Renders every span in place. `throwOnError: false` because a formula with
 /// a typo in it is the author's to see, in red, rather than a reason to show
 /// nothing; `output: "html"` because the alternative writes MathML beside the
@@ -72,6 +93,7 @@ export function createMathTypesetter({ base, document, window }) {
   }
 
   return function typesetMath() {
+    prepareQuartoMath(document.body);
     const spans = untypeset(document.body);
     if (spans.length === 0) return false;
     if (window.katex) {
