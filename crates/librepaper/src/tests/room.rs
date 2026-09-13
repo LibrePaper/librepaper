@@ -53,7 +53,7 @@ pub(super) fn attach_fixture_journal(rooms: &room::RoomSet, store: &store::Store
     ).unwrap()));
 }
 
-fn object_write_prefix(store: &store::Store, slug: &str) -> String {
+pub(super) fn object_write_prefix(store: &store::Store, slug: &str) -> String {
     let document = store.catalog.as_ref().unwrap().document(slug).unwrap().unwrap();
     format!("v2/documents/{}/objects/*", document.storage_id)
 }
@@ -69,7 +69,7 @@ fn checkpoint_storage_key(store: &store::Store, slug: &str, checkpoint: &str) ->
     }).unwrap()
 }
 
-async fn recovered_session(store: &store::Store, slug: &str) -> yrs::Doc {
+pub(super) async fn recovered_session(store: &store::Store, slug: &str) -> yrs::Doc {
     let catalog = store.catalog.as_ref().unwrap();
     let document = catalog.document(slug).unwrap().unwrap();
     let journal = crate::storage::journal::V2JournalRuntime::with_persistence(
@@ -83,7 +83,7 @@ async fn recovered_session(store: &store::Store, slug: &str) -> yrs::Doc {
     saved
 }
 
-async fn retain_and_collect(store: &store::Store, keep: usize) {
+pub(super) async fn retain_and_collect(store: &store::Store, keep: usize) {
     let catalog = store.catalog.as_ref().unwrap();
     let now = crate::util::now_millis();
     catalog.with_connection(|connection| {
@@ -330,6 +330,7 @@ impl BlobStore for HookStore {
         self.inner.list(p).await
     }
     async fn delete(&self, k: &[String]) -> BlobResult<()> {
+        for key in k { self.hook("delete", key).await?; }
         if self
             .fail_delete
             .lock()

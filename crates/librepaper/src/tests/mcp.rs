@@ -27,7 +27,8 @@ async fn call(base: &str, slug: &str, key: &str, input: &Value) -> (u16, Value) 
     if let Some(name) = input["params"]["name"].as_str() {
         req = req.header("mcp-name", name);
     }
-    let response = req.json(input).send().await.expect("MCP response");
+    let response = req.timeout(std::time::Duration::from_secs(10)).json(input).send().await
+        .unwrap_or_else(|error| panic!("MCP transport failed for method={} tool={} action={}: {error}", input["method"], input["params"]["name"], input["params"]["arguments"]["action"]));
     let status = response.status().as_u16();
     let body = response.bytes().await.expect("body");
     (
