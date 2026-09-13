@@ -413,12 +413,17 @@ impl Room {
                             .get(&object.storage_key)
                             .await
                             .map_err(|error| AcceptError::Failed(error.to_string()));
+                        let release_object_id = object_id.clone();
                         let _ = catalog
                             .execute_catalog(256, {
                                 let document_id = document_id.clone();
                                 let holder = holder.clone();
                                 move |catalog| {
-                                    catalog.release_v2_lease(&document_id, &object_id, &holder)
+                                    catalog.release_v2_lease(
+                                        &document_id,
+                                        &release_object_id,
+                                        &holder,
+                                    )
                                 }
                             })
                             .await;
@@ -695,7 +700,41 @@ impl Room {
             state.session.by = by.clone();
         }
 
-        let sha = match self.checkpoint_now("accept", by).await {
+        // An acceptance owns a prepared `agent_annotations` operation.  Carry
+        // that receipt into the canonical checkpoint transaction so the
+        // source head, durable recovery base, annotation state, and replay
+        // result become one effect.  The old follow-up receipt transaction
+        // left a crash window between the checkpoint and resolution.
+        let acceptance_proof =
+            (!request_id.is_empty() && self.catalog.get().is_some()).then(|| {
+                crate::storage::catalog::AgentCheckpointCommit {
+                    request_id: request_id.to_owned(),
+                    digest: acceptance_digest.clone(),
+                    operation: json!({
+                        "version": 2,
+                        "effect": "suggestion_accept",
+                        "comment_id": comment_id,
+                    }),
+                    source_revision: String::new(),
+                }
+            });
+        let sha = match (if let Some(proof) = acceptance_proof.as_ref() {
+            let authority = crate::storage::catalog::MutationAuthority {
+                account_id: &mutation_actor.account_id,
+                owner_key: &mutation_actor.owner_key,
+                generation: &mutation_actor.session_generation,
+                link_hash: &mutation_actor.link_hash,
+                policy_editor: mutation_actor.policy_editor,
+                automation: mutation_actor.automation,
+                unowned_publisher: mutation_actor.unowned_publisher,
+                execution_epoch: "",
+                agent_checkpoint: Some(proof),
+            };
+            self.checkpoint_now_with_authority("accept", by, authority)
+                .await
+        } else {
+            self.checkpoint_now("accept", by).await
+        }) {
             Ok(Some(sha)) => sha,
             Ok(None) => {
                 if self.catalog.get().is_some() && !request_id.is_empty() {
@@ -736,29 +775,31 @@ impl Room {
         };
 
         let resolved_at = timestamp();
-        if let Some(catalog) = self.catalog.get() {
-            if !request_id.is_empty() {
-                // Recording the checkpoint in the receipt and settling the
-                // comment are one job: a caller that goes away between them
-                // used to leave the second unissued, and the service now owns
-                // both once the request is dispatched. On failure the
-                // checkpoint remains valid and the prepared receipt makes the
-                // next identical request resumable, so this does not claim
-                // success while the durable comment outcome lags.
-                if let Err(error) = record_and_finish_suggestion_accept(
-                    catalog,
-                    &self.slug,
-                    comment_id,
-                    request_id,
-                    &acceptance_digest,
-                    &sha,
-                    &resolved_at,
-                    mutation_actor.clone(),
-                )
-                .await
-                {
-                    self.broadcast_accept_and_current(&update).await;
-                    return Err(AcceptError::Failed(error));
+        if acceptance_proof.is_none() {
+            if let Some(catalog) = self.catalog.get() {
+                if !request_id.is_empty() {
+                    // Recording the checkpoint in the receipt and settling the
+                    // comment are one job: a caller that goes away between them
+                    // used to leave the second unissued, and the service now owns
+                    // both once the request is dispatched. On failure the
+                    // checkpoint remains valid and the prepared receipt makes the
+                    // next identical request resumable, so this does not claim
+                    // success while the durable comment outcome lags.
+                    if let Err(error) = record_and_finish_suggestion_accept(
+                        catalog,
+                        &self.slug,
+                        comment_id,
+                        request_id,
+                        &acceptance_digest,
+                        &sha,
+                        &resolved_at,
+                        mutation_actor.clone(),
+                    )
+                    .await
+                    {
+                        self.broadcast_accept_and_current(&update).await;
+                        return Err(AcceptError::Failed(error));
+                    }
                 }
             }
         }

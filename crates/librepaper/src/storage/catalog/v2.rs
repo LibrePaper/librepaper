@@ -1688,7 +1688,7 @@ impl Catalog {
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM operations
                        WHERE id=?1 AND document_id=?2 AND actor_key=?3
-                         AND kind='agent_apply' AND state='prepared')",
+                         AND kind IN ('agent_apply','agent_annotations') AND state='prepared')",
                     params![
                         input.operation_id.as_str(),
                         input.document_id.as_str(),
@@ -2809,7 +2809,7 @@ impl Catalog {
                 .query_row(
                     "SELECT id FROM operations
                        WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
-                         AND kind='agent_apply' AND state='prepared'",
+                         AND kind IN ('agent_apply','agent_annotations') AND state='prepared'",
                     params![document_id.as_str(), actor_key, request_key],
                     |row| {
                         OperationId::new(row.get::<_, String>(0)?)
@@ -2980,7 +2980,7 @@ impl Catalog {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             ).map_err(CatalogError::from)?;
             if state != "prepared"
-                || !matches!(kind.as_str(), "source_publish" | "checkpoint" | "agent_apply")
+                || !matches!(kind.as_str(), "source_publish" | "checkpoint" | "agent_apply" | "agent_annotations")
             {
                 return Err(CatalogError::Conflict("source checkpoint operation is not prepared".into()));
             }
@@ -3370,7 +3370,7 @@ impl Catalog {
                 |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
             ).map_err(CatalogError::from)?;
             if state != "prepared"
-                || !matches!(kind.as_str(), "source_publish" | "checkpoint" | "agent_apply")
+                || !matches!(kind.as_str(), "source_publish" | "checkpoint" | "agent_apply" | "agent_annotations")
             {
                 return Err(CatalogError::Conflict("source checkpoint operation is not prepared".into()));
             }
@@ -3383,7 +3383,7 @@ impl Catalog {
                         "SELECT request_digest,state,plan_json,actor_key,work_expires_at
                            FROM operations
                           WHERE document_id=?1 AND request_key=?2 AND actor_key=?3
-                            AND kind='agent_apply'",
+                            AND kind IN ('agent_apply','agent_annotations')",
                         params![checkpoint.document_id.as_str(), agent.request_id.as_str(), actor_key.as_str()],
                         |row| {
                             Ok((
@@ -3422,10 +3422,11 @@ impl Catalog {
                 }
                 let agent_plan = serde_json::from_str::<serde_json::Value>(&agent_plan_json)
                     .map_err(|_| CatalogError::Invalid("invalid agent source plan".into()))?;
-                if agent_plan
-                    .get("after_tree")
-                    .and_then(serde_json::Value::as_str)
-                    != Some(agent.source_revision.as_str())
+                if kind == OperationKind::AgentApply.as_str()
+                    && agent_plan
+                        .get("after_tree")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(agent.source_revision.as_str())
                 {
                     return Err(CatalogError::Conflict(
                         "agent source CAS revision changed".into(),
@@ -3468,7 +3469,75 @@ impl Catalog {
                     ));
                 }
                 if agent_state == "prepared" {
-                    if let Some(acceptance) = agent_plan.get("acceptance").filter(|value| !value.is_null()) {
+                    let acceptance = agent_plan
+                        .get("acceptance")
+                        .filter(|value| !value.is_null());
+                    if kind == OperationKind::AgentAnnotations.as_str() {
+                        let comment_id = agent_plan
+                            .get("commentId")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|value| !value.is_empty())
+                            .ok_or_else(|| {
+                                CatalogError::Invalid(
+                                    "suggestion acceptance comment is missing".into(),
+                                )
+                            })?;
+                        let changed = tx
+                            .execute(
+                                "UPDATE annotations
+                                    SET protected_checkpoint_id=?2,
+                                        suggestion_state='accepted',
+                                        acceptance_operation_id=?1,
+                                        resolution_revision=?2,
+                                        resolved_at=?3,
+                                        updated_at=max(updated_at,?3)
+                                  WHERE document_id=?4 AND id=?5
+                                    AND kind='suggestion' AND suggestion_state='proposed'",
+                                params![
+                                    operation_id.as_str(),
+                                    checkpoint.id.as_str(),
+                                    checkpoint.now.0,
+                                    checkpoint.document_id.as_str(),
+                                    comment_id,
+                                ],
+                            )
+                            .map_err(CatalogError::from)?;
+                        if changed != 1 {
+                            return Err(CatalogError::Conflict(
+                                "agent suggestion changed before checkpoint commit".into(),
+                            ));
+                        }
+                        if let Some(payload_id) = agent_plan
+                            .get("update_object_id")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            let settled = tx
+                                .execute(
+                                    "UPDATE objects
+                                        SET live_root=1,gc_after=NULL
+                                      WHERE document_id=?1 AND id=?2
+                                        AND kind='agent_payload' AND state='available'",
+                                    params![checkpoint.document_id.as_str(), payload_id],
+                                )
+                                .map_err(CatalogError::from)?;
+                            if settled != 1 {
+                                return Err(CatalogError::Conflict(
+                                    "suggestion payload is not available for acceptance".into(),
+                                ));
+                            }
+                            tx.execute(
+                                "DELETE FROM object_leases
+                                  WHERE document_id=?1 AND object_id=?2
+                                    AND operation_id=?3 AND purpose='stage'",
+                                params![
+                                    checkpoint.document_id.as_str(),
+                                    payload_id,
+                                    operation_id.as_str(),
+                                ],
+                            )
+                            .map_err(CatalogError::from)?;
+                        }
+                    } else if let Some(acceptance) = acceptance {
                         let comment_id = acceptance
                             .get("comment_id")
                             .and_then(serde_json::Value::as_str)
@@ -3490,7 +3559,8 @@ impl Catalog {
                                         suggestion_state='accepted',
                                         acceptance_operation_id=(SELECT id FROM operations
                                                                   WHERE document_id=?1 AND request_key=?2
-                                                                    AND actor_key=?3 AND kind='agent_apply'),
+                                                                    AND actor_key=?3
+                                                                    AND kind IN ('agent_apply','agent_annotations')),
                                         resolution_revision=?4,
                                         resolved_at=?5,
                                         updated_at=max(updated_at,?5)
@@ -3518,7 +3588,7 @@ impl Catalog {
                     let before_tree = agent_plan
                         .get("before_tree")
                         .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| CatalogError::Invalid("agent source plan has no base tree".into()))?;
+                        .unwrap_or("");
                     let agent_result = serde_json::json!({
                         "version": 2,
                         "operation": agent.operation,
@@ -3536,7 +3606,9 @@ impl Catalog {
                         "UPDATE operations SET state='committed',result_json=?1,
                                 completed_at=?2,receipt_expires_at=?3,updated_at=?2
                           WHERE document_id=?4 AND request_key=?5
-                            AND actor_key=?6 AND kind='agent_apply' AND state='prepared'",
+                            AND actor_key=?6
+                            AND kind IN ('agent_apply','agent_annotations')
+                            AND state='prepared'",
                         params![
                             agent_result,
                             checkpoint.now.0,
@@ -3604,7 +3676,9 @@ impl Catalog {
                         .and_then(serde_json::Value::as_i64)?;
                     Some((id, digest, epoch, sequence))
                 });
-            if kind == OperationKind::AgentApply.as_str() && journal_base.is_none() {
+            if matches!(kind.as_str(), "agent_apply" | "agent_annotations")
+                && journal_base.is_none()
+            {
                 return Err(CatalogError::Conflict(
                     "agent checkpoint has no encoded journal base".into(),
                 ));

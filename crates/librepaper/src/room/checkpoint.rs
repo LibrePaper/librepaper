@@ -478,7 +478,16 @@ impl Room {
             .as_ref()
             .and_then(|authority| authority.agent_checkpoint.as_ref())
             .is_some();
-        let (tree, bodies, format, last, deferred, tree_generation, snapshot_state) = {
+        let (
+            tree,
+            bodies,
+            format,
+            last,
+            deferred,
+            tree_generation,
+            snapshot_state,
+            snapshot_permit,
+        ) = {
             let mut state = self.state.lock().await;
             // A deliberate write inside the defer window is not refused; it
             // waits, and is taken when the window passes, if the text still
@@ -496,6 +505,7 @@ impl Room {
                     String::new(),
                     true,
                     0,
+                    None,
                     None,
                 )
             } else {
@@ -515,6 +525,38 @@ impl Room {
                 } else {
                     state.session.format.clone()
                 };
+                let snapshot_estimate = if needs_agent_snapshot {
+                    state.session.encoded_bound.unwrap_or(
+                        tree.files.values().try_fold(0usize, |total, file| {
+                            total
+                                .checked_add(usize::try_from(file.size.max(0)).map_err(|_| {
+                                    WriteError::Storage("snapshot size overflow".into())
+                                })?)
+                                .ok_or_else(|| {
+                                    WriteError::Storage("snapshot size overflow".into())
+                                })
+                        })?,
+                    )
+                } else {
+                    0
+                };
+                let snapshot_permit = if needs_agent_snapshot {
+                    self.journal
+                        .get()
+                        .map(|journal| {
+                            journal
+                                .memory()
+                                .try_acquire(crate::config::PersistenceLimits::staging_cost(
+                                    snapshot_estimate,
+                                ))
+                                .map_err(|_| WriteError::ServerBusy)
+                        })
+                        .transpose()?
+                } else {
+                    None
+                };
+                let snapshot =
+                    needs_agent_snapshot.then(|| session::encode_state(&state.session.doc));
                 (
                     tree,
                     bodies,
@@ -525,38 +567,12 @@ impl Room {
                     // tell whether the document has moved on without hashing
                     // the whole tree again (R26).
                     state.session.generation,
-                    {
-                        let snapshot_permit = if needs_agent_snapshot {
-                            let bytes = tree.files.values().try_fold(0usize, |total, file| {
-                                total.checked_add(usize::try_from(file.size.max(0)).map_err(
-                                    |_| WriteError::Storage("snapshot size overflow".into()),
-                                )?)
-                                .ok_or_else(|| {
-                                    WriteError::Storage("snapshot size overflow".into())
-                                })
-                            })?;
-                            self.journal
-                                .get()
-                                .map(|journal| {
-                                    journal
-                                        .memory()
-                                        .try_acquire(crate::config::PersistenceLimits::staging_cost(
-                                            bytes,
-                                        ))
-                                        .map_err(|_| WriteError::ServerBusy)
-                                })
-                                .transpose()?
-                        } else {
-                            None
-                        };
-                        let snapshot =
-                            needs_agent_snapshot.then(|| session::encode_state(&state.session.doc));
-                        drop(snapshot_permit);
-                        snapshot
-                    },
+                    snapshot,
+                    snapshot_permit,
                 )
             }
         };
+        let _snapshot_permit = snapshot_permit;
         if deferred {
             return Ok(None);
         }

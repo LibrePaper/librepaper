@@ -781,6 +781,14 @@ impl Catalog {
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?;
+            let source_generation: i64 = tx
+                .query_row(
+                    "SELECT source_generation FROM documents
+                     WHERE id=?1 AND status <> 'deleting'",
+                    [&doc],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
             let plan = serde_json::json!({
                 "version": 2,
                 "effect": "suggestion_accept",
@@ -798,8 +806,9 @@ impl Catalog {
             tx.execute(
                 "INSERT INTO operations(
                     id,document_id,actor_key,request_key,kind,request_digest,state,
-                    writer_generation,plan_json,created_at,updated_at,work_expires_at
-                 ) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?8,?9)",
+                    writer_generation,expected_document_generation,plan_json,
+                    created_at,updated_at,work_expires_at
+                 ) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?9,?9,?10)",
                 params![
                     operation_id,
                     doc,
@@ -807,6 +816,7 @@ impl Catalog {
                     request_id,
                     request_digest,
                     generation,
+                    source_generation,
                     plan,
                     created_at,
                     work_expires,
@@ -1123,11 +1133,12 @@ impl Catalog {
             if let Some(planned) = value
                 .get("owner_plan")
                 .and_then(serde_json::Value::as_str)
-                && planned != owner_plan
             {
-                return Err(CatalogError::Conflict(
-                    "owner hard-quota plan changed while staging suggestion".into(),
-                ));
+                if planned != owner_plan {
+                    return Err(CatalogError::Conflict(
+                        "owner hard-quota plan changed while staging suggestion".into(),
+                    ));
+                }
             }
             value
                 .as_object_mut()
