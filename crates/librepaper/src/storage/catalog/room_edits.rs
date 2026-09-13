@@ -52,11 +52,11 @@ impl Catalog {
             let replaced = old_pending.checked_add(old_writing).ok_or_else(|| CatalogError::Invalid("room reservation overflow".into()))?;
             let process_owner = state.owner_bytes.get(&owner_id).copied().unwrap_or(0).checked_sub(replaced).ok_or_else(|| CatalogError::Invalid("owner room reservation underflow".into()))?;
             let process_total = state.deployment_bytes.checked_sub(replaced).ok_or_else(|| CatalogError::Invalid("deployment room reservation underflow".into()))?;
-            if owner_limit >= 0 && durable_owner.checked_add(process_owner).and_then(|v| v.checked_add(bytes)).ok_or_else(|| CatalogError::Invalid("owner admission overflow".into()))? > owner_limit { return Err(CatalogError::refused(CatalogRefusal::OwnerBytes,"owner byte quota exceeded")); }
-            if total_limit >= 0 && durable_total.checked_add(process_total).and_then(|v| v.checked_add(bytes)).ok_or_else(|| CatalogError::Invalid("deployment admission overflow".into()))? > total_limit { return Err(CatalogError::refused(CatalogRefusal::DeploymentBytes,"deployment byte quota exceeded")); }
-            let generation = old_generation.checked_add(1).ok_or_else(|| CatalogError::Invalid("room reservation generation overflow".into()))?;
             let (new_pending,new_writing) = if writing { (0,bytes) } else { (bytes,old_writing) };
             let new_charge = new_pending.checked_add(new_writing).ok_or_else(|| CatalogError::Invalid("room reservation overflow".into()))?;
+            if owner_limit >= 0 && durable_owner.checked_add(process_owner).and_then(|v| v.checked_add(new_charge)).ok_or_else(|| CatalogError::Invalid("owner admission overflow".into()))? > owner_limit { return Err(CatalogError::refused(CatalogRefusal::OwnerBytes,"owner byte quota exceeded")); }
+            if total_limit >= 0 && durable_total.checked_add(process_total).and_then(|v| v.checked_add(new_charge)).ok_or_else(|| CatalogError::Invalid("deployment admission overflow".into()))? > total_limit { return Err(CatalogError::refused(CatalogRefusal::DeploymentBytes,"deployment byte quota exceeded")); }
+            let generation = old_generation.checked_add(1).ok_or_else(|| CatalogError::Invalid("room reservation generation overflow".into()))?;
             let delta = new_charge.checked_sub(replaced).ok_or_else(|| CatalogError::Invalid("room reservation underflow".into()))?;
             let owner_total = state.owner_bytes.get(&owner_id).copied().unwrap_or(0).checked_add(delta).ok_or_else(|| CatalogError::Invalid("owner room reservation overflow".into()))?;
             state.owner_bytes.insert(owner_id.clone(), owner_total);

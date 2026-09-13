@@ -241,6 +241,22 @@ fn unsettled_reservation_and_ram_edits_share_the_owner_limit() {
     assert!(catalog.audit_v2_counters().unwrap());
 }
 #[test]
+fn pending_edits_include_the_snapshot_still_being_written() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    account(&catalog);
+    document(&catalog, "doc", "Title");
+    catalog.begin_room_write("doc", 60, 100, 100).unwrap();
+    assert!(matches!(catalog.reserve_room_edit("doc", 50, 100, 100),
+        Err(CatalogError::Refused(CatalogRefusal::OwnerBytes, _))));
+    catalog.reserve_room_edit("doc", 40, 100, 100).unwrap();
+    assert!(matches!(catalog.reserve_room_edit("doc", 41, 1000, 100),
+        Err(CatalogError::Refused(CatalogRefusal::DeploymentBytes, _))));
+    catalog.finish_room_write("doc", true).unwrap();
+    catalog.reserve_room_edit("doc", 100, 100, 100).unwrap();
+    assert!(catalog.audit_v2_counters().unwrap());
+}
+
+#[test]
 fn gc_requires_due_grace_and_respects_live_reader() {
     let catalog = Catalog::open_in_memory().unwrap();
     let request = allocation(&catalog, 100);
