@@ -28,14 +28,14 @@ impl Catalog {
     ) -> CatalogResult<Option<PublicationWork>> {
         let actor_key = publication_actor_key(actor)?;
         self.immediate(|tx| {
-            let row: Option<(String, String, String, String, Option<String>, String, Option<i64>)> = tx.query_row(
-                "SELECT id,state,request_digest,plan_json,result_json,writer_generation,work_expires_at
+            let row: Option<(String, String, String, String, Option<String>, String, Option<i64>, Option<i64>)> = tx.query_row(
+                "SELECT id,state,request_digest,plan_json,result_json,writer_generation,work_expires_at,receipt_expires_at
                    FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
                     AND kind='display_publish'",
                 params![document.as_str(), actor_key, request_key],
-                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)),
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
             ).optional()?;
-            let Some((id,state,request_digest,plan,result,generation,deadline)) = row else {
+            let Some((id,state,request_digest,plan,result,generation,deadline,receipt_expiry)) = row else {
                 let conflicting: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3)",
                     params![document.as_str(),actor_key,request_key], |row| row.get(0),
@@ -56,6 +56,9 @@ impl Catalog {
             };
             if !Self::mutation_authorized_in_tx(tx, &slug, authority, "editor")? {
                 return Err(CatalogError::refused(CatalogRefusal::ActorRights, "publication authority changed"));
+            }
+            if state != "prepared" && receipt_expiry.is_none_or(|expiry| expiry <= now.0) {
+                return Err(CatalogError::refused(CatalogRefusal::RequestExpired, "publication receipt has expired"));
             }
             let operation_id = OperationId::new(id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
             let plan: serde_json::Value = serde_json::from_str(&plan).map_err(|e| CatalogError::Invalid(e.to_string()))?;
@@ -568,6 +571,20 @@ mod tests {
             })
             .unwrap();
         assert!(catalog.audit_v2_counters().unwrap());
+    }
+
+    #[test]
+    fn terminal_publication_receipts_expire_before_cleanup_and_recheck_access() {
+        let (catalog, mut actor, allocations) = fixture();
+        let key = format!("v2.1.{}", "a".repeat(32));
+        catalog.with_connection(|db| {
+            db.execute("UPDATE operations SET state='committed',completed_at=2,receipt_expires_at=10,result_json='{\"version\":1}'", [])?;
+            Ok(())
+        }).unwrap();
+        assert!(catalog.publication_work(&allocations[0].document_id, &key, &actor, UnixMillis(9)).unwrap().is_some());
+        assert!(matches!(catalog.publication_work(&allocations[0].document_id, &key, &actor, UnixMillis(10)), Err(CatalogError::Refused(CatalogRefusal::RequestExpired, _))));
+        actor.session_generation = "revoked".into();
+        assert!(matches!(catalog.publication_work(&allocations[0].document_id, &key, &actor, UnixMillis(10)), Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))));
     }
 
     #[test]

@@ -2055,6 +2055,7 @@ fn catalog_publication_error(error: crate::storage::catalog::CatalogError) -> Pu
     match error.refusal() {
         CatalogRefusal::OwnerBytes | CatalogRefusal::DeploymentBytes => PublicationError::Quota,
         CatalogRefusal::ActorRights => PublicationError::Denied,
+        CatalogRefusal::RequestExpired => PublicationError::Expired,
         _ => match error {
             crate::storage::catalog::CatalogError::Invalid(message) => {
                 PublicationError::Invalid(message)

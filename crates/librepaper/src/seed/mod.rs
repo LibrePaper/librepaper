@@ -1096,7 +1096,7 @@ mod catalog_seed_tests {
         );
         let blobs = Arc::new(crate::storage::blob::FsStore::new(root.path(), true));
         seed_with_store(
-            blobs,
+            blobs.clone(),
             Arc::new(Configuration::default()),
             "",
             &[document(&source)],
