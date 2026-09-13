@@ -542,7 +542,8 @@ fn secret_payloads(paths: &DeploymentPaths) -> Result<Vec<BackupPayload>, Backup
         if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
             return Err(BackupV2Error::Invalid("unsafe secret filename".into()));
         }
-        let bytes = secure_read(&path).map_err(BackupV2Error::Storage)?;
+        let bytes = secure_read_limited(&path, 16 * 1024 * 1024)
+            .map_err(BackupV2Error::Storage)?;
         files.push(BackupPayload {
             relative: format!("secrets/{name}"),
             digest: hex::encode(Sha256::digest(&bytes)),
@@ -559,7 +560,7 @@ fn secret_payloads(paths: &DeploymentPaths) -> Result<Vec<BackupPayload>, Backup
 #[async_trait::async_trait]
 impl V2BackupCatalog for LocalV2BackupCatalog {
     async fn prepare_backup(&self, now: i64) -> Result<BackupSnapshot, String> {
-        let identity = secure_read(&self.paths.deployment_identity)?;
+        let identity = secure_read_limited(&self.paths.deployment_identity, 1024 * 1024)?;
         let secrets = secret_payloads(&self.paths).map_err(|error| error.to_string())?;
         let snapshot_path = self
             .paths
@@ -656,10 +657,13 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
         }
         let snapshot_for_read = snapshot_path.clone();
         let snapshot_read = tokio::task::spawn_blocking(move || -> Result<_, String> {
-                let bytes = fs::read(&snapshot_for_read).map_err(|error| error.to_string())?;
-                if bytes.len() > MAX_CATALOG_SNAPSHOT_BYTES {
+                let snapshot_bytes = fs::metadata(&snapshot_for_read)
+                    .map_err(|error| error.to_string())?
+                    .len();
+                if snapshot_bytes > MAX_CATALOG_SNAPSHOT_BYTES as u64 {
                     return Err("catalog snapshot exceeds backup bound".into());
                 }
+                let bytes = fs::read(&snapshot_for_read).map_err(|error| error.to_string())?;
                 let connection = Connection::open_with_flags(
                     &snapshot_for_read,
                     OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -699,10 +703,10 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
                     return Err(error);
                 }
             };
-        if snapshot_deployment != deployment_id || snapshot_revision != revision {
+        if snapshot_deployment != deployment_id {
             let _ = self.abort_backup(&operation_id).await;
             let _ = fs::remove_file(&snapshot_path);
-            return Err("catalog snapshot identity or revision changed".into());
+            return Err("catalog snapshot deployment identity changed".into());
         }
         *self
             .snapshot_path
@@ -1033,10 +1037,13 @@ fn secure_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 
-fn secure_read(path: &Path) -> Result<Vec<u8>, String> {
+fn secure_read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err(format!("refusing to read non-regular file {}", path.display()));
+    }
+    if metadata.len() > limit {
+        return Err(format!("file {} exceeds backup size bound", path.display()));
     }
     let mut options = OpenOptions::new();
     options.read(true);
