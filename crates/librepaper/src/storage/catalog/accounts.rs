@@ -753,7 +753,8 @@ impl Catalog {
                     let mut changed = 0u32;
                     for document_id in rows.drain(..) {
                         let updated = tx.execute(
-                            "UPDATE documents SET status='deleting', publication_id=NULL,
+                            "UPDATE documents SET status='deleting', source_generation=source_generation+1,
+                             publication_id=NULL,
                              publication_object_id=NULL, published_at=NULL,
                              current_checkpoint_id=NULL, journal_base_object_id=NULL,
                              journal_base_sequence=0
@@ -1210,8 +1211,9 @@ impl Catalog {
                             let receipt = now.saturating_add(7 * 24 * 60 * 60 * 1000);
                             changed = changed.saturating_add(tx.execute(
                                 "UPDATE operations SET state='aborted', result_json=?2,
-                                     completed_at=?3,
-                                     receipt_expires_at=max(COALESCE(receipt_expires_at,0),?4),
+                                     completed_at=max(created_at,updated_at,?3),
+                                     receipt_expires_at=max(COALESCE(receipt_expires_at,0),
+                                       max(created_at,updated_at,?3)+604800000,?4),
                                      updated_at=max(updated_at,?3)
                                      WHERE id=?1 AND state='prepared'",
                                 params![
@@ -1330,8 +1332,9 @@ impl Catalog {
                             let receipt = now.saturating_add(7 * 24 * 60 * 60 * 1000);
                             changed = changed.saturating_add(tx.execute(
                                 "UPDATE operations SET state='aborted', result_json=?2,
-                                     completed_at=?3,
-                                     receipt_expires_at=max(COALESCE(receipt_expires_at,0),?4),
+                                     completed_at=max(created_at,updated_at,?3),
+                                     receipt_expires_at=max(COALESCE(receipt_expires_at,0),
+                                       max(created_at,updated_at,?3)+604800000,?4),
                                      updated_at=max(updated_at,?3)
                                      WHERE id=?1 AND state='prepared'",
                                 params![

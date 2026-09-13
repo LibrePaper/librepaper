@@ -73,6 +73,7 @@ impl Catalog {
                 }
                 tx.execute(
                     "UPDATE documents SET status='deleting',updated_at=max(updated_at,?1),
+                        source_generation=source_generation+1,
                         publication_id=NULL,publication_object_id=NULL,published_at=NULL,
                         current_checkpoint_id=NULL,journal_base_object_id=NULL,
                         journal_base_sequence=0
@@ -91,8 +92,11 @@ impl Catalog {
             let now = unix_millis();
             if !was_deleting {
                 tx.execute(
-                    "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,
-                        receipt_expires_at=?3,updated_at=?2
+                    "UPDATE operations SET state='aborted',result_json=?1,
+                        completed_at=max(created_at,updated_at,?2),
+                        receipt_expires_at=max(COALESCE(receipt_expires_at,0),
+                          max(created_at,updated_at,?2)+604800000,?3),
+                        updated_at=max(updated_at,?2)
                      WHERE id IN (
                        SELECT id FROM operations
                        WHERE document_id=?4 AND state='prepared' AND kind<>'erase_document'
@@ -451,11 +455,12 @@ impl Catalog {
                                 "SELECT a.id,a.bookmarks_json FROM accounts a
                                  WHERE a.id>?1 ORDER BY a.id LIMIT ?2",
                             )?;
-                            statement
+                            let rows: Vec<(String, String)> = statement
                                 .query_map(params![after_account, remaining], |row| {
                                     Ok((row.get(0)?, row.get(1)?))
                                 })?
-                                .collect::<rusqlite::Result<Vec<_>>>()?
+                                .collect::<rusqlite::Result<Vec<_>>>()?;
+                            rows
                         };
                         let last_account = accounts.last().map(|(id, _)| id.clone());
                         for (account_id, payload) in &accounts {
@@ -545,11 +550,12 @@ impl Catalog {
                                 "SELECT id FROM checkpoints
                                  WHERE document_id=?1 ORDER BY id LIMIT ?2",
                             )?;
-                            statement
+                            let rows: Vec<String> = statement
                                 .query_map(params![document_id, checkpoint_page_limit], |row| {
                                     row.get(0)
                                 })?
-                                .collect::<rusqlite::Result<Vec<_>>>()?
+                                .collect::<rusqlite::Result<Vec<_>>>()?;
+                            rows
                         };
                         let full_checkpoint_page =
                             candidate_ids.len() as i64 == checkpoint_page_limit;
@@ -616,16 +622,28 @@ impl Catalog {
                         ids.len() as i64
                     }
                     "operations" => {
-                        let mut statement = tx.prepare(
-                            "SELECT id,state FROM operations WHERE document_id=?1
-                             AND id<>?2
-                             ORDER BY id LIMIT ?3",
-                        )?;
-                        let candidates: Vec<(String, String)> = statement
-                            .query_map(params![document_id, operation_id, remaining], |row| {
-                                Ok((row.get(0)?, row.get(1)?))
-                            })?
-                            .collect::<rusqlite::Result<Vec<_>>>()?;
+                        let after_operation = plan
+                            .get("cursor")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("");
+                        let pinned_seen = plan
+                            .get("pinned")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        let candidates: Vec<(String, String)> = {
+                            let mut statement = tx.prepare(
+                                "SELECT id,state FROM operations WHERE document_id=?1
+                                 AND id<>?2 AND id>?3
+                                 ORDER BY id LIMIT ?4",
+                            )?;
+                            let rows: Vec<(String, String)> = statement
+                                .query_map(
+                                    params![document_id, operation_id, after_operation, remaining],
+                                    |row| Ok((row.get(0)?, row.get(1)?)),
+                                )?
+                                .collect::<rusqlite::Result<Vec<_>>>()?;
+                            rows
+                        };
                         let mut changed_rows = 0i64;
                         let mut pinned = false;
                         for (candidate_id, state) in &candidates {
@@ -639,17 +657,19 @@ impl Catalog {
                                 tx.execute(
                                     r#"UPDATE operations SET state='aborted',
                                      result_json='{"version":2,"reason":"document_deleting"}',
-                                     completed_at=?1,receipt_expires_at=?1,updated_at=?1
+                                     completed_at=max(created_at,updated_at,?1),
+                                     receipt_expires_at=max(COALESCE(receipt_expires_at,0),
+                                       max(created_at,updated_at,?1)+604800000,?1+604800000),
+                                     updated_at=max(updated_at,?1)
                                      WHERE id=?2 AND state='prepared'"#,
                                     params![now, candidate_id],
                                 )?;
                             }
                             let blocked: i64 = tx.query_row(
-                                "SELECT
-                                   (SELECT count(*) FROM objects
-                                    WHERE allocation_operation_id=?1)
-                                   + (SELECT count(*) FROM object_leases
-                                      WHERE operation_id=?1)",
+                                "SELECT EXISTS(SELECT 1 FROM objects
+                                                WHERE allocation_operation_id=?1)
+                                   OR EXISTS(SELECT 1 FROM object_leases
+                                              WHERE operation_id=?1)",
                                 [candidate_id],
                                 |row| row.get(0),
                             )?;
@@ -664,8 +684,29 @@ impl Catalog {
                             changed_rows += 1;
                         }
                         if candidates.is_empty() {
-                            stage = "done".into();
-                            plan["cursor"] = serde_json::Value::Null;
+                            if after_operation.is_empty() && !pinned_seen {
+                                stage = "done".into();
+                                plan["cursor"] = serde_json::Value::Null;
+                                plan["pinned"] = serde_json::Value::Bool(false);
+                            } else {
+                                // A cursor cycle gives pinned rows at the
+                                // head another chance after later operation
+                                // pages have been settled.
+                                plan["cursor"] = serde_json::Value::Null;
+                                plan["pinned"] = serde_json::Value::Bool(false);
+                                yield_stage = true;
+                            }
+                        } else if let Some((last_id, _)) = candidates.last() {
+                            let seen_pinned = pinned_seen || pinned;
+                            plan["pinned"] = serde_json::Value::Bool(seen_pinned);
+                            if candidates.len() as i64 == remaining || seen_pinned {
+                                plan["cursor"] = serde_json::Value::String(last_id.clone());
+                                yield_stage = true;
+                            } else {
+                                stage = "done".into();
+                                plan["cursor"] = serde_json::Value::Null;
+                                plan["pinned"] = serde_json::Value::Bool(false);
+                            }
                         }
                         if changed_rows == 0 && pinned {
                             yield_stage = true;
@@ -722,10 +763,11 @@ impl Catalog {
                  ORDER BY o.updated_at,d.id LIMIT ?1"
             };
             let mut statement = connection.prepare(sql)?;
-            statement
+            let rows = statement
                 .query_map([i64::from(limit.min(64))], |row| row.get(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(CatalogError::from)
+                .map_err(CatalogError::from)?;
+            Ok(rows)
         })
     }
 
@@ -1310,8 +1352,11 @@ impl Catalog {
                 .ok_or_else(|| CatalogError::Invalid("operation receipt expiry overflow".into()))?;
             let changed = tx
                 .execute(
-                    "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,
-                     receipt_expires_at=?3,updated_at=?2
+                    "UPDATE operations SET state='aborted',result_json=?1,
+                     completed_at=max(created_at,updated_at,?2),
+                     receipt_expires_at=max(COALESCE(receipt_expires_at,0),
+                       max(created_at,updated_at,?2)+604800000,?3),
+                     updated_at=max(updated_at,?2)
                      WHERE document_id=?4 AND request_key=?5 AND state='prepared'",
                     params![result, now, receipt_expires, storage_id, request_id],
                 )
