@@ -1126,6 +1126,7 @@ fn install_catalog_snapshot_file_sync(
     create_secure_dirs(&paths.state)?;
     let temporary = paths.catalog.with_extension("restore");
     secure_copy_atomic(&temporary, source)?;
+    let _temporary_cleanup = RestoreTempFile(Some(temporary.clone()));
     Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
     let snapshot_identity = Connection::open_with_flags(
         &temporary,
@@ -1167,6 +1168,7 @@ impl V2RestoreCatalog for LocalV2RestoreCatalog {
         create_secure_dirs(&self.paths.state)?;
         let temporary = self.paths.catalog.with_extension("restore");
         secure_atomic_write(&temporary, &catalog_bytes)?;
+        let _temporary_cleanup = RestoreTempFile(Some(temporary.clone()));
         Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
         let snapshot_identity = Connection::open_with_flags(
             &temporary,
