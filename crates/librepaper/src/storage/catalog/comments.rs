@@ -140,7 +140,7 @@ fn unique_acceptance_operation_tx(
         "SELECT id,state,request_digest,actor_key
          FROM operations
          WHERE document_id=?1 AND request_key=?2
-           AND kind='agent_annotations'
+           AND kind='agent_apply'
            AND actor_key=?3
            AND json_extract(plan_json,'$.commentId')=?4
          ORDER BY id
@@ -169,7 +169,7 @@ fn unique_acceptance_operation_connection(
         "SELECT id,state,request_digest,actor_key
          FROM operations
          WHERE document_id=?1 AND request_key=?2
-           AND kind='agent_annotations' AND actor_key=?3
+           AND kind='agent_apply' AND actor_key=?3
          ORDER BY id
          LIMIT 2",
     )?;
@@ -501,6 +501,22 @@ impl Catalog {
                 ));
             }
             validate_new_request_key(request_id)?;
+            Self::admit_operation_slot(tx, Some(&doc), "agent_apply")?;
+            let writer_busy: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM operations
+                       WHERE document_id=?1 AND state='prepared'
+                         AND kind IN ('source_publish','checkpoint','journal_append',
+                                      'journal_compact','agent_apply'))",
+                    [&doc],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if writer_busy {
+                return Err(CatalogError::Conflict(
+                    "document has another prepared source writer".into(),
+                ));
+            }
             let operation_id = hex::encode(crate::auth::random_bytes(16));
             let writer_generation: String = tx
                 .query_row(
@@ -748,7 +764,7 @@ impl Catalog {
                      FROM operations
                      WHERE document_id=?1 AND account_id IS NULL
                        AND actor_key=?2 AND request_key=?3
-                       AND kind='agent_annotations'",
+                       AND kind='agent_apply'",
                     params![doc, actor, request_id],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
@@ -808,7 +824,7 @@ impl Catalog {
                     id,document_id,actor_key,request_key,kind,request_digest,state,
                     writer_generation,expected_document_generation,plan_json,
                     created_at,updated_at,work_expires_at
-                 ) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?9,?9,?10)",
+                 ) VALUES(?1,?2,?3,?4,'agent_apply',?5,'prepared',?6,?7,?8,?9,?9,?10)",
                 params![
                     operation_id,
                     doc,
@@ -1295,7 +1311,7 @@ impl Catalog {
                 .query_row(
                     "SELECT plan_json FROM operations
                      WHERE document_id=?1 AND request_key=?2
-                       AND request_digest=?3 AND kind='agent_annotations'
+                     AND request_digest=?3 AND kind='agent_apply'
                        AND state='prepared'",
                     params![doc, request_id, request_digest],
                     |row| row.get(0),
@@ -1360,7 +1376,7 @@ impl Catalog {
         })
     }
     pub fn pending_suggestion_accept(&self, slug: &str, comment_id: &str) -> CatalogResult<bool> {
-        self.with_connection(|c|{let doc=document_id_connection(c,slug)?;c.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE document_id=?1 AND kind='agent_annotations' AND state='prepared' AND json_extract(plan_json,'$.commentId')=?2)",params![doc,comment_id],|r|r.get(0)).map_err(CatalogError::from)})
+        self.with_connection(|c|{let doc=document_id_connection(c,slug)?;c.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE document_id=?1 AND kind='agent_apply' AND state='prepared' AND json_extract(plan_json,'$.commentId')=?2)",params![doc,comment_id],|r|r.get(0)).map_err(CatalogError::from)})
     }
     pub fn suggestion_accept_checkpoint(
         &self,

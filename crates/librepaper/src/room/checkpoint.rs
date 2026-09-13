@@ -2117,12 +2117,48 @@ impl Room {
                 .map_err(WriteError::Storage);
             if let Err(error) = write_result {
                 heartbeat.stop().await;
+                if agent_checkpoint.is_none() {
+                    let operation = admitted_operation.id.clone();
+                    let _ = catalog
+                        .execute_catalog(256, move |catalog| {
+                            catalog.finish_v2_operation(
+                                &operation,
+                                &serde_json::json!({
+                                    "version": 2,
+                                    "status": "aborted",
+                                    "reason": "checkpoint physical write failed",
+                                })
+                                .to_string(),
+                                false,
+                                now,
+                            )
+                        })
+                        .await;
+                }
                 return Err(error);
             }
         }
         let heartbeat_failure = heartbeat_error.lock().ok().and_then(|slot| slot.clone());
         if let Some(error) = heartbeat_failure {
             heartbeat.stop().await;
+            if agent_checkpoint.is_none() {
+                let operation = admitted_operation.id.clone();
+                let _ = catalog
+                    .execute_catalog(256, move |catalog| {
+                        catalog.finish_v2_operation(
+                            &operation,
+                            &serde_json::json!({
+                                "version": 2,
+                                "status": "aborted",
+                                "reason": "checkpoint lease heartbeat failed",
+                            })
+                            .to_string(),
+                            false,
+                            now,
+                        )
+                    })
+                    .await;
+            }
             return Err(WriteError::Storage(format!(
                 "checkpoint closure heartbeat failed: {error}"
             )));

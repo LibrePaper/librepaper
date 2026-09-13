@@ -1697,6 +1697,57 @@ impl Catalog {
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?;
+            if reused_agent {
+                // A suggestion acceptance reuses its prepared annotation
+                // operation, but the physical checkpoint closure is only
+                // known now. Merge the bounded checkpoint proof fields into
+                // that same row under the admission lock; the immutable
+                // acceptance identity and payload fields remain untouched.
+                let existing_plan: String = tx
+                    .query_row(
+                        "SELECT plan_json FROM operations WHERE id=?1 AND document_id=?2
+                          AND state='prepared'",
+                        params![input.operation_id.as_str(), input.document_id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                let mut merged: serde_json::Value = serde_json::from_str(&existing_plan)
+                    .map_err(|_| CatalogError::Invalid("invalid prepared operation plan".into()))?;
+                let admission_plan: serde_json::Value = serde_json::from_str(&input.operation.plan_json)
+                    .map_err(|_| CatalogError::Invalid("invalid checkpoint operation plan".into()))?;
+                let target = merged
+                    .as_object_mut()
+                    .ok_or_else(|| CatalogError::Invalid("prepared operation plan is not an object".into()))?;
+                let source = admission_plan
+                    .as_object()
+                    .ok_or_else(|| CatalogError::Invalid("checkpoint operation plan is not an object".into()))?;
+                for key in [
+                    "version",
+                    "source_format",
+                    "main",
+                    "closure_digest",
+                    "tree_digest",
+                    "tree_physical_digest",
+                    "journal_base_object_id",
+                    "journal_base_digest",
+                    "journal_base_epoch",
+                    "journal_base_sequence",
+                    "authority",
+                ] {
+                    if let Some(value) = source.get(key) {
+                        target.insert(key.to_owned(), value.clone());
+                    }
+                }
+                let merged_plan = serde_json::to_string(&merged)
+                    .map_err(|error| CatalogError::Invalid(format!("invalid merged operation plan: {error}")))?;
+                validate_json(&merged_plan, "prepared operation plan", 65_536)?;
+                tx.execute(
+                    "UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2)
+                       WHERE id=?3 AND document_id=?4 AND state='prepared'",
+                    params![merged_plan, input.now.0, input.operation_id.as_str(), input.document_id.as_str()],
+                )
+                .map_err(CatalogError::from)?;
+            }
             let issued = crate::util::request_key_timestamp(&input.operation.request_key)
                 .ok_or_else(|| CatalogError::Invalid("invalid v2 request key".into()))?;
             if issued > input.now.0.saturating_add(60_000)
@@ -2993,13 +3044,11 @@ impl Catalog {
             if expected_generation != Some(source_generation) {
                 return Err(CatalogError::Conflict("source generation changed".into()));
             }
-            if kind != OperationKind::AgentApply.as_str() {
-                if plan_digest.as_deref() != Some(closure_digest(&checkpoint.object_ids).as_str()) {
-                    return Err(CatalogError::Conflict("source closure digest does not match the prepared operation".into()));
-                }
-                if plan_tree_digest.as_deref() != Some(checkpoint.tree_digest.as_str()) {
-                    return Err(CatalogError::Conflict("source tree digest does not match the prepared operation".into()));
-                }
+            if plan_digest.as_deref() != Some(closure_digest(&checkpoint.object_ids).as_str()) {
+                return Err(CatalogError::Conflict("source closure digest does not match the prepared operation".into()));
+            }
+            if plan_tree_digest.as_deref() != Some(checkpoint.tree_digest.as_str()) {
+                return Err(CatalogError::Conflict("source tree digest does not match the prepared operation".into()));
             }
             let tree_kind: String = tx.query_row(
                 "SELECT kind FROM objects WHERE document_id=?1 AND id=?2 AND state='available'",
@@ -3377,6 +3426,7 @@ impl Catalog {
             let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
             if generation != current_generation { return Err(CatalogError::Conflict("source operation belongs to an obsolete writer generation".into())); }
             operation_authorized_in_tx(tx, checkpoint.document_id.as_str(), &actor_key, &plan_json, "editor")?;
+            let mut annotation_acceptance: Option<(String, Option<String>)> = None;
             if let Some(agent) = agent {
                 let agent_row: Option<(String, String, String, String, Option<i64>)> = tx
                     .query_row(
@@ -3422,7 +3472,12 @@ impl Catalog {
                 }
                 let agent_plan = serde_json::from_str::<serde_json::Value>(&agent_plan_json)
                     .map_err(|_| CatalogError::Invalid("invalid agent source plan".into()))?;
+                let suggestion_accept = agent_plan
+                    .get("effect")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("suggestion_accept");
                 if kind == OperationKind::AgentApply.as_str()
+                    && !suggestion_accept
                     && agent_plan
                         .get("after_tree")
                         .and_then(serde_json::Value::as_str)
@@ -3472,7 +3527,7 @@ impl Catalog {
                     let acceptance = agent_plan
                         .get("acceptance")
                         .filter(|value| !value.is_null());
-                    if kind == OperationKind::AgentAnnotations.as_str() {
+                    if suggestion_accept {
                         let comment_id = agent_plan
                             .get("commentId")
                             .and_then(serde_json::Value::as_str)
@@ -3482,61 +3537,25 @@ impl Catalog {
                                     "suggestion acceptance comment is missing".into(),
                                 )
                             })?;
-                        let changed = tx
-                            .execute(
-                                "UPDATE annotations
-                                    SET protected_checkpoint_id=?2,
-                                        suggestion_state='accepted',
-                                        acceptance_operation_id=?1,
-                                        resolution_revision=?2,
-                                        resolved_at=?3,
-                                        updated_at=max(updated_at,?3)
-                                  WHERE document_id=?4 AND id=?5
+                        let proposed: i64 = tx
+                            .query_row(
+                                "SELECT count(*) FROM annotations
+                                  WHERE document_id=?1 AND id=?2
                                     AND kind='suggestion' AND suggestion_state='proposed'",
-                                params![
-                                    operation_id.as_str(),
-                                    checkpoint.id.as_str(),
-                                    checkpoint.now.0,
-                                    checkpoint.document_id.as_str(),
-                                    comment_id,
-                                ],
+                                params![checkpoint.document_id.as_str(), comment_id],
+                                |row| row.get(0),
                             )
                             .map_err(CatalogError::from)?;
-                        if changed != 1 {
+                        if proposed != 1 {
                             return Err(CatalogError::Conflict(
                                 "agent suggestion changed before checkpoint commit".into(),
                             ));
                         }
-                        if let Some(payload_id) = agent_plan
+                        let payload_id = agent_plan
                             .get("update_object_id")
                             .and_then(serde_json::Value::as_str)
-                        {
-                            let settled = tx
-                                .execute(
-                                    "UPDATE objects
-                                        SET live_root=1,gc_after=NULL
-                                      WHERE document_id=?1 AND id=?2
-                                        AND kind='agent_payload' AND state='available'",
-                                    params![checkpoint.document_id.as_str(), payload_id],
-                                )
-                                .map_err(CatalogError::from)?;
-                            if settled != 1 {
-                                return Err(CatalogError::Conflict(
-                                    "suggestion payload is not available for acceptance".into(),
-                                ));
-                            }
-                            tx.execute(
-                                "DELETE FROM object_leases
-                                  WHERE document_id=?1 AND object_id=?2
-                                    AND operation_id=?3 AND purpose='stage'",
-                                params![
-                                    checkpoint.document_id.as_str(),
-                                    payload_id,
-                                    operation_id.as_str(),
-                                ],
-                            )
-                            .map_err(CatalogError::from)?;
-                        }
+                            .map(str::to_owned);
+                        annotation_acceptance = Some((comment_id.to_owned(), payload_id));
                     } else if let Some(acceptance) = acceptance {
                         let comment_id = acceptance
                             .get("comment_id")
@@ -3813,6 +3832,60 @@ impl Catalog {
             if checked_add(doc_refs,count,"document checkpoint references")? > MAX_DOCUMENT_CHECKPOINT_REFS { return Err(CatalogError::refused(super::CatalogRefusal::Other,"checkpoint_reference_limit")); }
             tx.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,checkpoint.author_account_id,checkpoint.author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,checkpoint.journal_epoch,checkpoint.journal_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|value|value.0)]).map_err(CatalogError::from)?;
             for object_id in &checkpoint.object_ids { tx.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?; }
+            if let Some((comment_id, payload_id)) = annotation_acceptance {
+                let changed = tx
+                    .execute(
+                        "UPDATE annotations
+                            SET protected_checkpoint_id=?1,
+                                suggestion_state='accepted',
+                                acceptance_operation_id=?2,
+                                resolution_revision=?1,
+                                resolved_at=?3,
+                                updated_at=max(updated_at,?3)
+                          WHERE document_id=?4 AND id=?5
+                            AND kind='suggestion' AND suggestion_state='proposed'",
+                        params![
+                            checkpoint.id.as_str(),
+                            operation_id.as_str(),
+                            checkpoint.now.0,
+                            checkpoint.document_id.as_str(),
+                            comment_id,
+                        ],
+                    )
+                    .map_err(CatalogError::from)?;
+                if changed != 1 {
+                    return Err(CatalogError::Conflict(
+                        "agent suggestion changed before checkpoint commit".into(),
+                    ));
+                }
+                if let Some(payload_id) = payload_id {
+                    let settled = tx
+                        .execute(
+                            "UPDATE objects
+                                SET live_root=1,gc_after=NULL
+                              WHERE document_id=?1 AND id=?2
+                                AND kind='agent_payload' AND state='available'",
+                            params![checkpoint.document_id.as_str(), payload_id],
+                        )
+                        .map_err(CatalogError::from)?;
+                    if settled != 1 {
+                        return Err(CatalogError::Conflict(
+                            "suggestion payload is not available for acceptance".into(),
+                        ));
+                    }
+                    tx.execute(
+                        "DELETE FROM object_leases
+                          WHERE document_id=?1 AND object_id=?2
+                            AND operation_id=?3 AND purpose='stage'",
+                        params![
+                            checkpoint.document_id.as_str(),
+                            payload_id,
+                            operation_id.as_str(),
+                        ],
+                    )
+                    .map_err(CatalogError::from)?;
+                }
+            }
             tx.execute("UPDATE documents SET title=COALESCE(?1,title),title_key=COALESCE(?2,title_key),source_format=COALESCE(?3,source_format),main_path=COALESCE(?4,main_path),status=CASE WHEN status='creating' THEN 'active' ELSE status END,next_checkpoint_seq=next_checkpoint_seq+1,source_generation=source_generation+1,checkpoint_ref_count=checkpoint_ref_count+?5,last_checkpoint_at=?6,retention_due_at=0,current_checkpoint_id=CASE WHEN ?7 THEN ?8 ELSE current_checkpoint_id END,updated_at=max(updated_at,?6) WHERE id=?9",params![title.as_deref(),title_key_value.as_deref(),plan_format.as_deref(),plan_main.as_deref(),count,checkpoint.now.0,checkpoint.make_current,checkpoint.id.as_str(),checkpoint.document_id.as_str()]).map_err(CatalogError::from)?;
             if let Some((base_id, _, base_epoch, base_sequence)) = journal_base {
                 let grace = checkpoint.now.0.saturating_add(900_000);
@@ -3924,7 +3997,7 @@ impl Catalog {
             {
                 return Ok(false);
             }
-            let protected: i64 = tx.query_row("SELECT count(*) FROM annotations WHERE document_id=?1 AND protected_checkpoint_id=?2 AND resolved_at IS NULL", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            let protected: i64 = tx.query_row("SELECT count(*) FROM annotations WHERE document_id=?1 AND protected_checkpoint_id=?2", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if protected != 0 { return Ok(false); }
             let labeled: i64 = tx.query_row("SELECT count(*) FROM checkpoints WHERE document_id=?1 AND id=?2 AND label IS NOT NULL", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if labeled != 0 { return Ok(false); }
