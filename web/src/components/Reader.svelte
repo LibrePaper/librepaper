@@ -2096,22 +2096,9 @@
   );
 
   let previousConnected = null;
-  let previousLatexPhase = null;
-  let previousQuartoRendering = null;
-  let previousCalepinRendering = null;
   $effect(() => {
     if (previousConnected === false && connected) toastDone("Connection restored", { id: "reader:connection-restored" });
     previousConnected = connected;
-  });
-  $effect(() => {
-    if (previousLatexPhase !== null && latexPhase === "ready" && previousLatexPhase !== "ready") toastDone("Preview ready", { id: "reader:preview-ready" });
-    previousLatexPhase = latexPhase;
-  });
-  $effect(() => {
-    if (previousQuartoRendering === true && !quartoRendering) toastDone("Quarto preview ready", { id: "reader:quarto-ready" });
-    previousQuartoRendering = quartoRendering;
-    if (previousCalepinRendering === true && !calepinRendering) toastDone("Calepin preview ready", { id: "reader:calepin-ready" });
-    previousCalepinRendering = calepinRendering;
   });
 
   async function paintPreview() {
@@ -2310,15 +2297,19 @@
       // No new page: an already painted page stays up transiently while the
       // diagnostics for the current source settle.
       if (snapshotSource !== sourceGeneration) return;
-      diagnosticPainter.rendered({ page: null, diagnostics: contextualDiagnostics });
       pdfFailure = true;
       // A log the parser found nothing in is still the only account there
       // is of what happened, and its last lines are where an engine says
       // why it stopped.
-      pdfFailureReason = said?.length
+      const hasError = contextualDiagnostics.some((item) => item.severity !== "warning");
+      pdfFailureReason = hasError
         ? ""
         : rendered.failure?.message || (log || "").trim().split("\n").slice(-12).join("\n") ||
           "the compiler produced no preview and no log";
+      const failureDiagnostics = hasError
+        ? contextualDiagnostics
+        : [...contextualDiagnostics, diagnosticContext({ severity: "error", message: pdfFailureReason }, tree, snapshotIdentity)];
+      diagnosticPainter.rendered({ page: null, diagnostics: failureDiagnostics });
       if (pdfFailureReason) console.error(`${format}: could not render:`, pdfFailureReason);
       // Unless nothing was ever painted, the frame gets a transient failure
       // page for flow formats; paged formats use the source and diagnostics
@@ -2338,7 +2329,10 @@
         pdfFailure = true;
         pdfFailureReason = error.message || "could not render";
         console.error(`${format}: could not render:`, error);
-        say(error.message || "could not render", true);
+        diagnosticPainter.rendered({
+          page: null,
+          diagnostics: [diagnosticContext({ severity: "error", message: pdfFailureReason }, tree, snapshotIdentity)],
+        });
       }
     } finally {
       previewPaintBusy = false;
