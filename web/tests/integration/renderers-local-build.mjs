@@ -98,4 +98,21 @@ assert.equal(failed.ok, false);
 assert.equal(failed.failure.message, "pandoc failed");
 assert.equal(failed.html, null);
 
+client._testing.inject({ fetch: async (url, init = {}) => {
+  if (url.endsWith("/jobs") && init.method === "POST") {
+    submitted = JSON.parse(await init.body.get("job").text());
+    return response(202, { id: "quarto-hosted" });
+  }
+  if (url.endsWith("/jobs/quarto-hosted")) return response(200, { status: "failed", exit: 1, error: "fixture stopped after admission", outputs: {} });
+  throw new Error(`unexpected hosted Quarto request ${url}`);
+} });
+const hostedQuarto = await renderers.render(
+  { main: "paper.qmd", texts: { "paper.qmd": "# Test" }, assets: {} },
+  "Test",
+  { project: "paper", buildPreferences: { selection: "tool", backend: "local", tool: "quarto", output: "html" } },
+);
+assert.equal(submitted.builder, "quarto");
+assert.deepEqual(submitted.workspace, { mode: "snapshot", binding_id: client.HOSTED_BINDING });
+assert.equal(hostedQuarto.failure.message, "fixture stopped after admission");
+
 client._testing.reset();

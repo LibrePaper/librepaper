@@ -130,9 +130,11 @@ export async function render(tree, title, { manual = false, format: requestedFor
   if (buildPreferences?.selection === "tool" && buildPreferences.backend === "local" && format !== "latex") {
     localBridge.configure({ project, origin: globalThis.location?.origin || "", active: true });
     const digest = await snapshotDigest(tree);
-    const needsBinding = ["quarto", "calepin"].includes(buildPreferences.tool);
-    const job = { snapshot: digest, generation: Date.now(), binding: needsBinding ? localBridge.bindingId() : "", inputRevision: digest };
-    if (needsBinding && localBridge.status().protocol?.includes(2) && (!job.binding || job.binding === localBridge.HOSTED_BINDING)) throw new Error("Authorize a local project folder in Local app settings before running this snapshot build.");
+    const usesWorkspace = ["quarto", "calepin"].includes(buildPreferences.tool);
+    // Snapshot builds can use the companion-owned hosted workspace populated
+    // from this request's complete manifest. A user-granted folder is only
+    // needed when the document deliberately depends on unshared local files.
+    const job = { snapshot: digest, generation: Date.now(), binding: usesWorkspace ? localBridge.bindingId() : "", inputRevision: digest };
     const output = buildPreferences.output || (format === "typst" ? "pdf" : "html");
     activeLocalAbort?.abort();
     const abort = new AbortController();
