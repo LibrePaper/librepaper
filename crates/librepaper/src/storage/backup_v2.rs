@@ -421,7 +421,6 @@ pub async fn restore_backup(
         std::process::id(),
         hex::encode(crate::auth::random_bytes(8))
     ));
-    let _catalog_cleanup = RestoreTempFile(Some(catalog_path.clone()));
     let mut catalog_writer = RestoreFileWriter::new(catalog_path.clone());
     let mut catalog_digest = Sha256::new();
     let mut catalog_offset = 0_u64;
@@ -441,7 +440,7 @@ pub async fn restore_backup(
             .map_err(BackupV2Error::Storage)?;
         catalog_offset = end;
     }
-    catalog_writer
+    let _catalog_cleanup = catalog_writer
         .finish()
         .await
         .map_err(BackupV2Error::Storage)?;
@@ -534,13 +533,18 @@ enum RestoreFileMessage {
 
 struct RestoreFileWriter {
     sender: Option<tokio::sync::mpsc::Sender<RestoreFileMessage>>,
-    task: Option<tokio::task::JoinHandle<Result<(), String>>>,
+    task: Option<tokio::task::JoinHandle<Result<RestoreTempFile, String>>>,
 }
 
 impl RestoreFileWriter {
     fn new(path: PathBuf) -> Self {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         let task = tokio::task::spawn_blocking(move || {
+            // The blocking writer owns cleanup until it has returned the
+            // completed path to the async caller. This closes the cancellation
+            // window in which a caller-side guard could unlink the path before
+            // this task had reached create_new.
+            let cleanup = RestoreTempFile(Some(path.clone()));
             let result = (|| {
                 let mut options = OpenOptions::new();
                 options.write(true).create_new(true);
@@ -567,10 +571,10 @@ impl RestoreFileWriter {
                 }
                 file.sync_all().map_err(|error| error.to_string())
             })();
-            if result.is_err() {
-                let _ = fs::remove_file(&path);
+            match result {
+                Ok(()) => Ok(cleanup),
+                Err(error) => Err(error),
             }
-            result
         });
         Self {
             sender: Some(sender),
@@ -587,7 +591,7 @@ impl RestoreFileWriter {
             .map_err(|_| "catalog snapshot writer stopped".to_string())
     }
 
-    async fn finish(mut self) -> Result<(), String> {
+    async fn finish(mut self) -> Result<RestoreTempFile, String> {
         self.sender
             .take()
             .ok_or_else(|| "catalog snapshot writer is closed".to_string())?
@@ -604,9 +608,9 @@ impl RestoreFileWriter {
 
 impl Drop for RestoreFileWriter {
     fn drop(&mut self) {
-        // Dropping the sender tells the blocking task to remove an incomplete
-        // private file. Its own task owns the file descriptor, so cancellation
-        // cannot race a caller-side unlink against an in-flight write.
+        // Dropping the sender tells the blocking task to close and drop its
+        // own cleanup guard. The JoinHandle is intentionally detached: the
+        // task must finish cleanup even if the restore future is cancelled.
         self.sender.take();
         self.task.take();
     }
@@ -1142,7 +1146,7 @@ fn install_catalog_snapshot_file_sync(
         let _ = fs::remove_file(&temporary);
         return Err("restore deployment identity does not match the catalog snapshot".into());
     }
-    fs::rename(&temporary, &paths.catalog).map_err(|error| error.to_string())?;
+    publish_noreplace(&temporary, &paths.catalog)?;
     sync_directory(paths.catalog.parent())?;
     Ok(())
 }
@@ -1183,7 +1187,7 @@ impl V2RestoreCatalog for LocalV2RestoreCatalog {
             let _ = fs::remove_file(&temporary);
             return Err("restore deployment identity does not match the catalog snapshot".into());
         }
-        fs::rename(&temporary, &self.paths.catalog).map_err(|error| error.to_string())?;
+        publish_noreplace(&temporary, &self.paths.catalog)?;
         sync_directory(self.paths.catalog.parent())?;
         Ok(())
     }
@@ -1336,7 +1340,7 @@ fn secure_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         file.write_all(bytes).map_err(|error| error.to_string())?;
         file.sync_all().map_err(|error| error.to_string())?;
         drop(file);
-        fs::rename(&temporary, path).map_err(|error| error.to_string())?;
+        publish_noreplace(&temporary, path)?;
         sync_directory(Some(parent))
     })();
     if result.is_err() {
@@ -1374,13 +1378,21 @@ fn secure_copy_atomic(path: &Path, source: &Path) -> Result<(), String> {
         std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
         output.sync_all().map_err(|error| error.to_string())?;
         drop(output);
-        fs::rename(&temporary, path).map_err(|error| error.to_string())?;
+        publish_noreplace(&temporary, path)?;
         sync_directory(Some(parent))
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+fn publish_noreplace(temporary: &Path, destination: &Path) -> Result<(), String> {
+    // `rename` replaces an existing destination on Unix. A hard link is an
+    // atomic no-replace publication within the same directory: it fails with
+    // AlreadyExists and leaves the existing restore target untouched.
+    fs::hard_link(temporary, destination).map_err(|error| error.to_string())?;
+    fs::remove_file(temporary).map_err(|error| error.to_string())
 }
 
 fn secure_read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
@@ -2082,6 +2094,45 @@ mod tests {
             .await,
             Err(BackupV2Error::Corrupt(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn fs_store_streams_sparse_snapshot_over_512_mib() {
+        let (object, _) = sample_object();
+        let source_root = tempfile::tempdir().expect("source directory");
+        let destination_root = tempfile::tempdir().expect("destination directory");
+        let source_path = source_root.path().join("catalog.db");
+        let byte_length = MAX_CATALOG_SNAPSHOT_BYTES as u64 + 1;
+        std::fs::File::create(&source_path)
+            .expect("sparse source")
+            .set_len(byte_length)
+            .expect("sparse source length");
+        let mut snapshot = sample_snapshot(object);
+        snapshot.catalog_bytes.clear();
+        snapshot.object_count = 0;
+        snapshot.catalog_file = Some(BackupCatalogFile {
+            path: source_path,
+            digest: digest_zeroes(byte_length),
+            byte_length,
+        });
+        let catalog = MockBackupCatalog {
+            snapshot,
+            objects: Vec::new(),
+            events: Arc::new(Mutex::new(Vec::new())),
+        };
+        let source: Arc<dyn BlobStore> = Arc::new(FsStore::new(source_root.path(), false));
+        let destination: Arc<dyn BlobStore> = Arc::new(FsStore::new(destination_root.path(), false));
+        let manifest = create_backup(&catalog, source, Arc::clone(&destination), "fs-large", 1)
+            .await
+            .expect("filesystem streaming backup");
+        let key = format!("{BACKUP_PREFIX_V2}/fs-large/catalog.db");
+        assert_eq!(destination.length(&key).await.expect("destination length"), byte_length);
+        assert_eq!(manifest.catalog_digest, digest_zeroes(byte_length));
+        let first = destination
+            .get_range(&key, 0..64 * 1024)
+            .await
+            .expect("destination range");
+        assert!(first.iter().all(|byte| *byte == 0));
     }
 
     fn digest_zeroes(length: u64) -> String {
