@@ -66,6 +66,10 @@ import {
       padding: 32px 40px;
       background: #fff;
     }
+    html.librepaper-preview.librepaper-flow img {
+      max-width: 100%;
+      height: auto;
+    }
     @media (max-width: 640px) {
       html.librepaper-preview.librepaper-flow body {
         padding: 24px 20px;

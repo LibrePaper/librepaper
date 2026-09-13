@@ -384,6 +384,40 @@ pub fn compile(
         texts,
         &wasm_markdown::markdown::no_assets,
     );
+    // Quarto cross-references use the same @name spelling as Pandoc
+    // citations. The lightweight browser draft leaves those references for
+    // Quarto itself, so they must not be reported as missing bibliography
+    // entries in the meantime.
+    compiled.diagnostics.retain(|diagnostic| {
+        let Some(key) = diagnostic
+            .message
+            .strip_prefix("citation key ")
+            .and_then(|rest| rest.strip_suffix(" is not present in the bibliography"))
+        else {
+            return true;
+        };
+        !matches!(
+            key.split_once('-').map(|(prefix, _)| prefix),
+            Some(
+                "fig"
+                    | "tbl"
+                    | "lst"
+                    | "eq"
+                    | "sec"
+                    | "thm"
+                    | "lem"
+                    | "cor"
+                    | "prp"
+                    | "cnj"
+                    | "def"
+                    | "exm"
+                    | "exr"
+                    | "sol"
+                    | "rem"
+                    | "tip"
+            )
+        )
+    });
     for diagnostic in &mut compiled.diagnostics {
         // Only the document passed as the virtual source needs remapping;
         // resource diagnostics (for example a bibliography file) already
@@ -426,6 +460,20 @@ mod tests {
             .unwrap();
         assert!(html.contains("A sentence."));
         assert!(!html.contains("secret_computation"));
+    }
+
+    #[test]
+    fn quarto_cross_references_are_not_missing_citations() {
+        let source = "![Plot](plot.png){#fig-plot}\n\nSee @fig-plot and [@missing].\n";
+        let result = compile("paper.qmd", source, "Paper", &BTreeMap::new());
+        assert!(!result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("fig-plot")));
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("missing")));
     }
 
     #[test]

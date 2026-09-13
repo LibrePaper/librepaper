@@ -38,3 +38,5 @@ const readerSource = await readFile(new URL("../../src/components/Reader.svelte"
 assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && buildPreferences\.output === "pdf"[\s\S]*?\? "pdf"/);
 assert.match(readerSource, /const frameLoaded = \(\) => \{[\s\S]*?framePreview\.markReady\(\)[\s\S]*?replayPreview\(\)/);
 assert.match(readerSource, /<Preview[\s\S]*?onload=\{frameLoaded\}/);
+const agentSource = await readFile(new URL("../../src/agent/agent.js", import.meta.url), "utf8");
+assert.match(agentSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*?height: auto;/);

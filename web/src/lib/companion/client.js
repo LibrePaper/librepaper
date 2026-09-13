@@ -1253,6 +1253,7 @@ export async function startLocalPreview({ engine = "quarto", job = {}, tree, opt
       protocol: 2, kind: "preview", project: request.project, origin: request.origin,
       snapshot: request.snapshot, generation: request.generation, builder,
       workspace: { mode: "bound", binding_id: bindingId }, entrypoint, output,
+      manifest: request.manifest,
       options: engine === "quarto" ? { ...(details.profile ? { profile: details.profile } : {}), parameters: details.parameters || {}, policy: details.policy || "project-defaults" } : {},
     };
     Object.keys(request).forEach((key) => delete request[key]);

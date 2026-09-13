@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import * as localBridge from "../../src/lib/latex/local.js";
 import { createLocalPreview } from "../../src/lib/reader/local-preview.js";
-import { _testing, configure, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus, quartoPreviewPage, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../../src/lib/latex/local.js";
+import { _testing, configure, probe, quartoRequest, runQuarto, startQuartoPreview, stopQuartoPreview, quartoPreviewStatus, quartoPreviewPage, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../../src/lib/latex/local.js";
 import { parameterSha256 } from "../../src/lib/engines/quarto.js";
 
 const digest = "a".repeat(64);
@@ -149,6 +149,7 @@ const preview = await startQuartoPreview({job:{binding:"binding-1"}, tree:{main:
 assert.equal(preview.id, "preview-1");
 const previewRequest = JSON.parse(previewCalls[0].init.body);
 assert.equal(previewRequest.manifest[0].sha256, await sha(new TextEncoder().encode("# Preview")));
+assert.equal(previewRequest.manifest[0].path, "paper.qmd");
 assert.equal(previewCalls[0].init.headers.Authorization, "Bearer token");
 assert.equal(previewRequest.token, undefined);
 await stopQuartoPreview(preview.id);
@@ -161,6 +162,23 @@ await stopQuartoPreview(pdfPreview.id);
 assert.equal(previewCalls[4].init.method, "DELETE");
 assert.ok(previewCalls[4].url.endsWith("/previews/preview-1"));
 console.log("quarto-local: snapshot inventory and managed preview lifecycle requests passed");
+
+let v2PreviewRequest = null;
+setup(async (url, init = {}) => {
+  if (url.endsWith("/health")) return response({ service: "librepaper-local", protocol: [1, 2], version: "2", instance: "v2" });
+  if (url.endsWith("/capabilities")) return response({ builders: [{ id: "quarto", available: true }] });
+  if (init.method === "POST" && url.endsWith("/previews")) {
+    v2PreviewRequest = JSON.parse(init.body);
+    return response({ id: "preview-v2", url: "http://127.0.0.1:4000/", state: "running" });
+  }
+  throw new Error(`unexpected v2 preview request: ${init.method || "GET"} ${url}`);
+});
+await probe({ force: true });
+await startQuartoPreview({ job: { binding: "binding-1" }, tree: { main: "paper.qmd", texts: { "paper.qmd": "# Preview" } }, options: {} });
+assert.equal(v2PreviewRequest.protocol, 2);
+assert.equal(v2PreviewRequest.entrypoint, "paper.qmd");
+assert.equal(v2PreviewRequest.manifest[0].path, "paper.qmd");
+console.log("quarto-local: protocol 2 preview retains its bound entrypoint inventory");
 
 let syncRequest = null;
 setup(async (url, init = {}) => {
