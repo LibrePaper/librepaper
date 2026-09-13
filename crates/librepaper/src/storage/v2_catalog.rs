@@ -21,7 +21,7 @@ use crate::storage::journal::{
 };
 use crate::storage::maintenance_v2::{
     GcCandidate, PreparedAllocation, PreparedKind, PreparedOperation, V2GcCatalog,
-    V2RecoveryCatalog,
+    V2RecoveryCatalog, READ_LEASE_MS,
 };
 use crate::storage::catalog::Catalog;
 
@@ -167,13 +167,21 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
             } else {
                 allocation_operation.is_some()
             };
+            // A cancelled/erased operation is deliberately allowed to settle
+            // the physical write into an unrooted, immediately collectible
+            // row.  Requiring `prepared` here leaks the reservation forever:
+            // the PUT can finish after the cancellation has already marked
+            // the operation aborted.  The allocation identity and measured
+            // digest/length checks above still fence this cleanup to the
+            // exact physical write that was admitted.
+            let aborted = operation_state.as_deref() == Some("aborted");
             if state != "allocated"
                 || digest != expected_digest
                 || written.byte_length > catalog_reserved as u64
                 || (record.managed && catalog_reserved != record.reserved)
                 || (record.managed && catalog_kind != record.kind)
-                || operation_state.as_deref() != Some("prepared")
-                || operation_generation.as_deref() != Some(writer_generation.as_str())
+                || (!aborted && operation_state.as_deref() != Some("prepared"))
+                || (!aborted && operation_generation.as_deref() != Some(writer_generation.as_str()))
                 || !operation_matches
             {
                 return Err(crate::storage::catalog::CatalogError::Conflict(
@@ -193,8 +201,8 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
             })?;
             transaction
                 .execute(
-                    "UPDATE objects SET state='available',byte_length=?1,reserved_bytes=0,allocation_operation_id=NULL WHERE document_id=?2 AND id=?3 AND state='allocated'",
-                    params![measured, record.document_id, written.object_id.as_str()],
+                    "UPDATE objects SET state='available',byte_length=?1,reserved_bytes=0,allocation_operation_id=NULL,live_root=CASE WHEN ?4=1 THEN 0 ELSE live_root END,publication_root=CASE WHEN ?4=1 THEN 0 ELSE publication_root END,gc_after=CASE WHEN ?4=1 THEN ?5 ELSE gc_after END WHERE document_id=?2 AND id=?3 AND state='allocated'",
+                    params![measured, record.document_id, written.object_id.as_str(), i64::from(aborted), now_millis()],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let delta = measured - reserved;
@@ -331,6 +339,27 @@ fn journal_tx<T>(catalog: &Catalog, operation: impl FnOnce(&rusqlite::Transactio
 /// is made while one of these transactions is open.
 #[async_trait]
 impl V2GcCatalog for Catalog {
+    async fn heartbeat_stage_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
+        if now < 0 || limit == 0 {
+            return Err("invalid stage-lease heartbeat request".into());
+        }
+        sql(self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let renewed = transaction
+                .execute(
+                    "UPDATE object_leases SET expires_at=?1 WHERE purpose='stage' AND (document_id,object_id,holder_id) IN (SELECT lease.document_id,lease.object_id,lease.holder_id FROM object_leases lease JOIN operations op ON op.id=lease.operation_id AND op.document_id=lease.document_id JOIN documents d ON d.id=lease.document_id JOIN accounts a ON a.id=d.owner_id WHERE lease.purpose='stage' AND op.kind='display_publish' AND op.state='prepared' AND op.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1) AND op.work_expires_at IS NOT NULL AND op.work_expires_at>?2 AND d.status='active' AND a.status='active' ORDER BY lease.expires_at,lease.document_id,lease.object_id,lease.holder_id LIMIT ?3)",
+                    params![now.saturating_add(READ_LEASE_MS), now, i64::try_from(limit.min(256)).unwrap_or(256)],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            transaction
+                .commit()
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            Ok(renewed)
+        }))
+    }
+
     async fn expire_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
         if now < 0 || limit == 0 {
             return Err("invalid lease expiry request".into());
@@ -1223,14 +1252,15 @@ impl V2ObjectWriter {
                     .map_err(crate::storage::catalog::CatalogError::from)?;
                 return Ok(());
             }
+            let aborted = operation_state.as_deref() == Some("aborted");
             if state != "allocated"
                 || digest != expected_digest_for_settle
                 || written_for_settle.byte_length > catalog_reserved as u64
                 || catalog_reserved != reserved
                 || catalog_kind != kind
                 || allocation_operation.is_none()
-                || operation_state.as_deref() != Some("prepared")
-                || operation_generation.as_deref() != Some(writer_generation.as_str())
+                || (!aborted && operation_state.as_deref() != Some("prepared"))
+                || (!aborted && operation_generation.as_deref() != Some(writer_generation.as_str()))
                 || allocation_operation.as_deref() != Some(admitted_operation_for_settle.as_str())
                 || operation_generation.as_deref() != Some(admitted_generation_for_settle.as_str())
             {
@@ -1239,7 +1269,7 @@ impl V2ObjectWriter {
             let measured = i64::try_from(written_for_settle.byte_length)
                 .map_err(|_| crate::storage::catalog::CatalogError::Invalid("object length overflows SQL integer".into()))?;
             transaction
-                .execute("UPDATE objects SET state='available',byte_length=?1,reserved_bytes=0,allocation_operation_id=NULL WHERE document_id=?2 AND id=?3 AND state='allocated'", params![measured, document_for_settle, written_for_settle.object_id.as_str()])
+                .execute("UPDATE objects SET state='available',byte_length=?1,reserved_bytes=0,allocation_operation_id=NULL,live_root=CASE WHEN ?4=1 THEN 0 ELSE live_root END,publication_root=CASE WHEN ?4=1 THEN 0 ELSE publication_root END,gc_after=CASE WHEN ?4=1 THEN ?5 ELSE gc_after END WHERE document_id=?2 AND id=?3 AND state='allocated'", params![measured, document_for_settle, written_for_settle.object_id.as_str(), i64::from(aborted), now_millis()])
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let delta = measured - reserved;
             transaction
@@ -1263,5 +1293,146 @@ impl V2ObjectWriter {
         .map_err(|error| error.to_string())?;
         remove_inflight(namespace, document_id, written.object_id.as_str());
         Ok(written)
+    }
+}
+
+#[cfg(test)]
+mod aborted_inflight_tests {
+    use super::*;
+    use crate::storage::blob::{write_v2_object_with_id, BlobInfo, BlobVersion, FsStore};
+    use crate::storage::maintenance_v2::run_gc_pass;
+    use tokio::sync::Notify;
+
+    struct DelayedStore {
+        inner: Arc<FsStore>,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl BlobStore for DelayedStore {
+        async fn get(&self, key: &str) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            self.inner.get(key).await
+        }
+
+        async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> crate::storage::blob::BlobResult<()> {
+            self.started.notify_one();
+            self.release.notified().await;
+            self.inner.put(key, body, content_type).await
+        }
+
+        async fn delete(&self, keys: &[String]) -> crate::storage::blob::BlobResult<()> {
+            self.inner.delete(keys).await
+        }
+
+        async fn list(&self, prefix: &str) -> crate::storage::blob::BlobResult<Vec<BlobInfo>> {
+            self.inner.list(prefix).await
+        }
+
+        async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> crate::storage::blob::BlobResult<BlobVersion> {
+            self.inner.swap(key, body, expect).await
+        }
+
+        async fn get_versioned(&self, key: &str) -> crate::storage::blob::BlobResult<(Vec<u8>, BlobVersion)> {
+            self.inner.get_versioned(key).await
+        }
+
+        fn describe(&self) -> String {
+            "delayed-test-store".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn aborted_completed_put_is_reclaimed_by_gc() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("v2 catalog"));
+        let document_id = "aborted-document";
+        let account_id = "aborted-account";
+        let operation_id = "aborted-operation";
+        let object_id = ObjectId::parse("0123456789abcdef0123456789abcdef".into())
+            .expect("object id");
+        let body = b"cancelled physical payload".to_vec();
+        let digest = hex::encode(Sha256::digest(&body));
+        let storage_key = crate::storage::blob::v2_object_key(document_id, &object_id)
+            .expect("object key");
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at) VALUES(?1,'registered','test',?1,'aborted','Aborted','aborted@example.test','active','generation','test',1,1)",
+                    [account_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,'aborted',?2,'owned','Aborted','aborted','active',1,1,'markdown','index.md')",
+                    params![document_id, account_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,'test','aborted-request','journal_append',?3,'prepared','generation',0,'{\"version\":1}',1,1,9999999999999)",
+                    params![operation_id, document_id, digest],
+                )?;
+                connection.execute(
+                    "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,journal_epoch,first_sequence,last_sequence) VALUES(?1,?2,?3,'journal_segment','allocated',?4,1,NULL,?5,?6,1,0,1,1)",
+                    params![document_id, object_id.as_str(), storage_key, digest, body.len() as i64, operation_id],
+                )?;
+                Ok(())
+            })
+            .expect("admitted allocation");
+
+        let root = tempfile::tempdir().expect("object root");
+        let inner = Arc::new(FsStore::new(root.path(), false));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let blobs: Arc<dyn BlobStore> = Arc::new(DelayedStore {
+            inner,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        });
+        let namespace = Arc::as_ptr(&catalog) as usize;
+        assert!(register_inflight(namespace, document_id, object_id.as_str(), 0, "", "", "", "", false));
+        let delayed_blobs = Arc::clone(&blobs);
+        let delayed_body = body.clone();
+        let delayed_object = object_id.clone();
+        let delayed_document = document_id.to_owned();
+        let put_task = tokio::spawn(async move {
+            write_v2_object_with_id(
+                delayed_blobs.as_ref(),
+                &delayed_document,
+                delayed_object,
+                delayed_body,
+                "application/octet-stream",
+            )
+            .await
+        });
+        started.notified().await;
+        catalog
+            .with_connection(|connection| {
+                let now = now_millis();
+                connection.execute(
+                    "UPDATE operations SET state='aborted',result_json='{\"version\":1,\"aborted\":true}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE id=?3",
+                    params![now, now.saturating_add(RECEIPT_RETENTION_MS), operation_id],
+                )?;
+                Ok(())
+            })
+            .expect("cancel operation");
+        release.notify_one();
+        let written = put_task.await.expect("physical writer task").expect("physical put");
+        complete_physical_guard(namespace, document_id, &written);
+
+        let report = run_gc_pass(catalog.as_ref(), blobs.as_ref(), now_millis())
+            .await
+            .expect("aborted write is reclaimed");
+        assert_eq!(report.inflight_settled, 1);
+        assert_eq!(report.objects_deleted, 1);
+        assert!(!inflight_active(namespace, document_id, object_id.as_str()));
+        let counters: (i64, i64, i64) = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT d.stored_bytes,d.reserved_bytes,s.stored_bytes FROM documents d CROSS JOIN server_state s WHERE d.id=?1",
+                        [document_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("refunded counters");
+        assert_eq!(counters, (0, 0, 0));
     }
 }

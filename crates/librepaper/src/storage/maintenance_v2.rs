@@ -34,6 +34,7 @@ pub struct GcReport {
     pub lease_rows_expired: usize,
     pub prepared_operations_expired: usize,
     pub inflight_settled: usize,
+    pub stage_leases_renewed: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +106,13 @@ impl std::error::Error for GcError {}
 /// remaining charge only when `confirmed` is true.
 #[async_trait]
 pub trait V2GcCatalog: Send + Sync {
+    /// Extend live display-publication stage leases.  This runs before
+    /// expiry so a quiet client holding a valid prepared operation cannot be
+    /// reclaimed merely because no request happened during the lease window.
+    async fn heartbeat_stage_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
+        let _ = (now, limit);
+        Ok(0)
+    }
     async fn expire_leases(&self, now: i64, limit: usize) -> Result<usize, String>;
     /// Abort expired work only when it has no allocated physical rows. An
     /// operation with an admitted PUT remains charged for startup recovery.
@@ -275,6 +283,10 @@ pub async fn run_gc_pass(
     if now < 0 {
         return Err(GcError::Invalid("negative time is not valid".into()));
     }
+    let stage_leases_renewed = catalog
+        .heartbeat_stage_leases(now, GC_PAGE_SIZE)
+        .await
+        .map_err(GcError::Catalog)?;
     let lease_rows_expired = catalog
         .expire_leases(now, GC_PAGE_SIZE)
         .await
@@ -296,6 +308,7 @@ pub async fn run_gc_pass(
         lease_rows_expired,
         prepared_operations_expired,
         inflight_settled,
+        stage_leases_renewed,
         ..GcReport::default()
     };
     let mut first_error = None;

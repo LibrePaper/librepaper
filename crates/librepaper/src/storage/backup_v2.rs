@@ -1178,7 +1178,9 @@ fn resolve_backup_source(path: &Path) -> Result<(PathBuf, String), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::encoding::{PhysicalLocator, TreeEnvelope, TreeFileLocator, TREE_ENVELOPE_VERSION};
     use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     struct MemoryStore(Arc<Mutex<HashMap<String, Vec<u8>>>>);
@@ -1535,6 +1537,99 @@ mod tests {
             .expect("deployment identity");
         fs::write(&source_paths.deployment_identity, format!("{deployment_id}\n")).expect("identity");
         let source: Arc<dyn BlobStore> = Arc::new(FsStore::new(&source_paths.objects, false));
+        // Seed one complete checkpoint closure in the real v2 catalog.  The
+        // object is available before the backup freeze, and the checkpoint
+        // edge makes the restored physical payload useful rather than merely
+        // an unreferenced blob.
+        let document_id = "document-roundtrip";
+        let account_id = "account-roundtrip";
+        let object_id = "0123456789abcdef0123456789abcdef";
+        let asset_id = "00000000000000000000000000000001";
+        let asset_body = b"roundtrip asset bytes".to_vec();
+        let asset_digest: [u8; 32] = Sha256::digest(&asset_body).into();
+        let mut tree = TreeEnvelope {
+            version: TREE_ENVELOPE_VERSION,
+            main_path: "asset.bin".into(),
+            source_format: "markdown".into(),
+            settings_json: "{\"version\":1}".into(),
+            logical_digest: [0; 32],
+            files: BTreeMap::from([(
+                "asset.bin".into(),
+                TreeFileLocator {
+                    kind: "asset".into(),
+                    file_id: "asset-file".into(),
+                    logical_digest: asset_digest,
+                    logical_length: asset_body.len() as u64,
+                    recipe: None,
+                    asset: Some(PhysicalLocator {
+                        object_id: crate::storage::blob::ObjectId::parse(asset_id).expect("asset id"),
+                        object_digest: asset_digest,
+                        logical_digest: None,
+                        logical_length: asset_body.len() as u64,
+                        byte_length: asset_body.len() as u64,
+                        encoding_version: 1,
+                    }),
+                },
+            )]),
+        };
+        tree.logical_digest = Sha256::digest(tree.logical_bytes().expect("logical tree")).into();
+        let object_body = tree.to_bytes().expect("tree envelope");
+        let object_digest = hex::encode(Sha256::digest(&object_body));
+        let object_key = format!("v2/documents/{document_id}/objects/{object_id}");
+        let asset_key = format!("v2/documents/{document_id}/objects/{asset_id}");
+        source
+            .put(&object_key, object_body.clone(), "application/octet-stream")
+            .await
+            .expect("source tree object");
+        source
+            .put(&asset_key, asset_body.clone(), "application/octet-stream")
+            .await
+            .expect("source asset object");
+        source_catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at) VALUES(?1,'registered','test',?2,'roundtrip','Roundtrip','roundtrip@example.test','active','session-generation','test',1,1)",
+                    rusqlite::params![account_id, account_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,'roundtrip',?2,'owned','Roundtrip','roundtrip','active',1,1,'markdown','index.md')",
+                    rusqlite::params![document_id, account_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,live_root,publication_root) VALUES(?1,?2,?3,'source_tree','available',?4,1,?5,0,NULL,1,0,0)",
+                    rusqlite::params![document_id, object_id, object_key, object_digest, object_body.len() as i64],
+                )?;
+                connection.execute(
+                    "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,live_root,publication_root) VALUES(?1,?2,?3,'asset','available',?4,1,?5,0,NULL,1,0,0)",
+                    rusqlite::params![document_id, asset_id, asset_key, hex::encode(asset_digest), asset_body.len() as i64],
+                )?;
+                connection.execute(
+                    "INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,journal_epoch,journal_sequence) VALUES(?1,'checkpoint-roundtrip',1,?2,?3,NULL,1,?4,'Roundtrip','backup fixture','markdown',?5,0,0)",
+                    rusqlite::params![document_id, object_id, object_digest, account_id, object_body.len() as i64],
+                )?;
+                connection.execute(
+                    "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,'checkpoint-roundtrip',?2)",
+                    rusqlite::params![document_id, object_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,'checkpoint-roundtrip',?2)",
+                    rusqlite::params![document_id, asset_id],
+                )?;
+                connection.execute(
+                    "UPDATE documents SET current_checkpoint_id='checkpoint-roundtrip',stored_bytes=?1,checkpoint_ref_count=2 WHERE id=?2",
+                    rusqlite::params![(object_body.len() + asset_body.len()) as i64, document_id],
+                )?;
+                connection.execute(
+                    "UPDATE accounts SET stored_bytes=?1,document_count=1 WHERE id=?2",
+                    rusqlite::params![(object_body.len() + asset_body.len()) as i64, account_id],
+                )?;
+                connection.execute(
+                    "UPDATE server_state SET stored_bytes=?1,document_count=1,checkpoint_ref_count=2,catalog_revision=catalog_revision+1 WHERE id=1",
+                    rusqlite::params![(object_body.len() + asset_body.len()) as i64],
+                )?;
+                Ok(())
+            })
+            .expect("complete checkpoint closure");
         let destination: Arc<dyn BlobStore> = Arc::new(FsStore::new(backup_root.path(), false));
         let source_adapter = LocalV2BackupCatalog::new(source_catalog.clone(), source_paths.clone());
         let manifest = create_backup(&source_adapter, source, destination.clone(), "roundtrip", 10)
@@ -1548,11 +1643,58 @@ mod tests {
         let report = restore_backup(&restore_adapter, destination.as_ref(), target, "roundtrip")
             .await
             .expect("real restore");
-        assert_eq!(report.objects_restored, 0);
+        assert_eq!(report.objects_restored, 2);
+        assert_eq!(report.bytes_restored, (object_body.len() + asset_body.len()) as u64);
         assert_eq!(fs::read_to_string(&restore_paths.deployment_identity).expect("restored identity").trim(), deployment_id);
         assert_eq!(fs::read(restore_paths.secrets.join("session.key")).expect("restored session secret"), b"session-secret");
         assert_eq!(fs::read(restore_paths.secrets.join("links.key")).expect("restored links secret"), b"links-secret");
         let restored_catalog = Catalog::open_with(&restore_paths.catalog, false).expect("restored catalog");
+        let restored_object: (String, i64, String) = restored_catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT o.digest,o.byte_length,o.state FROM objects o WHERE o.document_id=?1 AND o.id=?2",
+                        rusqlite::params![document_id, object_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("restored object row");
+        assert_eq!(restored_object.0, object_digest);
+        assert_eq!(restored_object.1, object_body.len() as i64);
+        assert_eq!(restored_object.2, "available");
+        let restored_asset: (String, i64, String) = restored_catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT o.digest,o.byte_length,o.state FROM objects o WHERE o.document_id=?1 AND o.id=?2",
+                        rusqlite::params![document_id, asset_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("restored asset row");
+        assert_eq!(restored_asset.0, hex::encode(asset_digest));
+        assert_eq!(restored_asset.1, asset_body.len() as i64);
+        assert_eq!(restored_asset.2, "available");
+        let restored_counters: (i64, i64, i64, i64, i64) = restored_catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT d.stored_bytes,a.stored_bytes,s.stored_bytes,d.checkpoint_ref_count,s.checkpoint_ref_count FROM documents d JOIN accounts a ON a.id=d.owner_id CROSS JOIN server_state s WHERE d.id=?1",
+                        [document_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("restored counters");
+        assert_eq!(
+            restored_counters,
+            ((object_body.len() + asset_body.len()) as i64, (object_body.len() + asset_body.len()) as i64, (object_body.len() + asset_body.len()) as i64, 2, 2)
+        );
+        let restored_target: Arc<dyn BlobStore> = Arc::new(FsStore::new(&restore_paths.objects, false));
+        assert_eq!(restored_target.get(&object_key).await.expect("restored object bytes"), object_body);
+        assert_eq!(restored_target.get(&asset_key).await.expect("restored asset bytes"), asset_body);
         let prepared_backups: i64 = restored_catalog
             .with_connection(|connection| {
                 connection
@@ -1562,6 +1704,26 @@ mod tests {
             .expect("restored operation audit");
         assert_eq!(prepared_backups, 0);
         restored_catalog.shutdown().await;
+
+        // Digest verification happens before any object is published into a
+        // second restore root. A corrupt physical backup must be rejected
+        // even though its catalog image and manifest are intact.
+        destination
+            .put(
+                &format!("{BACKUP_PREFIX_V2}/roundtrip/objects/{document_id}/{object_id}"),
+                b"corrupt".to_vec(),
+                "application/octet-stream",
+            )
+            .await
+            .expect("corrupt backup object");
+        let corrupt_root = tempfile::tempdir().expect("corrupt restore");
+        let corrupt_paths = DeploymentPaths::local(corrupt_root.path().to_path_buf());
+        let corrupt_catalog = LocalV2RestoreCatalog::new(corrupt_paths.clone());
+        let corrupt_target: Arc<dyn BlobStore> = Arc::new(FsStore::new(&corrupt_paths.objects, false));
+        assert!(matches!(
+            restore_backup(&corrupt_catalog, destination.as_ref(), corrupt_target, "roundtrip").await,
+            Err(BackupV2Error::Corrupt(_))
+        ));
 
         destination
             .delete(&[format!("{BACKUP_PREFIX_V2}/roundtrip/secrets/session.key")])
