@@ -70,7 +70,7 @@ async fn assistant_anchor_targets_second_occurrence_and_keeps_revision() {
         &server.url,
         &format!("/api/documents/{slug}/comments"),
         json!({
-            "type":"accept", "comment_id":id, "request_id":"assistant-duplicate"
+            "type":"accept", "comment_id":id, "request_id":crate::util::new_request_key()
         }),
     )
     .await;
@@ -192,7 +192,7 @@ async fn assistant_batch_item_cap_and_stale_accept_preserve_source() {
     let (_, accepted) = post(
         &server.url,
         &format!("/api/documents/{slug}/comments"),
-        json!({"type":"accept","comment_id":id,"request_id":"assistant-stale"}),
+        json!({"type":"accept","comment_id":id,"request_id":crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(accepted["stale"], true, "{accepted}");

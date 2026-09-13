@@ -32,7 +32,7 @@ async fn refinement_preserves_identity_and_refuses_stale_or_decided_proposals() 
     assert_eq!(status, 200, "{created}");
     let id = text(&created["comment"], "id");
     let request = json!({"type":"refine","comment_id":id,"proposed":"planet Earth",
-        "expected_proposed":"Earth","body":"More explicit","revision":revision,"request_id":"refine-once"});
+        "expected_proposed":"Earth","body":"More explicit","revision":revision,"request_id":crate::util::new_request_key()});
     let (status, refined) = post(&server.url, &path, request.clone()).await;
     assert_eq!(status, 200, "{refined}");
     assert_eq!(refined["comment"]["id"], id);
@@ -43,7 +43,7 @@ async fn refinement_preserves_identity_and_refuses_stale_or_decided_proposals() 
     assert_eq!(status, 200, "{retry}");
     let mut stale = request.clone();
     stale["proposed"] = json!("the planet");
-    stale["request_id"] = json!("refine-stale");
+    stale["request_id"] = json!(crate::util::new_request_key());
     let (status, refused) = post(&server.url, &path, stale).await;
     assert_ne!(status, 200, "{refused}");
     let (status, _) = post(
@@ -55,7 +55,7 @@ async fn refinement_preserves_identity_and_refuses_stale_or_decided_proposals() 
     assert_eq!(status, 200);
     let mut decided = request;
     decided["expected_proposed"] = json!("planet Earth");
-    decided["request_id"] = json!("refine-decided");
+    decided["request_id"] = json!(crate::util::new_request_key());
     let (status, refused) = post(&server.url, &path, decided).await;
     assert_ne!(status, 200, "{refused}");
     let (_, listing) = get_json_as(&session_as(TEST_PUBLISHER), &server.url, &path).await;
@@ -245,7 +245,7 @@ async fn assistant_revision_survives_restore_before_a_merge_accept() {
         json!({
             "type": "accept",
             "comment_id": comment_id,
-            "request_id": "assistant-restore-merge"
+            "request_id": crate::util::new_request_key()
         }),
     )
     .await;
