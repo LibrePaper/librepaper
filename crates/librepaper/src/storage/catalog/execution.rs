@@ -7,7 +7,7 @@
 //! point that submits an owned job to a blocking thread under bounded
 //! admission and returns an owned result.  The synchronous API stays exactly
 //! as it was: both go through `Catalog::lock_connection`, so they share one
-//! connection and therefore one TEMP `room_edit_reservations` table.
+//! connection. Room edit reservations live in a separate shared RAM ledger.
 //!
 //! Jobs must not perform object-store I/O, call back into asynchronous room
 //! code, or require a gate their waiting caller already owns: a job runs on a
@@ -71,7 +71,7 @@ pub enum CatalogExecError {
     /// The declared input exceeds `MAX_REQUEST_BYTES`.
     TooLarge { bytes: usize, limit: usize },
     /// The job panicked.  The connection, its open transaction's rollback,
-    /// and the TEMP reservation table all survive; only this request failed.
+    /// and shared RAM reservations all survive; only this request failed.
     Panicked,
     /// The job ran and returned a catalogue error.
     Catalog(CatalogError),
@@ -783,7 +783,7 @@ impl<T> Work<T> {
 mod tests {
     use super::*;
     use crate::storage::catalog::tests::{account, document};
-    use rusqlite::OptionalExtension;
+    use crate::storage::journal::V2JournalCatalog;
     use std::sync::mpsc;
 
     fn catalog() -> Arc<Catalog> {
@@ -829,14 +829,23 @@ mod tests {
 
     fn pending_reservation(catalog: &Catalog, storage_id: &str) -> Option<i64> {
         catalog
+            .room_reservations
+            .lock()
+            .unwrap()
+            .documents
+            .get(storage_id)
+            .map(|entry| entry.pending_bytes)
+    }
+
+    fn revision(catalog: &Catalog) -> i64 {
+        catalog
             .with_connection(|connection| {
                 connection
                     .query_row(
-                        "SELECT pending_bytes FROM room_edit_reservations WHERE storage_id=?1",
-                        [storage_id],
+                        "SELECT catalog_revision FROM server_state WHERE id=1",
+                        [],
                         |row| row.get(0),
                     )
-                    .optional()
                     .map_err(CatalogError::from)
             })
             .unwrap()
@@ -998,8 +1007,7 @@ mod tests {
                             started.send(()).unwrap();
                             blocked.recv().unwrap();
                             tx.execute(
-                                "INSERT INTO room_edit_reservations(storage_id,pending_bytes) \
-                                 VALUES('storage-1',11)",
+                                "UPDATE server_state SET catalog_revision=11 WHERE id=1",
                                 [],
                             )
                             .map_err(CatalogError::from)?;
@@ -1022,7 +1030,7 @@ mod tests {
 
         // The service still commits and still runs its completion hook.
         assert!(completed.recv().await.unwrap());
-        assert_eq!(pending_reservation(&catalog, "storage-1"), Some(11));
+        assert_eq!(revision(&catalog), 11);
         let snapshot = settled(&catalog).await;
         assert_eq!(snapshot.completed, 1);
         assert_eq!(snapshot.queued, 0);
@@ -1047,23 +1055,29 @@ mod tests {
                     .unwrap()
                     .transaction_with_completion(
                         move |tx| {
-                            tx.execute(
-                                "INSERT INTO room_edit_reservations(storage_id,pending_bytes) \
-                                 VALUES('storage-1',5)",
-                                [],
-                            )
-                            .map_err(CatalogError::from)?;
+                            tx.execute("UPDATE server_state SET catalog_revision=5 WHERE id=1", [])
+                                .map_err(CatalogError::from)?;
                             committed.send(()).unwrap();
                             Ok(())
                         },
                         move |outcome: CatalogOutcome<'_>, connection: &mut Connection| {
                             hook_blocked.recv().unwrap();
-                            // Reconciliation shape: the hook owns releasing
-                            // exactly the reservation this request created.
+                            // The service-owned hook observes the committed marker
+                            // and clears it even if the awaiting caller vanished.
+                            assert_eq!(
+                                connection
+                                    .query_row(
+                                        "SELECT catalog_revision FROM server_state WHERE id=1",
+                                        [],
+                                        |row| row.get::<_, i64>(0)
+                                    )
+                                    .unwrap(),
+                                5
+                            );
                             connection
                                 .execute(
-                                    "DELETE FROM room_edit_reservations WHERE storage_id=?1",
-                                    ["storage-1"],
+                                    "UPDATE server_state SET catalog_revision=0 WHERE id=1",
+                                    [],
                                 )
                                 .unwrap();
                             completions
@@ -1080,7 +1094,7 @@ mod tests {
         caller.abort();
         release_hook.send(()).unwrap();
         assert!(completed.recv().await.unwrap());
-        assert_eq!(pending_reservation(&catalog, "storage-1"), None);
+        assert_eq!(revision(&catalog), 0);
         let snapshot = settled(&catalog).await;
         assert_eq!(snapshot.completed, 1);
         assert_eq!(snapshot.executing, 0);
@@ -1105,8 +1119,7 @@ mod tests {
                         blocked.recv().unwrap();
                         connection
                             .execute(
-                                "UPDATE room_edit_reservations SET pending_bytes=pending_bytes+1 \
-                                 WHERE storage_id='storage-1'",
+                                "UPDATE server_state SET catalog_revision=catalog_revision+1 WHERE id=1",
                                 [],
                             )
                             .map_err(CatalogError::from)
@@ -1173,12 +1186,11 @@ mod tests {
         assert_eq!(snapshot.executing, 0);
     }
 
-    // A worker failure must not be a catalogue failure: the connection owns
-    // the process-local TEMP reservation table, and losing it would silently
-    // drop live edit quota.
+    // Worker panic and SQL rollback must preserve the independent RAM quota ledger.
     #[tokio::test]
     async fn a_job_panic_leaves_the_connection_and_reservations_usable() {
         let catalog = catalog();
+        let initial_revision = revision(&catalog);
         catalog.reserve_room_edit("doc", 42, -1, -1).unwrap();
         assert_eq!(pending_reservation(&catalog, "storage-1"), Some(42));
 
@@ -1191,33 +1203,21 @@ mod tests {
         // own guard rather than leaving partial state behind.
         let in_transaction = catalog
             .execute_transaction::<(), _>(0, |tx| {
-                tx.execute(
-                    "INSERT INTO room_edit_reservations(storage_id,pending_bytes) \
-                     VALUES('storage-2',9)",
-                    [],
-                )
-                .map_err(CatalogError::from)?;
+                tx.execute("UPDATE server_state SET catalog_revision=9 WHERE id=1", [])
+                    .map_err(CatalogError::from)?;
                 panic!("transaction panicked deliberately");
             })
             .await;
         assert!(matches!(in_transaction, Err(CatalogExecError::Panicked)));
-        assert_eq!(pending_reservation(&catalog, "storage-2"), None);
+        assert_eq!(revision(&catalog), initial_revision);
 
         // The reservation survives, synchronously and asynchronously.
         assert_eq!(pending_reservation(&catalog, "storage-1"), Some(42));
         let seen = catalog
-            .execute(0, |connection| {
-                connection
-                    .query_row(
-                        "SELECT pending_bytes FROM room_edit_reservations WHERE storage_id=?1",
-                        ["storage-1"],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .map_err(CatalogError::from)
-            })
+            .execute_catalog(0, |catalog| Ok(pending_reservation(catalog, "storage-1")))
             .await
             .unwrap();
-        assert_eq!(seen, 42);
+        assert_eq!(seen, Some(42));
         assert_eq!(
             catalog
                 .reserve_room_edit("doc", 43, -1, -1)
@@ -1269,8 +1269,9 @@ mod tests {
     #[tokio::test]
     async fn a_blocked_journal_job_does_not_stop_unrelated_tasks() {
         let catalog = catalog();
-        let store = crate::storage::journal::JournalStore::new(catalog.clone());
-        store.initialize("deployment", "generation").unwrap();
+        let store = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(
+            catalog.clone(),
+        ));
         let (release, blocked) = mpsc::channel::<()>();
         let holder = {
             let catalog = catalog.clone();
@@ -1291,8 +1292,8 @@ mod tests {
         // A second caller that needs the same connection. It waits on a
         // blocking thread, not on this runtime.
         let waiting = {
-            let store = crate::storage::journal::JournalStore::new(catalog.clone());
-            tokio::spawn(async move { store.state_async().await })
+            let store = store.clone();
+            tokio::spawn(async move { store.journal_head("storage-1").await })
         };
         let ticks = Arc::new(AtomicUsize::new(0));
         {
@@ -1309,10 +1310,7 @@ mod tests {
         assert_eq!(ticks.load(Ordering::Relaxed), 100);
         release.send(()).unwrap();
         holder.await.unwrap();
-        assert_eq!(
-            waiting.await.unwrap().unwrap().writer_generation,
-            "generation"
-        );
+        assert_eq!(waiting.await.unwrap().unwrap().sequence, 0);
     }
 
     /// Shutdown while journal work is queued and executing: the executing
@@ -1321,8 +1319,9 @@ mod tests {
     #[tokio::test]
     async fn shutdown_settles_executing_journal_work_and_rejects_the_queue() {
         let catalog = catalog();
-        let store = crate::storage::journal::JournalStore::new(catalog.clone());
-        store.initialize("deployment", "generation").unwrap();
+        let store = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(
+            catalog.clone(),
+        ));
         narrow_executing_budget(&catalog);
         let (release, blocked) = mpsc::channel::<()>();
         let (started, executing) = tokio::sync::oneshot::channel();
@@ -1334,10 +1333,7 @@ mod tests {
                         let _ = started.send(());
                         let _ = blocked.recv();
                         connection
-                            .execute(
-                                "UPDATE journal_state SET last_operation_id=?1 WHERE id=1",
-                                ["settled"],
-                            )
+                            .execute("UPDATE server_state SET catalog_revision=1 WHERE id=1", [])
                             .map_err(CatalogError::from)?;
                         Ok(())
                     })
@@ -1348,12 +1344,8 @@ mod tests {
         // Queued behind the one executing permit, so shutdown reaches it
         // before it starts.
         let queued = {
-            let store = crate::storage::journal::JournalStore::new(catalog.clone());
-            tokio::spawn(async move {
-                store
-                    .retire_storage_async("storage-1".to_string(), 10)
-                    .await
-            })
+            let store = store.clone();
+            tokio::spawn(async move { store.journal_head("storage-1").await })
         };
         tokio::task::yield_now().await;
         let shutdown = {
@@ -1365,16 +1357,12 @@ mod tests {
         assert!(!shutdown.is_finished());
         release.send(()).unwrap();
         committing.await.unwrap().unwrap();
-        assert!(matches!(
-            queued.await.unwrap(),
-            Err(crate::storage::journal::JournalError::Catalog(
-                CatalogError::Closed
-            ))
-        ));
+        let rejected = queued.await.unwrap().unwrap_err();
+        assert!(rejected.contains("shutting down"), "{rejected}");
         shutdown.await.unwrap();
         // The executing work committed before SQLite closed, and every path
         // now reports closure.
-        assert!(store.state().is_err());
+        assert!(store.journal_head("storage-1").await.is_err());
         assert!(matches!(
             catalog.reserve_execution(0).await,
             Err(CatalogExecError::ShuttingDown)

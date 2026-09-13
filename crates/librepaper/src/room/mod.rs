@@ -1684,7 +1684,7 @@ impl Room {
         // source tree into one HTML file.
         let checkpoint_point = manifest.latest().cloned();
         let use_v2_checkpoint =
-            stored.is_none() && self.catalog.is_some() && checkpoint_point.is_some();
+            stored.is_none() && self.catalog.get().is_some() && checkpoint_point.is_some();
         let checkpoint_seed = if use_v2_checkpoint {
             let catalog = self
                 .catalog

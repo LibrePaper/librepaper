@@ -303,9 +303,12 @@ fn retention_wakes_time_only_age_policy_without_existing_candidates() {
     let now = crate::util::now_millis();
     for index in 0..2 {
         let mut point = attributed(&format!("age-{index}"), "alice", Some("acct-1"));
-        point.seq = index;
+        // Sequence zero is treated as "allocate the next sequence" by the
+        // compatibility insert path.  Make both fixture rows explicit so
+        // the first allocated value cannot collide with the second row.
+        point.seq = index + 1;
         point.tree_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
-        point.at = (now - (index as i64 + 1) * 1_000).to_string();
+        point.at = (now - (2 - index as i64) * 1_000).to_string();
         point.parent = if index == 0 {
             String::new()
         } else {
