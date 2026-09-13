@@ -226,6 +226,9 @@ impl TreeEnvelope {
             {
                 return Err(EncodingError::InvalidRecipe("tree file locator kind is incomplete".into()));
             }
+            if file.logical_length > i64::MAX as u64 {
+                return Err(EncodingError::InvalidRecipe("tree logical length exceeds SQL range".into()));
+            }
         }
         Ok(())
     }
@@ -235,9 +238,10 @@ impl TreeEnvelope {
         #[derive(Serialize)]
         struct LogicalFile<'a> {
             kind: &'a str,
-            file_id: &'a str,
-            logical_digest: [u8; 32],
-            logical_length: u64,
+            #[serde(default, skip_serializing_if = "String::is_empty")]
+            id: String,
+            sha: String,
+            size: i64,
         }
         let files = self
             .files
@@ -247,25 +251,34 @@ impl TreeEnvelope {
                     path,
                     LogicalFile {
                         kind: &file.kind,
-                        file_id: &file.file_id,
-                        logical_digest: file.logical_digest,
-                        logical_length: file.logical_length,
+                        id: file.file_id.clone(),
+                        sha: hex::encode(file.logical_digest),
+                        size: file.logical_length as i64,
                     },
                 )
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         #[derive(Serialize)]
         struct LogicalTree<'a> {
-            main_path: &'a str,
-            source_format: &'a str,
-            settings_json: &'a str,
+            main: &'a str,
             files: std::collections::BTreeMap<&'a String, LogicalFile<'a>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            settings: Option<LogicalSettings>,
         }
+        #[derive(Serialize)]
+        struct LogicalSettings {
+            engine: String,
+        }
+        let settings = serde_json::from_str::<serde_json::Value>(&self.settings_json)
+            .ok()
+            .and_then(|value| value.get("engine").and_then(serde_json::Value::as_str).map(|engine| LogicalSettings {
+                engine: engine.to_owned(),
+            }))
+            .filter(|settings| !settings.engine.is_empty());
         serde_json::to_vec(&LogicalTree {
-            main_path: &self.main_path,
-            source_format: &self.source_format,
-            settings_json: &self.settings_json,
+            main: &self.main_path,
             files,
+            settings,
         })
         .map_err(|error| EncodingError::Worker(error.to_string()))
     }
@@ -1462,6 +1475,13 @@ mod tests {
         assert_eq!(
             first.logical_bytes().expect("logical bytes"),
             second.logical_bytes().expect("logical bytes")
+        );
+        assert_eq!(
+            String::from_utf8(first.logical_bytes().expect("logical bytes")).expect("UTF-8"),
+            format!(
+                "{{\"main\":\"main.md\",\"files\":{{\"main.md\":{{\"kind\":\"source\",\"id\":\"file-1\",\"sha\":\"{}\",\"size\":8}}}}}}",
+                "07".repeat(32)
+            )
         );
         assert_ne!(
             first.to_bytes().expect("physical bytes"),
