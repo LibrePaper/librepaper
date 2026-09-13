@@ -4,6 +4,7 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 pub const AGENT_PAYLOAD_MAX_BYTES: i64 = 16 * 1024 * 1024;
+pub const AGENT_PAYLOAD_DOCUMENT_MAX_BYTES: i64 = 32 * 1024 * 1024;
 const AGENT_PAYLOAD_MAX_DEADLINE_MS: i64 = 60 * 60 * 1_000;
 const AGENT_PAYLOAD_STAGE_LEASE_MS: i64 = 120_000;
 
@@ -124,6 +125,19 @@ impl Catalog {
             return Err(CatalogError::Invalid("invalid agent payload plan or request digest".into()));
         }
         let actor_key = input.actor_key.clone();
+        let expected_actor_key = if !authority.account_id.is_empty() {
+            format!("account:{}", authority.account_id)
+        } else if !authority.link_hash.is_empty() {
+            format!("link:{}", authority.link_hash)
+        } else {
+            return Err(CatalogError::Invalid("agent payload lacks canonical actor proof".into()));
+        };
+        if actor_key != expected_actor_key {
+            return Err(CatalogError::Refused(
+                CatalogRefusal::ActorRights,
+                "agent payload actor key does not match live proof".into(),
+            ));
+        }
         let agent_id = input.agent_id.clone();
         let agent_kind = input.agent_kind.clone();
         let _admission = self.room_reservations.lock().map_err(|_| CatalogError::Busy)?;
@@ -136,15 +150,21 @@ impl Catalog {
                 return Err(CatalogError::Refused(CatalogRefusal::ActorRights, "agent payload authority is not live".into()));
             }
             let request_key = natural_key(&document_id, &actor_key, &agent_id, &agent_kind);
+            let current_generation: String = tx.query_row(
+                "SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0),
+            ).map_err(CatalogError::from)?;
             if let Some(existing) = tx.query_row(
-                "SELECT id,state,request_digest,writer_generation,plan_json FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3 AND kind='agent_stage'",
+                "SELECT id,state,request_digest,writer_generation,work_expires_at,plan_json FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3 AND kind='agent_stage'",
                 params![document_id, actor_key, request_key],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<i64>>(4)?, row.get::<_, String>(5)?)),
             ).optional().map_err(CatalogError::from)? {
-                if existing.2 != input.request_digest {
+                if existing.2 != input.request_digest
+                    || existing.3 != current_generation
+                    || existing.4 != Some(input.expires_at.0)
+                {
                     return Err(CatalogError::Conflict("agent payload identity was reused for different bytes".into()));
                 }
-                let plan: serde_json::Value = serde_json::from_str(&existing.4)
+                let plan: serde_json::Value = serde_json::from_str(&existing.5)
                     .map_err(|_| CatalogError::Invalid("stored agent payload plan is invalid".into()))?;
                 let object_id = plan.get("object_id").and_then(serde_json::Value::as_str)
                     .ok_or_else(|| CatalogError::Invalid("stored agent payload plan lacks object id".into()))?;
@@ -192,21 +212,23 @@ impl Catalog {
             let (server_stored, server_reserved, server_agent_bytes, server_agent_count): (i64,i64,i64,i64) = tx.query_row("SELECT stored_bytes,reserved_bytes,agent_payload_bytes,agent_payload_count FROM server_state WHERE id=1", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(CatalogError::from)?;
             let owner_limit = if limits.owner_bytes < 0 { i64::MAX } else { limits.owner_bytes };
             let deployment_limit = if limits.deployment_bytes < 0 { i64::MAX } else { limits.deployment_bytes };
+            let owner_ram = _admission.owner_bytes.get(&owner_id).copied().unwrap_or(0);
+            let deployment_ram = _admission.deployment_bytes;
             let doc_reserved_new = checked_add(doc_reserved, input.reserved_bytes, "document")?;
             let owner_reserved_new = checked_add(owner_reserved, input.reserved_bytes, "owner")?;
             let server_reserved_new = checked_add(server_reserved, input.reserved_bytes, "deployment")?;
-            if checked_add(owner_stored, owner_reserved_new, "owner")? > owner_limit || checked_add(server_stored, server_reserved_new, "deployment")? > deployment_limit {
+            if checked_add(checked_add(owner_stored, owner_reserved_new, "owner")?, owner_ram, "owner process")? > owner_limit || checked_add(checked_add(server_stored, server_reserved_new, "deployment")?, deployment_ram, "deployment process")? > deployment_limit {
                 return Err(CatalogError::refused(CatalogRefusal::OwnerBytes, "agent payload exceeds configured quota"));
             }
             let new_agent_bytes = checked_add(doc_agent_bytes, input.reserved_bytes, "document agent")?;
             let new_agent_count = checked_add(doc_agent_count, 1, "document agent count")?;
             let server_agent_bytes_new = checked_add(server_agent_bytes, input.reserved_bytes, "deployment agent")?;
             let server_agent_count_new = checked_add(server_agent_count, 1, "deployment agent count")?;
-            if new_agent_bytes > AGENT_PAYLOAD_MAX_BYTES || new_agent_count > 512 || server_agent_bytes_new > 128 * 1024 * 1024 || server_agent_count_new > 16_384 {
+            if new_agent_bytes > AGENT_PAYLOAD_DOCUMENT_MAX_BYTES || new_agent_count > 512 || server_agent_bytes_new > 128 * 1024 * 1024 || server_agent_count_new > 16_384 {
                 return Err(CatalogError::refused(CatalogRefusal::OwnerBytes, "agent payload capacity exceeded"));
             }
             let now_value = now.0;
-            tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,?3,?4,?5,'agent_stage',?6,'prepared',?7,?8,?9,?9,?10)", params![operation_id, document_id, if authority.account_id.is_empty() { None::<String> } else { Some(authority.account_id.clone()) }, actor_key, request_key, input.request_digest, writer_generation, plan_json, now_value, input.expires_at.0]).map_err(CatalogError::from)?;
+            tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,?3,?4,'agent_stage',?5,'prepared',?6,?7,?8,?8,?9)", params![operation_id, document_id, actor_key, request_key, input.request_digest, writer_generation, plan_json, now_value, input.expires_at.0]).map_err(CatalogError::from)?;
             tx.execute("INSERT INTO objects(document_id,id,storage_key,kind,state,digest,logical_digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at) VALUES(?1,?2,?3,'agent_payload','allocated',?4,?5,1,NULL,?6,?7,?8)", params![document_id, object_id.as_str(), storage_key, input.physical_digest, input.logical_digest, input.reserved_bytes, operation_id, now_value]).map_err(CatalogError::from)?;
             tx.execute("UPDATE documents SET reserved_bytes=?1,agent_payload_bytes=?2,agent_payload_count=?3,updated_at=max(updated_at,?4) WHERE id=?5", params![doc_reserved_new, new_agent_bytes, new_agent_count, now_value, document_id]).map_err(CatalogError::from)?;
             tx.execute("UPDATE accounts SET reserved_bytes=?1 WHERE id=?2", params![owner_reserved_new, owner_id]).map_err(CatalogError::from)?;

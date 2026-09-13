@@ -477,6 +477,12 @@ fn journal_request_digest(request: &JournalAppendRequest) -> String {
         bytes.extend_from_slice(part.digest.as_bytes());
         bytes.extend_from_slice(&part.byte_length.to_le_bytes());
     }
+    for dependency in &request.dependencies {
+        bytes.extend_from_slice(dependency.object_id.as_str().as_bytes());
+        bytes.extend_from_slice(dependency.kind.as_bytes());
+        bytes.extend_from_slice(dependency.digest.as_bytes());
+        bytes.extend_from_slice(&dependency.byte_length.to_le_bytes());
+    }
     hex::encode(Sha256::digest(bytes))
 }
 
@@ -1480,6 +1486,17 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         if request.parts.is_empty() || request.parts.len() > 128 || request.first_sequence == 0 || request.last_sequence < request.first_sequence {
             return Err("invalid journal append request".into());
         }
+        if request.dependencies.len() > 4_096 {
+            return Err("journal dependency closure exceeds the bounded limit".into());
+        }
+        {
+            let mut dependency_ids = std::collections::HashSet::with_capacity(request.dependencies.len());
+            for dependency in &request.dependencies {
+                if !dependency_ids.insert(dependency.object_id.as_str()) {
+                    return Err("journal dependency closure contains a duplicate object".into());
+                }
+            }
+        }
         if self.owner_limit < 0 || self.deployment_limit < 0 {
             return Err("negative storage quota is invalid".into());
         }
@@ -1527,7 +1544,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
                 || u64::try_from(source_generation).ok() != Some(request.expected_source_generation)
             { return Err(crate::storage::catalog::CatalogError::Conflict("journal head changed".into())); }
             for dependency in &request.dependencies {
-                if dependency.byte_length > 16 * 1024 * 1024
+                if dependency.byte_length > 64 * 1024 * 1024
                     || !matches!(dependency.kind.as_str(), "source_chunk" | "source_recipe" | "source_tree" | "asset")
                 {
                     return Err(crate::storage::catalog::CatalogError::Invalid(
