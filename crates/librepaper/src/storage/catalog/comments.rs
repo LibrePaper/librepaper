@@ -740,6 +740,15 @@ impl Catalog {
             annotation_session_active(tx, authority)?;
             let doc = document_id(tx, slug)?;
             annotation_account_authorized(tx, &doc, authority)?;
+            let owner_plan: String = tx
+                .query_row(
+                    "SELECT a.plan FROM documents d
+                       JOIN accounts a ON a.id=d.owner_id
+                      WHERE d.id=?1 AND d.status='active' AND a.status='active'",
+                    [&doc],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
             let actor = annotation_actor(authority);
             validate_receipt_window(tx, &doc, &actor, request_id)?;
             let existing: Option<(String, String, String, String)> = tx
@@ -809,6 +818,7 @@ impl Catalog {
                 "version": 2,
                 "effect": "suggestion_accept",
                 "commentId": comment_id,
+                "owner_plan": owner_plan,
                 "authority": {
                     "account_id": authority.account_id,
                     "session_generation": authority.generation,
@@ -1059,6 +1069,24 @@ impl Catalog {
             ).map_err(CatalogError::from)?;
             let mut value: serde_json::Value = serde_json::from_str(&plan)
                 .map_err(|_| CatalogError::Invalid("invalid acceptance plan".into()))?;
+            let (owner_id, owner_plan): (String, String) = tx
+                .query_row(
+                    "SELECT d.owner_id,a.plan
+                       FROM documents d JOIN accounts a ON a.id=d.owner_id
+                      WHERE d.id=?1 AND d.status='active' AND a.status='active'",
+                    [&doc],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(CatalogError::from)?;
+            let planned_owner_plan = value
+                .get("owner_plan")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| CatalogError::Invalid("acceptance plan has no owner plan provenance".into()))?;
+            if planned_owner_plan != owner_plan {
+                return Err(CatalogError::Conflict(
+                    "owner hard-quota plan changed while staging suggestion".into(),
+                ));
+            }
             if let Some(existing_id) = value
                 .get("update_object_id")
                 .and_then(serde_json::Value::as_str)
@@ -1138,23 +1166,6 @@ impl Catalog {
                     },
                     format!("agent-accept:{}:{}", operation_id, existing_id),
                 ));
-            }
-            let (owner_id, owner_plan): (String, String) = tx.query_row(
-                "SELECT d.owner_id,a.plan
-                   FROM documents d JOIN accounts a ON a.id=d.owner_id
-                  WHERE d.id=?1 AND d.status='active' AND a.status='active'",
-                [&doc],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ).map_err(CatalogError::from)?;
-            if let Some(planned) = value
-                .get("owner_plan")
-                .and_then(serde_json::Value::as_str)
-            {
-                if planned != owner_plan {
-                    return Err(CatalogError::Conflict(
-                        "owner hard-quota plan changed while staging suggestion".into(),
-                    ));
-                }
             }
             let limits_value = serde_json::json!({
                 "owner_bytes": limits.owner_bytes,
