@@ -12,6 +12,7 @@ pub mod encoding;
 pub mod journal;
 pub mod maintenance;
 pub mod maintenance_v2;
+pub mod v2_catalog;
 
 use std::path::PathBuf;
 use std::sync::Arc;
