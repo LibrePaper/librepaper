@@ -5,6 +5,7 @@ use crate::config::{Configuration, StorageLimit};
 use crate::server::publication::{PublicationStore, STAGING_TTL_SECS};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -600,8 +601,19 @@ async fn editor_link_revocation_refuses_stage_and_activation() {
         .0,
         403 | 404
     ));
-    let entry = server.instance.store.get(&slug).await.unwrap();
-    assert!(entry.last_publication_id.is_empty());
+    let document = server
+        .instance
+        .store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .document(&slug)
+        .unwrap()
+        .unwrap();
+    assert!(
+        document.publication_id.is_none(),
+        "revoked editor activation changed the live publication head"
+    );
 }
 
 #[tokio::test]
