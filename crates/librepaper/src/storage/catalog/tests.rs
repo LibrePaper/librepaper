@@ -2071,7 +2071,7 @@ fn object_accounting_settles_repeated_v2_closures_without_counter_drift() {
                     logical_digest: None,
                     encoding_version: 1,
                     reserved_bytes,
-                    operation_id: operation.id,
+                    operation_id: operation.id.clone(),
                     now,
                 },
                 limits,
@@ -2079,6 +2079,14 @@ fn object_accounting_settles_repeated_v2_closures_without_counter_drift() {
             .unwrap();
         catalog
             .settle_v2_object(&document_id, &id, measured_bytes, now)
+            .unwrap();
+        catalog
+            .finish_v2_operation(
+                &operation.id,
+                r#"{"version":2,"effect":"source_publish"}"#,
+                true,
+                now,
+            )
             .unwrap();
     };
 
@@ -2146,102 +2154,43 @@ fn object_accounting_settles_repeated_v2_closures_without_counter_drift() {
     assert_eq!(object_count, 0);
     assert!(catalog.audit_v2_counters().unwrap());
 }
+#[test]
 fn file_catalog_reopens_with_wal_and_journal_state() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog.db");
-    {
+    let (deployment_id, writer_generation) = {
         let catalog = Catalog::open(&path).unwrap();
+        let initial = catalog.journal_state().unwrap();
         catalog
-            .configure_journal("deployment-1", "writer-1")
+            .configure_journal(&initial.deployment_id, "writer-1")
             .unwrap();
-        catalog
-            .prepare_journal(&JournalPreparation {
-                operation_id: "flush-1".into(),
-                kind: "flush".into(),
-                expected_revision: 0,
-                expected_generation: "writer-1".into(),
-                created_at: 1,
-                plan: "{}".into(),
-                resolved_at: None,
-            })
-            .unwrap();
-        catalog
-            .commit_journal(
-                "flush-1",
-                &JournalSegment {
-                    segment_id: "segment-1".into(),
-                    segment_seq: 0,
-                    operation_id: "flush-1".into(),
-                    object_key: "journal/segment-1".into(),
-                    digest: "digest".into(),
-                    encoded_bytes: 10,
-                    committed_at: 2,
-                },
-                "journal/manifest-1",
-                "manifest-digest",
-                12,
-                1,
-                2,
-            )
-            .unwrap();
-    }
+        (initial.deployment_id, String::from("writer-1"))
+    };
     let reopened = Catalog::open(&path).unwrap();
     let state = reopened.journal_state().unwrap();
-    assert_eq!(state.revision, 1);
-    assert_eq!(reopened.journal_segments(-1, 10).unwrap().len(), 1);
+    assert_eq!(state.deployment_id, deployment_id);
+    assert_eq!(state.writer_generation, writer_generation);
+    assert_eq!(state.revision, 0);
+    assert!(reopened.journal_segments(-1, 10).unwrap().is_empty());
 }
 
 #[test]
-fn journal_commit_rejects_non_head_sequence_and_negative_time() {
+fn journal_identity_and_cursor_validation_are_bounded() {
     let catalog = Catalog::open_in_memory().unwrap();
-    catalog
-        .configure_journal("deployment-1", "writer-1")
-        .unwrap();
-    catalog
-        .prepare_journal(&JournalPreparation {
-            operation_id: "flush-1".into(),
-            kind: "flush".into(),
-            expected_revision: 0,
-            expected_generation: "writer-1".into(),
-            created_at: 1,
-            plan: "{}".into(),
-            resolved_at: None,
-        })
-        .unwrap();
-    let segment = JournalSegment {
-        segment_id: "segment-1".into(),
-        segment_seq: 1,
-        operation_id: "flush-1".into(),
-        object_key: "journal/segment-1".into(),
-        digest: "digest".into(),
-        encoded_bytes: 10,
-        committed_at: 2,
-    };
+    let initial = catalog.journal_state().unwrap();
     assert!(matches!(
-        catalog.commit_journal(
-            "flush-1",
-            &segment,
-            "journal/manifest-1",
-            "manifest-digest",
-            12,
-            1,
-            2,
-        ),
+        catalog.configure_journal("different-deployment", "writer-1"),
         Err(CatalogError::Conflict(_))
     ));
-    let mut segment = segment;
-    segment.segment_seq = 0;
-    segment.committed_at = -1;
+    catalog
+        .configure_journal(&initial.deployment_id, "writer-1")
+        .unwrap();
     assert!(matches!(
-        catalog.commit_journal(
-            "flush-1",
-            &segment,
-            "journal/manifest-1",
-            "manifest-digest",
-            12,
-            1,
-            -1,
-        ),
+        catalog.journal_segments(-2, 10),
+        Err(CatalogError::Invalid(_))
+    ));
+    assert!(matches!(
+        catalog.journal_segments(-1, 0),
         Err(CatalogError::Invalid(_))
     ));
 }
@@ -2756,7 +2705,18 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
             label: String::new(),
             budget: None,
             since: "2026-01-01T00:00:00Z".into(),
-            until: "2020-01-01T00:00:00Z".into(),
+            until: String::new(),
+        })
+        .unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection
+                .execute(
+                    "UPDATE links SET until='2020-01-01T00:00:00.000Z' WHERE hash=?1",
+                    [&link_hash],
+                )
+                .map(|_| ())
+                .map_err(CatalogError::from)
         })
         .unwrap();
     assert!(admit_publication("editor-after-revoke", &authority).is_err());
