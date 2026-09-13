@@ -1283,18 +1283,23 @@ impl Room {
                 return;
             }
         };
-        let published_seed = if recovered.base.is_none() && recovered.updates.is_empty() {
-            self.published_source(entry.as_ref()).await
+        let cold = recovered.base.is_none() && recovered.updates.is_empty();
+        // Releases before the full-project seed fix could persist one update
+        // containing only the main file. Repair precisely that first-save
+        // shape from its immutable version while retaining edits to the main
+        // text. Later collaboration state may represent intentional deletes
+        // and must never be filled back in from an older version.
+        let repair_first_save = recovered.base.is_none()
+            && recovered.update_sequence <= 1
+            && recovered.project_generation == 0;
+        let published_seed = if cold || repair_first_save {
+            self.published_project(document_id, entry.as_ref()).await
         } else {
             None
         };
         let mut state = self.state.lock().await;
         *state.manifest = manifest;
         state.session.format = format;
-        let named = entry
-            .as_ref()
-            .map(|entry| entry.main.clone())
-            .unwrap_or_default();
         let candidate = session::new_doc();
         let mut applied = false;
         if let Some(base) = recovered.base {
@@ -1308,9 +1313,15 @@ impl Room {
             state.session.generation = recovered.update_sequence as u64;
             state.session.durable_sequence = recovered.update_sequence;
             state.session.dirty = false;
-        } else if let Some((source, format)) = published_seed {
-            state.session.format = format.clone();
-            session::replace_text(&state.session.doc, &source, &main_path_for(&named, &format));
+            if repair_first_save {
+                if let Some(project) = published_seed.as_ref() {
+                    state.session.dirty =
+                        hydrate_project(&state.session.doc, &project.archive, true);
+                }
+            }
+        } else if let Some(project) = published_seed.as_ref() {
+            state.session.format = project.archive.source_format.clone();
+            hydrate_project(&state.session.doc, &project.archive, false);
             state.session.dirty = false;
         }
         state.session.last_persist_at = now_unix().saturating_sub(15);
@@ -1368,20 +1379,53 @@ impl Room {
     /// the format becomes `html`, because that is what the bytes are. Seeding
     /// markdown's slot with HTML and still calling it markdown is how a
     /// migrated document would come back rendered twice.
-    async fn published_source(
+    async fn published_project(
         &self,
+        document_id: uuid::Uuid,
         entry: Option<&crate::document::store::IndexEntry>,
-    ) -> Option<(String, String)> {
+    ) -> Option<crate::storage::source::StoredProject> {
         let store = self.store.get()?;
-        let entry = entry?;
-        match store.read_source(&self.slug).await {
-            Ok(raw) => Some((
-                String::from_utf8_lossy(&raw).to_string(),
-                entry.source_format.clone(),
-            )),
+        let catalog = store.catalog.as_ref()?;
+        let source = crate::storage::source::SourceStorage::new(
+            catalog.clone(),
+            self.blobs.clone(),
+            Default::default(),
+        );
+        match source.read_current(document_id).await {
+            Ok(Some(mut project)) => {
+                // The first PostgreSQL onboarding release omitted this one
+                // LaTeX starter input from its immutable archive. Its room
+                // can still be repaired without replacing the user's edited
+                // main file because the missing input ships with the binary.
+                let latex_starter = entry.is_some_and(|entry| {
+                    entry.title == "Learn LibrePaper with LaTeX"
+                        && entry.slug.starts_with("starter-4-")
+                });
+                if latex_starter
+                    && !project.archive.files.iter().any(|file| {
+                        matches!(file, crate::storage::source_archive::SourceFile::Inline { path, .. } if path == "references.bib")
+                    })
+                {
+                    project.archive.files.push(
+                        crate::storage::source_archive::SourceFile::Inline {
+                            path: "references.bib".into(),
+                            bytes: include_bytes!(
+                                "../../../../docs/examples/tutorial-latex/references.bib"
+                            )
+                            .to_vec(),
+                        },
+                    );
+                }
+                Some(project)
+            }
+            Ok(None) => {
+                eprintln!("warning: no current source exists for {}", self.slug);
+                self.fence(FenceReason::UnreadableState);
+                None
+            }
             Err(error) => {
                 eprintln!(
-                    "warning: could not read published source for {}: {error}",
+                    "warning: could not read published project for {}: {error}",
                     self.slug
                 );
                 self.fence(FenceReason::UnreadableState);
@@ -2081,6 +2125,55 @@ impl Room {
     }
 }
 
+/// Populate a Yjs project from its immutable source archive. With
+/// `missing_only`, this repairs the one-update state written by releases that
+/// seeded only the main file and preserves any edit already made to that file.
+fn hydrate_project(
+    doc: &yrs::Doc,
+    archive: &crate::storage::source_archive::SourceArchive,
+    missing_only: bool,
+) -> bool {
+    use crate::storage::source_archive::SourceFile;
+
+    let existing_texts = session::texts_of(doc);
+    let existing_assets = session::assets_of(doc);
+    let mut changed = false;
+    let mut main_id = None;
+    for file in &archive.files {
+        match file {
+            SourceFile::Inline { path, bytes } => {
+                if missing_only && existing_texts.contains_key(path) {
+                    continue;
+                }
+                let body = String::from_utf8_lossy(bytes);
+                let id = session::put_text(doc, path, &body);
+                if *path == archive.main_path {
+                    main_id = Some(id);
+                }
+                changed = true;
+            }
+            SourceFile::Asset { path, digest, .. } => {
+                if missing_only && existing_assets.contains_key(path) {
+                    continue;
+                }
+                session::put_asset(doc, path, &hex::encode(digest));
+                changed = true;
+            }
+        }
+    }
+    if session::main_path(doc).is_empty() {
+        if let Some(id) = main_id.or_else(|| {
+            session::paths_of(doc)
+                .into_iter()
+                .find_map(|(id, path)| (path == archive.main_path).then_some(id))
+        }) {
+            session::set_main(doc, &id);
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// The document's directory as a checkpoint records it, and the bytes of each
 /// text by digest -- which is what the blobs are written from, so that two
 /// files with the same contents are one object and a file that did not change
@@ -2226,5 +2319,53 @@ pub fn rate_key(address: &str) -> String {
                 segments[0], segments[1], segments[2], segments[3]
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod project_hydration_tests {
+    use super::*;
+    use crate::storage::source_archive::{SourceArchive, SourceFile};
+
+    fn archive() -> SourceArchive {
+        SourceArchive {
+            source_format: "latex".into(),
+            main_path: "main.tex".into(),
+            files: vec![
+                SourceFile::Inline {
+                    path: "main.tex".into(),
+                    bytes: b"edited main".to_vec(),
+                },
+                SourceFile::Inline {
+                    path: "sections/body.tex".into(),
+                    bytes: b"section".to_vec(),
+                },
+                SourceFile::Asset {
+                    path: "figure.png".into(),
+                    asset_id: uuid::Uuid::nil(),
+                    digest: [7; 32],
+                    bytes: 10,
+                    media_type: "image/png".into(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn cold_hydration_restores_the_complete_project() {
+        let doc = session::new_doc();
+        assert!(hydrate_project(&doc, &archive(), false));
+        assert_eq!(session::main_path(&doc), "main.tex");
+        assert_eq!(session::texts_of(&doc)["sections/body.tex"], "section");
+        assert_eq!(session::assets_of(&doc)["figure.png"], "07".repeat(32));
+    }
+
+    #[test]
+    fn first_save_repair_preserves_the_edited_main_file() {
+        let doc = session::new_doc();
+        session::replace_text(&doc, "my edit", "main.tex");
+        assert!(hydrate_project(&doc, &archive(), true));
+        assert_eq!(session::text_of(&doc), "my edit");
+        assert_eq!(session::texts_of(&doc)["sections/body.tex"], "section");
     }
 }

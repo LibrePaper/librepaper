@@ -1016,7 +1016,7 @@
           .then((data) => receive({ type: "hello", comments: data.comments }))
           .catch(() => {});
       }
-      toastProblem(event.message);
+      toastProblem(event.message || "The server refused that change.");
       return;
     }
 

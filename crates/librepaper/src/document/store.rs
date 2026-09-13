@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::Configuration;
-use crate::storage::blob::{BlobError, BlobStore};
+use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{Error as CatalogError, PostgresCatalog as Catalog};
 use crate::util::parse_timestamp;
 
@@ -524,46 +524,6 @@ impl Store {
             .filter(|entry| after.is_none_or(|slug| entry.slug.as_str() < slug))
             .take(limit as usize)
             .collect())
-    }
-
-    pub async fn read_source(&self, slug: &str) -> Result<Vec<u8>, BlobError> {
-        let catalog = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| BlobError::Other("PostgreSQL catalog required".into()))?;
-        let document = catalog
-            .document_by_slug(slug)
-            .await
-            .map_err(|e| BlobError::Other(e.to_string()))?
-            .ok_or(BlobError::NotFound)?;
-        let storage = crate::storage::source::SourceStorage::new(
-            catalog.clone(),
-            self.blobs.clone(),
-            Default::default(),
-        );
-        let project = storage
-            .read_current(document.id)
-            .await
-            .map_err(|e| BlobError::Other(e.to_string()))?
-            .ok_or(BlobError::NotFound)?;
-        project
-            .archive
-            .files
-            .into_iter()
-            .find_map(|file| match file {
-                crate::storage::source_archive::SourceFile::Inline { path, bytes }
-                    if path == document.main_path =>
-                {
-                    Some(bytes)
-                }
-                crate::storage::source_archive::SourceFile::Asset { path, asset_id, .. }
-                    if path == document.main_path =>
-                {
-                    project.assets.get(&asset_id).cloned()
-                }
-                _ => None,
-            })
-            .ok_or_else(|| BlobError::Other("current source main file is absent".into()))
     }
 
     pub async fn put_directory_as_actor(

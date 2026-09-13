@@ -9,8 +9,7 @@ struct Starter {
     title: &'static str,
     format: &'static str,
     source: &'static str,
-    extra: &'static str,
-    extra_source: &'static str,
+    files: &'static [(&'static str, &'static [u8])],
 }
 
 const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
@@ -19,50 +18,84 @@ const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
         title: "Learn LibrePaper with Markdown",
         format: "markdown",
         source: include_str!("../../../../docs/examples/tutorial-markdown/librepaper.md"),
-        extra: "sections/rendering.md",
-        extra_source: include_str!(
-            "../../../../docs/examples/tutorial-markdown/sections/rendering.md"
-        ),
+        files: &[
+            (
+                "sections/rendering.md",
+                include_bytes!("../../../../docs/examples/tutorial-markdown/sections/rendering.md"),
+            ),
+            (
+                "librepaper-icon.png",
+                include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
+            ),
+        ],
     },
     Starter {
         main: "librepaper.typ",
         title: "Learn LibrePaper with Typst",
         format: "typst",
         source: include_str!("../../../../docs/examples/tutorial-typst/librepaper.typ"),
-        extra: "sections/rendering.typ",
-        extra_source: include_str!(
-            "../../../../docs/examples/tutorial-typst/sections/rendering.typ"
-        ),
+        files: &[
+            (
+                "sections/rendering.typ",
+                include_bytes!("../../../../docs/examples/tutorial-typst/sections/rendering.typ"),
+            ),
+            (
+                "librepaper-icon.png",
+                include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
+            ),
+        ],
     },
     Starter {
         main: "librepaper.html",
         title: "Learn LibrePaper with HTML",
         format: "html",
         source: include_str!("../../../../docs/examples/tutorial-html/librepaper.html"),
-        extra: "sections/rendering.html",
-        extra_source: include_str!(
-            "../../../../docs/examples/tutorial-html/sections/rendering.html"
-        ),
+        files: &[
+            (
+                "sections/rendering.html",
+                include_bytes!("../../../../docs/examples/tutorial-html/sections/rendering.html"),
+            ),
+            (
+                "librepaper-icon.png",
+                include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
+            ),
+        ],
     },
     Starter {
         main: "librepaper.tex",
         title: "Learn LibrePaper with LaTeX",
         format: "latex",
         source: include_str!("../../../../docs/examples/tutorial-latex/librepaper.tex"),
-        extra: "sections/rendering.tex",
-        extra_source: include_str!(
-            "../../../../docs/examples/tutorial-latex/sections/rendering.tex"
-        ),
+        files: &[
+            (
+                "sections/rendering.tex",
+                include_bytes!("../../../../docs/examples/tutorial-latex/sections/rendering.tex"),
+            ),
+            (
+                "references.bib",
+                include_bytes!("../../../../docs/examples/tutorial-latex/references.bib"),
+            ),
+            (
+                "librepaper-icon.png",
+                include_bytes!("../../../../docs/examples/tutorial-latex/librepaper-icon.png"),
+            ),
+        ],
     },
     Starter {
         main: "librepaper.qmd",
         title: "Learn LibrePaper with Quarto",
         format: "quarto",
         source: include_str!("../../../../docs/examples/tutorial-quarto/librepaper.qmd"),
-        extra: "sections/rendering.qmd",
-        extra_source: include_str!(
-            "../../../../docs/examples/tutorial-quarto/sections/rendering.qmd"
-        ),
+        files: &[
+            (
+                "sections/rendering.qmd",
+                include_bytes!("../../../../docs/examples/tutorial-quarto/sections/rendering.qmd"),
+            ),
+            (
+                "librepaper-icon.png",
+                include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
+            ),
+        ],
     },
 ];
 
@@ -125,7 +158,11 @@ impl Server {
                             source_format: starter.format.into(),
                             main: starter.main.into(),
                         },
-                        vec![(starter.extra.into(),starter.extra_source.as_bytes().to_vec()),("librepaper-icon.png".into(),include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png").to_vec())],
+                        starter
+                            .files
+                            .iter()
+                            .map(|(path, bytes)| ((*path).into(), bytes.to_vec()))
+                            .collect(),
                         actor.clone(),
                     )
                     .await
