@@ -79,23 +79,33 @@ impl V2GcCatalog for Catalog {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let mut statement = transaction
-                .prepare("SELECT document_id,id,storage_key,COALESCE(gc_after,retry_at),state FROM objects WHERE ((state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NOT NULL AND gc_after<=?1) OR (state='deleting' AND retry_at IS NOT NULL AND retry_at<=?1)) ORDER BY COALESCE(gc_after,retry_at),document_id,id LIMIT ?2")
-                .map_err(crate::storage::catalog::CatalogError::from)?;
-            let rows = statement
-                .query_map(params![now, i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, String>(4)?,
-                    ))
-                })
-                .map_err(crate::storage::catalog::CatalogError::from)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(crate::storage::catalog::CatalogError::from)?;
-            drop(statement);
+            let page_limit = i64::try_from(limit).unwrap_or(i64::MAX);
+            let mut rows: Vec<(String, String, String, i64, String)> = {
+                let mut statement = transaction
+                    .prepare("SELECT document_id,id,storage_key,gc_after,'available' FROM objects WHERE state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NOT NULL AND gc_after<=?1 ORDER BY gc_after,document_id,id LIMIT ?2")
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                statement
+                    .query_map(params![now, page_limit], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                    })
+                    .map_err(crate::storage::catalog::CatalogError::from)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(crate::storage::catalog::CatalogError::from)?
+            };
+            if rows.len() < limit {
+                let remaining = (limit - rows.len()) as i64;
+                let mut statement = transaction
+                    .prepare("SELECT document_id,id,storage_key,retry_at,'deleting' FROM objects WHERE state='deleting' AND retry_at IS NOT NULL AND retry_at<=?1 ORDER BY retry_at,document_id,id LIMIT ?2")
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                let retry_rows = statement
+                    .query_map(params![now, remaining], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                    })
+                    .map_err(crate::storage::catalog::CatalogError::from)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                rows.extend(retry_rows);
+            }
             let retry_at = now.saturating_add(GC_RETRY_MS);
             let mut claimed = Vec::with_capacity(rows.len());
             for (document_id, object_id, storage_key, gc_after, state) in rows {
@@ -421,7 +431,7 @@ impl V2ObjectWriter {
         let object_key = object_id.as_str().to_owned();
         let expected_digest_for_admission = expected_digest.clone();
         let body_length = body.len() as u64;
-        let (reserved, kind) = self
+        let (reserved, kind, admitted_operation, admitted_generation) = self
             .catalog
             .clone()
             .execute(1024, move |connection| {
@@ -441,7 +451,9 @@ impl V2ObjectWriter {
                 {
                     return Err(crate::storage::catalog::CatalogError::Conflict("physical object does not match its admitted allocation fence".into()));
                 }
-                Ok((reserved, kind))
+                let operation = allocation_operation
+                    .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("allocation operation is missing".into()))?;
+                Ok((reserved, kind, operation, operation_generation))
             })
             .await
             .map_err(|error| error.to_string())?;
@@ -457,6 +469,8 @@ impl V2ObjectWriter {
         let written_for_settle = written.clone();
         let document_for_settle = document_id.to_owned();
         let expected_digest_for_settle = expected_digest.clone();
+        let admitted_operation_for_settle = admitted_operation.clone();
+        let admitted_generation_for_settle = admitted_generation.clone();
         self.catalog
             .clone()
             .execute(1024, move |connection| {
@@ -478,6 +492,8 @@ impl V2ObjectWriter {
                 || allocation_operation.is_none()
                 || operation_state.as_deref() != Some("prepared")
                 || operation_generation.as_deref() != Some(writer_generation.as_str())
+                || allocation_operation.as_deref() != Some(admitted_operation_for_settle.as_str())
+                || operation_generation.as_deref() != Some(admitted_generation_for_settle.as_str())
             {
                 return Err(crate::storage::catalog::CatalogError::Conflict("physical object does not match its admitted allocation".into()));
             }

@@ -14,8 +14,7 @@ use crate::room::RoomSet;
 use crate::server::origins::DOCS_PREFIX;
 use crate::server::shell::load_shell;
 use crate::server::Server;
-use crate::storage::journal::JournalStore;
-use crate::storage::maintenance::{DeletionLimits, DeletionWorker, JournalRetirementWorker};
+use crate::storage::maintenance::{DeletionLimits, DeletionWorker};
 use crate::storage::{open_storage, StorageOptions};
 use crate::util::die;
 
@@ -277,42 +276,22 @@ pub async fn serve(options: ServeOptions) {
     // queued by a committed catalogue transition before accepting traffic.
     // A complete object set is retried with the original ids; an incomplete
     // set is resolved as a known abort and queued for safe reclamation.
-    let (deletion_worker, journal_retirement_worker) = if let Some(catalog) = store.catalog.as_ref()
-    {
-        let journal = JournalStore::new(catalog.clone());
-        journal
-            .initialize_local(&deployment_id)
-            .unwrap_or_else(|err| die(format!("could not initialize local journal: {err}")));
-        journal
-            .reconcile_pending(blobs.as_ref())
-            .await
-            .unwrap_or_else(|err| die(format!("local journal reconciliation failed: {err}")));
-        journal
-            .reconcile_object_reservations(blobs.as_ref())
-            .await
-            .unwrap_or_else(|err| die(format!("local journal accounting recovery failed: {err}")));
-        journal
-            .require_recovered()
-            .unwrap_or_else(|err| die(format!("local journal recovery is required: {err}")));
+    let deletion_worker = if let Some(catalog) = store.catalog.as_ref() {
         let worker = Arc::new(
             DeletionWorker::new(catalog.clone(), blobs.clone(), DeletionLimits::default())
                 .unwrap_or_else(|err| die(format!("could not initialize deletion worker: {err}"))),
         );
         worker
-            .run_once(crate::util::now_unix())
+            .recover_v2_startup()
             .await
-            .unwrap_or_else(|err| die(format!("local deletion recovery failed: {err}")));
-        let journal_worker = Arc::new(
-            JournalRetirementWorker::new(catalog.clone(), blobs.clone(), 1_000)
-                .unwrap_or_else(|err| die(format!("could not initialize journal cleanup: {err}"))),
-        );
-        journal_worker
-            .run_once(crate::util::now_unix())
+            .unwrap_or_else(|err| die(format!("v2 startup recovery failed: {err}")));
+        worker
+            .run_v2_once(crate::util::now_millis())
             .await
-            .unwrap_or_else(|err| die(format!("local journal cleanup failed: {err}")));
-        (Some(worker), Some(journal_worker))
+            .unwrap_or_else(|err| die(format!("v2 garbage collection failed: {err}")));
+        Some(worker)
     } else {
-        (None, None)
+        None
     };
     let rooms = RoomSet::new(blobs.clone(), config.clone());
     rooms.attach_deployment_lock(writer_lock);
@@ -497,7 +476,6 @@ pub async fn serve(options: ServeOptions) {
     if let Some(worker) = deletion_worker.clone() {
         let erasure_catalog = instance.store.catalog.clone();
         let retention_server = instance.clone();
-        let journal_worker = journal_retirement_worker.clone();
         let retention_hard_quota = instance.config.storage.per_owner;
         let retention_hard_count = (instance.config.session.history_max > 0)
             .then(|| instance.config.session.history_max as u32);
@@ -506,13 +484,8 @@ pub async fn serve(options: ServeOptions) {
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                if let Err(error) = worker.run_once(crate::util::now_unix()).await {
-                    eprintln!("warning: local deletion maintenance failed: {error}");
-                }
-                if let Some(journal_worker) = &journal_worker {
-                    if let Err(error) = journal_worker.run_once(crate::util::now_unix()).await {
-                        eprintln!("warning: local journal cleanup failed: {error}");
-                    }
+                if let Err(error) = worker.run_v2_once(crate::util::now_millis()).await {
+                    eprintln!("warning: v2 garbage collection failed: {error}");
                 }
                 if let Some(catalog) = &erasure_catalog {
                     let retention_result = catalog
@@ -577,18 +550,12 @@ pub async fn serve(options: ServeOptions) {
     // orderly shutdown.
     let closing = instance.clone();
     let closing_deletion_worker = deletion_worker;
-    let closing_journal_worker = journal_retirement_worker;
     let shutdown = async move {
         shutdown_signal().await;
         closing.rooms.flush().await;
         if let Some(worker) = closing_deletion_worker {
-            if let Err(error) = worker.run_once(crate::util::now_unix()).await {
-                eprintln!("warning: final local deletion maintenance failed: {error}");
-            }
-        }
-        if let Some(worker) = closing_journal_worker {
-            if let Err(error) = worker.run_once(crate::util::now_unix()).await {
-                eprintln!("warning: final local journal cleanup failed: {error}");
+            if let Err(error) = worker.run_v2_once(crate::util::now_millis()).await {
+                eprintln!("warning: final v2 garbage collection failed: {error}");
             }
         }
     };
