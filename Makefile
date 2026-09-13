@@ -200,10 +200,38 @@ latex-smoke: $(BIN)  ## Compile and display the seeded LaTeX example in Chromium
 	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
 	@node web/tools/latex-e2e.mjs $(BIN) browser docs/examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
 
+# The local deployment keeps PostgreSQL on the same machine in a persistent
+# Docker volume. An explicitly configured database URL always wins, so hosted
+# and native PostgreSQL installations do not involve Docker.
+DEV_POSTGRES_CONTAINER ?= librepaper-postgres
+DEV_POSTGRES_PORT      ?= 55432
+DEV_POSTGRES_VOLUME    ?= librepaper-postgres-data
+DEV_POSTGRES_PASSWORD  ?= librepaper-local
+DEV_POSTGRES_URL       := postgresql://postgres:$(DEV_POSTGRES_PASSWORD)@127.0.0.1:$(DEV_POSTGRES_PORT)/librepaper
+
+.PHONY: postgres-dev
+postgres-dev:  ## Start the persistent PostgreSQL used by an unconfigured local deploy
+	@command -v docker >/dev/null || { echo "make deploy needs Docker or LIBREPAPER_DATABASE_URL"; exit 1; }
+	@docker inspect $(DEV_POSTGRES_CONTAINER) >/dev/null 2>&1 || docker run -d \
+		--name $(DEV_POSTGRES_CONTAINER) --restart unless-stopped \
+		-p 127.0.0.1:$(DEV_POSTGRES_PORT):5432 \
+		-e POSTGRES_PASSWORD=$(DEV_POSTGRES_PASSWORD) -e POSTGRES_DB=librepaper \
+		-v $(DEV_POSTGRES_VOLUME):/var/lib/postgresql/data postgres:17-alpine >/dev/null
+	@docker start $(DEV_POSTGRES_CONTAINER) >/dev/null
+	@for attempt in $$(seq 1 30); do \
+		docker exec $(DEV_POSTGRES_CONTAINER) pg_isready -U postgres -d librepaper >/dev/null 2>&1 && exit 0; \
+		sleep 1; \
+	done; echo "PostgreSQL did not become ready"; exit 1
+
 # Use the ordinary sign-in flow: each new account receives five private
 # examples and owns its copies. Guest roles come from links created in Share.
 deploy: latex-check $(BIN)  ## Serve locally; sign in for your five examples and share links to test roles
-	@$(MAKE) serve LIBREPAPER_PUBLISHERS=any
+	@if [ -n "$(LIBREPAPER_DATABASE_URL)" ]; then \
+		$(MAKE) serve LIBREPAPER_PUBLISHERS=any; \
+	else \
+		$(MAKE) postgres-dev; \
+		LIBREPAPER_DATABASE_URL='$(DEV_POSTGRES_URL)' $(MAKE) serve LIBREPAPER_PUBLISHERS=any; \
+	fi
 
 # The deployment keys -- the Cloudflare token, the endpoints, the GitHub app
 # -- live sops-encrypted in deploy/keys.yaml. A target cannot export into the
