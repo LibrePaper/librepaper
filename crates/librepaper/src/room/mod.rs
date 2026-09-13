@@ -1684,7 +1684,7 @@ impl Room {
         // Resolve the complete physical closure before touching the live
         // Y.Doc; falling back to a rendered publication page would collapse a
         // multifile source tree into one HTML file.
-        let (checkpoint_point, checkpoint_lookup_failed) = if stored.is_none() {
+        let (checkpoint_point, checkpoint_lookup_failed) = {
             match self.catalog.get() {
                 Some(catalog) => {
                     let slug = self.slug.clone();
@@ -1720,8 +1720,6 @@ impl Room {
                 }
                 None => (None, false),
             }
-        } else {
-            (None, false)
         };
         let use_v2_checkpoint = stored.is_none() && checkpoint_point.is_some();
         let checkpoint_seed = if use_v2_checkpoint {

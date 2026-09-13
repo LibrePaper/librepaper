@@ -474,21 +474,20 @@ impl Catalog {
     /// manifest is a bounded cache and may omit this row after pruning, so a
     /// cold room must follow `documents.current_checkpoint_id` directly.
     pub fn current_checkpoint(&self, slug: &str) -> CatalogResult<Option<Checkpoint>> {
-        let checkpoint_id: Option<String> = self.with_connection(|connection| {
+        self.with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT current_checkpoint_id FROM documents
-                     WHERE slug=?1 AND status <> 'deleting'",
+                    &format!(
+                        "{} WHERE d.slug=?1 AND d.status <> 'deleting'
+                           AND c.id=d.current_checkpoint_id",
+                        CHECKPOINT_SELECT
+                    ),
                     [slug],
-                    |row| row.get(0),
+                    Self::read_checkpoint,
                 )
                 .optional()
                 .map_err(CatalogError::from)
-        })?;
-        let Some(checkpoint_id) = checkpoint_id else {
-            return Ok(None);
-        };
-        self.checkpoint(slug, &checkpoint_id)
+        })
     }
 
     pub fn checkpoints_prefix(&self, slug: &str, prefix: &str) -> CatalogResult<Vec<Checkpoint>> {

@@ -1679,8 +1679,13 @@ impl Catalog {
                     .get("account_id")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("");
-                let needs_anonymous_proof = owner_id.starts_with("anonymous:")
-                    || authority_account.starts_with("anonymous:");
+                let authority_link = authority
+                    .get("link_hash")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let accountless_actor = authority_account.is_empty() && authority_link.is_empty();
+                let needs_anonymous_proof = authority_account.starts_with("anonymous:")
+                    || (owner_id.starts_with("anonymous:") && accountless_actor);
                 if needs_anonymous_proof && owner_credential.is_none() {
                     return Err(CatalogError::refused(
                         CatalogRefusal::ActorRights,
