@@ -220,7 +220,14 @@ fn annotation_writes_recheck_the_account_session_generation() {
 fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
-    assert!(catalog.quota_preferences("acct-1").unwrap().is_none());
+    assert_eq!(
+        catalog
+            .quota_preferences("acct-1")
+            .unwrap()
+            .unwrap()
+            .revision,
+        0
+    );
     let first = catalog
         .save_quota_preferences("acct-1", 0, r#"{"version":1,"futureField":true}"#, 10)
         .unwrap();
@@ -273,6 +280,71 @@ fn quota_apply_marks_live_policy_for_advisory_worker() {
             .unwrap(),
         Some(("milestone-0".into(), true))
     );
+}
+
+#[test]
+fn retention_wakes_time_only_age_policy_without_existing_candidates() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let now = crate::util::now_millis();
+    for index in 0..2 {
+        let mut point = attributed(&format!("age-{index}"), "alice", Some("acct-1"));
+        point.seq = index;
+        point.at = (now - (index as i64 + 1) * 1_000).to_string();
+        point.parent = if index == 0 {
+            String::new()
+        } else {
+            "age-0".into()
+        };
+        catalog.insert_checkpoint(&point).unwrap();
+    }
+    catalog
+        .schedule_document_balanced(
+            "doc",
+            now,
+            crate::document::quota::RetentionBounds::default(),
+        )
+        .unwrap();
+    let due: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT retention_due_at FROM documents WHERE slug='doc'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert!(due > now, "age policy was not persisted as a future wakeup");
+    let eligible: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM checkpoints WHERE eligible_after IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(eligible, 0, "fresh points should not be candidates yet");
+    catalog
+        .schedule_due_documents(due, 64, crate::document::quota::RetentionBounds::default())
+        .unwrap();
+    let eligible_after: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM checkpoints WHERE eligible_after IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(eligible_after, 1);
 }
 
 #[test]

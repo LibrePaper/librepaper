@@ -249,7 +249,7 @@ pub(super) fn insert_comment_tx(
     let resolved_at = comment.resolved_at.as_deref().map(millis);
     let protected_checkpoint = annotation_protection(tx, &doc, comment)?;
     tx.execute("INSERT INTO annotations(document_id,id,seq,kind,body,author_account_id,author_key,author_label,via,created_at,updated_at,publication_id,source_revision,selector_json,context_json,protected_checkpoint_id,proposed_text,suggestion_state,acceptance_operation_id,resolution_revision,resolved_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)", params![doc,comment.id,seq,kind,comment.body,(!authority.account_id.is_empty()).then_some(authority.account_id),comment.author,comment.creator,comment.via,created,(!comment.publication_id.is_empty()).then_some(comment.publication_id.as_str()),(!comment.revision.is_empty()).then_some(comment.revision.as_str()),selector(comment),context(comment),protected_checkpoint,proposed,state,(!comment.accept_request.is_empty()).then_some(comment.accept_request.as_str()),(!comment.resolved_in.is_empty()).then_some(comment.resolved_in.as_str()),resolved_at]).map_err(CatalogError::from)?;
-    tx.execute("UPDATE documents SET next_annotation_seq=next_annotation_seq+1,updated_at=max(updated_at,?1) WHERE id=?2", params![created,doc]).map_err(CatalogError::from)?;
+    tx.execute("UPDATE documents SET next_annotation_seq=next_annotation_seq+1,retention_due_at=0,updated_at=max(updated_at,?1) WHERE id=?2", params![created,doc]).map_err(CatalogError::from)?;
     let mut statement = tx
         .prepare(&format!("{COMMENT_SELECT} WHERE d.slug=?1 AND a.id=?2"))
         .map_err(CatalogError::from)?;
@@ -462,7 +462,38 @@ impl Catalog {
         at: Option<&str>,
         in_checkpoint: &str,
     ) -> CatalogResult<Comment> {
-        self.immediate(|tx|{let doc=document_id(tx,slug)?;let now=unix_millis();let changed=if resolved{tx.execute("UPDATE annotations SET protected_checkpoint_id=NULL,resolved_at=?3,resolution_revision=?4,updated_at=max(updated_at,?3) WHERE document_id=?1 AND id=?2",params![doc,id,at.map(millis).unwrap_or(now),in_checkpoint]).map_err(CatalogError::from)?}else{if in_checkpoint.is_empty(){return Err(CatalogError::Invalid("unresolved annotation requires a checkpoint".into()))}tx.execute("UPDATE annotations SET protected_checkpoint_id=?3,resolved_at=NULL,resolution_revision=NULL,updated_at=max(updated_at,?4) WHERE document_id=?1 AND id=?2",params![doc,id,in_checkpoint,now]).map_err(CatalogError::from)?};if changed!=1{return Err(CatalogError::NotFound)}Self::comment_in_tx(tx,slug,id)})
+        self.immediate(|tx| {
+            let doc = document_id(tx, slug)?;
+            let now = unix_millis();
+            let changed = if resolved {
+                tx.execute(
+                    "UPDATE annotations SET protected_checkpoint_id=NULL,resolved_at=?3,
+                     resolution_revision=?4,updated_at=max(updated_at,?3)
+                     WHERE document_id=?1 AND id=?2",
+                    params![doc, id, at.map(millis).unwrap_or(now), in_checkpoint],
+                )?
+            } else {
+                if in_checkpoint.is_empty() {
+                    return Err(CatalogError::Invalid(
+                        "unresolved annotation requires a checkpoint".into(),
+                    ));
+                }
+                tx.execute(
+                    "UPDATE annotations SET protected_checkpoint_id=?3,resolved_at=NULL,
+                     resolution_revision=NULL,updated_at=max(updated_at,?4)
+                     WHERE document_id=?1 AND id=?2",
+                    params![doc, id, in_checkpoint, now],
+                )?
+            };
+            if changed != 1 {
+                return Err(CatalogError::NotFound);
+            }
+            tx.execute(
+                "UPDATE documents SET retention_due_at=0 WHERE id=?1",
+                [doc.as_str()],
+            )?;
+            Self::comment_in_tx(tx, slug, id)
+        })
     }
     pub fn update_comment(&self, comment: &Comment) -> CatalogResult<Comment> {
         self.update_comment_authorized(comment, AnnotationAuthority::default())
@@ -472,7 +503,7 @@ impl Catalog {
         comment: &Comment,
         authority: AnnotationAuthority<'_>,
     ) -> CatalogResult<Comment> {
-        self.immediate(|tx|{annotation_session_active(tx,authority)?;let doc=document_id(tx,&comment.slug)?;authorize_annotation_change(tx,&doc,&comment.id,authority)?;let updated=millis(&comment.created);let protected=annotation_protection(tx,&doc,comment)?;let changed=tx.execute("UPDATE annotations SET body=?3,author_key=?4,author_label=?5,via=?6,updated_at=max(updated_at,?7),publication_id=?8,source_revision=?9,selector_json=?10,context_json=?11,protected_checkpoint_id=?12,proposed_text=?13,suggestion_state=?14,resolution_revision=?15,resolved_at=?16 WHERE document_id=?1 AND id=?2 AND seq=?17",params![doc,comment.id,comment.body,comment.author,comment.creator,comment.via,updated,(!comment.publication_id.is_empty()).then_some(comment.publication_id.as_str()),(!comment.revision.is_empty()).then_some(comment.revision.as_str()),selector(comment),context(comment),protected,comment.proposed,if comment.motivation == "editing" { Some(if comment.outcome.is_empty() { "proposed" } else { comment.outcome.as_str() }) } else { None },(!comment.resolved_in.is_empty()).then_some(comment.resolved_in.as_str()),comment.resolved_at.as_deref().map(millis),comment.seq]).map_err(CatalogError::from)?;if changed!=1{return Err(CatalogError::NotFound)}Self::comment_in_tx(tx,&comment.slug,&comment.id)})
+        self.immediate(|tx|{annotation_session_active(tx,authority)?;let doc=document_id(tx,&comment.slug)?;authorize_annotation_change(tx,&doc,&comment.id,authority)?;let updated=millis(&comment.created);let protected=annotation_protection(tx,&doc,comment)?;let changed=tx.execute("UPDATE annotations SET body=?3,author_key=?4,author_label=?5,via=?6,updated_at=max(updated_at,?7),publication_id=?8,source_revision=?9,selector_json=?10,context_json=?11,protected_checkpoint_id=?12,proposed_text=?13,suggestion_state=?14,resolution_revision=?15,resolved_at=?16 WHERE document_id=?1 AND id=?2 AND seq=?17",params![doc,comment.id,comment.body,comment.author,comment.creator,comment.via,updated,(!comment.publication_id.is_empty()).then_some(comment.publication_id.as_str()),(!comment.revision.is_empty()).then_some(comment.revision.as_str()),selector(comment),context(comment),protected,comment.proposed,if comment.motivation == "editing" { Some(if comment.outcome.is_empty() { "proposed" } else { comment.outcome.as_str() }) } else { None },(!comment.resolved_in.is_empty()).then_some(comment.resolved_in.as_str()),comment.resolved_at.as_deref().map(millis),comment.seq]).map_err(CatalogError::from)?;if changed!=1{return Err(CatalogError::NotFound)}tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=?1",[doc.as_str()])?;Self::comment_in_tx(tx,&comment.slug,&comment.id)})
     }
 
     // Suggestion receipts use the v2 operations table.  The actor key binds a
@@ -663,7 +694,7 @@ impl Catalog {
         resolved_in: &str,
         resolved_at: &str,
     ) -> CatalogResult<Comment> {
-        self.immediate(|tx|{let doc=document_id(tx,slug)?;let op:Option<(String,String,String)>=tx.query_row("SELECT id,state,request_digest FROM operations WHERE document_id=?1 AND request_key=?2 AND kind='agent_annotations' AND json_extract(plan_json,'$.commentId')=?3",params![doc,request_id,comment_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?;let Some((op,state,digest))=op else{return Err(CatalogError::NotFound)};if digest!=request_digest{return Err(CatalogError::Conflict("suggestion acceptance receipt does not match".into()))}if state=="committed"{return Self::comment_in_tx(tx,slug,comment_id)}if state!="prepared"{return Err(CatalogError::Conflict("suggestion acceptance was aborted".into()))}let at=millis(resolved_at);let n=tx.execute("UPDATE annotations SET protected_checkpoint_id=NULL,suggestion_state='accepted',acceptance_operation_id=?1,resolution_revision=?2,resolved_at=?3,updated_at=?3 WHERE document_id=?4 AND id=?5 AND kind='suggestion'",params![op,resolved_in,at,doc,comment_id]).map_err(CatalogError::from)?;if n!=1{return Err(CatalogError::NotFound)}let done=unix_millis();let result=serde_json::json!({"version":1,"commentId":comment_id,"resolvedIn":resolved_in,"resolvedAt":resolved_at}).to_string();tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'",params![result,done,done.saturating_add(7*24*60*60*1000),op]).map_err(CatalogError::from)?;Self::comment_in_tx(tx,slug,comment_id)})
+        self.immediate(|tx|{let doc=document_id(tx,slug)?;let op:Option<(String,String,String)>=tx.query_row("SELECT id,state,request_digest FROM operations WHERE document_id=?1 AND request_key=?2 AND kind='agent_annotations' AND json_extract(plan_json,'$.commentId')=?3",params![doc,request_id,comment_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?;let Some((op,state,digest))=op else{return Err(CatalogError::NotFound)};if digest!=request_digest{return Err(CatalogError::Conflict("suggestion acceptance receipt does not match".into()))}if state=="committed"{return Self::comment_in_tx(tx,slug,comment_id)}if state!="prepared"{return Err(CatalogError::Conflict("suggestion acceptance was aborted".into()))}let at=millis(resolved_at);let n=tx.execute("UPDATE annotations SET protected_checkpoint_id=NULL,suggestion_state='accepted',acceptance_operation_id=?1,resolution_revision=?2,resolved_at=?3,updated_at=?3 WHERE document_id=?4 AND id=?5 AND kind='suggestion'",params![op,resolved_in,at,doc,comment_id]).map_err(CatalogError::from)?;if n!=1{return Err(CatalogError::NotFound)}tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=?1",[doc.as_str()])?;let done=unix_millis();let result=serde_json::json!({"version":1,"commentId":comment_id,"resolvedIn":resolved_in,"resolvedAt":resolved_at}).to_string();tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'",params![result,done,done.saturating_add(7*24*60*60*1000),op]).map_err(CatalogError::from)?;Self::comment_in_tx(tx,slug,comment_id)})
     }
 
     pub fn delete_comment(&self, slug: &str, id: &str) -> CatalogResult<bool> {
@@ -679,13 +710,20 @@ impl Catalog {
             annotation_session_active(tx, authority)?;
             let doc = document_id(tx, slug)?;
             authorize_annotation_change(tx, &doc, id, authority)?;
-            Ok(tx
+            let deleted = tx
                 .execute(
                     "DELETE FROM annotations WHERE document_id=?1 AND id=?2",
                     params![doc, id],
                 )
                 .map_err(CatalogError::from)?
-                == 1)
+                == 1;
+            if deleted {
+                tx.execute(
+                    "UPDATE documents SET retention_due_at=0 WHERE id=?1",
+                    [doc.as_str()],
+                )?;
+            }
+            Ok(deleted)
         })
     }
     pub fn delete_reply(&self, slug: &str, comment_id: &str, id: &str) -> CatalogResult<bool> {

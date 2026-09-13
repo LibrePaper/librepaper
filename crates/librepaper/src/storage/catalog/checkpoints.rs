@@ -271,6 +271,11 @@ impl Catalog {
                 params![document_id, checkpoint.sha, checkpoint.label],
             )
             .map_err(CatalogError::from)?;
+            tx.execute(
+                "UPDATE documents SET retention_due_at=0 WHERE id=?1",
+                [document_id.as_str()],
+            )
+            .map_err(CatalogError::from)?;
             return Ok(());
         }
         let seq: i64 = if checkpoint.seq >= 1 {
@@ -660,6 +665,7 @@ impl Catalog {
         self.immediate(|tx| {
             let changed = tx.execute("UPDATE checkpoints SET label=?3 WHERE document_id=(SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1) AND id=?2", params![slug, sha, if label.is_empty() { None } else { Some(label) }]).map_err(CatalogError::from)?;
             if changed != 1 { return Err(CatalogError::NotFound); }
+            tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=(SELECT id FROM documents WHERE slug=?1)", [slug]).map_err(CatalogError::from)?;
             Self::checkpoint_in_tx(tx, slug, sha)
         })
     }
@@ -705,6 +711,7 @@ impl Catalog {
             }
             let changed = tx.execute("UPDATE checkpoints SET label=?3 WHERE document_id=(SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1) AND id=?2", params![slug, sha, if label.is_empty() { None } else { Some(label) }]).map_err(CatalogError::from)?;
             if changed != 1 { return Err(CatalogError::NotFound); }
+            tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=(SELECT id FROM documents WHERE slug=?1)", [slug]).map_err(CatalogError::from)?;
             Self::checkpoint_in_tx(tx, slug, sha)
         })
     }

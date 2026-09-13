@@ -75,6 +75,7 @@ impl Catalog {
             if let Some((comment_id, expected_seq)) = acceptance {
                 let changed = tx.execute("UPDATE annotations SET suggestion_state='accepted',resolved_at=?1,acceptance_operation_id=?2,resolution_revision=?3 WHERE document_id=?4 AND id=?5 AND seq=?6 AND kind='suggestion' AND suggestion_state='proposed'", params![unix_millis(),request_id,request_id,storage_id,comment_id,expected_seq]).map_err(CatalogError::from)?;
                 if changed != 1 { return Err(CatalogError::Conflict("suggestion version or outcome changed".into())); }
+                tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=?1", [storage_id])?;
             }
             let completed = unix_millis();
             let result_json = if result.is_empty() { serde_json::json!({"version":2,"operation":request_id}).to_string() } else { result.to_owned() };

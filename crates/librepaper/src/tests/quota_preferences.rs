@@ -294,6 +294,7 @@ async fn preview_timezone_is_presentation_only_and_apply_is_advisory() {
 #[tokio::test]
 async fn advisory_apply_rejects_stale_revision_without_durable_job() {
     let server = new_test_server().await;
+    publish_and_slug(&server).await;
     let cookie = session_as(TEST_PUBLISHER);
     let preferences = QuotaPreferences::default();
 

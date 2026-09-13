@@ -5,7 +5,7 @@
 //! current policy in the final checkpoint transaction.
 
 use super::*;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 const RETENTION_GRACE_MS: i64 = 24 * 60 * 60 * 1_000;
 const RETENTION_DOCUMENT_PAGE: i64 = 64;
@@ -364,14 +364,17 @@ impl Catalog {
         // pass before the 32,768-row transaction budget can be exceeded.
         let limit = limit.clamp(1, 32) as i64;
         let candidates: Vec<(String,String,String,i64)> = self.with_connection(|connection| {
-            let mut statement = connection.prepare("SELECT c.document_id,c.id,d.slug,(SELECT count(*) FROM checkpoint_objects co WHERE co.document_id=c.document_id AND co.checkpoint_id=c.id) FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.status='active' AND c.eligible_after IS NOT NULL AND c.eligible_after<=?1 AND c.label IS NULL ORDER BY c.eligible_after,c.document_id,c.seq LIMIT ?2").map_err(CatalogError::from)?;
+            let mut statement = connection.prepare("SELECT c.document_id,c.id,d.slug,(SELECT count(*) FROM checkpoint_objects co WHERE co.document_id=c.document_id AND co.checkpoint_id=c.id) FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.status='active' AND d.retention_due_at<=?1 AND c.eligible_after IS NOT NULL AND c.eligible_after<=?1 AND c.label IS NULL ORDER BY c.eligible_after,c.document_id,c.seq LIMIT ?2").map_err(CatalogError::from)?;
             let rows = statement.query_map(params![now,limit], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(CatalogError::from)?;
             rows.collect::<Result<Vec<_>,_>>().map_err(CatalogError::from)
         })?;
+        let candidate_count = candidates.len();
         let mut removed = Vec::new();
         let mut blocked = 0usize;
         let mut edges = 0i64;
+        let mut touched_documents = BTreeSet::new();
         for (document_id, checkpoint_id, slug, count) in candidates {
+            touched_documents.insert(document_id.clone());
             if edges
                 .checked_add(count)
                 .ok_or_else(|| CatalogError::Invalid("retention edge counter overflow".into()))?
@@ -396,6 +399,19 @@ impl Catalog {
                 removed.push((slug, checkpoint.to_string()));
             } else {
                 blocked += 1;
+            }
+        }
+        if !touched_documents.is_empty() && (candidate_count >= limit as usize || edges >= 32_768) {
+            let yield_at = now.saturating_add(1);
+            for document_id in touched_documents {
+                self.immediate(|tx| {
+                    tx.execute(
+                        "UPDATE documents SET retention_due_at=max(retention_due_at,?1)
+                         WHERE id=?2 AND status='active'",
+                        params![yield_at, document_id],
+                    )
+                    .map_err(CatalogError::from)
+                })?;
             }
         }
         Ok(RetentionPass { removed, blocked })

@@ -3865,14 +3865,15 @@ fn import_annotations(
         // An unresolved annotation protects the checkpoint for the original
         // source revision. `resolved_in` is outcome provenance and must never
         // become a live retention pin after the annotation is resolved.
-        let protection = if resolved == 0 && !revision.is_empty() {
+        let protection = if resolved == 0 && !accepted && !revision.is_empty() {
             checkpoint_map
                 .get(&(doc_id.clone(), revision.clone()))
                 .cloned()
         } else {
             None
         };
-        let context = if resolved == 0 && !revision.is_empty() && protection.is_none() {
+        let context = if resolved == 0 && !accepted && !revision.is_empty() && protection.is_none()
+        {
             json_text(
                 &json!({"version":1,"review_pass":pass,"point":point,"color":color,"quarto_output":quarto_output,"unavailable":true}),
                 16384,
@@ -5054,7 +5055,7 @@ mod tests {
         )
         .expect("publication");
         db.execute("INSERT INTO comments(slug,id,seq,motivation,body,creator,author,via,created,publication_id,exact,prefix,suffix,outcome,accept_request,revision,resolved,resolved_in,pass,point) VALUES('paper','comment-1',1,'comment','body','Display name','acct','web','2','pub-1','exact','pre','suf','','','legacy-source',0,'','',0)",[]).expect("comment");
-        db.execute("INSERT INTO comments(slug,id,seq,motivation,body,creator,author,via,created,publication_id,exact,prefix,suffix,outcome,accept_request,revision,resolved,resolved_in,pass,point) VALUES('paper','comment-2',2,'comment','resolved body','Resolved name','acct','web','2','pub-1','exact','pre','suf','','','original-source',1,'resolution-checkpoint','',0)",[]).expect("resolved comment");
+        db.execute("INSERT INTO comments(slug,id,seq,motivation,body,creator,author,via,created,publication_id,exact,prefix,suffix,outcome,accept_request,revision,resolved,resolved_in,pass,point) VALUES('paper','comment-2',2,'comment','resolved body','Resolved name','acct','web','2','pub-1','exact','pre','suf','accepted','','original-source',1,'resolution-checkpoint','',0)",[]).expect("resolved comment");
         db.execute("INSERT INTO replies(slug,comment_id,id,body,creator,author,created) VALUES('paper','comment-1','reply-1','reply body','Display name','acct','2')",[]).expect("reply");
         let args = Args {
             source_data: source.path().to_path_buf(),

@@ -84,10 +84,15 @@
     busy = true;
     error = "";
     try {
-      await applyQuotaPreferences(snapshot.revision, proposed);
+      const result = await applyQuotaPreferences(snapshot.revision, proposed);
       if (!alive) return;
       await reload();
-      if (alive && !error) notice = "Storage preferences saved. Your edits continue to be saved promptly.";
+      if (alive && !error) {
+        const grace = Number(result?.graceMs) === 86_400_000;
+        notice = grace
+          ? "Storage preferences saved. Newly eligible history has a 24-hour grace period."
+          : "Storage preferences saved.";
+      }
     } catch (cause) {
       if (alive) {
         error = cause.message || "The policy could not be applied. Refresh storage status and preview again.";
