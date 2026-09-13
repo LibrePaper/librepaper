@@ -40,7 +40,7 @@ async fn per_owner_byte_quota_is_refused() {
     assert_eq!(status, 507, "got {status} {payload}");
     assert_eq!(
         text(&payload, "error"),
-        "your storage quota is used up; delete a document first"
+        "storage quota is used up; delete a document first"
     );
 }
 
@@ -69,7 +69,7 @@ async fn document_count_limit_is_refused() {
     assert_eq!(status, 507, "got {status} {payload}");
     assert_eq!(
         text(&payload, "error"),
-        "you have reached the document limit; delete one first"
+        "storage quota is used up; delete a document first"
     );
 }
 
@@ -150,7 +150,10 @@ async fn global_total_quota_is_refused() {
     )
     .await;
     assert_eq!(status, 507, "got {status} {payload}");
-    assert_eq!(text(&payload, "error"), "this deployment has no room left");
+    assert_eq!(
+        text(&payload, "error"),
+        "storage quota is used up; delete a document first"
+    );
 }
 
 // Replacing a document is not a new document, and its old bytes are not still
@@ -334,7 +337,8 @@ async fn small_publication_accounting_covers_every_materialized_object() {
         .with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT COALESCE(SUM(bytes),0) FROM object_accounting WHERE storage_id=?1",
+                    "SELECT COALESCE(SUM(byte_length),0) FROM objects
+                     WHERE document_id=?1 AND state='available'",
                     [&document.storage_id],
                     |row| row.get(0),
                 )

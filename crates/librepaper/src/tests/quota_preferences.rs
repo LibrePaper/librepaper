@@ -65,21 +65,26 @@ fn add_checkpoint(
     let tree_object_id = hex::encode(sha2::Sha256::digest(tree_sha.as_bytes()))[..32].to_owned();
     catalog
         .with_connection(|connection| {
+            let document_id: String = connection.query_row(
+                "SELECT id FROM documents WHERE slug=?1",
+                [slug],
+                |row| row.get(0),
+            )?;
             let available: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM objects WHERE document_id=(SELECT id FROM documents WHERE slug=?1)
+                "SELECT EXISTS(SELECT 1 FROM objects WHERE document_id=?1
                    AND kind='source_tree' AND digest=?2 AND state='available')",
-                rusqlite::params![slug, tree_sha],
+                rusqlite::params![document_id, tree_sha],
                 |row| row.get(0),
             )?;
             if !available {
                 connection.execute(
                     "INSERT INTO objects
                      (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
-                     VALUES((SELECT id FROM documents WHERE slug=?1),?2,?3,'source_tree','available',?4,0,0,?5)",
+                     VALUES(?1,?2,?3,'source_tree','available',?4,0,0,?5)",
                     rusqlite::params![
-                        slug,
+                        document_id,
                         tree_object_id,
-                        format!("objects/{slug}/{tree_object_id}"),
+                        format!("v2/documents/{document_id}/objects/{tree_object_id}"),
                         tree_sha,
                         crate::util::now_millis(),
                     ],
@@ -108,9 +113,9 @@ fn add_checkpoint(
             source_format: "html".into(),
             size: 1,
             label: String::new(),
-            git_commit: String::new(),
-            dirty: false,
-            changed: None,
+        git_commit: String::new(),
+        dirty: false,
+        changed: Some("[]".into()),
         })
         .expect("insert checkpoint fixture");
 }
@@ -395,7 +400,15 @@ async fn thinning_preserves_open_annotation_and_newest_checkpoint() {
     let (protected, routine_candidate, newest) = seed_old_bucket(&server, &slug);
     let catalog = server.instance.store.catalog.as_ref().unwrap();
     catalog
-        .insert_comment(&open_annotation(&slug, &protected))
+        .insert_comment_authorized(
+            &open_annotation(&slug, &protected),
+            crate::storage::catalog::AnnotationAuthority {
+                account_id: ACCOUNT,
+                generation: "test-session-generation",
+                policy_comment: true,
+                ..Default::default()
+            },
+        )
         .expect("open annotation fixture");
     let cookie = session_as(TEST_PUBLISHER);
     let preferences = QuotaPreferences {

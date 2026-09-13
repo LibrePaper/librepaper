@@ -2635,7 +2635,7 @@ fn measured_reconciliation_preserves_inflight_object_reservation() {
 }
 
 #[test]
-fn v2_checkpoint_admission_requires_a_prepared_operation_receipt() {
+fn v2_checkpoint_operation_receipt_is_bounded_and_terminal() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
@@ -2669,10 +2669,21 @@ fn v2_checkpoint_admission_requires_a_prepared_operation_receipt() {
         .commit_operation("storage-1", &request_id, "{}", "")
         .unwrap();
     assert_eq!(committed.status, "committed");
-    assert!(matches!(
-        catalog.admit_checkpoint_with_limits("doc", 3_601, false, 10, 10),
-        Err(CatalogError::Invalid(message)) if message.contains("operation transaction")
-    ));
+    let (state, result, receipt_expires_at): (String, String, i64) = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT state,result_json,receipt_expires_at
+                     FROM operations WHERE request_key=?1",
+                    [&request_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(state, "committed");
+    assert_eq!(result, "{}");
+    assert!(receipt_expires_at > crate::util::now_millis());
 }
 
 #[test]

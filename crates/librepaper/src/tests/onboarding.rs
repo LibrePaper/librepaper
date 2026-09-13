@@ -5,6 +5,8 @@ use serde_json::json;
 
 #[tokio::test]
 async fn account_examples_resume_after_admission_failure() {
+    use rusqlite::OptionalExtension;
+
     let mut config = Configuration::default();
     config.set_counts(Some(4), Some(30)).unwrap();
     let server = test_server_with(config, Policy::parse("any"), Policy::parse("any"), true).await;
@@ -22,6 +24,51 @@ async fn account_examples_resume_after_admission_failure() {
     assert_eq!(entries.len(), 4);
     let removed = &entries[0].slug;
     server.instance.store.remove(removed).await.unwrap();
+    // A v2 remove withdraws the document immediately, but its object charge
+    // remains until the bounded worker has confirmed the physical deletes.
+    // Drive that durable phase here so the retry exercises the intended
+    // admission-after-delete path rather than depending on a background
+    // maintenance tick.
+    let catalog = server.instance.store.catalog.as_ref().unwrap().clone();
+    let worker = crate::storage::maintenance::DeletionWorker::new(
+        catalog.clone(),
+        server.instance.store.blobs.clone(),
+        crate::storage::maintenance::DeletionLimits::default(),
+    )
+    .unwrap();
+    let mut gc_now = crate::util::now_millis().saturating_add(900_001);
+    for _ in 0..8 {
+        worker.run_v2_once(gc_now).await.unwrap();
+        let status: Option<String> = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT status FROM documents WHERE slug=?1",
+                        [removed.as_str()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .unwrap();
+        if status.is_none() {
+            break;
+        }
+        gc_now = gc_now.saturating_add(900_001);
+    }
+    assert!(catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT 1 FROM documents WHERE slug=?1",
+                    [removed.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap()
+        .is_none());
     server
         .instance
         .initialize_account_examples(&who)
