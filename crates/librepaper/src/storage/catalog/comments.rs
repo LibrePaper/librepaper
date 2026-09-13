@@ -1156,10 +1156,26 @@ impl Catalog {
                     ));
                 }
             }
+            let limits_value = serde_json::json!({
+                "owner_bytes": limits.owner_bytes,
+                "deployment_bytes": limits.deployment_bytes,
+                "owner_documents": limits.owner_documents,
+            });
+            if let Some(planned_limits) = value.get("owner_limits") {
+                if planned_limits != &limits_value {
+                    return Err(CatalogError::Conflict(
+                        "owner admission limits changed while staging suggestion".into(),
+                    ));
+                }
+            }
             value
                 .as_object_mut()
                 .ok_or_else(|| CatalogError::Invalid("acceptance plan is not an object".into()))?
                 .insert("owner_plan".into(), serde_json::Value::String(owner_plan));
+            value
+                .as_object_mut()
+                .ok_or_else(|| CatalogError::Invalid("acceptance plan is not an object".into()))?
+                .insert("owner_limits".into(), limits_value);
             let (doc_reserved, doc_agent_bytes, doc_agent_count): (i64, i64, i64) = tx.query_row(
                 "SELECT reserved_bytes,agent_payload_bytes,agent_payload_count FROM documents WHERE id=?1",
                 [&doc], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),

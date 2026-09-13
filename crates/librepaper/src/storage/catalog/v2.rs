@@ -3426,7 +3426,7 @@ impl Catalog {
             let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
             if generation != current_generation { return Err(CatalogError::Conflict("source operation belongs to an obsolete writer generation".into())); }
             operation_authorized_in_tx(tx, checkpoint.document_id.as_str(), &actor_key, &plan_json, "editor")?;
-            let mut annotation_acceptance: Option<(String, Option<String>)> = None;
+            let mut annotation_acceptance: Option<(String, Option<String>, bool)> = None;
             if let Some(agent) = agent {
                 let agent_row: Option<(String, String, String, String, Option<i64>)> = tx
                     .query_row(
@@ -3555,7 +3555,7 @@ impl Catalog {
                             .get("update_object_id")
                             .and_then(serde_json::Value::as_str)
                             .map(str::to_owned);
-                        annotation_acceptance = Some((comment_id.to_owned(), payload_id));
+                        annotation_acceptance = Some((comment_id.to_owned(), payload_id, false));
                     } else if let Some(acceptance) = acceptance {
                         let comment_id = acceptance
                             .get("comment_id")
@@ -3571,38 +3571,27 @@ impl Catalog {
                             .and_then(serde_json::Value::as_str)
                             .filter(|value| !value.is_empty())
                             .ok_or_else(|| CatalogError::Invalid("agent acceptance version is missing".into()))?;
-                        let changed = tx
-                            .execute(
-                                "UPDATE annotations
-                                    SET protected_checkpoint_id=NULL,
-                                        suggestion_state='accepted',
-                                        acceptance_operation_id=(SELECT id FROM operations
-                                                                  WHERE document_id=?1 AND request_key=?2
-                                                                    AND actor_key=?3
-                                                                    AND kind IN ('agent_apply','agent_annotations')),
-                                        resolution_revision=?4,
-                                        resolved_at=?5,
-                                        updated_at=max(updated_at,?5)
-                                  WHERE document_id=?1 AND id=?6 AND seq=?7
+                        let proposed: i64 = tx
+                            .query_row(
+                                "SELECT count(*) FROM annotations
+                                  WHERE document_id=?1 AND id=?2 AND seq=?3
                                     AND kind='suggestion' AND suggestion_state='proposed'
-                                    AND COALESCE(source_revision,'')=?8",
+                                    AND COALESCE(source_revision,'')=?4",
                                 params![
                                     checkpoint.document_id.as_str(),
-                                    agent.request_id.as_str(),
-                                    actor_key.as_str(),
-                                    checkpoint.id.as_str(),
-                                    checkpoint.now.0,
                                     comment_id,
                                     expected_seq,
                                     expected_version,
                                 ],
+                                |row| row.get(0),
                             )
                             .map_err(CatalogError::from)?;
-                        if changed != 1 {
+                        if proposed != 1 {
                             return Err(CatalogError::Conflict(
                                 "agent suggestion changed before checkpoint commit".into(),
                             ));
                         }
+                        annotation_acceptance = Some((comment_id.to_owned(), None, false));
                     }
                     let before_tree = agent_plan
                         .get("before_tree")
@@ -3832,19 +3821,20 @@ impl Catalog {
             if checked_add(doc_refs,count,"document checkpoint references")? > MAX_DOCUMENT_CHECKPOINT_REFS { return Err(CatalogError::refused(super::CatalogRefusal::Other,"checkpoint_reference_limit")); }
             tx.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,checkpoint.author_account_id,checkpoint.author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,checkpoint.journal_epoch,checkpoint.journal_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|value|value.0)]).map_err(CatalogError::from)?;
             for object_id in &checkpoint.object_ids { tx.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?; }
-            if let Some((comment_id, payload_id)) = annotation_acceptance {
+            if let Some((comment_id, payload_id, protect_checkpoint)) = annotation_acceptance {
                 let changed = tx
                     .execute(
                         "UPDATE annotations
                             SET protected_checkpoint_id=?1,
                                 suggestion_state='accepted',
-                                acceptance_operation_id=?2,
-                                resolution_revision=?1,
-                                resolved_at=?3,
-                                updated_at=max(updated_at,?3)
-                          WHERE document_id=?4 AND id=?5
+                                acceptance_operation_id=?3,
+                                resolution_revision=?2,
+                                resolved_at=?4,
+                                updated_at=max(updated_at,?4)
+                          WHERE document_id=?5 AND id=?6
                             AND kind='suggestion' AND suggestion_state='proposed'",
                         params![
+                            protect_checkpoint.then_some(checkpoint.id.as_str()),
                             checkpoint.id.as_str(),
                             operation_id.as_str(),
                             checkpoint.now.0,
@@ -3997,7 +3987,7 @@ impl Catalog {
             {
                 return Ok(false);
             }
-            let protected: i64 = tx.query_row("SELECT count(*) FROM annotations WHERE document_id=?1 AND protected_checkpoint_id=?2", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            let protected: i64 = tx.query_row("SELECT count(*) FROM annotations WHERE document_id=?1 AND protected_checkpoint_id=?2 AND resolved_at IS NULL", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if protected != 0 { return Ok(false); }
             let labeled: i64 = tx.query_row("SELECT count(*) FROM checkpoints WHERE document_id=?1 AND id=?2 AND label IS NOT NULL", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if labeled != 0 { return Ok(false); }
