@@ -15,23 +15,18 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rusqlite::OptionalExtension;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::auth::{link_sealing_keyring_file, session_key_file};
 use crate::cli::{server_or_die, stored_token_for};
 use crate::config::Configuration;
 use crate::document::render::{is_latex, is_markdown, is_typst, render_markdown_document};
 use crate::document::store::{example_suffix, slugify, Publication, Store};
 use crate::http::{detail_of, get_json, post_directory, post_json, text};
-use crate::room::{Comment, Message, Region, Reply, Room, RoomSet, SourceAnchor};
-use crate::storage::blob::clear_storage_checked;
+use crate::room::{Message, Region, SourceAnchor};
 use crate::storage::{open_storage, StorageOptions};
 #[cfg(not(test))]
 use crate::util::die;
-use crate::util::new_id;
-use crate::util::timestamp;
 
 #[cfg(test)]
 fn die(message: impl std::fmt::Display) -> ! {
@@ -144,7 +139,7 @@ pub fn latex_prose(source: &str) -> String {
 }
 
 pub async fn seed(options: StorageOptions, owner: &str, documents: &[SeedDocument]) {
-    seed_with_backup(options, owner, documents, None).await;
+    seed_with_backup(options, owner, documents, None).await
 }
 
 pub async fn seed_with_backup(
@@ -153,443 +148,86 @@ pub async fn seed_with_backup(
     documents: &[SeedDocument],
     backup: Option<&std::path::Path>,
 ) {
-    let paths = options.paths().unwrap_or_else(|err| die(err));
     let blobs = open_storage(options.clone())
         .await
-        .unwrap_or_else(|err| die(err));
-    let config = Arc::new(Configuration::default());
-    let lock = crate::server::serve::acquire_writer_lock(&paths.writer_lock)
-        .unwrap_or_else(|err| die(err));
-    let catalog_path = &paths.catalog;
+        .unwrap_or_else(|e| die(e));
+    let mut pg = crate::storage::postgres::PostgresOptions::new(&options.database_url);
+    pg.max_connections = options.database_connections;
     let catalog = Arc::new(
-        crate::storage::catalog::Catalog::open_with(catalog_path, options.fsync)
-            .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
+        crate::storage::postgres::PostgresCatalog::connect(pg)
+            .await
+            .unwrap_or_else(|e| die(e)),
     );
-    let catalog_nonempty = catalog
-        .totals()
-        .map(|(_, documents)| documents != 0)
-        .unwrap_or_else(|err| die(format!("could not inspect catalogue: {err}")));
-    let deployment_id = paths
-        .ensure_deployment_identity(catalog_nonempty)
-        .unwrap_or_else(|err| die(err));
-    if catalog_nonempty {
-        let backup = backup.unwrap_or_else(|| {
-            die("refusing to reset a nonempty deployment without --backup <verified-point>")
-        });
-        crate::storage::backup_v2::verify_seed_backup(&catalog, &paths, backup)
-            .await
-            .unwrap_or_else(|err| die(err));
-    }
-    let secrets = &paths.secrets;
-    let link_keys = link_sealing_keyring_file(&secrets.join("links.key"), catalog_nonempty)
-        .unwrap_or_else(|err| die(err));
-    session_key_file(&secrets.join("session.key"), catalog_nonempty).unwrap_or_else(|err| die(err));
-    catalog
-        .set_link_sealing_key(&link_keys[0])
-        .unwrap_or_else(|err| die(format!("could not configure link sealing: {err}")));
-    let marker = paths.state.join("seed-reset.json");
-    let marker_body = serde_json::json!({
-        "deployment_id": deployment_id,
-        "backup": backup.map(|path| path.display().to_string()),
-        "stage": "prepared",
-    });
-    write_seed_marker(&marker, &marker_body)
-        .unwrap_or_else(|err| die(format!("could not write seed reset marker: {err}")));
-    seed_into_catalog(blobs, config, owner, documents, catalog, &marker).await;
-    update_seed_marker(&marker, "seeded")
-        .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
-    let _ = std::fs::remove_file(marker);
-    drop(lock);
-}
-
-fn reset_catalog(catalog: &crate::storage::catalog::Catalog) -> Result<(), String> {
-    catalog
-        .with_connection(|connection| {
-            // Foreign-key-safe order.  The seed command is explicitly a
-            // destructive replacement of the demonstration deployment.
-            connection
-                .execute_batch(
-                    "BEGIN IMMEDIATE;
-                     UPDATE documents SET current_checkpoint_id=NULL,
-                         journal_base_object_id=NULL, journal_base_sequence=0,
-                         publication_object_id=NULL,
-                         publication_id=NULL, published_at=NULL;
-                     DELETE FROM object_leases;
-                     DELETE FROM checkpoint_objects;
-                     DELETE FROM replies;
-                     DELETE FROM annotations;
-                     DELETE FROM checkpoints;
-                     DELETE FROM grants;
-                     DELETE FROM links;
-                     DELETE FROM objects;
-                     DELETE FROM operations;
-                     DELETE FROM documents;
-                     DELETE FROM accounts;
-                     UPDATE server_state SET catalog_revision=0,
-                         stored_bytes=0, reserved_bytes=0, document_count=0,
-                         agent_payload_bytes=0, agent_payload_count=0,
-                         checkpoint_ref_count=0, updated_at=0 WHERE id=1;
-                     COMMIT;",
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .map_err(|err| format!("could not reset catalogue before seeding: {err}"))
-}
-
-/// Reset a test deployment's objects and catalogue, then seed through the
-/// same v2 writer used by `librepaper admin seed`. The caller owns the test
-/// deployment and keeps its catalogue outside the blob-store root.
-///
-/// `owner` is the account handle or visitor key the examples belong to, or
-/// "" for nobody. Ownerless examples can be read and commented on, but nobody
-/// can edit or share them. Account onboarding creates separately owned copies
-/// through the ordinary sign-in flow.
-#[cfg(test)]
-pub async fn seed_into(
-    blobs: Arc<dyn crate::storage::blob::BlobStore>,
-    config: Arc<Configuration>,
-    owner: &str,
-    documents: &[SeedDocument],
-    catalog: Arc<crate::storage::catalog::Catalog>,
-) {
-    clear_storage_checked(blobs.as_ref())
+    catalog.migrate().await.unwrap_or_else(|e| die(e));
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM documents")
+        .fetch_one(catalog.pool())
         .await
-        .unwrap_or_else(|err| {
-            die(format!(
-                "could not clear object storage before seeding: {err}"
-            ))
-        });
-    reset_catalog(&catalog).unwrap_or_else(|err| die(err));
-    seed_with_store(blobs, config, owner, documents, Some(catalog)).await;
-}
-
-async fn seed_into_catalog(
-    blobs: Arc<dyn crate::storage::blob::BlobStore>,
-    config: Arc<Configuration>,
-    owner: &str,
-    documents: &[SeedDocument],
-    catalog: Arc<crate::storage::catalog::Catalog>,
-    marker: &Path,
-) {
-    update_seed_marker(marker, "clearing-objects")
-        .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
-    clear_storage_checked(blobs.as_ref())
-        .await
-        .unwrap_or_else(|err| {
-            die(format!(
-                "could not clear object storage before seeding: {err}"
-            ))
-        });
-    update_seed_marker(marker, "objects-cleared")
-        .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
-    // Physical cleanup is the first half of the destructive reset. Only
-    // after every object has a confirmed absent outcome do we remove its
-    // catalogue row and release its counters. This covers allocated PUTs as
-    // well as acknowledged objects.
-    reset_catalog(&catalog).unwrap_or_else(|err| die(err));
-    update_seed_marker(marker, "catalog-reset")
-        .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
-    seed_with_store(blobs, config, owner, documents, Some(catalog)).await;
-}
-
-/// The local examples are administrative products.  Give them the durable
-/// v2 system owner rather than creating an anonymous publishing account for
-/// every fresh seed.  An explicit `--owner` remains the legacy visitor/account
-/// ownership mode and is intentionally left alone.
-async fn ensure_system_seed_account(
-    catalog: &Arc<crate::storage::catalog::Catalog>,
-) -> Result<String, String> {
-    const ID: &str = "system:examples";
-    let kind = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row("SELECT kind FROM accounts WHERE id=?1", [ID], |row| {
-                    row.get::<_, String>(0)
-                })
-                .optional()
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .map_err(|error| error.to_string())?;
-    if let Some(kind) = kind {
-        if kind != "system" {
-            return Err(format!("reserved seed account {ID} has kind {kind:?}"));
-        }
-        return Ok(ID.to_string());
+        .unwrap_or_else(|e| die(e));
+    if count > 0 && backup.is_none() {
+        die("refusing to reset a nonempty deployment without --backup <verified-point>")
     }
-    let preferences = serde_json::to_string(&crate::document::quota::QuotaPreferences::default())
-        .map_err(|error| error.to_string())?;
-    catalog
-        .create_v2_account(
-            &crate::storage::catalog::V2AccountInput {
-                id: ID.to_string(),
-                kind: crate::storage::catalog::AccountKind::System,
-                provider: None,
-                provider_subject: None,
-                handle: "examples".into(),
-                display_name: "Examples".into(),
-                email: None,
-                plan: "default".into(),
-                session_generation: hex::encode(crate::auth::random_bytes(16)),
-                preferences_json: preferences,
-                bookmarks_json: "{\"version\":1,\"items\":[]}".into(),
-                onboarding_json: "{\"version\":1,\"items\":[]}".into(),
-            },
-            crate::storage::catalog::UnixMillis::now(),
-        )
-        .map_err(|error| error.to_string())?;
-    Ok(ID.to_string())
-}
-
-fn write_seed_marker(path: &Path, body: &Value) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "seed reset marker has no parent".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let bytes = serde_json::to_vec(body).map_err(|error| error.to_string())?;
-    let temporary = path.with_extension("tmp");
-    std::fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-    let file = std::fs::File::open(&temporary).map_err(|error| error.to_string())?;
-    file.sync_all().map_err(|error| error.to_string())?;
-    std::fs::rename(&temporary, path).map_err(|error| error.to_string())?;
-    crate::config::DeploymentPaths::protect_file(path)?;
-    std::fs::File::open(parent)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| error.to_string())
-}
-
-fn update_seed_marker(path: &Path, stage: &str) -> Result<(), String> {
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    let mut body: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    body["stage"] = Value::String(stage.to_string());
-    write_seed_marker(path, &body)
-}
-
-async fn seed_with_store(
-    blobs: Arc<dyn crate::storage::blob::BlobStore>,
-    config: Arc<Configuration>,
-    owner: &str,
-    documents: &[SeedDocument],
-    catalog: Option<Arc<crate::storage::catalog::Catalog>>,
-) {
-    let system_owner_id = match &catalog {
-        Some(catalog) if owner.trim().is_empty() => Some(
-            ensure_system_seed_account(catalog)
-                .await
-                .unwrap_or_else(|error| die(format!("could not initialize seed owner: {error}"))),
-        ),
-        _ => None,
-    };
-    let store = match catalog.clone() {
-        Some(catalog) => Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
-            .await
-            .unwrap_or_else(|err| die(err)),
-        None => die("catalog-backed seed requires the deployment catalogue"),
-    };
-    let store = Arc::new(store);
-    let seed_actor = if let Some(owner_id) = &system_owner_id {
-        let catalog = catalog
-            .as_ref()
-            .expect("system seed ownership requires a catalogue");
-        let account = catalog
-            .account(owner_id)
-            .unwrap_or_else(|error| die(format!("could not read seed owner: {error}")))
-            .unwrap_or_else(|| die("seed owner disappeared"));
-        crate::document::store::MutationActor {
-            account_id: account.id,
-            owner_key: String::new(),
-            session_generation: account.session_generation,
-            link_hash: String::new(),
-            policy_editor: true,
-            automation: false,
-            unowned_publisher: false,
-        }
+    if count > 0 {
+        sqlx::query("TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,document_versions,document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE").execute(catalog.pool()).await.unwrap_or_else(|e|die(e));
+    }
+    let handle = if owner.trim().is_empty() {
+        "examples"
     } else {
-        crate::document::store::MutationActor {
-            account_id: String::new(),
-            owner_key: owner.trim().to_lowercase(),
-            session_generation: String::new(),
+        owner.trim()
+    };
+    let account = catalog
+        .create_account(crate::storage::postgres::NewAccount {
+            kind: "system".into(),
+            provider: None,
+            provider_subject: None,
+            handle: handle.into(),
+            display_name: if owner.is_empty() {
+                "Examples".into()
+            } else {
+                owner.into()
+            },
+            email: None,
+        })
+        .await
+        .unwrap_or_else(|e| die(e));
+    let config = Arc::new(Configuration::default());
+    let store = Arc::new(
+        Store::open_with_catalog(blobs.clone(), config, catalog.clone())
+            .await
+            .unwrap_or_else(|e| die(e)),
+    );
+    for document in documents {
+        let (_, source, format) = read_seed_document(document);
+        let main = seed_main(document);
+        let mut files = seed_text_files(document);
+        files.retain(|(path, _)| path != &main);
+        files.extend(seed_assets(document));
+        let slug = format!(
+            "{}-{}",
+            slugify(document.title, &store.config),
+            example_suffix(document.title, &store.config)
+        );
+        let publication = Publication {
+            slug: slug.clone(),
+            title: document.title.into(),
+            source,
+            source_format: format,
+            main,
+        };
+        let actor = crate::document::store::MutationActor {
+            account_id: account.id.to_string(),
+            owner_key: String::new(),
+            session_generation: account.session_generation.to_string(),
             link_hash: String::new(),
             policy_editor: true,
-            automation: false,
-            unowned_publisher: owner.trim().is_empty(),
-        }
-    };
-    let rooms = RoomSet::new(blobs.clone(), config.clone());
-    rooms.attach_store(store.clone());
-    if let Some(catalog) = &store.catalog {
-        let journal_catalog = Arc::new(
-            crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits_and_quota(
-                catalog.clone(),
-                config.persistence(),
-                config.storage.per_owner,
-                config.storage.total,
-            ),
-        );
-        let journal = Arc::new(
-            crate::storage::journal::V2JournalRuntime::with_persistence(
-                journal_catalog,
-                blobs.clone(),
-                config.persistence(),
-            )
-            .unwrap_or_else(|err| die(format!("could not initialize v2 journal: {err}"))),
-        );
-        rooms.attach_journal(journal);
+            unowned_publisher: false,
+        };
+        store
+            .put_directory_as_actor(publication, files, actor)
+            .await
+            .unwrap_or_else(|e| die(e));
+        println!("  {:<28} {}", slug, document.title);
     }
-
-    for document in documents {
-        // Rendered in memory, and not stored: the rendering is here only to
-        // anchor the example annotations against the text a browser will
-        // show, exactly as `visible_text` did when the HTML was stored.
-        let (raw, source, format) = read_seed_document(document);
-        let base = slugify(document.title, &config);
-        let slug = format!("{base}-{}", example_suffix(&base, &config));
-        let main = seed_main(document);
-        let entry = store
-            .put_as_actor(
-                Publication {
-                    slug: slug.clone(),
-                    title: document.title.to_string(),
-                    source: source.clone(),
-                    source_format: format.clone(),
-                    main: main.clone(),
-                    owner_id: String::new(),
-                },
-                seed_actor.clone(),
-            )
-            .await
-            .unwrap_or_else(|err| die(format!("could not store {}: {err}", document.file)));
-
-        // A named seed owner is anonymous at the request boundary, but v2
-        // persists that stable owner key as an anonymous account. Resolve the
-        // account and its live generation before any catalog-backed asset or
-        // checkpoint mutation. Carrying the original owner key as authority
-        // would make those writes look like an unauthenticated caller.
-        let catalog_actor = if let Some(catalog) = store
-            .catalog
-            .as_ref()
-            .filter(|_| seed_actor.account_id.is_empty())
-        {
-            let owner_id = catalog
-                .document(&slug)
-                .unwrap_or_else(|error| die(format!("could not read seeded owner: {error}")))
-                .and_then(|document| document.owner_id)
-                .unwrap_or_else(|| die("seeded anonymous document has no owner account"));
-            let mut account = catalog
-                .account(&owner_id)
-                .unwrap_or_else(|error| {
-                    die(format!("could not read seeded owner account: {error}"))
-                })
-                .unwrap_or_else(|| die("seeded anonymous owner account disappeared"));
-            // Keep the requested display identity while retaining v2's
-            // durable anonymous account and its authorization generation.
-            account.handle = owner.trim().to_lowercase();
-            account.name = owner.trim().to_owned();
-            catalog
-                .upsert_account(&account)
-                .unwrap_or_else(|error| die(format!("could not name seeded owner: {error}")));
-            crate::document::store::MutationActor {
-                account_id: account.id,
-                owner_key: String::new(),
-                session_generation: account.session_generation,
-                link_hash: String::new(),
-                policy_editor: true,
-                automation: false,
-                unowned_publisher: false,
-            }
-        } else {
-            seed_actor.clone()
-        };
-
-        let text = visible_text(&raw);
-        let room = rooms.get(&slug).await;
-        // A seed that could not write its source has nothing to checkpoint;
-        // stopping here is what keeps a half-seeded document out of the
-        // catalogue.
-        if let Err(error) = room.set_main_file(&source, &format, &main).await {
-            die(format!("could not store {}: {error}", document.file));
-        }
-        for (path, bytes) in seed_text_files(document) {
-            let body = std::str::from_utf8(&bytes)
-                .unwrap_or_else(|err| die(format!("{path} is not UTF-8: {err}")));
-            room.add_text(&path, body)
-                .await
-                .unwrap_or_else(|err| die(format!("could not store {path}: {err}")));
-        }
-        let assets = seed_assets(document);
-        for (path, bytes) in &assets {
-            let (sha, _) = room
-                .put_asset_authorized(
-                    bytes.clone(),
-                    (config.max_asset, config.max_assets),
-                    &catalog_actor,
-                )
-                .await
-                .unwrap_or_else(|err| die(format!("could not store {path}: {err}")));
-            room.name_asset(path, &sha)
-                .await
-                .unwrap_or_else(|err| die(format!("could not name {path}: {err}")));
-        }
-        // Seeded and imported documents have no authenticated caller behind
-        // them: the operator ran a command. There is no account to record,
-        // and the empty display name is the one this path has always written.
-        let checkpoint_authority = crate::storage::catalog::MutationAuthority {
-            account_id: &catalog_actor.account_id,
-            owner_key: &catalog_actor.owner_key,
-            generation: &catalog_actor.session_generation,
-            link_hash: &catalog_actor.link_hash,
-            policy_editor: catalog_actor.policy_editor,
-            automation: catalog_actor.automation,
-            unowned_publisher: catalog_actor.unowned_publisher,
-            execution_epoch: "",
-            agent_checkpoint: None,
-        };
-        let checkpoint_display = if seed_actor.account_id.is_empty() {
-            owner.trim()
-        } else if system_owner_id.is_some() {
-            "Examples"
-        } else {
-            owner.trim()
-        };
-        let _checkpoint = match room
-            .checkpoint_now_with_authority(
-                "cli",
-                crate::room::Attribution::account(&catalog_actor.account_id, checkpoint_display),
-                checkpoint_authority,
-            )
-            .await
-        {
-            Ok(Some(sha)) => sha,
-            Ok(None) => die(format!(
-                "could not store {}: checkpoint deferred",
-                document.file
-            )),
-            Err(err) => die(format!("could not store {}: {err}", document.file)),
-        };
-        if store.catalog.is_some() {
-            publish_seed_display(
-                &store,
-                &entry.storage_id,
-                &catalog_actor,
-                &source,
-                &format,
-                &raw,
-                &assets,
-            )
-            .await
-            .unwrap_or_else(|error| die(format!("could not publish {}: {error}", document.file)));
-        }
-        let (placed, missed) =
-            seed_annotations(&room, &document.annotations, &text, &source, &main).await;
-
-        println!("  {:<28} {}", entry.slug, document.title);
-        print!("      {placed} annotation(s)");
-        if missed > 0 {
-            // Worth saying out loud: a phrase that is not in the rendered
-            // document anchors nowhere, and the seed is meant to look right.
-            print!(", {missed} could not be anchored");
-        }
-        println!();
-    }
+    catalog.close().await;
 }
 
 /// Gives a deployment the same curated titles and annotations as the local
@@ -834,265 +472,6 @@ pub fn source_anchor(item: &SeedAnnotation, source: &str, path: &str) -> Option<
     })
 }
 
-fn seed_publication_mime(path: &str) -> &'static str {
-    match Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "css" => "text/css",
-        "csv" => "text/csv",
-        "gif" => "image/gif",
-        "html" => "text/html",
-        "jpeg" | "jpg" => "image/jpeg",
-        "js" | "mjs" => "text/javascript",
-        "json" => "application/json",
-        "pdf" => "application/pdf",
-        "png" => "image/png",
-        "svg" => "image/svg+xml",
-        "txt" | "md" => "text/plain",
-        "wasm" => "application/wasm",
-        _ => "application/octet-stream",
-    }
-}
-
-fn seed_display_html(raw: &str, format: &str) -> Vec<u8> {
-    if matches!(format, "html" | "markdown") {
-        raw.as_bytes().to_vec()
-    } else {
-        format!("<pre>{}</pre>", html_escape::encode_text(raw)).into_bytes()
-    }
-}
-
-#[derive(Serialize)]
-struct SeedBundleAsset<'a> {
-    path: &'a str,
-    sha256: &'a str,
-    bytes: usize,
-    mime: &'a str,
-}
-
-#[derive(Serialize)]
-struct SeedBundle<'a> {
-    html: &'a str,
-    assets: Vec<SeedBundleAsset<'a>>,
-}
-
-async fn publish_seed_display(
-    store: &Arc<Store>,
-    storage_id: &str,
-    actor: &crate::document::store::MutationActor,
-    source: &str,
-    format: &str,
-    rendered: &str,
-    assets: &[(String, Vec<u8>)],
-) -> Result<(), String> {
-    let mut publication_actor = actor.clone();
-    if publication_actor.account_id.is_empty() && !publication_actor.owner_key.is_empty() {
-        let catalog = store
-            .catalog
-            .as_ref()
-            .ok_or_else(|| "anonymous seed publication requires a catalogue".to_string())?;
-        let storage = storage_id.to_owned();
-        let slug = catalog
-            .execute_catalog(storage.len(), move |catalog| {
-                catalog.slug_by_storage_id(&storage)
-            })
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "seed publication document disappeared".to_string())?;
-        let slug_for_document = slug.clone();
-        let document = catalog
-            .execute_catalog(slug.len(), move |catalog| {
-                catalog.document(&slug_for_document)
-            })
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "seed publication document disappeared".to_string())?;
-        let owner_id = document
-            .owner_id
-            .ok_or_else(|| "anonymous seed publication has no owner account".to_string())?;
-        let owner = owner_id.clone();
-        let account = catalog
-            .execute_catalog(owner_id.len(), move |catalog| catalog.account(&owner))
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "anonymous seed publication owner disappeared".to_string())?;
-        publication_actor.account_id = account.id;
-        publication_actor.owner_key.clear();
-        publication_actor.session_generation = account.session_generation;
-    }
-    let html = seed_display_html(rendered, format);
-    let html_sha256 = crate::document::store::digest_of_bytes(&html);
-    let mut publication_assets = assets
-        .iter()
-        .map(
-            |(path, bytes)| crate::server::publication::PublicationAsset {
-                path: path.clone(),
-                object: crate::server::publication::PublicationObject {
-                    sha256: crate::document::store::digest_of_bytes(bytes),
-                    bytes: bytes.len(),
-                    mime: seed_publication_mime(path).into(),
-                },
-            },
-        )
-        .collect::<Vec<_>>();
-    publication_assets.sort_by(|left, right| left.path.cmp(&right.path));
-    let bundle_assets = publication_assets
-        .iter()
-        .map(|asset| SeedBundleAsset {
-            path: &asset.path,
-            sha256: &asset.object.sha256,
-            bytes: asset.object.bytes,
-            mime: &asset.object.mime,
-        })
-        .collect::<Vec<_>>();
-    let bundle = serde_json::to_vec(&SeedBundle {
-        html: &html_sha256,
-        assets: bundle_assets,
-    })
-    .map_err(|error| error.to_string())?;
-    let manifest = crate::server::publication::PublicationManifest {
-        publication_id: crate::storage::catalog::ObjectId::new(hex::encode(
-            crate::auth::random_bytes(16),
-        ))
-        .expect("random publication id is valid")
-        .to_string(),
-        bundle_sha256: crate::document::store::digest_of_bytes(&bundle),
-        source_sha256: crate::document::store::digest_of(source),
-        render_config_sha256: crate::document::store::digest_of(format),
-        published_at: timestamp(),
-        publisher: if actor.account_id == "system:examples" {
-            "Examples".into()
-        } else if actor.owner_key.is_empty() {
-            "Anonymous".into()
-        } else {
-            actor.owner_key.clone()
-        },
-        previous_publication_id: String::new(),
-        html: crate::server::publication::PublicationObject {
-            sha256: html_sha256,
-            bytes: html.len(),
-            mime: "text/html".into(),
-        },
-        assets: publication_assets,
-    };
-    let publication = crate::server::publication::PublicationStore::for_store(store.clone())
-        .with_actor(publication_actor);
-    let request_id = crate::util::new_request_key();
-    let missing = publication
-        .prepare(
-            storage_id,
-            &request_id,
-            "",
-            &manifest,
-            crate::server::publication::MAX_STAGED_BYTES,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    for hash in missing.hashes {
-        if hash == manifest.html.sha256 {
-            publication
-                .stage_object(
-                    storage_id,
-                    &request_id,
-                    &hash,
-                    false,
-                    &html,
-                    &manifest.html.mime,
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            continue;
-        }
-        let Some((asset, (_, bytes))) = manifest
-            .assets
-            .iter()
-            .filter(|asset| asset.object.sha256 == hash)
-            .find_map(|asset| {
-                assets
-                    .iter()
-                    .find(|(_, bytes)| {
-                        crate::document::store::digest_of_bytes(bytes) == asset.object.sha256
-                    })
-                    .map(|entry| (asset, entry))
-            })
-        else {
-            return Err(format!("publication asset {hash} has no source bytes"));
-        };
-        publication
-            .stage_object(
-                storage_id,
-                &request_id,
-                &hash,
-                false,
-                bytes,
-                &asset.object.mime,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    publication
-        .activate(storage_id, &request_id, "", &manifest)
-        .await
-        .map_err(|error| error.to_string())
-}
-
-/// Writes one document's annotations, anchoring each to where its passage
-/// actually appears.
-pub async fn seed_annotations(
-    room: &Room,
-    annotations: &[SeedAnnotation],
-    text: &str,
-    source: &str,
-    main_path: &str,
-) -> (usize, usize) {
-    let (mut placed, mut missed) = (0, 0);
-    for item in annotations {
-        let Some(spot) = anchor(item, text) else {
-            missed += 1;
-            continue;
-        };
-        let mut written = Comment {
-            id: new_id(),
-            motivation: item.motivation.into(),
-            exact: item.exact.into(),
-            prefix: spot.prefix,
-            suffix: spot.suffix,
-            position: spot.position,
-            source: source_anchor(item, source, main_path),
-            region: item.region.clone(),
-            body: item.body.into(),
-            creator: item.creator.into(),
-            created: timestamp(),
-            ..Comment::default()
-        };
-        if item.resolved {
-            written.resolved = true;
-            written.resolved_at = Some(timestamp());
-        }
-        for answer in &item.replies {
-            written.replies.push(Reply {
-                id: new_id(),
-                body: answer.to_string(),
-                creator: "Reviewer".into(),
-                created: timestamp(),
-                author: String::new(),
-            });
-        }
-        if let Err(err) = room.append_seed_comment(written).await {
-            die(format!(
-                "could not write the seeded comments for {}: {err}",
-                room.slug
-            ));
-        }
-        placed += 1;
-    }
-    (placed, missed)
-}
-
 /// What the reader would anchor against: the document with its markup,
 /// scripts and styles removed. An approximation of what a browser shows,
 /// which is enough to locate a phrase and take its surroundings. All
@@ -1129,148 +508,4 @@ fn tail(text: &str, n: usize) -> String {
         start += 1;
     }
     text[start..].to_string()
-}
-
-#[cfg(test)]
-mod catalog_seed_tests {
-    use super::*;
-
-    fn document(file: &std::path::Path) -> SeedDocument {
-        SeedDocument {
-            file: file.display().to_string(),
-            files: Vec::new(),
-            assets: vec!["asset.txt".into(), "style.css".into()],
-            title: "Catalog seed fixture",
-            annotations: vec![SeedAnnotation {
-                motivation: "commenting",
-                exact: "seed phrase",
-                body: "seed comment",
-                creator: "Seed display",
-                replies: vec!["seed reply"],
-                ..SeedAnnotation::default()
-            }],
-        }
-    }
-
-    #[tokio::test]
-    async fn catalog_seed_uses_system_owner_and_publishes_typed_annotations() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("example.md");
-        std::fs::write(&source, "seed phrase").unwrap();
-        std::fs::write(root.path().join("asset.txt"), "seed asset").unwrap();
-        std::fs::write(root.path().join("style.css"), "body { color: red; }").unwrap();
-        let catalog = Arc::new(
-            crate::storage::catalog::Catalog::open(root.path().join("catalog.db")).unwrap(),
-        );
-        let blobs = Arc::new(crate::storage::blob::FsStore::new(root.path(), true));
-        seed_with_store(
-            blobs.clone(),
-            Arc::new(Configuration::default()),
-            "",
-            &[document(&source)],
-            Some(catalog.clone()),
-        )
-        .await;
-        let slug = format!(
-            "catalog-seed-fixture-{}",
-            example_suffix("catalog-seed-fixture", &Configuration::default())
-        );
-        let row = catalog.document(&slug).unwrap().unwrap();
-        assert_eq!(row.owner_id.as_deref(), Some("system:examples"));
-        assert!(row.example);
-        assert_eq!(row.status, "active");
-        let comment = catalog.comments(&slug, None, 10).unwrap().remove(0);
-        assert_eq!(comment.creator, "Seed display");
-        assert_eq!(catalog.replies(&slug, &comment.id, 10).unwrap().len(), 1);
-        let reader = Arc::new(
-            Store::open_with_catalog(
-                blobs.clone(),
-                Arc::new(Configuration::default()),
-                catalog.clone(),
-            )
-            .await
-            .unwrap(),
-        );
-        let publication = crate::server::publication::PublicationStore::for_store(reader);
-        let manifest = publication
-            .current(&row.storage_id)
-            .await
-            .unwrap()
-            .expect("seed display publication");
-        assert!(!manifest.publication_id.is_empty());
-        assert_eq!(manifest.html.mime, "text/html");
-        assert_eq!(manifest.assets.len(), 2);
-        let (_, html) = publication
-            .deliver(&row.storage_id, "index.html")
-            .await
-            .unwrap();
-        let html = String::from_utf8(html).unwrap();
-        assert!(html.contains("seed phrase"));
-        assert!(
-            html.contains("<p>"),
-            "seed served source markdown instead of rendered HTML: {html}"
-        );
-        let (_, asset) = publication
-            .deliver(&row.storage_id, "asset.txt")
-            .await
-            .unwrap();
-        assert_eq!(asset, b"seed asset");
-        let (_, stylesheet) = publication
-            .deliver(&row.storage_id, "style.css")
-            .await
-            .unwrap();
-        assert_eq!(stylesheet, b"body { color: red; }");
-        let kind: String = catalog
-            .with_connection(|connection| {
-                connection
-                    .query_row(
-                        "SELECT kind FROM accounts WHERE id='system:examples'",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .map_err(crate::storage::catalog::CatalogError::from)
-            })
-            .unwrap();
-        assert_eq!(kind, "system");
-    }
-
-    #[tokio::test]
-    async fn catalog_seed_with_owner_keeps_anonymous_owner_kind() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("owned.md");
-        std::fs::write(&source, "seed phrase").unwrap();
-        std::fs::write(root.path().join("asset.txt"), "seed asset").unwrap();
-        std::fs::write(root.path().join("style.css"), "body { color: red; }").unwrap();
-        let catalog = Arc::new(
-            crate::storage::catalog::Catalog::open(root.path().join("catalog.db")).unwrap(),
-        );
-        let blobs = Arc::new(crate::storage::blob::FsStore::new(root.path(), true));
-        seed_with_store(
-            blobs.clone(),
-            Arc::new(Configuration::default()),
-            "Alice",
-            &[document(&source)],
-            Some(catalog.clone()),
-        )
-        .await;
-        let slug = format!(
-            "catalog-seed-fixture-{}",
-            example_suffix("catalog-seed-fixture", &Configuration::default())
-        );
-        let row = catalog.document(&slug).unwrap().unwrap();
-        let owner_id = row.owner_id.clone().unwrap();
-        let kind: String = catalog
-            .with_connection(|connection| {
-                connection
-                    .query_row(
-                        "SELECT kind FROM accounts WHERE id=?1",
-                        [&owner_id],
-                        |row| row.get(0),
-                    )
-                    .map_err(crate::storage::catalog::CatalogError::from)
-            })
-            .unwrap();
-        assert_eq!(kind, "anonymous");
-        assert!(!row.example);
-    }
 }

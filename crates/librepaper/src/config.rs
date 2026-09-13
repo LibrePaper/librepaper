@@ -16,12 +16,9 @@ pub const DEFAULT_LATEX_MIRROR: &str = "https://latex.librepaper.workers.dev/";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeploymentPaths {
     pub deployment: PathBuf,
-    pub catalog: PathBuf,
     pub objects: PathBuf,
     pub state: PathBuf,
     pub secrets: PathBuf,
-    pub writer_lock: PathBuf,
-    pub deployment_identity: PathBuf,
 }
 
 impl DeploymentPaths {
@@ -29,11 +26,8 @@ impl DeploymentPaths {
         let deployment = deployment.into();
         let state = deployment.join("state");
         Self {
-            catalog: deployment.join("catalog.db"),
             objects: deployment.join("objects"),
             secrets: deployment.join("secrets"),
-            writer_lock: state.join("writer.lock"),
-            deployment_identity: state.join("deployment.id"),
             state,
             deployment,
         }
@@ -75,61 +69,6 @@ impl DeploymentPaths {
         }
         Ok(())
     }
-
-    /// Return the persistent random identity for this deployment. A missing
-    /// identity is only repaired for an empty local deployment; changing the
-    /// identity of a non-empty catalogue would make journal and backup
-    /// namespaces ambiguous after a restore.
-    pub fn ensure_deployment_identity(&self, catalog_nonempty: bool) -> Result<String, String> {
-        match std::fs::read_to_string(&self.deployment_identity) {
-            Ok(value) => {
-                let value = value.trim().to_string();
-                if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                    return Err(format!(
-                        "deployment identity {} is not a 256-bit hex id",
-                        self.deployment_identity.display()
-                    ));
-                }
-                Ok(value)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !catalog_nonempty => {
-                let value = hex::encode(rand::random::<[u8; 32]>());
-                if let Some(parent) = self.deployment_identity.parent() {
-                    std::fs::create_dir_all(parent).map_err(|error| {
-                        format!("could not create {}: {error}", parent.display())
-                    })?;
-                }
-                let temporary = self.deployment_identity.with_extension("tmp");
-                std::fs::write(&temporary, format!("{value}\n"))
-                    .map_err(|error| format!("could not write deployment identity: {error}"))?;
-                Self::protect_file(&temporary)?;
-                std::fs::File::open(&temporary)
-                    .and_then(|file| file.sync_all())
-                    .map_err(|error| {
-                        format!("could not persist deployment identity contents: {error}")
-                    })?;
-                std::fs::rename(&temporary, &self.deployment_identity)
-                    .map_err(|error| format!("could not publish deployment identity: {error}"))?;
-                Self::protect_file(&self.deployment_identity)?;
-                if let Some(parent) = self.deployment_identity.parent() {
-                    let directory = std::fs::File::open(parent)
-                        .map_err(|error| format!("could not open identity directory: {error}"))?;
-                    directory.sync_all().map_err(|error| {
-                        format!("could not persist deployment identity: {error}")
-                    })?;
-                }
-                Ok(value)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(format!(
-                "nonempty deployment is missing {}",
-                self.deployment_identity.display()
-            )),
-            Err(error) => Err(format!(
-                "could not read {}: {error}",
-                self.deployment_identity.display()
-            )),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -153,12 +92,6 @@ pub struct Configuration {
     /// they count against the owner's quota like everything else stored.
     pub max_assets: i64,
     pub max_asset: i64,
-    /// How long an asset nothing refers to is kept before it is pruned. It
-    /// exists because uploading and naming are two requests: the bytes are
-    /// stored, and the digest is written into the shared document a moment
-    /// later. An asset pruned in that moment would be one somebody had just
-    /// successfully uploaded.
-    pub asset_grace: i64,
     /// Which extensions name a file a person edits, which name bytes nobody
     /// edits in place, and which name what a compiler wrote -- and a document
     /// keeps what a person wrote. Rules rather than constants, so a deployment
@@ -241,8 +174,8 @@ pub struct Configuration {
     pub suffix_length: usize,
 
     /// The persistence policy: what a source may be, what its encoded CRDT
-    /// snapshot may be, and the journal payload and memory budgets that have
-    /// to be able to carry one. Not part of the shell configuration -- a
+    /// snapshot may be, and the transient memory budget that must carry one.
+    /// Not part of the shell configuration -- a
     /// browser has no use for the server's storage ceilings -- so it is
     /// skipped rather than injected. `max_source_bytes` follows
     /// `max_document`; read the pair through [`Configuration::persistence`].
@@ -629,7 +562,6 @@ impl Default for Configuration {
             max_path: 200,
             max_assets: 32 * 1024 * 1024,
             max_asset: 8 * 1024 * 1024,
-            asset_grace: 3600,
             text_extensions: [
                 ".tex",
                 ".typ",
@@ -959,109 +891,10 @@ impl Configuration {
             None,
         );
         add(
-            "persistence.max_queued_payload_bytes",
-            json!(self.persistence.max_queued_payload_bytes),
-            "bytes",
-            "journal queue",
-            None,
-        );
-        add(
             "persistence.max_staging_bytes",
             json!(self.persistence.max_staging_bytes),
             "bytes",
             "persistence memory",
-            None,
-        );
-        add(
-            "catalog.max_executing",
-            json!(crate::storage::catalog::MAX_EXECUTING),
-            "workers",
-            "catalog",
-            None,
-        );
-        add(
-            "catalog.max_queued_bytes",
-            json!(crate::storage::catalog::MAX_QUEUED_BYTES),
-            "bytes",
-            "catalog queue",
-            None,
-        );
-        add(
-            "catalog.max_admitted_requests",
-            json!(crate::storage::catalog::MAX_ADMITTED_REQUESTS),
-            "jobs",
-            "catalog",
-            None,
-        );
-        add(
-            "catalog.max_request_bytes",
-            json!(crate::storage::catalog::MAX_REQUEST_BYTES),
-            "bytes",
-            "catalog job",
-            None,
-        );
-        add(
-            "catalog.max_waiting_producers",
-            json!(crate::storage::catalog::MAX_WAITING_PRODUCERS),
-            "producers",
-            "catalog",
-            None,
-        );
-        let deletion = crate::storage::maintenance::DeletionLimits::default();
-        add(
-            "maintenance.max_jobs",
-            json!(deletion.max_jobs),
-            "jobs",
-            "deletion pass",
-            None,
-        );
-        add(
-            "maintenance.max_object_requests",
-            json!(deletion.max_object_requests),
-            "requests",
-            "deletion pass",
-            None,
-        );
-        add(
-            "maintenance.max_read_bytes",
-            json!(deletion.max_read_bytes),
-            "bytes",
-            "deletion pass",
-            None,
-        );
-        add(
-            "encoding.max_recipe_chunks",
-            json!(crate::storage::encoding::MAX_RECIPE_CHUNKS),
-            "chunks",
-            "source recipe",
-            None,
-        );
-        add(
-            "encoding.max_recipe_bytes",
-            json!(crate::storage::encoding::MAX_RECIPE_BYTES),
-            "bytes",
-            "source recipe",
-            None,
-        );
-        add(
-            "encoding.max_source_bytes",
-            json!(crate::storage::encoding::MAX_SOURCE_BYTES),
-            "bytes",
-            "reconstruction",
-            None,
-        );
-        add(
-            "encoding.max_object_bytes",
-            json!(crate::storage::encoding::MAX_OBJECT_BYTES),
-            "bytes",
-            "source object",
-            None,
-        );
-        add(
-            "encoding.reconstruction_workers",
-            json!(2),
-            "workers",
-            "deployment",
             None,
         );
         add("oauth.requests", json!(16), "requests", "deployment", None);
@@ -1240,8 +1073,8 @@ impl Configuration {
     }
 
     /// The persistence policy this configuration implies: the source ceiling
-    /// an operator set, and the encoded, queue and memory ceilings the
-    /// journal format supports. One value, so admission, publication, append
+    /// an operator set, and the encoded and memory ceilings the collaboration
+    /// storage format supports. One value, so admission, publication, append
     /// and compaction cannot drift apart.
     pub fn persistence(&self) -> PersistenceLimits {
         PersistenceLimits {
@@ -1253,11 +1086,8 @@ impl Configuration {
     /// Overrides the document size ceiling, in megabytes. `None` leaves the
     /// default alone.
     ///
-    /// The ceiling used to run to a hundred megabytes, which was a promise
-    /// this deployment could not keep: the journal queue holds sixty-four and
-    /// a recovery base decodes sixty-four, so a document accepted at the old
-    /// maximum could be admitted and then never durably saved. The supported
-    /// maximum is now whatever [`PersistenceLimits::validate`] accepts.
+    /// The supported maximum is whatever [`PersistenceLimits::validate`]
+    /// accepts for collaboration recovery and bounded transient memory.
     pub fn set_max_document(&mut self, megabytes: Option<usize>) -> Result<(), String> {
         let Some(megabytes) = megabytes else {
             return Ok(());
@@ -1434,18 +1264,8 @@ pub const DEFAULT_MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 /// metadata that grow beside the visible text.
 pub const SUPPORTED_MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 
-/// `E`: the largest encoded CRDT snapshot this deployment will write. It has
-/// to be inside the recovery-base payload ceiling and inside the aggregate
-/// journal payload budget, because a snapshot that cannot be replayed or
-/// queued is a snapshot that cannot be acknowledged.
+/// `E`: the largest encoded CRDT snapshot this deployment will write.
 pub const DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
-
-/// `Q`: aggregate queued plus executing journal payload budget, shared by
-/// every room. It matches the coordinator's own queue ceiling; the
-/// coordinator additionally holds a sealed operation's bytes against this
-/// budget until the operation settles, so a burst of large rooms cannot
-/// enqueue a second round while the first is still in object I/O.
-pub const DEFAULT_MAX_QUEUED_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// `M`: the memory admission for the transient copies persistence makes
 /// around one snapshot -- construction, staging, encoded segment bodies,
@@ -1460,24 +1280,14 @@ pub const DEFAULT_MAX_STAGING_BYTES: usize = 512 * 1024 * 1024;
 /// recounting them makes the memory admission a decoration.
 pub const SNAPSHOT_COPY_FACTOR: usize = 8;
 
-/// The one relationship this deployment supports between what a person may
-/// write, what a CRDT snapshot of it encodes to, and what the journal can
-/// carry to storage.
-///
-/// It exists because the three used to be set independently: `--document-size-limit`
-/// accepted a hundred megabytes of source while the journal queue held
-/// sixty-four and a recovery base could decode sixty-four, so a deployment
-/// could be configured to accept work it could never durably save. Every
-/// caller that admits, appends, or compacts asks this one value instead of
-/// its own constant.
+/// The relationship between visible source, encoded collaboration state, and
+/// the transient memory needed to validate and compact that state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PersistenceLimits {
     /// `S`: the configured source-byte ceiling, which is `max_document`.
     pub max_source_bytes: usize,
     /// `E`: the supported encoded CRDT snapshot ceiling.
     pub max_encoded_snapshot_bytes: usize,
-    /// `Q`: the aggregate queued plus executing journal payload budget.
-    pub max_queued_payload_bytes: usize,
     /// `M`: the memory admission for transient persistence copies.
     pub max_staging_bytes: usize,
 }
@@ -1487,7 +1297,6 @@ impl Default for PersistenceLimits {
         Self {
             max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
             max_encoded_snapshot_bytes: DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES,
-            max_queued_payload_bytes: DEFAULT_MAX_QUEUED_PAYLOAD_BYTES,
             max_staging_bytes: DEFAULT_MAX_STAGING_BYTES,
         }
     }
@@ -1507,11 +1316,6 @@ impl PersistenceLimits {
     /// ceiling near `usize::MAX` gets a configuration error rather than a
     /// wrapped comparison that silently admits everything.
     pub fn validate(&self) -> Result<(), String> {
-        use crate::storage::journal::{
-            record_framing_bytes, MAX_JOURNAL_IDENTITY_BYTES, MAX_METADATA_BYTES,
-            MAX_RECORDS_PER_SEGMENT, MAX_RECORD_BYTES, MAX_RECORD_CHUNK_BYTES,
-            MAX_RECOVERY_BASE_PAYLOAD_BYTES, MAX_SEGMENT_BYTES, SEGMENT_HEADER_BYTES,
-        };
         if self.max_source_bytes == 0 {
             return Err("the document size ceiling must be positive".into());
         }
@@ -1519,7 +1323,7 @@ impl PersistenceLimits {
             return Err(format!(
                 "a document source ceiling of {} MB is not supported; the maximum is {} MB, \
                  because a larger source cannot be guaranteed to encode inside the {} MB \
-                 snapshot ceiling this journal format can save",
+                 collaboration snapshot ceiling this deployment can save",
                 self.max_source_bytes >> 20,
                 SUPPORTED_MAX_SOURCE_BYTES >> 20,
                 self.max_encoded_snapshot_bytes >> 20,
@@ -1535,49 +1339,6 @@ impl PersistenceLimits {
         }
         if self.max_encoded_snapshot_bytes == 0 {
             return Err("the encoded snapshot ceiling must be positive".into());
-        }
-        if self.max_encoded_snapshot_bytes > MAX_RECOVERY_BASE_PAYLOAD_BYTES {
-            return Err(format!(
-                "the encoded snapshot ceiling ({} MB) exceeds the recovery base payload \
-                 ceiling ({} MB); such a snapshot could be written and never recovered",
-                self.max_encoded_snapshot_bytes >> 20,
-                MAX_RECOVERY_BASE_PAYLOAD_BYTES >> 20,
-            ));
-        }
-        if self.max_encoded_snapshot_bytes > self.max_queued_payload_bytes {
-            return Err(format!(
-                "the journal payload budget ({} MB) cannot process one maximum snapshot \
-                 ({} MB)",
-                self.max_queued_payload_bytes >> 20,
-                self.max_encoded_snapshot_bytes >> 20,
-            ));
-        }
-        // Framing: one maximum snapshot has to chunk into records that each
-        // fit a record, and one record has to fit a segment beside its header.
-        if MAX_RECORD_CHUNK_BYTES == 0 || MAX_RECORD_CHUNK_BYTES > MAX_RECORD_BYTES {
-            return Err("invalid journal record framing limits".into());
-        }
-        let framed = SEGMENT_HEADER_BYTES
-            .checked_add(MAX_RECORD_CHUNK_BYTES)
-            .and_then(|bytes| bytes.checked_add(record_framing_bytes(MAX_JOURNAL_IDENTITY_BYTES)))
-            .ok_or_else(|| "journal record framing overflows".to_string())?;
-        if framed > MAX_SEGMENT_BYTES {
-            return Err(format!(
-                "a framed journal record ({framed} bytes) does not fit a segment \
-                 ({MAX_SEGMENT_BYTES} bytes)"
-            ));
-        }
-        if MAX_METADATA_BYTES == 0 || MAX_METADATA_BYTES > MAX_SEGMENT_BYTES {
-            return Err("invalid journal metadata limit".into());
-        }
-        let fragments = self
-            .max_encoded_snapshot_bytes
-            .div_ceil(MAX_RECORD_CHUNK_BYTES);
-        if u32::try_from(fragments).is_err() || fragments > MAX_RECORDS_PER_SEGMENT {
-            return Err(format!(
-                "one maximum snapshot needs {fragments} record fragments, more than the \
-                 journal can seal"
-            ));
         }
         let peak = self
             .max_encoded_snapshot_bytes
@@ -1606,65 +1367,22 @@ pub enum SizeRefusal {
     Encoded { bytes: usize, ceiling: usize },
 }
 
-/// Why a proposed write cannot be saved *now*. The same work may succeed once
-/// another operation settles, which is why this is never reported as a
-/// document that can never fit.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CapacityRefusal {
-    /// `Q` is exhausted: queued plus executing journal payload.
-    JournalQueue,
-    /// `M` is exhausted: transient persistence memory.
-    StagingMemory,
-    /// The shared compaction maintenance reserve is exhausted.
-    MaintenanceReserve,
-}
-
-/// The narrow typed refusal the size-limit work needs. Track 6 will
-/// generalize write errors; this exists so that permanent and temporary
-/// refusals stop sharing one string today.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WriteRefusal {
-    Permanent(SizeRefusal),
-    Temporary(CapacityRefusal),
-}
-
-impl WriteRefusal {
-    pub fn is_permanent(&self) -> bool {
-        matches!(self, Self::Permanent(_))
-    }
-
-    /// The wording a socket, a route, or the command line shows. A temporary
-    /// refusal always says to try again; a permanent one never does.
+impl SizeRefusal {
     pub fn message(&self) -> String {
         match self {
-            Self::Permanent(SizeRefusal::Source { bytes, ceiling }) => format!(
+            Self::Source { bytes, ceiling } => format!(
                 "this document is {} MB of text, past the {} MB this deployment accepts",
                 bytes >> 20,
                 ceiling >> 20
             ),
-            Self::Permanent(SizeRefusal::Encoded { bytes, ceiling }) => format!(
+            Self::Encoded { bytes, ceiling } => format!(
                 "this document's saved state would be {} MB, past the {} MB this deployment \
                  can durably save; its edit history and metadata count towards that as well \
                  as its text",
                 bytes >> 20,
                 ceiling >> 20
             ),
-            Self::Temporary(CapacityRefusal::JournalQueue) => {
-                "this deployment is saving as much as it can hold; try again in a moment".into()
-            }
-            Self::Temporary(CapacityRefusal::StagingMemory) => {
-                "this deployment has no free memory for another save; try again in a moment".into()
-            }
-            Self::Temporary(CapacityRefusal::MaintenanceReserve) => {
-                "this deployment is compacting as much as it can hold; try again in a moment".into()
-            }
         }
-    }
-}
-
-impl std::fmt::Display for WriteRefusal {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message())
     }
 }
 

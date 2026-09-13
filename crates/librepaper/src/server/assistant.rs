@@ -137,7 +137,6 @@ impl Server {
                     session_generation: current_who.id.session_generation.clone(),
                     link_hash: current_who.link.clone(),
                     policy_editor: self.publishers.allows(&current_who.id.handle),
-                    automation: true,
                     unowned_publisher: false,
                 },
             )

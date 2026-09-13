@@ -49,7 +49,7 @@ fn operator_commands_are_only_exposed_under_admin() {
     assert!(output.status.success(), "{output:?}");
     let help = String::from_utf8_lossy(&output.stdout);
 
-    for command in ["serve", "status", "key", "seed", "backup"] {
+    for command in ["serve", "status", "seed", "backup"] {
         assert!(
             lists_command(&help, command),
             "operator command {command:?} is absent from admin help:\n{help}"
@@ -60,7 +60,6 @@ fn operator_commands_are_only_exposed_under_admin() {
 #[test]
 fn compound_resources_use_subcommand_namespaces() {
     for (path, commands) in [
-        (&["admin", "key"][..], &["rotate"][..]),
         (&["admin", "backup"][..], &["create", "restore"][..]),
         (&["local", "quarto"][..], &["bind", "unbind", "list"][..]),
     ] {

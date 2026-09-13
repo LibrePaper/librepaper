@@ -26,20 +26,19 @@ use crate::document::history::{Checkpoint, Manifest};
 use crate::document::session;
 use crate::storage::blob::BlobStore;
 use crate::util::{clean, new_id};
-use crate::util::{now_unix, parse_timestamp, timestamp};
+use crate::util::{now_unix, timestamp};
 
 pub(crate) mod agent;
 pub(crate) mod agent_comments;
 mod agent_view;
 mod catalog;
-mod checkpoint;
+pub(crate) mod checkpoint;
 mod command;
 mod comments;
 pub(crate) mod error;
 mod figures;
 pub(crate) mod outgoing;
 mod resident;
-mod retention;
 pub(crate) mod revisions;
 mod suggestions;
 pub(crate) mod text;
@@ -183,6 +182,8 @@ pub struct Peer {
 /// once from the source the document was created with.
 pub struct Session {
     pub doc: yrs::Doc,
+    /// Highest PostgreSQL collaboration sequence merged into this room.
+    pub durable_sequence: i64,
     /// Whether the document has changed since `sessions/<slug>` was written.
     pub dirty: bool,
     /// Start of the current dirty interval. It is deliberately not refreshed
@@ -192,9 +193,9 @@ pub struct Session {
     /// this survives durable session writes and resets only when a checkpoint
     /// captures the current generation.
     pub pending_checkpoint_since: i64,
-    /// Last successful durable snapshot, used for the deployment-wide flush
-    /// floor. It is separate from checkpoint time: a busy room still gets a
-    /// bounded journal flush cadence without creating history entries.
+    /// Last successful durable update, used for the deployment-wide flush
+    /// floor. It is separate from version time: a busy room still gets a
+    /// bounded flush cadence without creating history entries.
     pub last_persist_at: i64,
     /// Bumped on every mutation that changes the document or how its files
     /// are named -- an edit, a main-file change, a restore, an asset naming.
@@ -210,8 +211,7 @@ pub struct Session {
     ///
     /// A v1 update carries every block it inserts, so the snapshot after
     /// applying an update is at most the snapshot before plus that update's
-    /// own length; deletions only shrink it. That is the same bound the quota
-    /// reservation has always leaned on. Keeping it here is what lets the
+    /// own length; deletions only shrink it. Keeping it here is what lets the
     /// encoded ceiling be decided on every keystroke without encoding the
     /// whole document each time. Any mutation that is not a measured update
     /// clears it through `mark_dirty`, and the next exact encode -- a persist,
@@ -237,21 +237,11 @@ pub struct Session {
     pub last_checkpoint: String,
     /// What the source is written in, which travels with every checkpoint.
     pub format: String,
-    /// The tree the last checkpoint recorded, so the next one can say which
-    /// paths moved without reading it back. Empty on a cold room, and filled
-    /// from storage by the first checkpoint that needs it.
-    pub last_tree: Option<crate::document::history::Tree>,
     /// Every asset this document holds, by digest, and what it costs. Read
     /// once when the room is loaded and added to by each upload, because a
     /// checkpoint has to record what a figure weighs and the shared document
     /// carries only its name.
     pub asset_sizes: HashMap<String, i64>,
-    /// When each asset was written here, for the grace period. Uploading a
-    /// figure and naming it are two requests, and an asset pruned in between
-    /// is one somebody had just successfully uploaded. Held in memory only:
-    /// the gap it covers is seconds, and a server that restarted in the middle
-    /// of it has lost the upload anyway.
-    pub asset_written_at: HashMap<String, i64>,
 }
 
 impl Session {
@@ -322,7 +312,6 @@ pub struct Room {
     /// Legacy/isolated rooms fall back to their slug.
     storage_id: String,
     blobs: Arc<dyn BlobStore>,
-    checkpoint_cache: Arc<crate::document::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     /// True when another server holds this room's lock: it can be read and
     /// served, but nothing here may write over what that server is doing.
@@ -334,22 +323,13 @@ pub struct Room {
     /// companion to that flag and never a substitute for the durable
     /// catalogue generation checks a write still makes.
     fence_reason: std::sync::atomic::AtomicU8,
-    /// How many checkpoints of this room are between their first write and
-    /// their last. The blob sweep at the end of a checkpoint deletes what no
-    /// tree names, and a checkpoint still on its way to writing its tree has
-    /// blobs nothing names yet; the sweep runs only when it is the sole
-    /// checkpoint in flight, so it can never collect those.
-    checkpointing: std::sync::atomic::AtomicUsize,
     /// The index, for the half of a checkpoint that is bookkeeping: the size a
     /// document's history counts against its owner's quota, and the digest of
     /// the newest checkpoint. Set once, after the store exists, because the
     /// store and the rooms are made in that order.
     store: Arc<std::sync::OnceLock<Arc<crate::document::store::Store>>>,
     /// The authoritative local catalogue. Unattached rooms are read-only.
-    catalog: Arc<std::sync::OnceLock<Arc<crate::storage::catalog::Catalog>>>,
-    /// The local durable edit journal. Legacy fixtures leave this unset;
-    /// production catalog-backed rooms receive it from `serve`.
-    journal: Arc<std::sync::OnceLock<Arc<dyn crate::storage::journal::DocumentJournal>>>,
+    catalog: Arc<std::sync::OnceLock<Arc<crate::storage::postgres::PostgresCatalog>>>,
     /// Serializes session snapshots and conditional writes without blocking edits.
     session_write: Mutex<()>,
     /// Serializes mutations that must remain one publication operation from
@@ -448,103 +428,12 @@ pub enum AcceptError {
 /// (R35) -- see `RoomSet::loading`.
 type LoadingSlot = Arc<Mutex<Option<Arc<Room>>>>;
 
-/// One checkpoint's presence in `Room::checkpointing`, counted in when made
-/// and out when dropped, so an early return counts out as surely as the end
-/// of the function does.
-struct InFlight<'a>(&'a std::sync::atomic::AtomicUsize);
-
-impl<'a> InFlight<'a> {
-    fn new(counter: &'a std::sync::atomic::AtomicUsize) -> Self {
-        counter.fetch_add(1, Ordering::Relaxed);
-        InFlight(counter)
-    }
-}
-
-impl Drop for InFlight<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-/// The two cancellation gates the room tests park a caller in: after an edit
-/// reservation commits, and after a checkpoint's budget admission commits.
-/// Both are the window the completion hook cannot observe, and both are keyed
-/// by slug so tests in one process cannot gate each other's rooms.
-#[cfg(test)]
-pub(crate) struct ReservationGate {
-    pub(crate) slug: String,
-    /// Signalled as a caller enters the window, so a test can act inside it
-    /// rather than wait for a clock.
-    pub(crate) reached: tokio::sync::Notify,
-    /// One permit lets one parked caller out.
-    pub(crate) resume: tokio::sync::Semaphore,
-}
-
-#[cfg(test)]
-impl ReservationGate {
-    pub(crate) fn new(slug: &str) -> Arc<Self> {
-        Arc::new(Self {
-            slug: slug.to_string(),
-            reached: tokio::sync::Notify::new(),
-            resume: tokio::sync::Semaphore::new(0),
-        })
-    }
-
-    /// Park a caller in the window, announcing that it got there.
-    async fn park(gate: &TestGate, slug: &str) {
-        let gate = {
-            let held = match gate.lock() {
-                Ok(held) => held,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            held.as_ref().filter(|gate| gate.slug == slug).cloned()
-        };
-        if let Some(gate) = gate {
-            gate.reached.notify_one();
-            if let Ok(permit) = gate.resume.acquire().await {
-                permit.forget();
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-type TestGate = std::sync::Mutex<Option<Arc<ReservationGate>>>;
-
-#[cfg(test)]
-pub(crate) fn after_edit_reservation_gate() -> &'static TestGate {
-    &catalog::AFTER_EDIT_RESERVATION
-}
-
-#[cfg(test)]
-pub(crate) fn after_checkpoint_admission_gate() -> &'static TestGate {
-    &checkpoint::AFTER_CHECKPOINT_ADMISSION
-}
-
-#[cfg(test)]
-static BEFORE_COMMENT_PERSISTENCE: TestGate = std::sync::Mutex::new(None);
-
-#[cfg(test)]
-pub(crate) fn before_comment_persistence_gate() -> &'static TestGate {
-    &BEFORE_COMMENT_PERSISTENCE
-}
-
-#[cfg(test)]
-pub(crate) use catalog::AcceptanceReceiptGate;
-
-#[cfg(test)]
-pub(crate) fn before_acceptance_receipt_gate(
-) -> &'static std::sync::Mutex<Option<Arc<AcceptanceReceiptGate>>> {
-    &catalog::BEFORE_ACCEPTANCE_RECEIPT
-}
-
 pub struct RoomSet {
     /// Who this server is, in the lock objects it takes. A name rather than a
     /// pid, because a pid means nothing to whoever reads the refusal.
     /// Comments live wherever the documents do. On a bucket that makes the
     /// server genuinely stateless.
     pub blobs: Arc<dyn BlobStore>,
-    checkpoint_cache: Arc<crate::document::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
     /// Serialize capacity decisions, not cached lookups. Never acquire this
@@ -557,10 +446,7 @@ pub struct RoomSet {
     /// was made for finishes, successfully or not.
     loading: Mutex<HashMap<String, LoadingSlot>>,
     store: Arc<std::sync::OnceLock<Arc<crate::document::store::Store>>>,
-    catalog: Arc<std::sync::OnceLock<Arc<crate::storage::catalog::Catalog>>>,
-    journal: Arc<std::sync::OnceLock<Arc<dyn crate::storage::journal::DocumentJournal>>>,
-    /// The native deployment has one writer, held for the server lifetime.
-    deployment_lock: Arc<std::sync::OnceLock<Option<std::fs::File>>>,
+    catalog: Arc<std::sync::OnceLock<Arc<crate::storage::postgres::PostgresCatalog>>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -612,7 +498,7 @@ impl RoomSet {
             for point in &mut state.manifest.checkpoints {
                 if point.by_account.as_deref() == Some(account_id) {
                     point.by_account = None;
-                    point.by = crate::storage::catalog::ERASED_ATTRIBUTION.to_string();
+                    point.by = "Deleted account".to_string();
                 }
             }
             // The pending attribution a quiet, automatic or deferred
@@ -628,42 +514,17 @@ impl RoomSet {
                 }
             }
         }
-        // A room can be evicted and reloaded while the bounded erasure worker
-        // is still draining SQLite.  Invalidate immutable checkpoint reads as
-        // well, so no request can combine a fresh comment list with a stale
-        // cached history object from before the erasure started.
-        self.checkpoint_cache.invalidate_prefix("history/").await;
     }
     pub fn new(blobs: Arc<dyn BlobStore>, config: Arc<Configuration>) -> RoomSet {
         RoomSet {
             blobs,
-            checkpoint_cache: Arc::new(
-                crate::document::checkpoint_cache::CheckpointCache::default(),
-            ),
             config,
             rooms: Mutex::new(HashMap::new()),
             admission: Mutex::new(()),
             loading: Mutex::new(HashMap::new()),
             store: Arc::new(std::sync::OnceLock::new()),
             catalog: Arc::new(std::sync::OnceLock::new()),
-            journal: Arc::new(std::sync::OnceLock::new()),
-            deployment_lock: Arc::new(std::sync::OnceLock::new()),
         }
-    }
-
-    /// Pass the deployment lock acquired by `serve` before constructing the
-    /// server.  The handle is retained here so a room can rely on the same
-    /// process-wide ownership decision without taking a second OS lock.
-    pub fn attach_deployment_lock(&self, lock: std::fs::File) {
-        let _ = self.deployment_lock.set(Some(lock));
-    }
-
-    /// Retain a failed deployment writer claim so all rooms open read-only.
-    /// Production startup exits on a failed claim; embedded callers can
-    /// represent a reader explicitly through this boundary.
-    #[allow(dead_code)]
-    pub fn attach_deployment_lock_unavailable(&self) {
-        let _ = self.deployment_lock.set(None);
     }
 
     /// Hands the rooms the index. Called once, by `Server::new`, because a
@@ -676,13 +537,6 @@ impl RoomSet {
                 let _ = self.catalog.set(catalog.clone());
             }
         }
-    }
-
-    /// Attach the one deployment-wide journal before any room is loaded.
-    /// Existing rooms are never created before Server::new finishes, so a
-    /// once-lock keeps this setup race-free without changing RoomSet's API.
-    pub fn attach_journal(&self, journal: Arc<dyn crate::storage::journal::DocumentJournal>) {
-        let _ = self.journal.set(journal);
     }
 
     /// Explicit production admission. Unlike the compatibility `get` helper,
@@ -801,7 +655,6 @@ impl RoomSet {
         // Production startup owns the deployment writer lock before rooms
         // open. Embedded catalog fixtures can omit the OS lock, while an
         // explicitly failed writer claim always opens read-only.
-        let writer_unavailable = self.deployment_lock.get().is_some_and(Option::is_none);
         let mut catalog_read_failed = false;
         let catalog_document = match self.catalog.get() {
             Some(catalog) => match read_catalog_document(catalog, slug).await {
@@ -830,14 +683,14 @@ impl RoomSet {
                     // the slug and miss its journal/session objects.
                     catalog_document
                         .as_ref()
-                        .map(|document| document.storage_id.clone())
+                        .map(|document| document.id.to_string())
                 }),
                 Err(error) => {
                     eprintln!("warning: could not read catalogue entry {slug}: {error}");
                     catalog_read_failed = true;
                     catalog_document
                         .as_ref()
-                        .map(|document| document.storage_id.clone())
+                        .map(|document| document.id.to_string())
                 }
             }
             .filter(|identity| !identity.is_empty())
@@ -848,11 +701,8 @@ impl RoomSet {
             slug: slug.to_string(),
             storage_id,
             blobs: self.blobs.clone(),
-            checkpoint_cache: self.checkpoint_cache.clone(),
             config: self.config.clone(),
-            read_only: std::sync::atomic::AtomicBool::new(
-                writer_unavailable || deleting || catalog_read_failed,
-            ),
+            read_only: std::sync::atomic::AtomicBool::new(deleting || catalog_read_failed),
             fence_reason: std::sync::atomic::AtomicU8::new(if deleting {
                 FenceReason::Deleted as u8
             } else if catalog_read_failed {
@@ -860,10 +710,8 @@ impl RoomSet {
             } else {
                 FenceReason::HeldElsewhere as u8
             }),
-            checkpointing: std::sync::atomic::AtomicUsize::new(0),
             store: self.store.clone(),
             catalog: self.catalog.clone(),
-            journal: self.journal.clone(),
             session_write: Mutex::new(()),
             publication_write: Mutex::new(()),
             publication_checkpoint: RwLock::new(()),
@@ -880,6 +728,7 @@ impl RoomSet {
                 rate: HashMap::new(),
                 session: Session {
                     doc: session::new_doc(),
+                    durable_sequence: 0,
                     dirty: false,
                     dirty_since: 0,
                     pending_checkpoint_since: 0,
@@ -894,9 +743,7 @@ impl RoomSet {
                     last_checkpoint_at: 0,
                     last_checkpoint: String::new(),
                     format: String::new(),
-                    last_tree: None,
                     asset_sizes: HashMap::new(),
-                    asset_written_at: HashMap::new(),
                 },
                 manifest: Measured::new(Manifest::default()),
                 touched: now_unix(),
@@ -984,16 +831,7 @@ impl RoomSet {
                 let _ = peer.tx.try_send(Outgoing::Close("document deleted".into()));
             }
         }
-        // The deletion worker owns object removal. Keeping all object keys in
-        // the durable queue means a crash after fencing cannot release quota
-        // while an old room/session/checkpoint is still reachable.
-        let object_identity = storage_id.unwrap_or(&room.storage_id);
-        self.checkpoint_cache
-            .invalidate_prefix(&format!("v2/documents/{object_identity}/objects/"))
-            .await;
-        self.checkpoint_cache
-            .invalidate_prefix(&format!("decoded:{object_identity}:"))
-            .await;
+        let _ = storage_id;
         self.rooms.lock().await.remove(slug);
     }
 
@@ -1013,55 +851,18 @@ impl RoomSet {
         };
         // Bound storage concurrency while letting other rooms save during a slow write.
         let idle: Vec<String> = stream::iter(open)
-            .map(|(slug, room)| async move { room.tick().await.then_some(slug) })
+            .map(|(slug, room)| async move {
+                if let Err(error) = room.merge_remote_updates().await {
+                    eprintln!(
+                        "warning: could not merge remote collaboration updates for {slug}: {error}"
+                    );
+                }
+                room.tick().await.then_some(slug)
+            })
             .buffer_unordered(4)
             .filter_map(|slug| async move { slug })
             .collect()
             .await;
-        // A catalogue-backed deployment also schedules documents that are
-        // currently cold.  The persisted clock is the scheduler authority;
-        // loading a bounded page avoids requiring every document to be held
-        // in memory at once, and hard admission simply defers the remainder.
-        if let Some(catalog) = self.catalog.get() {
-            let now = now_unix();
-            let interval = self.config.session.history_interval_seconds;
-            let due = catalog
-                .execute_catalog(DESCRIPTOR_BYTES, move |catalog| {
-                    catalog.documents_due_auto_checkpoint(now, interval, 64)
-                })
-                .await;
-            if let Ok(due) = due {
-                for document in due {
-                    if let Ok(room) = self.try_get(&document.slug).await {
-                        let _ = room.tick().await;
-                        let settled = {
-                            let state = room.state.lock().await;
-                            !state.session.dirty
-                                && state.session.generation == state.session.checkpoint_generation
-                        };
-                        if settled {
-                            // A manual checkpoint can leave this scheduler
-                            // clock stale. Advance examined, unchanged rows so
-                            // the next page of due documents gets its turn.
-                            // The observation above is taken under state and
-                            // the write is made without it: an edit that
-                            // arrives in between only defers this document's
-                            // *automatic* interval by one period, and its own
-                            // quiet-period checkpoint -- a far shorter timer --
-                            // is what actually covers it. Holding state here
-                            // would stall every editor of a document the
-                            // sweeper touches once an interval.
-                            let slug = document.slug.clone();
-                            let _ = catalog
-                                .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-                                    catalog.touch_auto_checkpoint(&slug, now)
-                                })
-                                .await;
-                        }
-                    }
-                }
-            }
-        }
         // Kept for a while after the last socket closes: a reader who
         // reloads the page should not pay for a state transfer from storage.
         // The ceiling in `get` is what bounds the map; this only trims it.
@@ -1075,19 +876,6 @@ impl RoomSet {
                 }
             }
         }
-    }
-
-    /// Reconcile resident manifests after account-wide retention has removed
-    /// cold rows. This is intentionally separate from `sweep`: preference
-    /// grace/application must not alter checkpoint cadence or live saves.
-    pub async fn refresh_retention(&self) {
-        let rooms: Vec<Arc<Room>> = self.rooms.lock().await.values().cloned().collect();
-        stream::iter(rooms)
-            .for_each_concurrent(
-                4,
-                |room| async move { room.refresh_retained_manifest().await },
-            )
-            .await;
     }
 
     /// Estimates may await room state, but never own either registry while
@@ -1105,13 +893,7 @@ impl RoomSet {
     pub async fn cost_snapshot(&self) -> serde_json::Value {
         let count = self.rooms.lock().await.len();
         let bytes = self.cached_bytes().await;
-        let mut value = serde_json::json!({"rooms": count, "resident_bytes": bytes, "loading": self.loading.lock().await.len(), "checkpoint_cache_bytes":self.checkpoint_cache.bytes().await});
-        if let Some(journal) = self.journal.get() {
-            let (queued, executing) = journal.payload_bytes_in_flight().await;
-            let memory = journal.memory();
-            value["persistence"] = serde_json::json!({"queued_bytes":queued,"executing_bytes":executing,"staging_bytes":memory.held_bytes(),"staging_peak_bytes":memory.peak_bytes(),"waiting":memory.waiters()});
-        }
-        value
+        serde_json::json!({"rooms": count, "resident_bytes": bytes, "loading": self.loading.lock().await.len()})
     }
 
     /// Revalidate under the registry before removal. A nonblocking state lock
@@ -1132,7 +914,6 @@ impl RoomSet {
         if !state.sockets.is_empty()
             || state.session.dirty
             || state.session.asked.is_some()
-            || candidate.checkpointing.load(Ordering::Relaxed) != 0
             || stale_at.is_some_and(|now| now.saturating_sub(state.touched) <= 60)
         {
             return false;
@@ -1212,16 +993,7 @@ impl Room {
             .saturating_add(self.config.max_document)
             .saturating_add(4096)
             .min(ceiling);
-        let _permit = self
-            .journal
-            .get()
-            .map(|journal| {
-                journal
-                    .memory()
-                    .try_acquire(crate::config::PersistenceLimits::staging_cost(staging))
-                    .map_err(|_| E::from(WriteError::ServerBusy))
-            })
-            .transpose()?;
+        let _ = staging;
         let candidate = session::edit_candidate(doc);
         session::apply_update(&candidate, &before)
             .map_err(|error| E::from(WriteError::Storage(error)))?;
@@ -1412,11 +1184,11 @@ impl Room {
         .await;
         json!({"type":"revision-decision","revision_id":revision_id,"revision":revision,"request_id":request_id,"durable":true})
     }
-    /// Reports the independently observable live-save and history-checkpoint
+    /// Reports the independently observable live-save and history-version
     /// boundaries without forcing either operation.  `dirty` is cleared only
     /// after the session snapshot has been accepted by storage; generation
     /// coverage is advanced only after the checkpoint is committed.  In
-    /// particular, this does not treat a journal cursor or checkpoint delay
+    /// particular, this does not treat an update sequence or version delay
     /// as proof of the other boundary.
     pub async fn history_durability(&self) -> HistoryDurability {
         let state = self.state.lock().await;
@@ -1428,16 +1200,6 @@ impl Room {
             checkpoint_pending: state.session.generation != state.session.checkpoint_generation
                 || state.session.pending_checkpoint_since > 0
                 || state.session.asked.is_some(),
-        }
-    }
-
-    fn snapshot_budget(&self, bytes: usize) -> i64 {
-        let bytes = bytes.min(i64::MAX as usize) as i64;
-        if self.journal.get().is_some() {
-            // Segment framing, manifest publication and a possible recovery base.
-            bytes.saturating_mul(3).saturating_add(8192)
-        } else {
-            bytes
         }
     }
 
@@ -1463,8 +1225,7 @@ impl Room {
         self.load_session().await;
     }
 
-    /// Recover native journal state, or the current catalog checkpoint when
-    /// no journal state exists. Unattached rooms have no durable source.
+    /// Recover the PostgreSQL collaboration base and ordered update tail.
     async fn load_session(&self) {
         let Some(catalog) = self.catalog.get() else {
             self.fence(FenceReason::UnreadableState);
@@ -1506,235 +1267,61 @@ impl Room {
             })
             .unwrap_or_default();
 
-        let durable_journal_sequence = if let Some(journal) = self.journal.get() {
-            match journal.latest_sequence(&self.storage_id, 0).await {
-                Ok(sequence) => sequence,
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not read the durable journal cursor for {}: {error}",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    0
-                }
+        let document_id = match uuid::Uuid::parse_str(&self.storage_id) {
+            Ok(id) => id,
+            Err(_) => {
+                self.fence(FenceReason::UnreadableState);
+                return;
             }
-        } else {
-            0
         };
-        let stored = if let Some(journal) = self.journal.get() {
-            match journal.recover_latest(&self.storage_id).await {
-                Ok(raw) => raw,
-                Err(err) => {
-                    // A catalogue-backed deployment must not seed over an
-                    // unreadable journal: doing so would fork the live
-                    // document from its committed edits.
-                    eprintln!(
-                        "warning: could not recover the journal for {}: {err}",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    let mut state = self.state.lock().await;
-                    *state.manifest = manifest;
-                    state.session.format = format;
-                    return;
-                }
+        let collaboration = crate::storage::collaboration::CollaborationStorage::new(
+            catalog.clone(),
+            self.blobs.clone(),
+        );
+        let recovered = match collaboration.recover(document_id).await {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "warning: could not recover collaboration state for {}: {error}",
+                    self.slug
+                );
+                self.fence(FenceReason::UnreadableState);
+                return;
             }
+        };
+        let published_seed = if recovered.base.is_none() && recovered.updates.is_empty() {
+            self.published_source(entry.as_ref()).await
         } else {
             None
         };
-
-        // A catalog checkpoint is the authoritative cold-start source when
-        // there is no newer durable journal/session snapshot.  The resident
-        // manifest is only a bounded cache and may have been pruned, so read
-        // the document head from SQL instead of selecting manifest.latest().
-        // Resolve the complete physical closure before touching the live
-        // Y.Doc; falling back to a rendered publication page would collapse a
-        // multifile source tree into one HTML file.
-        let (checkpoint_point, checkpoint_lookup_failed) = {
-            match self.catalog.get() {
-                Some(catalog) => {
-                    let slug = self.slug.clone();
-                    match catalog
-                        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-                            let Some(row) = catalog.current_checkpoint(&slug)? else {
-                                return Ok(None);
-                            };
-                            let point = Manifest::from_catalog_rows(vec![row])
-                                .map_err(crate::storage::catalog::CatalogError::Invalid)?
-                                .checkpoints
-                                .into_iter()
-                                .next()
-                                .ok_or_else(|| {
-                                    crate::storage::catalog::CatalogError::Invalid(
-                                        "current checkpoint row is empty".to_owned(),
-                                    )
-                                })?;
-                            Ok(Some(point))
-                        })
-                        .await
-                    {
-                        Ok(point) => (point, false),
-                        Err(error) => {
-                            eprintln!(
-                                "warning: could not read the current checkpoint for {}: {error}",
-                                self.slug
-                            );
-                            self.fence(FenceReason::UnreadableState);
-                            (None, true)
-                        }
-                    }
-                }
-                None => (None, false),
-            }
-        };
-        let use_v2_checkpoint = stored.is_none() && checkpoint_point.is_some();
-        let checkpoint_seed = if use_v2_checkpoint {
-            let catalog = self
-                .catalog
-                .get()
-                .expect("v2 checkpoint mode has a catalogue");
-            let point = checkpoint_point
-                .as_ref()
-                .expect("v2 checkpoint mode has a point");
-            match self
-                .checkpoint_cache
-                .load_checkpoint_v2(self.blobs.as_ref(), catalog, &self.slug, point)
-                .await
-            {
-                Ok(seed) => Some(seed),
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not load v2 checkpoint {} for {}: {error}",
-                        point.sha, self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let seed = if use_v2_checkpoint || checkpoint_lookup_failed {
-            None
-        } else {
-            match &stored {
-                Some(_) => None,
-                None => self.published_source(entry.as_ref()).await,
-            }
-        };
-        let recovered_from_durable_checkpoint = if checkpoint_seed.is_some() {
-            // A document without a journal was just reconstructed from the
-            // verified current checkpoint. Its first quiet tick is unchanged.
-            true
-        } else if stored.is_some() {
-            if let Some(catalog) = self.catalog.get() {
-                let slug = self.slug.clone();
-                match catalog
-                    .execute_catalog(256, move |catalog| {
-                        catalog.current_checkpoint_journal_fence(&slug)
-                    })
-                    .await
-                {
-                    Ok(Some(matches)) => matches,
-                    _ => false,
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
         let mut state = self.state.lock().await;
         *state.manifest = manifest;
         state.session.format = format;
-        let state_checkpoint = checkpoint_point.as_ref().cloned();
-        if let Some(point) = state_checkpoint {
-            state.session.last_checkpoint = point.sha.clone();
-            state.session.last_checkpoint_at = parse_timestamp(&point.at).unwrap_or(0);
-            // A freshly loaded document has taken no edits yet, so generation
-            // 0 covers whatever the newest checkpoint recorded until proven
-            // otherwise.
-            state.session.checkpoint_generation = 0;
-        }
         let named = entry
             .as_ref()
             .map(|entry| entry.main.clone())
             .unwrap_or_default();
-        match stored {
-            Some(raw) => {
-                // Decoded onto a fresh document first, and installed only if
-                // it actually applies: a session that half-applies onto the
-                // live document is worse than one left alone, since the live
-                // document is what the next persist would write over the
-                // original object with.
-                let candidate = session::new_doc();
-                if session::apply_update(&candidate, &raw).is_ok() {
-                    state.session.doc = candidate;
-                    // A recovered session may contain edits newer than the
-                    // newest checkpoint. Mark that relationship explicitly so
-                    // the hourly scheduler can checkpoint it after restart;
-                    // quiet-time debounce must not be the only trigger.
-                    // `generation` doubles as the next journal sequence for
-                    // local persistence.  It must resume at the recovered
-                    // durable cursor; resetting it to one would make the
-                    // first post-restart edit reuse an old sequence and be
-                    // mistaken for an idempotent retry.
-                    state.session.generation = durable_journal_sequence;
-                    state.session.checkpoint_generation = 0;
-                    state.session.pending_checkpoint_since = now_unix();
-                } else {
-                    eprintln!("warning: unreadable native journal state for {}", self.slug);
-                    self.fence(FenceReason::UnreadableState);
-                }
-            }
-            None => {
-                if let Some((tree, bodies)) = checkpoint_seed {
-                    if let Some(point_format) = checkpoint_point
-                        .as_ref()
-                        .map(|point| point.source_format.as_str())
-                        .filter(|format| {
-                            matches!(*format, "markdown" | "html" | "typst" | "latex" | "quarto")
-                        })
-                    {
-                        state.session.format = point_format.to_owned();
-                    }
-                    session::restore(&state.session.doc, &tree, &bodies);
-                    state.session.last_tree = Some(tree);
-                    state.session.dirty = false;
-                    state.session.pending_checkpoint_since = 0;
-                } else if let Some((source, format)) = seed {
-                    state.session.format = format.clone();
-                    session::replace_text(
-                        &state.session.doc,
-                        &source,
-                        &main_path_for(&named, &format),
-                    );
-                    // Seeded, not edited: what is in the document is what
-                    // storage already says, so there is nothing to write back
-                    // until somebody types.
-                    state.session.dirty = false;
-                }
-            }
+        let candidate = session::new_doc();
+        let mut applied = false;
+        if let Some(base) = recovered.base {
+            applied = session::apply_update(&candidate, &base).is_ok();
         }
-        // A journal-backed room was opened from an already durable snapshot.
-        // Treat that load as the beginning of the next flush interval; the
-        // first edit after a restart must still be acknowledged promptly,
-        // rather than inheriting an artificial fifteen-second delay from the
-        // in-memory default timestamp.
-        if self.journal.get().is_some() && !state.session.dirty {
-            state.session.last_persist_at = now_unix().saturating_sub(15);
+        for update in recovered.updates {
+            applied |= session::apply_update(&candidate, &update.update_bytes).is_ok();
         }
+        if applied {
+            state.session.doc = candidate;
+            state.session.generation = recovered.update_sequence as u64;
+            state.session.durable_sequence = recovered.update_sequence;
+            state.session.dirty = false;
+        } else if let Some((source, format)) = published_seed {
+            state.session.format = format.clone();
+            session::replace_text(&state.session.doc, &source, &main_path_for(&named, &format));
+            state.session.dirty = false;
+        }
+        state.session.last_persist_at = now_unix().saturating_sub(15);
         drop(state);
         self.load_asset_sizes().await;
-        if recovered_from_durable_checkpoint {
-            // The source came from the checkpoint or its exact journal
-            // watermark. Set the quiet comparison after asset sizes are
-            // rehydrated; a newer journal must still checkpoint.
-            let mut state = self.state.lock().await;
-            state.session.last_tree =
-                Some(tree_of(&state.session.doc, &state.session.asset_sizes).0);
-        }
     }
 
     /// What each of this document's figures weighs, read once when the room is
@@ -1742,7 +1329,7 @@ impl Room {
     /// its size, and a checkpoint has to record what the document costs -- so
     /// the answer is read from where the bytes are, which is the store.
     ///
-    /// Rooms resolve their current physical assets through one bounded v2 query and fence on a
+    /// Rooms resolve current asset metadata through one bounded PostgreSQL query and fence on a
     /// missing or unreadable asset instead of deriving an under-sized tree.
     async fn load_asset_sizes(&self) {
         let Some(catalog) = self.catalog.get() else {
@@ -1757,17 +1344,11 @@ impl Room {
         if digests.is_empty() {
             return;
         }
-        let Ok(document_id) = crate::storage::catalog::DocumentId::new(self.storage_id.clone())
-        else {
+        let Ok(document_id) = uuid::Uuid::parse_str(&self.storage_id) else {
             self.fence(FenceReason::UnreadableState);
             return;
         };
-        let sizes = catalog
-            .execute_catalog(digests.len().saturating_mul(64).saturating_add(256), {
-                let digests = digests.clone();
-                move |catalog| catalog.available_asset_sizes(&document_id, &digests)
-            })
-            .await;
+        let sizes = catalog.asset_sizes_by_digests(document_id, &digests).await;
         let Ok(sizes) = sizes else {
             self.fence(FenceReason::UnreadableState);
             return;
@@ -1850,49 +1431,6 @@ impl Room {
     /// Preserve the room's startup, corruption, and lifecycle fences too.
     async fn hold(&self) -> bool {
         !self.read_only() && self.catalog.get().is_some()
-    }
-
-    /// Adds one prepared comment to the room and persists the list, for the
-    /// seeding command -- the one comment writer outside `room/`, and until
-    /// now the one that took no gate at all while writing the same object
-    /// every comment mutation writes.
-    pub(crate) async fn append_seed_comment(&self, mut comment: Comment) -> Result<(), String> {
-        let _comment_writer = self.comment_write.lock().await;
-        let (seq, comments) = {
-            let state = self.state.lock().await;
-            let seq = state.seq.saturating_add(1);
-            comment.seq = seq;
-            let mut comments = state.comments.clone();
-            comments.push(comment);
-            (seq, comments)
-        };
-        self.persist_seed_comments(seq, comments).await
-    }
-
-    /// Persist a seed comment list through the catalog and install it only
-    /// after the durable reconciliation succeeds. Ordinary comment mutations
-    /// use authenticated typed operations instead.
-    async fn persist_seed_comments(&self, seq: i64, comments: Vec<Comment>) -> Result<(), String> {
-        self.persist_comments_inner(seq, comments).await
-    }
-
-    async fn persist_comments_inner(
-        &self,
-        seq: i64,
-        mut comments: Vec<Comment>,
-    ) -> Result<(), String> {
-        if !self.hold().await {
-            return Err("this room is held by another server".into());
-        }
-        if let Some(catalog) = self.catalog.get() {
-            let mut seq = seq;
-            save_catalog_comments(catalog, &self.slug, &mut seq, &mut comments).await?;
-            let mut state = self.state.lock().await;
-            state.seq = state.seq.max(seq);
-            *state.comments = comments;
-            return Ok(());
-        }
-        Err("durable catalog required for comments".into())
     }
 
     /// Every comment, for seeding and for the tests that read a room back.
@@ -2205,26 +1743,10 @@ impl Room {
                 return Applied::Refuse(WriteError::RateLimited);
             }
         }
-        // Admission, the quota reservation, and the apply are three phases,
-        // and only the first and the last need room state. The reservation is
-        // taken with state released so that a document's readers, its socket
-        // attachments and its checkpoints are not stalled for the length of a
-        // SQLite quota decision; what the release costs is that the document
-        // can move underneath us, so the generation observed during admission
-        // is checked before the update is applied and a reservation that no
-        // longer describes the snapshot it was sized for is given back and
-        // taken again. An unreserved update is still never applied or
-        // relayed: nothing below this loop touches the document until a
-        // reservation matching the current generation is in hand.
-        //
-        // Only `restore_and_checkpoint` and suggestion acceptance can move
-        // the generation here -- every other CRDT mutation takes
-        // `publication_write`, which this call holds -- so the retry is rare
-        // and bounded. Exhausting it is reported as saturation rather than as
-        // a size refusal, because the document is fine and reconnecting works.
-        const RESERVATION_ATTEMPTS: usize = 8;
-        let mut attempts = 0usize;
-        let (pending_edit, admitted_bound) = loop {
+        // Validate and bound the candidate while holding room state. Durable
+        // quota is charged when an immutable version or asset is committed;
+        // live CRDT updates do not reserve estimated physical bytes.
+        let admitted_bound = {
             let decoded = match session::decode_update(update) {
                 Ok(decoded) => decoded,
                 Err(_) => return Applied::Ignored,
@@ -2262,21 +1784,13 @@ impl Room {
                 }
                 session::DecodedAdmission::Fits(decoded) => decoded,
             };
-            // The quota reservation below is awaited, and a parsed `yrs::Update`
-            // is not `Send`, so it cannot be held across that await: the socket
-            // task's future has to stay spawnable. The parse is therefore dropped
-            // here and repeated once the bytes are reserved. Repeating it is
-            // cheap beside the validation work this path already does, and it
-            // is the alternative to reserving before the size and file ceilings
-            // have decided -- which would charge, however briefly, for updates
-            // this room refuses.
             drop(decoded);
             // `S` bounds what a person can see; `E` bounds what persistence has
             // to write, and the two move independently -- a document whose text
             // never grows still accumulates CRDT history and metadata. A
             // candidate that would carry the snapshot past `E` is refused here,
             // before it is applied and before it is relayed, because a snapshot
-            // that cannot be journalled could never be acknowledged and relaying
+            // that cannot be persisted could never be acknowledged and relaying
             // it would show every peer a document this server cannot save.
             let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
             let admitted_bound = {
@@ -2294,25 +1808,7 @@ impl Room {
                     // The cheap bound cannot decide, so buy the exact answer on a
                     // scratch copy. That copy is a large allocation, so it is
                     // admitted against the same memory budget persistence uses.
-                    let _staging = match self.journal.get() {
-                        Some(journal) => {
-                            match journal
-                                .memory()
-                                .try_acquire(crate::config::PersistenceLimits::staging_cost(bound))
-                            {
-                                Ok(permit) => Some(permit),
-                                Err(error) if error.is_temporary() => {
-                                    return Applied::Refuse(WriteError::ServerBusy);
-                                }
-                                Err(_) => {
-                                    return Applied::Refuse(WriteError::Document(
-                                        crate::room::error::DocumentLimit::Encoded,
-                                    ));
-                                }
-                            }
-                        }
-                        None => None,
-                    };
+                    let _ = bound;
                     let Some(exact) = session::rehearsed_encoded_len(&state.session.doc, update)
                     else {
                         return Applied::Ignored;
@@ -2325,81 +1821,7 @@ impl Room {
                     exact
                 }
             };
-            // Reserve the whole next snapshot, not just this message. The SQL
-            // admission view includes unsaved work in every live room and keeps a
-            // separate reservation for a snapshot already being written.
-            //
-            // The reservation is taken through the catalogue's execution
-            // boundary, so the quota decision waits on a blocking thread instead
-            // of parking a Tokio worker on the connection.  What it returns is a
-            // guard rather than a number: a caller cancelled between that
-            // transaction committing and this room accounting for the bytes must
-            // not leave them charged, and only the guard and its completion hook
-            // between them cover both halves of that window.
-            let Some(catalog) = self.catalog.get() else {
-                break (None, admitted_bound);
-            };
-            let generation = state.session.generation;
-            // `client_update_safe_after_as` already encoded this exact live
-            // state to build its validation copy. Reuse its length while
-            // retaining the historical conservative `state + update` quota
-            // reservation bound.
-            let bound = revision_base_len.saturating_add(update.len());
-            let budget = self.snapshot_budget(bound);
-            drop(state);
-            let reservation = match reserve_pending_edit(
-                catalog,
-                &self.slug,
-                budget,
-                self.config.storage.per_owner,
-                self.config.storage.total,
-            )
-            .await
-            {
-                Ok(reservation) => reservation,
-                Err(error) => {
-                    // The catalogue said no. Which allowance it was is in the
-                    // error; what the peer is told is that this document has
-                    // no room, which is the same either way.
-                    let _ = error;
-                    return Applied::Refuse(WriteError::Document(
-                        crate::room::error::DocumentLimit::Quota,
-                    ));
-                }
-            };
-            // The window between the reservation committing and the room taking
-            // it on. Room state is deliberately not held here.
-            #[cfg(test)]
-            pause_after_edit_reservation(&self.slug).await;
-            state = self.state.lock().await;
-            if self.read_only() {
-                drop(state);
-                reservation.rollback().await;
-                return Applied::Refuse(self.fenced());
-            }
-            // The socket may have closed, or lost its right to write, while the
-            // reservation was in SQL. Neither of those may be relayed, and the
-            // bytes go back rather than staying charged to a document that is
-            // not going to grow by them.
-            if !state.sockets.get(&socket).is_some_and(|peer| peer.may_edit) {
-                drop(state);
-                reservation.rollback().await;
-                return Applied::Ignored;
-            }
-            if state.session.generation == generation {
-                break (Some(reservation), admitted_bound);
-            }
-            // The document moved while the quota decision was in flight, so the
-            // ceilings above decided against a document that no longer exists and
-            // the reservation is sized for the wrong snapshot. Give it back and
-            // decide again against what the room now holds.
-            drop(state);
-            reservation.rollback().await;
-            attempts += 1;
-            state = self.state.lock().await;
-            if attempts >= RESERVATION_ATTEMPTS {
-                return Applied::Refuse(WriteError::ServerBusy);
-            }
+            admitted_bound
         };
         // Read before the update is applied, so a change to the shared
         // main-file pointer can be told from a document that already opened
@@ -2423,10 +1845,6 @@ impl Room {
         let correction = match applied {
             Ok(correction) => correction,
             Err(error) => {
-                drop(state);
-                if let Some(pending_edit) = pending_edit {
-                    pending_edit.rollback().await;
-                }
                 return match error {
                     WriteError::Invalid(_) => Applied::Ignored,
                     WriteError::Size(_) => Applied::Refuse(WriteError::Document(
@@ -2470,16 +1888,10 @@ impl Room {
         state.session.generation += 1;
         state.session.updated_at = now;
         state.session.by = by.clone();
-        // The room state now accounts for the reserved snapshot, so the
-        // reservation stays charged until the next one replaces it rather
-        // than being rolled back by the guard.
-        if let Some(pending_edit) = pending_edit {
-            pending_edit.keep();
-        }
         Applied::Relay
     }
 
-    /// Appends native journal state when the document has changed, and only then
+    /// Appends PostgreSQL collaboration state when the document has changed, and only then
     /// tells the sockets their updates are durable. Relaying an update is not
     /// an acknowledgment: nothing here says "saved" until storage has said so.
     pub async fn persist(&self) -> Result<bool, WriteError> {
@@ -2490,7 +1902,7 @@ impl Room {
     }
 
     /// Snapshot under the write gate: checkpoints and timer saves cannot write
-    /// snapshots out of order or reuse a journal cursor. Ordinary edits use only
+    /// snapshots out of order or reuse an update sequence. Ordinary edits use only
     /// state, so they can proceed during storage I/O.
     async fn write_session(
         &self,
@@ -2512,28 +1924,21 @@ impl Room {
         if self.read_only() {
             return Err(self.fenced());
         }
+        self.merge_remote_updates()
+            .await
+            .map_err(WriteError::Storage)?;
         if only_dirty && !self.state.lock().await.session.dirty {
             return Ok(None);
         }
-        if !self.hold().await {
-            return Err(self.fenced());
-        }
-        if self.catalog.get().is_none() || self.journal.get().is_none() {
-            return Err(WriteError::Storage(
-                "durable catalog and native journal required".into(),
-            ));
-        }
-        let (body, generation, durable, dependencies) = {
+        let catalog = self
+            .catalog
+            .get()
+            .ok_or_else(|| WriteError::Storage("PostgreSQL catalog required".into()))?;
+        let document_id = uuid::Uuid::parse_str(&self.storage_id)
+            .map_err(|_| WriteError::Storage("room has an invalid document id".into()))?;
+        let (body, generation, durable) = {
             let mut state = self.state.lock().await;
             let body = session::encode_state(&state.session.doc);
-            // `E`, at the last gate before anything durable happens. Room
-            // admission refuses an oversized candidate before applying it, so
-            // reaching this means an internal caller grew the document past
-            // the ceiling, or the room was loaded from a snapshot an older,
-            // laxer configuration wrote. Either way the write is refused
-            // explicitly rather than truncated, and the room is fenced so the
-            // once-a-second sweeper does not retry a permanent failure
-            // forever. What is already stored stays readable.
             let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
             if body.len() > ceiling {
                 self.fence(FenceReason::Oversized);
@@ -2549,132 +1954,37 @@ impl Room {
                 .iter()
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
-            let mut dependencies = Vec::new();
-            let mut seen_assets = std::collections::HashSet::new();
-            for digest in session::assets_of(&state.session.doc).values() {
-                if !seen_assets.insert(digest.clone()) {
-                    continue;
-                }
-                let Some(bytes) = state.session.asset_sizes.get(digest) else {
-                    return Err(WriteError::Storage(
-                        "snapshot names an asset whose size is not admitted".into(),
-                    ));
-                };
-                if *bytes <= 0 {
-                    return Err(WriteError::Storage(
-                        "snapshot names an asset with an invalid size".into(),
-                    ));
-                }
-                dependencies.push(crate::storage::journal::JournalDependencyHint {
-                    kind: "asset".to_string(),
-                    digest: digest.clone(),
-                    byte_length: u64::try_from(*bytes).map_err(|_| {
-                        WriteError::Storage("snapshot asset size exceeds the physical limit".into())
-                    })?,
-                });
-            }
-            (body, generation, durable, dependencies)
-        };
-        // The reservation comes back as a guard rather than as a bare
-        // success, so the window between this transaction committing and
-        // the room owning the reservation cannot leak it. It is taken with
-        // room state released: the session writer gate is what serialises
-        // the reservation row, and holding state as well only stalled every
-        // reader and editor of this document for the length of the quota
-        // decision. Nothing between the encode above and here can invalidate
-        // the reservation -- an edit that lands meanwhile leaves the snapshot
-        // this call writes merely older than the room, which the generation
-        // comparison at the end already accounts for, and the next write
-        // reserves for the newer snapshot.
-        let quota = match self.catalog.get() {
-            Some(catalog) => Some(
-                begin_room_write(
-                    catalog,
-                    &self.slug,
-                    &self.storage_id,
-                    self.snapshot_budget(body.len()),
-                    self.config.storage.per_owner,
-                    self.config.storage.total,
-                )
-                .await
-                .map_err(WriteError::from)?,
-            ),
-            None => None,
+            (body, generation, durable)
         };
         let size = body.len() as i64;
-        // `generation` is normally advanced by every mediated CRDT mutation.
-        // A checkpoint can also be requested after an internal caller has
-        // changed the document directly (for example while attaching an
-        // asset), though, and those changes still need a fresh journal
-        // cursor.  Never reuse a durable sequence merely because the in
-        // memory generation did not move with that internal mutation.
-        let catalog_journal_head = if let Some(catalog) = self.catalog.get() {
-            let document_id = crate::storage::catalog::DocumentId::new(self.storage_id.clone())
-                .map_err(|error| WriteError::Storage(error.to_string()))?;
-            Some(
-                catalog
-                    .execute_catalog(256, move |catalog| {
-                        catalog.v2_document_journal_head(&document_id)
-                    })
-                    .await
-                    .map_err(WriteError::from)?,
-            )
-        } else {
-            None
-        };
-        let mut durable_sequence = if let Some((_, sequence)) = catalog_journal_head {
-            u64::try_from(sequence)
-                .map_err(|_| WriteError::Storage("catalog journal sequence is negative".into()))?
-                .checked_add(1)
-                .ok_or_else(|| WriteError::Storage("catalog journal sequence overflow".into()))?
-        } else {
-            generation.saturating_add(1)
-        };
-        if let Some(journal) = self.journal.get() {
-            if catalog_journal_head.is_none() {
-                let latest = journal
-                    .latest_sequence(&self.storage_id, 0)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                durable_sequence = latest.saturating_add(1);
-            }
-            journal
-                .append_with_dependencies(
-                    &self.storage_id,
-                    durable_sequence,
-                    body.clone(),
-                    dependencies.clone(),
-                )
+        let collaboration = crate::storage::collaboration::CollaborationStorage::new(
+            catalog.clone(),
+            self.blobs.clone(),
+        );
+        let durable_sequence = collaboration
+            .append(document_id, &body)
+            .await
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
+        if durable_sequence % 100 == 0 {
+            catalog
+                .enqueue_job(crate::storage::postgres::NewJob {
+                    kind: "source_compaction".into(),
+                    document_id: Some(document_id),
+                    account_id: None,
+                    scope_key: format!("document:{document_id}"),
+                    dedupe_key: Some(format!("through:{durable_sequence}")),
+                    payload: serde_json::json!({"through_update_sequence":durable_sequence}),
+                    priority: 0,
+                    max_attempts: 5,
+                    run_after: time::OffsetDateTime::now_utc(),
+                })
                 .await
-                .map_err(|error| error.to_string())?;
-            // Keep the committed replay tail bounded even for rooms whose
-            // edits never become quiet enough for a checkpoint.  The base is
-            // published through the same journal head transition, so an
-            // acknowledgement cannot overtake compaction or its retirement
-            // metadata.
-            if journal
-                .compaction_due(&self.storage_id, 0, durable_sequence)
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                journal
-                    .compact_with_dependencies(
-                        &self.storage_id,
-                        0,
-                        durable_sequence,
-                        body.clone(),
-                        dependencies.clone(),
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-        if let Some(quota) = quota {
-            quota.commit().await.map_err(WriteError::from)?;
+                .map_err(|e| WriteError::Storage(e.to_string()))?;
         }
         let mut state = self.state.lock().await;
+        state.session.durable_sequence = state.session.durable_sequence.max(durable_sequence);
         if state.session.generation == generation {
-            // The journal cursor and logical edit generation are independent:
+            // The durable update sequence and logical edit generation are independent:
             // persisting a document must not make an older checkpoint cover it.
             state.session.dirty = false;
             state.session.dirty_since = 0;
@@ -2695,7 +2005,34 @@ impl Room {
                 }
             }
         }
-        Ok(Some((size, durable_sequence.min(i64::MAX as u64) as i64)))
+        Ok(Some((size, durable_sequence)))
+    }
+
+    async fn merge_remote_updates(&self) -> Result<(), String> {
+        let catalog = self.catalog.get().ok_or("PostgreSQL catalog required")?;
+        let document_id =
+            uuid::Uuid::parse_str(&self.storage_id).map_err(|_| "invalid document id")?;
+        loop {
+            let after = self.state.lock().await.session.durable_sequence;
+            let updates = catalog
+                .updates_after(document_id, after, 256)
+                .await
+                .map_err(|e| e.to_string())?;
+            if updates.is_empty() {
+                return Ok(());
+            }
+            let full = updates.len() == 256;
+            let mut state = self.state.lock().await;
+            for update in updates {
+                session::apply_update(&state.session.doc, &update.update_bytes)
+                    .map_err(|e| e.to_string())?;
+                state.session.durable_sequence =
+                    state.session.durable_sequence.max(update.update_sequence);
+            }
+            if !full {
+                return Ok(());
+            }
+        }
     }
 
     /// What the sweeper does to one room, once a second: write the document if
@@ -2748,7 +2085,7 @@ impl Room {
             dirty_for >= 15
         };
         let quiet = quiet_for >= limits.write_after_seconds.max(0);
-        // Quiet periods may request an early save only after the journal's
+        // Quiet periods may request an early save only after collaboration storage's
         // flush floor. Continuous typing still reaches the dirty-age deadline;
         // it must not reset that deadline or force a write on every brief pause.
         let flush_due = floor_elapsed && (quiet || dirty_for >= 15);

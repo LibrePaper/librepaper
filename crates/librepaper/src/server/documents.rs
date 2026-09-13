@@ -287,13 +287,12 @@ impl Server {
             session_generation: who.session_generation.clone(),
             link_hash: String::new(),
             policy_editor: true,
-            automation: false,
             unowned_publisher: false,
         };
         // Publishing over a document is an edit into its live Room.  The Room
-        // holds the restore/publication/checkpoint gates while merging the
-        // directory, so concurrent CRDT edits are preserved and the v2
-        // checkpoint sees the same source generation it admitted.
+        // holds the restore/publication/version gates while merging the
+        // directory, so concurrent CRDT edits are preserved and the resulting
+        // version sees the same source generation it admitted.
         if mine {
             let room = match self.rooms.try_get(&key).await {
                 Ok(room) => room,
@@ -351,7 +350,6 @@ impl Server {
                     source: parsed.source.clone(),
                     source_format: parsed.source_format.clone(),
                     main: main.clone(),
-                    owner_id: who.id.clone(),
                 },
                 parsed.files.clone(),
                 actor,
@@ -458,38 +456,6 @@ impl Server {
         // Replacements are source uploads even though the live Room owns the
         // merge. Charge the durable document owner, rather than the editor's
         // account or link, so collaborators share one bounded bucket.
-        let mut source_rate = if let Some(catalog) = &self.store.catalog {
-            let owner = if existing.publisher_id.is_empty() {
-                return Err(write_json(
-                    409,
-                    &json!({"error": "document has no durable owner"}),
-                ));
-            } else {
-                format!("account:{}", existing.publisher_id)
-            };
-            Some(
-                catalog
-                    .reserve_process_rate(
-                        &owner,
-                        "source_upload",
-                        self.config.storage.uploads_per_hour,
-                    )
-                    .map_err(|_| {
-                        write_json(
-                            429,
-                            &json!({"error": "too many uploads this hour; try later"}),
-                        )
-                    })?,
-            )
-        } else {
-            None
-        };
-
-        // The v2 checkpoint admission installs the operation, physical
-        // allocations, counters, and leases in one transaction.  The old
-        // standalone publication budget token cannot represent a replacement
-        // closure and would reject every catalog-backed upload before that
-        // admission runs.
 
         let mut wanted: std::collections::HashSet<String> =
             parsed.files.iter().map(|(path, _)| path.clone()).collect();
@@ -515,7 +481,6 @@ impl Server {
                             session_generation: who.session_generation.clone(),
                             link_hash: String::new(),
                             policy_editor: true,
-                            automation: false,
                             unowned_publisher: false,
                         },
                     )
@@ -643,20 +608,9 @@ impl Server {
                 .unwrap_or_else(|_| crate::document::session::encode_state(&state.session.doc))
         };
         let sha = match room
-            .checkpoint_now_with_authority_locked(
+            .checkpoint_after_locked_edit(
                 "cli",
                 crate::room::Attribution::account(&who.id, &who.key),
-                crate::storage::catalog::MutationAuthority {
-                    account_id: &who.id,
-                    owner_key: &who.key,
-                    generation: &who.session_generation,
-                    link_hash: "",
-                    policy_editor: true,
-                    automation: false,
-                    unowned_publisher: false,
-                    execution_epoch: "",
-                    agent_checkpoint: None,
-                },
             )
             .await
         {
@@ -677,9 +631,6 @@ impl Server {
                 ));
             }
         };
-        if let Some(rate) = source_rate.as_mut() {
-            rate.commit();
-        }
         room.broadcast_editors_except(
             None,
             &json!({"type": "y-update", "update": encode_update(&update)}),

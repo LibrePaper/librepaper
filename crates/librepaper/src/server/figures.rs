@@ -149,7 +149,6 @@ impl Server {
             session_generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             policy_editor: self.publishers.allows(&who.id.handle),
-            automation: who.automation,
             unowned_publisher: false,
         };
         let stored = room
@@ -203,42 +202,24 @@ impl Server {
         let Some(catalog) = self.store.catalog.clone() else {
             return plain(503, "local catalogue unavailable");
         };
-        let actor = crate::document::store::MutationActor {
-            account_id: who.id.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            policy_editor: self.publishers.allows(&who.id.handle),
-            automation: who.automation,
-            unowned_publisher: false,
+        let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {
+            return plain(404, "not found");
         };
-        let read_catalog = catalog.clone();
-        let lease = match catalog
-            .execute_catalog(4096 + slug.len() + sha.len(), {
-                let slug = slug.to_owned();
-                let sha = sha.to_owned();
-                move |_| {
-                    read_catalog.acquire_source_asset_read(
-                        &slug,
-                        &sha,
-                        &actor,
-                        crate::storage::catalog::unix_millis(),
-                    )
-                }
-            })
+        let assets = match catalog
+            .assets_by_digests(document_id, &[sha.to_owned()])
             .await
         {
-            Ok(lease) => lease,
-            Err(crate::storage::catalog::CatalogExecError::Catalog(
-                crate::storage::catalog::CatalogError::NotFound
-                | crate::storage::catalog::CatalogError::Refused(_, _),
-            )) => return plain(404, "not found"),
+            Ok(assets) => assets,
             Err(_) => return plain(503, "catalogue temporarily unavailable"),
         };
-        crate::server::cost::leased_blob_response(
+        let Some(asset) = assets.first() else {
+            return plain(404, "not found");
+        };
+        crate::server::cost::blob_response(
             &self.cost,
             self.store.blobs.clone(),
-            lease,
+            asset.storage_key.clone(),
+            sha,
             headers,
             false,
         )

@@ -35,9 +35,9 @@ pub use cli::peer;
 // What the fuzz targets read: the shared document and the path rules.
 pub use document::{paths, session};
 // The durable layer is reachable from outside so that what it exposes and
-// nothing yet calls -- restore, conversations, journal readers -- is API in
+// nothing yet calls -- restore and conversations -- is API in
 // progress rather than dead code to the lint. Drop this line to see the list.
-pub use storage::{backup_v2, catalog, journal, maintenance};
+pub use storage::{collaboration, maintenance, postgres, publication, source, source_archive};
 
 #[cfg(test)]
 mod tests;

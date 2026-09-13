@@ -3,8 +3,16 @@ use super::*;
 use crate::document::quota::{
     effective_retention, select_retained, QuotaPreferences, RetentionBounds,
 };
-use crate::storage::catalog::{AccountStorageUsage, QuotaPreferencesRecord};
-use std::collections::BTreeMap;
+#[derive(Clone)]
+struct QuotaPreferencesRecord {
+    revision: i64,
+    payload: String,
+}
+struct AccountStorageUsage {
+    charged_bytes: i64,
+    document_count: i64,
+    checkpoint_count: i64,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -19,13 +27,11 @@ fn bounds(server: &Server) -> RetentionBounds {
         ..RetentionBounds::default()
     }
 }
-fn default_record(account_id: &str) -> QuotaPreferencesRecord {
+fn default_record(_account_id: &str) -> QuotaPreferencesRecord {
     QuotaPreferencesRecord {
-        account_id: account_id.into(),
         revision: 0,
         payload: serde_json::to_string(&QuotaPreferences::default())
             .expect("preferences serialize"),
-        updated_at: 0,
     }
 }
 fn decode_preferences(record: &QuotaPreferencesRecord) -> (QuotaPreferences, bool) {
@@ -82,15 +88,28 @@ impl Server {
                 &json!({"error": "local catalogue unavailable"}),
             ));
         };
-        let account_id = account_id.to_string();
-        catalog
-            .execute_catalog(SERVER_JOB_BYTES + account_id.len(), move |catalog| {
-                Ok(catalog
-                    .quota_preferences(&account_id)?
-                    .unwrap_or_else(|| default_record(&account_id)))
-            })
+        let id = uuid::Uuid::parse_str(account_id)
+            .map_err(|_| write_json(401, &json!({"error":"invalid account"})))?;
+        let account = catalog
+            .account(id)
             .await
-            .map_err(|error| write_json(503, &json!({"error": error.to_string()})))
+            .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?
+            .ok_or_else(|| write_json(401, &json!({"error":"account not found"})))?;
+        if account.preferences.is_null() || account.preferences == json!({}) {
+            return Ok(default_record(account_id));
+        }
+        Ok(QuotaPreferencesRecord {
+            revision: account
+                .preferences
+                .get("revision")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            payload: account
+                .preferences
+                .get("value")
+                .map(Value::to_string)
+                .unwrap_or_else(|| serde_json::to_string(&QuotaPreferences::default()).unwrap()),
+        })
     }
 
     #[allow(clippy::result_large_err)]
@@ -101,13 +120,29 @@ impl Server {
                 &json!({"error": "local catalogue unavailable"}),
             ));
         };
-        let account_id = account_id.to_string();
-        catalog
-            .execute_catalog(SERVER_JOB_BYTES + account_id.len(), move |catalog| {
-                catalog.account_storage_usage(&account_id)
-            })
+        let id = uuid::Uuid::parse_str(account_id)
+            .map_err(|_| write_json(401, &json!({"error":"invalid account"})))?;
+        let charged_bytes = catalog
+            .usage_bytes(Some(id))
             .await
-            .map_err(|error| write_json(503, &json!({"error": error.to_string()})))
+            .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?;
+        let documents = catalog
+            .documents_by_owner(id, 200)
+            .await
+            .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?;
+        let mut checkpoints = 0i64;
+        for document in &documents {
+            checkpoints += catalog
+                .versions(document.id, 1000)
+                .await
+                .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?
+                .len() as i64;
+        }
+        Ok(AccountStorageUsage {
+            charged_bytes,
+            document_count: documents.len() as i64,
+            checkpoint_count: checkpoints,
+        })
     }
 
     pub(super) async fn handle_quota_storage(
@@ -177,33 +212,32 @@ impl Server {
         let policy_bounds = bounds(self);
         let effective = effective_retention(&asked.preferences, &policy_bounds);
         let now = crate::util::now_millis();
-        let preview = catalog
-            .execute_catalog(SERVER_JOB_BYTES + account_id.len(), move |catalog| {
-                let points = catalog.account_checkpoints(&account_id)?;
-                let references = catalog.account_open_annotation_references(&account_id)?;
-                let mut grouped = BTreeMap::<String, Vec<_>>::new();
-                for point in points {
-                    grouped.entry(point.slug.clone()).or_default().push(point);
-                }
-                let mut removed = 0usize;
-                let mut protected = 0usize;
-                for (slug, points) in grouped {
-                    let manifest = crate::document::history::Manifest::from_catalog_rows(points)
-                        .map_err(crate::storage::catalog::CatalogError::Invalid)?;
-                    let refs = references.get(&slug).cloned().unwrap_or_default();
-                    let selected = select_retained(
-                        &manifest.checkpoints,
-                        now,
-                        &asked.preferences,
-                        &policy_bounds,
-                        &refs,
-                    );
-                    removed += selected.removed.len();
-                    protected += selected.protected.len();
-                }
-                Ok((removed, protected))
-            })
-            .await;
+        let preview: Result<(usize, usize), crate::storage::postgres::Error> = async {
+            let id = uuid::Uuid::parse_str(&account_id)
+                .map_err(|_| crate::storage::postgres::Error::Invalid("invalid account".into()))?;
+            let docs = catalog.documents_by_owner(id, 200).await?;
+            let mut removed = 0;
+            let mut protected = 0;
+            for doc in docs {
+                let mut rows = catalog.versions(doc.id, 1000).await?;
+                rows.reverse();
+                let points = rows
+                    .iter()
+                    .map(crate::room::checkpoint::checkpoint_from_version)
+                    .collect::<Vec<_>>();
+                let selected = select_retained(
+                    &points,
+                    now,
+                    &asked.preferences,
+                    &policy_bounds,
+                    &std::collections::BTreeSet::new(),
+                );
+                removed += selected.removed.len();
+                protected += selected.protected.len();
+            }
+            Ok((removed, protected))
+        }
+        .await;
         match preview {
             Ok((removed, protected)) => write_json(
                 200,
@@ -234,38 +268,52 @@ impl Server {
         if let Err(error) = asked.preferences.validate() {
             return write_json(400, &json!({"error":error}));
         }
-        let payload = match serde_json::to_string(&asked.preferences) {
+        let payload = match serde_json::to_value(&asked.preferences) {
             Ok(payload) => payload,
             Err(error) => return write_json(400, &json!({"error":error.to_string()})),
         };
         let Some(catalog) = &self.store.catalog else {
             return write_json(503, &json!({"error":"catalog unavailable"}));
         };
-        let saved = catalog
-            .execute_catalog(
-                SERVER_JOB_BYTES + account_id.len() + generation.len() + payload.len(),
-                move |catalog| {
-                    catalog.save_quota_preferences_authorized(
-                        &account_id,
-                        &generation,
-                        asked.revision,
-                        &payload,
-                        crate::util::now_millis(),
-                    )
-                },
-            )
-            .await;
+        let saved = async {
+            let id = uuid::Uuid::parse_str(&account_id)
+                .map_err(|_| crate::storage::postgres::Error::Invalid("invalid account".into()))?;
+            let account = catalog
+                .account(id)
+                .await?
+                .ok_or(crate::storage::postgres::Error::NotFound)?;
+            if account.session_generation.to_string() != generation {
+                return Err(crate::storage::postgres::Error::Conflict(
+                    "account session changed".into(),
+                ));
+            }
+            let revision = account
+                .preferences
+                .get("revision")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if revision != asked.revision {
+                return Err(crate::storage::postgres::Error::Conflict(
+                    "preference revision is stale".into(),
+                ));
+            }
+            let next = revision + 1;
+            sqlx::query("UPDATE accounts SET preferences=$2 WHERE id=$1")
+                .bind(id)
+                .bind(json!({"revision":next,"value":payload}))
+                .execute(catalog.pool())
+                .await?;
+            Ok(next)
+        }
+        .await;
         match saved {
-            Ok(record) => write_json(
+            Ok(revision) => write_json(
                 200,
-                &json!({"status":"saved", "revision":record.revision, "graceMs":86_400_000}),
+                &json!({"status":"saved", "revision":revision, "graceMs":86_400_000}),
             ),
-            Err(crate::storage::catalog::CatalogExecError::Catalog(
-                crate::storage::catalog::CatalogError::Refused(_, error),
-            )) => write_json(403, &json!({"error":error})),
-            Err(crate::storage::catalog::CatalogExecError::Catalog(
-                crate::storage::catalog::CatalogError::Conflict(error),
-            )) => write_json(409, &json!({"error":error})),
+            Err(crate::storage::postgres::Error::Conflict(error)) => {
+                write_json(409, &json!({"error":error}))
+            }
             Err(error) => write_json(503, &json!({"error":error.to_string()})),
         }
     }

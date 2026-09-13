@@ -924,12 +924,17 @@ Open <http://localhost:8081>. Everything is stored in `librepaper-data` (see [St
 
 ### Self-managed server
 
-Run the bundled server on your own host, with `--data-directory` set to a persistent
-directory:
+Run PostgreSQL on the same host, create a dedicated database/user, and start the
+server with its database URL and a persistent object directory:
 
 ```sh
+LIBREPAPER_DATABASE_URL=postgresql:///librepaper \
 librepaper admin serve --port 8080 --data-directory /var/lib/librepaper --publishers YOUR-GITHUB-LOGIN
 ```
+
+PostgreSQL may use a protected Unix socket or loopback connection. Do not expose
+its port publicly. See [self-managed hosting](docs/hosting.md) for database,
+S3-compatible storage, backup, and restore examples.
 
 To let people sign in, set up a [GitHub app](#github-oauth) for this server's address.
 
@@ -949,16 +954,20 @@ hourly pass, and once at startup.
 
 ### Storage
 
-`librepaper admin serve` keeps everything in the directory named by `--data-directory` or
-`LIBREPAPER_DATA`, `librepaper-data` in the working directory by default: the
-catalogue (`catalog.db`), the objects it names, private server state, and the
-secrets that keep sessions and share links valid. Back it up if the instance
-holds real work; `librepaper admin backup create` writes a verified recovery point of
-all of it, and `librepaper admin backup restore` restores one into a fresh
-directory.
+PostgreSQL is the only catalogue. `--data-directory` or `LIBREPAPER_DATA`
+selects the filesystem object directory plus private runtime state and session
+secrets. Set `--object-store s3` with the S3 endpoint, region, bucket, and the
+provider's standard credential environment variables to keep immutable objects
+in remote storage. There is no SQLite fallback or in-place v2 conversion.
+
+Back up any deployment that holds real work. `librepaper admin backup create`
+uses an exported PostgreSQL snapshot and `pg_dump`, copies and verifies every
+referenced local object, and writes a checksummed manifest. Restore requires an
+empty PostgreSQL database and a new object directory. The host running these
+commands needs compatible `pg_dump` and `pg_restore` client tools.
 See the [operator cost policy](docs/cost-policy.md) for the complete defaults,
 advanced YAML schema, `admin status` command, capacity accounting, and backup
-reservations.
+policy.
 
 The storage flags bound what a deployment will store:
 
@@ -976,12 +985,12 @@ librepaper admin serve --document-size-limit 8 --document-assets-limit 16 --publ
 ```
 
 `--document-size-limit` may not be set above 8 MB. It bounds the text a person can see;
-what has to be durably saved is the CRDT snapshot behind that text, which
+what has to be durably saved is the CRDT state behind that text, which
 carries the document's edit history and metadata as well, and this deployment
 supports snapshots up to 16 MB. A document can therefore reach that second
 ceiling without its visible text ever approaching the first -- an edit refused
 for that reason says so, and says that the history counts too. A configuration
-whose ceilings could accept work the journal could not durably save is refused
+whose ceilings could accept work the collaboration store could not durably save is refused
 at startup rather than at the first save.
 
 A document is a directory, so `--document-size-limit` bounds the sum of its texts and

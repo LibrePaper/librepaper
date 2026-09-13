@@ -5,7 +5,6 @@
 //! stored. The server and the command line both build on this; nothing here
 //! answers HTTP or runs a command.
 
-pub mod checkpoint_cache;
 pub mod history;
 pub mod html;
 pub mod needs;

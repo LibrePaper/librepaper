@@ -1,304 +1,187 @@
-//! Bounded, restartable local reclamation.
-//!
-//! Object rows retain their physical charge until the native collector
-//! confirms deletion. Account erasure and document deletion advance in
-//! bounded SQL batches and preserve roots and leases across retries.
+//! Bounded lifecycle work over simple document prefixes.
 
+use std::collections::HashSet;
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
 
-use crate::storage::blob::BlobStore;
-use crate::storage::catalog::{Catalog, CatalogError};
+use super::blob::BlobStore;
+use super::postgres::PostgresCatalog;
 
-#[derive(Clone, Debug)]
-pub struct DeletionLimits {
-    pub max_jobs: usize,
-    pub max_object_requests: usize,
-    pub max_read_bytes: i64,
-}
-
-impl Default for DeletionLimits {
-    fn default() -> Self {
-        Self {
-            max_jobs: 100,
-            max_object_requests: 1_000,
-            max_read_bytes: 64 * 1024 * 1024,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum MaintenanceError {
-    Catalog(CatalogError),
-    Invalid(String),
-}
-
-impl std::fmt::Display for MaintenanceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Catalog(error) => write!(f, "maintenance catalogue error: {error}"),
-            Self::Invalid(error) => write!(f, "invalid maintenance request: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for MaintenanceError {}
-
-impl From<CatalogError> for MaintenanceError {
-    fn from(error: CatalogError) -> Self {
-        Self::Catalog(error)
-    }
-}
-
-impl From<crate::storage::catalog::CatalogExecError> for MaintenanceError {
-    fn from(error: crate::storage::catalog::CatalogExecError) -> Self {
-        Self::Catalog(CatalogError::from(error))
-    }
-}
-
-/// Declared input for a maintenance job.  Every one of them carries a slug or
-/// an object key and nothing else; the pass limits bound the result.
-const MAINTENANCE_JOB_BYTES: usize = 512;
-
-pub type MaintenanceResult<T> = Result<T, MaintenanceError>;
-
-/// Advance account erasure without ever loading an account's whole history.
-/// Owned documents are completed by `DeletionWorker`; cross-document
-/// references are removed/anonymized here in deterministic bounded stages.
-pub fn run_erasure_pass(
-    catalog: &Catalog,
-    now: i64,
-    accounts: u32,
-    rows: u32,
-) -> MaintenanceResult<u32> {
-    validate_erasure_limits(now, accounts, rows)?;
-    let now_millis = erasure_time_millis(now)?;
-    erasure_pass_sql(catalog, now_millis, accounts, rows.min(250)).map_err(MaintenanceError::from)
-}
-
-/// The asynchronous counterpart of [`run_erasure_pass`].
-///
-/// The whole bounded pass is one job rather than one job per stage: it is
-/// already limited to `accounts` accounts and `rows` rows per batch, its
-/// stages must run in order against the same connection, and its durable
-/// resume token is the erasure cursor.  A caller cancelled after dispatch
-/// therefore loses only the returned count; the pass completes and the cursor
-/// records exactly how far it got, which is the same state a crash mid-pass
-/// would leave.
-pub async fn run_erasure_pass_async(
-    catalog: &Arc<Catalog>,
-    now: i64,
-    accounts: u32,
-    rows: u32,
-) -> MaintenanceResult<u32> {
-    validate_erasure_limits(now, accounts, rows)?;
-    let now_millis = erasure_time_millis(now)?;
-    catalog
-        .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
-            erasure_pass_sql(catalog, now_millis, accounts, rows.min(250))
-        })
-        .await
-        .map_err(MaintenanceError::from)
-}
-
-fn validate_erasure_limits(now: i64, accounts: u32, rows: u32) -> MaintenanceResult<()> {
-    if now < 0 || accounts == 0 || rows == 0 || rows > 1000 {
-        return Err(MaintenanceError::Invalid(
-            "invalid erasure pass limits".into(),
-        ));
-    }
-    Ok(())
-}
-
-/// Server maintenance callers historically supplied Unix seconds while v2
-/// catalogue timestamps are milliseconds. Normalize at this boundary so a
-/// seconds value can never move `updated_at` backwards and hide progress.
-fn erasure_time_millis(now: i64) -> MaintenanceResult<i64> {
-    if now < 0 {
-        return Err(MaintenanceError::Invalid(
-            "invalid erasure timestamp".into(),
-        ));
-    }
-    if now < 10_000_000_000 {
-        now.checked_mul(1_000)
-            .ok_or_else(|| MaintenanceError::Invalid("erasure timestamp overflow".into()))
-    } else {
-        Ok(now)
-    }
-}
-
-fn erasure_pass_sql(
-    catalog: &Catalog,
-    now: i64,
-    accounts: u32,
-    rows: u32,
-) -> Result<u32, CatalogError> {
-    let mut touched = 0;
-    for id in catalog.erasing_accounts(None, accounts)? {
-        touched += 1;
-        let stages = [
-            "owned_documents",
-            "operations",
-            "operations_owned_documents",
-            "grants",
-            "bookmarks",
-            "annotation_replies",
-            "annotations",
-            "replies",
-            "checkpoints",
-        ];
-        let (current, stored_cursor) = catalog
-            .erasure_progress(&id)?
-            .unwrap_or_else(|| (stages[0].to_string(), None));
-        let known_stage = stages.iter().position(|stage| *stage == current);
-        let mut index = known_stage.unwrap_or(0);
-        // Cursors are encoded primary-key tuples whose shape belongs to one
-        // stage (replies has three fields, the others currently have two).
-        // Never carry a completed stage's tuple into the next stage.
-        let mut cursor = known_stage.and(stored_cursor);
-        loop {
-            let removed =
-                match catalog.erase_account_batch(&id, stages[index], cursor.as_deref(), now, rows)
-                {
-                    Ok(removed) => removed,
-                    // A pinned terminal receipt is a durable retry condition. It
-                    // must yield this account without advancing its cursor or
-                    // starving unrelated accounts in the same pass.
-                    Err(CatalogError::Conflict(message))
-                        if stages[index] == "annotations"
-                            && message == "annotation gained a reply during account erasure" =>
-                    {
-                        // A reply may have landed after the child-drain phase
-                        // but before parent deletion. Rewind to that bounded
-                        // phase; the next pass drains children and retries the
-                        // parent, instead of leaving the cursor permanently on
-                        // an annotation that can never be deleted.
-                        index = stages
-                            .iter()
-                            .position(|stage| *stage == "annotation_replies")
-                            .expect("annotation-replies stage is present");
-                        cursor = None;
-                        catalog.erasure_batch(&id, stages[index], None, now, rows)?;
-                        continue;
-                    }
-                    Err(CatalogError::Conflict(_)) => break,
-                    Err(error) => return Err(error),
-                };
-            if removed != 0 {
-                break;
-            }
-            // An owned-document operation page can advance to the next
-            // document without deleting a receipt. Keep that stage active
-            // when its cursor changed; only a stable empty cursor permits a
-            // transition to the next erasure phase.
-            let latest_cursor = catalog
-                .erasure_progress(&id)?
-                .and_then(|(_, cursor)| cursor);
-            if latest_cursor != cursor {
-                cursor = latest_cursor;
-                continue;
-            }
-            index += 1;
-            if index == stages.len() {
-                match catalog.finish_erasure(&id) {
-                    Ok(()) | Err(CatalogError::Conflict(_)) => {}
-                    Err(error) => return Err(error),
-                }
-                break;
-            }
-            cursor = None;
-            catalog.erasure_batch(&id, stages[index], None, now, rows)?;
-        }
-    }
-    Ok(touched)
-}
-
-pub struct DeletionWorker {
-    catalog: Arc<Catalog>,
+pub struct Maintenance {
+    catalog: Arc<PostgresCatalog>,
     blobs: Arc<dyn BlobStore>,
-    v2_catalog: crate::storage::v2_catalog::V2GcCatalogAdapter,
 }
 
-impl DeletionWorker {
-    pub fn new(
-        catalog: Arc<Catalog>,
-        blobs: Arc<dyn BlobStore>,
-        limits: DeletionLimits,
-    ) -> MaintenanceResult<Self> {
-        if limits.max_jobs == 0 || limits.max_object_requests == 0 || limits.max_read_bytes < 0 {
-            return Err(MaintenanceError::Invalid("invalid deletion limits".into()));
-        }
-        Ok(Self {
-            v2_catalog: crate::storage::v2_catalog::V2GcCatalogAdapter::new(catalog.clone()),
-            catalog,
-            blobs,
-        })
+impl Maintenance {
+    pub fn new(catalog: Arc<PostgresCatalog>, blobs: Arc<dyn BlobStore>) -> Self {
+        Self { catalog, blobs }
     }
 
-    /// Collect canonical object rows using leases, roots, and confirmed
-    /// physical deletion.
-    pub async fn run_v2_once(
+    pub async fn prune_document_versions(
         &self,
-        now: i64,
-    ) -> Result<crate::storage::maintenance_v2::GcReport, crate::storage::maintenance_v2::GcError>
-    {
-        if now < 0 {
-            return Err(crate::storage::maintenance_v2::GcError::Invalid(
-                "negative maintenance time".into(),
-            ));
+        document_id: Uuid,
+        keep_newest: i64,
+        max_age: Duration,
+    ) -> Result<usize, String> {
+        let keys = self
+            .catalog
+            .prune_versions(
+                document_id,
+                keep_newest,
+                OffsetDateTime::now_utc() - max_age,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        // Rows are already gone. Failure leaves harmless extra immutable bytes
+        // and is retried by the orphan/lifecycle sweep.
+        if !keys.is_empty() {
+            let _ = self.blobs.delete(&keys).await;
         }
-        let deletion_catalog = Arc::clone(&self.catalog);
-        deletion_catalog
-            .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
-                for slug in catalog.deleting_documents_page(64, false)? {
-                    // Each invocation is capped at 250 logical rows. Object
-                    // bytes are reclaimed by the GC pass after checkpoint and
-                    // annotation roots have been removed.
-                    if let Err(error) = catalog.erase_document_batch(&slug, 250, now) {
-                        if !matches!(&error, CatalogError::Conflict(_)) {
-                            return Err(error);
-                        }
-                    }
-                }
-                Ok(())
-            })
-            .await
-            .map_err(|error| crate::storage::maintenance_v2::GcError::Catalog(error.to_string()))?;
-        let report =
-            crate::storage::maintenance_v2::run_gc_pass(&self.v2_catalog, self.blobs.as_ref(), now)
-                .await?;
-        let finish_catalog = Arc::clone(&self.catalog);
-        finish_catalog
-            .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
-                for slug in catalog.deleting_documents_page(64, true)? {
-                    // A conflict means physical GC or a lease still fences
-                    // finalization; the next maintenance pass retries it.
-                    if let Err(error) = catalog.finish_delete(&slug) {
-                        if !matches!(&error, CatalogError::Conflict(_)) {
-                            return Err(error);
-                        }
-                    }
-                }
-                Ok(())
-            })
-            .await
-            .map_err(|error| crate::storage::maintenance_v2::GcError::Catalog(error.to_string()))?;
-        Ok(report)
+        Ok(keys.len())
     }
 
-    /// Reconcile guarded v2 allocations and prepared work after the process
-    /// has acquired the deployment writer lock and before serving traffic.
-    pub async fn recover_v2_startup(
-        &self,
-    ) -> Result<
-        crate::storage::maintenance_v2::RecoveryReport,
-        crate::storage::maintenance_v2::GcError,
-    > {
-        let adapter = crate::storage::v2_catalog::V2GcCatalogAdapter::new(self.catalog.clone());
-
-        crate::storage::maintenance_v2::recover_v2_startup(&adapter, self.blobs.as_ref()).await
+    pub async fn delete_superseded_bases(&self, batch: i64) -> Result<usize, String> {
+        if !(1..=500).contains(&batch) {
+            return Err("base cleanup batch must be 1..=500".into());
+        }
+        let rows:Vec<(Uuid,String)>=sqlx::query_as(
+            "SELECT document_id,previous_snapshot_key FROM document_bases WHERE previous_delete_after<=now() ORDER BY previous_delete_after LIMIT $1",
+        ).bind(batch).fetch_all(self.catalog.pool()).await.map_err(|e|e.to_string())?;
+        let mut removed = 0;
+        for (document_id, key) in rows {
+            self.blobs
+                .delete(std::slice::from_ref(&key))
+                .await
+                .map_err(|e| e.to_string())?;
+            removed+=sqlx::query("UPDATE document_bases SET previous_snapshot_key=NULL,previous_delete_after=NULL WHERE document_id=$1 AND previous_snapshot_key=$2")
+                .bind(document_id).bind(key).execute(self.catalog.pool()).await.map_err(|e|e.to_string())?.rows_affected() as usize;
+        }
+        Ok(removed)
     }
+
+    /// Remove old immutable objects which have no domain-row reference.
+    /// Persistent cursors make each run bounded without starving keys late in
+    /// a large namespace. A complete pass resets its cursor to the beginning.
+    pub async fn delete_orphans(&self, batch: usize, grace: Duration) -> Result<usize, String> {
+        if !(1..=1000).contains(&batch) || grace < Duration::days(7) {
+            return Err("orphan cleanup bounds are invalid".into());
+        }
+        let mut removed = 0;
+        for (name, prefix) in [
+            ("document_objects", "documents/"),
+            ("temporary_objects", "temporary/"),
+        ] {
+            let cursor: Option<String> =
+                sqlx::query_scalar("SELECT cursor FROM maintenance_cursors WHERE name=$1")
+                    .bind(name)
+                    .fetch_optional(self.catalog.pool())
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .flatten();
+            let page = self
+                .blobs
+                .list_page(prefix, cursor.as_deref(), batch)
+                .await
+                .map_err(|error| error.to_string())?;
+            let keys: Vec<String> = page.iter().map(|item| item.key.clone()).collect();
+            let referenced = if prefix == "documents/" {
+                referenced_keys(self.catalog.as_ref(), &keys).await?
+            } else {
+                HashSet::new()
+            };
+            let cutoff = std::time::SystemTime::now()
+                .checked_sub(grace.unsigned_abs())
+                .ok_or("orphan cleanup grace is outside the system clock range")?;
+            let doomed: Vec<String> = page
+                .iter()
+                .filter(|item| !referenced.contains(&item.key))
+                .filter(|item| {
+                    item.modified_at
+                        .or_else(|| object_created_at(&item.key))
+                        .is_some_and(|created| created <= cutoff)
+                })
+                .map(|item| item.key.clone())
+                .collect();
+            if !doomed.is_empty() {
+                self.blobs
+                    .delete(&doomed)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                removed += doomed.len();
+            }
+            let next = if page.len() < batch {
+                None
+            } else {
+                keys.last().cloned()
+            };
+            sqlx::query(
+                "INSERT INTO maintenance_cursors(name,cursor) VALUES($1,$2)
+                 ON CONFLICT(name) DO UPDATE SET cursor=excluded.cursor,updated_at=now()",
+            )
+            .bind(name)
+            .bind(next)
+            .execute(self.catalog.pool())
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+        Ok(removed)
+    }
+}
+
+async fn referenced_keys(
+    catalog: &PostgresCatalog,
+    keys: &[String],
+) -> Result<HashSet<String>, String> {
+    if keys.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let found: Vec<String> = sqlx::query_scalar(
+        "SELECT storage_key FROM document_assets WHERE storage_key=ANY($1)
+         UNION SELECT archive_key FROM document_versions WHERE archive_key=ANY($1)
+         UNION SELECT manifest_key FROM publications WHERE manifest_key=ANY($1)
+         UNION SELECT storage_key FROM publication_files WHERE storage_key=ANY($1)
+         UNION SELECT snapshot_key FROM document_bases WHERE snapshot_key=ANY($1)
+         UNION SELECT previous_snapshot_key FROM document_bases WHERE previous_snapshot_key=ANY($1)",
+    )
+    .bind(keys)
+    .fetch_all(catalog.pool())
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(found.into_iter().collect())
+}
+
+fn object_created_at(key: &str) -> Option<std::time::SystemTime> {
+    let parts: Vec<&str> = key.split('/').collect();
+    let raw = match parts.as_slice() {
+        ["documents", _, "assets", id] => *id,
+        ["documents", _, "versions", file] | ["documents", _, "collaboration", file] => {
+            file.split('.').next()?
+        }
+        ["documents", _, "publications", id, ..] => *id,
+        _ => return None,
+    };
+    let id = Uuid::parse_str(raw).ok()?;
+    let (seconds, nanos) = id.get_timestamp()?.to_unix();
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(seconds, nanos))
 }
 
 #[cfg(test)]
-#[path = "maintenance_tests.rs"]
-mod tests;
+mod tests {
+    use super::object_created_at;
+
+    #[test]
+    fn recognizes_uuid_v7_object_namespaces() {
+        let id = uuid::Uuid::now_v7();
+        for key in [
+            format!("documents/{id}/assets/{id}"),
+            format!("documents/{id}/versions/{id}.tar.zst"),
+            format!("documents/{id}/collaboration/{id}.yrs.zst"),
+            format!("documents/{id}/publications/{id}/index.html"),
+        ] {
+            assert!(object_created_at(&key).is_some(), "{key}");
+        }
+        assert!(object_created_at("documents/nope/assets/nope").is_none());
+        assert!(object_created_at(&format!("temporary/publications/{id}/index.html")).is_none());
+    }
+}

@@ -516,7 +516,7 @@ impl Room {
             return Err(BatchRefusal("this room is held by another server".into()));
         }
         let config = self.config.clone();
-        // The SQLite catalogue has the same hard ceiling as the default
+        // The PostgreSQL catalogue has the same hard ceiling as the default
         // configuration. Check its durable count too, since a hot room cache
         // may lag a previous process while the room lease is being acquired.
         // Asked before room state is taken: it is the catalogue's answer and
@@ -814,7 +814,6 @@ impl Room {
                 session_generation: session_generation.to_owned(),
                 link_hash: via.to_owned(),
                 policy_editor: true,
-                automation: false,
                 unowned_publisher: false,
             },
         )
@@ -937,35 +936,6 @@ impl Room {
         if !existing_submission && !self.rate_ok(&mut state, address, via, budget) {
             let source = if via.is_empty() { "address" } else { "link" };
             return fail(&format!("too many comments from this {source}; try later"));
-        }
-
-        // A decision on a suggestion is refused while its acceptance is still
-        // staged. That answer is the catalogue's, so it is asked for with room
-        // state released -- an editor's keystrokes must not queue behind it.
-        // It is asked here rather than inside the branches so that the state
-        // release happens once, before any preparation; the branches keep
-        // their own authorization refusals, which still come first for the
-        // caller who is not allowed to decide at all.
-        let deciding = match &command {
-            Command::Resolve { .. } => is_owner,
-            Command::Delete { .. } | Command::Refine { .. } => true,
-            _ => false,
-        };
-        if let (Some(catalog), true) = (self.catalog.get(), deciding) {
-            let is_suggestion = state
-                .comments
-                .iter()
-                .any(|item| item.id == comment_id && item.motivation == "editing");
-            if is_suggestion {
-                drop(state);
-                let pending = pending_suggestion_accept(catalog, &self.slug, &comment_id).await;
-                state = self.state.lock().await;
-                match pending {
-                    Ok(true) => return fail("a suggestion acceptance is still pending"),
-                    Ok(false) => {}
-                    Err(_) => return fail(UNSAVED),
-                }
-            }
         }
 
         match command {
@@ -1260,14 +1230,12 @@ impl Room {
                 let target_id = state.comments[index].id.clone();
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
-                    let row = crate::storage::catalog::Reply {
-                        slug: self.slug.clone(),
+                    let row = ReplyRow {
                         comment_id: target_id.clone(),
                         id: added.id.clone(),
                         body: added.body.clone(),
                         creator: added.creator.clone(),
                         author: added.author.clone(),
-                        created: added.created.clone(),
                     };
                     let digest = request_digest(&json!({
                         "kind": "reply",
@@ -1516,33 +1484,17 @@ impl Room {
                 };
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
+                    let digest = request_digest(&json!({
+                        "kind": "comment",
+                        "comment": added,
+                    }));
                     let row = match catalog_comment_row(&self.slug, &added) {
                         Ok(row) => row,
                         Err(_) => return fail(UNSAVED),
                     };
-                    let digest = request_digest(&json!({
-                        "kind": "comment",
-                        "id": row.id,
-                        "body": row.body,
-                        "motivation": row.motivation,
-                        "exact": row.exact,
-                        "prefix": row.prefix,
-                        "suffix": row.suffix,
-                        "position": row.position,
-                        "point": row.point,
-                        "color": row.color,
-                        "region": row.region,
-                        "output_anchor": row.quarto_output,
-                        "source_path": row.source_path,
-                        "proposed": row.proposed,
-                        "author": row.author,
-                        "via": row.via,
-                    }));
                     // Pushed into room state only once the receipt is durable,
                     // so a cancelled caller leaves neither an unbroadcast
                     // comment here nor a row nobody was told about.
-                    #[cfg(test)]
-                    ReservationGate::park(&BEFORE_COMMENT_PERSISTENCE, &self.slug).await;
                     match insert_comment_request(
                         catalog,
                         row,

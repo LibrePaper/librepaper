@@ -178,11 +178,7 @@ examples: $(EXAMPLES)
 # admin seed --backup <verified-point>` the operator runs deliberately, so a second
 # `make deploy` serves what is there rather than refusing to start.
 seed: $(BIN) $(EXAMPLES)
-	@if [ -e $(DATA)/catalog.db ]; then \
-		echo "$(DATA) is already seeded; serving it as is (move it aside to reseed)"; \
-	else \
-		$(BIN) admin seed --data-directory $(DATA) $(if $(OWNER),--owner $(OWNER)); \
-	fi
+	@$(BIN) admin seed --data-directory $(DATA) $(if $(OWNER),--owner $(OWNER))
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.

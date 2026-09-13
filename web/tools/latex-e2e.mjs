@@ -8,13 +8,14 @@
 // fragment key. Publishing itself uses a locally minted, signed GitHub test
 // session; no OAuth service is contacted.
 import { createHmac } from "node:crypto";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browser, until } from "./browser-driver.mjs";
 import { ephemeralMirror } from "./ephemeral-mirror.mjs";
+import { postgresTestDatabase } from "./postgres-test.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BINARY = resolve(process.argv[2] || "target/debug/librepaper");
@@ -30,35 +31,22 @@ const config = mkdtempSync(join(tmpdir(), "librepaper-latex-config-"));
 let mirror = null;
 let server = null;
 let local = null;
+let postgres = null;
 
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 const shellHeaders = { "x-librepaper-client": "shell" };
 
-function sql(value) {
-  return `'${String(value).replaceAll("'", "''")}'`;
-}
-
-// This is the same v2 envelope as the OAuth callback writes. The catalogue
+// This is the same session envelope as the OAuth callback writes. The account
 // row is seeded below so the configured provider and session generation are
 // checked by the real binary before it accepts the publication.
 function signedGithubSession() {
   const key = Buffer.from(readFileSync(join(data, "secrets", "session.key"), "utf8").trim(), "hex");
-  const generation = "latex-browser-test-generation";
+  const generation = "1";
   const expires = Math.floor(Date.now() / 1000) + 3600;
   const raw = `github|browser-test|github:browser-test|${generation}||Browser Test|${expires}`;
   const payload = Buffer.from(raw).toString("base64url");
   const signature = createHmac("sha256", key).update(`session-v2\0${payload}`).digest("base64url");
   return { cookie: `librepaper_session=v2.${payload}.${signature}`, generation };
-}
-
-function seedAccount(generation) {
-  const db = join(data, "catalog.db");
-  const now = new Date().toISOString();
-  const statement = `INSERT INTO accounts
-    (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation, erasure_cursor)
-    VALUES (${sql("github:browser-test")}, ${sql("github")}, ${sql("browser-test")}, ${sql("Browser Test")}, '',
-      ${sql(now)}, ${sql(now)}, ${sql("test")}, 'active', ${sql(generation)}, NULL);`;
-  execFileSync("sqlite3", [db, statement], { stdio: "ignore" });
 }
 
 function fixtureTree(directory) {
@@ -93,6 +81,7 @@ async function publish(cookie, fixture) {
 }
 
 async function main() {
+  postgres = postgresTestDatabase("latex_e2e");
   if (!(MODE === "browser" || MODE === "local")) throw new Error(`unknown mode ${MODE}; use browser or local`);
   const fixture = existsSync(REQUESTED_FIXTURE)
     ? REQUESTED_FIXTURE
@@ -108,7 +97,7 @@ async function main() {
   ];
   server = spawn(BINARY, args, {
     stdio: ["ignore", "ignore", "pipe"],
-    env: { ...process.env, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" },
+    env: { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" },
   });
   let serverLog = "";
   server.stderr.on("data", (bytes) => { serverLog += String(bytes); });
@@ -118,7 +107,7 @@ async function main() {
   }, 30000);
   console.log("origin baseline " + JSON.stringify(await (await fetch(`${BASE}/api/status`)).json()));
   const session = signedGithubSession();
-  seedAccount(session.generation);
+  postgres.seedRegisteredAccount({ provider: "github", subject: "browser-test", handle: "browser-test", displayName: "Browser Test" });
   const published = await publish(session.cookie, fixture);
   console.log(`published ${published.slug}; reader key only; mirror ${mirrorUrl}`);
 
@@ -226,6 +215,7 @@ try {
 } finally {
   server?.kill();
   local?.kill("SIGINT");
+  postgres?.drop();
   mirror?.server.close();
   await wait(250);
   for (const directory of [data, config, scratch, mirror?.tls].filter(Boolean)) rmSync(directory, { recursive: true, force: true, maxRetries: 3 });

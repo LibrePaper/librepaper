@@ -1,1746 +1,427 @@
-//! The bridge to the catalogue: reading a room's comments and manifest out of
-//! it when the room loads, and writing them back.
-//!
-//! Every function here submits its SQL through the catalogue's execution
-//! boundary rather than running it on the caller's Tokio worker.  The shapes
-//! are the ones that boundary asks for: capacity is reserved before large
-//! owned inputs are built, one job carries a whole existing sequence of
-//! catalogue calls, and a job never performs object-store I/O or calls back
-//! into the room.
+use std::sync::Arc;
 
-use super::*;
-use crate::storage::catalog::{
-    AnnotationAuthority, Catalog, CatalogExecError, MutationAuthority, RoomEditReservation,
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use super::{Comment, Manifest, QuartoOutputAnchor, Region, Reply, SourceAnchor, WriteError};
+use crate::storage::postgres::{
+    AnnotationRecord, MutationAuthorization, NewAnnotation, NewReply, PostgresCatalog, ReplyRecord,
 };
 
-/// What a job's owned arguments cost beyond the strings it carries: the
-/// identifiers, limits and flags every catalogue descriptor has.  Small
-/// enough that such a request may wait for admission rather than being shed,
-/// which is what keeps an ordinary edit from failing under a burst.
-pub(super) const DESCRIPTOR_BYTES: usize = 128;
-
-/// A `MutationAuthority` a job can own.
-///
-/// The borrowed form cannot cross the boundary — a job takes owned inputs —
-/// and the authority is re-checked inside the catalogue transaction, so it
-/// has to arrive there intact rather than being validated early and dropped.
-#[derive(Clone, Debug)]
-pub(super) struct OwnedAuthority {
-    account_id: String,
-    owner_key: String,
-    generation: String,
-    link_hash: String,
-    policy_editor: bool,
-    automation: bool,
-    unowned_publisher: bool,
-    execution_epoch: String,
-    agent_checkpoint: Option<crate::storage::catalog::AgentCheckpointCommit>,
-}
-
-impl OwnedAuthority {
-    pub(super) fn new(actor: &MutationAuthority<'_>) -> Self {
-        Self {
-            account_id: actor.account_id.to_string(),
-            owner_key: actor.owner_key.to_string(),
-            generation: actor.generation.to_string(),
-            link_hash: actor.link_hash.to_string(),
-            policy_editor: actor.policy_editor,
-            automation: actor.automation,
-            unowned_publisher: actor.unowned_publisher,
-            execution_epoch: actor.execution_epoch.to_string(),
-            agent_checkpoint: actor.agent_checkpoint.cloned(),
-        }
-    }
-
-    pub(super) fn borrow(&self) -> MutationAuthority<'_> {
-        MutationAuthority {
-            account_id: &self.account_id,
-            owner_key: &self.owner_key,
-            generation: &self.generation,
-            link_hash: &self.link_hash,
-            policy_editor: self.policy_editor,
-            automation: self.automation,
-            unowned_publisher: self.unowned_publisher,
-            execution_epoch: &self.execution_epoch,
-            agent_checkpoint: self.agent_checkpoint.as_ref(),
-        }
-    }
-
-    fn bytes(&self) -> usize {
-        self.account_id.len() + self.owner_key.len() + self.generation.len() + self.link_hash.len()
-    }
-}
-
-/// The pending-snapshot reservation one accepted edit owns between the
-/// catalogue transaction that took it and the room state that accounts for
-/// it.
-///
-/// Cancellation is why this is a type rather than two catalogue calls.  A
-/// caller can disappear at two different moments — while the reserving
-/// transaction is still running, and after it has committed but before the
-/// awaiting future resumes — and only the first is visible to the execution
-/// boundary's completion hook, which runs on the executing thread before the
-/// result is handed back.  The hook settles the first case, this guard's
-/// `Drop` the second, and one shared slot makes sure only one of them acts.
-/// Both undo the reservation by its generation, so a reservation that a newer
-/// edit or session write has already replaced is left alone; that also makes
-/// a duplicated rollback a no-op rather than a way to release quota twice.
-pub(super) struct PendingEditReservation {
-    catalog: Arc<Catalog>,
-    slug: String,
-    slot: Arc<ReservationSlot<RoomEditReservation>>,
-}
-
-/// The handshake between the caller that will own a reservation and the
-/// completion hook that must settle it if that caller disappears.
-///
-/// `T` is whatever the undo needs: the generation of a room edit, the owner
-/// and hour of a checkpoint token, or nothing at all when the operation id
-/// already identifies what to release.  Exactly one of the two sides ever
-/// takes the value out, because both go through this mutex.
-pub(super) struct ReservationSlot<T> {
-    state: std::sync::Mutex<ReservationSlotState<T>>,
-}
-
-struct ReservationSlotState<T> {
-    /// What the job reserved, once its transaction has committed.
-    reserved: Option<T>,
-    /// The awaiting caller has gone, or has handed the reservation on.
-    caller_gone: bool,
-    /// Somebody has taken responsibility for this reservation.
-    settled: bool,
-}
-
-impl<T> Default for ReservationSlot<T> {
-    fn default() -> Self {
-        Self {
-            state: std::sync::Mutex::new(ReservationSlotState {
-                reserved: None,
-                caller_gone: false,
-                settled: false,
-            }),
-        }
-    }
-}
-
-impl<T> ReservationSlot<T> {
-    /// Recorded by the job itself, on the executing thread, before the
-    /// completion hook can look at it.
-    pub(super) fn record(&self, reserved: T) {
-        self.lock().reserved = Some(reserved);
-    }
-
-    /// The completion hook's claim: it owns the undo only if the caller was
-    /// already gone when the request settled.
-    pub(super) fn on_completion(&self) -> Option<T> {
-        let mut state = self.lock();
-        if state.settled || !state.caller_gone {
-            return None;
-        }
-        state.settled = true;
-        state.reserved.take()
-    }
-
-    /// The caller's claim, on cancellation or an explicit undo.  When the job
-    /// has not committed yet there is nothing to undo and the hook will find
-    /// `caller_gone` set.
-    pub(super) fn abandon(&self) -> Option<T> {
-        let mut state = self.lock();
-        state.caller_gone = true;
-        if state.settled {
-            return None;
-        }
-        let reserved = state.reserved.take()?;
-        state.settled = true;
-        Some(reserved)
-    }
-
-    /// What the caller would have to undo, without settling it: the guard
-    /// stays responsible until the undo has actually happened.
-    pub(super) fn peek(&self) -> Option<T>
-    where
-        T: Clone,
-    {
-        let state = self.lock();
-        if state.settled {
-            return None;
-        }
-        state.reserved.clone()
-    }
-
-    /// Nobody owes anything: the room has taken the reservation on, or the
-    /// undo has run.
-    pub(super) fn keep(&self) {
-        let mut state = self.lock();
-        state.caller_gone = true;
-        state.settled = true;
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, ReservationSlotState<T>> {
-        match self.state.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-    }
-}
-
-impl PendingEditReservation {
-    /// The room state now accounts for these bytes.  The reservation stays
-    /// charged until the room's next reservation replaces it, which is what
-    /// makes room admission include unsaved work.
-    pub(super) fn keep(self) {
-        self.slot.keep();
-    }
-
-    /// The update was refused after the bytes were reserved, so give them
-    /// back now rather than leaving the document charged for a snapshot that
-    /// will never exist.  Cancellation here is safe: the guard stays armed
-    /// across the await, and a rollback that ran twice is refused by the
-    /// generation the second time.
-    pub(super) async fn rollback(self) {
-        let Some(reservation) = self.slot.peek() else {
-            return;
-        };
-        let slug = self.slug.clone();
-        let restored = self
-            .catalog
-            .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-                catalog.restore_room_edit(&slug, reservation)
-            })
-            .await;
-        if restored.is_ok() {
-            self.slot.keep();
-        }
-    }
-}
-
-impl Drop for PendingEditReservation {
-    fn drop(&mut self) {
-        let Some(reservation) = self.slot.abandon() else {
-            return;
-        };
-        // The caller was cancelled after the reservation committed and before
-        // it took ownership.  A `Drop` cannot await, so this is the one
-        // catalogue call the room still makes synchronously; it runs only on
-        // that cancellation path, it is a single conditional statement, and
-        // the alternative — leaving the bytes charged until the document is
-        // edited again — is a quota leak on a document nobody may touch
-        // again.
-        if let Err(error) = self.catalog.restore_room_edit(&self.slug, reservation) {
-            eprintln!(
-                "warning: could not release the pending edit reservation for {}: {error}",
-                self.slug
-            );
-        }
-    }
-}
-
-/// A test-only gate for the window between an edit reservation committing and
-/// the room taking ownership of it.
-///
-/// That window is the one the completion hook cannot observe — the hook runs
-/// on the executing thread before the result is handed back — so it is the
-/// window `Drop` covers, and a test needs a way to park a caller inside it.
-/// The gate is keyed by slug so that one test's gate cannot stop another
-/// test's room in the same process.
-#[cfg(test)]
-pub(crate) static AFTER_EDIT_RESERVATION: super::TestGate = std::sync::Mutex::new(None);
-
-#[cfg(test)]
-pub(super) async fn pause_after_edit_reservation(slug: &str) {
-    super::ReservationGate::park(&AFTER_EDIT_RESERVATION, slug).await;
-}
-
-/// Reserve a complete pending snapshot for one update.
-///
-/// The reservation is taken on a blocking thread under the boundary's
-/// admission, so the quota decision no longer parks a Tokio worker on the
-/// connection; what it does still hold is the caller's room gates, which is
-/// recorded in the track 1 inventory for track 2 to shorten.
-pub(super) async fn reserve_pending_edit(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    bytes: i64,
-    owner_limit: i64,
-    total_limit: i64,
-) -> Result<PendingEditReservation, CatalogExecError> {
-    let slot = Arc::new(ReservationSlot::default());
-    let guard = PendingEditReservation {
-        catalog: catalog.clone(),
-        slug: slug.to_string(),
-        slot: slot.clone(),
-    };
-    let job_slot = slot.clone();
-    let job_slug = slug.to_string();
-    let cleanup = EditReservationCleanup {
-        slug: slug.to_string(),
-        slot,
-    };
-    catalog
-        .reserve_execution(slug.len() + DESCRIPTOR_BYTES)
-        .await?
-        .execute_catalog_with_completion(
-            move |catalog| {
-                let reservation =
-                    catalog.reserve_room_edit(&job_slug, bytes, owner_limit, total_limit)?;
-                job_slot.record(reservation);
-                Ok(())
-            },
-            cleanup,
+fn mutation_authorization(
+    actor: &crate::document::store::MutationActor,
+) -> Result<MutationAuthorization, WriteError> {
+    let account_id = if actor.account_id.is_empty() {
+        None
+    } else {
+        Some(
+            Uuid::parse_str(&actor.account_id)
+                .map_err(|_| WriteError::Invalid("actor account is invalid".into()))?,
         )
-        .await?;
-    Ok(guard)
-}
-
-/// The single session writer's reservation, held from the transaction that
-/// moves the pending snapshot into it until the snapshot is durable.
-///
-/// This is the `RoomWriteQuota` the room used to build by hand, with the
-/// cancellation window closed: the reservation is created by the same call
-/// that takes it, so there is no longer a gap between the catalogue
-/// transaction committing and the guard existing in which a cancelled writer
-/// would leave `writing_bytes` charged forever.  Settlement is unconditional
-/// because the session writer gate serialises these: no newer session write
-/// can have taken the row while this one still holds the gate.
-pub(super) struct RoomWriteReservation {
-    catalog: Arc<Catalog>,
-    storage_id: String,
-    slot: Arc<ReservationSlot<()>>,
-}
-
-impl RoomWriteReservation {
-    /// The snapshot is durable, so its cost has moved into ordinary object
-    /// accounting.
-    pub(super) async fn commit(self) -> Result<(), CatalogExecError> {
-        if self.slot.abandon().is_none() {
-            return Ok(());
-        }
-        let storage_id = self.storage_id.clone();
-        self.catalog
-            .execute_catalog(storage_id.len() + DESCRIPTOR_BYTES, move |catalog| {
-                catalog.finish_room_write(&storage_id, true)
-            })
-            .await
-    }
-}
-
-impl Drop for RoomWriteReservation {
-    fn drop(&mut self) {
-        if self.slot.abandon().is_none() {
-            return;
-        }
-        // The write failed or its caller went away: the bytes go back to the
-        // room's pending reservation, which is what admission counts. A
-        // `Drop` cannot await, and this is the same synchronous call the
-        // hand-written quota guard made before.
-        if let Err(error) = self.catalog.finish_room_write(&self.storage_id, false) {
-            eprintln!(
-                "warning: could not restore pending edit quota for {}: {error}",
-                self.storage_id
-            );
-        }
-    }
-}
-
-/// The service's half of the session writer's reservation.
-struct RoomWriteCleanup {
-    storage_id: String,
-    slot: Arc<ReservationSlot<()>>,
-}
-
-impl crate::storage::catalog::CatalogServiceCompletion for RoomWriteCleanup {
-    fn complete(
-        self: Box<Self>,
-        outcome: crate::storage::catalog::CatalogOutcome<'_>,
-        catalog: &Catalog,
-    ) {
-        if !matches!(outcome, crate::storage::catalog::CatalogOutcome::Committed) {
-            return;
-        }
-        if self.slot.on_completion().is_none() {
-            return;
-        }
-        if let Err(error) = catalog.finish_room_write(&self.storage_id, false) {
-            eprintln!(
-                "warning: could not restore pending edit quota for {}: {error}",
-                self.storage_id
-            );
-        }
-    }
-}
-
-/// Move a room's pending snapshot into the session writer's reservation.
-pub(super) async fn begin_room_write(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    storage_id: &str,
-    bytes: i64,
-    owner_limit: i64,
-    total_limit: i64,
-) -> Result<RoomWriteReservation, CatalogExecError> {
-    let slot = Arc::new(ReservationSlot::default());
-    let guard = RoomWriteReservation {
-        catalog: catalog.clone(),
-        storage_id: storage_id.to_string(),
-        slot: slot.clone(),
     };
-    let cleanup = RoomWriteCleanup {
-        storage_id: storage_id.to_string(),
-        slot: slot.clone(),
-    };
-    let job_slug = slug.to_string();
-    catalog
-        .reserve_execution(slug.len() + storage_id.len() + DESCRIPTOR_BYTES)
-        .await?
-        .execute_catalog_with_completion(
-            move |catalog| {
-                catalog.begin_room_write(&job_slug, bytes, owner_limit, total_limit)?;
-                slot.record(());
-                Ok(())
-            },
-            cleanup,
+    let session_generation = if actor.session_generation.is_empty() {
+        None
+    } else {
+        Some(
+            actor
+                .session_generation
+                .parse::<i64>()
+                .map_err(|_| WriteError::Invalid("actor session is invalid".into()))?,
         )
-        .await?;
-    Ok(guard)
+    };
+    let token_hash = if actor.link_hash.is_empty() {
+        None
+    } else {
+        let bytes = hex::decode(&actor.link_hash)
+            .map_err(|_| WriteError::Invalid("share link is invalid".into()))?;
+        Some(
+            bytes
+                .try_into()
+                .map_err(|_| WriteError::Invalid("share link is invalid".into()))?,
+        )
+    };
+    Ok(MutationAuthorization {
+        account_id,
+        session_generation,
+        token_hash,
+        policy_editor: actor.policy_editor,
+    })
 }
 
-/// The service's half of the reservation handshake: it runs on the executing
-/// thread whether or not the caller is still waiting, and undoes the
-/// reservation only when the caller had already gone by the time the
-/// transaction settled.
-struct EditReservationCleanup {
-    slug: String,
-    slot: Arc<ReservationSlot<RoomEditReservation>>,
-}
-
-impl crate::storage::catalog::CatalogServiceCompletion for EditReservationCleanup {
-    fn complete(
-        self: Box<Self>,
-        outcome: crate::storage::catalog::CatalogOutcome<'_>,
-        catalog: &Catalog,
-    ) {
-        if !matches!(outcome, crate::storage::catalog::CatalogOutcome::Committed) {
-            // Nothing committed, so there is no reservation to undo.
-            return;
-        }
-        let Some(reservation) = self.slot.on_completion() else {
-            return;
-        };
-        if let Err(error) = catalog.restore_room_edit(&self.slug, reservation) {
-            eprintln!(
-                "warning: could not release the pending edit reservation for {}: {error}",
-                self.slug
-            );
-        }
-    }
-}
-
-/// The owned identity of one accounted object mutation.  Reserve, commit and
-/// abort all name the same `operation_id`, which is the receipt this
-/// reservation is reconciled by: an abort can only ever release the operation
-/// it names, so a late cleanup cannot touch a newer upload of the same key.
-/// One document row, read through the boundary.  Every room path that only
-/// needs the catalogue's view of a document goes through here rather than
-/// taking the connection on a Tokio worker.
 pub(super) async fn read_catalog_document(
-    catalog: &Arc<Catalog>,
+    catalog: &Arc<PostgresCatalog>,
     slug: &str,
-) -> Result<Option<crate::storage::catalog::Document>, CatalogExecError> {
-    let slug = slug.to_string();
-    catalog
-        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            catalog.document(&slug)
-        })
+) -> crate::storage::postgres::Result<Option<crate::storage::postgres::DocumentRecord>> {
+    catalog.document_by_slug(slug).await
+}
+
+pub(super) async fn load_catalog_manifest(
+    catalog: &Arc<PostgresCatalog>,
+    slug: &str,
+) -> Result<Manifest, String> {
+    let Some(document) = catalog
+        .document_by_slug(slug)
         .await
-}
-
-/// The checkpoint that already records this content, if there is one.
-pub(super) async fn read_checkpoint_by_content_sha(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    content_sha: &str,
-) -> Result<Option<crate::storage::catalog::Checkpoint>, String> {
-    let slug = slug.to_string();
-    let content_sha = content_sha.to_string();
-    catalog
-        .execute_catalog(
-            slug.len() + content_sha.len() + DESCRIPTOR_BYTES,
-            move |catalog| catalog.checkpoint_by_content_sha(&slug, &content_sha),
-        )
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(Manifest::default());
+    };
+    let mut rows = catalog
+        .versions(document.id, 1000)
         .await
-        .map_err(|error| error.to_string())
-}
-
-/// Advance the automatic-checkpoint clock for a document.
-pub(super) async fn touch_auto_checkpoint(catalog: &Arc<Catalog>, slug: &str, at: i64) {
-    let slug = slug.to_string();
-    let _ = catalog
-        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            catalog.touch_auto_checkpoint(&slug, at)
-        })
-        .await;
-}
-
-/// Resolve a checkpoint prefix against the authoritative catalogue.
-pub(super) async fn read_checkpoints_prefix(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    prefix: &str,
-) -> Result<Vec<crate::storage::catalog::Checkpoint>, String> {
-    let slug = slug.to_string();
-    let prefix = prefix.to_string();
-    catalog
-        .execute_catalog(
-            slug.len() + prefix.len() + DESCRIPTOR_BYTES,
-            move |catalog| catalog.checkpoints_prefix(&slug, &prefix),
-        )
-        .await
-        .map_err(|error| error.to_string())
-}
-
-/// One keyset page of the authoritative checkpoint timeline.
-pub(super) async fn read_checkpoints_page(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    after_seq: Option<i64>,
-    limit: u32,
-) -> Result<Vec<crate::document::history::Checkpoint>, String> {
-    let slug = slug.to_string();
-    catalog
-        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            let rows = catalog.checkpoints(&slug, after_seq, limit)?;
-            let mut points = Manifest::from_catalog_rows(rows)
-                .map_err(crate::storage::catalog::CatalogError::Invalid)?
-                .checkpoints;
-            let first = points.iter().map(|point| point.seq).min().unwrap_or(0);
-            let last = points.iter().map(|point| point.seq).max().unwrap_or(0);
-            let metadata = catalog.retention_metadata_range(&slug, first, last)?;
-            for point in &mut points {
-                if let Some((parent, gap)) = metadata.get(&point.sha) {
-                    point.original_parent = parent.clone();
-                    point.ancestry_gap = *gap;
-                }
-            }
-            Ok(points)
-        })
-        .await
-        .map_err(|error| error.to_string())
-}
-
-/// Label a checkpoint, with the request's authority re-checked inside the
-/// write.
-///
-/// There is no operation id here, and adding one would change a persisted
-/// record for a mutation that is already idempotent: a label write sets the
-/// stored label to exactly what the request asked for, so a repeat is the
-/// same write and a cancelled caller leaves either the old label or the new
-/// one, never a half-applied state.  That is the reconciliation rule for this
-/// operation, and it is why it needs no completion hook.
-pub(super) async fn label_checkpoint(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    sha: &str,
-    label: &str,
-    actor: Option<OwnedAuthority>,
-) -> crate::storage::catalog::CatalogResult<()> {
-    let input_bytes = slug.len()
-        + sha.len()
-        + label.len()
-        + DESCRIPTOR_BYTES
-        + actor
-            .as_ref()
-            .map(OwnedAuthority::bytes)
-            .unwrap_or_default();
-    let slug = slug.to_string();
-    let sha = sha.to_string();
-    let label = label.to_string();
-    match catalog
-        .execute_catalog(input_bytes, move |catalog| match &actor {
-            Some(actor) => catalog
-                .label_checkpoint_with_authority(&slug, &sha, &label, actor.borrow())
-                .map(|_| ()),
-            None => catalog.label_checkpoint(&slug, &sha, &label).map(|_| ()),
-        })
-        .await
-    {
-        Ok(()) => Ok(()),
-        Err(CatalogExecError::Catalog(error)) => Err(error),
-        Err(error) => Err(crate::storage::catalog::CatalogError::Invalid(
-            error.to_string(),
-        )),
-    }
-}
-
-/// One checkpoint row, read through the boundary.
-pub(super) async fn read_catalog_checkpoint(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    sha: &str,
-) -> Result<Option<crate::storage::catalog::Checkpoint>, CatalogExecError> {
-    let slug = slug.to_string();
-    let sha = sha.to_string();
-    catalog
-        .execute_catalog(slug.len() + sha.len() + DESCRIPTOR_BYTES, move |catalog| {
-            catalog.checkpoint(&slug, &sha)
-        })
-        .await
-}
-
-/// Load annotation state from the authoritative SQLite catalog.
-///
-/// The comment listing and its per-comment reply reads are one job: they were
-/// already one read each, and issuing them from a single blocking thread
-/// keeps a cold room's load from taking the connection five hundred separate
-/// times from a Tokio worker.
-pub(super) async fn load_catalog_comments(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-) -> Result<(i64, Vec<Comment>), CatalogExecError> {
-    let slug = slug.to_string();
-    catalog
-        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            load_catalog_comments_blocking(catalog, &slug)
-        })
-        .await
-}
-
-fn load_catalog_comments_blocking(
-    catalog: &Catalog,
-    slug: &str,
-) -> crate::storage::catalog::CatalogResult<(i64, Vec<Comment>)> {
-    let annotation_seq = catalog.agent_annotation_sequence(slug)?;
-    let rows = catalog.comments(slug, None, 500)?;
-    let mut comments = Vec::with_capacity(rows.len());
-    for row in rows {
-        let replies = catalog.replies(slug, &row.id, 100)?;
-        comments.push(room_comment_from_catalog_row(row, replies)?);
-    }
-    Ok((annotation_seq, comments))
-}
-
-/// Convert the canonical catalogue representation to the client-visible room
-/// representation. Acceptance versioning uses this exact conversion too.
-pub(crate) fn room_comment_from_catalog_row(
-    row: crate::storage::catalog::Comment,
-    replies: Vec<crate::storage::catalog::Reply>,
-) -> crate::storage::catalog::CatalogResult<Comment> {
-    let region = row
-        .region
-        .map(|raw| {
-            serde_json::from_str::<Region>(&raw).map_err(|err| {
-                crate::storage::catalog::CatalogError::Invalid(format!(
-                    "comment region is invalid: {err}"
-                ))
-            })
-        })
-        .transpose()?;
-    let source = row.source_path.map(|path| SourceAnchor {
-        path,
-        exact: row.source_exact.unwrap_or_default(),
-        prefix: row.source_prefix.unwrap_or_default(),
-        suffix: row.source_suffix.unwrap_or_default(),
-        position: row.source_position,
-    });
-    let output_anchor = row
-        .quarto_output
-        .map(|raw| {
-            serde_json::from_str::<QuartoOutputAnchor>(&raw).map_err(|err| {
-                crate::storage::catalog::CatalogError::Invalid(format!(
-                    "comment Quarto output anchor is invalid: {err}"
-                ))
-            })
-        })
-        .transpose()?;
-    Ok(Comment {
-        id: row.id,
-        seq: row.seq,
-        motivation: row.motivation,
-        publication_id: row.publication_id,
-        body: row.body,
-        creator: row.creator,
-        author: row.author,
-        via: row.via,
-        created: row.created,
-        exact: row.exact,
-        prefix: row.prefix,
-        suffix: row.suffix,
-        position: row.position,
-        point: row.point,
-        color: row.color,
-        region,
-        output_anchor,
-        source,
-        proposed: row.proposed,
-        pass: row.pass,
-        outcome: row.outcome,
-        accept_request: row.accept_request,
-        revision: row.revision,
-        resolved: row.resolved,
-        resolved_at: row.resolved_at,
-        resolved_in: row.resolved_in,
-        replies: replies
-            .into_iter()
-            .map(|reply| Reply {
-                id: reply.id,
-                body: reply.body,
-                creator: reply.creator,
-                author: reply.author,
-                created: reply.created,
-            })
+        .map_err(|e| e.to_string())?;
+    rows.reverse();
+    Ok(Manifest {
+        checkpoints: rows
+            .iter()
+            .map(super::checkpoint::checkpoint_from_version)
             .collect(),
     })
 }
 
-/// What one catalogue comment row costs as an owned job input.
-fn comment_row_bytes(row: &crate::storage::catalog::Comment) -> usize {
-    DESCRIPTOR_BYTES
-        + row.slug.len()
-        + row.id.len()
-        + row.body.len()
-        + row.exact.len()
-        + row.prefix.len()
-        + row.suffix.len()
-        + row.proposed.as_ref().map(String::len).unwrap_or_default()
-        + row.region.as_ref().map(String::len).unwrap_or_default()
+pub(super) async fn load_catalog_comments(
+    catalog: &Arc<PostgresCatalog>,
+    slug: &str,
+) -> Result<(i64, Vec<Comment>), String> {
+    let Some(document) = catalog
+        .document_by_slug(slug)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok((0, Vec::new()));
+    };
+    let rows = catalog
+        .annotations(document.id, None, None, 500)
+        .await
+        .map_err(|e| e.to_string())?;
+    let ids: Vec<_> = rows.iter().map(|row| row.id).collect();
+    let replies = catalog.replies(&ids).await.map_err(|e| e.to_string())?;
+    let mut comments = Vec::with_capacity(rows.len());
+    for (sequence, row) in rows.into_iter().enumerate() {
+        let attached = replies
+            .iter()
+            .filter(|reply| reply.annotation_id == row.id)
+            .cloned()
+            .collect();
+        comments.push(room_comment_from_catalog_row(
+            row,
+            attached,
+            sequence as i64 + 1,
+        )?);
+    }
+    Ok((comments.len() as i64, comments))
 }
 
-/// How many comments this document durably has.  Read rather than counted in
-/// memory, because a hot room cache may lag a previous process while the room
-/// lease is being acquired.
 pub(super) async fn count_catalog_comments(
-    catalog: &Arc<Catalog>,
+    catalog: &Arc<PostgresCatalog>,
     slug: &str,
 ) -> Result<usize, String> {
-    let slug = slug.to_string();
-    catalog
-        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            catalog.comments(&slug, None, 500).map(|rows| rows.len())
-        })
+    let Some(document) = catalog
+        .document_by_slug(slug)
         .await
-        .map_err(|error| error.to_string())
-}
-
-/// Insert one comment under its request receipt, which is what makes a retry
-/// of the same request return the first insert rather than a second comment.
-pub(super) async fn insert_comment_request(
-    catalog: &Arc<Catalog>,
-    row: crate::storage::catalog::Comment,
-    request_id: String,
-    digest: String,
-    at: i64,
-    actor: crate::document::store::MutationActor,
-    require_editor: bool,
-) -> Result<(i64, String), crate::room::WriteError> {
-    let input_bytes = comment_row_bytes(&row)
-        + request_id.len()
-        + digest.len()
-        + actor.account_id.len()
-        + actor.session_generation.len();
-    catalog
-        .execute_catalog(input_bytes, move |catalog| {
-            catalog
-                .insert_comment_request_authorized(
-                    &row,
-                    &request_id,
-                    &digest,
-                    at.saturating_mul(1000),
-                    crate::storage::catalog::AnnotationAuthority {
-                        account_id: &actor.account_id,
-                        author_key: &actor.owner_key,
-                        generation: &actor.session_generation,
-                        link_hash: &actor.link_hash,
-                        policy_comment: actor.policy_editor,
-                        automation: actor.automation,
-                        require_editor,
-                    },
-                )
-                .map(|row| (row.seq, row.created))
-        })
-        .await
-        .map_err(crate::room::WriteError::from)
-}
-
-/// Write one comment row back.
-///
-/// There is no receipt for a decision — resolve, reopen, anchor — and it does
-/// not need one: the row is written to exactly the value the request asked
-/// for, so repeating it is the same write. What cancellation must not do is
-/// leave the room's in-memory copy ahead of the row, which is why every
-/// caller here applies its change to room state only after this returns.
-pub(super) async fn update_comment_row(
-    catalog: &Arc<Catalog>,
-    row: crate::storage::catalog::Comment,
-    actor: crate::document::store::MutationActor,
-) -> Result<(), String> {
-    let input_bytes =
-        comment_row_bytes(&row) + actor.account_id.len() + actor.session_generation.len();
-    catalog
-        .execute_catalog(input_bytes, move |catalog| {
-            catalog
-                .update_comment_authorized(
-                    &row,
-                    crate::storage::catalog::AnnotationAuthority {
-                        account_id: &actor.account_id,
-                        author_key: &actor.owner_key,
-                        generation: &actor.session_generation,
-                        link_hash: &actor.link_hash,
-                        policy_comment: actor.policy_editor,
-                        automation: actor.automation,
-                        require_editor: false,
-                    },
-                )
-                .map(|_| ())
-        })
-        .await
-        .map_err(|error| error.to_string())
-}
-
-/// Remove one comment row.
-pub(super) async fn delete_comment_row(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    id: &str,
-    actor: crate::document::store::MutationActor,
-) -> Result<(), String> {
-    let slug = slug.to_string();
-    let id = id.to_string();
-    catalog
-        .execute_catalog(
-            slug.len()
-                + id.len()
-                + actor.account_id.len()
-                + actor.session_generation.len()
-                + DESCRIPTOR_BYTES,
-            move |catalog| {
-                catalog
-                    .delete_comment_authorized(
-                        &slug,
-                        &id,
-                        crate::storage::catalog::AnnotationAuthority {
-                            account_id: &actor.account_id,
-                            author_key: &actor.owner_key,
-                            generation: &actor.session_generation,
-                            link_hash: &actor.link_hash,
-                            policy_comment: actor.policy_editor,
-                            automation: actor.automation,
-                            require_editor: false,
-                        },
-                    )
-                    .map(|_| ())
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())
-}
-
-/// Insert one reply under its request receipt.
-pub(super) async fn insert_reply_request(
-    catalog: &Arc<Catalog>,
-    row: crate::storage::catalog::Reply,
-    request_id: String,
-    digest: String,
-    at: i64,
-    actor: crate::document::store::MutationActor,
-) -> Result<String, crate::room::WriteError> {
-    let input_bytes = DESCRIPTOR_BYTES
-        + row.slug.len()
-        + row.comment_id.len()
-        + row.id.len()
-        + row.body.len()
-        + request_id.len()
-        + digest.len()
-        + actor.account_id.len()
-        + actor.session_generation.len();
-    catalog
-        .execute_catalog(input_bytes, move |catalog| {
-            catalog
-                .insert_reply_request_authorized(
-                    &row,
-                    &request_id,
-                    &digest,
-                    at.saturating_mul(1000),
-                    crate::storage::catalog::AnnotationAuthority {
-                        account_id: &actor.account_id,
-                        author_key: &actor.owner_key,
-                        generation: &actor.session_generation,
-                        link_hash: &actor.link_hash,
-                        policy_comment: actor.policy_editor,
-                        automation: actor.automation,
-                        require_editor: false,
-                    },
-                )
-                .map(|row| row.created)
-        })
-        .await
-        .map_err(crate::room::WriteError::from)
-}
-
-/// A dispatched receipt insertion can outlive its awaiting caller. Share the
-/// cleanup claim with the caller's guard so exactly one side aborts an empty
-/// receipt, while the catalogue predicate preserves any staged update.
-struct SuggestionBeginCleanup {
-    slug: String,
-    comment_id: String,
-    request_id: String,
-    digest: String,
-    actor: crate::document::store::MutationActor,
-    slot: Arc<ReservationSlot<()>>,
-    #[cfg(test)]
-    gate: Option<Arc<AcceptanceReceiptGate>>,
-}
-
-impl crate::storage::catalog::CatalogServiceCompletion for SuggestionBeginCleanup {
-    fn complete(
-        self: Box<Self>,
-        outcome: crate::storage::catalog::CatalogOutcome<'_>,
-        catalog: &Catalog,
-    ) {
-        if matches!(outcome, crate::storage::catalog::CatalogOutcome::Committed)
-            && self.slot.on_completion().is_some()
-        {
-            if let Err(error) = catalog.abort_unstaged_suggestion_accept(
-                &self.slug,
-                &self.comment_id,
-                &self.request_id,
-                &self.digest,
-                AnnotationAuthority {
-                    account_id: &self.actor.account_id,
-                    author_key: &self.actor.owner_key,
-                    generation: &self.actor.session_generation,
-                    link_hash: &self.actor.link_hash,
-                    policy_comment: self.actor.policy_editor,
-                    automation: self.actor.automation,
-                    require_editor: true,
-                },
-            ) {
-                eprintln!(
-                    "warning: could not release cancelled acceptance for {}: {error}",
-                    self.slug
-                );
-            }
-        }
-        #[cfg(test)]
-        if let Some(gate) = self.gate {
-            gate.completed.notify_one();
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) struct AcceptanceReceiptGate {
-    slug: String,
-    pub(crate) reached: tokio::sync::Notify,
-    pub(crate) completed: tokio::sync::Notify,
-    pub(crate) resume: std::sync::mpsc::Sender<()>,
-    receiver: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
-
-#[cfg(test)]
-impl AcceptanceReceiptGate {
-    pub(crate) fn new(slug: &str) -> Arc<Self> {
-        let (resume, receiver) = std::sync::mpsc::channel();
-        Arc::new(Self {
-            slug: slug.into(),
-            reached: tokio::sync::Notify::new(),
-            completed: tokio::sync::Notify::new(),
-            resume,
-            receiver: std::sync::Mutex::new(receiver),
-        })
-    }
-    fn park(&self) {
-        self.reached.notify_one();
-        self.receiver
-            .lock()
-            .unwrap()
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("acceptance receipt test releases the dispatched job");
-    }
-}
-
-#[cfg(test)]
-pub(crate) static BEFORE_ACCEPTANCE_RECEIPT: std::sync::Mutex<Option<Arc<AcceptanceReceiptGate>>> =
-    std::sync::Mutex::new(None);
-
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn begin_suggestion_accept(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    comment_id: &str,
-    request_id: &str,
-    digest: &str,
-    at: i64,
-    actor: crate::document::store::MutationActor,
-    slot: Arc<ReservationSlot<()>>,
-) -> Result<Option<crate::storage::catalog::Comment>, String> {
-    let slug = slug.to_string();
-    let comment_id = comment_id.to_string();
-    let request_id = request_id.to_string();
-    let digest = digest.to_string();
-    let input_bytes = slug.len()
-        + comment_id.len()
-        + request_id.len()
-        + digest.len()
-        + actor.account_id.len()
-        + actor.session_generation.len()
-        + actor.owner_key.len()
-        + actor.link_hash.len()
-        + DESCRIPTOR_BYTES;
-    #[cfg(test)]
-    let gate = BEFORE_ACCEPTANCE_RECEIPT
-        .lock()
-        .unwrap()
-        .as_ref()
-        .filter(|gate| gate.slug == slug)
-        .cloned();
-    #[cfg(test)]
-    let job_gate = gate.clone();
-    let cleanup = SuggestionBeginCleanup {
-        slug: slug.clone(),
-        comment_id: comment_id.clone(),
-        request_id: request_id.clone(),
-        digest: digest.clone(),
-        actor: actor.clone(),
-        slot: slot.clone(),
-        #[cfg(test)]
-        gate,
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(0);
     };
     catalog
-        .reserve_execution(input_bytes.saturating_mul(2))
+        .annotation_count(document.id)
         .await
-        .map_err(|error| error.to_string())?
-        .execute_catalog_with_completion(
-            move |catalog| {
-                #[cfg(test)]
-                if let Some(gate) = job_gate {
-                    gate.park();
-                }
-                let result = catalog.begin_suggestion_accept_authorized(
-                    &slug,
-                    &comment_id,
-                    &request_id,
-                    &digest,
-                    at.saturating_mul(1000),
-                    crate::storage::catalog::AnnotationAuthority {
-                        account_id: &actor.account_id,
-                        author_key: &actor.owner_key,
-                        generation: &actor.session_generation,
-                        link_hash: &actor.link_hash,
-                        policy_comment: actor.policy_editor,
-                        automation: actor.automation,
-                        require_editor: true,
-                    },
-                )?;
-                if result.is_none() {
-                    slot.record(());
-                }
-                Ok(result)
-            },
-            cleanup,
-        )
-        .await
-        .map_err(|error| error.to_string())
+        .map(|n| n as usize)
+        .map_err(|e| e.to_string())
 }
 
-pub(super) async fn suggestion_accept_checkpoint(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    request_id: &str,
-    digest: &str,
-    actor: crate::document::store::MutationActor,
-) -> Result<Option<(String, String, String)>, String> {
-    let slug = slug.to_string();
-    let request_id = request_id.to_string();
-    let digest = digest.to_string();
-    let input_bytes = slug.len()
-        + request_id.len()
-        + digest.len()
-        + actor.account_id.len()
-        + actor.session_generation.len()
-        + DESCRIPTOR_BYTES;
-    catalog
-        .execute_catalog(input_bytes, move |catalog| {
-            catalog.suggestion_accept_checkpoint_authorized(
-                &slug,
-                &request_id,
-                &digest,
-                crate::storage::catalog::AnnotationAuthority {
-                    account_id: &actor.account_id,
-                    author_key: &actor.owner_key,
-                    generation: &actor.session_generation,
-                    link_hash: &actor.link_hash,
-                    policy_comment: actor.policy_editor,
-                    automation: actor.automation,
-                    require_editor: true,
-                },
-            )
-        })
-        .await
-        .map_err(|error| error.to_string())
+#[derive(Clone)]
+pub(super) struct AnnotationRow {
+    slug: String,
+    comment: Comment,
 }
 
-pub(super) async fn suggestion_accept_update(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    request_id: &str,
-    digest: &str,
-    actor: crate::document::store::MutationActor,
-) -> Result<Option<String>, String> {
-    let slug = slug.to_string();
-    let request_id = request_id.to_string();
-    let digest = digest.to_string();
-    let input_bytes = slug.len()
-        + request_id.len()
-        + digest.len()
-        + actor.account_id.len()
-        + actor.session_generation.len()
-        + DESCRIPTOR_BYTES;
-    catalog
-        .execute_catalog(input_bytes, move |catalog| {
-            catalog
-                .suggestion_accept_update_object_authorized(
-                    &slug,
-                    &request_id,
-                    &digest,
-                    crate::storage::catalog::AnnotationAuthority {
-                        account_id: &actor.account_id,
-                        author_key: &actor.owner_key,
-                        generation: &actor.session_generation,
-                        link_hash: &actor.link_hash,
-                        policy_comment: actor.policy_editor,
-                        automation: actor.automation,
-                        require_editor: true,
-                    },
-                )
-                .map(|value| value.map(|object_id| object_id.to_string()))
-        })
-        .await
-        .map_err(|error| error.to_string())
+#[derive(Clone)]
+pub(super) struct ReplyRow {
+    pub comment_id: String,
+    pub id: String,
+    pub body: String,
+    pub creator: String,
+    pub author: String,
 }
 
-/// Stage the exact post-accept state in the receipt.  The update is the large
-/// input here, so capacity is reserved for it before it is copied.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn stage_suggestion_accept_update(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    comment_id: &str,
-    request_id: &str,
-    digest: &str,
-    update: &[u8],
-    actor: crate::document::store::MutationActor,
-    limits: crate::storage::catalog::V2AdmissionLimits,
-) -> Result<(crate::storage::catalog::V2ObjectAllocation, String), String> {
-    let input_bytes = slug.len()
-        + comment_id.len()
-        + request_id.len()
-        + digest.len()
-        + update.len()
-        + actor.account_id.len()
-        + actor.session_generation.len()
-        + DESCRIPTOR_BYTES;
-    let reservation = catalog
-        .reserve_execution(input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES))
-        .await
-        .map_err(|error| error.to_string())?;
-    let slug = slug.to_string();
-    let comment_id = comment_id.to_string();
-    let request_id = request_id.to_string();
-    let digest = digest.to_string();
-    let update = update.to_vec();
-    reservation
-        .execute_catalog(move |catalog| {
-            catalog.allocate_suggestion_accept_update_authorized(
-                &slug,
-                &comment_id,
-                &request_id,
-                &digest,
-                &crate::document::store::digest_of_bytes(&update),
-                i64::try_from(update.len()).map_err(|_| {
-                    crate::storage::catalog::CatalogError::Invalid(
-                        "suggestion update is too large".into(),
-                    )
-                })?,
-                limits,
-                crate::storage::catalog::UnixMillis::new(crate::util::now_millis())?,
-                crate::storage::catalog::AnnotationAuthority {
-                    account_id: &actor.account_id,
-                    author_key: &actor.owner_key,
-                    generation: &actor.session_generation,
-                    link_hash: &actor.link_hash,
-                    policy_comment: actor.policy_editor,
-                    automation: actor.automation,
-                    require_editor: true,
-                },
-            )
-        })
-        .await
-        .map_err(|error| error.to_string())
-}
-
-/// Record the accept checkpoint in the receipt and settle the comment, in one
-/// job: they were two transactions and remain two, but a caller that goes
-/// away between them no longer leaves the second unissued.
-// Keep the explicit fields at this authenticated transaction boundary.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn record_and_finish_suggestion_accept(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    comment_id: &str,
-    request_id: &str,
-    digest: &str,
-    sha: &str,
-    resolved_at: &str,
-    actor: crate::document::store::MutationActor,
-) -> Result<(), String> {
-    let slug = slug.to_string();
-    let comment_id = comment_id.to_string();
-    let request_id = request_id.to_string();
-    let digest = digest.to_string();
-    let sha = sha.to_string();
-    let resolved_at = resolved_at.to_string();
-    let input_bytes = slug.len()
-        + comment_id.len()
-        + request_id.len()
-        + digest.len()
-        + sha.len()
-        + resolved_at.len()
-        + actor.account_id.len()
-        + actor.session_generation.len()
-        + DESCRIPTOR_BYTES;
-    catalog
-        .execute_catalog(input_bytes, move |catalog| {
-            let authority = crate::storage::catalog::AnnotationAuthority {
-                account_id: &actor.account_id,
-                author_key: &actor.owner_key,
-                generation: &actor.session_generation,
-                link_hash: &actor.link_hash,
-                policy_comment: actor.policy_editor,
-                automation: actor.automation,
-                require_editor: true,
-            };
-            catalog
-                .record_and_finish_suggestion_accept_authorized(
-                    &slug,
-                    &comment_id,
-                    &request_id,
-                    &digest,
-                    &sha,
-                    &resolved_at,
-                    authority,
-                )
-                .map(|_| ())
-        })
-        .await
-        .map_err(|error| error.to_string())
-}
-
-// Keep the explicit fields at this authenticated transaction boundary.
-
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn finish_suggestion_accept(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    comment_id: &str,
-    request_id: &str,
-    digest: &str,
-    sha: &str,
-    resolved_at: &str,
-    actor: crate::document::store::MutationActor,
-) -> Result<(), String> {
-    let slug = slug.to_string();
-    let comment_id = comment_id.to_string();
-    let request_id = request_id.to_string();
-    let digest = digest.to_string();
-    let sha = sha.to_string();
-    let resolved_at = resolved_at.to_string();
-    let input_bytes = slug.len()
-        + comment_id.len()
-        + request_id.len()
-        + digest.len()
-        + sha.len()
-        + resolved_at.len()
-        + actor.account_id.len()
-        + actor.session_generation.len()
-        + DESCRIPTOR_BYTES;
-    catalog
-        .execute_catalog(input_bytes, move |catalog| {
-            catalog
-                .finish_suggestion_accept_authorized(
-                    &slug,
-                    &comment_id,
-                    &request_id,
-                    &digest,
-                    &sha,
-                    &resolved_at,
-                    crate::storage::catalog::AnnotationAuthority {
-                        account_id: &actor.account_id,
-                        author_key: &actor.owner_key,
-                        generation: &actor.session_generation,
-                        link_hash: &actor.link_hash,
-                        policy_comment: actor.policy_editor,
-                        automation: actor.automation,
-                        require_editor: true,
-                    },
-                )
-                .map(|_| ())
-        })
-        .await
-        .map_err(|error| error.to_string())
-}
-
-/// Whether a suggestion acceptance is still staged for this comment.
-pub(super) async fn pending_suggestion_accept(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    comment_id: &str,
-) -> Result<bool, String> {
-    let slug = slug.to_string();
-    let comment_id = comment_id.to_string();
-    catalog
-        .execute_catalog(
-            slug.len() + comment_id.len() + DESCRIPTOR_BYTES,
-            move |catalog| catalog.pending_suggestion_accept(&slug, &comment_id),
-        )
-        .await
-        .map_err(|error| error.to_string())
-}
-
-pub(super) fn catalog_comment_row(
-    slug: &str,
-    item: &Comment,
-) -> Result<crate::storage::catalog::Comment, String> {
-    let region = item
-        .region
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|err| format!("comment region is not serializable: {err}"))?;
-    let (source_path, source_exact, source_prefix, source_suffix, source_position) =
-        match &item.source {
-            Some(source) => (
-                Some(source.path.clone()),
-                Some(source.exact.clone()),
-                Some(source.prefix.clone()),
-                Some(source.suffix.clone()),
-                source.position,
-            ),
-            None => (None, None, None, None, None),
-        };
-    let quarto_output = item
-        .output_anchor
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|err| format!("comment Quarto output anchor is not serializable: {err}"))?;
-    Ok(crate::storage::catalog::Comment {
-        slug: slug.to_string(),
-        id: item.id.clone(),
-        seq: item.seq,
-        motivation: item.motivation.clone(),
-        body: item.body.clone(),
-        creator: item.creator.clone(),
-        author: item.author.clone(),
-        via: item.via.clone(),
-        created: item.created.clone(),
-        publication_id: item.publication_id.clone(),
-        exact: item.exact.clone(),
-        prefix: item.prefix.clone(),
-        suffix: item.suffix.clone(),
-        position: item.position,
-        point: item.point,
-        color: item.color.clone(),
-        region,
-        quarto_output,
-        source_path,
-        source_exact,
-        source_prefix,
-        source_suffix,
-        source_position,
-        proposed: item.proposed.clone(),
-        pass: item.pass.clone(),
-        outcome: item.outcome.clone(),
-        accept_request: item.accept_request.clone(),
-        revision: item.revision.clone(),
-        resolved: item.resolved,
-        resolved_at: item.resolved_at.clone(),
-        resolved_in: item.resolved_in.clone(),
+pub(super) fn catalog_comment_row(slug: &str, item: &Comment) -> Result<AnnotationRow, String> {
+    Uuid::parse_str(&item.id).map_err(|_| "annotation id must be a UUID".to_string())?;
+    Ok(AnnotationRow {
+        slug: slug.into(),
+        comment: item.clone(),
     })
 }
 
+pub(super) async fn insert_comment_request(
+    catalog: &Arc<PostgresCatalog>,
+    row: AnnotationRow,
+    _request_id: String,
+    _digest: String,
+    _at: i64,
+    actor: crate::document::store::MutationActor,
+    require_editor: bool,
+) -> Result<(i64, String), WriteError> {
+    let document = catalog
+        .document_by_slug(&row.slug)
+        .await?
+        .ok_or(WriteError::NotFound)?;
+    let id = Uuid::parse_str(&row.comment.id)
+        .map_err(|_| WriteError::Invalid("annotation id must be a UUID".into()))?;
+    let record = catalog
+        .put_annotation_authorized(
+            id,
+            annotation_input(document.id, &row.comment)?,
+            &mutation_authorization(&actor)?,
+            require_editor,
+        )
+        .await?;
+    Ok((
+        record.created_at.unix_timestamp_nanos() as i64,
+        crate::util::format_unix(record.created_at.unix_timestamp()),
+    ))
+}
+
+pub(super) async fn update_comment_row(
+    catalog: &Arc<PostgresCatalog>,
+    row: AnnotationRow,
+    actor: crate::document::store::MutationActor,
+) -> Result<(), String> {
+    let document = catalog
+        .document_by_slug(&row.slug)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("document missing")?;
+    let id = Uuid::parse_str(&row.comment.id).map_err(|_| "invalid annotation id")?;
+    catalog
+        .replace_annotation_authorized(
+            id,
+            annotation_input(document.id, &row.comment).map_err(|e| e.to_string())?,
+            row.comment.resolved,
+            &mutation_authorization(&actor).map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(super) async fn delete_comment_row(
+    catalog: &Arc<PostgresCatalog>,
+    _slug: &str,
+    id: &str,
+    actor: crate::document::store::MutationActor,
+) -> Result<(), String> {
+    let id = Uuid::parse_str(id).map_err(|_| "invalid annotation id")?;
+    catalog
+        .delete_annotation_authorized(
+            id,
+            &mutation_authorization(&actor).map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(super) async fn insert_reply_request(
+    catalog: &Arc<PostgresCatalog>,
+    row: ReplyRow,
+    _request_id: String,
+    _digest: String,
+    _at: i64,
+    actor: crate::document::store::MutationActor,
+) -> Result<String, WriteError> {
+    let annotation_id = Uuid::parse_str(&row.comment_id)
+        .map_err(|_| WriteError::Invalid("invalid annotation id".into()))?;
+    let account = row
+        .author
+        .strip_prefix("account:")
+        .and_then(|id| Uuid::parse_str(id).ok());
+    let reply = catalog
+        .create_reply_authorized(
+            NewReply {
+                id: Uuid::parse_str(&row.id)
+                    .map_err(|_| WriteError::Invalid("reply id is invalid".into()))?,
+                annotation_id,
+                author_account_id: account,
+                author_key: row.author,
+                author_label: row.creator,
+                body: row.body,
+            },
+            &mutation_authorization(&actor)?,
+        )
+        .await?;
+    Ok(crate::util::format_unix(reply.created_at.unix_timestamp()))
+}
+
 pub(super) fn request_digest(value: &Value) -> String {
-    fn canonical(value: &Value, out: &mut String) {
+    fn canonical(value: &Value, output: &mut String) {
         match value {
-            Value::Null => out.push_str("null"),
-            Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
-            Value::Number(value) => out.push_str(&value.to_string()),
-            Value::String(value) => {
-                out.push_str(&serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into()))
-            }
+            Value::Null => output.push_str("null"),
+            Value::Bool(v) => output.push_str(if *v { "true" } else { "false" }),
+            Value::Number(v) => output.push_str(&v.to_string()),
+            Value::String(v) => output.push_str(&serde_json::to_string(v).unwrap_or_default()),
             Value::Array(values) => {
-                out.push('[');
-                for (index, value) in values.iter().enumerate() {
-                    if index != 0 {
-                        out.push(',');
+                output.push('[');
+                for (i, v) in values.iter().enumerate() {
+                    if i > 0 {
+                        output.push(',');
                     }
-                    canonical(value, out);
+                    canonical(v, output);
                 }
-                out.push(']');
+                output.push(']');
             }
             Value::Object(values) => {
+                output.push('{');
                 let mut keys: Vec<_> = values.keys().collect();
                 keys.sort();
-                out.push('{');
-                for (index, key) in keys.into_iter().enumerate() {
-                    if index != 0 {
-                        out.push(',');
+                for (i, key) in keys.into_iter().enumerate() {
+                    if i > 0 {
+                        output.push(',');
                     }
-                    out.push_str(&serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into()));
-                    out.push(':');
-                    canonical(&values[key], out);
+                    canonical(&Value::String(key.clone()), output);
+                    output.push(':');
+                    canonical(&values[key], output);
                 }
-                out.push('}');
+                output.push('}');
             }
         }
     }
     let mut bytes = String::new();
     canonical(value, &mut bytes);
-    // The hashing step -- not the canonicalization above it -- is shared with
-    // every other content digest in this codebase, so a stored receipt and a
-    // stored document digest are hex(sha256(...)) by the same one function
-    // rather than by two copies that could drift.
-    crate::document::store::digest_of_bytes(bytes.as_bytes())
+    hex::encode(Sha256::digest(bytes))
 }
 
-/// Reconciles the *entire* in-memory comment list against the catalogue, one
-/// row (and one reply listing) at a time -- an upsert per comment plus a
-/// bounded reply read, for every comment the room currently holds, on every
-/// call. Every request-serving mutation (add/delete/resolve/reply/anchor/
-/// accept/reject in `room/comments.rs` and `room/suggestions.rs`) instead
-/// writes only the one row it changed and never reaches this function; the
-/// only production caller is `seed::seed_annotations`, which uses it to write
-/// a handful of demo annotations once per document when `librepaper admin seed`
-/// populates an empty deployment. That caller's input is small and bounded by
-/// the fixed example set, so the O(comments²) catalogue traffic (this runs
-/// once per comment added, each time reconciling every comment added so far)
-/// costs nothing worth batching. Do not add a new caller on a request path:
-/// update the one row that changed instead, the way every handler above
-/// already does.
-pub(super) async fn save_catalog_comments(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-    seq: &mut i64,
-    comments: &mut [Comment],
-) -> Result<(), String> {
-    // Reserved from the borrowed comments, before the owned copy the job
-    // carries is built: a caller that copied first would already have spent
-    // the memory the budget exists to bound.
-    let input_bytes = slug.len()
-        + DESCRIPTOR_BYTES
-        + comments
-            .iter()
-            .map(comment_bytes)
-            .sum::<usize>()
-            .min(crate::storage::catalog::MAX_REQUEST_BYTES);
-    let reservation = catalog
-        .reserve_execution(input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES))
-        .await
-        .map_err(|error| error.to_string())?;
-    let slug_owned = slug.to_string();
-    let mut owned: Vec<Comment> = comments.to_vec();
-    let assigned = reservation
-        .execute_catalog(move |catalog| {
-            save_catalog_comments_blocking(catalog, &slug_owned, &mut owned)
-                .map_err(crate::storage::catalog::CatalogError::Invalid)?;
-            Ok(owned.iter().map(|item| item.seq).collect::<Vec<i64>>())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    for (item, item_seq) in comments.iter_mut().zip(assigned) {
-        item.seq = item_seq;
-        *seq = (*seq).max(item_seq);
-    }
-    Ok(())
-}
-
-/// What one comment costs as an owned job input.  An estimate rather than a
-/// measurement: it names the fields that actually carry a person's text.
-fn comment_bytes(item: &Comment) -> usize {
-    DESCRIPTOR_BYTES
-        + item.body.len()
-        + item.exact.len()
-        + item.prefix.len()
-        + item.suffix.len()
-        + item.proposed.as_ref().map(String::len).unwrap_or_default()
-        + item
-            .replies
-            .iter()
-            .map(|reply| DESCRIPTOR_BYTES + reply.body.len())
-            .sum::<usize>()
-}
-
-fn save_catalog_comments_blocking(
-    catalog: &Catalog,
-    slug: &str,
-    comments: &mut [Comment],
-) -> Result<(), String> {
-    // Administrative seeding still writes through the same typed annotation
-    // boundary as a live room.  The document's current owner account is the
-    // authority for this one-shot catalogue import; checkpoint attribution is
-    // separately marked as system by the caller.  Looking the account up here
-    // also preserves anonymous/example ownership instead of manufacturing a
-    // second synthetic identity for the seed process.
-    let document = catalog
-        .document(slug)
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| "cannot seed annotations for a missing document".to_string())?;
-    let owner_id = document
-        .owner_id
-        .ok_or_else(|| "v2 seed documents require an owner account".to_string())?;
-    let owner = catalog
-        .account(&owner_id)
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| "cannot seed annotations for a missing owner account".to_string())?;
-    let authority = AnnotationAuthority {
-        account_id: &owner.id,
-        generation: &owner.session_generation,
-        ..Default::default()
+fn annotation_input(document_id: Uuid, comment: &Comment) -> Result<NewAnnotation, WriteError> {
+    let kind = if comment.proposed.is_some() {
+        "suggestion"
+    } else if comment.motivation == "highlighting" {
+        "highlight"
+    } else {
+        "comment"
     };
-    for item in comments.iter_mut() {
-        let current = match catalog.comment(slug, &item.id) {
-            Ok(row) => Some(row),
-            Err(crate::storage::catalog::CatalogError::NotFound) => None,
-            Err(err) => return Err(err.to_string()),
-        };
-        let mut row = catalog_comment_row(slug, item)?;
-        if let Some(current) = current.as_ref() {
-            row.seq = current.seq;
-            catalog
-                .update_comment_authorized(&row, authority)
-                .map_err(|err| err.to_string())?;
-            item.seq = current.seq;
+    let selector = json!({"exact":comment.exact,"prefix":comment.prefix,"suffix":comment.suffix,"position":comment.position,"point":comment.point,"color":comment.color,"region":comment.region,"output_anchor":comment.output_anchor,"source":comment.source});
+    let context = json!({"motivation":comment.motivation,"creator":comment.creator,"via":comment.via,"pass":comment.pass,"outcome":comment.outcome,"accept_request":comment.accept_request,"revision":comment.revision,"resolved_in":comment.resolved_in});
+    Ok(NewAnnotation {
+        document_id,
+        kind: kind.into(),
+        body: comment.body.clone(),
+        author_account_id: comment
+            .author
+            .strip_prefix("account:")
+            .and_then(|id| Uuid::parse_str(id).ok()),
+        author_key: if comment.author.is_empty() {
+            "system".into()
         } else {
-            row.seq = -1;
-            let inserted = catalog
-                .insert_comment_request_authorized(&row, "", "", 0, authority)
-                .map_err(|err| err.to_string())?;
-            item.seq = inserted.seq;
-        }
-        let current_replies = catalog
-            .replies(slug, &item.id, 100)
-            .map_err(|err| err.to_string())?
+            comment.author.clone()
+        },
+        author_label: if comment.creator.is_empty() {
+            "Unknown".into()
+        } else {
+            comment.creator.clone()
+        },
+        selector,
+        context,
+        source_version_id: None,
+        source_update_sequence: None,
+        source_project_generation: None,
+        source_state_vector: None,
+        publication_id: Uuid::parse_str(&comment.publication_id).ok(),
+        proposed_text: comment.proposed.clone(),
+    })
+}
+
+pub(crate) fn room_comment_from_catalog_row(
+    row: AnnotationRecord,
+    replies: Vec<ReplyRecord>,
+    seq: i64,
+) -> Result<Comment, String> {
+    let selector = row
+        .selector
+        .as_object()
+        .ok_or("annotation selector is invalid")?;
+    let context = row
+        .context
+        .as_object()
+        .ok_or("annotation context is invalid")?;
+    fn parse<T: serde::de::DeserializeOwned>(
+        selector: &serde_json::Map<String, Value>,
+        key: &str,
+    ) -> Option<T> {
+        selector
+            .get(key)
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+    }
+    Ok(Comment {
+        id: row.id.to_string(),
+        seq,
+        motivation: context
+            .get("motivation")
+            .and_then(Value::as_str)
+            .unwrap_or("commenting")
+            .into(),
+        publication_id: row
+            .publication_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+        exact: parse(selector, "exact").unwrap_or_default(),
+        prefix: parse(selector, "prefix").unwrap_or_default(),
+        suffix: parse(selector, "suffix").unwrap_or_default(),
+        position: parse(selector, "position"),
+        point: parse(selector, "point").unwrap_or(false),
+        color: parse(selector, "color"),
+        region: parse::<Region>(selector, "region"),
+        output_anchor: parse::<QuartoOutputAnchor>(selector, "output_anchor"),
+        source: parse::<SourceAnchor>(selector, "source"),
+        proposed: row.proposed_text,
+        pass: context
+            .get("pass")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        outcome: context
+            .get("outcome")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        accept_request: context
+            .get("accept_request")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        revision: context
+            .get("revision")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        body: row.body,
+        creator: row.author_label,
+        author: row.author_key,
+        via: context
+            .get("via")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        created: crate::util::format_unix(row.created_at.unix_timestamp()),
+        resolved: row.resolved_at.is_some(),
+        resolved_at: row
+            .resolved_at
+            .map(|at| crate::util::format_unix(at.unix_timestamp())),
+        resolved_in: context
+            .get("resolved_in")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        replies: replies
             .into_iter()
             .map(|reply| Reply {
-                id: reply.id,
+                id: reply.id.to_string(),
                 body: reply.body,
-                creator: reply.creator,
-                author: reply.author,
-                created: reply.created,
+                creator: reply.author_label,
+                created: crate::util::format_unix(reply.created_at.unix_timestamp()),
+                author: reply.author_key,
             })
-            .collect::<Vec<_>>();
-        let desired_reply_ids: std::collections::HashSet<String> =
-            item.replies.iter().map(|reply| reply.id.clone()).collect();
-        for reply in &item.replies {
-            let row = crate::storage::catalog::Reply {
-                slug: slug.to_string(),
-                comment_id: item.id.clone(),
-                id: reply.id.clone(),
-                body: reply.body.clone(),
-                creator: reply.creator.clone(),
-                author: reply.author.clone(),
-                created: reply.created.clone(),
-            };
-            if current_replies.iter().any(|old| old.id == reply.id) {
-                catalog
-                    .update_reply_authorized(&row, authority)
-                    .map_err(|err| err.to_string())?;
-            } else {
-                catalog
-                    .insert_reply_request_authorized(&row, "", "", 0, authority)
-                    .map_err(|err| err.to_string())?;
-            }
-        }
-        for reply in current_replies {
-            if !desired_reply_ids.contains(&reply.id) {
-                catalog
-                    .delete_reply_authorized(slug, &item.id, &reply.id, authority)
-                    .map_err(|err| err.to_string())?;
-            }
-        }
-    }
-    // Deletions are issued by the delete operation itself.  Never infer them
-    // from a room snapshot: a cold/stale room may not contain a comment another
-    // process inserted, and replacing all rows would erase that concurrent
-    // write.
-    // comment_seq is only ever advanced by insert_comment.  Never write the
-    // room's possibly stale cached value back over the authoritative counter;
-    // the caller only raises its cached maximum from the seqs assigned here.
-    Ok(())
-}
-
-/// Number of history entries a live room retains for hot-path operations.
-/// SQLite remains the source of truth for the complete timeline; keeping the
-/// tail here bounds resident memory for documents with years of checkpoints.
-pub(super) const RESIDENT_CATALOG_HISTORY: u32 = 64;
-
-pub(super) async fn load_catalog_manifest(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-) -> Result<Manifest, CatalogExecError> {
-    let slug = slug.to_string();
-    catalog
-        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            let rows = catalog.checkpoints_tail(&slug, RESIDENT_CATALOG_HISTORY)?;
-            let mut manifest = Manifest::from_catalog_rows(rows)
-                .map_err(crate::storage::catalog::CatalogError::Invalid)?;
-            let first = manifest
-                .checkpoints
-                .iter()
-                .map(|point| point.seq)
-                .min()
-                .unwrap_or(0);
-            let last = manifest
-                .checkpoints
-                .iter()
-                .map(|point| point.seq)
-                .max()
-                .unwrap_or(0);
-            let metadata = catalog.retention_metadata_range(&slug, first, last)?;
-            for point in &mut manifest.checkpoints {
-                if let Some((original_parent, gap)) = metadata.get(&point.sha) {
-                    point.original_parent = original_parent.clone();
-                    point.ancestry_gap = *gap;
-                }
-            }
-            Ok(manifest)
-        })
-        .await
-}
-
-/// The complete timeline, paged inside one job.
-///
-/// The paging stays: a room with years of checkpoints must not read them in
-/// one statement.  What changes is that the whole loop is one admitted
-/// request on a blocking thread instead of one connection acquisition per
-/// page from a Tokio worker.
-pub(super) async fn load_catalog_history(
-    catalog: &Arc<Catalog>,
-    slug: &str,
-) -> Result<Vec<Checkpoint>, CatalogExecError> {
-    let slug = slug.to_string();
-    catalog
-        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-            let rows = load_catalog_checkpoint_rows(catalog, &slug)?;
-            let mut manifest = Manifest::from_catalog_rows(rows)
-                .map_err(crate::storage::catalog::CatalogError::Invalid)?;
-            let first = manifest
-                .checkpoints
-                .iter()
-                .map(|point| point.seq)
-                .min()
-                .unwrap_or(0);
-            let last = manifest
-                .checkpoints
-                .iter()
-                .map(|point| point.seq)
-                .max()
-                .unwrap_or(0);
-            let metadata = catalog.retention_metadata_range(&slug, first, last)?;
-            for point in &mut manifest.checkpoints {
-                if let Some((original_parent, gap)) = metadata.get(&point.sha) {
-                    point.original_parent = original_parent.clone();
-                    point.ancestry_gap = *gap;
-                }
-            }
-            Ok(manifest.checkpoints)
-        })
-        .await
-}
-
-fn load_catalog_checkpoint_rows(
-    catalog: &Catalog,
-    slug: &str,
-) -> crate::storage::catalog::CatalogResult<Vec<crate::storage::catalog::Checkpoint>> {
-    // Catalog reads are deliberately bounded.  Never load only the first
-    // page and then let a later metadata write treat that prefix as the whole
-    // history: doing so would silently discard every newer checkpoint.
-    let mut rows = Vec::new();
-    let mut after = None;
-    loop {
-        let page = catalog.checkpoints(slug, after, 200)?;
-        if page.is_empty() {
-            break;
-        }
-        after = page.last().map(|row| row.seq);
-        let complete = page.len() < 200;
-        rows.extend(page);
-        if complete {
-            break;
-        }
-    }
-    Ok(rows)
-}
-
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-mod request_digest_tests {
-    use super::request_digest;
-    use serde_json::json;
-
-    /// `request_digest` is what makes a stored comment/suggestion receipt
-    /// idempotent: the same canonical bytes must hash the same way forever,
-    /// or a retried request could be charged or applied twice after a
-    /// canonicalization change nobody meant to make. These fix the digest of
-    /// a handful of representative values so any future edit to `canonical`
-    /// (key order, string escaping, or number formatting) that is not
-    /// byte-for-byte compatible fails loudly here rather than silently
-    /// breaking retry matching against already-stored receipts.
-    #[test]
-    fn nested_object_keys_are_sorted_before_hashing() {
-        // Two JSON objects with the same keys inserted in a different order
-        // must canonicalize (and therefore hash) identically.
-        let forward = json!({"a": 1, "b": 2, "z": 3});
-        let reversed = json!({"z": 3, "b": 2, "a": 1});
-        assert_eq!(request_digest(&forward), request_digest(&reversed));
-        assert_eq!(
-            request_digest(&forward),
-            "329d4b5a274b8081ef038bb735813dc3082cf6d95855f8029c9cd8432168c112"
-        );
-    }
-
-    #[test]
-    fn string_escapes_are_included_in_the_canonical_bytes() {
-        let value = json!({"body": "quote \" and backslash \\ and newline \n"});
-        assert_eq!(
-            request_digest(&value),
-            "dde0899efbe2c590bf2985f9ff257a896714a5907f558f811d0006ee7e998ee5"
-        );
-    }
-
-    /// Distinguishes an integer from an equal-valued float: `1` and `1.0`
-    /// must not collide, because a stored receipt's request payload keeps
-    /// whatever numeric shape the client sent.
-    #[test]
-    fn integer_and_float_of_equal_value_hash_differently() {
-        let integer = json!({"position": 1});
-        let float = json!({"position": 1.0});
-        assert_ne!(request_digest(&integer), request_digest(&float));
-    }
-
-    #[test]
-    fn nested_arrays_and_objects_canonicalize_deterministically() {
-        let value = json!({
-            "outer": {"z": [1, 2, {"inner": "value"}], "a": null},
-            "flag": true,
-        });
-        // Recomputing twice from equivalent but differently-ordered input
-        // must agree; this is the property the receipt matching relies on.
-        let same_value_reordered = json!({
-            "flag": true,
-            "outer": {"a": null, "z": [1, 2, {"inner": "value"}]},
-        });
-        assert_eq!(
-            request_digest(&value),
-            request_digest(&same_value_reordered)
-        );
-    }
+            .collect(),
+    })
 }

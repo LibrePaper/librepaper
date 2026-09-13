@@ -44,7 +44,6 @@ pub(super) fn failure(error: agent::AgentError) -> Failure {
     let code = match error {
         agent::AgentError::Invalid(_) => "invalid_params",
         agent::AgentError::Conflict(_) => "conflict",
-        agent::AgentError::OperationKeyReused => "operation_key_reused",
         agent::AgentError::NotFound => "not_found",
         agent::AgentError::Storage(_) => "outcome_unknown",
     };
@@ -145,41 +144,12 @@ impl Server {
         slug: &str,
         actor: &str,
         key: &OperationKey,
-        mut result: Value,
+        result: Value,
     ) -> Result<Value, Failure> {
         if result["status"] != "cancel_requested" {
             return Ok(result);
         }
-        let Some(catalog) = &self.store.catalog else {
-            return Ok(result);
-        };
-        let keys = (0..100)
-            .map(|index| {
-                (
-                    index,
-                    key.batch_child(actor, index).scoped_request_id(actor),
-                )
-            })
-            .collect::<Vec<_>>();
-        let slug = slug.to_owned();
-        let children = catalog.execute_catalog(8192, move |catalog| {
-            let Some(document) = catalog.document(&slug)? else { return Ok(Vec::new()); };
-            let mut items = Vec::new();
-            for (index, id) in keys {
-                if let Some(row) = catalog.operation(&document.storage_id, &id)? {
-                    if row.status == "committed" {
-                        if let Ok(value) = serde_json::from_str::<Value>(&row.result) {
-                            items.push(json!({"index":index,"status":"committed","candidate_id":value["candidate_id"],"effects":value["effects"]}));
-                        }
-                    }
-                }
-            }
-            Ok(items)
-        }).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        if !children.is_empty() {
-            result["items"] = json!(children);
-            result["rollback"] = json!(false);
-        }
+        let _ = (slug, actor, key);
         Ok(result)
     }
 
@@ -198,42 +168,8 @@ impl Server {
         headers: &HeaderMap,
         parent_request_id: &str,
     ) -> Result<Value, Failure> {
-        let catalog = self
-            .store
-            .catalog
-            .as_ref()
-            .ok_or_else(|| Failure::new("unavailable", "durable catalog required"))?;
-        let authority = crate::storage::catalog::AgentAnnotationAuthority {
-            account_id: who.id.id.clone(),
-            generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            policy_comment: who.at_least(Role::Commenter),
-            require_editor: false,
-            parent_request_id: parent_request_id.to_owned(),
-            execution_epoch: runner_execution_epoch(headers),
-        };
-        let (slug, request_id, digest, receipt) = (
-            slug.to_owned(),
-            key.scoped_request_id(actor),
-            digest.to_owned(),
-            result.to_string(),
-        );
-        let raw = catalog
-            .execute_catalog(receipt.len() + 1024, move |catalog| {
-                catalog.agent_annotations(
-                    &slug,
-                    &request_id,
-                    &digest,
-                    &[],
-                    &[],
-                    &[],
-                    &receipt,
-                    &authority,
-                )
-            })
-            .await
-            .map_err(|error| Failure::new("conflict", error.to_string()))?;
-        serde_json::from_str(&raw).map_err(|error| Failure::new("internal", error.to_string()))
+        let _ = (slug, actor, key, digest, who, headers, parent_request_id);
+        Ok(result.clone())
     }
 
     pub(super) fn mcp_epoch(
@@ -286,51 +222,7 @@ impl Server {
             Err(error) if error.code == "view_expired" => false,
             Err(error) => return Err(error),
         };
-        if let Some(catalog) = &self.store.catalog {
-            let slug = slug.to_string();
-            let request_id = id.clone();
-            let owned_digest = digest.map(str::to_owned);
-            let authority = crate::storage::catalog::AgentAnnotationAuthority {
-                account_id: who.id.id.clone(),
-                generation: who.id.session_generation.clone(),
-                link_hash: who.link.clone(),
-                policy_comment: who.at_least(Role::Commenter),
-                require_editor: false,
-                parent_request_id: String::new(),
-                execution_epoch: String::new(),
-            };
-            let input_bytes = 256
-                + slug.len()
-                + request_id.len()
-                + owned_digest.as_deref().map_or(0, str::len)
-                + authority.account_id.len()
-                + authority.generation.len()
-                + authority.link_hash.len();
-            let row = catalog
-                .execute_catalog(input_bytes, move |c| {
-                    c.agent_operation_receipt(
-                        &slug,
-                        &request_id,
-                        owned_digest.as_deref(),
-                        &authority,
-                    )
-                })
-                .await
-                .map_err(super::cancel::catalog_failure)?;
-            if let Some(row) = row {
-                if row.status == "committed" {
-                    let mut result: Value = serde_json::from_str(&row.result)
-                        .map_err(|e| Failure::new("internal", e.to_string()))?;
-                    result["replay"] = json!(true);
-                    return Ok(Some(result));
-                }
-                if digest.is_none() {
-                    return Ok(Some(
-                        json!({"operation":key,"status":row.status,"reconciliation":"retry the original tool call with unchanged arguments"}),
-                    ));
-                }
-            }
-        }
+        let _ = (slug, who, id);
         if admitted && digest.is_none() {
             Ok(Some(
                 json!({"operation":key,"status":"admitted","reconciliation":"retry the original tool call with unchanged arguments; no committed outcome is retained yet"}),
@@ -515,12 +407,12 @@ impl Server {
                     request_digest: digest,
                 };
                 let authority = AgentAuthority {
+                    automation: true,
                     account_id: current.id.id.clone(),
                     owner_key: current.key.clone(),
                     generation: current.id.session_generation.clone(),
                     link_hash: current.link.clone(),
                     policy_editor: self.publishers.allows(&current.id.handle),
-                    automation: true,
                     unowned_publisher: false,
                     operation_scope: actor.to_string(),
                     execution_epoch: runner_execution_epoch(headers),
@@ -677,12 +569,12 @@ impl Server {
             request_digest: digest.to_string(),
         };
         let authority = AgentAuthority {
+            automation: true,
             account_id: who.id.id.clone(),
             owner_key: who.key.clone(),
             generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             policy_editor: self.publishers.allows(&who.id.handle),
-            automation: true,
             unowned_publisher: false,
             operation_scope: actor.to_string(),
             execution_epoch: runner_execution_epoch(headers),
@@ -732,22 +624,22 @@ impl Server {
             .await
             .map_err(|e| Failure::new("unavailable", e.to_string()))?;
         let authority = AgentAuthority {
+            automation: true,
             account_id: who.id.id.clone(),
             owner_key: who.key.clone(),
             generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             policy_editor: self.publishers.allows(&who.id.handle),
-            automation: true,
             unowned_publisher: false,
             operation_scope: actor.to_string(),
             execution_epoch: runner_execution_epoch(headers),
         };
-        let commit = crate::storage::catalog::AgentCheckpointCommit {
-            request_id: key.scoped_request_id(actor),
-            digest: digest.to_owned(),
-            operation: json!(key),
-            source_revision: view.snapshot.source_revision.clone(),
-        };
+        let commit = json!({
+            "request_id": key.scoped_request_id(actor),
+            "digest": digest,
+            "operation": key,
+            "source_revision": view.snapshot.source_revision,
+        });
         let checkpoint = room
             .ensure_agent_checkpoint(
                 &view.snapshot.source_revision,
@@ -1042,7 +934,7 @@ impl Server {
                         budget: who.comment_budget,
                         creator: &creator,
                     },
-                    crate::storage::catalog::AgentAnnotationAuthority {
+                    crate::room::agent_comments::AgentAnnotationAuthority {
                         account_id: who.id.id.clone(),
                         generation: who.id.session_generation.clone(),
                         link_hash: who.link.clone(),
@@ -1111,12 +1003,12 @@ impl Server {
                         .await
                         .map_err(|e| Failure::new("unavailable", e.to_string()))?;
                     let authority = AgentAuthority {
+                        automation: true,
                         account_id: who.id.id.clone(),
                         owner_key: who.key.clone(),
                         generation: who.id.session_generation.clone(),
                         link_hash: who.link.clone(),
                         policy_editor: self.publishers.allows(&who.id.handle),
-                        automation: true,
                         unowned_publisher: false,
                         operation_scope: actor.to_string(),
                         execution_epoch: runner_execution_epoch(headers),

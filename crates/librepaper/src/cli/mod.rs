@@ -333,9 +333,6 @@ impl ServiceFlags {
                     "max_encoded_snapshot_bytes" => {
                         config.persistence.max_encoded_snapshot_bytes = value
                     }
-                    "max_queued_payload_bytes" => {
-                        config.persistence.max_queued_payload_bytes = value
-                    }
                     "max_staging_bytes" => config.persistence.max_staging_bytes = value,
                     _ => die(format!("unknown advanced persistence limit: {name}")),
                 }
@@ -620,11 +617,6 @@ pub(crate) enum AdminCommand {
         #[arg(long, default_value_t = 8080, value_name = "PORT")]
         port: u16,
     },
-    /// Manage the keys used by a deployment.
-    Key {
-        #[command(subcommand)]
-        command: KeyCommand,
-    },
     /// Replace local or remote data with the example documents
     Seed {
         #[command(flatten)]
@@ -642,17 +634,8 @@ pub(crate) enum AdminCommand {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum KeyCommand {
-    /// Rotate the local deployment's sealed-link key.
-    Rotate {
-        /// Deployment data directory
-        directory: PathBuf,
-    },
-}
-
-#[derive(Subcommand)]
 pub(crate) enum BackupCommand {
-    /// Create a verified offline SQLite/object/secrets recovery point.
+    /// Create a snapshot-consistent PostgreSQL and immutable-object recovery point.
     Create {
         #[command(flatten)]
         storage: StorageFlags,
@@ -967,7 +950,7 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
         AdminCommand::Status {
             endpoint,
             port,
-            storage,
+            storage: _,
         } => {
             let endpoint = endpoint
                 .or(server)
@@ -986,12 +969,7 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
             }
             let (status, payload) = match get_json(&url, Duration::from_secs(10)).await {
                 Ok(response) => response,
-                Err(error) => {
-                    let paths = storage.options().paths().unwrap_or_else(|error| die(error));
-                    let payload = crate::server::cost::offline_status(&paths.catalog)
-                        .unwrap_or_else(|offline| die(format!("could not query operator status: {error}; could not read durable counters: {offline}")));
-                    (200, payload)
-                }
+                Err(error) => die(format!("could not query operator status: {error}")),
             };
             if status != 200 {
                 die(format!(
@@ -1005,84 +983,6 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                     "could not format operator status: {error}"
                 )))
             );
-        }
-        AdminCommand::Key {
-            command: KeyCommand::Rotate { directory },
-        } => {
-            let root = directory;
-            let _writer_lock =
-                crate::server::serve::acquire_writer_lock(&root.join("state/writer.lock"))
-                    .unwrap_or_else(|error| die(error));
-            let key_path = root.join("secrets/links.key");
-            let keys = crate::auth::link_sealing_keyring_file(&key_path, true)
-                .unwrap_or_else(|error| die(error));
-            let key_id = |key: &[u8]| {
-                use sha2::Digest;
-                hex::encode(sha2::Sha256::digest(key))[..16].to_string()
-            };
-            let durable_primary = crate::storage::catalog::Catalog::persisted_primary_link_key_id(
-                root.join("catalog.db"),
-            )
-            .unwrap_or_else(|error| die(error.to_string()));
-            let source_index = keys
-                .iter()
-                .position(|key| key_id(key) == durable_primary)
-                .unwrap_or_else(|| {
-                    die("durable primary link key is missing from deployment secrets")
-                });
-            let deployment_id = crate::config::DeploymentPaths::local(&root)
-                .ensure_deployment_identity(true)
-                .unwrap_or_else(|error| die(error));
-            let catalog = crate::storage::catalog::Catalog::open_with_identity(
-                root.join("catalog.db"),
-                true,
-                &deployment_id,
-                &durable_primary,
-            )
-            .unwrap_or_else(|error| die(format!("could not open catalogue: {error}")));
-            catalog
-                .set_link_sealing_key(&keys[source_index])
-                .unwrap_or_else(|error| die(error.to_string()));
-            for key in &keys {
-                catalog
-                    .add_link_decryption_key(key)
-                    .unwrap_or_else(|error| die(error.to_string()));
-            }
-            if let Some(changed) = catalog
-                .resume_link_key_rotation()
-                .unwrap_or_else(|error| die(error.to_string()))
-            {
-                println!("resealed {changed} remaining links");
-                return;
-            }
-            let source = keys[source_index].clone();
-            let destination = if key_id(&keys[0]) != key_id(&source) {
-                keys[0].clone()
-            } else {
-                crate::auth::random_bytes(32)
-            };
-            let mut persisted = Vec::with_capacity(keys.len() + 1);
-            persisted.push(destination.clone());
-            persisted.push(source.clone());
-            for key in keys {
-                if key_id(&key) != key_id(&destination) && key_id(&key) != key_id(&source) {
-                    persisted.push(key);
-                }
-            }
-            crate::auth::write_link_sealing_keyring(&key_path, &persisted)
-                .unwrap_or_else(|error| die(error));
-            catalog
-                .set_link_sealing_key(&source)
-                .unwrap_or_else(|error| die(error.to_string()));
-            for old in persisted.iter().skip(1) {
-                catalog
-                    .add_link_decryption_key(old)
-                    .unwrap_or_else(|error| die(error.to_string()));
-            }
-            let changed = catalog
-                .rotate_link_sealing_key(&destination)
-                .unwrap_or_else(|error| die(error.to_string()));
-            println!("resealed {changed} links");
         }
         AdminCommand::Seed {
             storage,
@@ -1121,16 +1021,12 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                 },
         } => {
             let _backup_policy = backup_policy_from_config(advanced_config.as_deref());
-            crate::storage::backup_v2::backup_cli_v2(
-                storage.options(),
-                directory,
-                id.unwrap_or_default(),
-            )
-            .await
+            crate::storage::backup::backup_cli(storage.options(), directory, id.unwrap_or_default())
+                .await
         }
         AdminCommand::Backup {
             command: BackupCommand::Restore { backup, directory },
-        } => crate::storage::backup_v2::restore_cli_v2(backup, directory).await,
+        } => crate::storage::backup::restore_cli(backup, directory).await,
     }
 }
 

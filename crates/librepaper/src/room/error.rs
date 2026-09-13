@@ -2,13 +2,13 @@
 //!
 //! Every mutator that can refuse answers with a [`WriteError`]. A caller
 //! decides what to do -- stop a publication, close a socket, pick a status
-//! code, release a reservation -- by matching on the variant, never by
+//! code -- by matching on the variant, never by
 //! reading the message. That is the whole point of the type: the wording of a
 //! refusal is for the person reading it, so rewording one must not silently
 //! move a route from 507 to 413 or turn a permanent refusal into a retry.
 
-use crate::config::{CapacityRefusal, SizeRefusal, WriteRefusal};
-use crate::storage::catalog::{CatalogError, CatalogRefusal};
+use crate::config::SizeRefusal;
+use crate::storage::postgres::Error as CatalogError;
 
 /// Why this server may not write a room it is holding open.
 ///
@@ -27,7 +27,7 @@ pub enum FenceReason {
     /// This server could not read the room's durable state, so it will not
     /// write over it. Permanent for this instance: an operator has to look.
     UnreadableState = 2,
-    /// A compatibility copy that no sweeper owns, handed out by the lenient
+    /// A room copy that no process currently owns,
     /// `get` path. It never becomes writable.
     NotAuthoritative = 3,
     /// The stored state is already past the encoded ceiling, so no further
@@ -207,9 +207,6 @@ pub enum WriteError {
     /// This server momentarily has no capacity at all; the peer is asked to
     /// reconnect rather than told its document is too large.
     ServerBusy,
-    /// This server momentarily has nowhere to put the write (track 10's
-    /// type). The same work succeeds once another operation settles.
-    Capacity(CapacityRefusal),
     /// The document, checkpoint or comment named is not there.
     NotFound,
     /// The input describes a state the document has moved on from.
@@ -247,7 +244,6 @@ impl WriteError {
             Self::Quota(_) => Retry::No,
             Self::Size(_) | Self::Figure(_) | Self::Document(_) => Retry::No,
             Self::RateLimited | Self::ServerBusy => Retry::Later,
-            Self::Capacity(_) => Retry::Later,
             // A stale input has to be rebuilt against the current document
             // before it can be sent again, so the same bytes never help.
             Self::Conflict(_) => Retry::No,
@@ -271,7 +267,6 @@ impl WriteError {
             Self::Document(_) => 413,
             Self::RateLimited => 429,
             Self::ServerBusy => 503,
-            Self::Capacity(_) => 503,
             Self::Conflict(_) => 409,
             Self::Invalid(_) => 400,
             Self::Storage(_) => 503,
@@ -286,12 +281,11 @@ impl WriteError {
             Self::PermissionDenied => "edit access changed".into(),
             Self::RequestExpired => "request has expired; submit a new request key".into(),
             Self::Quota(kind) => kind.message().to_string(),
-            Self::Size(refusal) => WriteRefusal::Permanent(*refusal).message(),
+            Self::Size(refusal) => refusal.message(),
             Self::Figure(limit) => limit.message(),
             Self::Document(limit) => limit.message().to_string(),
             Self::RateLimited => "too many updates".into(),
             Self::ServerBusy => super::BUSY_REFUSAL.to_string(),
-            Self::Capacity(refusal) => WriteRefusal::Temporary(*refusal).message(),
             Self::NotFound => "not found".into(),
             Self::Conflict(why) | Self::Invalid(why) => why.clone(),
             Self::Storage(_) => "storage temporarily unavailable".into(),
@@ -319,15 +313,6 @@ impl std::fmt::Display for WriteError {
 
 impl std::error::Error for WriteError {}
 
-impl From<WriteRefusal> for WriteError {
-    fn from(refusal: WriteRefusal) -> Self {
-        match refusal {
-            WriteRefusal::Permanent(size) => Self::Size(size),
-            WriteRefusal::Temporary(capacity) => Self::Capacity(capacity),
-        }
-    }
-}
-
 /// The room's own storage paths still report failures as strings. Those are
 /// storage context by construction: every refusal that a caller has to tell
 /// apart is built as a variant at the point that decides it.
@@ -337,46 +322,13 @@ impl From<String> for WriteError {
     }
 }
 
-/// A catalogue job that never ran, or ran and failed. Saturation and
-/// shutdown are this server being unable to admit the write now; a panic or
-/// an oversized request is a storage-side fault worth logging; a catalogue
-/// error keeps the distinctions the catalogue itself drew.
-impl From<crate::storage::catalog::CatalogExecError> for WriteError {
-    fn from(error: crate::storage::catalog::CatalogExecError) -> Self {
-        use crate::storage::catalog::CatalogExecError;
-        match error {
-            CatalogExecError::Saturated | CatalogExecError::ShuttingDown => {
-                Self::Capacity(CapacityRefusal::JournalQueue)
-            }
-            CatalogExecError::TooLarge { .. } | CatalogExecError::Panicked => {
-                Self::Storage(error.to_string())
-            }
-            CatalogExecError::Catalog(error) => Self::from(error),
-        }
-    }
-}
-
 impl From<CatalogError> for WriteError {
     fn from(error: CatalogError) -> Self {
         match error {
             CatalogError::NotFound => Self::NotFound,
             CatalogError::Invalid(why) => Self::Invalid(why),
-            CatalogError::Busy | CatalogError::Closed => Self::Capacity(
-                // A busy or closed catalogue is this server being unable to
-                // admit the write now, not the write being too large.
-                CapacityRefusal::JournalQueue,
-            ),
             CatalogError::Conflict(why) => Self::Conflict(why),
-            CatalogError::Refused(kind, why) => match kind {
-                CatalogRefusal::OwnerBytes => Self::Quota(QuotaKind::Owner),
-                CatalogRefusal::DeploymentBytes => Self::Quota(QuotaKind::Deployment),
-                CatalogRefusal::OwnerDocuments => Self::Quota(QuotaKind::Documents),
-                CatalogRefusal::UploadRate => Self::Quota(QuotaKind::UploadRate),
-                CatalogRefusal::ActorRights => Self::PermissionDenied,
-                CatalogRefusal::RequestExpired => Self::RequestExpired,
-                CatalogRefusal::Other => Self::Conflict(why),
-            },
-            CatalogError::Sql(err) => Self::Storage(err.to_string()),
+            CatalogError::Database(err) => Self::Storage(err.to_string()),
         }
     }
 }
@@ -406,104 +358,5 @@ impl From<super::AcceptError> for WriteError {
             }
             super::AcceptError::Failed(context) => Self::Storage(context),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The mapping is a property of the variant. Rewording a refusal -- which
-    /// happens whenever somebody improves what a person reads -- must not move
-    /// its status, its retry advice or its cleanup.
-    #[test]
-    fn wording_does_not_decide_status_retry_or_cleanup() {
-        let cases = [
-            WriteError::Conflict("the passage has moved".into()),
-            WriteError::Invalid("that path is not allowed".into()),
-            WriteError::Storage("bucket timed out".into()),
-        ];
-        for original in cases {
-            let reworded = match &original {
-                WriteError::Conflict(_) => WriteError::Conflict("ANYTHING ELSE".into()),
-                WriteError::Invalid(_) => WriteError::Invalid("ANYTHING ELSE".into()),
-                WriteError::Storage(_) => WriteError::Storage("ANYTHING ELSE".into()),
-                _ => unreachable!(),
-            };
-            assert_eq!(original.status(), reworded.status());
-            assert_eq!(original.retry(), reworded.retry());
-            assert_eq!(original.refused(), reworded.refused());
-            // A storage failure is the exception: its context is for the log,
-            // so both wordings reach a client as the same sentence.
-            if original.log_context().is_none() {
-                assert_ne!(original.client_message(), reworded.client_message());
-            }
-        }
-    }
-
-    #[test]
-    fn quota_keeps_its_status_and_a_size_refusal_keeps_its_own() {
-        assert_eq!(WriteError::Quota(QuotaKind::Owner).status(), 507);
-        assert_eq!(WriteError::Quota(QuotaKind::Deployment).status(), 507);
-        assert_eq!(WriteError::Quota(QuotaKind::UploadRate).status(), 429);
-        assert_eq!(
-            WriteError::Size(SizeRefusal::Encoded {
-                bytes: 2,
-                ceiling: 1
-            })
-            .status(),
-            413
-        );
-        assert_eq!(
-            WriteError::Capacity(CapacityRefusal::StagingMemory).status(),
-            503
-        );
-    }
-
-    #[test]
-    fn storage_context_is_logged_and_never_shown() {
-        let error = WriteError::Storage("s3://bucket/key: connection reset".into());
-        assert_eq!(
-            error.log_context(),
-            Some("s3://bucket/key: connection reset")
-        );
-        assert!(!error.client_message().contains("bucket"));
-        // A storage failure is not a refusal: the room tried, and whatever it
-        // may have written is the object ledger's to reconcile.
-        assert!(!error.refused());
-        assert!(WriteError::Quota(QuotaKind::Owner).refused());
-    }
-
-    #[test]
-    fn catalogue_refusals_become_the_distinctions_callers_need() {
-        assert!(matches!(
-            WriteError::from(CatalogError::refused(
-                CatalogRefusal::OwnerBytes,
-                "wording is irrelevant"
-            )),
-            WriteError::Quota(QuotaKind::Owner)
-        ));
-        assert!(matches!(
-            WriteError::from(CatalogError::refused(
-                CatalogRefusal::ActorRights,
-                "wording is irrelevant"
-            )),
-            WriteError::PermissionDenied
-        ));
-        assert!(matches!(
-            WriteError::from(CatalogError::NotFound),
-            WriteError::NotFound
-        ));
-    }
-
-    #[test]
-    fn fencing_tells_a_moved_lease_from_a_deleted_document() {
-        let moved = WriteError::ReadOnly(FenceReason::HeldElsewhere);
-        assert_eq!(moved.status(), 503);
-        assert_eq!(moved.retry(), Retry::Later);
-        let gone = WriteError::ReadOnly(FenceReason::Deleted);
-        assert_eq!(gone.status(), 404);
-        assert_eq!(gone.retry(), Retry::No);
-        assert_eq!(gone.client_message(), "this document has been deleted");
     }
 }

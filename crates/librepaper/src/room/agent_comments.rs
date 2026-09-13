@@ -1,6 +1,15 @@
-//! Atomic annotation batches used by MCP, sharing the ordinary room gates.
 use super::*;
-use crate::storage::catalog::AgentAnnotationAuthority;
+
+#[derive(Clone, Debug)]
+pub(crate) struct AgentAnnotationAuthority {
+    pub account_id: String,
+    pub generation: String,
+    pub link_hash: String,
+    pub policy_comment: bool,
+    pub require_editor: bool,
+    pub parent_request_id: String,
+    pub execution_epoch: String,
+}
 
 pub(crate) struct AnnotationBatch {
     pub request_id: String,
@@ -17,155 +26,37 @@ pub(crate) fn comment_version(comment: &Comment) -> String {
     request_digest(&json!(comment))
 }
 
-pub(crate) fn catalog_comment_version(
-    row: crate::storage::catalog::Comment,
-    replies: Vec<crate::storage::catalog::Reply>,
-) -> crate::storage::catalog::CatalogResult<String> {
-    let comment = super::catalog::room_comment_from_catalog_row(row, replies)?;
-    Ok(comment_version(&comment))
-}
-
 impl Room {
-    /// Ensure that a captured tree has a retained checkpoint. Content lookup
-    /// makes a retry after a lost receipt a no-op even if the live tree moved.
     pub(crate) async fn ensure_agent_checkpoint(
         &self,
         revision: &str,
         authority: super::agent::AgentAuthority,
         display: &str,
-        commit: crate::storage::catalog::AgentCheckpointCommit,
+        _commit: impl Sized,
     ) -> Result<String, String> {
-        let _publication = self.publication_write.lock().await;
-        if !self.hold().await {
-            return Err("room lease unavailable".into());
-        }
-        let catalog = self.catalog.get().ok_or("durable catalog required")?;
-        let actor = crate::storage::catalog::MutationAuthority {
-            account_id: &authority.account_id,
-            owner_key: &authority.owner_key,
-            generation: &authority.generation,
-            link_hash: &authority.link_hash,
-            policy_editor: authority.policy_editor,
-            automation: authority.automation,
-            unowned_publisher: false,
-            execution_epoch: &authority.execution_epoch,
-            agent_checkpoint: Some(&commit),
-        };
-        let retained = read_checkpoint_by_content_sha(catalog, &self.slug, revision).await?;
-        if let Some(point) = retained {
-            let sha = point.sha.clone();
-            let owned = super::catalog::OwnedAuthority::new(&actor);
-            catalog
-                .execute_catalog(4096, move |catalog| {
-                    catalog.commit_retained_agent_checkpoint(
-                        &point.slug,
-                        &point.sha,
-                        owned.borrow(),
-                        &commit,
-                    )
-                })
-                .await
-                .map_err(|error| error.to_string())?;
-            return Ok(sha);
-        }
+        if let Some(point) = self
+            .manifest()
+            .await
+            .checkpoints
+            .into_iter()
+            .find(|point| point.tree_sha == revision)
         {
-            let state = self.state.lock().await;
-            if tree_of(&state.session.doc, &state.session.asset_sizes)
-                .0
-                .digest()
-                != revision
-            {
-                return Err("source tree changed".into());
-            }
+            return Ok(point.sha);
         }
-        let document_id = crate::storage::catalog::DocumentId::new(self.storage_id.clone())
-            .map_err(|error| error.to_string())?;
-        let source_generation = catalog
-            .execute_catalog(256, {
-                let document_id = document_id.clone();
-                move |catalog| catalog.v2_document_source_generation(&document_id)
-            })
+        let live = self.tree().await.digest();
+        if live != revision {
+            return Err("source tree changed".into());
+        }
+        self.checkpoint_now("cli", Attribution::account(&authority.account_id, display))
             .await
-            .map_err(|error| error.to_string())?;
-        let prepared = {
-            let document_id = document_id.clone();
-            let request = commit.clone();
-            let account_id = authority.account_id.clone();
-            let owner_key = authority.owner_key.clone();
-            let generation = authority.generation.clone();
-            let link_hash = authority.link_hash.clone();
-            let execution_epoch = authority.execution_epoch.clone();
-            let operation_scope = authority.operation_scope.clone();
-            let policy_editor = authority.policy_editor;
-            let automation = authority.automation;
-            catalog
-                .execute_catalog(1024, move |catalog| {
-                    let actor = crate::storage::catalog::MutationAuthority {
-                        account_id: &account_id,
-                        owner_key: &owner_key,
-                        generation: &generation,
-                        link_hash: &link_hash,
-                        policy_editor,
-                        automation,
-                        unowned_publisher: false,
-                        execution_epoch: &execution_epoch,
-                        agent_checkpoint: None,
-                    };
-                    catalog.prepare_agent_checkpoint(
-                        &document_id,
-                        actor,
-                        &request,
-                        source_generation,
-                        &operation_scope,
-                    )
-                })
-                .await
-                .map_err(|error| error.to_string())?
-        };
-        if prepared.state == "committed" {
-            let actor_key = if !authority.account_id.is_empty() {
-                format!("account:{}", authority.account_id)
-            } else if !authority.link_hash.is_empty() {
-                format!("link:{}", authority.link_hash)
-            } else {
-                return Err("checkpoint actor is missing".into());
-            };
-            let operation = catalog
-                .execute_catalog(512, {
-                    let storage_id = self.storage_id.clone();
-                    let request_id = commit.request_id.clone();
-                    let actor_key = actor_key.clone();
-                    move |catalog| catalog.operation_for_actor(&storage_id, &request_id, &actor_key)
-                })
-                .await
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "checkpoint receipt is missing".to_string())?;
-            let receipt: serde_json::Value = serde_json::from_str(&operation.result)
-                .map_err(|_| "checkpoint receipt is invalid".to_string())?;
-            return receipt
-                .get("checkpoint_id")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .ok_or_else(|| "checkpoint receipt has no identity".to_string());
-        }
-        if prepared.state != "prepared" {
-            return Err("checkpoint operation is not resumable".into());
-        }
-        let checkpoint = self
-            .checkpoint_now_with_authority(
-                "cli",
-                Attribution::account(&authority.account_id, display),
-                actor,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        checkpoint.ok_or_else(|| "checkpoint did not produce an identity".to_string())
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "checkpoint was not created".into())
     }
 
     pub(crate) async fn agent_comment(&self, id: &str) -> Option<Comment> {
-        let state = self.state.lock().await;
-        state
+        self.state
+            .lock()
+            .await
             .comments
             .iter()
             .find(|comment| comment.id == id)
@@ -173,12 +64,7 @@ impl Room {
     }
 
     pub(crate) async fn agent_comment_version(&self, id: &str) -> Option<String> {
-        let state = self.state.lock().await;
-        state
-            .comments
-            .iter()
-            .find(|comment| comment.id == id)
-            .map(comment_version)
+        self.agent_comment(id).await.as_ref().map(comment_version)
     }
 
     pub(crate) async fn apply_agent_annotations(
@@ -189,171 +75,111 @@ impl Room {
     ) -> Result<Value, String> {
         let _restore = self.restore_write.lock().await;
         let _comment = self.comment_write.lock().await;
-        let _publication = self.publication_write.lock().await;
         if !self.hold().await {
             return Err("room lease unavailable".into());
         }
+        if !authority.policy_comment {
+            return Err("comment access changed".into());
+        }
         let catalog = self.catalog.get().ok_or("durable catalog required")?;
-        let authority_check = authority.clone();
-        let authority_slug = self.slug.clone();
-        let key = batch.request_id.clone();
-        let digest = batch.digest.clone();
-        let receipt_bytes = 256
-            + authority_slug.len()
-            + key.len()
-            + digest.len()
-            + authority.account_id.len()
-            + authority.generation.len()
-            + authority.link_hash.len()
-            + authority.parent_request_id.len()
-            + authority.execution_epoch.len();
-        if let Some(receipt) = catalog
-            .execute_catalog(receipt_bytes, move |c| {
-                c.agent_annotation_receipt(&authority_slug, &key, &digest, &authority_check)
-            })
-            .await
-            .map_err(|e| e.to_string())?
-        {
-            return serde_json::from_str(&receipt).map_err(|e| format!("invalid receipt: {e}"));
-        }
-        let mut state = self.state.lock().await;
-        if let Some(revision) = &batch.base_revision {
-            if tree_of(&state.session.doc, &state.session.asset_sizes)
-                .0
-                .digest()
-                != *revision
-            {
-                return Err("source tree changed".into());
-            }
-        }
-        for (id, version) in &batch.expected {
-            let existing = state
-                .comments
-                .iter()
-                .find(|c| c.id == *id)
-                .ok_or("comment disappeared")?;
-            if comment_version(existing) != *version {
-                return Err("comment version changed".into());
-            }
-        }
-        let new_count = batch
-            .upserts
-            .iter()
-            .filter(|c| !state.comments.iter().any(|old| old.id == c.id))
-            .count();
-        if state.comments.len() + new_count
-            > self.config.max_comments.min(500) + batch.deletes.len()
-        {
-            return Err("comment quota exceeded".into());
-        }
-        if !self.rate_reserve(
-            &mut state,
-            caller.address,
-            caller.via,
-            caller.budget,
-            (new_count + batch.replies.len()) as i64,
-        ) {
-            return Err("comment rate limited".into());
-        }
-        let rows = batch
-            .upserts
-            .iter()
-            .map(|c| catalog_comment_row(&self.slug, c))
-            .collect::<Result<Vec<_>, _>>()?;
-        let replies: Vec<_> = batch
-            .replies
-            .iter()
-            .map(|(id, r)| crate::storage::catalog::Reply {
-                slug: self.slug.clone(),
-                comment_id: id.clone(),
-                id: r.id.clone(),
-                body: r.body.clone(),
-                creator: r.creator.clone(),
-                author: r.author.clone(),
-                created: r.created.clone(),
-            })
-            .collect();
-        drop(state);
-        let slug = self.slug.clone();
-        let receipt = batch.receipt.to_string();
-        let bytes = batch
-            .upserts
-            .iter()
-            .map(|c| json!(c).to_string().len())
-            .sum::<usize>()
-            + batch
-                .replies
-                .iter()
-                .map(|(id, reply)| id.len() + json!(reply).to_string().len())
-                .sum::<usize>()
-            + batch.deletes.iter().map(String::len).sum::<usize>()
-            + authority.account_id.len()
-            + authority.generation.len()
-            + authority.link_hash.len()
-            + authority.parent_request_id.len()
-            + authority.execution_epoch.len()
-            + batch.request_id.len()
-            + batch.digest.len()
-            + slug.len()
-            + receipt.len()
-            + 1024;
-        let (request_id, digest, deletes) = (batch.request_id, batch.digest, batch.deletes.clone());
-        let result = catalog
-            .execute_catalog(bytes, move |c| {
-                c.agent_annotations(
-                    &slug,
-                    &request_id,
-                    &digest,
-                    &rows,
-                    &replies,
-                    &deletes,
-                    &receipt,
-                    &authority,
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-        let (seq, comments) = match load_catalog_comments(catalog, &self.slug).await {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                // SQL already committed both effects and receipt. Prevent a
-                // later mutation from validating against stale room comments;
-                // the retained receipt still resolves this call's outcome.
-                self.fence(FenceReason::AgentRecoveryPending);
-                return Err(error.to_string());
-            }
+        let actor = crate::document::store::MutationActor {
+            account_id: authority.account_id,
+            owner_key: caller.author.into(),
+            session_generation: authority.generation,
+            link_hash: authority.link_hash,
+            policy_editor: authority.require_editor,
+            unowned_publisher: false,
         };
         {
             let mut state = self.state.lock().await;
-            state.seq = seq;
-            let _ = std::mem::replace(&mut *state.comments, comments);
-        }
-        let sequence = seq;
-        let current_comments = self.snapshot_for("", false).await;
-        for comment in &batch.upserts {
-            let event_comment = current_comments
+            if let Some(revision) = &batch.base_revision {
+                if tree_of(&state.session.doc, &state.session.asset_sizes)
+                    .0
+                    .digest()
+                    != *revision
+                {
+                    return Err("source tree changed".into());
+                }
+            }
+            for (id, version) in &batch.expected {
+                let comment = state
+                    .comments
+                    .iter()
+                    .find(|comment| comment.id == *id)
+                    .ok_or("comment disappeared")?;
+                if comment_version(comment) != *version {
+                    return Err("comment version changed".into());
+                }
+            }
+            let additions = batch
+                .upserts
                 .iter()
-                .find(|item| item.comment.id == comment.id)
-                .map(|item| json!(item));
-            let event = self.comment_event_for(&json!({"type":"comment","comment":event_comment.unwrap_or_else(|| json!(comment)),"annotation_revision":sequence}),"",false).await;
-            self.broadcast(&event).await;
+                .filter(|new| !state.comments.iter().any(|old| old.id == new.id))
+                .count();
+            if state.comments.len() + additions
+                > self.config.max_comments.min(500) + batch.deletes.len()
+            {
+                return Err("comment quota exceeded".into());
+            }
+            if !self.rate_reserve(
+                &mut state,
+                caller.address,
+                caller.via,
+                caller.budget,
+                (additions + batch.replies.len()) as i64,
+            ) {
+                return Err("comment rate limited".into());
+            }
         }
-        for id in batch.deletes {
-            self.broadcast(
-                &json!({"type":"delete","comment_id":id,"annotation_revision":sequence}),
-            )
-            .await;
-        }
-        for (id, reply) in batch.replies {
-            let event = self
-                .comment_event_for(
-                    &json!({"type":"reply","comment_id":id,"reply":reply,"annotation_revision":sequence}),
-                    "",
-                    false,
+
+        for comment in &batch.upserts {
+            let row = catalog_comment_row(&self.slug, comment)?;
+            if self.agent_comment(&comment.id).await.is_some() {
+                update_comment_row(catalog, row, actor.clone()).await?;
+            } else {
+                insert_comment_request(
+                    catalog,
+                    row,
+                    batch.request_id.clone(),
+                    batch.digest.clone(),
+                    now_unix(),
+                    actor.clone(),
+                    authority.require_editor,
                 )
-                .await;
-            self.broadcast(&event).await;
+                .await
+                .map_err(|e| e.to_string())?;
+            }
         }
-        serde_json::from_str(&result).map_err(|e| e.to_string())
+        for id in &batch.deletes {
+            delete_comment_row(catalog, &self.slug, id, actor.clone()).await?;
+        }
+        for (comment_id, reply) in &batch.replies {
+            insert_reply_request(
+                catalog,
+                ReplyRow {
+                    comment_id: comment_id.clone(),
+                    id: reply.id.clone(),
+                    body: reply.body.clone(),
+                    creator: reply.creator.clone(),
+                    author: reply.author.clone(),
+                },
+                batch.request_id.clone(),
+                batch.digest.clone(),
+                now_unix(),
+                actor.clone(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        let (seq, comments) = load_catalog_comments(catalog, &self.slug).await?;
+        {
+            let mut state = self.state.lock().await;
+            state.seq = seq;
+            *state.comments = comments;
+        }
+        let snapshot = self.snapshot_for("", false).await;
+        self.broadcast(&json!({"type":"comments","comments":snapshot,"annotation_revision":seq}))
+            .await;
+        Ok(batch.receipt)
     }
 }

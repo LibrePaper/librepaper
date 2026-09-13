@@ -147,7 +147,7 @@ impl Server {
         } else {
             None
         };
-        let mut ready = match self
+        let ready = match self
             .chat
             .attach(&slug, &id, &join.token, &join.role, socket_id, tx.clone())
             .await
@@ -163,33 +163,6 @@ impl Server {
                 .await;
                 return;
             }
-        };
-        let execution_epoch = if join.role == "agent" {
-            let Some(catalog) = &self.store.catalog else {
-                self.connections.lock().await.remove(&socket_id);
-                self.chat.detach(&id, socket_id).await;
-                return;
-            };
-            let slug_for_lease = slug.clone();
-            let conversation_for_lease = id.clone();
-            match catalog
-                .execute_catalog(256, move |catalog| {
-                    catalog.issue_agent_execution_lease(&slug_for_lease, &conversation_for_lease)
-                })
-                .await
-            {
-                Ok(epoch) => {
-                    ready["execution_epoch"] = json!(epoch.clone());
-                    Some(epoch)
-                }
-                Err(_) => {
-                    self.connections.lock().await.remove(&socket_id);
-                    self.chat.detach(&id, socket_id).await;
-                    return;
-                }
-            }
-        } else {
-            None
         };
         drop(lease_admission);
         self.reauthorize_connection(&slug, socket_id).await;
@@ -234,19 +207,6 @@ impl Server {
                 }
                 _ = housekeeping.tick() => {
                     if !self.chat.attached(&id, socket_id).await || last_frame.elapsed() > Duration::from_secs(self.socket_budget.policy.idle_seconds) { break; }
-                    if let Some(epoch) = &execution_epoch {
-                        if let Some(catalog) = &self.store.catalog {
-                            let slug_for_lease = slug.clone();
-                            let conversation_for_lease = id.clone();
-                            let epoch_for_lease = epoch.clone();
-                            let renewed = catalog.execute_catalog(256, move |catalog| {
-                                catalog.renew_agent_execution_lease(&slug_for_lease, &conversation_for_lease, &epoch_for_lease)
-                            }).await;
-                            if !matches!(renewed, Ok(true)) {
-                                break;
-                            }
-                        }
-                    }
                     if last_ping.elapsed() >= Duration::from_secs(10) {
                         if !matches!(tokio::time::timeout(Duration::from_secs(5), socket.send(WsMessage::Ping(Vec::new().into()))).await, Ok(Ok(()))) { break; }
                         last_ping = tokio::time::Instant::now();
@@ -255,21 +215,6 @@ impl Server {
             }
         }
         self.connections.lock().await.remove(&socket_id);
-        if let Some(epoch) = execution_epoch {
-            if let Some(catalog) = &self.store.catalog {
-                let slug_for_lease = slug.clone();
-                let conversation_for_lease = id.clone();
-                let _ = catalog
-                    .execute_catalog(256, move |catalog| {
-                        catalog.revoke_agent_execution_lease(
-                            &slug_for_lease,
-                            &conversation_for_lease,
-                            &epoch,
-                        )
-                    })
-                    .await;
-            }
-        }
         self.chat.detach(&id, socket_id).await;
     }
 

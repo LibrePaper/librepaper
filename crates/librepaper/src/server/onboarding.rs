@@ -71,28 +71,19 @@ impl Server {
         let Some(catalog) = &self.store.catalog else {
             return Ok(());
         };
-        if pending_account_examples(catalog, &who.id)
-            .await
-            .map_err(|e| e.to_string())?
-            .is_empty()
-        {
-            return Ok(());
-        }
         let _guard = self.onboarding.lock().await;
         // The caller can be an identity captured before the account row was
         // refreshed. Read the live generation once and use it for every write
         // in this provisioning pass; accepting an empty or stale generation
         // would turn a valid authenticated retry into a 401.
-        let account_id = who.id.clone();
+        let account_id = uuid::Uuid::parse_str(&who.id).map_err(|_| "invalid account id")?;
         let account = catalog
-            .execute_catalog(
-                crate::server::SERVER_JOB_BYTES + account_id.len(),
-                move |catalog| catalog.account(&account_id),
-            )
+            .account(account_id)
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "account disappeared during onboarding".to_string())?;
-        if who.session_generation.is_empty() || who.session_generation != account.session_generation
+        if who.session_generation.is_empty()
+            || who.session_generation != account.session_generation.to_string()
         {
             return Err("account session changed during onboarding".into());
         }
@@ -101,7 +92,7 @@ impl Server {
         // has no request actor, so carry the identity that sign-in already
         // authenticated through every catalogue admission and checkpoint.
         let actor = crate::document::store::MutationActor {
-            account_id: account.id.clone(),
+            account_id: account.id.to_string(),
             owner_key: account.handle.clone(),
             session_generation: who.session_generation.clone(),
             link_hash: String::new(),
@@ -111,16 +102,10 @@ impl Server {
             // private starter set, while ordinary document creation remains
             // governed by that policy at its request boundary.
             policy_editor: true,
-            automation: false,
             unowned_publisher: false,
         };
-        for (position, slug) in pending_account_examples(catalog, &who.id)
-            .await
-            .map_err(|e| e.to_string())?
-        {
-            let starter = STARTERS
-                .get(position)
-                .ok_or_else(|| format!("invalid starter position: {position}"))?;
+        for (position, starter) in STARTERS.iter().enumerate() {
+            let slug = format!("starter-{}-{}", position + 1, &account.id.to_string()[..8]);
             if let Some(entry) = self
                 .store
                 .get_result(&slug)
@@ -132,100 +117,21 @@ impl Server {
                 }
             } else {
                 self.store
-                    .put_as_actor(
+                    .put_directory_as_actor(
                         Publication {
                             slug: slug.clone(),
                             title: starter.title.into(),
                             source: starter.source.into(),
                             source_format: starter.format.into(),
                             main: starter.main.into(),
-                            owner_id: who.id.clone(),
                         },
+                        vec![(starter.extra.into(),starter.extra_source.as_bytes().to_vec()),("librepaper-icon.png".into(),include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png").to_vec())],
                         actor.clone(),
                     )
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            let room = self.rooms.try_get(&slug).await.map_err(|e| e.to_string())?;
-            // A retry after a crash finishes this same copy. Never replace a
-            // source already recovered from its durable session.
-            if room.source().await.is_empty() {
-                // A refused starter write stops the provisioning: the
-                // checkpoint below would otherwise record an example
-                // document that has no source in it.
-                room.set_main_file(starter.source, starter.format, starter.main)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-            if !room.tree().await.files.contains_key("librepaper-icon.png") {
-                let icon = include_bytes!(
-                    "../../../../docs/examples/tutorial-markdown/librepaper-icon.png"
-                )
-                .to_vec();
-                let (sha, _) = room
-                    .put_asset_authorized(
-                        icon,
-                        (self.config.max_asset, self.config.max_assets),
-                        &actor,
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                room.name_asset("librepaper-icon.png", &sha)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-            if !room.tree().await.files.contains_key(starter.extra) {
-                room.add_text(starter.extra, starter.extra_source)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-            // First sign-in provisioning is the new account's own write. The
-            // final catalogue insertion rechecks the live account/session in
-            // the same transaction, so a revoked sign-in cannot finish a
-            // partially provisioned example.
-            room.checkpoint_now_with_authority(
-                "onboarding",
-                crate::room::Attribution::account(&who.id, &who.handle),
-                crate::storage::catalog::MutationAuthority {
-                    account_id: &actor.account_id,
-                    owner_key: &actor.owner_key,
-                    generation: &actor.session_generation,
-                    link_hash: &actor.link_hash,
-                    policy_editor: actor.policy_editor,
-                    automation: actor.automation,
-                    unowned_publisher: actor.unowned_publisher,
-                    execution_epoch: "",
-                    agent_checkpoint: None,
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-            // The starter document and its checkpoint are durable before this
-            // runs. Rendering is an on-demand browser/companion concern and
-            // creates no deployment artifact during provisioning.
-            let account_id = who.id.clone();
-            catalog
-                .execute_catalog(
-                    crate::server::SERVER_JOB_BYTES + account_id.len(),
-                    move |catalog| catalog.complete_account_example(&account_id, position),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
-}
-
-async fn pending_account_examples(
-    catalog: &std::sync::Arc<crate::storage::catalog::Catalog>,
-    account_id: &str,
-) -> Result<Vec<(usize, String)>, crate::storage::catalog::CatalogError> {
-    let account_id = account_id.to_string();
-    catalog
-        .execute_catalog(
-            crate::server::SERVER_JOB_BYTES + account_id.len(),
-            move |catalog| catalog.pending_account_examples(&account_id),
-        )
-        .await
-        .map_err(crate::storage::catalog::CatalogError::from)
 }

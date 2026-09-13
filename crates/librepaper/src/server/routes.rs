@@ -243,31 +243,17 @@ pub(super) async fn dispatch(
         let Some(catalog) = &server.store.catalog else {
             return write_json(503, &json!({"error": "local catalogue unavailable"}));
         };
+        let Ok(account_id) = uuid::Uuid::parse_str(&identity.id) else {
+            return write_json(409, &json!({"error":"invalid account identity"}));
+        };
+        if let Err(error) = catalog
+            .begin_account_erasure(account_id, time::Duration::days(7))
+            .await
         {
-            let account_id = identity.id.clone();
-            let generation = crate::util::new_id();
-            if let Err(error) = catalog
-                .execute_catalog(
-                    crate::server::SERVER_JOB_BYTES + account_id.len(),
-                    move |catalog| catalog.begin_erasure(&account_id, &generation),
-                )
-                .await
-            {
-                return write_json(409, &json!({"error": error.to_string()}));
-            }
+            return write_json(409, &json!({"error": error.to_string()}));
         }
         server.reauthorize_all().await;
         server.rooms.erase_author_from_caches(&identity.id).await;
-        if let Err(error) = crate::storage::maintenance::run_erasure_pass_async(
-            catalog,
-            crate::util::now_unix(),
-            25,
-            250,
-        )
-        .await
-        {
-            eprintln!("warning: account erasure pass failed: {error}");
-        }
         return write_json(202, &json!({"status": "erasing"}));
     }
     if path == "/api/account/storage" && method == Method::GET {
@@ -585,21 +571,7 @@ pub(super) async fn dispatch(
                 };
                 // Not a reason to refuse the document: the pin is bookkeeping
                 // about the visit, and the visit itself is what matters.
-                let result = if let Some(catalog) = &server.store.catalog {
-                    let request = crate::storage::catalog::Guest {
-                        slug: slug.to_string(),
-                        account_id: guest.id.clone(),
-                        since: guest.since.clone(),
-                        link_hash: guest.link.clone(),
-                    };
-                    catalog
-                        .execute_catalog(
-                            crate::server::SERVER_JOB_BYTES + slug.len(),
-                            move |catalog| catalog.pin_guest(&request).map(|_| ()),
-                        )
-                        .await
-                        .map_err(crate::storage::catalog::CatalogError::from)
-                } else {
+                let _ =
                     server
                         .store
                         .modify(slug, |entry| {
@@ -610,15 +582,7 @@ pub(super) async fn dispatch(
                             }
                             Ok(())
                         })
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| {
-                            crate::storage::catalog::CatalogError::Invalid(format!("{error:?}"))
-                        })
-                };
-                if let Err(err) = result {
-                    eprintln!("warning: could not record a guest on {slug}: {err:?}");
-                }
+                        .await;
             }
             let mut body = json!({
                 "slug": entry.slug, "title": entry.title,
@@ -999,28 +963,20 @@ impl Server {
         else {
             return false;
         };
-        if generation.len() != 64
-            || !generation
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        {
-            return false;
-        }
         let Some(catalog) = &self.store.catalog else {
             return false;
         };
         let slug = entry.slug.clone();
         let id_for_catalog = id.clone();
         let generation = generation.to_string();
-        catalog
-            .execute_catalog(
-                crate::server::SERVER_JOB_BYTES + slug.len() + id.len() + generation.len(),
-                move |catalog| {
-                    catalog.display_account_authorized(&slug, &id_for_catalog, &generation)
-                },
-            )
-            .await
-            .unwrap_or(false)
+        let Ok(account_id) = uuid::Uuid::parse_str(&id_for_catalog) else {
+            return false;
+        };
+        let Ok(generation) = generation.parse::<i64>() else {
+            return false;
+        };
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=$2 LEFT JOIN grants g ON g.document_id=d.id AND g.account_id=a.id WHERE d.slug=$1 AND d.status='active' AND a.status='active' AND a.session_generation=$3 AND (d.owner_id=a.id OR g.account_id IS NOT NULL))")
+            .bind(&slug).bind(account_id).bind(generation).fetch_one(catalog.pool()).await.unwrap_or(false)
     }
 
     /// Which formats this deployment can render again in a reader, and so

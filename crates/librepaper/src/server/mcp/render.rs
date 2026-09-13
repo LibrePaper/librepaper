@@ -167,7 +167,7 @@ async fn recheck_issuer(
         if account.is_none_or(|account| {
             account.status != "active"
                 || (!candidate.grant.generation.is_empty()
-                    && account.session_generation != candidate.grant.generation)
+                    && account.session_generation.to_string() != candidate.grant.generation)
         }) {
             return Err(boxed_error(404, "candidate not found"));
         }

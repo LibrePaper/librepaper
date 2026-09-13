@@ -148,7 +148,6 @@ impl Server {
             session_generation: caller.session_generation.clone(),
             link_hash: String::new(),
             policy_editor: true,
-            automation: false,
             unowned_publisher: caller.id.is_empty(),
         };
         self.store
@@ -296,7 +295,6 @@ impl Server {
             session_generation: current_who.id.session_generation.clone(),
             link_hash: current_who.link.clone(),
             policy_editor: self.publishers.allows(&current_who.id.handle),
-            automation: current_who.automation,
             unowned_publisher: false,
         };
         let updated = self
@@ -528,86 +526,39 @@ impl Server {
             return write_json(404, &json!({"error": "not found"}));
         }
         // The earlier viewer check is only for a non-enumerating HTTP reply.
-        // Recheck ownership on the authoritative row under SQLite's write
-        // lock before changing anything; transfers and revocations racing
+        // Recheck ownership in the authoritative PostgreSQL transaction before
+        // changing anything; transfers and revocations racing
         // this request therefore have a single winner.
         if let Some(catalog) = &self.store.catalog {
-            let now = crate::util::timestamp();
-            if let Err(error) = crate::server::upsert_account_job(
-                catalog,
-                crate::storage::catalog::Account {
-                    id: account.id.clone(),
-                    provider: account.provider.clone(),
+            let target = match catalog
+                .upsert_registered_account(crate::storage::postgres::NewAccount {
+                    kind: "registered".into(),
+                    provider: Some(account.provider.clone()),
+                    provider_subject: Some(account.id.clone()),
                     handle: account.handle.clone(),
-                    name: account.name.clone(),
-                    email: String::new(),
-                    first_seen: now.clone(),
-                    last_seen: now,
-                    plan: "default".into(),
-                    status: "active".into(),
-                    session_generation: if cfg!(test) {
-                        "test-session-generation".into()
-                    } else {
-                        random_token()
-                    },
-                    erasure_cursor: None,
-                },
-            )
-            .await
-            {
-                eprintln!("could not record transfer target: {error}");
-                return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
-            }
-            let caller_id = current_who
-                .id
-                .is_signed_in()
-                .then_some(current_who.id.id.as_str());
-            // The transfer re-checks the caller id and session generation
-            // inside its own write, so a caller cancelled after dispatch
-            // either transferred the document under the authority it proved
-            // or did not transfer it at all; there is no partial state and
-            // nothing to undo.
-            let transfer_slug = slug.to_string();
-            let caller_id = caller_id.map(str::to_owned);
-            let caller_key = current_who.key.clone();
-            let caller_generation = current_who
-                .id
-                .is_signed_in()
-                .then(|| current_who.id.session_generation.clone());
-            let new_owner = account.id.clone();
-            let per_owner = self.config.storage.per_owner;
-            if let Err(error) = catalog
-                .execute_catalog(
-                    crate::server::SERVER_JOB_BYTES + transfer_slug.len(),
-                    move |catalog| {
-                        catalog.transfer_ownership_authorized_with_generation(
-                            &transfer_slug,
-                            caller_id.as_deref(),
-                            &caller_key,
-                            caller_generation.as_deref(),
-                            &new_owner,
-                            per_owner,
-                        )
-                    },
-                )
+                    display_name: account.name.clone(),
+                    email: None,
+                })
                 .await
-                .map_err(crate::storage::catalog::CatalogError::from)
             {
-                return match error {
-                    crate::storage::catalog::CatalogError::NotFound => {
-                        write_json(404, &json!({"error": "not found"}))
-                    }
-                    crate::storage::catalog::CatalogError::Conflict(message) => {
-                        write_json(409, &json!({"error": message}))
-                    }
-                    crate::storage::catalog::CatalogError::Refused(_, message) => {
-                        write_json(409, &json!({"error": message}))
-                    }
-                    error => {
-                        eprintln!("could not authorize transfer of {slug}: {error}");
-                        write_json(500, &json!({"error": "could not record the change"}))
-                    }
-                };
+                Ok(target) => target,
+                Err(error) => {
+                    eprintln!("could not record transfer target: {error}");
+                    return write_json(503, &json!({"error":"catalogue temporarily unavailable"}));
+                }
+            };
+            let Some(document) = catalog.document_by_slug(slug).await.ok().flatten() else {
+                return write_json(404, &json!({"error":"not found"}));
+            };
+            if uuid::Uuid::parse_str(&current_who.id.id).ok() != Some(document.owner_id) {
+                return write_json(409, &json!({"error":"ownership changed"}));
+            }
+            if let Err(error) = catalog
+                .update_document_identity(document.id, &document.title, target.id, "owned")
+                .await
+            {
+                eprintln!("could not transfer {slug}: {error}");
+                return write_json(500, &json!({"error":"could not record the change"}));
             }
         }
         // The catalogue path has already committed the ownership change in

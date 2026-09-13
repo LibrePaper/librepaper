@@ -144,130 +144,43 @@ impl Room {
             }
         };
         {
+            let _ = actor;
             let catalog = self
                 .catalog
                 .get()
-                .ok_or_else(|| WriteError::Storage("catalog is required".into()))?;
-            let actor = actor.clone();
-            let slug = self.slug.clone();
-            let digest = sha.clone();
-            let captured = slug.len()
-                + digest.len()
-                + actor.account_id.len()
-                + actor.session_generation.len()
-                + actor.link_hash.len()
-                + actor.owner_key.len()
-                + 256;
-            let admitted_actor = actor.clone();
-            let limits = crate::storage::catalog::V2AdmissionLimits {
-                owner_bytes: if self.config.storage.per_owner < 0 {
-                    i64::MAX
-                } else {
-                    self.config.storage.per_owner
-                },
-                deployment_bytes: if self.config.storage.total < 0 {
-                    i64::MAX
-                } else {
-                    self.config.storage.total
-                },
-                owner_documents: 0,
-            };
-            let admission = catalog
-                .execute_catalog(captured, move |catalog| {
-                    catalog.admit_source_asset(
-                        &slug,
-                        &digest,
-                        size,
-                        &admitted_actor,
-                        limits,
-                        crate::util::now_millis(),
-                    )
-                })
+                .ok_or_else(|| WriteError::Storage("PostgreSQL catalog is required".into()))?;
+            let document_id = uuid::Uuid::parse_str(&self.storage_id)
+                .map_err(|_| WriteError::Storage("invalid document id".into()))?;
+            let digest: [u8; 32] = sha2::Sha256::digest(&body).into();
+            let key = format!("documents/{document_id}/assets/{}", uuid::Uuid::now_v7());
+            self.blobs
+                .put_new(&key, body, "application/octet-stream")
+                .await
+                .map_err(|e| WriteError::Storage(e.to_string()))?;
+            let stored = self
+                .blobs
+                .get(&key)
+                .await
+                .map_err(|e| WriteError::Storage(e.to_string()))?;
+            if stored.len() as i64 != size || sha2::Sha256::digest(&stored).as_slice() != digest {
+                return Err(WriteError::Storage(
+                    "asset failed immutable verification".into(),
+                ));
+            }
+            catalog
+                .complete_asset_with_limit(
+                    crate::storage::postgres::NewAsset {
+                        document_id,
+                        storage_key: key,
+                        digest,
+                        byte_length: size,
+                        media_type: "application/octet-stream".into(),
+                        original_name: None,
+                    },
+                    max_assets,
+                )
                 .await
                 .map_err(WriteError::from)?;
-            if let Some(operation) = admission.operation.clone() {
-                struct Heartbeat(tokio::task::JoinHandle<()>);
-                impl Drop for Heartbeat {
-                    fn drop(&mut self) {
-                        self.0.abort();
-                    }
-                }
-                let heartbeat_catalog = catalog.clone();
-                let document = admission.object.document_id.clone();
-                let ids = vec![admission.object.id.clone()];
-                let holder = admission.holder.clone();
-                let generation = admission.generation.clone();
-                let heartbeat = Heartbeat(tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-                    loop {
-                        interval.tick().await;
-                        let document = document.clone();
-                        let ids = ids.clone();
-                        let holder = holder.clone();
-                        let generation = generation.clone();
-                        let operation = operation.clone();
-                        if heartbeat_catalog
-                            .execute_catalog(512, move |catalog| {
-                                let now = crate::util::now_millis();
-                                catalog.renew_v2_lease_set(
-                                    &document,
-                                    &ids,
-                                    &holder,
-                                    &operation,
-                                    &generation,
-                                    crate::storage::catalog::UnixMillis(
-                                        now.saturating_add(120_000),
-                                    ),
-                                    crate::storage::catalog::UnixMillis(now),
-                                )
-                            })
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }));
-                crate::storage::v2_catalog::V2ObjectWriter::new(
-                    catalog.clone(),
-                    self.blobs.clone(),
-                )
-                .write_allocated(
-                    admission.object.document_id.as_str(),
-                    crate::storage::blob::ObjectId::parse(admission.object.id.as_str().to_owned())
-                        .map_err(|e| WriteError::Storage(e.to_string()))?,
-                    body,
-                    "application/octet-stream",
-                )
-                .await
-                .map_err(WriteError::Storage)?;
-                let slug = self.slug.clone();
-                catalog
-                    .execute_catalog(captured + 512, move |catalog| {
-                        catalog.finish_source_asset(
-                            &slug,
-                            &admission,
-                            &actor,
-                            crate::util::now_millis(),
-                        )
-                    })
-                    .await
-                    .map_err(WriteError::from)?;
-                drop(heartbeat);
-            } else {
-                let slug = self.slug.clone();
-                catalog
-                    .execute_catalog(captured + 512, move |catalog| {
-                        catalog.finish_source_asset(
-                            &slug,
-                            &admission,
-                            &actor,
-                            crate::util::now_millis(),
-                        )
-                    })
-                    .await
-                    .map_err(WriteError::from)?;
-            }
         }
         {
             let _assets_writer = self.assets_write.lock().await;
@@ -277,10 +190,6 @@ impl Room {
                 return Ok((sha, *known));
             }
             state.session.asset_sizes.insert(sha.clone(), size);
-            state
-                .session
-                .asset_written_at
-                .insert(sha.clone(), now_unix());
         }
         upload.release();
         Ok((sha, size))
@@ -290,14 +199,11 @@ impl Room {
     #[cfg(test)]
     pub async fn read_asset(&self, sha: &str) -> Option<Vec<u8>> {
         let catalog = self.catalog.get()?;
-        let storage_key: Option<String> = catalog.with_connection(|connection| {
-                use rusqlite::OptionalExtension;
-                Ok(connection.query_row(
-                    "SELECT storage_key FROM objects WHERE document_id=?1 AND kind='asset'
-                     AND state='available' AND encoding_version=1 AND digest=?2 ORDER BY id LIMIT 1",
-                    rusqlite::params![self.storage_id, sha], |row| row.get(0),
-                ).optional()?)
-            }).ok()?;
-        self.blobs.get(&storage_key?).await.ok()
+        let document_id = uuid::Uuid::parse_str(&self.storage_id).ok()?;
+        let rows = catalog
+            .assets_by_digests(document_id, &[sha.to_owned()])
+            .await
+            .ok()?;
+        self.blobs.get(&rows.first()?.storage_key).await.ok()
     }
 }

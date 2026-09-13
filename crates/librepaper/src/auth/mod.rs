@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 mod device;
@@ -507,73 +507,6 @@ pub fn read_visitor(key: &[u8], cookie: &str) -> String {
 /// or object-store credential cannot disclose the cookie-signing material.
 pub fn session_key_file(path: &std::path::Path, catalog_nonempty: bool) -> Result<Vec<u8>, String> {
     deployment_secret_key(path, catalog_nonempty, "session")
-}
-
-/// Versioned local link-key ring. The first key encrypts new envelopes; the
-/// remainder are retained for interrupted rotations and backup restore.
-pub fn link_sealing_keyring_file(
-    path: &std::path::Path,
-    catalog_nonempty: bool,
-) -> Result<Vec<Vec<u8>>, String> {
-    match std::fs::read(path) {
-        Ok(raw) => {
-            let value: serde_json::Value = serde_json::from_slice(&raw).map_err(|err| {
-                format!("the link keyring at {} is invalid: {err}", path.display())
-            })?;
-            if value["version"].as_u64() != Some(1) {
-                return Err(format!("unsupported link keyring at {}", path.display()));
-            }
-            let keys = value["keys"]
-                .as_array()
-                .ok_or_else(|| format!("the link keyring at {} has no keys", path.display()))?
-                .iter()
-                .map(|row| hex::decode(row["key"].as_str().unwrap_or("")))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| {
-                    format!(
-                        "the link keyring at {} contains an invalid key",
-                        path.display()
-                    )
-                })?;
-            if keys.is_empty() || keys.iter().any(|key| key.len() != 32) {
-                return Err(format!(
-                    "the link keyring at {} contains an invalid key",
-                    path.display()
-                ));
-            }
-            Ok(keys)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if catalog_nonempty {
-                return Err(format!(
-                    "the nonempty catalogue is missing its link keyring at {}",
-                    path.display()
-                ));
-            }
-            let primary = random_bytes(32);
-            write_link_sealing_keyring(path, std::slice::from_ref(&primary))?;
-            Ok(vec![primary])
-        }
-        Err(error) => Err(format!("could not read {}: {error}", path.display())),
-    }
-}
-
-pub fn write_link_sealing_keyring(path: &std::path::Path, keys: &[Vec<u8>]) -> Result<(), String> {
-    if keys.is_empty() || keys.iter().any(|key| key.len() != 32) {
-        return Err("link keyring needs 32-byte keys".into());
-    }
-    let rows: Vec<_> = keys
-        .iter()
-        .map(|key| {
-            serde_json::json!({
-                "id": hex::encode(Sha256::digest(key))[..16],
-                "key": hex::encode(key),
-            })
-        })
-        .collect();
-    let body = serde_json::to_vec(&serde_json::json!({"version": 1, "keys": rows}))
-        .map_err(|error| error.to_string())?;
-    write_secret_atomically(path, &body, true).map(|_| ())
 }
 
 /// Publish fully written, private bytes, with optional replacement. Creating a

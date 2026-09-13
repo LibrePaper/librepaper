@@ -1,0 +1,112 @@
+{
+  "asset_versions": [
+    {
+      "archive_bytes": 374,
+      "asset_references": 1,
+      "elapsed_us": 20924
+    },
+    {
+      "archive_bytes": 4795,
+      "asset_references": 100,
+      "elapsed_us": 27946
+    },
+    {
+      "archive_bytes": 23996,
+      "asset_references": 512,
+      "elapsed_us": 50512
+    }
+  ],
+  "job_claims": [
+    {
+      "claimed": 100,
+      "elapsed_us": 5018,
+      "workers": 1
+    },
+    {
+      "claimed": 400,
+      "elapsed_us": 9944,
+      "workers": 4
+    },
+    {
+      "claimed": 1600,
+      "elapsed_us": 17948,
+      "workers": 16
+    }
+  ],
+  "measured_at": "2026-09-13 15:43:44.982526369 +00:00:00",
+  "postgres_version": "17.11",
+  "profile": "release",
+  "rooms": [
+    {
+      "active_rooms": 1,
+      "append": {
+        "p50_us": 659,
+        "p95_us": 1157,
+        "p99_us": 1749,
+        "samples": 30
+      },
+      "append_batch_us": 23626,
+      "reconstruction": {
+        "p50_us": 958,
+        "p95_us": 958,
+        "p99_us": 958,
+        "samples": 1
+      }
+    },
+    {
+      "active_rooms": 20,
+      "append": {
+        "p50_us": 1442,
+        "p95_us": 3047,
+        "p99_us": 12517,
+        "samples": 600
+      },
+      "append_batch_us": 78620,
+      "reconstruction": {
+        "p50_us": 1115,
+        "p95_us": 1496,
+        "p99_us": 1496,
+        "samples": 20
+      }
+    },
+    {
+      "active_rooms": 100,
+      "append": {
+        "p50_us": 2972,
+        "p95_us": 4792,
+        "p99_us": 7101,
+        "samples": 3000
+      },
+      "append_batch_us": 152925,
+      "reconstruction": {
+        "p50_us": 366,
+        "p95_us": 1186,
+        "p99_us": 1386,
+        "samples": 100
+      }
+    }
+  ],
+  "scale": {
+    "database_bytes": 301495987,
+    "documents": 10000,
+    "load_us": 13579846,
+    "versions": 500000
+  },
+  "source_versions": [
+    {
+      "archive_bytes": 253,
+      "elapsed_us": 14004,
+      "inline_bytes": 102400
+    },
+    {
+      "archive_bytes": 291,
+      "elapsed_us": 18017,
+      "inline_bytes": 1048576
+    },
+    {
+      "archive_bytes": 274,
+      "elapsed_us": 34774,
+      "inline_bytes": 4194304
+    }
+  ]
+}

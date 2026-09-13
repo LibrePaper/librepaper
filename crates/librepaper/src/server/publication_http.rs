@@ -127,7 +127,6 @@ impl Server {
             session_generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             policy_editor: self.publishers.allows(&who.id.handle),
-            automation: who.automation,
             unowned_publisher: false,
         };
         let store = store.with_actor(actor);
@@ -215,13 +214,13 @@ impl Server {
                 .activate(&entry.storage_id, &request_id, expected, &manifest)
                 .await
             {
-                Ok(()) => {
+                Ok(committed) => {
                     if let Ok(room) = self.rooms.try_get(slug).await {
-                        room.broadcast(&json!({"type": "publication-updated", "publication_id": manifest.publication_id})).await;
+                        room.broadcast(&json!({"type": "publication-updated", "publication_id": committed.publication_id})).await;
                     }
                     write_json(
                         200,
-                        &json!({"publication": self.publication_metadata(&entry, &who, arrival, &manifest).await}),
+                        &json!({"publication": self.publication_metadata(&entry, &who, arrival, &committed).await}),
                     )
                 }
                 Err(error) => publication_error(error),

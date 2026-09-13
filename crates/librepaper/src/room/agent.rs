@@ -3,7 +3,7 @@
 //! This module deliberately keeps the patch language independent of MCP.  A
 //! caller supplies a source tree identity and immutable byte ranges; the
 //! validator produces a new source without ever guessing an anchor.  The
-//! room implementation below then journals the operation before it changes
+//! room implementation below persists the operation before it changes
 //! Yjs and commits the receipt only after the resulting snapshot is durable.
 //!
 //! The room integration applies a validated batch across all text files in a
@@ -12,7 +12,6 @@
 
 use std::collections::BTreeMap;
 
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -23,7 +22,6 @@ const MAX_OPERATION_EPOCH: usize = 128;
 const MAX_OPERATION_ID: usize = 128;
 const MAX_PATCHES: usize = 100;
 const MAX_PATCH_BYTES: usize = 256 * 1024;
-const MARKER_PREFIX: &str = "agent.operation.";
 
 /// A server-issued epoch and a client-chosen operation id.  The pair, rather
 /// than an MCP request id, is the durable retry identity.
@@ -77,7 +75,7 @@ impl OperationKey {
     /// Room mutations always pass the authenticated scope.
     pub fn scoped_request_id(&self, scope: &str) -> String {
         let mut binding = Vec::with_capacity(self.epoch.len() + self.id.len() + 32);
-        binding.extend_from_slice(b"librepaper-agent-operation-v2\0");
+        binding.extend_from_slice(b"librepaper-agent-operation-v3\0");
         binding.extend_from_slice(scope.as_bytes());
         binding.push(0);
         binding.extend_from_slice(self.epoch.as_bytes());
@@ -89,71 +87,6 @@ impl OperationKey {
             &hex::encode(Sha256::digest(binding))[..32]
         )
     }
-}
-
-fn authority_scope(authority: &AgentAuthority) -> String {
-    if !authority.operation_scope.is_empty() {
-        authority.operation_scope.clone()
-    } else if authority.account_id.is_empty() {
-        authority.owner_key.clone()
-    } else {
-        authority.account_id.clone()
-    }
-}
-
-fn operation_actor_key(authority: &AgentAuthority) -> String {
-    if !authority.account_id.is_empty() {
-        format!("account:{}", authority.account_id)
-    } else if !authority.link_hash.is_empty() {
-        format!("link:{}", authority.link_hash)
-    } else if !authority.owner_key.is_empty() {
-        format!(
-            "account:anonymous:{}",
-            hex::encode(Sha256::digest(authority.owner_key.as_bytes()))
-        )
-    } else {
-        "internal".into()
-    }
-}
-
-async fn require_agent_authority(
-    catalog: &std::sync::Arc<crate::storage::catalog::Catalog>,
-    slug: String,
-    request_id: String,
-    authority: AgentAuthority,
-) -> Result<(), AgentError> {
-    catalog
-        .execute_catalog(
-            slug.len() + request_id.len() + authority.account_id.len() + authority.owner_key.len(),
-            move |catalog| {
-                catalog.require_agent_source_authority(
-                    &slug,
-                    &request_id,
-                    &authority.execution_epoch,
-                    crate::storage::catalog::MutationAuthority {
-                        account_id: &authority.account_id,
-                        owner_key: &authority.owner_key,
-                        generation: &authority.generation,
-                        link_hash: &authority.link_hash,
-                        policy_editor: authority.policy_editor,
-                        automation: authority.automation,
-                        unowned_publisher: authority.unowned_publisher,
-                        execution_epoch: &authority.execution_epoch,
-                        agent_checkpoint: None,
-                    },
-                )
-            },
-        )
-        .await
-        .map_err(|error| match error {
-            crate::storage::catalog::CatalogExecError::Catalog(
-                crate::storage::catalog::CatalogError::Conflict(message),
-            ) => AgentError::Conflict(message),
-            crate::storage::catalog::CatalogExecError::Catalog(
-                crate::storage::catalog::CatalogError::Refused(_, message),
-            ) => AgentError::Conflict(message),
-            other => AgentError::Storage(other.to_string()),
-        })
 }
 
 /// An operation's conditional write policy.
@@ -319,117 +252,6 @@ pub struct AgentReceipt {
     pub replay: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_comment_id: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct AgentIntent {
-    agent: bool,
-    #[serde(default)]
-    operation: Option<OperationKey>,
-    before_tree: String,
-    after_tree: String,
-    marker_secret: String,
-    #[serde(default)]
-    actor: Option<AgentActor>,
-    #[serde(default)]
-    acceptance: Option<AgentAcceptanceIntent>,
-    #[serde(default)]
-    backup_key: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-struct AgentActor {
-    #[serde(default)]
-    execution_epoch: String,
-}
-
-fn authority_with_persisted_epoch(
-    authority: &AgentAuthority,
-    intent: &AgentIntent,
-) -> AgentAuthority {
-    let mut bound = authority.clone();
-    if let Some(actor) = &intent.actor {
-        // A retry may arrive with a fresh runner header. The effect was
-        // prepared under the epoch persisted in its intent, so that epoch
-        // must remain part of the final receipt authority check.
-        bound.execution_epoch = actor.execution_epoch.clone();
-    }
-    bound
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct AgentAcceptanceIntent {
-    comment_id: String,
-    expected_version: String,
-    expected_seq: i64,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct AgentMarker {
-    digest: String,
-    after_tree: String,
-    mac: String,
-}
-
-fn marker_key(request_id: &str) -> String {
-    format!("{MARKER_PREFIX}{request_id}")
-}
-
-fn backup_key(storage_id: &str, request_id: &str) -> String {
-    format!("agent-backups/{storage_id}/{request_id}")
-}
-
-fn marker_mac(secret: &str, digest: &str, after_tree: &str) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-        .expect("HMAC accepts arbitrary key lengths");
-    mac.update(b"librepaper-agent-marker-v1\0");
-    mac.update(digest.as_bytes());
-    mac.update(&[0]);
-    mac.update(after_tree.as_bytes());
-    hex::encode(mac.finalize().into_bytes())
-}
-
-fn marker_authenticates(secret: &str, digest: &str, after_tree: &str, encoded: &str) -> bool {
-    let Ok(received) = hex::decode(encoded) else {
-        return false;
-    };
-    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
-        return false;
-    };
-    mac.update(b"librepaper-agent-marker-v1\0");
-    mac.update(digest.as_bytes());
-    mac.update(&[0]);
-    mac.update(after_tree.as_bytes());
-    mac.verify_slice(&received).is_ok()
-}
-
-fn request_digest(request: &PatchRequest) -> Result<String, AgentError> {
-    if !request.request_digest.is_empty() {
-        if request.request_digest.len() > 128 || !request.request_digest.is_ascii() {
-            return Err(AgentError::Invalid("invalid request digest".into()));
-        }
-        return Ok(request.request_digest.clone());
-    }
-    let payload = serde_json::to_vec(request)
-        .map_err(|error| AgentError::Invalid(format!("operation payload: {error}")))?;
-    Ok(hex::encode(Sha256::digest(payload)))
-}
-
-fn parse_intent(intent: &str) -> Result<AgentIntent, AgentError> {
-    let parsed: AgentIntent = serde_json::from_str(intent)
-        .map_err(|error| AgentError::Storage(format!("invalid agent intent: {error}")))?;
-    if !parsed.agent
-        || parsed.before_tree.is_empty()
-        || parsed.after_tree.is_empty()
-        || parsed.marker_secret.len() != 64
-        || !parsed.marker_secret.is_ascii()
-    {
-        return Err(AgentError::Storage("invalid agent intent marker".into()));
-    }
-    if let Some(operation) = &parsed.operation {
-        operation.validate()?;
-    }
-    Ok(parsed)
 }
 
 /// Validate and apply a request to a source tree.  No input is normalized:
@@ -612,7 +434,6 @@ fn reject_overlaps(ranges: &mut [(&str, usize, usize)]) -> Result<(), AgentError
 pub enum AgentError {
     Invalid(String),
     Conflict(String),
-    OperationKeyReused,
     NotFound,
     Storage(String),
 }
@@ -622,9 +443,6 @@ impl std::fmt::Display for AgentError {
         match self {
             Self::Invalid(message) => write!(f, "invalid agent operation: {message}"),
             Self::Conflict(message) => write!(f, "agent operation conflict: {message}"),
-            Self::OperationKeyReused => {
-                f.write_str("operation key was reused with different content")
-            }
             Self::NotFound => f.write_str("agent operation was not found"),
             Self::Storage(message) => write!(f, "agent operation storage failure: {message}"),
         }
@@ -673,965 +491,6 @@ async fn room_tree_locked(room: &Room) -> SourceTree {
     }
 }
 
-fn marker_from_doc(doc: &yrs::Doc, request_id: &str) -> Result<Option<AgentMarker>, AgentError> {
-    use yrs::{Any, Map, Out, RootRef, Transact};
-    let txn = doc.transact();
-    let Some(meta) = yrs::MapRef::root(session::META).get(&txn) else {
-        return Ok(None);
-    };
-    let Some(Out::Any(Any::String(value))) = meta.get(&txn, &marker_key(request_id)) else {
-        return Ok(None);
-    };
-    serde_json::from_str(value.as_ref())
-        .map(Some)
-        .map_err(|error| AgentError::Storage(format!("invalid operation marker: {error}")))
-}
-
-/// Read the marker from the latest durable session state. Looking at the live
-/// Yjs document here would turn a failed snapshot write into a false receipt:
-/// the in-memory patch and marker can outlive a rejected journal append.
-async fn room_marker(room: &Room, request_id: &str) -> Result<Option<AgentMarker>, AgentError> {
-    let journal = room.journal.get().ok_or_else(|| {
-        AgentError::Storage("native journal required for durable operation markers".into())
-    })?;
-    let raw = journal
-        .recover_latest(&room.storage_id)
-        .await
-        .map_err(|error| AgentError::Storage(error.to_string()))?;
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-    let doc = session::new_doc();
-    session::apply_update(&doc, &raw)
-        .map_err(|error| AgentError::Storage(format!("invalid durable session: {error}")))?;
-    marker_from_doc(&doc, request_id)
-}
-
-/// Restore the snapshot captured before an agent operation.  The backup is a
-/// separate durable object because an operation intent is deliberately small;
-/// it is written before the Yjs effect and remains until the receipt is
-/// committed.  Callers hold both publication gates while invoking this helper.
-async fn restore_agent_backup(room: &Room, key: &str) -> Result<(), AgentError> {
-    let raw = room
-        .blobs
-        .get(key)
-        .await
-        .map_err(|error| AgentError::Storage(format!("agent backup read: {error}")))?;
-    let restored = session::new_doc();
-    session::apply_update(&restored, &raw)
-        .map_err(|error| AgentError::Storage(format!("invalid agent backup: {error}")))?;
-    {
-        let mut state = room.state.lock().await;
-        state.session.doc = restored;
-        state.session.mark_dirty(crate::util::now_unix());
-        state.session.generation = state.session.generation.saturating_add(1);
-        state.session.updated_at = crate::util::now_unix();
-    }
-    room.write_session_inner(true, false)
-        .await
-        .map_err(AgentError::from)?;
-    Ok(())
-}
-
-async fn abort_agent_operation(
-    room: &Room,
-    catalog: &std::sync::Arc<crate::storage::catalog::Catalog>,
-    request_id: &str,
-    reason: &str,
-) -> Result<(), AgentError> {
-    let storage_id = room.storage_id.clone();
-    let request_id = request_id.to_owned();
-    let reason = serde_json::json!({"version": 2, "reason": reason}).to_string();
-    let operation_id = request_id.clone();
-    catalog
-        .execute_catalog(operation_id.len() + reason.len() + 128, move |catalog| {
-            catalog
-                .abort_operation(&storage_id, &operation_id, &reason)
-                .map(|_| ())
-        })
-        .await
-        .map_err(|error| AgentError::Storage(error.to_string()))?;
-    let backup = backup_key(&room.storage_id, request_id.as_str());
-    room.blobs
-        .delete(&[backup])
-        .await
-        .map_err(|error| AgentError::Storage(format!("agent backup cleanup: {error}")))
-}
-
-impl Room {
-    async fn validate_agent_acceptance(
-        &self,
-        acceptance: Option<&AgentAcceptance>,
-    ) -> Result<Option<AgentAcceptanceIntent>, AgentError> {
-        let Some(acceptance) = acceptance else {
-            return Ok(None);
-        };
-        if acceptance.comment_id.is_empty() || acceptance.expected_version.is_empty() {
-            return Err(AgentError::Invalid("invalid suggestion acceptance".into()));
-        }
-        let state = self.state.lock().await;
-        let comment = state
-            .comments
-            .iter()
-            .find(|comment| comment.id == acceptance.comment_id)
-            .ok_or(AgentError::Conflict("suggestion disappeared".into()))?;
-        if super::agent_comments::comment_version(comment) != acceptance.expected_version
-            || comment.motivation != "editing"
-            || comment.proposed.is_none()
-            || !comment.outcome.is_empty()
-        {
-            return Err(AgentError::Conflict("suggestion changed".into()));
-        }
-        Ok(Some(AgentAcceptanceIntent {
-            comment_id: acceptance.comment_id.clone(),
-            expected_version: acceptance.expected_version.clone(),
-            expected_seq: comment.seq,
-        }))
-    }
-
-    /// Apply one strict source operation and durably journal its replay key.
-    ///
-    /// The catalogue row is prepared before Yjs changes. The room snapshot is
-    /// then persisted under the same publication gate, and only after that
-    /// durable effect does the row become the committed receipt. A crash in
-    /// the gap leaves a prepared intent; retry/recovery commits only when the
-    /// operation marker from that same Yjs snapshot is present.
-    pub async fn apply_agent_request(
-        &self,
-        request: PatchRequest,
-        authority: AgentAuthority,
-    ) -> Result<AgentReceipt, AgentError> {
-        request.operation.validate()?;
-        let catalog =
-            self.catalog.get().cloned().ok_or_else(|| {
-                AgentError::Storage("agent operations require a catalogue".into())
-            })?;
-        let request_id = request
-            .operation
-            .scoped_request_id(&authority_scope(&authority));
-        let digest = request_digest(&request)?;
-
-        // Keep the same ordering as annotation and restore paths.  An
-        // acceptance must not race a comment edit or a restore while its
-        // source patch is being prepared, applied, and committed.
-        let _restore = self.restore_write.lock().await;
-        let _comment = self.comment_write.lock().await;
-        let _publication = self.publication_write.lock().await;
-        let existing = catalog
-            .execute_catalog(request_id.len() + digest.len() + 128, {
-                let storage_id = self.storage_id.clone();
-                let request_id = request_id.clone();
-                let actor_key = operation_actor_key(&authority);
-                move |catalog| catalog.operation_for_actor(&storage_id, &request_id, &actor_key)
-            })
-            .await
-            .map_err(|error| AgentError::Storage(error.to_string()))?;
-        if let Some(operation) = existing {
-            if operation.request_digest != digest || operation.kind != "agent_apply" {
-                return Err(AgentError::OperationKeyReused);
-            }
-            if operation.status == "committed" {
-                return receipt_from_result(&operation.result, true);
-            }
-            if operation.status == "aborted" {
-                return Err(AgentError::Conflict("operation was aborted".into()));
-            }
-            if operation.status != "prepared" {
-                return Err(AgentError::Conflict("operation is not prepared".into()));
-            }
-            let stored = parse_intent(&operation.intent)?;
-            if let Err(error) = require_agent_authority(
-                &catalog,
-                self.slug.clone(),
-                request_id.clone(),
-                authority.clone(),
-            )
-            .await
-            {
-                // A prepared source effect may have survived a process crash.
-                // Revoke it from the durable backup before exposing the
-                // authorization failure; otherwise a later ordinary read
-                // would observe an edit whose actor can no longer commit.
-                if matches!(error, AgentError::Conflict(_)) && !stored.backup_key.is_empty() {
-                    let marked = room_marker(self, &request_id).await?;
-                    if marked.is_some() {
-                        let _checkpoint = self.publication_checkpoint.write().await;
-                        if let Err(restore) = restore_agent_backup(self, &stored.backup_key).await {
-                            self.fence(super::FenceReason::AgentRecoveryPending);
-                            return Err(AgentError::Storage(format!(
-                                "agent authority failed ({error}); rollback failed ({restore})"
-                            )));
-                        }
-                    }
-                    if let Err(abort) = abort_agent_operation(
-                        self,
-                        &catalog,
-                        &request_id,
-                        "agent authority revoked",
-                    )
-                    .await
-                    {
-                        self.fence(super::FenceReason::AgentRecoveryPending);
-                        return Err(abort);
-                    }
-                }
-                return Err(error);
-            }
-            let persisted_authority = authority_with_persisted_epoch(&authority, &stored);
-            if let Err(error) = require_agent_authority(
-                &catalog,
-                self.slug.clone(),
-                request_id.clone(),
-                persisted_authority.clone(),
-            )
-            .await
-            {
-                if matches!(error, AgentError::Conflict(_)) && !stored.backup_key.is_empty() {
-                    let marked = room_marker(self, &request_id).await?;
-                    if marked.is_some() {
-                        let _checkpoint = self.publication_checkpoint.write().await;
-                        restore_agent_backup(self, &stored.backup_key).await?;
-                    }
-                    abort_agent_operation(
-                        self,
-                        &catalog,
-                        &request_id,
-                        "agent execution epoch revoked",
-                    )
-                    .await?;
-                }
-                return Err(error);
-            }
-            if let Some(marker) = room_marker(self, &request_id).await? {
-                if marker.digest != digest {
-                    return Err(AgentError::OperationKeyReused);
-                }
-                if marker.after_tree != stored.after_tree {
-                    return Err(AgentError::Conflict(
-                        "operation marker is inconsistent".into(),
-                    ));
-                }
-                if !marker_authenticates(
-                    &stored.marker_secret,
-                    &digest,
-                    &marker.after_tree,
-                    &marker.mac,
-                ) {
-                    return Err(AgentError::Conflict(
-                        "operation marker authentication failed".into(),
-                    ));
-                }
-                let applied = AppliedSource {
-                    before_tree: stored.before_tree,
-                    after_tree: stored.after_tree,
-                    before: String::new(),
-                    after: String::new(),
-                };
-                return self
-                    .commit_agent_receipt(
-                        &catalog,
-                        &request_id,
-                        &request.operation,
-                        &applied,
-                        true,
-                        &operation.request_digest,
-                        stored.acceptance.clone(),
-                        persisted_authority,
-                        false,
-                    )
-                    .await;
-            }
-            let stored = parse_intent(&operation.intent)?;
-            // A prepared operation without its marker has no durable proof of
-            // its effect. The source must still equal the captured base;
-            // otherwise an intervening write makes the outcome unknown.
-            let current = room_tree_locked(self).await;
-            if current.digest() != stored.before_tree {
-                return Err(AgentError::Conflict(
-                    "prepared operation outcome is unknown".into(),
-                ));
-            }
-            // The effect did not reach the durable room. Continue below and
-            // apply the exact same request under its already prepared row.
-            let tree = current;
-            let applied = apply_patches(&tree, &request)?;
-            if applied.after_tree != stored.after_tree {
-                return Err(AgentError::OperationKeyReused);
-            }
-            let marker_secret = stored.marker_secret.clone();
-            return self
-                .apply_prepared_agent(
-                    request,
-                    tree,
-                    applied,
-                    catalog,
-                    request_id,
-                    authority,
-                    marker_secret,
-                    stored.acceptance.clone(),
-                )
-                .await;
-        } else {
-            let acceptance_intent = self
-                .validate_agent_acceptance(request.acceptance.as_ref())
-                .await?;
-            let tree = room_tree_locked(self).await;
-            let applied = apply_patches(&tree, &request)?;
-            let marker_secret = hex::encode(crate::auth::random_bytes(32));
-            let backup = backup_key(&self.storage_id, &request_id);
-            let intent = serde_json::json!({
-                "agent": true,
-                "operation": request.operation,
-                "marker_secret": marker_secret,
-                "backup_key": backup,
-                "acceptance": acceptance_intent,
-                "actor": {
-                    "account_id": authority.account_id.clone(),
-                    "owner_key": authority.owner_key.clone(),
-                    "generation": authority.generation.clone(),
-                    "link_hash": authority.link_hash.clone(),
-                    "policy_editor": authority.policy_editor,
-                    "automation": authority.automation,
-                    "unowned_publisher": authority.unowned_publisher,
-                    "execution_epoch": authority.execution_epoch.clone(),
-                    "operation_scope": authority.operation_scope.clone(),
-                },
-                "before_tree": applied.before_tree,
-                "after_tree": applied.after_tree,
-                "before_source": hex::encode(Sha256::digest(applied.before.as_bytes())),
-                "after_source": hex::encode(Sha256::digest(applied.after.as_bytes())),
-            })
-            .to_string();
-            let storage_id = self.storage_id.clone();
-            let request_id_for_job = request_id.clone();
-            let kind = "agent_apply".to_string();
-            let intent_for_job = intent.clone();
-            let digest_for_job = digest.clone();
-            require_agent_authority(
-                &catalog,
-                self.slug.clone(),
-                request_id.clone(),
-                authority.clone(),
-            )
-            .await?;
-            catalog
-                .execute_catalog(
-                    request_id.len() + intent.len() + digest.len(),
-                    move |catalog| {
-                        catalog
-                            .prepare_operation(&crate::storage::catalog::OperationRequest {
-                                storage_id: &storage_id,
-                                request_id: &request_id_for_job,
-                                kind: &kind,
-                                request_digest: &digest_for_job,
-                                intent: &intent_for_job,
-                                created_at: crate::util::now_millis(),
-                                // Full MutationAuthority was checked above;
-                                // the generic OperationActor path cannot
-                                // represent link-bounded anonymous editors.
-                                actor: None,
-                            })
-                            .map(|_| ())
-                    },
-                )
-                .await
-                .map_err(|error| AgentError::Storage(error.to_string()))?;
-            return self
-                .apply_prepared_agent(
-                    request,
-                    tree,
-                    applied,
-                    catalog,
-                    request_id,
-                    authority,
-                    parse_intent(&intent)?.marker_secret,
-                    acceptance_intent.clone(),
-                )
-                .await;
-        }
-    }
-
-    /// Reconcile a prepared operation after a process restart. This endpoint
-    /// never infers success from the current source: only the marker written
-    /// in the same Yjs transaction as the patch is sufficient evidence.
-    pub async fn recover_agent_operation(
-        &self,
-        key: OperationKey,
-        authority: AgentAuthority,
-    ) -> Result<AgentReceipt, AgentError> {
-        key.validate()?;
-        let catalog =
-            self.catalog.get().cloned().ok_or_else(|| {
-                AgentError::Storage("agent operations require a catalogue".into())
-            })?;
-        let request_id = key.scoped_request_id(&authority_scope(&authority));
-        let _restore = self.restore_write.lock().await;
-        let _comment = self.comment_write.lock().await;
-        let _publication = self.publication_write.lock().await;
-        let storage_id = self.storage_id.clone();
-        let operation_request_id = request_id.clone();
-        let actor_key = operation_actor_key(&authority);
-        let operation = catalog
-            .execute_catalog(storage_id.len() + request_id.len() + 256, move |catalog| {
-                catalog.operation_for_actor(&storage_id, &operation_request_id, &actor_key)
-            })
-            .await
-            .map_err(|error| AgentError::Storage(error.to_string()))?
-            .ok_or(AgentError::NotFound)?;
-        if operation.kind != "agent_apply" {
-            return Err(AgentError::NotFound);
-        }
-        if operation.status == "committed" {
-            return receipt_from_result(&operation.result, true);
-        }
-        if operation.status != "prepared" {
-            return Err(AgentError::Conflict("operation was aborted".into()));
-        }
-        let stored = parse_intent(&operation.intent)?;
-        if let Err(error) = require_agent_authority(
-            &catalog,
-            self.slug.clone(),
-            request_id.clone(),
-            authority.clone(),
-        )
-        .await
-        {
-            if !matches!(error, AgentError::Conflict(_)) {
-                return Err(error);
-            }
-            if stored.backup_key.is_empty() {
-                self.fence(super::FenceReason::AgentRecoveryPending);
-                return Err(error);
-            }
-            let marked = room_marker(self, &request_id).await?;
-            if marked.is_some() {
-                let _checkpoint = self.publication_checkpoint.write().await;
-                if let Err(restore) = restore_agent_backup(self, &stored.backup_key).await {
-                    self.fence(super::FenceReason::AgentRecoveryPending);
-                    return Err(AgentError::Storage(format!(
-                        "agent authority failed ({error}); rollback failed ({restore})"
-                    )));
-                }
-            }
-            if let Err(abort) =
-                abort_agent_operation(self, &catalog, &request_id, "agent authority revoked").await
-            {
-                self.fence(super::FenceReason::AgentRecoveryPending);
-                return Err(abort);
-            }
-            return Err(error);
-        }
-        let persisted_authority = authority_with_persisted_epoch(&authority, &stored);
-        if let Err(error) = require_agent_authority(
-            &catalog,
-            self.slug.clone(),
-            request_id.clone(),
-            persisted_authority.clone(),
-        )
-        .await
-        {
-            if !matches!(error, AgentError::Conflict(_)) {
-                return Err(error);
-            }
-            if stored.backup_key.is_empty() {
-                self.fence(super::FenceReason::AgentRecoveryPending);
-                return Err(error);
-            }
-            if room_marker(self, &request_id).await?.is_some() {
-                let _checkpoint = self.publication_checkpoint.write().await;
-                restore_agent_backup(self, &stored.backup_key).await?;
-            }
-            abort_agent_operation(self, &catalog, &request_id, "agent execution epoch revoked")
-                .await?;
-            return Err(error);
-        }
-        let Some(marker) = room_marker(self, &request_id).await? else {
-            return Err(AgentError::Conflict(
-                "operation effect is not durably marked".into(),
-            ));
-        };
-        if marker.digest != operation.request_digest {
-            return Err(AgentError::OperationKeyReused);
-        }
-        if marker.after_tree != stored.after_tree {
-            return Err(AgentError::Conflict(
-                "operation marker is inconsistent".into(),
-            ));
-        }
-        if !marker_authenticates(
-            &stored.marker_secret,
-            &operation.request_digest,
-            &marker.after_tree,
-            &marker.mac,
-        ) {
-            return Err(AgentError::Conflict(
-                "operation marker authentication failed".into(),
-            ));
-        }
-        self.commit_agent_receipt(
-            &catalog,
-            &request_id,
-            &key,
-            &AppliedSource {
-                before_tree: stored.before_tree,
-                after_tree: stored.after_tree,
-                before: String::new(),
-                after: String::new(),
-            },
-            true,
-            &operation.request_digest,
-            stored.acceptance.clone(),
-            persisted_authority,
-            false,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn apply_prepared_agent(
-        &self,
-        request: PatchRequest,
-        tree: SourceTree,
-        applied: AppliedSource,
-        catalog: std::sync::Arc<crate::storage::catalog::Catalog>,
-        request_id: String,
-        authority: AgentAuthority,
-        marker_secret: String,
-        acceptance: Option<AgentAcceptanceIntent>,
-    ) -> Result<AgentReceipt, AgentError> {
-        if !self.hold().await {
-            return Err(AgentError::from(self.fenced()));
-        }
-        let _checkpoint = self.publication_checkpoint.write().await;
-        // Apply every file in one Yjs transaction. The publication gate keeps
-        // readers from observing an intermediate file, and the transaction
-        // writes the replay marker beside the source effect. The checkpoint
-        // write permit is acquired before mutation so no background snapshot
-        // can persist a transient source without its operation marker.
-        let resulting_source_bytes = source_size_after(&tree, &request)?;
-        if resulting_source_bytes > self.config.max_document {
-            if let Err(error) =
-                abort_agent_operation(self, &catalog, &request_id, "agent source size exceeded")
-                    .await
-            {
-                self.fence(super::FenceReason::AgentRecoveryPending);
-                return Err(error);
-            }
-            return Err(AgentError::Conflict(
-                "source document size limit exceeded".into(),
-            ));
-        }
-        // Capture the complete pre-effect Yjs state before touching the live
-        // document.  A prepared row plus a marker proves what happened, but
-        // the backup is what makes an authority failure after a crash
-        // reversible even if the source has since changed in memory.
-        let backup = backup_key(&self.storage_id, &request_id);
-        let before_state = {
-            let state = self.state.lock().await;
-            session::encode_state(&state.session.doc)
-        };
-        if let Err(error) = self
-            .blobs
-            .put(&backup, before_state, "application/octet-stream")
-            .await
-        {
-            let storage_error = AgentError::Storage(format!("agent backup write: {error}"));
-            if let Err(abort) =
-                abort_agent_operation(self, &catalog, &request_id, "agent backup admission failed")
-                    .await
-            {
-                self.fence(super::FenceReason::AgentRecoveryPending);
-                return Err(abort);
-            }
-            return Err(storage_error);
-        }
-        let update = {
-            use yrs::{Map, Out, RootRef, Text, Transact};
-            let mut state = self.state.lock().await;
-            let result = self.checked_edit(&state.session.doc, |candidate| {
-                let before_vector = session::encode_vector(candidate);
-                let files = yrs::MapRef::root(session::FILES)
-                    .get(&candidate.transact())
-                    .ok_or_else(|| AgentError::Storage("files map is absent".into()))?;
-                let paths = yrs::MapRef::root(session::PATHS)
-                    .get(&candidate.transact())
-                    .ok_or_else(|| AgentError::Storage("paths map is absent".into()))?;
-                let meta = yrs::MapRef::root(session::META)
-                    .get(&candidate.transact())
-                    .ok_or_else(|| AgentError::Storage("meta map is absent".into()))?;
-                let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
-                for patch in &request.patches {
-                    by_path.entry(&patch.path).or_default().push(patch);
-                }
-                let mut txn = candidate.transact_mut();
-                for (path, mut patches) in by_path {
-                    patches.sort_by(|left, right| {
-                        right.start.cmp(&left.start).then(right.end.cmp(&left.end))
-                    });
-                    let file_id = paths
-                        .iter(&txn)
-                        .find_map(|(id, value)| match value {
-                            Out::Any(value) if value.to_string() == path => Some(id.to_string()),
-                            _ => None,
-                        })
-                        .ok_or_else(|| AgentError::Conflict(format!("file is absent: {path}")))?;
-                    let Some(Out::YText(text)) = files.get(&txn, &file_id) else {
-                        return Err(AgentError::Conflict(format!("file is absent: {path}")));
-                    };
-                    for patch in patches {
-                        let at = byte_to_utf16(&tree.files[path].text, patch.start);
-                        let end = byte_to_utf16(&tree.files[path].text, patch.end);
-                        text.remove_range(&mut txn, at as u32, (end - at) as u32);
-                        if !patch.replacement.is_empty() {
-                            text.insert(&mut txn, at as u32, &patch.replacement);
-                        }
-                    }
-                }
-                let marker = serde_json::json!({
-                "digest": request_digest(&request)?,
-                "after_tree": applied.after_tree,
-                "mac": marker_mac(&marker_secret, &request_digest(&request)?, &applied.after_tree),
-            })
-            .to_string();
-                // There can be only one prepared source operation per document.
-                // Remove terminal markers before recording this operation so the
-                // Yjs metadata cannot grow without bound across a long-lived
-                // room. The current marker remains until the SQL receipt commits.
-                let current_marker = marker_key(&request_id);
-                let old_markers: Vec<String> = meta
-                    .iter(&txn)
-                    .filter_map(|(key, _)| {
-                        let key = key.to_string();
-                        (key.starts_with(MARKER_PREFIX) && key != current_marker).then_some(key)
-                    })
-                    .collect();
-                for key in old_markers {
-                    meta.remove(&mut txn, &key);
-                }
-                meta.insert(&mut txn, current_marker, marker);
-                drop(txn);
-
-                session::encode_diff(candidate, &before_vector).map_err(AgentError::Conflict)
-            });
-            if result.is_ok() {
-                state.session.mark_dirty(crate::util::now_unix());
-                state.session.generation = state.session.generation.saturating_add(1);
-                state.session.updated_at = crate::util::now_unix();
-            }
-            result
-        };
-        let update = match update {
-            Ok(update) => update,
-            Err(error) => {
-                if let Err(abort) = abort_agent_operation(
-                    self,
-                    &catalog,
-                    &request_id,
-                    "agent edit admission failed",
-                )
-                .await
-                {
-                    self.fence(super::FenceReason::AgentRecoveryPending);
-                    return Err(abort);
-                }
-                return Err(error);
-            }
-        };
-        // The prepared `agent_apply` row owns this document's sole source
-        // writer slot.  Calling `write_session_inner` here would prepare a
-        // second `journal_append` operation before the agent receipt is
-        // committed, violating the v2 one-source-writer index.  The
-        // canonical checkpoint below records the complete post-edit source
-        // closure and settles this same operation.  The session journal is
-        // flushed after that commit, so a crash can replay the committed
-        // source checkpoint without manufacturing a competing operation.
-        let digest = request_digest(&request)?;
-        let receipt = match self
-            .commit_agent_receipt(
-                &catalog,
-                &request_id,
-                &request.operation,
-                &applied,
-                false,
-                &digest,
-                acceptance.clone(),
-                authority.clone(),
-                true,
-            )
-            .await
-        {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                // A database error can be reported after SQLite has actually
-                // committed.  Never compensate until the operation row has
-                // been reread: otherwise a committed source effect could be
-                // rolled back while its durable receipt remains committed.
-                let storage_id = self.storage_id.clone();
-                let operation_id = request_id.clone();
-                let actor_key = operation_actor_key(&authority);
-                let durable = catalog
-                    .execute_catalog(
-                        operation_id.len() + storage_id.len() + 128,
-                        move |catalog| {
-                            catalog.operation_for_actor(&storage_id, &operation_id, &actor_key)
-                        },
-                    )
-                    .await;
-                match durable {
-                    Ok(Some(operation)) if operation.status == "committed" => {
-                        if acceptance.is_some() {
-                            if let Ok((seq, comments)) =
-                                super::load_catalog_comments(&catalog, &self.slug).await
-                            {
-                                let mut state = self.state.lock().await;
-                                state.seq = seq;
-                                *state.comments = comments;
-                            } else {
-                                self.fence(super::FenceReason::AgentRecoveryPending);
-                            }
-                        }
-                        return receipt_from_result(&operation.result, true);
-                    }
-                    Ok(Some(_)) => {}
-                    Ok(None) | Err(_) => {
-                        self.fence(super::FenceReason::AgentRecoveryPending);
-                        return Err(AgentError::Storage(format!(
-                            "receipt outcome is ambiguous: {error}"
-                        )));
-                    }
-                }
-                // The source snapshot is already durable, but the final
-                // authority check or receipt transaction failed. Restore the
-                // exact pre-operation tree and abort the prepared row before
-                // releasing the publication gate. If either compensating
-                // step is ambiguous, fence for startup reconciliation.
-                let Some(before) = tree.canonical.as_ref() else {
-                    self.fence(super::FenceReason::AgentRecoveryPending);
-                    return Err(error);
-                };
-                let bodies = tree
-                    .files
-                    .iter()
-                    .filter_map(|(path, file)| {
-                        before
-                            .files
-                            .get(path)
-                            .map(|entry| (entry.sha.clone(), file.text.clone()))
-                    })
-                    .collect::<std::collections::HashMap<_, _>>();
-                let format = self.state.lock().await.session.format.clone();
-                drop(_checkpoint);
-                if let Err(rollback_error) = self
-                    .rollback_publication_memory(before, &bodies, &format)
-                    .await
-                {
-                    self.fence(super::FenceReason::AgentRecoveryPending);
-                    return Err(AgentError::Storage(format!(
-                        "receipt failed ({error}); rollback failed ({rollback_error})"
-                    )));
-                }
-                let storage_id = self.storage_id.clone();
-                let request_id_for_abort = request_id.clone();
-                let abort = catalog
-                    .execute_catalog(request_id.len() + 128, move |catalog| {
-                        catalog
-                            .abort_operation(
-                                &storage_id,
-                                &request_id_for_abort,
-                                r#"{"version":2,"reason":"agent source receipt authorization failed; source rolled back"}"#,
-                            )
-                            .map(|_| ())
-                    })
-                    .await;
-                if let Err(abort_error) = abort {
-                    self.fence(super::FenceReason::AgentRecoveryPending);
-                    return Err(AgentError::Storage(format!(
-                        "receipt failed ({error}); abort failed ({abort_error})"
-                    )));
-                }
-                if let Err(persist_error) = self.write_session_inner(false, false).await {
-                    self.fence(super::FenceReason::AgentRecoveryPending);
-                    return Err(AgentError::Storage(format!(
-                        "receipt failed ({error}); rollback persistence failed ({persist_error})"
-                    )));
-                }
-                return Err(AgentError::Conflict(
-                    "agent authority changed before receipt commit; source rolled back".into(),
-                ));
-            }
-        };
-        // The canonical checkpoint ran under the publication gate. Release it
-        // before the trailing journal append, whose writer acquires the read
-        // side of the same gate; retaining the write guard here deadlocks the
-        // successful acceptance after its receipt has committed.
-        drop(_checkpoint);
-        if let Err(error) = self.write_session_inner(true, false).await {
-            // The v2 source checkpoint and receipt are already durable.  A
-            // journal append failure must not turn that committed mutation
-            // into an ambiguous outcome; fence the room and let recovery
-            // replay the committed operation from its canonical source.
-            self.fence(super::FenceReason::AgentRecoveryPending);
-            let _ = error;
-        }
-        // Broadcast follows the durable receipt, never precedes it.
-        let payload = serde_json::json!({
-            "type": "y-update",
-            "update": crate::room::encode_update(&update),
-            "operation": request.operation,
-        })
-        .to_string();
-        let mut state = self.state.lock().await;
-        super::send_to_editors(&mut state, None, super::Outgoing::shared_text(payload));
-        Ok(receipt)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn commit_agent_receipt(
-        &self,
-        catalog: &std::sync::Arc<crate::storage::catalog::Catalog>,
-        request_id: &str,
-        key: &OperationKey,
-        applied: &AppliedSource,
-        replay: bool,
-        request_digest: &str,
-        acceptance: Option<AgentAcceptanceIntent>,
-        authority: AgentAuthority,
-        checkpoint_gate_held: bool,
-    ) -> Result<AgentReceipt, AgentError> {
-        // Agent source effects share the prepared source-writer operation with
-        // their checkpoint.  The checkpoint commit settles the source head,
-        // annotation acceptance, and receipt in one SQL transaction; a
-        // standalone receipt here would expose an acknowledged operation with
-        // no durable source checkpoint after a crash.
-        let existing = catalog
-            .execute_catalog(request_id.len() + self.storage_id.len() + 128, {
-                let storage_id = self.storage_id.clone();
-                let request_id = request_id.to_owned();
-                let actor_key = operation_actor_key(&authority);
-                move |catalog| catalog.operation_for_actor(&storage_id, &request_id, &actor_key)
-            })
-            .await
-            .map_err(|error| AgentError::Storage(error.to_string()))?
-            .ok_or(AgentError::NotFound)?;
-        if existing.status == "committed" {
-            return receipt_from_result(&existing.result, true);
-        }
-        if existing.status != "prepared" {
-            return Err(AgentError::Conflict(
-                "agent operation is not prepared".into(),
-            ));
-        }
-        let checkpoint_proof = crate::storage::catalog::AgentCheckpointCommit {
-            request_id: request_id.to_owned(),
-            digest: request_digest.to_owned(),
-            operation: serde_json::to_value(key)
-                .map_err(|error| AgentError::Storage(error.to_string()))?,
-            source_revision: applied.after_tree.clone(),
-        };
-        let mutation_authority = crate::storage::catalog::MutationAuthority {
-            account_id: &authority.account_id,
-            owner_key: &authority.owner_key,
-            generation: &authority.generation,
-            link_hash: &authority.link_hash,
-            policy_editor: authority.policy_editor,
-            automation: authority.automation,
-            unowned_publisher: authority.unowned_publisher,
-            execution_epoch: &authority.execution_epoch,
-            agent_checkpoint: Some(&checkpoint_proof),
-        };
-        let attribution = if !authority.account_id.is_empty() {
-            crate::room::Attribution::account(&authority.account_id, &authority.account_id)
-        } else if !authority.link_hash.is_empty() {
-            crate::room::Attribution::unattributed(&authority.link_hash)
-        } else {
-            crate::room::Attribution::system()
-        };
-        let checkpoint_result = if checkpoint_gate_held {
-            self.checkpoint_now_with_authority_locked(
-                "agent_apply",
-                attribution,
-                mutation_authority,
-            )
-            .await
-        } else {
-            self.checkpoint_now_with_authority("agent_apply", attribution, mutation_authority)
-                .await
-        };
-        let checkpoint = checkpoint_result
-            .map_err(AgentError::from)?
-            .ok_or_else(|| {
-                AgentError::Conflict("agent source checkpoint was not committed".into())
-            })?;
-        let storage_id = self.storage_id.clone();
-        let operation_id = request_id.to_owned();
-        let operation = catalog
-            .execute_catalog(storage_id.len() + operation_id.len() + 128, {
-                let actor_key = operation_actor_key(&authority);
-                move |catalog| catalog.operation_for_actor(&storage_id, &operation_id, &actor_key)
-            })
-            .await
-            .map_err(|error| AgentError::Storage(error.to_string()))?
-            .ok_or(AgentError::NotFound)?;
-        if operation.status != "committed" {
-            return Err(AgentError::Conflict(format!(
-                "agent checkpoint {checkpoint} did not settle its operation"
-            )));
-        }
-        let receipt = receipt_from_result(&operation.result, replay)?;
-        if acceptance.is_some() {
-            match super::load_catalog_comments(catalog, &self.slug).await {
-                Ok((seq, comments)) => {
-                    let mut state = self.state.lock().await;
-                    state.seq = seq;
-                    *state.comments = comments;
-                    drop(state);
-                    if let Some(comment_id) = receipt.accepted_comment_id.as_deref() {
-                        let current = self.snapshot_for("", false).await;
-                        if let Some(comment) =
-                            current.iter().find(|item| item.comment.id == comment_id)
-                        {
-                            let event = self
-                                .comment_event_for(
-                                    &serde_json::json!({
-                                        "type": "comment",
-                                        "comment": comment,
-                                        "annotation_revision": seq,
-                                    }),
-                                    "",
-                                    false,
-                                )
-                                .await;
-                            self.broadcast(&event).await;
-                        }
-                    }
-                }
-                Err(error) => {
-                    // The receipt and comment outcome already committed in
-                    // one SQL transaction. A refresh failure must not turn
-                    // that durable success into a compensating source
-                    // rollback; fence and let the next load reconcile room
-                    // memory from the catalogue.
-                    self.fence(super::FenceReason::AgentRecoveryPending);
-                    eprintln!(
-                        "warning: accepted comment committed but room refresh failed for {}: {error}",
-                        self.slug
-                    );
-                }
-            }
-        }
-        let backup = backup_key(&self.storage_id, request_id);
-        let _ = self.blobs.delete(&[backup]).await;
-        Ok(receipt)
-    }
-}
-
-fn receipt_from_result(result: &str, replay: bool) -> Result<AgentReceipt, AgentError> {
-    let mut receipt: AgentReceipt = serde_json::from_str(result)
-        .map_err(|error| AgentError::Storage(format!("invalid operation receipt: {error}")))?;
-    receipt.replay = replay;
-    Ok(receipt)
-}
-
 fn byte_to_utf16(text: &str, byte: usize) -> usize {
     text[..byte].encode_utf16().count()
 }
@@ -1656,6 +515,143 @@ fn source_size_after(tree: &SourceTree, request: &PatchRequest) -> Result<usize,
             .checked_add(*size)
             .ok_or_else(|| AgentError::Invalid("source size overflow".into()))
     })
+}
+
+impl Room {
+    pub async fn apply_agent_request(
+        &self,
+        request: PatchRequest,
+        authority: AgentAuthority,
+    ) -> Result<AgentReceipt, AgentError> {
+        request.operation.validate()?;
+        if !authority.policy_editor
+            && authority.account_id.is_empty()
+            && authority.link_hash.is_empty()
+        {
+            return Err(AgentError::Conflict("edit access changed".into()));
+        }
+        let _restore = self.restore_write.lock().await;
+        let _comment = self.comment_write.lock().await;
+        let _publication = self.publication_write.lock().await;
+        if !self.hold().await {
+            return Err(AgentError::Storage(self.fenced().to_string()));
+        }
+        let tree = room_tree_locked(self).await;
+        let applied = apply_patches(&tree, &request)?;
+        if source_size_after(&tree, &request)? > self.config.max_document {
+            return Err(AgentError::Conflict("document size limit exceeded".into()));
+        }
+        let before_vector = {
+            let mut state = self.state.lock().await;
+            let vector = session::encode_vector(&state.session.doc);
+            let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
+            for patch in &request.patches {
+                by_path.entry(&patch.path).or_default().push(patch);
+            }
+            self.checked_edit(&state.session.doc, |candidate| {
+                for (path, mut patches) in by_path {
+                    patches.sort_by_key(|patch| std::cmp::Reverse(patch.start));
+                    let original = tree
+                        .files
+                        .get(path)
+                        .ok_or_else(|| WriteError::Conflict(format!("file is absent: {path}")))?;
+                    let edits: Vec<_> = patches
+                        .into_iter()
+                        .map(|patch| wasm_helpers::text::Edit {
+                            at: byte_to_utf16(&original.text, patch.start),
+                            delete: byte_to_utf16(
+                                &original.text[patch.start..],
+                                patch.end - patch.start,
+                            ),
+                            insert: patch.replacement.clone(),
+                        })
+                        .collect();
+                    session::apply_path_edits(candidate, path, &edits);
+                }
+                Ok::<_, WriteError>(())
+            })
+            .map_err(AgentError::from)?;
+            state.session.generation += 1;
+            state.session.mark_dirty(crate::util::now_unix());
+            vector
+        };
+        let update = {
+            let state = self.state.lock().await;
+            session::encode_diff(&state.session.doc, &before_vector).map_err(AgentError::Storage)?
+        };
+        self.write_session_inner(false, true)
+            .await
+            .map_err(AgentError::from)?;
+        let checkpoint = self
+            .checkpoint_now(
+                "cli",
+                super::Attribution::account(&authority.account_id, &authority.account_id),
+            )
+            .await
+            .map_err(AgentError::from)?;
+
+        let mut accepted_comment_id = None;
+        if let Some(acceptance) = &request.acceptance {
+            let updated = {
+                let mut state = self.state.lock().await;
+                let comment = state
+                    .comments
+                    .iter_mut()
+                    .find(|comment| comment.id == acceptance.comment_id)
+                    .ok_or_else(|| AgentError::Conflict("suggestion disappeared".into()))?;
+                if super::agent_comments::comment_version(comment) != acceptance.expected_version
+                    || !comment.outcome.is_empty()
+                {
+                    return Err(AgentError::Conflict("suggestion changed".into()));
+                }
+                comment.outcome = "accepted".into();
+                comment.resolved = true;
+                comment.resolved_at = Some(crate::util::timestamp());
+                comment.resolved_in = checkpoint.clone().unwrap_or_default();
+                comment.clone()
+            };
+            if let Some(catalog) = self.catalog.get() {
+                let row = super::catalog::catalog_comment_row(&self.slug, &updated)
+                    .map_err(AgentError::Storage)?;
+                super::catalog::update_comment_row(
+                    catalog,
+                    row,
+                    crate::document::store::MutationActor {
+                        account_id: authority.account_id.clone(),
+                        owner_key: authority.owner_key.clone(),
+                        session_generation: authority.generation.clone(),
+                        link_hash: authority.link_hash.clone(),
+                        policy_editor: authority.policy_editor,
+                        unowned_publisher: authority.unowned_publisher,
+                    },
+                )
+                .await
+                .map_err(AgentError::Storage)?;
+            }
+            accepted_comment_id = Some(acceptance.comment_id.clone());
+        }
+        self.broadcast_editors_except(
+            None,
+            &serde_json::json!({"type":"y-update","update":super::encode_update(&update)}),
+        )
+        .await;
+        Ok(AgentReceipt {
+            operation: request.operation,
+            status: "committed".into(),
+            source_revision_before: applied.before_tree,
+            source_revision_after: applied.after_tree,
+            replay: false,
+            accepted_comment_id,
+        })
+    }
+
+    pub async fn recover_agent_operation(
+        &self,
+        _key: OperationKey,
+        _authority: AgentAuthority,
+    ) -> Result<AgentReceipt, AgentError> {
+        Err(AgentError::NotFound)
+    }
 }
 
 #[cfg(test)]

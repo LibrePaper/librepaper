@@ -1,15 +1,13 @@
 //! The manifest: what a document used to say, and when.
 //!
 //! Each checkpoint is a distinct event whose canonical tree describes the
-//! whole document directory. The catalog retains its immutable object closure
-//! and supplies the timeline; reading a tree holds a lease over that closure.
+//! whole document directory. PostgreSQL retains the version timeline while
+//! immutable archives and assets live in the configured blob store.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-use crate::storage::blob::BlobStore;
 
 /// One entry in the manifest. The field names are wire format: the manifest
 /// is served to the browser as it stands.
@@ -226,147 +224,4 @@ impl Manifest {
     pub fn latest(&self) -> Option<&Checkpoint> {
         self.checkpoints.last()
     }
-
-    pub fn has(&self, sha: &str) -> bool {
-        self.checkpoints.iter().any(|point| point.sha == sha)
-    }
-
-    /// Rehydrate the in-memory timeline from the authoritative catalogue.
-    ///
-    /// The local catalogue stores one row per checkpoint rather than a
-    /// whole-document manifest blob.  Keeping this conversion here makes the
-    /// room code independent of SQL column layout while preserving the wire
-    /// representation used by the history API.  Rows are sorted by `seq`
-    /// before they become a manifest; callers may therefore pass a bounded
-    /// page or the complete result without relying on database row order.
-    pub fn from_catalog_rows(
-        mut rows: Vec<crate::storage::catalog::Checkpoint>,
-    ) -> Result<Self, String> {
-        rows.sort_by_key(|row| row.seq);
-        let mut checkpoints = Vec::with_capacity(rows.len());
-        for row in rows {
-            let changed = match row.changed.as_deref() {
-                None => Vec::new(),
-                Some(raw) => serde_json::from_str::<Vec<String>>(raw).map_err(|err| {
-                    format!("checkpoint {} has invalid changed metadata: {err}", row.sha)
-                })?,
-            };
-            checkpoints.push(Self::from_catalog_row(row, changed));
-        }
-        Ok(Self { checkpoints })
-    }
-
-    fn from_catalog_row(
-        row: crate::storage::catalog::Checkpoint,
-        changed: Vec<String>,
-    ) -> Checkpoint {
-        Checkpoint {
-            sha: row.sha,
-            tree_sha: row.tree_sha,
-            parent: row.parent.clone(),
-            at: row.at,
-            by: row.by,
-            by_account: row.by_account,
-            why: row.why,
-            source_format: row.source_format,
-            size: row.size,
-            label: row.label,
-            commit: row.git_commit,
-            dirty: row.dirty,
-            tree: true,
-            changed,
-            seq: row.seq,
-            original_parent: row.parent,
-            ancestry_gap: false,
-        }
-    }
-}
-
-/// Read the canonical tree through its checkpoint closure and a durable read lease.
-pub async fn load_tree(
-    blobs: &dyn BlobStore,
-    catalog: &std::sync::Arc<crate::storage::catalog::Catalog>,
-    slug: &str,
-    point: &Checkpoint,
-) -> Result<Tree, String> {
-    let owner = catalog.clone();
-    let slug = slug.to_owned();
-    let event = point.sha.clone();
-    let lease = catalog
-        .execute_catalog(slug.len() + event.len(), move |_| {
-            owner.acquire_checkpoint_read(&slug, Some(&event), crate::util::now_millis())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let result = load_tree_envelope(blobs, &lease)
-        .await
-        .map(|(tree, _)| tree);
-    let _ = lease.finish().await;
-    result
-}
-
-pub(crate) async fn load_tree_envelope(
-    blobs: &dyn BlobStore,
-    lease: &crate::storage::catalog::CheckpointReadLease,
-) -> Result<(Tree, crate::storage::encoding::TreeEnvelope), String> {
-    let result = load_tree_envelope_from_set(blobs, &lease.set).await;
-    if result.is_ok() && !lease.valid_at(crate::util::now_millis()) {
-        return Err("checkpoint read lease expired".into());
-    }
-    result
-}
-
-/// Read a tree against a snapshot of the leased closure.  Callers that keep
-/// the lease alive in a background heartbeat use this form so the heartbeat
-/// can own and renew the lease while a slow object-store GET is in flight.
-pub(crate) async fn load_tree_envelope_from_set(
-    blobs: &dyn BlobStore,
-    set: &crate::storage::catalog::CheckpointReadSet,
-) -> Result<(Tree, crate::storage::encoding::TreeEnvelope), String> {
-    let object = set
-        .objects
-        .iter()
-        .find(|object| object.id == set.tree_object_id)
-        .ok_or("checkpoint tree is absent from its closure")?;
-    let raw = blobs
-        .get(&object.storage_key)
-        .await
-        .map_err(|error| error.to_string())?;
-    if object.byte_length != i64::try_from(raw.len()).ok()
-        || hex::encode(Sha256::digest(&raw)) != object.digest
-    {
-        return Err("checkpoint tree physical integrity check failed".into());
-    }
-    let envelope = crate::storage::encoding::TreeEnvelope::from_bytes(&raw)
-        .map_err(|error| error.to_string())?;
-    let logical = envelope
-        .logical_bytes()
-        .map_err(|error| error.to_string())?;
-    let digest = hex::encode(Sha256::digest(&logical));
-    if digest != set.tree_digest || digest != hex::encode(envelope.logical_digest) {
-        return Err("checkpoint logical tree digest mismatch".into());
-    }
-    for file in envelope.files.values() {
-        let locator = file
-            .recipe
-            .as_ref()
-            .or(file.asset.as_ref())
-            .ok_or("tree file has no physical locator")?;
-        let kind = if file.kind == "asset" {
-            "asset"
-        } else {
-            "source_recipe"
-        };
-        if !set.objects.iter().any(|object| {
-            object.id.as_str() == locator.object_id.as_str()
-                && object.kind == kind
-                && object.digest == hex::encode(locator.object_digest)
-                && object.byte_length == i64::try_from(locator.byte_length).ok()
-        }) {
-            return Err("checkpoint file is outside its available closure".into());
-        }
-    }
-    let tree = serde_json::from_slice(&logical)
-        .map_err(|error| format!("invalid logical checkpoint tree: {error}"))?;
-    Ok((tree, envelope))
 }

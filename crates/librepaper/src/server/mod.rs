@@ -100,7 +100,7 @@ pub struct Server {
     /// The terminals waiting to be signed in. In memory only: a restart
     /// forgets them, and a `login` that was mid-flight starts again.
     pub pending: PendingCodes,
-    /// Serialize first-sign-in provisioning; its progress is durable in SQLite.
+    /// Serialize first-sign-in provisioning; its progress is durable in PostgreSQL.
     onboarding: tokio::sync::Mutex<()>,
     /// Private agent channels are live coordination and never durable data.
     pub chat: chat::Hub,
@@ -246,16 +246,13 @@ pub(crate) const SERVER_JOB_BYTES: usize = 512;
 
 /// Read one account row off the runtime worker.
 pub(crate) async fn account_row(
-    catalog: &Arc<crate::storage::catalog::Catalog>,
+    catalog: &Arc<crate::storage::postgres::PostgresCatalog>,
     id: &str,
-) -> Result<Option<crate::storage::catalog::Account>, crate::storage::catalog::CatalogError> {
-    let id = id.to_string();
-    catalog
-        .execute_catalog(SERVER_JOB_BYTES + id.len(), move |catalog| {
-            catalog.account(&id)
-        })
-        .await
-        .map_err(crate::storage::catalog::CatalogError::from)
+) -> Result<Option<crate::storage::postgres::AccountRecord>, crate::storage::postgres::Error> {
+    let Ok(id) = uuid::Uuid::parse_str(id) else {
+        return Ok(None);
+    };
+    catalog.account(id).await
 }
 
 /// Establish or refresh one account row off the runtime worker.
@@ -264,24 +261,16 @@ pub(crate) async fn account_row(
 /// dispatch leaves exactly the row it would have left, and the next request
 /// reads it. Nothing is reserved here, so there is nothing to refund.
 pub(crate) async fn upsert_account_job(
-    catalog: &Arc<crate::storage::catalog::Catalog>,
-    account: crate::storage::catalog::Account,
-) -> Result<crate::storage::catalog::Account, crate::storage::catalog::CatalogError> {
-    catalog
-        .execute_catalog(SERVER_JOB_BYTES + account.id.len(), move |catalog| {
-            catalog.upsert_account(&account)
-        })
-        .await
-        .map_err(crate::storage::catalog::CatalogError::from)
+    catalog: &Arc<crate::storage::postgres::PostgresCatalog>,
+    account: crate::storage::postgres::NewAccount,
+) -> Result<crate::storage::postgres::AccountRecord, crate::storage::postgres::Error> {
+    catalog.upsert_registered_account(account).await
 }
 
-fn authentication_failure_of(
-    error: crate::storage::catalog::CatalogError,
-) -> AuthenticationFailure {
+fn authentication_failure_of(error: crate::storage::postgres::Error) -> AuthenticationFailure {
     if matches!(
         error,
-        crate::storage::catalog::CatalogError::Conflict(_)
-            | crate::storage::catalog::CatalogError::Refused(_, _)
+        crate::storage::postgres::Error::Conflict(_) | crate::storage::postgres::Error::Invalid(_)
     ) {
         AuthenticationFailure::Invalid
     } else {
@@ -326,7 +315,7 @@ impl Server {
         let accounts = Arc::new(GithubAccounts::new(&app));
         let cost = Arc::new(cost::CostMeter::new(&config, store.catalog.clone()));
         let socket_budget = socket_budget::SocketBudget::new(config.sockets);
-        let mcp_capacity = mcp::Capacity::with_payload_memory(cost.incoming_memory());
+        let mcp_capacity = mcp::Capacity::default();
         Server {
             store,
             rooms,
@@ -445,79 +434,28 @@ impl Server {
             // the account on first use and always take the generation from the
             // authoritative row, so cached provider identity cannot bypass
             // account erasure or session revocation.
-            let now = crate::util::timestamp();
-            let profile = crate::storage::catalog::Account {
-                id: identity.id.clone(),
-                provider: identity.provider.clone(),
+            let profile = crate::storage::postgres::NewAccount {
+                kind: "registered".into(),
+                provider: Some(identity.provider.clone()),
+                provider_subject: Some(identity.id.clone()),
                 handle: identity.handle.clone(),
-                name: identity.name.clone(),
-                email: String::new(),
-                first_seen: now.clone(),
-                last_seen: now,
-                plan: "default".into(),
-                status: "active".into(),
-                session_generation: random_token(),
-                erasure_cursor: None,
+                display_name: identity.name.clone(),
+                email: None,
             };
-            let account = match account_row(catalog, &identity.id).await {
-                Err(_) => return Err(AuthenticationFailure::Unavailable),
-                Ok(Some(account)) if account.status != "active" => {
-                    return Err(AuthenticationFailure::Invalid)
-                }
-                Ok(Some(account)) => {
-                    // A cached bearer still observes lifecycle state above,
-                    // while profile changes are refreshed only when there is
-                    // something to write. This keeps ordinary bearer traffic
-                    // read-only and avoids a catalogue transaction per call.
-                    if account.provider != profile.provider
-                        || account.handle != profile.handle
-                        || account.name != profile.name
-                        || account.email != profile.email
-                    {
-                        upsert_account_job(catalog, profile)
-                            .await
-                            .map_err(authentication_failure_of)?
-                    } else {
-                        account
-                    }
-                }
-                Ok(None) => upsert_account_job(catalog, profile)
-                    .await
-                    .map_err(authentication_failure_of)?,
-            };
-            identity.session_generation = account.session_generation;
+            let account = upsert_account_job(catalog, profile)
+                .await
+                .map_err(authentication_failure_of)?;
+            identity.id = account.id.to_string();
+            identity.session_generation = account.session_generation.to_string();
             return Ok(identity);
         }
 
-        #[cfg(test)]
-        if matches!(account_row(catalog, &identity.id).await, Ok(None))
-            && identity.session_generation == "test-session-generation"
-        {
-            let now = crate::util::timestamp();
-            let _ = upsert_account_job(
-                catalog,
-                crate::storage::catalog::Account {
-                    id: identity.id.clone(),
-                    provider: identity.provider.clone(),
-                    handle: identity.handle.clone(),
-                    name: identity.name.clone(),
-                    email: String::new(),
-                    first_seen: now.clone(),
-                    last_seen: now,
-                    plan: "test".into(),
-                    status: "active".into(),
-                    session_generation: identity.session_generation.clone(),
-                    erasure_cursor: None,
-                },
-            )
-            .await;
-        }
         match account_row(catalog, &identity.id).await {
             Ok(Some(account))
                 if account.status == "active"
                     && needs_generation
                     && !identity.session_generation.is_empty()
-                    && account.session_generation == identity.session_generation =>
+                    && account.session_generation.to_string() == identity.session_generation =>
             {
                 Ok(identity)
             }
@@ -817,7 +755,7 @@ impl Server {
                 Ok(Some(account)) => {
                     account.status != "active"
                         || identity.session_generation.is_empty()
-                        || account.session_generation != identity.session_generation
+                        || account.session_generation.to_string() != identity.session_generation
                 }
                 Ok(None) => true,
                 Err(_) => false,
@@ -1030,7 +968,6 @@ impl Server {
             } else {
                 ceiling.comment
             },
-            automation: who.automation,
             unowned_publisher: false,
         }
     }

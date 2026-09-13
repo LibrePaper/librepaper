@@ -4,15 +4,12 @@
 use super::*;
 
 /// The longest a checkpoint's label may be, in characters. Long enough for
-/// "sent to the journal, second round" and short enough that the history panel
+/// "submitted after review, second round" and short enough that the history panel
 /// is a list of names rather than of paragraphs.
 pub(super) const MAX_LABEL: usize = 120;
 
 fn is_checkpoint_id(value: &str) -> bool {
-    crate::storage::catalog::CheckpointId::new(value).is_ok()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    uuid::Uuid::parse_str(value).is_ok()
 }
 
 /// Content authorship is separate from the checkpoint event actor. Current
@@ -268,22 +265,8 @@ impl Server {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
         };
-        let authority = crate::storage::catalog::MutationAuthority {
-            account_id: who.id.id.as_str(),
-            owner_key: who.key.as_str(),
-            generation: who.id.session_generation.as_str(),
-            link_hash: who.link.as_str(),
-            policy_editor: self.publishers.allows(&who.id.handle),
-            automation: who.automation,
-            unowned_publisher: false,
-            execution_epoch: "",
-            agent_checkpoint: None,
-        };
         let sha = if current {
-            match room
-                .checkpoint_now_with_authority("label", who.attribution(), authority)
-                .await
-            {
+            match room.checkpoint_now("label", who.attribution()).await {
                 Ok(Some(sha)) => sha,
                 Ok(None) => return plain(404, "not found"),
                 Err(error) => {
@@ -297,7 +280,7 @@ impl Server {
         } else {
             sha.to_string()
         };
-        match room.label_as_authority(&sha, &label, Some(authority)).await {
+        match room.label_version(&sha, &label).await {
             Ok(true) => write_json(200, &json!({"sha": sha, "label": label})),
             Ok(false) => plain(404, "not found"),
             Err(error) => refused_with(

@@ -3,13 +3,14 @@
 // no release, deployment, or existing mirror is modified by this check.
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { readFileSync, writeFileSync, readdirSync, symlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { browser, until } from "../../tools/browser-driver.mjs";
 import { ephemeralMirror } from "../../tools/ephemeral-mirror.mjs";
+import { postgresTestDatabase } from "../../tools/postgres-test.mjs";
 
 const root = resolve(import.meta.dirname, "../../..");
 const engineRoot = resolve(process.env.LATEXML_DIST || join(root, "../wasm-latex/wasm-build/dist"));
@@ -90,22 +91,15 @@ const scratch = mkdtempSync(join(tmpdir(), "librepaper-latexml-browser-"));
 const appData = join(scratch, "app-data");
 let tab;
 let app;
+let postgres;
 
-function sql(value) { return `'${String(value).replaceAll("'", "''")}'`; }
 function appSession() {
   const key = Buffer.from(readFileSync(join(appData, "secrets", "session.key"), "utf8").trim(), "hex");
-  const generation = "latexml-browser-test-generation";
+  const generation = "1";
   const expires = Math.floor(Date.now() / 1000) + 3600;
   const payload = Buffer.from(`github|browser-test|github:browser-test|${generation}||Browser Test|${expires}`).toString("base64url");
   const signature = createHmac("sha256", key).update(`session-v2\0${payload}`).digest("base64url");
   return { value: `v2.${payload}.${signature}`, generation };
-}
-function seedAppAccount(generation) {
-  const now = new Date().toISOString();
-  execFileSync("sqlite3", [join(appData, "catalog.db"), `INSERT INTO accounts
-    (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation, erasure_cursor)
-    VALUES (${sql("github:browser-test")}, ${sql("github")}, ${sql("browser-test")}, ${sql("Browser Test")}, '',
-      ${sql(now)}, ${sql(now)}, ${sql("test")}, 'active', ${sql(generation)}, NULL);`], { stdio: "ignore" });
 }
 try {
   process.env.LIBREPAPER_BROWSER_IGNORE_CERT_ERRORS = "1";
@@ -175,9 +169,10 @@ See equation~\eqref{eq:test}.
     console.log("latex-html-browser: legacy release settings ignored by current HTML renderer");
   }
   if (process.env.LIBREPAPER_BIN) {
+    postgres = postgresTestDatabase("latexml_browser");
     const port = 22000 + Math.floor(Math.random() * 1000);
     const appBase = `http://localhost:${port}`;
-    const env = { ...process.env, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" };
+    const env = { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" };
     app = spawn(resolve(process.env.LIBREPAPER_BIN), ["admin", "serve", "--port", String(port), "--data-directory", appData,
       "--publishers", "any", "--commenters", "anyone", "--latex-mirror", mirrorBase], { env, stdio: ["ignore", "ignore", "pipe"] });
     let appLog = "";
@@ -187,7 +182,7 @@ See equation~\eqref{eq:test}.
       return (await fetch(`${appBase}/api/config`)).ok;
     });
     const session = appSession();
-    seedAppAccount(session.generation);
+    postgres.seedRegisteredAccount({ provider: "github", subject: "browser-test", handle: "browser-test", displayName: "Browser Test" });
     await tab.setCookie("librepaper_session", session.value, appBase);
     await tab.navigate(appBase);
     await until("app page", () => tab.evaluate(`location.origin === ${JSON.stringify(appBase)} && document.readyState === 'complete'`));
@@ -235,6 +230,7 @@ See equation~\eqref{eq:test}.
 } finally {
   await tab?.close();
   app?.kill();
+  postgres?.drop();
   await new Promise((done) => server.close(done));
   if (mirrorServer) {
     mirrorServer.server.closeAllConnections();

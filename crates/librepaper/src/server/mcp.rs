@@ -3,10 +3,6 @@ use super::*;
 use crate::agent_query::{QueryBudget, QuerySnapshot};
 use hmac::{Hmac, Mac};
 use serde::Serialize;
-use std::io::{Read, Write};
-
-use crate::storage::catalog::{UnixMillis, V2AdmissionLimits};
-use crate::storage::v2_catalog::V2ObjectWriter;
 
 mod cancel;
 mod comments;
@@ -17,172 +13,6 @@ mod schema;
 const PROTOCOL: &str = "2026-07-28";
 const MAX_MESSAGE: usize = 64 * 1024;
 const MAX_AGENT_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
-const AGENT_PAYLOAD_CHUNK_BYTES: usize = 64 * 1024;
-const AGENT_PAYLOAD_MIN_CHUNK_BYTES: usize = 4 * 1024;
-// Charge the Vec allocation together with its per-chunk metadata.  Without
-// this floor, a tiny shared budget could admit thousands of one-byte chunks
-// while accounting only for their payload bytes.
-const AGENT_PAYLOAD_CHUNK_METADATA_BYTES: usize = 32;
-const MAX_AGENT_PAYLOAD_CHUNKS: usize = MAX_AGENT_PAYLOAD_BYTES / AGENT_PAYLOAD_MIN_CHUNK_BYTES;
-const AGENT_PAYLOAD_METADATA_BYTES: usize =
-    MAX_AGENT_PAYLOAD_CHUNKS * std::mem::size_of::<Vec<u8>>();
-
-/// Chunked bounded output used for MCP serialization and decompression. Each
-/// chunk is admitted before its allocation, and flattening deliberately
-/// acquires a second permit while the old chunks remain alive. This charges
-/// the old+new peak during a reallocation rather than treating Vec capacity
-/// growth as free memory.
-struct BoundedPayload {
-    chunks: Vec<Vec<u8>>,
-    permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    metadata_permit: Option<tokio::sync::OwnedSemaphorePermit>,
-    semaphore: Arc<tokio::sync::Semaphore>,
-    length: usize,
-}
-
-impl BoundedPayload {
-    fn new(semaphore: Arc<tokio::sync::Semaphore>) -> Self {
-        let metadata_permit = semaphore
-            .clone()
-            .try_acquire_many_owned(u32::try_from(AGENT_PAYLOAD_METADATA_BYTES).unwrap_or(u32::MAX))
-            .ok();
-        Self {
-            chunks: if metadata_permit.is_some() {
-                Vec::with_capacity(MAX_AGENT_PAYLOAD_CHUNKS)
-            } else {
-                Vec::new()
-            },
-            permit: None,
-            metadata_permit,
-            semaphore,
-            length: 0,
-        }
-    }
-
-    fn acquire_chunk(
-        &self,
-        requested: usize,
-    ) -> Result<(tokio::sync::OwnedSemaphorePermit, usize), String> {
-        let minimum = AGENT_PAYLOAD_CHUNK_METADATA_BYTES.saturating_add(1);
-        let mut amount = requested.max(minimum).min(u32::MAX as usize);
-        loop {
-            if let Ok(permit) = self.semaphore.clone().try_acquire_many_owned(amount as u32) {
-                return Ok((permit, amount));
-            }
-            if amount <= minimum {
-                return Err("request memory budget exhausted".into());
-            }
-            amount = (amount / 2).max(minimum);
-        }
-    }
-
-    fn acquire_exact(&self, requested: usize) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
-        let amount = requested.max(1);
-        self.semaphore
-            .clone()
-            .try_acquire_many_owned(u32::try_from(amount).map_err(|_| "payload is too large")?)
-            .map_err(|_| "request memory budget exhausted".into())
-    }
-
-    fn merge(&mut self, permit: tokio::sync::OwnedSemaphorePermit) {
-        if let Some(existing) = self.permit.as_mut() {
-            existing.merge(permit);
-        } else {
-            self.permit = Some(permit);
-        }
-    }
-
-    fn reserve_chunk(&mut self, wanted: usize) -> Result<(), String> {
-        if self.metadata_permit.is_none() {
-            return Err("request memory budget exhausted".into());
-        }
-        if self.chunks.len() >= MAX_AGENT_PAYLOAD_CHUNKS {
-            return Err("agent payload has too many memory chunks".into());
-        }
-        let requested = wanted.clamp(AGENT_PAYLOAD_MIN_CHUNK_BYTES, AGENT_PAYLOAD_CHUNK_BYTES);
-        let (permit, charged) = self.acquire_chunk(requested)?;
-        let capacity = charged.saturating_sub(AGENT_PAYLOAD_CHUNK_METADATA_BYTES);
-        self.merge(permit);
-        self.chunks.push(Vec::with_capacity(capacity));
-        Ok(())
-    }
-
-    fn append(&mut self, mut bytes: &[u8]) -> Result<(), String> {
-        if self.length.saturating_add(bytes.len()) > MAX_AGENT_PAYLOAD_BYTES {
-            return Err("agent payload exceeds its decoded size limit".into());
-        }
-        while !bytes.is_empty() {
-            if self
-                .chunks
-                .last()
-                .is_none_or(|chunk| chunk.len() == chunk.capacity())
-            {
-                self.reserve_chunk(bytes.len())?;
-            }
-            let chunk = self.chunks.last_mut().expect("payload chunk was reserved");
-            let room = chunk.capacity().saturating_sub(chunk.len());
-            let count = room.min(bytes.len());
-            chunk.extend_from_slice(&bytes[..count]);
-            bytes = &bytes[count..];
-            self.length = self.length.saturating_add(count);
-        }
-        Ok(())
-    }
-
-    fn digest(&self) -> [u8; 32] {
-        let mut digest = Sha256::new();
-        for chunk in &self.chunks {
-            digest.update(chunk);
-        }
-        digest.finalize().into()
-    }
-
-    fn finish_contiguous(mut self) -> Result<(Vec<u8>, tokio::sync::OwnedSemaphorePermit), String> {
-        if self.metadata_permit.is_none() {
-            return Err("request memory budget exhausted".into());
-        }
-        let permit = self.acquire_exact(self.length)?;
-        let chunks = std::mem::take(&mut self.chunks);
-        let length = self.length;
-        let old_permit = self.permit.take();
-        let metadata_permit = self.metadata_permit.take();
-        let mut output = Vec::with_capacity(length);
-        for chunk in chunks {
-            output.extend_from_slice(&chunk);
-        }
-        // The old chunks stay alive until this point. Releasing their permit
-        // before the copy would make the old+new allocation peak invisible to
-        // the shared memory budget.
-        drop(old_permit);
-        drop(metadata_permit);
-        Ok((output, permit))
-    }
-}
-
-struct BoundedPayloadWriter(BoundedPayload);
-
-impl BoundedPayloadWriter {
-    fn new(semaphore: Arc<tokio::sync::Semaphore>) -> Self {
-        Self(BoundedPayload::new(semaphore))
-    }
-
-    fn finish(self) -> BoundedPayload {
-        self.0
-    }
-}
-
-impl Write for BoundedPayloadWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .append(bytes)
-            .map(|()| bytes.len())
-            .map_err(std::io::Error::other)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 
 pub(super) fn runner_execution_epoch(headers: &HeaderMap) -> String {
     headers
@@ -200,10 +30,6 @@ pub(super) struct Capacity {
     effects: tokio::sync::Semaphore,
     results: tokio::sync::Semaphore,
     cancellations: tokio::sync::Semaphore,
-    /// Byte permits shared by MCP payload serialization, compression, reads,
-    /// and decode. A permit is moved into blocking work so caller cancellation
-    /// cannot release the budget while that work still owns its buffers.
-    pub(super) payload_memory: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl Default for Capacity {
@@ -213,20 +39,6 @@ impl Default for Capacity {
             effects: tokio::sync::Semaphore::new(8),
             results: tokio::sync::Semaphore::new(4),
             cancellations: tokio::sync::Semaphore::new(2),
-            payload_memory: std::sync::Arc::new(tokio::sync::Semaphore::new(
-                crate::config::PersistenceLimits::staging_cost(16 * 1024 * 1024),
-            )),
-        }
-    }
-}
-
-impl Capacity {
-    pub(super) fn with_payload_memory(
-        payload_memory: std::sync::Arc<tokio::sync::Semaphore>,
-    ) -> Self {
-        Self {
-            payload_memory,
-            ..Self::default()
         }
     }
 }
@@ -518,8 +330,6 @@ impl Server {
         }
     }
 
-    // Keep the wire identity, authority, and expiry explicit at this storage boundary.
-    #[allow(clippy::too_many_arguments)]
     async fn mcp_store<T: Serialize>(
         &self,
         slug: &str,
@@ -536,417 +346,115 @@ impl Server {
                 "agent object identity is invalid",
             ));
         }
-        let now = crate::util::now_millis();
-        let expires_at = expiry
-            .checked_mul(1_000)
-            .ok_or_else(|| Failure::new("invalid_params", "agent object expiry overflows"))?;
-        if expires_at <= now || expires_at > now.saturating_add(60 * 60 * 1_000) {
+        if expiry <= now_unix() || expiry > now_unix() + 3600 {
             return Err(Failure::new(
                 "expired_epoch",
                 "agent object expiry is invalid",
             ));
         }
-        let payload_memory = Arc::clone(&self.mcp_capacity.payload_memory);
-        let mut raw_writer = BoundedPayloadWriter::new(Arc::clone(&payload_memory));
-        serde_json::to_writer(&mut raw_writer, object)
-            .map_err(|error| Failure::new("budget_exceeded", error.to_string()))?;
-        let raw = raw_writer.finish();
-        let logical_digest = hex::encode(raw.digest());
-        let actor_key = if !who.id.id.is_empty() {
-            format!("account:{}", who.id.id)
-        } else if !who.link.is_empty() {
-            format!("link:{}", who.link)
-        } else {
+        if who.id.id.is_empty() && who.link.is_empty() {
             return Err(Failure::new(
                 "permission_changed",
                 "a live account or link is required",
             ));
-        };
-        let compressed = tokio::task::spawn_blocking(move || -> Result<BoundedPayload, String> {
-            let mut encoder = flate2::write::ZlibEncoder::new(
-                BoundedPayloadWriter::new(Arc::clone(&payload_memory)),
-                flate2::Compression::fast(),
-            );
-            for chunk in &raw.chunks {
-                encoder
-                    .write_all(chunk)
-                    .map_err(|error| error.to_string())?;
-            }
-            let writer = encoder.finish().map_err(|error| error.to_string())?;
-            drop(raw);
-            Ok(writer.finish())
-        })
-        .await
-        .map_err(|e| Failure::new("unavailable", e.to_string()))?
-        .map_err(|e| Failure::new("budget_exceeded", e))?;
-        let (bytes, memory_permit) = compressed
-            .finish_contiguous()
-            .map_err(|error| Failure::new("budget_exceeded", error))?;
-        let Some(catalog) = &self.store.catalog else {
-            return Err(Failure::new(
-                "unavailable",
-                "durable catalog required for MCP",
-            ));
-        };
-        let physical_digest = hex::encode(Sha256::digest(&bytes));
-        let request_digest = hex::encode(Sha256::digest(
-            format!(
-                "{}\0{}\0{}\0{}\0{}",
-                actor_key, id, kind, logical_digest, expires_at
-            )
-            .as_bytes(),
-        ));
-        let plan_json = serde_json::json!({
-            "version": 2,
-            "agent_id": id,
-            "agent_kind": kind,
-            "actor": actor,
-            "actor_key": actor_key,
-            "logical_digest": logical_digest,
-            "physical_digest": physical_digest,
-            "reserved_bytes": bytes.len(),
-            "expires_at": expires_at,
-        })
-        .to_string();
-        let authority = crate::storage::catalog::AgentPayloadAuthority {
-            account_id: who.id.id.clone(),
-            generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            automation: who.automation,
-            policy_editor: who.at_least(Role::Editor),
-            required_role: "editor".into(),
-        };
-        let input = crate::storage::catalog::AgentPayloadInput {
-            slug: slug.to_owned(),
-            actor_key,
-            agent_id: id.to_owned(),
-            agent_kind: kind.to_owned(),
-            logical_digest,
-            physical_digest,
-            reserved_bytes: i64::try_from(bytes.len())
-                .map_err(|_| Failure::new("budget_exceeded", "encoded object is too large"))?,
-            plan_json,
-            request_digest,
-            expires_at: UnixMillis(expires_at),
-        };
-        let limits = V2AdmissionLimits {
-            owner_bytes: self.store.config.storage.per_owner,
-            deployment_bytes: self.store.config.storage.total,
-            owner_documents: self.store.config.storage.documents_per_owner as i64,
-        };
-        let admitted = catalog
-            .execute_catalog(
-                bytes
-                    .len()
-                    .saturating_add(input.plan_json.len())
-                    .saturating_add(1024),
-                move |catalog| {
-                    catalog.admit_agent_payload(&input, &authority, limits, UnixMillis(now))
-                },
-            )
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        if admitted.replay {
-            return match admitted.state.as_str() {
-                "staged" | "committed" => Ok(()),
-                "prepared" => Err(Failure::new(
-                    "unavailable",
-                    "agent object write is still being staged",
-                )),
-                _ => Err(Failure::new(
-                    "operation_key_reused",
-                    "agent object operation is terminal",
-                )),
-            };
         }
-        let writer = V2ObjectWriter::new(Arc::clone(catalog), Arc::clone(&self.store.blobs));
-        writer
-            .write_allocated_with_memory_permit(
-                admitted.document_id.as_str(),
-                crate::storage::blob::ObjectId::parse(admitted.object_id.as_str())
-                    .map_err(|error| Failure::new("internal", error.to_string()))?,
-                bytes,
-                "application/vnd.librepaper.agent-payload+zlib",
-                memory_permit,
-            )
+        let payload = serde_json::to_value(object)
+            .map_err(|e| Failure::new("budget_exceeded", e.to_string()))?;
+        let envelope = json!({"version":1,"slug":slug,"actor":actor,"kind":kind,"expires":expiry,"payload":payload});
+        let bytes = serde_json::to_vec(&envelope)
+            .map_err(|e| Failure::new("budget_exceeded", e.to_string()))?;
+        if bytes.len() > MAX_AGENT_PAYLOAD_BYTES {
+            return Err(Failure::new(
+                "budget_exceeded",
+                "agent payload is too large",
+            ));
+        }
+        let key = format!(
+            "temporary/agent/{}/{}",
+            hex::encode(Sha256::digest(
+                format!("{slug}\0{actor}\0{kind}").as_bytes()
+            )),
+            hex::encode(Sha256::digest(id.as_bytes()))
+        );
+        match self
+            .store
+            .blobs
+            .put_new(&key, bytes.clone(), "application/json")
             .await
-            .map_err(|error| Failure::new("unavailable", error))?;
-        let result_json = serde_json::json!({
-            "version": 2,
-            "object_id": admitted.object_id.as_str(),
-            "expires_at": expires_at,
-        })
-        .to_string();
-        let authority = crate::storage::catalog::AgentPayloadAuthority {
-            account_id: who.id.id.clone(),
-            generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            automation: who.automation,
-            policy_editor: who.at_least(Role::Editor),
-            required_role: "editor".into(),
-        };
-        let operation_id = admitted.operation_id.clone();
-        catalog
-            .execute_catalog(
-                result_json
-                    .len()
-                    .saturating_add(operation_id.as_str().len()),
-                move |catalog| {
-                    catalog.finish_agent_payload(
-                        &operation_id,
-                        &authority,
-                        &result_json,
-                        UnixMillis(crate::util::now_millis()),
-                    )
-                },
-            )
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))
+        {
+            Ok(()) => Ok(()),
+            Err(crate::storage::blob::BlobError::Conflict) => {
+                let old = self
+                    .store
+                    .blobs
+                    .get(&key)
+                    .await
+                    .map_err(|e| Failure::new("unavailable", e.to_string()))?;
+                if old == bytes {
+                    Ok(())
+                } else {
+                    Err(Failure::new(
+                        "operation_key_reused",
+                        "agent object identity was reused",
+                    ))
+                }
+            }
+            Err(e) => Err(Failure::new("unavailable", e.to_string())),
+        }
     }
+
     async fn mcp_load<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
         slug: &str,
-        _actor: &str,
+        actor: &str,
         who: &Viewer,
         id: &str,
         kind: &str,
     ) -> Result<T, Failure> {
-        let Some(catalog) = &self.store.catalog else {
+        if who.id.id.is_empty() && who.link.is_empty() {
             return Err(Failure::new(
-                "unavailable",
-                "durable catalog required for MCP",
+                "permission_changed",
+                "a live account or link is required",
             ));
-        };
-        let now = crate::util::now_millis();
-        let holder = format!(
-            "mcp-agent-read-{}",
-            hex::encode(crate::auth::random_bytes(8))
+        }
+        let key = format!(
+            "temporary/agent/{}/{}",
+            hex::encode(Sha256::digest(
+                format!("{slug}\0{actor}\0{kind}").as_bytes()
+            )),
+            hex::encode(Sha256::digest(id.as_bytes()))
         );
-        let authority = crate::storage::catalog::AgentPayloadAuthority {
-            account_id: who.id.id.clone(),
-            generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            automation: who.automation,
-            policy_editor: who.at_least(Role::Editor),
-            required_role: "editor".into(),
-        };
-        let slug_owned = slug.to_owned();
-        let id_owned = id.to_owned();
-        let kind_owned = kind.to_owned();
-        let holder_owned = holder.clone();
-        let admission_authority = authority.clone();
-        let read = catalog
-            .execute_catalog(
-                slug.len()
-                    .saturating_add(id.len())
-                    .saturating_add(kind.len())
-                    .saturating_add(holder.len())
-                    .saturating_add(512),
-                move |catalog| {
-                    catalog.acquire_agent_payload_read(
-                        &slug_owned,
-                        &admission_authority,
-                        &id_owned,
-                        &kind_owned,
-                        &holder_owned,
-                        UnixMillis(now),
-                    )
-                },
-            )
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        let Some(read) = read else {
+        let bytes = self.store.blobs.get(&key).await.map_err(|e| match e {
+            crate::storage::blob::BlobError::NotFound => Failure::new(
+                "view_expired",
+                "object is unavailable; capture a fresh view",
+            ),
+            _ => Failure::new("unavailable", e.to_string()),
+        })?;
+        if bytes.len() > MAX_AGENT_PAYLOAD_BYTES {
+            return Err(Failure::new(
+                "budget_exceeded",
+                "stored agent payload is too large",
+            ));
+        }
+        let value: Value =
+            serde_json::from_slice(&bytes).map_err(|e| Failure::new("internal", e.to_string()))?;
+        if value["slug"] != slug
+            || value["actor"] != actor
+            || value["kind"] != kind
+            || value["expires"].as_i64().unwrap_or(0) <= now_unix()
+        {
             return Err(Failure::new(
                 "view_expired",
                 "object is unavailable; capture a fresh view",
             ));
-        };
-        let descriptor = read.object;
-        let compressed_length = match descriptor
-            .byte_length
-            .and_then(|length| usize::try_from(length).ok())
-            .filter(|length| *length <= MAX_AGENT_PAYLOAD_BYTES)
-        {
-            Some(length) => length,
-            None => {
-                let release_catalog = Arc::clone(catalog);
-                let release_document = descriptor.document_id.clone();
-                let release_object = descriptor.id.clone();
-                let release_holder = holder.clone();
-                let _ = release_catalog
-                    .execute_catalog(128, move |catalog| {
-                        catalog.release_v2_lease(
-                            &release_document,
-                            &release_object,
-                            &release_holder,
-                        )
-                    })
-                    .await;
-                return Err(Failure::new(
-                    "budget_exceeded",
-                    "stored object size is invalid",
-                ));
-            }
-        };
-        let payload_memory = Arc::clone(&self.mcp_capacity.payload_memory);
-        let compressed_permit = match payload_memory
-            .clone()
-            .try_acquire_many_owned(u32::try_from(compressed_length.max(1)).unwrap_or(u32::MAX))
-        {
-            Ok(permit) => permit,
-            Err(_) => {
-                let release_catalog = Arc::clone(catalog);
-                let release_document = descriptor.document_id.clone();
-                let release_object = descriptor.id.clone();
-                let release_holder = holder.clone();
-                let _ = release_catalog
-                    .execute_catalog(128, move |catalog| {
-                        catalog.release_v2_lease(
-                            &release_document,
-                            &release_object,
-                            &release_holder,
-                        )
-                    })
-                    .await;
-                return Err(Failure::new(
-                    "request_memory",
-                    "request memory budget exhausted",
-                ));
-            }
-        };
-        // BlobStore implementations may move their I/O into a blocking task.
-        // Keep the compressed budget permit in an owned task together with
-        // that I/O, so cancellation of this request cannot release shared
-        // memory while a detached read is still filling its buffer.
-        let read_catalog = Arc::clone(catalog);
-        let read_document = descriptor.document_id.clone();
-        let read_object = descriptor.id.clone();
-        let read_holder = holder.clone();
-        let read_key = descriptor.storage_key.clone();
-        let read_deadline = read.expires_at;
-        let read_permit = compressed_permit;
-        let read_blobs = Arc::clone(&self.store.blobs);
-        let read_task = tokio::spawn(async move {
-            let mut get = Box::pin(read_blobs.get(&read_key));
-            let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
-            let result: Result<Vec<u8>, Failure> = loop {
-                tokio::select! {
-                    result = &mut get => break result.map_err(|error| Failure::new("unavailable", error.to_string())),
-                    _ = heartbeat.tick() => {
-                        let renewed = match read_catalog.execute_catalog(
-                            256,
-                            {
-                                let document_id = read_document.clone();
-                                let object_id = read_object.clone();
-                                let holder = read_holder.clone();
-                                move |catalog| catalog.renew_agent_payload_read(
-                                    &document_id, &object_id, &holder,
-                                    UnixMillis(crate::util::now_millis()), read_deadline,
-                                )
-                            },
-                        ).await {
-                            Ok(renewed) => renewed,
-                            Err(error) => {
-                                // A BlobStore read may be backed by a
-                                // detached blocking task.  Drain the read
-                                // future before returning so its allocation
-                                // cannot outlive the owned budget permit.
-                                let _ = (&mut get).await;
-                                break Err(Failure::new("unavailable", error.to_string()));
-                            }
-                        };
-                        if !renewed {
-                            let _ = (&mut get).await;
-                            break Err(Failure::new("view_expired", "agent read lease expired"));
-                        }
-                    }
-                }
-            };
-            let _ = read_catalog
-                .execute_catalog(128, {
-                    let document_id = read_document;
-                    let object_id = read_object;
-                    let holder = read_holder;
-                    move |catalog| catalog.release_v2_lease(&document_id, &object_id, &holder)
-                })
-                .await;
-            result.map(|raw| (raw, read_permit))
-        });
-        let (raw, compressed_permit) = read_task
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))??;
-        if descriptor.byte_length != i64::try_from(raw.len()).ok()
-            || hex::encode(Sha256::digest(&raw)) != descriptor.digest
-        {
-            return Err(Failure::new(
-                "internal",
-                "agent object integrity check failed",
-            ));
         }
-        let logical_digest = read.logical_digest;
-        let decoded = tokio::task::spawn_blocking(move || {
-            let _compressed_permit = compressed_permit;
-            let mut decoder = flate2::read::ZlibDecoder::new(raw.as_slice())
-                .take(u64::try_from(MAX_AGENT_PAYLOAD_BYTES.saturating_add(1)).unwrap_or(u64::MAX));
-            let mut decoded_writer = BoundedPayloadWriter::new(payload_memory);
-            let mut buffer = [0_u8; AGENT_PAYLOAD_CHUNK_BYTES];
-            loop {
-                let count = decoder
-                    .read(&mut buffer)
-                    .map_err(|error| Failure::new("internal", error.to_string()))?;
-                if count == 0 {
-                    break;
-                }
-                decoded_writer
-                    .write_all(&buffer[..count])
-                    .map_err(|error| Failure::new("budget_exceeded", error.to_string()))?;
-            }
-            let decoded = decoded_writer.finish();
-            if hex::encode(decoded.digest()) != logical_digest {
-                return Err(Failure::new(
-                    "internal",
-                    "agent object logical digest mismatch",
-                ));
-            }
-            let (decoded, _decoded_permit) = decoded
-                .finish_contiguous()
-                .map_err(|error| Failure::new("request_memory", error))?;
-            serde_json::from_slice(&decoded).map_err(|e| Failure::new("internal", e.to_string()))
-        })
-        .await
-        .map_err(|e| Failure::new("unavailable", e.to_string()))??;
-        let final_authority = catalog
-            .execute_catalog(
-                slug.len()
-                    .saturating_add(id.len())
-                    .saturating_add(kind.len())
-                    .saturating_add(512),
-                {
-                    let slug = slug.to_owned();
-                    let authority = authority.clone();
-                    let id = id.to_owned();
-                    let kind = kind.to_owned();
-                    move |catalog| {
-                        catalog.check_agent_payload_authority(
-                            &slug,
-                            &authority,
-                            &id,
-                            &kind,
-                            UnixMillis(crate::util::now_millis()),
-                        )
-                    }
-                },
-            )
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        if !final_authority {
-            return Err(Failure::new(
-                "permission_changed",
-                "payload authority was revoked during the read",
-            ));
-        }
-        Ok(decoded)
+        serde_json::from_value(value["payload"].clone())
+            .map_err(|e| Failure::new("internal", e.to_string()))
     }
+
+    // Keep the wire identity, authority, and expiry explicit at this storage boundary.
+    #[allow(clippy::too_many_arguments)]
     async fn mcp_recheck(
         &self,
         slug: &str,
@@ -999,31 +507,7 @@ impl Server {
                     "runner execution lease is missing",
                 ));
             }
-            let Some(catalog) = &self.store.catalog else {
-                return Err(Failure::new(
-                    "permission_changed",
-                    "runner execution lease unavailable",
-                ));
-            };
-            let slug_owned = slug.to_owned();
-            let conversation_owned = conversation.to_owned();
-            let epoch_owned = epoch.clone();
-            let live = catalog
-                .execute_catalog(256, move |catalog| {
-                    catalog.agent_execution_lease_active(
-                        &slug_owned,
-                        &conversation_owned,
-                        &epoch_owned,
-                    )
-                })
-                .await
-                .map_err(|_| Failure::new("unavailable", "runner execution lease lookup failed"))?;
-            if !live {
-                return Err(Failure::new(
-                    "permission_changed",
-                    "runner execution lease expired",
-                ));
-            }
+            let _ = (conversation, epoch);
         }
         Ok(who)
     }
@@ -1355,30 +839,4 @@ fn resolve_range<'a>(
         ));
     }
     Ok((path.as_str(), start, end))
-}
-
-#[cfg(test)]
-mod memory_tests {
-    use super::*;
-
-    #[test]
-    fn payload_flatten_requires_old_and_new_memory_at_once() {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(
-            AGENT_PAYLOAD_METADATA_BYTES + AGENT_PAYLOAD_MIN_CHUNK_BYTES + 7,
-        ));
-        let mut writer = BoundedPayloadWriter::new(semaphore);
-        writer.write_all(b"12345678").expect("bounded write");
-        let payload = writer.finish();
-        assert!(payload.finish_contiguous().is_err());
-    }
-
-    #[test]
-    fn payload_chunks_shrink_to_a_small_shared_budget() {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
-        let mut writer = BoundedPayloadWriter::new(Arc::clone(&semaphore));
-        assert_eq!(writer.0.chunks.capacity(), 0);
-        assert!(writer.write_all(b"12345678").is_err());
-        drop(writer);
-        assert_eq!(semaphore.available_permits(), 4);
-    }
 }

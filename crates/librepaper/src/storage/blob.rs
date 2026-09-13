@@ -1,11 +1,4 @@
-//! The immutable v2 application objects LibrePaper keeps in a deployment.
-//!
-//! ```text
-//! v2/documents/<document-id>/objects/<random-object-id>
-//! ```
-//!
-//! Deployment metadata and backup payloads use separate namespaces. Mutable
-//! slugs never occur in an application object key.
+//! Immutable application objects kept by a LibrePaper deployment.
 
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
@@ -14,146 +7,30 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use fs2::{available_space, total_space, FileExt};
-use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
-/// An object's ETag, or "" for one that is not there.
-pub type BlobVersion = String;
-
-/// A v2 physical object identifier. Object IDs identify allocations, rather
-/// than content, and are therefore never derived from a digest or a slug.
-/// The wire/storage representation is always 32 lowercase hexadecimal bytes.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ObjectId(String);
-
-impl ObjectId {
-    pub fn random() -> Self {
-        Self(hex::encode(rand::random::<[u8; 16]>()))
+/// Reject an empty, absolute, traversing, or platform-prefixed object key.
+/// Object namespaces are owned by product operations; the backend only
+/// enforces that a key cannot escape its configured root.
+pub fn validate_object_key(key: &str) -> BlobResult<()> {
+    if key.is_empty() || key.contains('\0') || key.contains('\\') {
+        return Err(BlobError::Other("invalid object key".into()));
     }
-
-    pub fn parse(value: impl Into<String>) -> BlobResult<Self> {
-        let value = value.into();
-        if value.len() != 32
-            || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
-            || value.bytes().any(|byte| byte.is_ascii_uppercase())
-        {
-            return Err(BlobError::Other(
-                "object id must be 32 lowercase hex digits".into(),
-            ));
+    let mut components = Path::new(key).components();
+    let mut any = false;
+    for component in components.by_ref() {
+        match component {
+            Component::Normal(_) => any = true,
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(BlobError::Other("invalid object key".into()));
+            }
         }
-        Ok(Self(value))
     }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for ObjectId {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl serde::Serialize for ObjectId {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ObjectId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(value).map_err(serde::de::Error::custom)
-    }
-}
-
-/// The only physical key layout accepted for application objects in v2.
-/// Mutable document slugs never occur in this key.
-pub fn v2_object_key(document_id: &str, object_id: &ObjectId) -> BlobResult<String> {
-    validate_document_id(document_id)?;
-    Ok(format!(
-        "v2/documents/{document_id}/objects/{}",
-        object_id.as_str()
-    ))
-}
-
-pub fn validate_document_id(document_id: &str) -> BlobResult<()> {
-    if document_id.is_empty()
-        || document_id.len() > 128
-        || document_id.contains('/')
-        || document_id.contains('\\')
-        || document_id.contains('\0')
-        || document_id == "."
-        || document_id == ".."
-    {
-        return Err(BlobError::Other("invalid document id".into()));
+    if !any {
+        return Err(BlobError::Other("empty object key".into()));
     }
     Ok(())
-}
-
-pub fn validate_v2_object_key(key: &str) -> BlobResult<()> {
-    parse_v2_object_key(key).map(|_| ())
-}
-
-pub fn parse_v2_object_key(key: &str) -> BlobResult<(String, ObjectId)> {
-    let mut components = key.split('/');
-    if components.next() != Some("v2") || components.next() != Some("documents") {
-        return Err(BlobError::Other(
-            "object key is outside the v2 namespace".into(),
-        ));
-    }
-    let document_id = components.next().unwrap_or_default();
-    if components.next() != Some("objects") {
-        return Err(BlobError::Other(
-            "object key is outside the v2 namespace".into(),
-        ));
-    }
-    let object_id = components.next().unwrap_or_default();
-    if components.next().is_some() {
-        return Err(BlobError::Other(
-            "object key has unexpected components".into(),
-        ));
-    }
-    validate_document_id(document_id)?;
-    ObjectId::parse(object_id.to_owned()).map(|object_id| (document_id.to_owned(), object_id))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WrittenObject {
-    pub object_id: ObjectId,
-    pub storage_key: String,
-    pub digest: String,
-    pub byte_length: u64,
-}
-
-/// Write one physical v2 allocation and return the exact descriptor that must
-/// be settled in `objects`. The catalog row is intentionally created and
-/// settled by the caller's typed operation; a successful PUT alone is never a
-/// user-visible acknowledgement.
-pub async fn write_v2_object_with_id(
-    blobs: &dyn BlobStore,
-    document_id: &str,
-    object_id: ObjectId,
-    body: Vec<u8>,
-    content_type: &str,
-) -> BlobResult<WrittenObject> {
-    let storage_key = v2_object_key(document_id, &object_id)?;
-    let digest = hex::encode(Sha256::digest(&body));
-    let byte_length = body.len() as u64;
-    blobs.put_new(&storage_key, body, content_type).await?;
-    Ok(WrittenObject {
-        object_id,
-        storage_key,
-        digest,
-        byte_length,
-    })
 }
 
 /// One object in a storage listing, with its logical byte length.
@@ -161,6 +38,13 @@ pub async fn write_v2_object_with_id(
 pub struct BlobInfo {
     pub key: String,
     pub size: i64,
+    pub modified_at: Option<std::time::SystemTime>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlobMetadata {
+    pub size: u64,
+    pub version: Option<String>,
 }
 
 #[derive(Debug)]
@@ -245,9 +129,16 @@ impl DeleteOutcome {
 #[async_trait]
 pub trait BlobStore: Send + Sync {
     async fn get(&self, key: &str) -> BlobResult<Vec<u8>>;
+    async fn head(&self, key: &str) -> BlobResult<BlobMetadata> {
+        let bytes = self.get(key).await?;
+        Ok(BlobMetadata {
+            size: bytes.len() as u64,
+            version: None,
+        })
+    }
     /// Metadata-only on production storage, so admission precedes file opening.
     async fn length(&self, key: &str) -> BlobResult<u64> {
-        Ok(self.get(key).await?.len() as u64)
+        Ok(self.head(key).await?.size)
     }
     /// Return only the requested byte interval. The default supports in-memory
     /// test backends; filesystem storage overrides it with a bounded seek/read.
@@ -268,25 +159,8 @@ pub trait BlobStore: Send + Sync {
             Err(error) => Err(error),
         }
     }
-    async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()>;
-    /// Publish a filesystem snapshot without requiring the caller to retain
-    /// the complete file in memory. Backends must opt into this operation;
-    /// silently reading an unbounded snapshot into the request heap is unsafe.
-    async fn put_file(&self, _key: &str, _path: &Path, _content_type: &str) -> BlobResult<()> {
-        Err(BlobError::Other(
-            "streaming file upload is unsupported by this store".into(),
-        ))
-    }
-    /// Publish an immutable v2 object. Implementations with an atomic
-    /// no-replace primitive should override this; the default remains useful
-    /// for small test stores and detects an already registered key before PUT.
-    async fn put_new(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
-        validate_v2_object_key(key)?;
-        if self.exists(key).await? {
-            return Err(BlobError::Conflict);
-        }
-        self.put(key, body, content_type).await
-    }
+    /// Publish an immutable object and fail if its key already exists.
+    async fn put_new(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()>;
     /// Removes keys; ones that are not there are not an error, because the
     /// outcome asked for is the outcome either way. Fails if any key's
     /// removal is not confirmed, which is what the callers that only care
@@ -333,13 +207,6 @@ pub trait BlobStore: Send + Sync {
         Ok(found)
     }
 
-    /// Writes body only if the object's current version is `expect`, where the
-    /// empty version means "only if it does not exist". It is what the index is
-    /// written through, and the only reason this interface has versions at
-    /// all. Returns `Conflict` when the object moved.
-    async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion>;
-    async fn get_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)>;
-
     /// Says where these bytes are, for the line `serve` prints at startup. An
     /// operator should never have to guess which bucket they are writing to.
     fn describe(&self) -> String;
@@ -358,13 +225,6 @@ pub trait BlobStore: Send + Sync {
     }
 }
 
-/// How a store with no versions of its own supplies one: the digest of the
-/// bytes. It has the property that matters -- it changes when the content
-/// changes -- and it costs a hash of something already in memory.
-pub fn version_of(body: &[u8]) -> BlobVersion {
-    format!("\"{}\"", hex::encode(Sha256::digest(body)))
-}
-
 /* ------------------------------------------------------------ filesystem */
 
 /// What `serve` has always done: a directory, one file per key. The process
@@ -381,9 +241,6 @@ pub struct FsStore {
     /// which a case that writes a thousand objects pays a thousand times
     /// over.
     durable: bool,
-    /// One writer at a time, so a swap cannot be overtaken between reading a
-    /// version and writing the next one.
-    swapping: Arc<Mutex<()>>,
     /// Filesystem calls are synchronous, so keep them off Tokio's worker
     /// threads. The bound matters for a burst of uploads or a sweep over many
     /// rooms: `spawn_blocking` otherwise creates an unbounded queue of work
@@ -405,39 +262,9 @@ impl FsStore {
         FsStore {
             dir: dir.into(),
             durable,
-            swapping: Arc::new(Mutex::new(())),
             blocking: Arc::new(Semaphore::new(FS_BLOCKING_CONCURRENCY)),
             reserved_space: Arc::new(Mutex::new(FsSpaceState::default())),
         }
-    }
-
-    /// Publish a v2 object under a fresh allocation identity. The final
-    /// filesystem name is linked with a no-replace operation, so a retry can never
-    /// overwrite an existing immutable object, even if two writers race.
-    pub async fn put_new_object(
-        &self,
-        document_id: &str,
-        object_id: &ObjectId,
-        body: Vec<u8>,
-        _content_type: &str,
-    ) -> BlobResult<String> {
-        let key = v2_object_key(document_id, object_id)?;
-        let path = self.path_for(&key)?;
-        let durable = self.durable;
-        let capacity_root = self.dir.clone();
-        let reserved_space = Arc::clone(&self.reserved_space);
-        self.blocking(move || {
-            let _space = reserve_fs_space(&path, &capacity_root, &reserved_space, body.len())?;
-            match write_file_immutable(&path, &body, durable) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return Err(BlobError::Conflict);
-                }
-                Err(error) => return Err(error.into()),
-            }
-            Ok(key)
-        })
-        .await
     }
 
     /// Maps a key to a file. Keys are slash-separated and come from this
@@ -634,14 +461,17 @@ fn reserve_fs_space(
 
 #[async_trait]
 impl BlobStore for FsStore {
-    async fn length(&self, key: &str) -> BlobResult<u64> {
+    async fn head(&self, key: &str) -> BlobResult<BlobMetadata> {
         let path = self.path_for(key)?;
         self.blocking(move || {
             let metadata = std::fs::metadata(path)?;
             if !metadata.is_file() {
                 return Err(BlobError::Other("object is not a regular file".into()));
             }
-            Ok(metadata.len())
+            Ok(BlobMetadata {
+                size: metadata.len(),
+                version: None,
+            })
         })
         .await
     }
@@ -686,50 +516,23 @@ impl BlobStore for FsStore {
             .await
     }
 
-    async fn get_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
-        let path = self.path_for(key)?;
-        self.blocking(move || read_versioned_path(&path)).await
-    }
-
-    async fn put(&self, key: &str, body: Vec<u8>, _content_type: &str) -> BlobResult<()> {
+    async fn put_new(&self, key: &str, body: Vec<u8>, _content_type: &str) -> BlobResult<()> {
+        validate_object_key(key)?;
         let path = self.path_for(key)?;
         let durable = self.durable;
         let capacity_root = self.dir.clone();
         let reserved_space = Arc::clone(&self.reserved_space);
         self.blocking(move || {
             let _space = reserve_fs_space(&path, &capacity_root, &reserved_space, body.len())?;
-            write_file_atomically(&path, &body, durable)?;
-            Ok(())
+            match write_file_immutable(&path, &body, durable) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Err(BlobError::Conflict)
+                }
+                Err(error) => Err(error.into()),
+            }
         })
         .await
-    }
-
-    async fn put_file(&self, key: &str, source: &Path, _content_type: &str) -> BlobResult<()> {
-        let path = self.path_for(key)?;
-        let source = source.to_owned();
-        let durable = self.durable;
-        let capacity_root = self.dir.clone();
-        let reserved_space = Arc::clone(&self.reserved_space);
-        self.blocking(move || {
-            let length = std::fs::metadata(&source)?.len();
-            let length = usize::try_from(length)
-                .map_err(|_| BlobError::Other("snapshot is too large for this platform".into()))?;
-            let _space = reserve_fs_space(&path, &capacity_root, &reserved_space, length)?;
-            copy_file_atomically(&path, &source, durable)?;
-            Ok(())
-        })
-        .await
-    }
-
-    async fn put_new(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
-        validate_v2_object_key(key)?;
-        let document_id = key.split('/').nth(2).unwrap_or_default().to_owned();
-        let object_id = ObjectId::parse(key.split('/').nth(4).unwrap_or_default().to_owned())?;
-        let published = self
-            .put_new_object(&document_id, &object_id, body, content_type)
-            .await?;
-        debug_assert_eq!(published, key);
-        Ok(())
     }
 
     async fn delete(&self, keys: &[String]) -> BlobResult<()> {
@@ -793,32 +596,6 @@ impl BlobStore for FsStore {
             walk_bounded(&root, &scope, &prefix, after.as_deref(), limit, &mut found)?;
             found.sort_by(|a, b| a.key.cmp(&b.key));
             Ok(found)
-        })
-        .await
-    }
-
-    async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
-        let path = self.path_for(key)?;
-        let swapping = self.swapping.clone();
-        let expect = expect.to_string();
-        let durable = self.durable;
-        let capacity_root = self.dir.clone();
-        let reserved_space = Arc::clone(&self.reserved_space);
-        self.blocking(move || {
-            let _guard = swapping
-                .lock()
-                .map_err(|_| BlobError::Other("swap lock poisoned".into()))?;
-            let _space = reserve_fs_space(&path, &capacity_root, &reserved_space, body.len())?;
-            let current = match read_versioned_path(&path) {
-                Ok((_, version)) => version,
-                Err(BlobError::NotFound) => String::new(),
-                Err(err) => return Err(err),
-            };
-            if current != expect {
-                return Err(BlobError::Conflict);
-            }
-            write_file_atomically(&path, &body, durable)?;
-            Ok(version_of(&body))
         })
         .await
     }
@@ -942,12 +719,6 @@ fn sync_existing_ancestor(
     ))
 }
 
-fn read_versioned_path(path: &Path) -> BlobResult<(Vec<u8>, BlobVersion)> {
-    let body = std::fs::read(path)?;
-    let version = version_of(&body);
-    Ok((body, version))
-}
-
 fn walk(root: &Path, dir: &Path, prefix: &str, found: &mut Vec<BlobInfo>) -> BlobResult<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -1003,6 +774,7 @@ fn walk(root: &Path, dir: &Path, prefix: &str, found: &mut Vec<BlobInfo>) -> Blo
         found.push(BlobInfo {
             key,
             size: info.len() as i64,
+            modified_at: info.modified().ok(),
         });
     }
     Ok(())
@@ -1074,6 +846,7 @@ fn walk_bounded(
         found.push(BlobInfo {
             key,
             size: metadata.len() as i64,
+            modified_at: metadata.modified().ok(),
         });
         if found.len() > limit {
             let worst = found
@@ -1131,96 +904,6 @@ fn sync_directory(path: &Path, durable: bool) -> std::io::Result<()> {
     } else {
         Ok(())
     }
-}
-
-/// Leaves either the old bytes or the new ones, never a half-written file: a
-/// crash mid-write must not turn the index into something that no longer
-/// parses.
-///
-/// `durable` is the deployment's own choice: true pushes every write to the
-/// platter before it is called done, which is what a deployment always
-/// wants, since the point of the atomic write below is that a machine losing
-/// power leaves the old bytes or the new ones. False is for a throwaway test
-/// deployment, since each `fsync` costs about twenty milliseconds on a
-/// journalling filesystem, which a case that writes a thousand objects pays
-/// a thousand times over.
-pub fn write_file_atomically(name: &Path, body: &[u8], durable: bool) -> std::io::Result<()> {
-    if let Some(parent) = name.parent() {
-        durable_create_dir_all(parent, durable)?;
-    }
-    // A deterministic sibling such as `index.json.tmp` is unsafe when two
-    // unconditional puts of one object overlap: one writer can rename or
-    // replace the other writer's temporary file. Unique names retain the
-    // same-directory atomic rename while allowing independent puts to run in
-    // separate blocking workers.
-    static TEMPORARY: AtomicU64 = AtomicU64::new(0);
-    let serial = TEMPORARY.fetch_add(1, Ordering::Relaxed);
-    let basename = name
-        .file_name()
-        .map(|part| part.to_string_lossy())
-        .unwrap_or_else(|| std::borrow::Cow::Borrowed("object"));
-    let temporary = name.with_file_name(format!(".{basename}.tmp-{}-{serial}", std::process::id()));
-    let result = write_private_file(&temporary, body, durable)
-        .and_then(|_| {
-            let file = std::fs::OpenOptions::new().read(true).open(&temporary)?;
-            sync_file(&file, durable)
-        })
-        .and_then(|_| std::fs::rename(&temporary, name))
-        .and_then(|_| {
-            if let Some(parent) = name.parent() {
-                sync_directory(parent, durable)?;
-            }
-            Ok(())
-        });
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
-}
-
-/// Copy a potentially large local snapshot to its final key while retaining
-/// only the operating-system copy buffer in memory. The temporary file is
-/// private and the final hard link is the no-replace publication point.
-fn copy_file_atomically(name: &Path, source: &Path, durable: bool) -> std::io::Result<()> {
-    if let Some(parent) = name.parent() {
-        durable_create_dir_all(parent, durable)?;
-    }
-    static COPY_TEMPORARY: AtomicU64 = AtomicU64::new(0);
-    let serial = COPY_TEMPORARY.fetch_add(1, Ordering::Relaxed);
-    let basename = name
-        .file_name()
-        .map(|part| part.to_string_lossy())
-        .unwrap_or_else(|| std::borrow::Cow::Borrowed("object"));
-    let temporary = name.with_file_name(format!(
-        ".{basename}.tmp-copy-{}-{serial}",
-        std::process::id()
-    ));
-    let result = (|| {
-        let mut input = std::fs::File::open(source)?;
-        #[cfg(unix)]
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut output = options.open(&temporary)?;
-        std::io::copy(&mut input, &mut output)?;
-        sync_file(&output, durable)?;
-        drop(output);
-        // Hard-link publication is atomic and refuses an existing destination,
-        // preserving the backup manifest's no-replace contract even when two
-        // workers race after the existence check.
-        std::fs::hard_link(&temporary, name)?;
-        std::fs::remove_file(&temporary)?;
-        if let Some(parent) = name.parent() {
-            sync_directory(parent, durable)?;
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
 }
 
 /// Write and publish a file without replacing an existing name. The temporary
@@ -1294,77 +977,11 @@ fn durable_create_dir_all(path: &Path, durable: bool) -> std::io::Result<()> {
     }
 }
 
-/// Remove native application objects in bounded pages, retaining unrelated
-/// storage keys and refusing to continue after a partial deletion.
-pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
-    const RESET_PAGE: usize = 256;
-    for prefix in ["v2/"] {
-        let mut after = None;
-        loop {
-            let page = blobs
-                .list_page(prefix, after.as_deref(), RESET_PAGE)
-                .await?;
-            if page.is_empty() {
-                break;
-            }
-            if page.len() > RESET_PAGE {
-                return Err(BlobError::Other(format!(
-                    "seed reset received an oversized page under {prefix}"
-                )));
-            }
-            let keys: Vec<String> = page.into_iter().map(|object| object.key).collect();
-            let last = keys.last().cloned().ok_or_else(|| {
-                BlobError::Other("seed reset received an empty object page".into())
-            })?;
-            if after
-                .as_deref()
-                .is_some_and(|cursor| last.as_str() <= cursor)
-            {
-                return Err(BlobError::Other(format!(
-                    "seed reset object cursor did not advance under {prefix}"
-                )));
-            }
-            if keys.windows(2).any(|pair| pair[0] >= pair[1]) {
-                return Err(BlobError::Other(format!(
-                    "seed reset object page was not strictly ordered under {prefix}"
-                )));
-            }
-            let outcomes = blobs.delete_each(&keys).await?;
-            if outcomes.len() != keys.len() {
-                return Err(BlobError::Other(format!(
-                    "seed reset received incomplete deletion results under {prefix}"
-                )));
-            }
-            for (key, outcome) in keys.iter().zip(outcomes.iter()) {
-                if !outcome.confirmed() {
-                    return Err(BlobError::Other(format!(
-                        "seed reset could not confirm removal under {prefix}: {}",
-                        outcome.why()
-                    )));
-                }
-                if blobs.exists(key).await? {
-                    return Err(BlobError::Other(format!(
-                        "seed reset deletion outcome did not remove {key}"
-                    )));
-                }
-            }
-            after = Some(last);
-        }
-        if !blobs.list_page(prefix, None, 1).await?.is_empty() {
-            return Err(BlobError::Other(format!(
-                "seed reset found objects remaining under {prefix}"
-            )));
-        }
-    }
-    Ok(())
-}
-
 /* ----------------------------------------------------------- room locks */
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn disk_guard_resolves_a_new_relative_store_to_current_directory() {
@@ -1423,7 +1040,7 @@ mod tests {
         let blobs = FsStore::new(directory.path(), true);
         assert!(!blobs.exists("missing").await.unwrap());
         blobs
-            .put("nested/object", b"body".to_vec(), "")
+            .put_new("nested/object", b"body".to_vec(), "")
             .await
             .unwrap();
         assert!(blobs.exists("nested/object").await.unwrap());
@@ -1439,7 +1056,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let blobs = FsStore::new(directory.path(), true);
         blobs
-            .put("nested/object", b"body".to_vec(), "")
+            .put_new("nested/object", b"body".to_vec(), "")
             .await
             .expect("write object");
 
@@ -1459,89 +1076,11 @@ mod tests {
         let listed = blobs.list("").await.expect("list objects");
         assert!(listed.iter().all(|item| !item.key.starts_with(".orphan")));
         assert!(matches!(
-            blobs.put(".object.tmp-123-4", b"nope".to_vec(), "").await,
+            blobs
+                .put_new(".object.tmp-123-4", b"nope".to_vec(), "")
+                .await,
             Err(BlobError::Other(message)) if message.contains("reserved")
         ));
-    }
-
-    #[tokio::test]
-    async fn checked_seed_cleanup_is_paged_and_resumable_after_delete_failure() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let blobs = FlakyDeleteStore {
-            // This exercises deletion failure and paging, not power-loss durability.
-            inner: FsStore::new(directory.path(), false),
-            fail_next: AtomicUsize::new(1),
-        };
-        for index in 0..600u32 {
-            let document = format!("{index:032x}");
-            let object = format!("{index:032x}");
-            blobs
-                .put(
-                    &format!("v2/documents/{document}/objects/{object}"),
-                    vec![index as u8],
-                    "application/octet-stream",
-                )
-                .await
-                .expect("seed fixture object");
-        }
-        blobs
-            .put(
-                "unrelated/metadata",
-                b"preserve me".to_vec(),
-                "application/json",
-            )
-            .await
-            .expect("unrelated metadata");
-
-        assert!(clear_storage_checked(&blobs).await.is_err());
-        assert!(!blobs.inner.list("v2/").await.unwrap().is_empty());
-        clear_storage_checked(&blobs)
-            .await
-            .expect("retry seed cleanup");
-        assert!(blobs.inner.list("v2/").await.unwrap().is_empty());
-        assert_eq!(
-            blobs.get("unrelated/metadata").await.unwrap(),
-            b"preserve me"
-        );
-    }
-
-    struct FlakyDeleteStore {
-        inner: FsStore,
-        fail_next: AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl BlobStore for FlakyDeleteStore {
-        async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
-            self.inner.get(key).await
-        }
-
-        async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
-            self.inner.put(key, body, content_type).await
-        }
-
-        async fn delete(&self, keys: &[String]) -> BlobResult<()> {
-            if self.fail_next.swap(0, Ordering::SeqCst) != 0 {
-                return Err(BlobError::Other("injected seed cleanup failure".into()));
-            }
-            self.inner.delete(keys).await
-        }
-
-        async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
-            self.inner.list(prefix).await
-        }
-
-        async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
-            self.inner.swap(key, body, expect).await
-        }
-
-        async fn get_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
-            self.inner.get_versioned(key).await
-        }
-
-        fn describe(&self) -> String {
-            self.inner.describe()
-        }
     }
 
     #[test]

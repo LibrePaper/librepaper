@@ -104,30 +104,21 @@ impl Server {
         let https = arrival.is_https();
         let mut signed_who = who.clone();
         if let Some(catalog) = &self.store.catalog {
-            let now = crate::util::timestamp();
-            let profile = crate::storage::catalog::Account {
-                id: who.id.clone(),
-                provider: who.provider.clone(),
+            let profile = crate::storage::postgres::NewAccount {
+                kind: "registered".into(),
+                provider: Some(who.provider.clone()),
+                provider_subject: Some(who.id.clone()),
                 handle: who.handle.clone(),
-                name: who.name.clone(),
-                email: if who.handle.contains('@') {
-                    who.handle.clone()
-                } else {
-                    String::new()
-                },
-                first_seen: now.clone(),
-                last_seen: now,
-                plan: "default".into(),
-                status: "active".into(),
-                session_generation: random_token(),
-                erasure_cursor: None,
+                display_name: who.name.clone(),
+                email: who.handle.contains('@').then(|| who.handle.clone()),
             };
             match crate::server::upsert_account_job(catalog, profile).await {
                 Ok(account) if account.status == "active" => {
-                    signed_who.session_generation = account.session_generation;
+                    signed_who.id = account.id.to_string();
+                    signed_who.session_generation = account.session_generation.to_string();
                 }
                 Ok(_) => return plain(403, "this account is not active"),
-                Err(crate::storage::catalog::CatalogError::Conflict(_)) => {
+                Err(crate::storage::postgres::Error::Conflict(_)) => {
                     return plain(403, "this account is not active")
                 }
                 Err(err) => return plain(503, &format!("could not establish account: {err}")),

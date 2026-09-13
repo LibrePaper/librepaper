@@ -850,7 +850,7 @@ impl Server {
 
     /// Rechecks one live socket against the current catalogue entry.  Inbound
     /// frames use this sender-specific path so an expensive catalogue lookup
-    /// cannot make every other socket pay the same SQLite cost.
+    /// cannot make every other socket pay the same PostgreSQL query cost.
     pub async fn reauthorize_connection(&self, slug: &str, socket_id: u64) -> bool {
         let entry = match self.store.get_result(slug).await {
             Ok(entry) => entry,

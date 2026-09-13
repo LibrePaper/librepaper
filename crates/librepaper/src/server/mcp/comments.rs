@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::room::agent::OperationKey;
+use crate::room::agent_comments::AgentAnnotationAuthority;
 use crate::room::{self, BatchCaller, Comment, Reply, SourceAnchor};
-use crate::storage::catalog::AgentAnnotationAuthority;
 
 fn validate_existing_action(
     action: &str,
