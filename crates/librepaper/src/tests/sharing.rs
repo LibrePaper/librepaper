@@ -556,11 +556,14 @@ async fn an_expired_link_reads_as_no_link() {
     let key = mint(&server.url, "alice", &slug, "editor", "30d").await;
     assert_eq!(role_of(&server.url, "", &key, &slug).await, "commenter");
 
+    let expired_at = crate::util::now_unix() - 3600;
+    let created_at = expired_at - 3600;
     server
         .instance
         .store
         .modify(&slug, |entry| {
-            entry.links[0].until = crate::util::format_unix(crate::util::now_unix() - 3600);
+            entry.links[0].since = crate::util::format_unix(created_at);
+            entry.links[0].until = crate::util::format_unix(expired_at);
             Ok(())
         })
         .await
