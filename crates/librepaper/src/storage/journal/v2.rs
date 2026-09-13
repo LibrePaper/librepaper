@@ -534,43 +534,6 @@ pub struct WrittenJournalObject {
     pub last_sequence: u64,
 }
 
-/// Write one complete set of immutable per-document segments. SQL registration
-/// is deliberately left to the caller's operation transaction; no caller may
-/// acknowledge the append until that transaction succeeds.
-pub async fn write_segments(
-    blobs: &dyn BlobStore,
-    document_id: &str,
-    epoch: u64,
-    segments: &[Segment],
-) -> JournalResult<Vec<WrittenJournalObject>> {
-    let mut written = Vec::with_capacity(segments.len());
-    for segment in segments {
-        let object = DocumentSegment::new(document_id.to_owned(), epoch, segment.clone())?;
-        let body = object.encode()?;
-        let digest = hex::encode(Sha256::digest(&body));
-        let object_id = ObjectId::random();
-        let storage_key = v2_object_key(document_id, &object_id)
-            .map_err(|error| JournalError::Storage(error.to_string()))?;
-        blobs
-            .put_new(&storage_key, body.clone(), JOURNAL_OBJECT_CONTENT_TYPE)
-            .await
-            .map_err(|error| match error {
-                BlobError::Conflict => JournalError::Conflict("journal allocation id reused".into()),
-                other => JournalError::Storage(other.to_string()),
-            })?;
-        written.push(WrittenJournalObject {
-            object_id,
-            storage_key,
-            digest,
-            byte_length: body.len() as u64,
-            epoch,
-            first_sequence: object.first_sequence,
-            last_sequence: object.last_sequence,
-        });
-    }
-    Ok(written)
-}
-
 async fn write_encoded_segments(
     blobs: &dyn BlobStore,
     admission: &JournalAppendAdmission,
@@ -581,11 +544,14 @@ async fn write_encoded_segments(
     }
     let mut written = Vec::with_capacity(encoded.len());
     for ((object, body, digest), allocation) in encoded.into_iter().zip(&admission.allocations) {
+        let expected_key = v2_object_key(&admission.document_id, &allocation.object_id)
+            .map_err(|error| JournalError::Storage(error.to_string()))?;
         if allocation.epoch != object.epoch
             || allocation.first_sequence != object.first_sequence
             || allocation.last_sequence != object.last_sequence
+            || allocation.storage_key != expected_key
         {
-            return Err(JournalError::Conflict("journal allocation range does not match encoded segment".into()));
+            return Err(JournalError::Conflict("journal allocation does not match encoded segment".into()));
         }
         blobs
             .put_new(&allocation.storage_key, body.clone(), JOURNAL_OBJECT_CONTENT_TYPE)
