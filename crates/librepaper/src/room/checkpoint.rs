@@ -323,6 +323,21 @@ impl Room {
             .await
     }
 
+    /// Immediate checkpoint for callers that already hold the publication
+    /// checkpoint write gate. Reacquiring its read side would deadlock Tokio's
+    /// non-reentrant RwLock, so agent source effects use this entry point while
+    /// settling their prepared operation.
+    pub(crate) async fn checkpoint_now_with_authority_locked(
+        &self,
+        why: &str,
+        by: impl Into<Attribution>,
+        actor: crate::storage::catalog::MutationAuthority<'_>,
+    ) -> Result<Option<String>, WriteError> {
+        let force_event = actor.agent_checkpoint.is_some();
+        self.checkpoint_impl_locked(why, &by.into(), false, force_event, None, None, Some(actor))
+            .await
+    }
+
     /// Reserve the explicit checkpoint budget before a publication mutates
     /// the live CRDT. The subsequent publication checkpoint skips its normal
     /// admission because this token already belongs to it.

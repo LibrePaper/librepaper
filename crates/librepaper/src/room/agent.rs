@@ -902,6 +902,7 @@ impl Room {
             &operation.request_digest,
             stored.acceptance,
             authority,
+            false,
         )
         .await
         .map(|_| ())
@@ -1085,6 +1086,7 @@ impl Room {
                         &operation.request_digest,
                         stored.acceptance.clone(),
                         persisted_authority,
+                        false,
                     )
                     .await;
             }
@@ -1329,6 +1331,7 @@ impl Room {
             &operation.request_digest,
             stored.acceptance.clone(),
             persisted_authority,
+            false,
         )
         .await
     }
@@ -1502,6 +1505,7 @@ impl Room {
                 &digest,
                 acceptance.clone(),
                 authority.clone(),
+                true,
             )
             .await
         {
@@ -1565,6 +1569,7 @@ impl Room {
                     })
                     .collect::<std::collections::HashMap<_, _>>();
                 let format = self.state.lock().await.session.format.clone();
+                drop(_checkpoint);
                 if let Err(rollback_error) = self
                     .rollback_publication_inner(before, &bodies, &format)
                     .await
@@ -1598,6 +1603,11 @@ impl Room {
                 ));
             }
         };
+        // The canonical checkpoint ran under the publication gate. Release it
+        // before the trailing journal append, whose writer acquires the read
+        // side of the same gate; retaining the write guard here deadlocks the
+        // successful acceptance after its receipt has committed.
+        drop(_checkpoint);
         if let Err(error) = self.write_session_inner(true, false).await {
             // The v2 source checkpoint and receipt are already durable.  A
             // journal append failure must not turn that committed mutation
@@ -1629,6 +1639,7 @@ impl Room {
         request_digest: &str,
         acceptance: Option<AgentAcceptanceIntent>,
         authority: AgentAuthority,
+        checkpoint_gate_held: bool,
     ) -> Result<AgentReceipt, AgentError> {
         // Agent source effects share the prepared source-writer operation with
         // their checkpoint.  The checkpoint commit settles the source head,
@@ -1678,9 +1689,18 @@ impl Room {
         } else {
             crate::room::Attribution::system()
         };
-        let checkpoint = self
-            .checkpoint_now_with_authority("agent_apply", attribution, mutation_authority)
+        let checkpoint_result = if checkpoint_gate_held {
+            self.checkpoint_now_with_authority_locked(
+                "agent_apply",
+                attribution,
+                mutation_authority,
+            )
             .await
+        } else {
+            self.checkpoint_now_with_authority("agent_apply", attribution, mutation_authority)
+                .await
+        };
+        let checkpoint = checkpoint_result
             .map_err(AgentError::from)?
             .ok_or_else(|| {
                 AgentError::Conflict("agent source checkpoint was not committed".into())
