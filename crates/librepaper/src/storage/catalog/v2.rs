@@ -772,9 +772,8 @@ impl Catalog {
             }
             let issued = crate::util::request_key_timestamp(&input.request_key)
                 .ok_or_else(|| CatalogError::Invalid("request key must be v2.<issued-seconds>.<nonce32>".into()))?;
-            let now_seconds = now.0 / 1_000;
-            if issued > now_seconds.saturating_add(60)
-                || now_seconds.saturating_sub(issued) > 15 * 60
+            if issued > now.0.saturating_add(60_000)
+                || now.0.saturating_sub(issued) > 15 * 60_000
             {
                 return Err(CatalogError::Invalid("request key is outside the admission freshness window".into()));
             }

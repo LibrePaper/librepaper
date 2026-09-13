@@ -25,6 +25,14 @@ pub(super) fn promote_link_key(keys: &mut Vec<(String, [u8; 32])>, id: String, k
     keys.insert(0, (id, key));
 }
 
+fn link_time(value: &str) -> CatalogResult<i64> {
+    if value.is_empty() { return Ok(unix_millis()); }
+    if let Ok(value) = value.parse::<i64>() { return Ok(if value < 10_000_000_000 { value.saturating_mul(1_000) } else { value }); }
+    crate::util::parse_timestamp(value)
+        .map(|value| value.saturating_mul(1_000))
+        .ok_or_else(|| CatalogError::Invalid("link time must be Unix milliseconds or RFC3339".into()))
+}
+
 pub(super) fn open_link_envelope(
     key: &[u8; 32],
     storage_id: &str,
@@ -138,7 +146,7 @@ impl Catalog {
                     "SELECT EXISTS(SELECT 1 FROM documents d
                   WHERE d.slug=?1 AND d.status='active'
                     AND (d.owner_id=?2 OR EXISTS(
-                        SELECT 1 FROM grants g WHERE g.slug=d.slug
+                        SELECT 1 FROM grants g WHERE g.document_id=d.id
                           AND g.account_id=?2 AND g.role='editor')))",
                     params![slug, account_id],
                     |row| row.get(0),
@@ -160,16 +168,17 @@ impl Catalog {
         if !Self::agent_execution_epoch_active_tx(tx, slug, actor.execution_epoch)? {
             return Ok(false);
         }
-        let link_ok = !actor.link_hash.is_empty()
-            && actor.policy_editor
+        let required_role = if role == "reader" { "reader" } else { "editor" };
+        let now = unix_millis();
+        let link_ok: bool = !actor.link_hash.is_empty()
             && tx
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM links l
-                       JOIN documents d ON d.slug=l.slug
-                         WHERE l.slug=?1 AND l.hash=?2 AND l.role='editor'
-                         AND d.status='active' AND d.pending_publication IS NULL
-                         AND (l.until='' OR unixepoch(l.until)>unixepoch('now')))",
-                    params![slug, actor.link_hash],
+                    "SELECT EXISTS(
+                       SELECT 1 FROM links l JOIN documents d ON d.id=l.document_id
+                        WHERE d.slug=?1 AND l.token_hash=?2 AND d.status='active'
+                          AND (l.role=?3 OR l.role='editor')
+                          AND (l.expires_at IS NULL OR l.expires_at>?4))",
+                    params![slug, actor.link_hash, required_role, now],
                     |row| row.get::<_, bool>(0),
                 )
                 .map_err(CatalogError::from)?;
@@ -197,39 +206,32 @@ impl Catalog {
                 return tx
                     .query_row(
                         "SELECT EXISTS(SELECT 1 FROM documents
-                           WHERE slug=?1 AND status='active' AND pending_publication IS NULL
-                             AND owner_id IS NULL AND owner_key='example:' || slug)",
+                           WHERE slug=?1 AND status='active'
+                             AND ownership_mode IN ('open','example'))",
                         [slug],
                         |row| row.get::<_, bool>(0),
                     )
                     .map(|open| open || link_ok)
                     .map_err(CatalogError::from);
             }
-            return tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM documents
-                       WHERE slug=?1 AND status='active' AND pending_publication IS NULL
-                         AND owner_id IS NULL AND owner_key<>'' AND owner_key=?2)",
-                    params![slug, actor.owner_key],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map(|owner| owner || link_ok)
-                .map_err(CatalogError::from);
+            return Ok(link_ok);
         }
         tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM documents d
                JOIN accounts a ON a.id=?2
-              WHERE d.slug=?1 AND d.status='active' AND d.pending_publication IS NULL
+              WHERE d.slug=?1 AND d.status='active'
                 AND a.status='active' AND a.session_generation=?3
                 AND (d.owner_id=?2 OR (?4=1 AND EXISTS(
-                    SELECT 1 FROM grants g WHERE g.slug=d.slug
-                      AND g.account_id=?2 AND g.role='editor')) OR ?5=1))",
+                    SELECT 1 FROM grants g WHERE g.document_id=d.id
+                      AND g.account_id=?2 AND (g.role=?5 OR g.role='editor'))) OR (?6=1 AND ?7=1))",
             params![
                 slug,
                 actor.account_id,
                 actor.generation,
                 actor.policy_editor,
-                link_ok
+                required_role,
+                link_ok,
+                actor.policy_editor,
             ],
             |row| row.get::<_, bool>(0),
         )
@@ -912,7 +914,7 @@ impl Catalog {
             tx.execute(
                 "INSERT INTO grants(document_id,role,account_id,created_at) VALUES(?1,?2,?3,?4)
                         ON CONFLICT(document_id,account_id) DO UPDATE SET role=excluded.role,created_at=excluded.created_at",
-                params![document_id, role, account_id, since.parse::<i64>().unwrap_or_else(|_| super::unix_millis())],
+                params![document_id, role, account_id, link_time(since)?],
             )
             .map_err(CatalogError::from)?;
             Ok(Grant {
@@ -981,21 +983,22 @@ impl Catalog {
         {
             return Err(CatalogError::Invalid("invalid link".into()));
         }
-        if link.budget.is_some_and(|n| n < 0) || (!link.until.is_empty() && link.until.len() < 10) {
+        if link.budget.is_some_and(|n| n < 0) {
             return Err(CatalogError::Invalid(
                 "invalid link expiry or budget".into(),
             ));
         }
         self.immediate(|tx| {
-            let valid_expiry: i64 = tx.query_row("SELECT (?1='' OR julianday(?1) IS NOT NULL)", [&link.until], |r| r.get(0)).map_err(CatalogError::from)?;
-            if valid_expiry == 0 { return Err(CatalogError::Invalid("invalid link expiry".into())); }
             let key_id = envelope_key_id(&link.sealed);
             let document_id: String = tx.query_row("SELECT id FROM documents WHERE slug=?1", [&link.slug], |row| row.get(0)).map_err(CatalogError::from)?;
+            let created_at = link_time(&link.since)?;
+            let expires_at = if link.until.is_empty() { None } else { Some(link_time(&link.until)?) };
+            if expires_at.is_some_and(|expires_at| expires_at < created_at) { return Err(CatalogError::Invalid("link expiry precedes creation".into())); }
             tx.execute("INSERT INTO links(document_id,id,role,token_hash,sealed_token,sealing_key_id,label,budget,created_at,expires_at)
                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
                 ON CONFLICT(document_id,role) DO UPDATE SET token_hash=excluded.token_hash,sealed_token=excluded.sealed_token,
                 label=excluded.label,budget=excluded.budget,expires_at=excluded.expires_at,sealing_key_id=excluded.sealing_key_id",
-                params![document_id, format!("{}-{}", link.role, hex::encode(crate::auth::random_bytes(8))), link.role, link.hash, link.sealed, key_id, link.label, link.budget, link.since.parse::<i64>().unwrap_or_else(|_| super::unix_millis()), if link.until.is_empty() {None::<i64>} else {Some(link.until.parse::<i64>().unwrap_or(0))}]).map_err(CatalogError::from)?;
+                params![document_id, format!("{}-{}", link.role, hex::encode(crate::auth::random_bytes(8))), link.role, link.hash, link.sealed, key_id, link.label, link.budget, created_at, expires_at]).map_err(CatalogError::from)?;
             Ok(link.clone())
         })
     }
@@ -1098,6 +1101,41 @@ impl Catalog {
         include_examples: bool,
     ) -> CatalogResult<Vec<Document>> {
         let limit = limit.clamp(1, 200);
+        return self.with_connection(|connection| {
+            let cursor_time = cursor.and_then(|value| value.0.parse::<i64>().ok());
+            let cursor_slug = cursor.map(|value| value.1);
+            let account = account_id.unwrap_or("");
+            let mut statement = connection.prepare(
+                "SELECT d.slug,d.id,d.title,d.created_at,d.published_at,d.updated_at,
+                        d.ownership_mode,d.owner_id,d.status,d.stored_bytes,d.reserved_bytes,
+                        d.source_format,d.main_path
+                 FROM documents d
+                 WHERE d.status='active'
+                   AND (?2 IS NULL OR d.updated_at<?2 OR (d.updated_at=?2 AND d.slug<?3))
+                   AND (d.ownership_mode='open'
+                        OR (?4=1 AND d.ownership_mode='example')
+                        OR (d.owner_id=?1)
+                        OR EXISTS(SELECT 1 FROM grants g WHERE g.document_id=d.id
+                                  AND g.account_id=?1))
+                 ORDER BY d.updated_at DESC,d.slug DESC LIMIT ?5",
+            ).map_err(CatalogError::from)?;
+            let mut rows = statement.query(params![account,cursor_time,cursor_slug,include_examples,limit as i64]).map_err(CatalogError::from)?;
+            let mut documents = Vec::new();
+            while let Some(row) = rows.next().map_err(CatalogError::from)? {
+                documents.push(Document {
+                    slug: row.get(0)?, storage_id: row.get(1)?, title: row.get(2)?, sha: String::new(),
+                    created_at: row.get::<_, i64>(3)?.to_string(),
+                    published_at: row.get::<_, Option<i64>>(4)?.map_or_else(String::new, |value| value.to_string()),
+                    updated_at: row.get::<_, i64>(5)?.to_string(),
+                    example: matches!(row.get::<_, String>(6)?.as_str(), "example"),
+                    owner_key: String::new(), owner_id: row.get(7)?, status: row.get(8)?,
+                    size: row.get(9)?, counted_size: row.get::<_, i64>(9)?.checked_add(row.get(10)?).ok_or_else(|| rusqlite::Error::InvalidQuery)?,
+                    maintenance_reserved: 0, last_auto_checkpoint_at: 0,
+                    source_format: row.get(11)?, main: row.get(12)?,
+                });
+            }
+            Ok(documents)
+        });
         let branch_limit = i64::from(limit.saturating_mul(4).min(800));
         self.with_connection(|connection| {
             let mut slugs = HashSet::new();
