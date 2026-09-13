@@ -674,7 +674,7 @@ impl Catalog {
     }
 
     pub(super) const DOCUMENT_SELECT: &'static str =
-        "SELECT d.slug,d.id,d.title,'',d.created_at,d.published_at,d.updated_at,
+        "SELECT d.slug,d.id,d.title,COALESCE(d.current_checkpoint_id,''),d.created_at,d.published_at,d.updated_at,
                 d.ownership_mode='example','',d.owner_id,d.status,d.stored_bytes,d.stored_bytes+d.reserved_bytes,
                 d.reserved_bytes,d.next_annotation_seq,d.last_checkpoint_at,NULL,COALESCE(d.publication_id,''),d.source_format,d.main_path
          FROM documents d JOIN accounts a ON a.id=d.owner_id AND a.status='active'";
