@@ -15,6 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -313,6 +314,54 @@ async fn seed_into_catalog(
     seed_with_store(blobs, config, owner, documents, Some(catalog)).await;
 }
 
+/// The local examples are administrative products.  Give them the durable
+/// v2 system owner rather than creating an anonymous publishing account for
+/// every fresh seed.  An explicit `--owner` remains the legacy visitor/account
+/// ownership mode and is intentionally left alone.
+async fn ensure_system_seed_account(
+    catalog: &Arc<crate::storage::catalog::Catalog>,
+) -> Result<String, String> {
+    const ID: &str = "system:examples";
+    let kind = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row("SELECT kind FROM accounts WHERE id=?1", [ID], |row| {
+                    row.get::<_, String>(0)
+                })
+                .optional()
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .map_err(|error| error.to_string())?;
+    if let Some(kind) = kind {
+        if kind != "system" {
+            return Err(format!("reserved seed account {ID} has kind {kind:?}"));
+        }
+        return Ok(ID.to_string());
+    }
+    let preferences = serde_json::to_string(&crate::document::quota::QuotaPreferences::default())
+        .map_err(|error| error.to_string())?;
+    catalog
+        .create_v2_account(
+            &crate::storage::catalog::V2AccountInput {
+                id: ID.to_string(),
+                kind: crate::storage::catalog::AccountKind::System,
+                provider: None,
+                provider_subject: None,
+                handle: "examples".into(),
+                display_name: "Examples".into(),
+                email: None,
+                plan: "default".into(),
+                session_generation: hex::encode(crate::auth::random_bytes(16)),
+                preferences_json: preferences,
+                bookmarks_json: "{\"version\":1,\"items\":[]}".into(),
+                onboarding_json: "{\"version\":1,\"items\":[]}".into(),
+            },
+            crate::storage::catalog::UnixMillis::now(),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(ID.to_string())
+}
+
 fn write_seed_marker(path: &Path, body: &Value) -> Result<(), String> {
     let parent = path
         .parent()
@@ -344,6 +393,14 @@ async fn seed_with_store(
     documents: &[SeedDocument],
     catalog: Option<Arc<crate::storage::catalog::Catalog>>,
 ) {
+    let system_owner_id = match &catalog {
+        Some(catalog) if owner.trim().is_empty() => Some(
+            ensure_system_seed_account(catalog)
+                .await
+                .unwrap_or_else(|error| die(format!("could not initialize seed owner: {error}"))),
+        ),
+        _ => None,
+    };
     let store = match catalog {
         Some(catalog) => Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
             .await
@@ -384,8 +441,15 @@ async fn seed_with_store(
                 source: source.clone(),
                 source_format: format.clone(),
                 main: main.clone(),
-                owner: owner.trim().to_lowercase(),
-                owner_name: owner.trim().to_string(),
+                owner: system_owner_id
+                    .is_some()
+                    .then(String::new)
+                    .unwrap_or_else(|| owner.trim().to_lowercase()),
+                owner_id: system_owner_id.clone().unwrap_or_default(),
+                owner_name: system_owner_id
+                    .as_ref()
+                    .map(|_| "Examples".to_string())
+                    .unwrap_or_else(|| owner.trim().to_string()),
                 ..Publication::default()
             })
             .await
