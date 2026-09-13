@@ -1094,18 +1094,17 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                     advanced_config,
                 },
         } => {
-            let backup_policy = backup_policy_from_config(advanced_config.as_deref());
-            crate::storage::backup::backup_cli(
+            let _backup_policy = backup_policy_from_config(advanced_config.as_deref());
+            crate::storage::backup_v2::backup_cli_v2(
                 storage.options(),
                 directory,
                 id.unwrap_or_default(),
-                backup_policy,
             )
             .await
         }
         AdminCommand::Backup {
             command: BackupCommand::Restore { backup, directory },
-        } => crate::storage::backup::restore_cli(backup, directory).await,
+        } => crate::storage::backup_v2::restore_cli_v2(backup, directory).await,
     }
 }
 

@@ -5,11 +5,16 @@
 //! exact available object set, and writes its completion manifest last.
 
 use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::storage::blob::{parse_v2_object_key, BlobStore};
+use crate::config::DeploymentPaths;
+use crate::storage::blob::{parse_v2_object_key, BlobStore, FsStore};
+use crate::storage::catalog::Catalog;
 
 pub const BACKUP_FORMAT_V2: u16 = 2;
 pub const BACKUP_OBJECT_LIMIT: usize = 1_000_000;
@@ -452,6 +457,336 @@ fn valid_backup_id(value: &str) -> bool {
 
 fn is_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// Filesystem-backed v2 catalog boundary used by the administrative CLI. The
+/// operation row is prepared before object enumeration, so GC observes the
+/// backup freeze while the catalog image and immutable objects are copied.
+pub struct LocalV2BackupCatalog {
+    catalog: Arc<Catalog>,
+    paths: DeploymentPaths,
+}
+
+impl LocalV2BackupCatalog {
+    pub fn new(catalog: Arc<Catalog>, paths: DeploymentPaths) -> Self {
+        Self { catalog, paths }
+    }
+}
+
+fn backup_operation_id() -> String {
+    hex::encode(crate::auth::random_bytes(16))
+}
+
+fn secret_payloads(paths: &DeploymentPaths) -> Result<Vec<BackupPayload>, BackupV2Error> {
+    let mut files = Vec::new();
+    if !paths.secrets.exists() {
+        return Ok(files);
+    }
+    for entry in fs::read_dir(&paths.secrets)
+        .map_err(|error| BackupV2Error::Storage(error.to_string()))?
+    {
+        let entry = entry.map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(BackupV2Error::Invalid("unsafe secret filename".into()));
+        }
+        let bytes = fs::read(&path).map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+        files.push(BackupPayload {
+            relative: format!("secrets/{name}"),
+            digest: hex::encode(Sha256::digest(&bytes)),
+            bytes,
+        });
+    }
+    files.sort_by(|left, right| left.relative.cmp(&right.relative));
+    if files.len() > 16 {
+        return Err(BackupV2Error::Invalid("too many deployment secret files".into()));
+    }
+    Ok(files)
+}
+
+#[async_trait::async_trait]
+impl V2BackupCatalog for LocalV2BackupCatalog {
+    async fn prepare_backup(&self, now: i64) -> Result<BackupSnapshot, String> {
+        let identity = fs::read(&self.paths.deployment_identity).map_err(|error| error.to_string())?;
+        let secrets = secret_payloads(&self.paths).map_err(|error| error.to_string())?;
+        let snapshot_path = self
+            .paths
+            .state
+            .join(format!(".backup-v2-{}.db", std::process::id()));
+        let catalog = Arc::clone(&self.catalog);
+        let path_for_job = snapshot_path.clone();
+        let (operation_id, deployment_id, revision, object_count) = catalog
+            .execute_catalog(4096, move |catalog| {
+                if path_for_job.exists() {
+                    return Err(crate::storage::catalog::CatalogError::Conflict(
+                        "another v2 catalog snapshot is in progress".into(),
+                    ));
+                }
+                if let Some(parent) = path_for_job.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|error| crate::storage::catalog::CatalogError::Invalid(error.to_string()))?;
+                }
+                catalog
+                    .with_connection(|connection| {
+                        connection
+                            .execute_batch("PRAGMA wal_checkpoint(FULL);")
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        let escaped = path_for_job.to_string_lossy().to_string();
+                        connection
+                            .execute("VACUUM INTO ?1", [&escaped])
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        let (deployment_id, revision): (String, i64) = connection
+                            .query_row(
+                                "SELECT deployment_id,catalog_revision FROM server_state WHERE id=1",
+                                [],
+                                |row| Ok((row.get(0)?, row.get(1)?)),
+                            )
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        let prepared: i64 = connection
+                            .query_row(
+                                "SELECT count(*) FROM operations WHERE kind='backup' AND state='prepared'",
+                                [],
+                                |row| row.get(0),
+                            )
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        if prepared != 0 {
+                            return Err(crate::storage::catalog::CatalogError::Conflict(
+                                "a v2 backup is already in progress".into(),
+                            ));
+                        }
+                        let operation_id = backup_operation_id();
+                        let writer_generation: String = connection
+                            .query_row(
+                                "SELECT writer_generation FROM server_state WHERE id=1",
+                                [],
+                                |row| row.get(0),
+                            )
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        let plan = serde_json::json!({
+                            "version": 2,
+                            "snapshot_revision": revision,
+                            "deployment_id": deployment_id,
+                            "created_at": now,
+                        })
+                        .to_string();
+                        connection
+                            .execute(
+                                "INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,NULL,NULL,'backup',?2,'backup',?3,'prepared',?4,NULL,?5,?6,?6,?7)",
+                                rusqlite::params![
+                                    operation_id,
+                                    format!("backup-{now}"),
+                                    hex::encode(Sha256::digest(plan.as_bytes())),
+                                    writer_generation,
+                                    plan,
+                                    now,
+                                    now.saturating_add(24 * 60 * 60 * 1000),
+                                ],
+                            )
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        let object_count: usize = connection
+                            .query_row(
+                                "SELECT count(*) FROM objects WHERE state='available'",
+                                [],
+                                |row| row.get::<_, i64>(0).map(|value| value as usize),
+                            )
+                            .map_err(crate::storage::catalog::CatalogError::from)?;
+                        Ok((operation_id, deployment_id, revision, object_count))
+                    })
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let catalog_bytes = fs::read(&snapshot_path).map_err(|error| error.to_string());
+        let _ = fs::remove_file(&snapshot_path);
+        let catalog_bytes = catalog_bytes?;
+        Ok(BackupSnapshot {
+            operation_id,
+            deployment_id,
+            snapshot_revision: revision,
+            catalog_bytes,
+            object_count,
+            identity: BackupPayload {
+                relative: "state/deployment.id".into(),
+                digest: hex::encode(Sha256::digest(&identity)),
+                bytes: identity,
+            },
+            secret_versions: secrets.iter().map(|secret| secret.digest.clone()).collect(),
+            secrets,
+        })
+    }
+
+    async fn backup_objects_page(
+        &self,
+        operation_id: &str,
+        after_object_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<BackupObjectEntry>, String> {
+        if limit == 0 || limit > 256 {
+            return Err("invalid v2 backup page size".into());
+        }
+        let operation_id = operation_id.to_owned();
+        let after = after_object_id.map(str::to_owned);
+        let catalog = Arc::clone(&self.catalog);
+        catalog
+            .execute_catalog(2048, move |catalog| {
+                catalog.with_connection(|connection| {
+                    let mut statement = connection
+                        .prepare("SELECT o.document_id,o.id,o.storage_key,o.digest,o.byte_length FROM objects o JOIN operations op ON op.id=?1 WHERE op.kind='backup' AND op.state='prepared' AND o.state='available' AND (?2 IS NULL OR o.id>?2) ORDER BY o.id LIMIT ?3")
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                    let rows = statement
+                        .query_map(rusqlite::params![operation_id, after, limit as i64], |row| {
+                            Ok(BackupObjectEntry {
+                                document_id: row.get(0)?,
+                                object_id: row.get(1)?,
+                                source_key: row.get(2)?,
+                                backup_key: String::new(),
+                                digest: row.get(3)?,
+                                byte_length: row.get::<_, i64>(4)?.max(0) as u64,
+                            })
+                        })
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                    rows.collect::<Result<Vec<_>, _>>()
+                        .map_err(crate::storage::catalog::CatalogError::from)
+                })
+            })
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn commit_backup(&self, operation_id: &str, manifest_digest: &str) -> Result<(), String> {
+        let operation_id = operation_id.to_owned();
+        let manifest_digest = manifest_digest.to_owned();
+        let catalog = Arc::clone(&self.catalog);
+        catalog
+            .execute_catalog(512, move |catalog| {
+                catalog.with_connection(|connection| {
+                    let now = crate::util::now_millis() as i64;
+                    let changed = connection
+                        .execute(
+                            "UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND kind='backup' AND state='prepared'",
+                            rusqlite::params![serde_json::json!({"version":2,"manifest_digest":manifest_digest}).to_string(), now, now.saturating_add(7 * 24 * 60 * 60 * 1000), operation_id],
+                        )
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                    if changed != 1 {
+                        return Err(crate::storage::catalog::CatalogError::Conflict("backup operation is no longer prepared".into()));
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn abort_backup(&self, operation_id: &str) -> Result<(), String> {
+        let operation_id = operation_id.to_owned();
+        let catalog = Arc::clone(&self.catalog);
+        catalog
+            .execute_catalog(256, move |catalog| {
+                catalog.with_connection(|connection| {
+                    let now = crate::util::now_millis() as i64;
+                    connection
+                        .execute(
+                            "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND kind='backup' AND state='prepared'",
+                            rusqlite::params![r#"{"version":2,"aborted":true}"#, now, now.saturating_add(7 * 24 * 60 * 60 * 1000), operation_id],
+                        )
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+pub struct LocalV2RestoreCatalog {
+    paths: DeploymentPaths,
+}
+
+impl LocalV2RestoreCatalog {
+    pub fn new(paths: DeploymentPaths) -> Self {
+        Self { paths }
+    }
+}
+
+#[async_trait::async_trait]
+impl V2RestoreCatalog for LocalV2RestoreCatalog {
+    async fn install_catalog_snapshot(
+        &self,
+        deployment_id: &str,
+        _snapshot_revision: i64,
+        catalog_bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        if self.paths.catalog.exists() {
+            return Err("restore destination already has a catalog".into());
+        }
+        fs::create_dir_all(&self.paths.deployment).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&self.paths.state).map_err(|error| error.to_string())?;
+        let temporary = self.paths.catalog.with_extension("restore");
+        fs::write(&temporary, &catalog_bytes).map_err(|error| error.to_string())?;
+        Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
+        fs::rename(&temporary, &self.paths.catalog).map_err(|error| error.to_string())?;
+        let actual = fs::read_to_string(&self.paths.deployment_identity).unwrap_or_default();
+        if !actual.trim().is_empty() && actual.trim() != deployment_id {
+            return Err("restore deployment identity does not match the catalog snapshot".into());
+        }
+        Ok(())
+    }
+
+    async fn install_deployment_file(&self, relative: &str, bytes: Vec<u8>) -> Result<(), String> {
+        let path = safe_deployment_path(&self.paths.deployment, relative)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        fs::write(path, bytes).map_err(|error| error.to_string())
+    }
+
+    async fn finish_restore(&self) -> Result<(), String> {
+        Catalog::verify_backup_snapshot(&self.paths.catalog).map_err(|error| error.to_string())
+    }
+}
+
+fn safe_deployment_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    if relative.is_empty() || relative.starts_with('/') || relative.contains('\\') || relative.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+        return Err("unsafe deployment restore path".into());
+    }
+    Ok(root.join(relative))
+}
+
+pub async fn backup_cli_v2(
+    storage: crate::storage::StorageOptions,
+    output: String,
+    id: String,
+) {
+    let paths = storage.paths().unwrap_or_else(|error| crate::util::die(error));
+    let backup_id = if id.is_empty() { format!("backup-{}", crate::util::now_millis()) } else { id };
+    let catalog = Arc::new(Catalog::open_with(&paths.catalog, storage.fsync).unwrap_or_else(|error| crate::util::die(format!("could not open catalog: {error}"))));
+    let source: Arc<dyn BlobStore> = Arc::new(FsStore::new(paths.objects.clone(), storage.fsync));
+    let destination_root = PathBuf::from(&output);
+    if destination_root.starts_with(&paths.deployment) {
+        crate::util::die("backup destination must be outside the live deployment");
+    }
+    let destination: Arc<dyn BlobStore> = Arc::new(FsStore::new(&destination_root, storage.fsync));
+    let adapter = LocalV2BackupCatalog::new(catalog.clone(), paths);
+    let manifest = create_backup(&adapter, source.as_ref(), destination.as_ref(), &backup_id, crate::util::now_millis() as i64)
+        .await
+        .unwrap_or_else(|error| crate::util::die(format!("could not create v2 backup: {error}")));
+    catalog.shutdown().await;
+    println!("completed v2 backup {} at {}", backup_id, output);
+    println!("{}", serde_json::json!({"event":"backup_completed","format_version":2,"backup_id":backup_id,"deployment_id":manifest.deployment_id,"objects":manifest.objects.len()}));
+}
+
+pub async fn restore_cli_v2(backup: String, destination: String) {
+    let paths = DeploymentPaths::local(&destination);
+    let backup_store: Arc<dyn BlobStore> = Arc::new(FsStore::new(&backup, true));
+    let target: Arc<dyn BlobStore> = Arc::new(FsStore::new(paths.objects.clone(), true));
+    let adapter = LocalV2RestoreCatalog::new(paths.clone());
+    let report = restore_backup(&adapter, backup_store.as_ref(), target.as_ref(), backup.trim_end_matches('/').rsplit('/').next().unwrap_or_default())
+        .await
+        .unwrap_or_else(|error| crate::util::die(format!("could not restore v2 backup: {error}")));
+    println!("restored v2 backup to {}; objects: {}; bytes: {}", destination, report.objects_restored, report.bytes_restored);
 }
 
 #[cfg(test)]
