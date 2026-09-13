@@ -2463,7 +2463,10 @@ async fn bounded_listing_propagates_catalog_failure() {
     catalog
         .with_connection(|connection| {
             connection
-                .execute("DROP TABLE guests", [])
+                // v2 stores guest visits in each account's bookmarks; links
+                // remain the authoritative authorization rows used while
+                // materializing a listing entry.
+                .execute("DROP TABLE links", [])
                 .map(|_| ())
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
@@ -2517,35 +2520,15 @@ fn measured_reconciliation_preserves_inflight_object_reservation() {
 }
 
 #[test]
-fn checkpoint_budget_cleanup_is_bounded_and_keeps_the_rolling_hour() {
+fn v2_checkpoint_budget_api_requires_operation_admission() {
     let catalog = Catalog::open_in_memory().unwrap();
-    catalog
-        .with_connection(|connection| {
-            for bucket in [0_i64, 1, 3_599, 3_600, 3_601] {
-                connection
-                    .execute(
-                        "INSERT INTO checkpoint_budgets(scope,bucket,owner_key,used)
-                         VALUES('owner',?1,'acct-1',1)",
-                        [bucket],
-                    )
-                    .map_err(crate::storage::catalog::CatalogError::from)?;
-            }
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(catalog.prune_checkpoint_budgets(3_601, 2).unwrap(), 2);
-    let remaining: i64 = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM checkpoint_budgets WHERE owner_key='acct-1'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .unwrap();
-    assert_eq!(remaining, 3);
+    assert!(matches!(
+        catalog.admit_checkpoint_with_limits("doc", 3_601, false, 10, 10),
+        Err(CatalogError::Invalid(message)) if message.contains("operation transaction")
+    ));
+    // There is no durable budget table in v2. Cleanup is deliberately a
+    // no-op, while the operation admission path owns the bounded accounting.
+    assert_eq!(catalog.prune_checkpoint_budgets(3_601, 2).unwrap(), 0);
 }
 
 #[test]
@@ -2645,11 +2628,11 @@ fn attributed(sha: &str, by: &str, by_account: Option<&str>) -> Checkpoint {
 fn drain_erasure(catalog: &Catalog, id: &str, limit: u32) {
     let stages = [
         "grants",
-        "guests",
-        "comments",
+        "bookmarks",
+        "annotation_replies",
+        "annotations",
         "replies",
         "checkpoints",
-        "checkpoints_legacy",
     ];
     for stage in stages {
         let mut cursor: Option<String> = None;
