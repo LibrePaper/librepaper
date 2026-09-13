@@ -657,6 +657,18 @@ impl Room {
                     deployment_bytes: self.config.storage.total.max(0),
                     owner_documents: self.config.storage.documents_per_owner.max(1) as i64,
                 };
+                let payload_permit = self
+                    .journal
+                    .get()
+                    .map(|journal| {
+                        journal
+                            .memory()
+                            .try_acquire(crate::config::PersistenceLimits::staging_cost(
+                                update.len(),
+                            ))
+                            .map_err(|error| AcceptError::Failed(error.to_string()))
+                    })
+                    .transpose()?;
                 let (allocation, _holder) = stage_suggestion_accept_update(
                     catalog,
                     &self.slug,
@@ -676,15 +688,28 @@ impl Room {
                 let object_id =
                     crate::storage::blob::ObjectId::parse(allocation.id.as_str().to_owned())
                         .map_err(|error| AcceptError::Failed(error.to_string()))?;
-                writer
-                    .write_allocated(
-                        allocation.document_id.as_str(),
-                        object_id,
-                        update.clone(),
-                        "application/vnd.librepaper.agent-payload",
-                    )
-                    .await
-                    .map_err(AcceptError::Failed)?;
+                if let Some(permit) = payload_permit {
+                    writer
+                        .write_allocated_with_guard(
+                            allocation.document_id.as_str(),
+                            object_id,
+                            update.clone(),
+                            "application/vnd.librepaper.agent-payload",
+                            permit,
+                        )
+                        .await
+                        .map_err(AcceptError::Failed)?;
+                } else {
+                    writer
+                        .write_allocated(
+                            allocation.document_id.as_str(),
+                            object_id,
+                            update.clone(),
+                            "application/vnd.librepaper.agent-payload",
+                        )
+                        .await
+                        .map_err(AcceptError::Failed)?;
+                }
             }
             update
         };

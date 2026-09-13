@@ -579,7 +579,6 @@ impl Room {
                 )
             }
         };
-        let _snapshot_permit = snapshot_permit;
         if deferred {
             return Ok(None);
         }
@@ -621,6 +620,7 @@ impl Room {
                         snapshot_journal,
                         actor.agent_checkpoint,
                         snapshot_state.as_deref().unwrap_or_default(),
+                        snapshot_permit,
                     )
                     .await;
             }
@@ -669,6 +669,7 @@ impl Room {
                         snapshot_journal,
                         None,
                         snapshot_state.as_deref().unwrap_or_default(),
+                        snapshot_permit,
                     )
                     .await;
             }
@@ -1360,6 +1361,7 @@ impl Room {
         journal: (i64, i64),
         agent_checkpoint: Option<&crate::storage::catalog::AgentCheckpointCommit>,
         snapshot_state: &[u8],
+        snapshot_permit: Option<crate::storage::journal::MemoryPermit>,
     ) -> Result<Option<String>, WriteError> {
         use crate::storage::blob::ObjectId as BlobObjectId;
         use crate::storage::catalog::{
@@ -1447,6 +1449,7 @@ impl Room {
                     .map_err(|_| WriteError::ServerBusy)
             })
             .transpose()?;
+        let detached_snapshot_permit = snapshot_permit.map(std::sync::Arc::new);
 
         struct PhysicalObject {
             id: ObjectId,
@@ -2114,15 +2117,27 @@ impl Room {
         for object in physical.iter().filter(|object| object.write) {
             let blob_id = BlobObjectId::parse(object.id.as_str().to_owned())
                 .map_err(|error| WriteError::Storage(error.to_string()))?;
-            let write_result = writer
-                .write_allocated(
-                    document_id.as_str(),
-                    blob_id,
-                    object.bytes.clone(),
-                    object.content_type,
-                )
-                .await
-                .map_err(WriteError::Storage);
+            let write_result = if let Some(permit) = detached_snapshot_permit.clone() {
+                writer
+                    .write_allocated_with_guard(
+                        document_id.as_str(),
+                        blob_id,
+                        object.bytes.clone(),
+                        object.content_type,
+                        permit,
+                    )
+                    .await
+            } else {
+                writer
+                    .write_allocated(
+                        document_id.as_str(),
+                        blob_id,
+                        object.bytes.clone(),
+                        object.content_type,
+                    )
+                    .await
+            }
+            .map_err(WriteError::Storage);
             if let Err(error) = write_result {
                 heartbeat.stop().await;
                 if agent_checkpoint.is_none() {
