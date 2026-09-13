@@ -37,7 +37,7 @@ const AGENT_RECEIPT_RETENTION_MS: i64 = 60 * 60 * 1000;
 fn receipt_retention_ms(kind: &str) -> i64 {
     match kind {
         "journal_append" | "journal_compact" => JOURNAL_RECEIPT_RETENTION_MS,
-        "agent_stage" | "agent_execution" => AGENT_RECEIPT_RETENTION_MS,
+        "agent_stage" | "agent_execution" | "agent_apply" | "agent_annotations" => AGENT_RECEIPT_RETENTION_MS,
         _ => RECEIPT_RETENTION_MS,
     }
 }
@@ -1219,7 +1219,7 @@ impl V2GcCatalog for Catalog {
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let changed = transaction
                 .execute(
-                    r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?1 + CASE kind WHEN 'journal_append' THEN 60000 WHEN 'journal_compact' THEN 60000 WHEN 'agent_stage' THEN 3600000 WHEN 'agent_execution' THEN 3600000 ELSE 604800000 END,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations candidate WHERE candidate.state='prepared' AND candidate.work_expires_at IS NOT NULL AND candidate.work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects allocated WHERE allocated.allocation_operation_id=candidate.id AND allocated.state='allocated') ORDER BY candidate.work_expires_at,candidate.id LIMIT ?2)"#,
+                    r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?1 + CASE kind WHEN 'journal_append' THEN 60000 WHEN 'journal_compact' THEN 60000 WHEN 'agent_stage' THEN 3600000 WHEN 'agent_execution' THEN 3600000 WHEN 'agent_apply' THEN 3600000 WHEN 'agent_annotations' THEN 3600000 ELSE 604800000 END,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations candidate WHERE candidate.state='prepared' AND candidate.work_expires_at IS NOT NULL AND candidate.work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects allocated WHERE allocated.allocation_operation_id=candidate.id AND allocated.state='allocated') ORDER BY candidate.work_expires_at,candidate.id LIMIT ?2)"#,
                     params![now, i64::try_from(limit).unwrap_or(i64::MAX)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
