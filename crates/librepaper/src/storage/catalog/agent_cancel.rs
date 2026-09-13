@@ -68,7 +68,8 @@ impl Catalog {
     ) -> CatalogResult<AgentCancellation> {
         if target_request_id.is_empty()
             || cancel_request_id.is_empty()
-            || kind.is_empty()
+            || !matches!(kind, "operation" | "candidate" | "render")
+            || crate::util::request_key_timestamp(target_request_id).is_none()
             || target_id.len() > 128
             || created_at < 0
         {
@@ -102,7 +103,13 @@ impl Catalog {
                     ));
                 }
                 let outcome = if result.is_empty() { plan } else { result };
-                return Ok(AgentCancellation { target_request_id: target_request_id.into(), cancel_request_id: cancel_request_id.into(), request_digest: digest, kind: kind.into(), target_id: target_id.into(), status: if state == "committed" { "cancel_requested".into() } else { state }, result: outcome });
+                let status = serde_json::from_str::<serde_json::Value>(&outcome)
+                    .ok().and_then(|value| value.get("status").and_then(|status| status.as_str()).map(str::to_owned))
+                    .ok_or_else(|| CatalogError::Invalid("cancellation receipt has no status".into()))?;
+                if state != "committed" {
+                    return Err(CatalogError::Conflict("cancellation receipt is not committed".into()));
+                }
+                return Ok(AgentCancellation { target_request_id: target_request_id.into(), cancel_request_id: cancel_request_id.into(), request_digest: digest, kind: kind.into(), target_id: target_id.into(), status, result: outcome });
             }
             if created_at.saturating_sub(issued) > 15 * 60_000 {
                 return Err(CatalogError::refused(CatalogRefusal::RequestExpired, "cancel request key has expired"));
@@ -251,8 +258,12 @@ mod tests {
 
     fn fixture() -> Catalog {
         let catalog = Catalog::open_in_memory().unwrap();
-        catalog.upsert_account(&super::super::tests::account()).unwrap();
-        catalog.create_document(&super::super::tests::document()).unwrap();
+        catalog
+            .upsert_account(&super::super::tests::account())
+            .unwrap();
+        catalog
+            .create_document(&super::super::tests::document())
+            .unwrap();
         catalog
     }
 
@@ -269,7 +280,21 @@ mod tests {
             }
             Ok(())
         }).unwrap();
-        let result = catalog.cancel_agent_operation("doc", &target, &request, &"b".repeat(64), "operation", "target", None, "acct-1", "generation-1", "", now).unwrap();
+        let result = catalog
+            .cancel_agent_operation(
+                "doc",
+                &target,
+                &request,
+                &"b".repeat(64),
+                "operation",
+                "target",
+                None,
+                "acct-1",
+                "generation-1",
+                "",
+                now,
+            )
+            .unwrap();
         assert_eq!(result.status, "cancel_requested");
         catalog.immediate(|tx| {
             assert!(Catalog::agent_cancellation_active_tx(tx, "storage-1", &target, "account:acct-1")?);
@@ -278,7 +303,10 @@ mod tests {
             assert!(Catalog::agent_cancellation_active_tx(tx, "storage-1", &target, "account:acct-1")?);
             Ok(())
         }).unwrap();
-        assert!(matches!(catalog.agent_cancellation_by_request("doc", &request, "acct-1", "generation-1", ""), Err(CatalogError::Refused(CatalogRefusal::RequestExpired, _))));
+        assert!(matches!(
+            catalog.agent_cancellation_by_request("doc", &request, "acct-1", "generation-1", ""),
+            Err(CatalogError::Refused(CatalogRefusal::RequestExpired, _))
+        ));
     }
 
     #[test]
@@ -288,11 +316,93 @@ mod tests {
         let request = crate::util::new_request_key();
         let digest = "c".repeat(64);
         let now = unix_millis();
-        let original = catalog.cancel_agent_operation("doc", &target, &request, &digest, "operation", "target", None, "acct-1", "generation-1", "", now).unwrap();
-        let old = format!("v2.{}.{}", now-20*60_000, "d".repeat(32));
-        catalog.with_connection(|db| { db.execute("UPDATE operations SET request_key=?1 WHERE request_key=?2", params![old,request])?; Ok(()) }).unwrap();
-        let replay = catalog.cancel_agent_operation("doc", &target, &old, &digest, "operation", "target", None, "acct-1", "generation-1", "", now).unwrap();
+        let original = catalog
+            .cancel_agent_operation(
+                "doc",
+                &target,
+                &request,
+                &digest,
+                "operation",
+                "target",
+                None,
+                "acct-1",
+                "generation-1",
+                "",
+                now,
+            )
+            .unwrap();
+        let old = format!("v2.{}.{}", now - 20 * 60_000, "d".repeat(32));
+        catalog
+            .with_connection(|db| {
+                db.execute(
+                    "UPDATE operations SET request_key=?1 WHERE request_key=?2",
+                    params![old, request],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let replay = catalog
+            .cancel_agent_operation(
+                "doc",
+                &target,
+                &old,
+                &digest,
+                "operation",
+                "target",
+                None,
+                "acct-1",
+                "generation-1",
+                "",
+                now,
+            )
+            .unwrap();
         assert_eq!(replay.result, original.result);
-        assert!(matches!(catalog.agent_cancellation_by_request("doc", &old, "acct-1", "revoked-session", ""), Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))));
+        assert!(matches!(
+            catalog.agent_cancellation_by_request("doc", &old, "acct-1", "revoked-session", ""),
+            Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))
+        ));
+    }
+
+    #[test]
+    fn cancellation_replay_preserves_already_committed_outcome() {
+        let catalog = fixture();
+        let target = crate::util::new_request_key();
+        let request = crate::util::new_request_key();
+        let now = unix_millis();
+        catalog.immediate(|tx| {
+            tx.execute("INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,result_json,created_at,updated_at,completed_at,receipt_expires_at)
+                VALUES('completed-target','storage-1','account:acct-1',?1,'agent_annotations',?2,'committed','initial','{\"version\":1,\"saved\":true}',?3,?3,?3,?4)", params![target,"a".repeat(64),now,now+60_000])?;
+            Ok(())
+        }).unwrap();
+        for _ in 0..2 {
+            let receipt = catalog
+                .cancel_agent_operation(
+                    "doc",
+                    &target,
+                    &request,
+                    &"b".repeat(64),
+                    "operation",
+                    "target",
+                    None,
+                    "acct-1",
+                    "generation-1",
+                    "",
+                    now,
+                )
+                .unwrap();
+            assert_eq!(receipt.status, "already_committed");
+            assert!(receipt.result.contains("\"rollback\":false"));
+        }
+        catalog
+            .immediate(|tx| {
+                assert!(!Catalog::agent_cancellation_active_tx(
+                    tx,
+                    "storage-1",
+                    &target,
+                    "account:acct-1"
+                )?);
+                Ok(())
+            })
+            .unwrap();
     }
 }

@@ -46,7 +46,7 @@ impl Server {
                 )
             })
             .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+            .map_err(catalog_failure)?;
         match cancellation {
             Some(value) => {
                 let result = serde_json::from_str(&value.result)
@@ -102,8 +102,9 @@ impl Server {
         let request_digest = hex::encode(Sha256::digest(
             json!({"tool":"document_result","arguments":args}).to_string(),
         ));
+        let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
         // All mutation tools share one retry namespace, including cancellation.
-        self.mcp_receipt(slug, actor, &operation, Some(&request_digest))
+        self.mcp_receipt(slug, actor, &who, &operation, Some(&request_digest))
             .await?;
 
         let Some(catalog) = &self.store.catalog else {
@@ -138,7 +139,7 @@ impl Server {
                 )
             })
             .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+            .map_err(catalog_failure)?;
         if let Some(existing) = existing {
             if existing.request_digest != request_digest {
                 return Err(Failure::new(
@@ -163,7 +164,7 @@ impl Server {
         // cancellation can roll back. The catalog still records this answer
         // so retries remain durable and idempotent.
         let committed = self
-            .mcp_receipt(slug, actor, &target, None)
+            .mcp_receipt(slug, actor, &who, &target, None)
             .await?
             .filter(|value| value.get("status").and_then(Value::as_str) == Some("committed"))
             .map(|value| value.to_string());
@@ -205,7 +206,7 @@ impl Server {
                 )
             })
             .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+            .map_err(catalog_failure)?;
 
         // A browser render is only a pending waiter. Removing it is best
         // effort; the durable flag remains authoritative if the result races
@@ -237,4 +238,21 @@ impl Server {
         self.mcp_cancelled_children(slug, actor, &target, result)
             .await
     }
+}
+
+pub(super) fn catalog_failure(error: crate::storage::catalog::CatalogExecError) -> Failure {
+    use crate::storage::catalog::{CatalogError, CatalogExecError, CatalogRefusal};
+    let code = match &error {
+        CatalogExecError::Catalog(CatalogError::Refused(CatalogRefusal::RequestExpired, _)) => {
+            "request_expired"
+        }
+        CatalogExecError::Catalog(CatalogError::Refused(CatalogRefusal::ActorRights, _)) => {
+            "permission_changed"
+        }
+        CatalogExecError::Catalog(CatalogError::Conflict(_)) => "operation_key_reused",
+        CatalogExecError::Catalog(CatalogError::Invalid(_)) => "invalid_params",
+        CatalogExecError::Catalog(CatalogError::NotFound) => "not_found",
+        _ => "unavailable",
+    };
+    Failure::new(code, error.to_string())
 }

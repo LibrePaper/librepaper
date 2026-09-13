@@ -21,7 +21,7 @@ pub(super) fn account() -> Account {
     }
 }
 
-fn annotation(id: &str, motivation: &str) -> Comment {
+pub(super) fn annotation(id: &str, motivation: &str) -> Comment {
     Comment {
         slug: "doc".into(),
         id: id.into(),

@@ -265,6 +265,7 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         key: &OperationKey,
         digest: Option<&str>,
     ) -> Result<Option<Value>, Failure> {
@@ -287,22 +288,35 @@ impl Server {
         if let Some(catalog) = &self.store.catalog {
             let slug = slug.to_string();
             let request_id = id.clone();
+            let owned_digest = digest.map(str::to_owned);
+            let authority = crate::storage::catalog::AgentAnnotationAuthority {
+                account_id: who.id.id.clone(),
+                generation: who.id.session_generation.clone(),
+                link_hash: who.link.clone(),
+                policy_comment: who.at_least(Role::Commenter),
+                require_editor: false,
+                parent_request_id: String::new(),
+                execution_epoch: String::new(),
+            };
+            let input_bytes = 256
+                + slug.len()
+                + request_id.len()
+                + owned_digest.as_deref().map_or(0, str::len)
+                + authority.account_id.len()
+                + authority.generation.len()
+                + authority.link_hash.len();
             let row = catalog
-                .execute_catalog(256, move |c| {
-                    let Some(document) = c.document(&slug)? else {
-                        return Ok(None);
-                    };
-                    c.operation(&document.storage_id, &request_id)
+                .execute_catalog(input_bytes, move |c| {
+                    c.agent_operation_receipt(
+                        &slug,
+                        &request_id,
+                        owned_digest.as_deref(),
+                        &authority,
+                    )
                 })
                 .await
-                .map_err(|e| Failure::new("unavailable", e.to_string()))?;
+                .map_err(super::cancel::catalog_failure)?;
             if let Some(row) = row {
-                if digest.is_some_and(|digest| digest != row.request_digest) {
-                    return Err(Failure::new(
-                        "operation_key_reused",
-                        "operation key already identifies different arguments",
-                    ));
-                }
                 if row.status == "committed" {
                     let mut result: Value = serde_json::from_str(&row.result)
                         .map_err(|e| Failure::new("internal", e.to_string()))?;
@@ -337,7 +351,8 @@ impl Server {
         name: &str,
         args: &Value,
     ) -> Result<Value, Failure> {
-        self.mcp_operation_inner(slug, actor, who, headers, arrival, peer, name, args, "").await
+        self.mcp_operation_inner(slug, actor, who, headers, arrival, peer, name, args, "")
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -365,7 +380,9 @@ impl Server {
             json!({"tool":name,"arguments":args}).to_string(),
         ));
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
-        let receipt = self.mcp_receipt(slug, actor, &key, Some(&digest)).await?;
+        let receipt = self
+            .mcp_receipt(slug, actor, &who, &key, Some(&digest))
+            .await?;
         if let Some(result) = receipt {
             return Ok(result);
         }
@@ -382,17 +399,24 @@ impl Server {
                     for (index, patch) in
                         args["patches"].as_array().into_iter().flatten().enumerate()
                     {
-                        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, &key).await?
+                        if let Some(cancellation) =
+                            self.mcp_cancellation(slug, actor, &who, &key).await?
                         {
                             return Ok(cancellation);
                         }
                         let mut child = args.clone();
                         child["batch"] = json!("atomic");
                         child["patches"] = json!([patch]);
-                        child["operation"]["id"] =
-                            json!(key.batch_child(actor, index).id);
+                        child["operation"]["id"] = json!(key.batch_child(actor, index).id);
                         let outcome = Box::pin(self.mcp_operation_inner(
-                            slug, actor, &current, headers, arrival, peer, name, &child,
+                            slug,
+                            actor,
+                            &current,
+                            headers,
+                            arrival,
+                            peer,
+                            name,
+                            &child,
                             &key.scoped_request_id(actor),
                         ))
                         .await;
@@ -401,11 +425,29 @@ impl Server {
                     let result = json!({"operation":key,"status":"committed","batch":"independent","items":items,"replay":false});
                     let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
                     return self
-                        .mcp_private_receipt(slug, actor, &key, &digest, &result, &current, headers, parent_request_id)
+                        .mcp_private_receipt(
+                            slug,
+                            actor,
+                            &key,
+                            &digest,
+                            &result,
+                            &current,
+                            headers,
+                            parent_request_id,
+                        )
                         .await;
                 }
                 self.mcp_propose(
-                    slug, actor, &current, headers, arrival, peer, args, key, digest, parent_request_id,
+                    slug,
+                    actor,
+                    &current,
+                    headers,
+                    arrival,
+                    peer,
+                    args,
+                    key,
+                    digest,
+                    parent_request_id,
                 )
                 .await
             }
@@ -1005,8 +1047,17 @@ impl Server {
                 .map_err(|e| Failure::new("conflict", e));
         }
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
-        self.mcp_private_receipt(slug, actor, key, &digest, &result, &current, headers, &candidate.parent_request_id)
-            .await
+        self.mcp_private_receipt(
+            slug,
+            actor,
+            key,
+            &digest,
+            &result,
+            &current,
+            headers,
+            &candidate.parent_request_id,
+        )
+        .await
     }
 
     async fn mcp_result(
@@ -1035,7 +1086,7 @@ impl Server {
                     return Ok(cancellation);
                 }
                 let result = self
-                    .mcp_receipt(slug, actor, &key, None)
+                    .mcp_receipt(slug, actor, &who, &key, None)
                     .await?
                     .ok_or_else(|| {
                         Failure::new(
@@ -1086,7 +1137,13 @@ impl Server {
                         return Ok(cancellation);
                     }
                     if let Some(receipt) = self
-                        .mcp_receipt(slug, actor, &candidate.operation, Some(&candidate.digest))
+                        .mcp_receipt(
+                            slug,
+                            actor,
+                            &who,
+                            &candidate.operation,
+                            Some(&candidate.digest),
+                        )
                         .await?
                     {
                         return Ok(receipt);

@@ -39,7 +39,7 @@ impl Catalog {
             [prepared_limit],
             |row| row.get(0),
         )?;
-        if prepared >= prepared_limit {
+        if kind != "agent_cancel" && prepared >= prepared_limit {
             return Err(CatalogError::Busy);
         }
         if let Some(document_id) = document_id {
@@ -77,8 +77,12 @@ mod tests {
     #[test]
     fn prepared_slots_reserve_capacity_for_cleanup_and_release_on_settlement() {
         let catalog = Catalog::open_in_memory().unwrap();
-        catalog.upsert_account(&super::super::tests::account()).unwrap();
-        catalog.create_document(&super::super::tests::document()).unwrap();
+        catalog
+            .upsert_account(&super::super::tests::account())
+            .unwrap();
+        catalog
+            .create_document(&super::super::tests::document())
+            .unwrap();
         for index in 0..PREPARED_ROWS {
             catalog.immediate(|tx| {
                 if index >= PREPARED_ROWS - PREPARED_RECOVERY_RESERVE {
@@ -92,6 +96,7 @@ mod tests {
         }
         catalog.immediate(|tx| {
             assert!(matches!(Catalog::admit_operation_slot(tx, Some("storage-1"), "erase_document"), Err(CatalogError::Busy)));
+            Catalog::admit_operation_slot(tx, Some("storage-1"), "agent_cancel")?;
             tx.execute("UPDATE operations SET state='committed',completed_at=1,receipt_expires_at=1000,result_json='{}'", [])?;
             Catalog::admit_operation_slot(tx, Some("storage-1"), "agent_annotations")?;
             Ok(())

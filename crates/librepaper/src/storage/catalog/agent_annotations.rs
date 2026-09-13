@@ -185,6 +185,45 @@ impl Catalog {
         })
     }
 
+    /// Actor-scoped replay for any MCP effect. The supplied identity is the
+    /// current caller proof, not an identity recovered from an old receipt.
+    pub fn agent_operation_receipt(
+        &self,
+        slug: &str,
+        request_id: &str,
+        digest: Option<&str>,
+        authority: &AgentAnnotationAuthority,
+    ) -> CatalogResult<Option<Operation>> {
+        self.immediate(|tx| {
+            let document = authorize(tx, slug, authority)?;
+            let issued = crate::util::request_key_timestamp(request_id)
+                .ok_or_else(|| CatalogError::Invalid("invalid v2 request key".into()))?;
+            let actor = actor_key(authority)?;
+            let now = unix_millis();
+            let row: Option<(Operation, Option<i64>, Option<i64>)> = tx.query_row(
+                "SELECT document_id,request_key,kind,request_digest,state,plan_json,result_json,created_at,receipt_expires_at,work_expires_at
+                 FROM operations WHERE document_id=?1 AND account_id IS NULL AND actor_key=?2 AND request_key=?3",
+                params![document, actor, request_id], |row| Ok((Operation {
+                    storage_id: row.get(0)?, request_id: row.get(1)?, kind: row.get(2)?, request_digest: row.get(3)?,
+                    status: row.get(4)?, intent: row.get(5)?, result: row.get::<_, Option<String>>(6)?.unwrap_or_default(), created_at: row.get(7)?
+                }, row.get(8)?, row.get(9)?))).optional()?;
+            if let Some((row, receipt_expiry, work_expiry)) = row {
+                let expired = if row.status == "prepared" { work_expiry.is_some_and(|at| at<=now) }
+                    else { receipt_expiry.is_none_or(|at| at<=now) };
+                if expired { return Err(CatalogError::refused(CatalogRefusal::RequestExpired, "request receipt has expired")); }
+                if digest.is_some_and(|value| value != row.request_digest) {
+                    return Err(CatalogError::Conflict("operation key reused with different content".into()));
+                }
+                return Ok(Some(row));
+            }
+            if now.saturating_sub(issued)>15*60_000 {
+                return Err(CatalogError::refused(CatalogRefusal::RequestExpired, "request key has expired; submit a new request key"));
+            }
+            if issued>now.saturating_add(60_000) { return Err(CatalogError::Invalid("request key is in the future".into())); }
+            Ok(None)
+        })
+    }
+
     pub fn agent_annotation_sequence(&self, slug: &str) -> CatalogResult<i64> {
         self.with_connection(|db| {
             db.query_row(
@@ -377,7 +416,7 @@ mod tests {
         catalog
             .with_connection(|db| {
                 db.execute(
-                    "UPDATE operations SET receipt_expires_at=?1 WHERE request_key=?2",
+                    "UPDATE operations SET created_at=0,completed_at=0,receipt_expires_at=?1 WHERE request_key=?2",
                     params![unix_millis() - 1, old_key],
                 )?;
                 Ok(())
@@ -408,5 +447,130 @@ mod tests {
             catalog.agent_annotation_receipt("doc", &old_key, &"c".repeat(64), &authority),
             Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))
         ));
+    }
+
+    #[test]
+    fn generic_mcp_receipts_check_actor_access_and_both_expiry_states() {
+        let (catalog, authority) = fixture();
+        let key = crate::util::new_request_key();
+        let digest = "d".repeat(64);
+        catalog
+            .agent_annotations("doc", &key, &digest, &[], &[], &[], "", &authority)
+            .unwrap();
+        assert_eq!(
+            catalog
+                .agent_operation_receipt("doc", &key, Some(&digest), &authority)
+                .unwrap()
+                .unwrap()
+                .kind,
+            "agent_annotations"
+        );
+        assert!(matches!(
+            catalog.agent_operation_receipt("doc", &key, Some(&"e".repeat(64)), &authority),
+            Err(CatalogError::Conflict(_))
+        ));
+        catalog
+            .with_connection(|db| {
+                db.execute(
+                    "UPDATE operations SET actor_key='account:someone-else' WHERE request_key=?1",
+                    [&key],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(catalog
+            .agent_operation_receipt("doc", &key, None, &authority)
+            .unwrap()
+            .is_none());
+        catalog.with_connection(|db| {
+            db.execute("UPDATE operations SET actor_key='account:acct-1',kind='agent_apply',state='prepared',created_at=0,completed_at=NULL,receipt_expires_at=NULL,work_expires_at=1 WHERE request_key=?1", [&key])?;
+            Ok(())
+        }).unwrap();
+        assert!(matches!(
+            catalog.agent_operation_receipt("doc", &key, None, &authority),
+            Err(CatalogError::Refused(CatalogRefusal::RequestExpired, _))
+        ));
+        let mut revoked = authority.clone();
+        revoked.generation = "revoked".into();
+        assert!(matches!(
+            catalog.agent_operation_receipt("doc", &key, None, &revoked),
+            Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))
+        ));
+        catalog.with_connection(|db| {
+            db.execute("UPDATE operations SET state='committed',completed_at=1,receipt_expires_at=2 WHERE request_key=?1", [&key])?;
+            Ok(())
+        }).unwrap();
+        assert!(matches!(
+            catalog.agent_operation_receipt("doc", &key, None, &authority),
+            Err(CatalogError::Refused(CatalogRefusal::RequestExpired, _))
+        ));
+    }
+    #[test]
+    fn annotation_batch_upserts_and_rolls_back_effects_with_receipt() {
+        let (catalog, authority) = fixture();
+        let row = super::super::tests::annotation("batch-comment", "commenting");
+        catalog
+            .agent_annotations(
+                "doc",
+                &crate::util::new_request_key(),
+                &"d".repeat(64),
+                &[row],
+                &[],
+                &[],
+                "",
+                &authority,
+            )
+            .unwrap();
+        let mut changed = catalog.comment("doc", "batch-comment").unwrap();
+        changed.body = "updated in place".into();
+        catalog
+            .agent_annotations(
+                "doc",
+                &crate::util::new_request_key(),
+                &"e".repeat(64),
+                &[changed.clone()],
+                &[],
+                &[],
+                "",
+                &authority,
+            )
+            .unwrap();
+        assert_eq!(
+            catalog.comment("doc", "batch-comment").unwrap().body,
+            "updated in place"
+        );
+        changed.body = "must roll back".into();
+        let bad_reply = Reply {
+            slug: "doc".into(),
+            comment_id: "missing-parent".into(),
+            id: "bad-reply".into(),
+            body: "reply".into(),
+            creator: "Alice".into(),
+            author: "acct-1".into(),
+            created: crate::util::format_unix_millis(unix_millis()),
+        };
+        let key = crate::util::new_request_key();
+        assert!(catalog
+            .agent_annotations(
+                "doc",
+                &key,
+                &"f".repeat(64),
+                &[changed],
+                &[bad_reply],
+                &[],
+                "",
+                &authority
+            )
+            .is_err());
+        assert_eq!(
+            catalog.comment("doc", "batch-comment").unwrap().body,
+            "updated in place"
+        );
+        assert_eq!(
+            catalog
+                .agent_annotation_receipt("doc", &key, &"f".repeat(64), &authority)
+                .unwrap(),
+            None
+        );
     }
 }
