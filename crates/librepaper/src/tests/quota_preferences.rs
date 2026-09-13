@@ -400,8 +400,11 @@ async fn thinning_preserves_open_annotation_and_newest_checkpoint() {
     let (protected, routine_candidate, newest) = seed_old_bucket(&server, &slug);
     let catalog = server.instance.store.catalog.as_ref().unwrap();
     catalog
-        .insert_comment_authorized(
+        .insert_comment_request_authorized(
             &open_annotation(&slug, &protected),
+            &crate::util::new_request_key(),
+            &"a".repeat(64),
+            crate::util::now_millis(),
             crate::storage::catalog::AnnotationAuthority {
                 account_id: ACCOUNT,
                 generation: "test-session-generation",

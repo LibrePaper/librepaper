@@ -28,14 +28,7 @@ fn checkpoint_time_ms(value: &str) -> CatalogResult<i64> {
 }
 
 fn format_checkpoint_time_ms(value: i64) -> String {
-    let Ok(value) = time::OffsetDateTime::from_unix_timestamp_nanos(
-        i128::from(value).saturating_mul(1_000_000),
-    ) else {
-        return String::new();
-    };
-    value
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default()
+    crate::util::format_unix_millis(value)
 }
 
 const CHECKPOINT_SELECT: &str = "SELECT d.slug,c.id,c.seq,c.journal_sequence,c.tree_digest,

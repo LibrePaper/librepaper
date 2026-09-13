@@ -89,9 +89,10 @@ pub fn parse_timestamp(value: &str) -> Option<i64> {
 
 /// Catalog timestamps retain milliseconds in wire values and keyset cursors.
 pub fn format_unix_millis(unix: i64) -> String {
+    let format = format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
     OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix) * 1_000_000)
         .ok()
-        .and_then(|at| at.format(&Rfc3339).ok())
+        .and_then(|at| at.format(&format).ok())
         .unwrap_or_default()
 }
 
