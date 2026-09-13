@@ -131,7 +131,11 @@ impl Server {
     /// Mints this document's read link, replacing any it had, and returns the
     /// path to hand out. The key is generated before the write, as the share
     /// route does, since the write is what commits it.
-    pub(super) async fn mint_read_link(&self, slug: &str) -> Result<String, ModifyError> {
+    pub(super) async fn mint_read_link(
+        &self,
+        slug: &str,
+        viewer: &Viewer,
+    ) -> Result<String, ModifyError> {
         let key = mint_link_key();
         let link = LinkGrant {
             hash: hash_link_key(&key),
@@ -140,8 +144,17 @@ impl Server {
             since: crate::util::timestamp(),
             ..Default::default()
         };
+        let actor = crate::document::store::MutationActor {
+            account_id: viewer.id.id.clone(),
+            owner_key: viewer.key.clone(),
+            session_generation: viewer.id.session_generation.clone(),
+            link_hash: viewer.link.clone(),
+            policy_editor: true,
+            automation: viewer.automation,
+            unowned_publisher: viewer.id.id.is_empty(),
+        };
         self.store
-            .modify(slug, |entry| {
+            .modify_as_owner(slug, &actor, |entry| {
                 entry.set_link(link.clone());
                 Ok(())
             })

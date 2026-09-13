@@ -1858,6 +1858,142 @@ fn link_key_id_for_test(key: &[u8; 32]) -> String {
 }
 
 #[test]
+fn access_rotation_is_cas_protected_and_keeps_link_identity() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog.set_link_sealing_key(&[41_u8; 32]).unwrap();
+    let first_key = "first-reader-key";
+    let first_hash = hex::encode(sha2::Sha256::digest(first_key.as_bytes()));
+    let first = Link {
+        slug: "doc".into(),
+        role: "reader".into(),
+        hash: first_hash.clone(),
+        sealed: catalog
+            .seal_link_key("storage-1", "reader", &first_hash, first_key)
+            .unwrap(),
+        label: "first".into(),
+        budget: None,
+        since: "2026-01-01T00:00:00Z".into(),
+        until: String::new(),
+    };
+    let snapshot = catalog.document("doc").unwrap().unwrap();
+    catalog
+        .update_document_access(
+            &snapshot,
+            &[],
+            std::slice::from_ref(&first),
+            &[],
+            Some(("acct-1", "", "generation-1")),
+        )
+        .unwrap();
+    let first_id: String = catalog
+        .with_connection(|db| {
+            db.query_row(
+                "SELECT id FROM links WHERE document_id='storage-1' AND role='reader'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    let second_key = "second-reader-key";
+    let second_hash = hex::encode(sha2::Sha256::digest(second_key.as_bytes()));
+    let second = Link {
+        hash: second_hash.clone(),
+        sealed: catalog
+            .seal_link_key("storage-1", "reader", &second_hash, second_key)
+            .unwrap(),
+        label: "rotated".into(),
+        ..first
+    };
+    let current = catalog.document("doc").unwrap().unwrap();
+    catalog
+        .update_document_access(
+            &current,
+            &[],
+            std::slice::from_ref(&second),
+            &[],
+            Some(("acct-1", "", "generation-1")),
+        )
+        .unwrap();
+    let (second_id, generation): (String, i64) = catalog
+        .with_connection(|db| {
+            db.query_row(
+                "SELECT id,credential_generation FROM links
+                 WHERE document_id='storage-1' AND role='reader'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(second_id, first_id);
+    assert_eq!(generation, 2);
+    assert!(catalog
+        .update_document_access(
+            &snapshot,
+            &[],
+            std::slice::from_ref(&second),
+            &[],
+            Some(("acct-1", "", "generation-1")),
+        )
+        .is_err());
+}
+
+#[test]
+fn visibility_reads_live_bookmarks_and_removes_rotated_ones() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    let mut guest = account();
+    guest.id = "acct-guest".into();
+    guest.handle = "guest".into();
+    guest.session_generation = "guest-generation".into();
+    catalog.upsert_account(&guest).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog.set_link_sealing_key(&[43_u8; 32]).unwrap();
+    let key = "bookmark-reader-key";
+    let hash = hex::encode(sha2::Sha256::digest(key.as_bytes()));
+    let sealed = catalog
+        .seal_link_key("storage-1", "reader", &hash, key)
+        .unwrap();
+    catalog
+        .put_link(&Link {
+            slug: "doc".into(),
+            role: "reader".into(),
+            hash: hash.clone(),
+            sealed,
+            label: String::new(),
+            budget: None,
+            since: "2026-01-01T00:00:00Z".into(),
+            until: String::new(),
+        })
+        .unwrap();
+    catalog
+        .pin_guest(&super::Guest {
+            slug: "doc".into(),
+            account_id: "acct-guest".into(),
+            since: "2026-01-01T00:00:00Z".into(),
+            link_hash: hash,
+        })
+        .unwrap();
+    assert_eq!(
+        catalog
+            .visible_documents(Some("acct-guest"), None, None, 20)
+            .unwrap()
+            .iter()
+            .filter(|document| document.slug == "doc")
+            .count(),
+        1
+    );
+    catalog.drop_link("doc", "reader").unwrap();
+    assert!(catalog
+        .visible_documents(Some("acct-guest"), None, None, 20)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn transfer_rechecks_owner_inside_the_write_transaction() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();

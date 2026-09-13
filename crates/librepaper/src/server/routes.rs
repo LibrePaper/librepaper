@@ -601,7 +601,21 @@ pub(super) async fn dispatch(
                 };
                 // Not a reason to refuse the document: the pin is bookkeeping
                 // about the visit, and the visit itself is what matters.
-                if let Err(err) =
+                let result = if let Some(catalog) = &server.store.catalog {
+                    let request = crate::storage::catalog::Guest {
+                        slug: slug.to_string(),
+                        account_id: guest.id.clone(),
+                        since: guest.since.clone(),
+                        link_hash: guest.link.clone(),
+                    };
+                    catalog
+                        .execute_catalog(
+                            crate::server::SERVER_JOB_BYTES + slug.len(),
+                            move |catalog| catalog.pin_guest(&request).map(|_| ()),
+                        )
+                        .await
+                        .map_err(crate::storage::catalog::CatalogError::from)
+                } else {
                     server
                         .store
                         .modify(slug, |entry| {
@@ -613,7 +627,12 @@ pub(super) async fn dispatch(
                             Ok(())
                         })
                         .await
-                {
+                        .map(|_| ())
+                        .map_err(|error| {
+                            crate::storage::catalog::CatalogError::Invalid(error.to_string())
+                        })
+                };
+                if let Err(err) = result {
                     eprintln!("warning: could not record a guest on {slug}: {err:?}");
                 }
             }

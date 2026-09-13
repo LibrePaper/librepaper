@@ -533,7 +533,7 @@ impl Server {
         // revokes it from the share dialog like any other link. A failure
         // to record it is not a failure to publish -- the document is there
         // and the dialog can mint one -- so it is reported and not fatal.
-        let share_url = match self.mint_read_link(&key).await {
+        let share_url = match self.mint_read_link(&key, &who).await {
             Ok(url) => Value::String(url),
             Err(err) => {
                 eprintln!("warning: could not mint the read link of {key}: {err:?}");

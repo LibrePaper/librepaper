@@ -3018,6 +3018,11 @@ fn update_catalog_entry_access_sql(
         String::new()
     };
     document.owner_id = (!entry.publisher_id.is_empty()).then(|| entry.publisher_id.clone());
+    // `entry` is the compare-and-swap snapshot loaded before the caller's
+    // closure.  Keep that revision on the mutation input: the catalogue
+    // transaction must reject a concurrent checkpoint or access write rather
+    // than replacing it with this stale compatibility view.
+    document.updated_at = entry.updated_at.clone();
 
     let current_links = catalog.links(&entry.slug)?;
     let mut links = Vec::with_capacity(entry.links.len());
