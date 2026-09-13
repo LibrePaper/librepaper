@@ -130,6 +130,7 @@ pub struct PhysicalLocator {
     /// Digest of the logical/uncompressed value, when the object represents
     /// one (for example a compressed source chunk).
     pub logical_digest: Option<[u8; 32]>,
+    pub logical_length: u64,
     pub byte_length: u64,
     pub encoding_version: u16,
 }
@@ -152,7 +153,7 @@ impl SourceRecipeEnvelope {
         }
         for (reference, locator) in self.recipe.chunks.iter().zip(&self.chunk_locators) {
             if locator.logical_digest != Some(reference.digest)
-                || reference.length as u64 != locator.byte_length
+                || reference.length as u64 != locator.logical_length
             {
                 return Err(EncodingError::Integrity("recipe locator does not match logical chunk".into()));
             }
@@ -415,8 +416,17 @@ pub async fn write_encoded_source(
     document_id: &str,
     source: &EncodedSource,
 ) -> Result<StagedSourceObjects, EncodingError> {
+    write_encoded_source_with_existing(blobs, document_id, source, &HashMap::new()).await
+}
+
+pub async fn write_encoded_source_with_existing(
+    blobs: &dyn crate::storage::blob::BlobStore,
+    document_id: &str,
+    source: &EncodedSource,
+    existing: &HashMap<[u8; 32], PhysicalLocator>,
+) -> Result<StagedSourceObjects, EncodingError> {
     let mut chunk_objects = Vec::with_capacity(source.objects.len());
-    let mut by_digest = HashMap::<[u8; 32], crate::storage::blob::WrittenObject>::new();
+    let mut by_digest = HashMap::<[u8; 32], PhysicalLocator>::new();
     for object in &source.objects {
         let written = crate::storage::blob::write_v2_object(
             blobs,
@@ -426,21 +436,38 @@ pub async fn write_encoded_source(
         )
         .await
         .map_err(|error| EncodingError::Worker(error.to_string()))?;
-        by_digest.insert(object.digest, written.clone());
+        let object_digest = decode_digest(&written.digest)?;
+        by_digest.insert(
+            object.digest,
+            PhysicalLocator {
+                object_id: written.object_id.clone(),
+                object_digest,
+                logical_digest: Some(object.digest),
+                logical_length: object.uncompressed_len as u64,
+                byte_length: written.byte_length,
+                encoding_version: 1,
+            },
+        );
         chunk_objects.push(written);
+    }
+    for (digest, locator) in existing {
+        if locator.logical_digest != Some(*digest) || locator.encoding_version == 0 {
+            return Err(EncodingError::Integrity("existing source locator does not match chunk".into()));
+        }
+        by_digest.entry(*digest).or_insert_with(|| locator.clone());
     }
     let mut chunk_locators = Vec::with_capacity(source.recipe.chunks.len());
     for reference in &source.recipe.chunks {
-        let object = by_digest.get(&reference.digest).ok_or_else(|| {
+        let locator = by_digest.get(&reference.digest).ok_or_else(|| {
             EncodingError::Integrity("encoded source omitted a required chunk".into())
         })?;
-        let object_digest = decode_digest(&object.digest)?;
         chunk_locators.push(PhysicalLocator {
-            object_id: object.object_id.clone(),
-            object_digest,
+            object_id: locator.object_id.clone(),
+            object_digest: locator.object_digest,
             logical_digest: Some(reference.digest),
-            byte_length: object.byte_length,
-            encoding_version: 1,
+            logical_length: locator.logical_length,
+            byte_length: locator.byte_length,
+            encoding_version: locator.encoding_version,
         });
     }
     let recipe = SourceRecipeEnvelope {
@@ -1309,6 +1336,7 @@ mod tests {
             object_id: ObjectId::parse("0123456789abcdef0123456789abcdef").expect("object id"),
             object_digest: [8u8; 32],
             logical_digest: Some(digest),
+            logical_length: 8,
             byte_length: 8,
             encoding_version: 1,
         };
