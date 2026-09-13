@@ -780,11 +780,7 @@ impl Catalog {
             .map_err(|e| CatalogError::Invalid(e.to_string()))?;
         let kind = match request.kind {
             "source_publish" => OperationKind::SourcePublish,
-            // The HTTP replacement route historically called this intent
-            // `replace`. It is the same v2 display publication receipt: keep
-            // one canonical operation kind so pending/commit/recovery queries
-            // cannot strand a replacement under a legacy-only kind.
-            "display_publish" | "replace" => OperationKind::DisplayPublish,
+            "display_publish" => OperationKind::DisplayPublish,
             "checkpoint" => OperationKind::Checkpoint,
             "checkpoint_delete" => OperationKind::CheckpointDelete,
             "journal_append" => OperationKind::JournalAppend,
@@ -897,8 +893,99 @@ impl Catalog {
             if !object.contains_key("version") {
                 object.insert("version".into(), serde_json::json!(2));
             }
-            serde_json::to_string(&value)
-                .map_err(|error| CatalogError::Invalid(format!("agent operation plan: {error}")))?
+            let actor = object
+                .get_mut("actor")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| CatalogError::Invalid("agent operation actor is missing".into()))?;
+            let supplied_account = actor
+                .get("account_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let owner_key = actor
+                .get("owner_key")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let link_hash = actor
+                .get("link_hash")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            if supplied_account.is_empty() && !link_hash.is_empty() {
+                actor.remove("owner_key");
+                serde_json::to_string(&value).map_err(|error| {
+                    CatalogError::Invalid(format!("agent operation plan: {error}"))
+                })?
+            } else {
+                let account_id = if supplied_account.is_empty() {
+                    if owner_key.is_empty() {
+                        return Err(CatalogError::refused(
+                            CatalogRefusal::ActorRights,
+                            "agent operation requires a verified actor credential",
+                        ));
+                    }
+                    format!(
+                        "anonymous:{}",
+                        hex::encode(sha2::Sha256::digest(owner_key.as_bytes()))
+                    )
+                } else {
+                    supplied_account
+                };
+                if account_id.starts_with("anonymous:") {
+                    if owner_key.is_empty()
+                        || account_id
+                            != format!(
+                                "anonymous:{}",
+                                hex::encode(sha2::Sha256::digest(owner_key.as_bytes()))
+                            )
+                    {
+                        return Err(CatalogError::refused(
+                            CatalogRefusal::ActorRights,
+                            "anonymous actor credential does not match its account",
+                        ));
+                    }
+                }
+                let stored_generation: String = self
+                    .with_connection(|connection| {
+                        connection
+                            .query_row(
+                                "SELECT session_generation FROM accounts
+                              WHERE id=?1 AND status='active'",
+                                [account_id.as_str()],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(CatalogError::from)
+                    })?
+                    .ok_or_else(|| {
+                        CatalogError::refused(
+                            CatalogRefusal::ActorRights,
+                            "agent actor account is not active",
+                        )
+                    })?;
+                let supplied_generation = actor
+                    .get("generation")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if !supplied_generation.is_empty() && supplied_generation != stored_generation {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::ActorRights,
+                        "agent actor session generation changed",
+                    ));
+                }
+                actor.insert("account_id".into(), serde_json::Value::String(account_id));
+                actor.insert(
+                    "generation".into(),
+                    serde_json::Value::String(stored_generation),
+                );
+                // Bearer credentials authenticate admission only and never enter
+                // the durable operation plan.
+                actor.remove("owner_key");
+                serde_json::to_string(&value).map_err(|error| {
+                    CatalogError::Invalid(format!("agent operation plan: {error}"))
+                })?
+            }
         } else {
             request.intent.to_owned()
         };

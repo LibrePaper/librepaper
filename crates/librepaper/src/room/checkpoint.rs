@@ -314,7 +314,12 @@ impl Room {
         by: impl Into<Attribution>,
         actor: crate::storage::catalog::MutationAuthority<'_>,
     ) -> Result<Option<String>, WriteError> {
-        self.checkpoint_impl(why, &by.into(), false, false, None, None, Some(actor))
+        // An agent operation is a distinct source effect even when its
+        // resulting bytes equal an existing checkpoint. Its prepared receipt
+        // must be settled by this checkpoint transaction, so it cannot take
+        // the ordinary content-deduplication branch.
+        let force_event = actor.agent_checkpoint.is_some();
+        self.checkpoint_impl(why, &by.into(), false, force_event, None, None, Some(actor))
             .await
     }
 
@@ -1610,13 +1615,61 @@ impl Room {
             closure_hasher.update([0]);
         }
         let closure_digest = hex::encode(closure_hasher.finalize());
+        let authority_account = if !actor.account_id.is_empty() {
+            actor.account_id.to_owned()
+        } else if !actor.owner_key.is_empty() {
+            format!(
+                "anonymous:{}",
+                hex::encode(Sha256::digest(actor.owner_key.as_bytes()))
+            )
+        } else {
+            String::new()
+        };
+        if authority_account.starts_with("anonymous:")
+            && (!actor.owner_key.is_empty()
+                && authority_account
+                    != format!(
+                        "anonymous:{}",
+                        hex::encode(Sha256::digest(actor.owner_key.as_bytes()))
+                    ))
+        {
+            return Err(WriteError::Storage(
+                "anonymous actor credential does not match its account".into(),
+            ));
+        }
+        let authority_generation = if !authority_account.is_empty() {
+            let account = catalog
+                .execute_catalog(256, {
+                    let account_id = authority_account.clone();
+                    move |catalog| catalog.account(&account_id)
+                })
+                .await
+                .map_err(WriteError::from)?
+                .ok_or(WriteError::NotFound)?;
+            if account.status != "active" {
+                return Err(WriteError::Storage(
+                    "checkpoint actor account is not active".into(),
+                ));
+            }
+            if !actor.generation.is_empty() && actor.generation != account.session_generation {
+                return Err(WriteError::Conflict(
+                    "checkpoint actor session generation changed".into(),
+                ));
+            }
+            account.session_generation
+        } else {
+            String::new()
+        };
         let authority = serde_json::json!({
-            "account_id": actor.account_id,
-            "session_generation": actor.generation,
+            "account_id": authority_account,
+            "session_generation": authority_generation,
             "link_hash": actor.link_hash,
             "policy_editor": actor.policy_editor,
             "automation": actor.automation,
-            "unowned_publisher": actor.unowned_publisher,
+            "internal_checkpoint": actor.unowned_publisher
+                && actor.account_id.is_empty()
+                && actor.owner_key.is_empty()
+                && actor.link_hash.is_empty(),
             "execution_epoch": actor.execution_epoch,
             "agent_source_revision": agent_checkpoint
                 .map(|proof| proof.source_revision.as_str()),

@@ -1701,61 +1701,76 @@ impl Room {
         acceptance: Option<AgentAcceptanceIntent>,
         authority: AgentAuthority,
     ) -> Result<AgentReceipt, AgentError> {
-        let receipt = AgentReceipt {
-            operation: key.clone(),
-            status: "committed".into(),
-            source_revision_before: applied.before_tree.clone(),
-            source_revision_after: applied.after_tree.clone(),
-            replay,
-            accepted_comment_id: acceptance
-                .as_ref()
-                .map(|acceptance| acceptance.comment_id.clone()),
+        // Agent source effects share the prepared source-writer operation with
+        // their checkpoint.  The checkpoint commit settles the source head,
+        // annotation acceptance, and receipt in one SQL transaction; a
+        // standalone receipt here would expose an acknowledged operation with
+        // no durable source checkpoint after a crash.
+        let existing = catalog
+            .execute_catalog(request_id.len() + self.storage_id.len() + 128, {
+                let storage_id = self.storage_id.clone();
+                let request_id = request_id.to_owned();
+                move |catalog| catalog.operation(&storage_id, &request_id)
+            })
+            .await
+            .map_err(|error| AgentError::Storage(error.to_string()))?
+            .ok_or(AgentError::NotFound)?;
+        if existing.status == "committed" {
+            return receipt_from_result(&existing.result, true);
+        }
+        if existing.status != "prepared" {
+            return Err(AgentError::Conflict(
+                "agent operation is not prepared".into(),
+            ));
+        }
+        let checkpoint_proof = crate::storage::catalog::AgentCheckpointCommit {
+            request_id: request_id.to_owned(),
+            digest: request_digest.to_owned(),
+            operation: serde_json::to_value(key)
+                .map_err(|error| AgentError::Storage(error.to_string()))?,
+            source_revision: applied.after_tree.clone(),
         };
-        let result = serde_json::to_string(&receipt)
-            .map_err(|error| AgentError::Storage(error.to_string()))?;
-        let accepted_comment_id = acceptance
-            .as_ref()
-            .map(|acceptance| acceptance.comment_id.clone());
+        let mutation_authority = crate::storage::catalog::MutationAuthority {
+            account_id: &authority.account_id,
+            owner_key: &authority.owner_key,
+            generation: &authority.generation,
+            link_hash: &authority.link_hash,
+            policy_editor: authority.policy_editor,
+            automation: authority.automation,
+            unowned_publisher: authority.unowned_publisher,
+            execution_epoch: &authority.execution_epoch,
+            agent_checkpoint: Some(&checkpoint_proof),
+        };
+        let attribution = if !authority.account_id.is_empty() {
+            crate::room::Attribution::account(&authority.account_id, &authority.account_id)
+        } else if !authority.link_hash.is_empty() {
+            crate::room::Attribution::unattributed(&authority.link_hash)
+        } else {
+            crate::room::Attribution::system()
+        };
+        let checkpoint = self
+            .checkpoint_now_with_authority("agent_apply", attribution, mutation_authority)
+            .await
+            .map_err(AgentError::from)?
+            .ok_or_else(|| {
+                AgentError::Conflict("agent source checkpoint was not committed".into())
+            })?;
         let storage_id = self.storage_id.clone();
-        let request_id_owned = request_id.to_string();
-        let digest_owned = request_digest.to_owned();
-        let acceptance_for_commit = acceptance.clone();
-        let committed = catalog
+        let operation_id = request_id.to_owned();
+        let operation = catalog
             .execute_catalog(
-                result.len() + request_id.len() + storage_id.len(),
-                move |catalog| {
-                    catalog.commit_agent_source_operation(
-                        &storage_id,
-                        &request_id_owned,
-                        &digest_owned,
-                        &result,
-                        acceptance_for_commit.as_ref().map(|acceptance| {
-                            (acceptance.comment_id.as_str(), acceptance.expected_seq)
-                        }),
-                        &authority.execution_epoch,
-                        crate::storage::catalog::MutationAuthority {
-                            account_id: &authority.account_id,
-                            owner_key: &authority.owner_key,
-                            generation: &authority.generation,
-                            link_hash: &authority.link_hash,
-                            policy_editor: authority.policy_editor,
-                            automation: authority.automation,
-                            unowned_publisher: authority.unowned_publisher,
-                            execution_epoch: &authority.execution_epoch,
-                            agent_checkpoint: None,
-                        },
-                    )
-                },
+                storage_id.len() + operation_id.len() + 128,
+                move |catalog| catalog.operation(&storage_id, &operation_id),
             )
-            .await;
-        if let Err(error) = committed {
-            return Err(AgentError::Storage(error.to_string()));
+            .await
+            .map_err(|error| AgentError::Storage(error.to_string()))?
+            .ok_or(AgentError::NotFound)?;
+        if operation.status != "committed" {
+            return Err(AgentError::Conflict(format!(
+                "agent checkpoint {checkpoint} did not settle its operation"
+            )));
         }
         if acceptance.is_some() {
-            // The source receipt transaction also settled the annotation.
-            // Refresh the room copy before returning so a same-request read
-            // sees the accepted outcome and the incremented annotation
-            // revision, rather than the stale pre-transaction comment.
             match super::load_catalog_comments(catalog, &self.slug).await {
                 Ok((seq, comments)) => {
                     let mut state = self.state.lock().await;
@@ -1775,29 +1790,10 @@ impl Room {
                     );
                 }
             }
-            if let Some(comment_id) = accepted_comment_id.as_deref() {
-                if let Some(comment) = self.agent_comment(comment_id).await {
-                    let annotation_revision = self.state.lock().await.seq;
-                    let event = self
-                        .comment_event_for(
-                            &serde_json::json!({
-                                "type": "comment",
-                                "comment": comment,
-                                "annotation_revision": annotation_revision,
-                            }),
-                            "",
-                            false,
-                        )
-                        .await;
-                    self.broadcast(&event).await;
-                }
-            }
         }
-        // The receipt is now the durable replay record; retaining a backup
-        // after this point is safe but needlessly consumes object storage.
         let backup = backup_key(&self.storage_id, request_id);
         let _ = self.blobs.delete(&[backup]).await;
-        Ok(receipt)
+        receipt_from_result(&operation.result, replay)
     }
 
     /// Undo an effect rejected before storage could report an ambiguous write.
