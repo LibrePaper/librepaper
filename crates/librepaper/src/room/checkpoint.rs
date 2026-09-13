@@ -429,6 +429,22 @@ impl Room {
         // the guard's drop is what lets the sweep at the end of another
         // checkpoint know it is alone again.
         let _in_flight = InFlight::new(&self.checkpointing);
+        // Capture the durable fences before taking the tree snapshot. The
+        // final v2 commit compares both fences again, so an acknowledgement
+        // racing this capture conservatively rejects this checkpoint rather
+        // than assigning its newer journal cursor to older tree bytes.
+        let (snapshot_source_generation, snapshot_journal) =
+            if let Some(catalog) = self.catalog.get() {
+                let document_id = crate::storage::catalog::DocumentId::new(self.storage_id.clone())
+                    .map_err(|error| WriteError::Storage(error.to_string()))?;
+                let (source_generation, journal_epoch, journal_sequence) = catalog
+                    .execute_catalog(256, move |catalog| catalog.v2_document_fence(&document_id))
+                    .await
+                    .map_err(WriteError::from)?;
+                (source_generation, (journal_epoch, journal_sequence))
+            } else {
+                (0, (0, 0))
+            };
         let (tree, bodies, format, last, deferred, tree_generation) = {
             let mut state = self.state.lock().await;
             // A deliberate write inside the defer window is not refused; it
@@ -478,32 +494,6 @@ impl Room {
                 )
             }
         };
-        // Capture the durable fences immediately after taking the immutable
-        // room snapshot. The checkpoint gate excludes another checkpoint, and
-        // the CAS in the final transaction rejects a journal/source change
-        // that races this capture; reading these values before the snapshot
-        // could attach a newer tree to an older durability watermark.
-        let (snapshot_source_generation, snapshot_journal) =
-            if let Some(catalog) = self.catalog.get() {
-                let document_id = crate::storage::catalog::DocumentId::new(self.storage_id.clone())
-                    .map_err(|error| WriteError::Storage(error.to_string()))?;
-                let source_generation = catalog
-                    .execute_catalog(256, {
-                        let document_id = document_id.clone();
-                        move |catalog| catalog.v2_document_source_generation(&document_id)
-                    })
-                    .await
-                    .map_err(WriteError::from)?;
-                let journal = catalog
-                    .execute_catalog(256, move |catalog| {
-                        catalog.v2_document_journal_head(&document_id)
-                    })
-                    .await
-                    .map_err(WriteError::from)?;
-                (source_generation, journal)
-            } else {
-                (0, (0, 0))
-            };
         if deferred {
             return Ok(None);
         }
@@ -1303,7 +1293,7 @@ impl Room {
         let now =
             UnixMillis::new(now_ms).map_err(|error| WriteError::Storage(error.to_string()))?;
         let (journal_epoch, journal_sequence) = journal;
-        let operation_id = OperationId::new(hex::encode(crate::auth::random_bytes(16)))
+        let generated_operation_id = OperationId::new(hex::encode(crate::auth::random_bytes(16)))
             .map_err(|error| WriteError::Storage(error.to_string()))?;
         let checkpoint_id =
             crate::storage::catalog::CheckpointId::new(hex::encode(crate::auth::random_bytes(16)))
@@ -1664,6 +1654,24 @@ impl Room {
             return Err(WriteError::Storage(
                 "checkpoint actor has no accountable identity".into(),
             ));
+        };
+        let operation_id = if let Some(agent) = agent_checkpoint {
+            let document = document_id.clone();
+            let actor_key = actor_key.clone();
+            let request_key = agent.request_id.clone();
+            catalog
+                .execute_catalog(512, move |catalog| {
+                    catalog.prepared_agent_operation_id(&document, &actor_key, &request_key)
+                })
+                .await
+                .map_err(WriteError::from)?
+                .ok_or_else(|| {
+                    WriteError::Conflict(
+                        "agent source operation is not prepared for checkpoint commit".into(),
+                    )
+                })?
+        } else {
+            generated_operation_id
         };
         let operation_expires = now_ms
             .checked_add(120_000)

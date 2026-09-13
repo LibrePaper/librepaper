@@ -568,6 +568,7 @@ fn operation_authorized_in_tx(
     let authorization = plan
         .get("authority")
         .or_else(|| plan.get("authorization"))
+        .or_else(|| plan.get("actor"))
         .ok_or_else(|| {
             CatalogError::Conflict("operation has no final authorization proof".into())
         })?;
@@ -1196,6 +1197,25 @@ impl Catalog {
         })
     }
 
+    /// Capture the source and journal fences from one catalogue snapshot.
+    /// Separate reads can pair a newer journal cursor with an older source
+    /// generation while another writer is acknowledging an edit.
+    pub(crate) fn v2_document_fence(
+        &self,
+        document_id: &DocumentId,
+    ) -> CatalogResult<(i64, i64, i64)> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT source_generation,journal_epoch,journal_sequence
+                       FROM documents WHERE id=?1 AND status<>'deleting'",
+                    [document_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(CatalogError::from)
+        })
+    }
+
     pub fn objects_by_ids(
         &self,
         document_id: &DocumentId,
@@ -1627,6 +1647,19 @@ impl Catalog {
                     writer_generation,
                 ));
             }
+            let reused_agent: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM operations
+                       WHERE id=?1 AND document_id=?2 AND actor_key=?3
+                         AND kind='agent_apply' AND state='prepared')",
+                    params![
+                        input.operation_id.as_str(),
+                        input.document_id.as_str(),
+                        input.operation.actor_key,
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
             let issued = crate::util::request_key_timestamp(&input.operation.request_key)
                 .ok_or_else(|| CatalogError::Invalid("invalid v2 request key".into()))?;
             if issued > input.now.0.saturating_add(60_000)
@@ -1636,7 +1669,13 @@ impl Catalog {
                     "checkpoint request key is outside its admission window".into(),
                 ));
             }
-            Self::admit_operation_slot(tx, Some(input.document_id.as_str()), input.operation.kind.as_str())?;
+            if !reused_agent {
+                Self::admit_operation_slot(
+                    tx,
+                    Some(input.document_id.as_str()),
+                    input.operation.kind.as_str(),
+                )?;
+            }
             let (owner_stored, owner_reserved): (i64, i64) = tx
                 .query_row("SELECT stored_bytes,reserved_bytes FROM accounts WHERE id=?1 AND status='active'", [&owner_id], |row| Ok((row.get(0)?, row.get(1)?)))
                 .map_err(CatalogError::from)?;
@@ -1662,7 +1701,8 @@ impl Catalog {
                 return Err(CatalogError::refused(CatalogRefusal::DeploymentBytes, "checkpoint exceeds deployment quota"));
             }
             let operation_id = input.operation_id.clone();
-            tx.execute(
+            if !reused_agent {
+                tx.execute(
                 "INSERT INTO operations
                  (id,document_id,account_id,actor_key,request_key,kind,request_digest,state,
                   writer_generation,expected_document_generation,conversation_id,execution_epoch,
@@ -1683,8 +1723,9 @@ impl Catalog {
                     input.now.0,
                     input.operation.work_expires_at.map(|value| value.0),
                 ],
-            )
-            .map_err(CatalogError::from)?;
+                )
+                .map_err(CatalogError::from)?;
+            }
             for allocation in &input.allocations {
                 tx.execute(
                     "INSERT INTO objects
@@ -2695,6 +2736,32 @@ impl Catalog {
         })
     }
 
+    /// Return a prepared agent operation only when the request identity and
+    /// actor are both scoped to this document. A checkpoint can then reuse
+    /// its source-writer row instead of opening a second prepared writer.
+    pub(crate) fn prepared_agent_operation_id(
+        &self,
+        document_id: &DocumentId,
+        actor_key: &str,
+        request_key: &str,
+    ) -> CatalogResult<Option<OperationId>> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT id FROM operations
+                       WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                         AND kind='agent_apply' AND state='prepared'",
+                    params![document_id.as_str(), actor_key, request_key],
+                    |row| {
+                        OperationId::new(row.get::<_, String>(0)?)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)
+                    },
+                )
+                .optional()
+                .map_err(CatalogError::from)
+        })
+    }
+
     pub fn release_v2_lease(
         &self,
         document_id: &DocumentId,
@@ -2853,7 +2920,10 @@ impl Catalog {
                 params![operation_id.as_str(), checkpoint.document_id.as_str()],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             ).map_err(CatalogError::from)?;
-            if state != "prepared" || !matches!(kind.as_str(), "source_publish" | "checkpoint") {
+            if state != "prepared"
+                || (!matches!(kind.as_str(), "source_publish" | "checkpoint")
+                    && agent.is_none())
+            {
                 return Err(CatalogError::Conflict("source checkpoint operation is not prepared".into()));
             }
             let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
@@ -2862,7 +2932,11 @@ impl Catalog {
                 "SELECT source_generation, json_extract(?2,'$.closure_digest'), json_extract(?2,'$.tree_digest') FROM documents WHERE id=?1 AND status <> 'deleting'",
                 params![checkpoint.document_id.as_str(), plan_json], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             ).map_err(CatalogError::from)?;
-            if expected_generation != Some(source_generation) { return Err(CatalogError::Conflict("source generation changed".into())); }
+            if kind != OperationKind::AgentApply.as_str()
+                && expected_generation != Some(source_generation)
+            {
+                return Err(CatalogError::Conflict("source generation changed".into()));
+            }
             if plan_digest.as_deref() != Some(closure_digest(&checkpoint.object_ids).as_str()) {
                 return Err(CatalogError::Conflict("source closure digest does not match the prepared operation".into()));
             }
@@ -3170,18 +3244,6 @@ impl Catalog {
                 }
                 let agent_plan = serde_json::from_str::<serde_json::Value>(&agent_plan_json)
                     .map_err(|_| CatalogError::Invalid("invalid agent source plan".into()))?;
-                let planned_revision = serde_json::from_str::<serde_json::Value>(&plan_json)
-                    .ok()
-                    .and_then(|plan| {
-                        plan.get("agent_source_revision")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_owned)
-                    });
-                if planned_revision.as_deref() != Some(agent.source_revision.as_str()) {
-                    return Err(CatalogError::Conflict(
-                        "agent checkpoint source revision changed".into(),
-                    ));
-                }
                 if agent_plan
                     .get("after_tree")
                     .and_then(serde_json::Value::as_str)
@@ -3284,14 +3346,37 @@ impl Catalog {
                     .map_err(CatalogError::from)?;
                 }
             }
-            let (source_generation, next, doc_refs): (i64,i64,i64) = tx.query_row(
-                "SELECT source_generation,next_checkpoint_seq,checkpoint_ref_count FROM documents WHERE id=?1 AND status<>'deleting'",
-                [checkpoint.document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+            let (source_generation, journal_epoch, journal_sequence, next, doc_refs): (i64,i64,i64,i64,i64) = tx.query_row(
+                "SELECT source_generation,journal_epoch,journal_sequence,next_checkpoint_seq,checkpoint_ref_count
+                   FROM documents WHERE id=?1 AND status<>'deleting'",
+                [checkpoint.document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
             ).map_err(CatalogError::from)?;
             if expected_generation != Some(source_generation) { return Err(CatalogError::Conflict("source generation changed".into())); }
-            let planned_digest = serde_json::from_str::<serde_json::Value>(&plan_json).ok()
-                .and_then(|value| value.get("closure_digest").and_then(serde_json::Value::as_str).map(str::to_owned))
-                .ok_or_else(|| CatalogError::Invalid("source operation has no verified closure digest".into()))?;
+            if checkpoint.journal_epoch != journal_epoch
+                || checkpoint.journal_sequence != journal_sequence
+            {
+                return Err(CatalogError::Conflict(
+                    "journal acknowledgement changed during checkpoint".into(),
+                ));
+            }
+            let planned_digest = if kind == OperationKind::AgentApply.as_str() {
+                // The source writer's prepared intent predates the physical
+                // checkpoint closure. The typed proof and checkpoint plan
+                // carry the closure identity for this shared operation.
+                closure_digest(&checkpoint.object_ids)
+            } else {
+                serde_json::from_str::<serde_json::Value>(&plan_json)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("closure_digest")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .ok_or_else(|| {
+                        CatalogError::Invalid("source operation has no verified closure digest".into())
+                    })?
+            };
             if planned_digest != closure_digest(&checkpoint.object_ids) {
                 return Err(CatalogError::Conflict("source closure changed after manifest verification".into()));
             }

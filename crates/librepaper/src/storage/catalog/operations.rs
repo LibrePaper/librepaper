@@ -888,6 +888,20 @@ impl Catalog {
             })?;
         }
         let now = UnixMillis::new(request.created_at)?;
+        let canonical_intent = if kind == OperationKind::AgentApply {
+            let mut value: serde_json::Value = serde_json::from_str(request.intent)
+                .map_err(|error| CatalogError::Invalid(format!("agent operation plan: {error}")))?;
+            let object = value.as_object_mut().ok_or_else(|| {
+                CatalogError::Invalid("agent operation plan must be an object".into())
+            })?;
+            if !object.contains_key("version") {
+                object.insert("version".into(), serde_json::json!(2));
+            }
+            serde_json::to_string(&value)
+                .map_err(|error| CatalogError::Invalid(format!("agent operation plan: {error}")))?
+        } else {
+            request.intent.to_owned()
+        };
         let operation = self.prepare_v2_operation(
             &V2OperationInput {
                 scope: OperationScope::Document(document_id.clone()),
@@ -895,7 +909,7 @@ impl Catalog {
                 request_key: request.request_id.to_owned(),
                 kind,
                 request_digest: request.request_digest.to_owned(),
-                plan_json: request.intent.to_owned(),
+                plan_json: canonical_intent.clone(),
                 expected_document_generation: None,
                 conversation_id: None,
                 execution_epoch: None,
@@ -909,7 +923,7 @@ impl Catalog {
             kind: operation.kind,
             request_digest: operation.request_digest,
             status: operation.state,
-            intent: request.intent.to_owned(),
+            intent: canonical_intent,
             result: String::new(),
             created_at: request.created_at,
         })
