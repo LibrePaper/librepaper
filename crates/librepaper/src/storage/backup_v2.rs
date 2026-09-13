@@ -6,11 +6,14 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::{Read, Write};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use rusqlite::{Connection, OpenFlags};
 
 use crate::config::DeploymentPaths;
 use crate::storage::blob::{parse_v2_object_key, BlobStore, FsStore};
@@ -191,8 +194,8 @@ pub fn backup_manifest_key(backup_id: &str) -> String {
 
 pub async fn create_backup(
     catalog: &dyn V2BackupCatalog,
-    source: &dyn BlobStore,
-    destination: &dyn BlobStore,
+    source: Arc<dyn BlobStore>,
+    destination: Arc<dyn BlobStore>,
     backup_id: &str,
     now: i64,
 ) -> Result<BackupManifestV2, BackupV2Error> {
@@ -238,11 +241,11 @@ pub async fn create_backup(
     }
     let result = async {
         let catalog_key = format!("{BACKUP_PREFIX_V2}/{backup_id}/catalog.db");
-        put_new_destination(destination, &catalog_key, snapshot.catalog_bytes, "application/vnd.sqlite3")
+        put_new_destination(Arc::clone(&destination), &catalog_key, snapshot.catalog_bytes, "application/vnd.sqlite3")
             .await?;
-        copy_file_payload(destination, &manifest.identity, &snapshot.identity.bytes).await?;
+        copy_file_payload(&destination, &manifest.identity, &snapshot.identity.bytes).await?;
         for (secret, entry) in snapshot.secrets.iter().zip(&manifest.secrets) {
-            copy_file_payload(destination, entry, &secret.bytes).await?;
+            copy_file_payload(&destination, entry, &secret.bytes).await?;
         }
         let mut after = None;
         let mut copied = 0usize;
@@ -274,7 +277,7 @@ pub async fn create_backup(
                     object.source_key
                 )));
             }
-            put_new_destination(destination, &object.backup_key, body, "application/octet-stream").await?;
+            put_new_destination(Arc::clone(&destination), &object.backup_key, body, "application/octet-stream").await?;
             manifest.objects.push(object);
                 copied = copied.saturating_add(1);
             }
@@ -292,7 +295,7 @@ pub async fn create_backup(
         let encoded = serde_json::to_vec(&manifest)
             .map_err(|error| BackupV2Error::Invalid(format!("manifest encoding failed: {error}")))?;
         let manifest_digest = hex::encode(Sha256::digest(&encoded));
-        put_new_destination(destination, &backup_manifest_key(backup_id), encoded, "application/json").await?;
+        put_new_destination(Arc::clone(&destination), &backup_manifest_key(backup_id), encoded, "application/json").await?;
         catalog
             .commit_backup(&manifest.operation_id, &manifest_digest)
             .await
@@ -325,6 +328,10 @@ pub trait V2RestoreCatalog: Send + Sync {
         snapshot_revision: i64,
         catalog_bytes: Vec<u8>,
     ) -> Result<(), String>;
+    /// A restored catalogue contains the source backup operation copied by
+    /// the SQLite image.  It belongs to the source deployment and must be
+    /// closed before the destination can be considered live.
+    async fn abort_restored_backup(&self, operation_id: &str) -> Result<(), String>;
     async fn install_deployment_file(&self, relative: &str, bytes: Vec<u8>) -> Result<(), String>;
     async fn finish_restore(&self) -> Result<(), String>;
 }
@@ -332,7 +339,7 @@ pub trait V2RestoreCatalog: Send + Sync {
 pub async fn restore_backup(
     catalog: &dyn V2RestoreCatalog,
     backup: &dyn BlobStore,
-    target: &dyn BlobStore,
+    target: Arc<dyn BlobStore>,
     backup_id: &str,
 ) -> Result<RestoreReport, BackupV2Error> {
     if !valid_backup_id(backup_id) {
@@ -367,6 +374,11 @@ pub async fn restore_backup(
         if body.len() as u64 != file.byte_length || hex::encode(Sha256::digest(&body)) != file.digest {
             return Err(BackupV2Error::Corrupt(format!("backup file {} failed digest verification", file.relative)));
         }
+        if file.relative == manifest.identity.relative
+            && std::str::from_utf8(&body).map(str::trim).ok() != Some(manifest.deployment_id.as_str())
+        {
+            return Err(BackupV2Error::Corrupt("deployment identity payload disagrees with manifest".into()));
+        }
         catalog
             .install_deployment_file(&file.relative, body)
             .await
@@ -378,6 +390,10 @@ pub async fn restore_backup(
             manifest.snapshot_revision,
             catalog_bytes,
         )
+        .await
+        .map_err(BackupV2Error::Catalog)?;
+    catalog
+        .abort_restored_backup(&manifest.operation_id)
         .await
         .map_err(BackupV2Error::Catalog)?;
     let mut report = RestoreReport {
@@ -397,10 +413,16 @@ pub async fn restore_backup(
                 object.backup_key
             )));
         }
-        target
-            .put_new(&object.source_key, body, "application/octet-stream")
-            .await
-            .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+        let key = object.source_key.clone();
+        let target_for_put = Arc::clone(&target);
+        tokio::spawn(async move {
+            target_for_put
+                .put_new(&key, body, "application/octet-stream")
+                .await
+                .map_err(|error| BackupV2Error::Storage(error.to_string()))
+        })
+        .await
+        .map_err(|error| BackupV2Error::Storage(format!("restore object task failed: {error}")))??;
         report.objects_restored += 1;
         report.bytes_restored = report.bytes_restored.saturating_add(object.byte_length);
     }
@@ -409,7 +431,7 @@ pub async fn restore_backup(
 }
 
 async fn put_new_destination(
-    destination: &dyn BlobStore,
+    destination: Arc<dyn BlobStore>,
     key: &str,
     body: Vec<u8>,
     content_type: &str,
@@ -421,21 +443,27 @@ async fn put_new_destination(
     {
         return Err(BackupV2Error::Invalid(format!("backup destination already contains {key}")));
     }
-    destination
-        .put(key, body, content_type)
-        .await
-        .map_err(|error| BackupV2Error::Storage(error.to_string()))
+    let key = key.to_owned();
+    let content_type = content_type.to_owned();
+    tokio::spawn(async move {
+        destination
+            .put(&key, body, &content_type)
+            .await
+            .map_err(|error| BackupV2Error::Storage(error.to_string()))
+    })
+    .await
+    .map_err(|error| BackupV2Error::Storage(format!("backup object task failed: {error}")))?
 }
 
 async fn copy_file_payload(
-    destination: &dyn BlobStore,
+    destination: &Arc<dyn BlobStore>,
     entry: &BackupFileEntry,
     body: &[u8],
 ) -> Result<(), BackupV2Error> {
     if body.len() as u64 != entry.byte_length || hex::encode(Sha256::digest(body)) != entry.digest {
         return Err(BackupV2Error::Corrupt(format!("backup payload {} failed digest verification", entry.relative)));
     }
-    put_new_destination(destination, &entry.backup_key, body.to_vec(), "application/octet-stream").await
+    put_new_destination(Arc::clone(destination), &entry.backup_key, body.to_vec(), "application/octet-stream").await
 }
 
 fn valid_backup_file(file: &BackupFileEntry) -> bool {
@@ -465,11 +493,19 @@ fn is_digest(value: &str) -> bool {
 pub struct LocalV2BackupCatalog {
     catalog: Arc<Catalog>,
     paths: DeploymentPaths,
+    // The snapshot is deliberately retained until the operation is settled.
+    // Object pages must all read this immutable image, never the live
+    // catalogue, so a concurrent append cannot change the copied set.
+    snapshot_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl LocalV2BackupCatalog {
     pub fn new(catalog: Arc<Catalog>, paths: DeploymentPaths) -> Self {
-        Self { catalog, paths }
+        Self {
+            catalog,
+            paths,
+            snapshot_path: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
@@ -482,19 +518,31 @@ fn secret_payloads(paths: &DeploymentPaths) -> Result<Vec<BackupPayload>, Backup
     if !paths.secrets.exists() {
         return Ok(files);
     }
+    if fs::symlink_metadata(&paths.secrets)
+        .map_err(|error| BackupV2Error::Storage(error.to_string()))?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(BackupV2Error::Invalid("secret directory is a symlink".into()));
+    }
     for entry in fs::read_dir(&paths.secrets)
         .map_err(|error| BackupV2Error::Storage(error.to_string()))?
     {
         let entry = entry.map_err(|error| BackupV2Error::Storage(error.to_string()))?;
         let path = entry.path();
-        if !path.is_file() {
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(BackupV2Error::Invalid("secret directory contains a symlink".into()));
+        }
+        if !metadata.is_file() {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
             return Err(BackupV2Error::Invalid("unsafe secret filename".into()));
         }
-        let bytes = fs::read(&path).map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+        let bytes = secure_read(&path).map_err(BackupV2Error::Storage)?;
         files.push(BackupPayload {
             relative: format!("secrets/{name}"),
             digest: hex::encode(Sha256::digest(&bytes)),
@@ -511,34 +559,17 @@ fn secret_payloads(paths: &DeploymentPaths) -> Result<Vec<BackupPayload>, Backup
 #[async_trait::async_trait]
 impl V2BackupCatalog for LocalV2BackupCatalog {
     async fn prepare_backup(&self, now: i64) -> Result<BackupSnapshot, String> {
-        let identity = fs::read(&self.paths.deployment_identity).map_err(|error| error.to_string())?;
+        let identity = secure_read(&self.paths.deployment_identity)?;
         let secrets = secret_payloads(&self.paths).map_err(|error| error.to_string())?;
         let snapshot_path = self
             .paths
             .state
             .join(format!(".backup-v2-{}.db", std::process::id()));
         let catalog = Arc::clone(&self.catalog);
-        let path_for_job = snapshot_path.clone();
-        let (operation_id, deployment_id, revision, object_count) = catalog
+        let (operation_id, deployment_id, revision) = catalog
             .execute_catalog(4096, move |catalog| {
-                if path_for_job.exists() {
-                    return Err(crate::storage::catalog::CatalogError::Conflict(
-                        "another v2 catalog snapshot is in progress".into(),
-                    ));
-                }
-                if let Some(parent) = path_for_job.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|error| crate::storage::catalog::CatalogError::Invalid(error.to_string()))?;
-                }
                 catalog
                     .with_connection(|connection| {
-                        connection
-                            .execute_batch("PRAGMA wal_checkpoint(FULL);")
-                            .map_err(crate::storage::catalog::CatalogError::from)?;
-                        let escaped = path_for_job.to_string_lossy().to_string();
-                        connection
-                            .execute("VACUUM INTO ?1", [&escaped])
-                            .map_err(crate::storage::catalog::CatalogError::from)?;
                         let (deployment_id, revision): (String, i64) = connection
                             .query_row(
                                 "SELECT deployment_id,catalog_revision FROM server_state WHERE id=1",
@@ -587,25 +618,100 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
                                 ],
                             )
                             .map_err(crate::storage::catalog::CatalogError::from)?;
-                        let object_count: usize = connection
-                            .query_row(
-                                "SELECT count(*) FROM objects WHERE state='available'",
-                                [],
-                                |row| row.get::<_, i64>(0).map(|value| value as usize),
-                            )
-                            .map_err(crate::storage::catalog::CatalogError::from)?;
-                        Ok((operation_id, deployment_id, revision, object_count))
+                        Ok((operation_id, deployment_id, revision))
                     })
             })
             .await
             .map_err(|error| error.to_string())?;
-        let catalog_bytes = fs::read(&snapshot_path).map_err(|error| error.to_string());
-        let _ = fs::remove_file(&snapshot_path);
-        let catalog_bytes = catalog_bytes?;
+        // The prepared operation is committed before VACUUM starts. GC and
+        // compaction therefore observe the backup freeze while the immutable
+        // image is made.
+        if let Some(parent) = snapshot_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        if snapshot_path.exists() {
+            let _ = self.abort_backup(&operation_id).await;
+            return Err("another v2 catalog snapshot is in progress".into());
+        }
+        let path_for_snapshot = snapshot_path.clone();
+        let catalog_for_snapshot = Arc::clone(&self.catalog);
+        let snapshot_result = catalog_for_snapshot
+            .execute_catalog(4096, move |catalog| {
+                catalog.with_connection(|connection| {
+                    connection
+                        .execute_batch("PRAGMA wal_checkpoint(FULL);")
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                    let escaped = path_for_snapshot.to_string_lossy().to_string();
+                    connection
+                        .execute("VACUUM INTO ?1", [&escaped])
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                    Ok(())
+                })
+            })
+            .await;
+        if let Err(error) = snapshot_result {
+            let _ = self.abort_backup(&operation_id).await;
+            let _ = fs::remove_file(&snapshot_path);
+            return Err(error.to_string());
+        }
+        let snapshot_for_read = snapshot_path.clone();
+        let snapshot_read = tokio::task::spawn_blocking(move || -> Result<_, String> {
+                let bytes = fs::read(&snapshot_for_read).map_err(|error| error.to_string())?;
+                if bytes.len() > MAX_CATALOG_SNAPSHOT_BYTES {
+                    return Err("catalog snapshot exceeds backup bound".into());
+                }
+                let connection = Connection::open_with_flags(
+                    &snapshot_for_read,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )
+                .map_err(|error| error.to_string())?;
+                let (deployment, revision): (String, i64) = connection
+                    .query_row(
+                        "SELECT deployment_id,catalog_revision FROM server_state WHERE id=1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let count = connection
+                    .query_row(
+                        "SELECT count(*) FROM objects WHERE state='available'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let count = usize::try_from(count)
+                    .map_err(|_| "invalid object count".to_string())?;
+                Ok((bytes, count, deployment, revision))
+            })
+            .await
+            .map_err(|error| error.to_string());
+        let (catalog_bytes, object_count, snapshot_deployment, snapshot_revision) =
+            match snapshot_read {
+                Ok(Ok(value)) => value,
+                Ok(Err(error)) => {
+                    let _ = self.abort_backup(&operation_id).await;
+                    let _ = fs::remove_file(&snapshot_path);
+                    return Err(error);
+                }
+                Err(error) => {
+                    let _ = self.abort_backup(&operation_id).await;
+                    let _ = fs::remove_file(&snapshot_path);
+                    return Err(error);
+                }
+            };
+        if snapshot_deployment != deployment_id || snapshot_revision != revision {
+            let _ = self.abort_backup(&operation_id).await;
+            let _ = fs::remove_file(&snapshot_path);
+            return Err("catalog snapshot identity or revision changed".into());
+        }
+        *self
+            .snapshot_path
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot_path);
         Ok(BackupSnapshot {
             operation_id,
-            deployment_id,
-            snapshot_revision: revision,
+            deployment_id: snapshot_deployment,
+            snapshot_revision,
             catalog_bytes,
             object_count,
             identity: BackupPayload {
@@ -629,31 +735,48 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
         }
         let operation_id = operation_id.to_owned();
         let after = after_object_id.map(str::to_owned);
-        let catalog = Arc::clone(&self.catalog);
-        catalog
-            .execute_catalog(2048, move |catalog| {
-                catalog.with_connection(|connection| {
-                    let mut statement = connection
-                        .prepare("SELECT o.document_id,o.id,o.storage_key,o.digest,o.byte_length FROM objects o JOIN operations op ON op.id=?1 WHERE op.kind='backup' AND op.state='prepared' AND o.state='available' AND (?2 IS NULL OR o.id>?2) ORDER BY o.id LIMIT ?3")
-                        .map_err(crate::storage::catalog::CatalogError::from)?;
-                    let rows = statement
-                        .query_map(rusqlite::params![operation_id, after, limit as i64], |row| {
-                            Ok(BackupObjectEntry {
-                                document_id: row.get(0)?,
-                                object_id: row.get(1)?,
-                                source_key: row.get(2)?,
-                                backup_key: String::new(),
-                                digest: row.get(3)?,
-                                byte_length: row.get::<_, i64>(4)?.max(0) as u64,
-                            })
-                        })
-                        .map_err(crate::storage::catalog::CatalogError::from)?;
-                    rows.collect::<Result<Vec<_>, _>>()
-                        .map_err(crate::storage::catalog::CatalogError::from)
+        let snapshot_path = self
+            .snapshot_path
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| "backup has no immutable catalog snapshot".to_string())?;
+        tokio::task::spawn_blocking(move || {
+            let connection = Connection::open_with_flags(
+                snapshot_path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .map_err(|error| error.to_string())?;
+            let prepared: i64 = connection
+                .query_row(
+                    "SELECT count(*) FROM operations WHERE id=?1 AND kind='backup' AND state='prepared'",
+                    [&operation_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if prepared != 1 {
+                return Err("backup operation is absent from immutable snapshot".into());
+            }
+            let mut statement = connection
+                .prepare("SELECT o.document_id,o.id,o.storage_key,o.digest,o.byte_length FROM objects o WHERE o.state='available' AND (?1 IS NULL OR o.id>?1) ORDER BY o.id LIMIT ?2")
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map(rusqlite::params![after, limit as i64], |row| {
+                    Ok(BackupObjectEntry {
+                        document_id: row.get(0)?,
+                        object_id: row.get(1)?,
+                        source_key: row.get(2)?,
+                        backup_key: String::new(),
+                        digest: row.get(3)?,
+                        byte_length: row.get::<_, i64>(4)?.max(0) as u64,
+                    })
                 })
-            })
-            .await
-            .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     async fn commit_backup(&self, operation_id: &str, manifest_digest: &str) -> Result<(), String> {
@@ -677,7 +800,9 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
                 })
             })
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.remove_snapshot();
+        Ok(())
     }
 
     async fn abort_backup(&self, operation_id: &str) -> Result<(), String> {
@@ -697,7 +822,21 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
                 })
             })
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.remove_snapshot();
+        Ok(())
+    }
+}
+
+impl LocalV2BackupCatalog {
+    fn remove_snapshot(&self) {
+        let mut slot = self
+            .snapshot_path
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(path) = slot.take() {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -722,29 +861,103 @@ impl V2RestoreCatalog for LocalV2RestoreCatalog {
         if self.paths.catalog.exists() {
             return Err("restore destination already has a catalog".into());
         }
-        fs::create_dir_all(&self.paths.deployment).map_err(|error| error.to_string())?;
-        fs::create_dir_all(&self.paths.state).map_err(|error| error.to_string())?;
+        create_secure_dirs(&self.paths.deployment)?;
+        create_secure_dirs(&self.paths.state)?;
         let temporary = self.paths.catalog.with_extension("restore");
-        fs::write(&temporary, &catalog_bytes).map_err(|error| error.to_string())?;
+        secure_atomic_write(&temporary, &catalog_bytes)?;
         Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
-        fs::rename(&temporary, &self.paths.catalog).map_err(|error| error.to_string())?;
-        let actual = fs::read_to_string(&self.paths.deployment_identity).unwrap_or_default();
-        if !actual.trim().is_empty() && actual.trim() != deployment_id {
+        let snapshot_identity = Connection::open_with_flags(
+            &temporary,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| error.to_string())?
+        .query_row(
+            "SELECT deployment_id FROM server_state WHERE id=1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| error.to_string())?;
+        if snapshot_identity != deployment_id {
+            let _ = fs::remove_file(&temporary);
             return Err("restore deployment identity does not match the catalog snapshot".into());
         }
+        let actual = fs::read_to_string(&self.paths.deployment_identity).unwrap_or_default();
+        if !actual.trim().is_empty() && actual.trim() != deployment_id {
+            let _ = fs::remove_file(&temporary);
+            return Err("restore deployment identity does not match the catalog snapshot".into());
+        }
+        fs::rename(&temporary, &self.paths.catalog).map_err(|error| error.to_string())?;
+        sync_directory(self.paths.catalog.parent())?;
         Ok(())
+    }
+
+    async fn abort_restored_backup(&self, operation_id: &str) -> Result<(), String> {
+        let operation_id = operation_id.to_owned();
+        let catalog = Catalog::open_with(&self.paths.catalog, true)
+            .map_err(|error| error.to_string())?;
+        catalog
+            .execute_catalog(512, move |catalog| {
+                catalog.with_connection(|connection| {
+                    let now = crate::util::now_millis() as i64;
+                    let changed = connection
+                        .execute(
+                            "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND kind='backup' AND state IN ('prepared','committed')",
+                            rusqlite::params![r#"{"version":2,"aborted_after_restore":true}"#, now, now.saturating_add(7 * 24 * 60 * 60 * 1000), operation_id],
+                        )
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                    if changed != 1 {
+                        return Err(crate::storage::catalog::CatalogError::Conflict(
+                            "copied backup operation is missing or already closed".into(),
+                        ));
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|error| error.to_string())
     }
 
     async fn install_deployment_file(&self, relative: &str, bytes: Vec<u8>) -> Result<(), String> {
         let path = safe_deployment_path(&self.paths.deployment, relative)?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            create_secure_dirs(parent)?;
         }
-        fs::write(path, bytes).map_err(|error| error.to_string())
+        secure_atomic_write(&path, &bytes)
     }
 
     async fn finish_restore(&self) -> Result<(), String> {
-        Catalog::verify_backup_snapshot(&self.paths.catalog).map_err(|error| error.to_string())
+        Catalog::verify_backup_snapshot(&self.paths.catalog).map_err(|error| error.to_string())?;
+        let catalog = Catalog::open_with(&self.paths.catalog, true)
+            .map_err(|error| error.to_string())?;
+        catalog
+            .with_connection(|connection| {
+                let dangling: i64 = connection
+                    .query_row(
+                        "SELECT count(*) FROM objects o LEFT JOIN documents d ON d.id=o.document_id WHERE d.id IS NULL",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                if dangling != 0 {
+                    return Err(crate::storage::catalog::CatalogError::Invalid(
+                        "restored catalog contains dangling physical objects".into(),
+                    ));
+                }
+                let counters_match: i64 = connection
+                    .query_row(
+                        "SELECT CASE WHEN (SELECT stored_bytes FROM server_state WHERE id=1) = (SELECT COALESCE(SUM(byte_length),0) FROM objects WHERE state='available') AND (SELECT COALESCE(SUM(stored_bytes),0) FROM accounts) = (SELECT COALESCE(SUM(byte_length),0) FROM objects WHERE state='available') THEN 1 ELSE 0 END",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                if counters_match != 1 {
+                    return Err(crate::storage::catalog::CatalogError::Invalid(
+                        "restored catalog physical counters do not close".into(),
+                    ));
+                }
+                Ok(())
+            })
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -752,7 +965,107 @@ fn safe_deployment_path(root: &Path, relative: &str) -> Result<PathBuf, String> 
     if relative.is_empty() || relative.starts_with('/') || relative.contains('\\') || relative.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
         return Err("unsafe deployment restore path".into());
     }
-    Ok(root.join(relative))
+    let path = root.join(relative);
+    let mut current = Some(root);
+    while let Some(candidate) = current {
+        if candidate.exists() && fs::symlink_metadata(candidate).map_err(|error| error.to_string())?.file_type().is_symlink() {
+            return Err("restore destination contains a symlinked directory".into());
+        }
+        current = candidate.parent();
+        if candidate == Path::new("/") {
+            break;
+        }
+    }
+    Ok(path)
+}
+
+fn create_secure_dirs(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|error| error.to_string())?;
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        if candidate.exists() && fs::symlink_metadata(candidate).map_err(|error| error.to_string())?.file_type().is_symlink() {
+            return Err("restore destination contains a symlinked directory".into());
+        }
+        current = candidate.parent();
+        if candidate == Path::new("/") {
+            break;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn secure_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if path.exists() {
+        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        return Err(if metadata.file_type().is_symlink() {
+            "refusing to replace a symlink during restore".into()
+        } else {
+            format!("restore destination already contains {}", path.display())
+        });
+    }
+    let parent = path.parent().ok_or_else(|| "restore file has no parent".to_string())?;
+    create_secure_dirs(parent)?;
+    let temporary = parent.join(format!(".{}.restore-{}", path.file_name().and_then(|name| name.to_str()).unwrap_or("file"), std::process::id()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(nofollow_flag());
+    }
+    let result = (|| {
+        let mut file = options.open(&temporary).map_err(|error| error.to_string())?;
+        file.write_all(bytes).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        drop(file);
+        fs::rename(&temporary, path).map_err(|error| error.to_string())?;
+        sync_directory(Some(parent))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn secure_read(path: &Path) -> Result<Vec<u8>, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(format!("refusing to read non-regular file {}", path.display()));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(nofollow_flag());
+    }
+    let mut file = options.open(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|error| error.to_string())?;
+    Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+const fn nofollow_flag() -> i32 { 0o400000 }
+#[cfg(target_os = "macos")]
+const fn nofollow_flag() -> i32 { 0x100 }
+#[cfg(target_os = "freebsd")]
+const fn nofollow_flag() -> i32 { 0x20000 }
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))))]
+const fn nofollow_flag() -> i32 { 0 }
+
+fn sync_directory(path: Option<&Path>) -> Result<(), String> {
+    if let Some(path) = path {
+        let file = OpenOptions::new().read(true).open(path).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 pub async fn backup_cli_v2(
@@ -761,16 +1074,21 @@ pub async fn backup_cli_v2(
     id: String,
 ) {
     let paths = storage.paths().unwrap_or_else(|error| crate::util::die(error));
+    if !paths.catalog.is_file() || !paths.deployment_identity.is_file() {
+        crate::util::die("v2 backup requires an existing deployment catalog and identity");
+    }
+    let _writer_lock = crate::server::serve::acquire_writer_lock(&paths.writer_lock)
+        .unwrap_or_else(|error| crate::util::die(error));
     let backup_id = if id.is_empty() { format!("backup-{}", crate::util::now_millis()) } else { id };
     let catalog = Arc::new(Catalog::open_with(&paths.catalog, storage.fsync).unwrap_or_else(|error| crate::util::die(format!("could not open catalog: {error}"))));
     let source: Arc<dyn BlobStore> = Arc::new(FsStore::new(paths.objects.clone(), storage.fsync));
     let destination_root = PathBuf::from(&output);
-    if destination_root.starts_with(&paths.deployment) {
-        crate::util::die("backup destination must be outside the live deployment");
+    if paths_overlap(&paths.deployment, &destination_root) {
+        crate::util::die("backup destination must not overlap the live deployment");
     }
     let destination: Arc<dyn BlobStore> = Arc::new(FsStore::new(&destination_root, storage.fsync));
     let adapter = LocalV2BackupCatalog::new(catalog.clone(), paths);
-    let manifest = create_backup(&adapter, source.as_ref(), destination.as_ref(), &backup_id, crate::util::now_millis() as i64)
+    let manifest = create_backup(&adapter, Arc::clone(&source), Arc::clone(&destination), &backup_id, crate::util::now_millis() as i64)
         .await
         .unwrap_or_else(|error| crate::util::die(format!("could not create v2 backup: {error}")));
     catalog.shutdown().await;
@@ -780,18 +1098,211 @@ pub async fn backup_cli_v2(
 
 pub async fn restore_cli_v2(backup: String, destination: String) {
     let paths = DeploymentPaths::local(&destination);
-    let backup_store: Arc<dyn BlobStore> = Arc::new(FsStore::new(&backup, true));
+    let (backup_root, backup_id) = resolve_backup_source(Path::new(&backup))
+        .unwrap_or_else(|error| crate::util::die(error));
+    if paths_overlap(&paths.deployment, &backup_root) {
+        crate::util::die("restore destination must not overlap the backup source");
+    }
+    let _writer_lock = crate::server::serve::acquire_writer_lock(&paths.writer_lock)
+        .unwrap_or_else(|error| crate::util::die(error));
+    let backup_store: Arc<dyn BlobStore> = Arc::new(FsStore::new(&backup_root, true));
     let target: Arc<dyn BlobStore> = Arc::new(FsStore::new(paths.objects.clone(), true));
     let adapter = LocalV2RestoreCatalog::new(paths.clone());
-    let report = restore_backup(&adapter, backup_store.as_ref(), target.as_ref(), backup.trim_end_matches('/').rsplit('/').next().unwrap_or_default())
+    let report = restore_backup(&adapter, backup_store.as_ref(), Arc::clone(&target), &backup_id)
         .await
         .unwrap_or_else(|error| crate::util::die(format!("could not restore v2 backup: {error}")));
     println!("restored v2 backup to {}; objects: {}; bytes: {}", destination, report.objects_restored, report.bytes_restored);
 }
 
+fn canonical_candidate(path: &Path) -> Result<PathBuf, String> {
+    let absolute = std::path::absolute(path).map_err(|error| error.to_string())?;
+    let mut missing = Vec::new();
+    let mut current = absolute.as_path();
+    while !current.exists() {
+        missing.push(
+            current
+                .file_name()
+                .ok_or_else(|| format!("{} has no name", current.display()))?
+                .to_owned(),
+        );
+        current = current
+            .parent()
+            .ok_or_else(|| format!("{} has no existing parent", absolute.display()))?;
+    }
+    let mut result = fs::canonicalize(current).map_err(|error| error.to_string())?;
+    for component in missing.iter().rev() {
+        result.push(component);
+    }
+    Ok(result)
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    let left = canonical_candidate(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = canonical_candidate(right).unwrap_or_else(|_| right.to_path_buf());
+    left == right || left.starts_with(&right) || right.starts_with(&left)
+}
+
+fn resolve_backup_source(path: &Path) -> Result<(PathBuf, String), String> {
+    let path = fs::canonicalize(path).map_err(|error| format!("invalid backup directory: {error}"))?;
+    let manifest = path.join("manifest.json");
+    if !manifest.is_file() {
+        return Err("restore expects the completed recovery/v2/<backup-id> directory".into());
+    }
+    let backup_id = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "backup directory has no valid id".to_string())?;
+    if path.parent().and_then(Path::file_name) != Some(std::ffi::OsStr::new("v2"))
+        || path.parent().and_then(Path::parent).and_then(Path::file_name)
+            != Some(std::ffi::OsStr::new("recovery"))
+        || !valid_backup_id(backup_id)
+    {
+        return Err("backup directory must be recovery/v2/<backup-id>".into());
+    }
+    let root = path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| "backup directory has no storage root".to_string())?
+        .to_path_buf();
+    Ok((root, backup_id.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct MemoryStore(Arc<Mutex<HashMap<String, Vec<u8>>>>);
+
+    #[async_trait::async_trait]
+    impl BlobStore for MemoryStore {
+        async fn get(&self, key: &str) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .ok_or(crate::storage::blob::BlobError::NotFound)
+        }
+
+        async fn put(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            _content_type: &str,
+        ) -> crate::storage::blob::BlobResult<()> {
+            self.0.lock().unwrap().insert(key.to_owned(), body);
+            Ok(())
+        }
+    }
+
+    struct MockBackupCatalog {
+        snapshot: BackupSnapshot,
+        objects: Vec<BackupObjectEntry>,
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl V2BackupCatalog for MockBackupCatalog {
+        async fn prepare_backup(&self, _now: i64) -> Result<BackupSnapshot, String> {
+            self.events.lock().unwrap().push("prepare");
+            Ok(self.snapshot.clone())
+        }
+
+        async fn backup_objects_page(
+            &self,
+            _operation_id: &str,
+            after_object_id: Option<&str>,
+            limit: usize,
+        ) -> Result<Vec<BackupObjectEntry>, String> {
+            self.events.lock().unwrap().push("page");
+            Ok(self
+                .objects
+                .iter()
+                .filter(|object| after_object_id.map_or(true, |after| object.object_id.as_str() > after))
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        async fn commit_backup(&self, _operation_id: &str, _digest: &str) -> Result<(), String> {
+            self.events.lock().unwrap().push("commit");
+            Ok(())
+        }
+
+        async fn abort_backup(&self, _operation_id: &str) -> Result<(), String> {
+            self.events.lock().unwrap().push("abort");
+            Ok(())
+        }
+    }
+
+    struct MockRestoreCatalog {
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl V2RestoreCatalog for MockRestoreCatalog {
+        async fn install_catalog_snapshot(
+            &self,
+            _deployment_id: &str,
+            _snapshot_revision: i64,
+            _catalog_bytes: Vec<u8>,
+        ) -> Result<(), String> {
+            self.events.lock().unwrap().push("install_catalog");
+            Ok(())
+        }
+
+        async fn abort_restored_backup(&self, _operation_id: &str) -> Result<(), String> {
+            self.events.lock().unwrap().push("abort_copied");
+            Ok(())
+        }
+
+        async fn install_deployment_file(&self, _relative: &str, _bytes: Vec<u8>) -> Result<(), String> {
+            self.events.lock().unwrap().push("install_file");
+            Ok(())
+        }
+
+        async fn finish_restore(&self) -> Result<(), String> {
+            self.events.lock().unwrap().push("finish");
+            Ok(())
+        }
+    }
+
+    fn sample_snapshot(_object: BackupObjectEntry) -> BackupSnapshot {
+        let identity = b"deployment\n".to_vec();
+        BackupSnapshot {
+            operation_id: "op".into(),
+            deployment_id: "deployment".into(),
+            snapshot_revision: 7,
+            catalog_bytes: b"catalog".to_vec(),
+            object_count: 1,
+            identity: BackupPayload {
+                relative: "state/deployment.id".into(),
+                digest: hex::encode(Sha256::digest(&identity)),
+                bytes: identity,
+            },
+            secrets: Vec::new(),
+            secret_versions: Vec::new(),
+        }
+    }
+
+    fn sample_object() -> (BackupObjectEntry, Vec<u8>) {
+        let body = b"immutable".to_vec();
+        let object_id = "0123456789abcdef0123456789abcdef";
+        (
+            BackupObjectEntry {
+                document_id: "doc".into(),
+                object_id: object_id.into(),
+                source_key: format!("v2/documents/doc/objects/{object_id}"),
+                backup_key: String::new(),
+                digest: hex::encode(Sha256::digest(&body)),
+                byte_length: body.len() as u64,
+            },
+            body,
+        )
+    }
 
     fn digest() -> String {
         "a".repeat(64)
@@ -861,5 +1372,74 @@ mod tests {
             complete: true,
         };
         assert!(manifest.validate_for_backup("backup").is_err());
+    }
+
+    #[tokio::test]
+    async fn backup_restore_round_trip_aborts_copied_operation_before_finish() {
+        let (object, body) = sample_object();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let catalog = MockBackupCatalog {
+            snapshot: sample_snapshot(object.clone()),
+            objects: vec![object.clone()],
+            events: Arc::clone(&events),
+        };
+        let source_map = Arc::new(Mutex::new(HashMap::from([(object.source_key.clone(), body)])));
+        let backup_map = Arc::new(Mutex::new(HashMap::new()));
+        let source: Arc<dyn BlobStore> = Arc::new(MemoryStore(source_map));
+        let destination: Arc<dyn BlobStore> = Arc::new(MemoryStore(Arc::clone(&backup_map)));
+        let manifest = create_backup(
+            &catalog,
+            Arc::clone(&source),
+            Arc::clone(&destination),
+            "backup",
+            10,
+        )
+            .await
+            .expect("backup completes");
+        assert!(manifest.complete);
+        assert_eq!(events.lock().unwrap().as_slice(), &["prepare", "page", "page", "commit"]);
+
+        let restore_events = Arc::new(Mutex::new(Vec::new()));
+        let restore = MockRestoreCatalog {
+            events: Arc::clone(&restore_events),
+        };
+        let restored = MemoryStore(Arc::new(Mutex::new(HashMap::new())));
+        let report = restore_backup(&restore, destination.as_ref(), Arc::new(restored), "backup")
+            .await
+            .expect("restore completes");
+        assert_eq!(report.objects_restored, 1);
+        assert_eq!(restore_events.lock().unwrap().as_slice(), &["install_file", "install_catalog", "abort_copied", "finish"]);
+    }
+
+    #[tokio::test]
+    async fn backup_missing_object_never_publishes_completion() {
+        let (object, _body) = sample_object();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let catalog = MockBackupCatalog {
+            snapshot: sample_snapshot(object.clone()),
+            objects: vec![object.clone()],
+            events: Arc::clone(&events),
+        };
+        let source = MemoryStore(Arc::new(Mutex::new(HashMap::new())));
+        let backup_map = Arc::new(Mutex::new(HashMap::new()));
+        let destination = MemoryStore(Arc::clone(&backup_map));
+        assert!(create_backup(
+            &catalog,
+            Arc::new(source),
+            Arc::new(destination),
+            "backup",
+            10,
+        )
+            .await
+            .is_err());
+        assert!(!backup_map.lock().unwrap().contains_key(&backup_manifest_key("backup")));
+        assert_eq!(events.lock().unwrap().last(), Some(&"abort"));
+    }
+
+    #[test]
+    fn restore_source_and_destination_must_not_overlap() {
+        let root = std::env::temp_dir().join(format!("librepaper-backup-test-{}", std::process::id()));
+        let backup = root.join("recovery/v2/backup");
+        assert!(paths_overlap(&root, &backup));
     }
 }
