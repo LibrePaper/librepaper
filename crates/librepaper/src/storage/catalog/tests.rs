@@ -2747,7 +2747,7 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
     assert!(admit_publication("editor-after-revoke", &authority).is_err());
     let automation_without_link = crate::document::store::MutationActor {
         automation: true,
-        link_hash: "",
+        link_hash: String::new(),
         ..authority.clone()
     };
     assert!(admit_publication("automation-without-link", &automation_without_link).is_err());
