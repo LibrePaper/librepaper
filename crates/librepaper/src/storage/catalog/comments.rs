@@ -500,6 +500,22 @@ impl Catalog {
         if exists != 1 {
             return Err(CatalogError::NotFound);
         }
+        let author_erasing: bool = tx
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM annotations a
+                    JOIN accounts owner ON owner.id=a.author_account_id
+                    WHERE a.document_id=?1 AND a.id=?2 AND owner.status='erasing'
+                )",
+                params![doc, reply.comment_id],
+                |r| r.get(0),
+            )
+            .map_err(CatalogError::from)?;
+        if author_erasing {
+            return Err(CatalogError::Conflict(
+                "replies to erased annotations are unavailable".into(),
+            ));
+        }
         let count: i64 = tx
             .query_row(
                 "SELECT count(*) FROM replies WHERE document_id=?1 AND annotation_id=?2",

@@ -847,17 +847,26 @@ impl Catalog {
             ));
         }
         self.immediate(|tx| {
-            let (state, kind, writer_generation, expected_generation): (
+            let (state, kind, writer_generation, expected_generation, plan_json): (
                 String,
                 String,
                 String,
                 Option<i64>,
+                String,
             ) = tx
                 .query_row(
-                    "SELECT state,kind,writer_generation,expected_document_generation
+                    "SELECT state,kind,writer_generation,expected_document_generation,plan_json
                  FROM operations WHERE id=?1 AND document_id=?2",
                     params![operation_id.as_str(), document_id.as_str()],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
                 )
                 .map_err(CatalogError::from)?;
             if state != "prepared" || kind != OperationKind::DisplayPublish.as_str() {
@@ -887,6 +896,17 @@ impl Catalog {
             if expected_generation != Some(source_generation) {
                 return Err(CatalogError::Conflict(
                     "publication source generation changed".into(),
+                ));
+            }
+            let planned_manifest = serde_json::from_str::<serde_json::Value>(&plan_json)
+                .ok()
+                .and_then(|plan| {
+                    plan.get("manifest_object_id")
+                        .and_then(serde_json::Value::as_str)
+                });
+            if planned_manifest != Some(manifest_object_id.as_str()) {
+                return Err(CatalogError::Conflict(
+                    "publication manifest is not bound to the prepared operation".into(),
                 ));
             }
 
@@ -1727,6 +1747,17 @@ impl Catalog {
                 return Err(CatalogError::Conflict("publication belongs to an obsolete writer generation".into()));
             }
             operation_authorized_in_tx(tx, proof.document_id.as_str(), &actor_key, &plan_json, "editor")?;
+            let planned_manifest = serde_json::from_str::<serde_json::Value>(&plan_json)
+                .ok()
+                .and_then(|plan| {
+                    plan.get("manifest_object_id")
+                        .and_then(serde_json::Value::as_str)
+                });
+            if planned_manifest != Some(proof.manifest_object_id.as_str()) {
+                return Err(CatalogError::Conflict(
+                    "publication manifest is not bound to the prepared operation".into(),
+                ));
+            }
             let source_generation: i64 = tx.query_row(
                 "SELECT source_generation FROM documents WHERE id=?1 AND status='active'",
                 [proof.document_id.as_str()], |r| r.get(0),
