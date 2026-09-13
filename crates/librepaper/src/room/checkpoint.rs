@@ -1466,7 +1466,7 @@ impl Room {
                         .execute_catalog(256, |catalog| catalog.v2_server_state())
                         .await
                         .map_err(WriteError::from)?;
-                    let read_holder = format!("checkpoint-read:{}:{}", operation_id, asset.id);
+                    let read_holder = format!("checkpoint-read:{}:{}", document_id, asset.id);
                     let lease_now = UnixMillis::new(crate::util::now_millis())
                         .map_err(|error| WriteError::Storage(error.to_string()))?;
                     let lease_expiry =
@@ -1496,7 +1496,7 @@ impl Room {
                     None
                 };
                 let bytes_result = self.blobs.get(&asset_key).await;
-                if let (Some(object_id), holder) = read_lease {
+                if let Some((object_id, holder)) = read_lease {
                     let document = document_id.clone();
                     let holder = holder.clone();
                     let _ = catalog
@@ -1600,6 +1600,7 @@ impl Room {
             content_type: "application/vnd.librepaper.source-tree",
             digest: hex::encode(tree_physical_digest),
             logical_digest: None,
+            write: true,
         });
 
         // The tree is committed first in the closure so replay and recovery

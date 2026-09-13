@@ -1010,23 +1010,16 @@ impl Catalog {
             None
         };
         let execution_epoch = if kind == OperationKind::AgentApply {
-            let epoch = serde_json::from_str::<serde_json::Value>(&canonical_intent)
+            serde_json::from_str::<serde_json::Value>(&canonical_intent)
                 .ok()
                 .and_then(|plan| {
                     plan.get("actor")
                         .or_else(|| plan.get("authority"))
                         .and_then(|actor| actor.get("execution_epoch"))
                         .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
                 })
                 .filter(|epoch| !epoch.is_empty())
-                .ok_or_else(|| {
-                    CatalogError::refused(
-                        CatalogRefusal::ActorRights,
-                        "agent source operation requires an execution epoch",
-                    )
-                })?
-                .to_owned();
-            Some(execution_epoch)
         } else {
             None
         };
@@ -1623,6 +1616,79 @@ impl Catalog {
                 )
                 .optional()
                 .map_err(CatalogError::from)
+        })
+    }
+
+    /// Recover a pending agent effect only when the durable document pointer
+    /// identifies exactly one prepared agent row. A request key may be reused
+    /// by different actors, so an ambiguous pending set is a hard conflict.
+    pub fn pending_agent_operation(
+        &self,
+        storage_id: &str,
+        request_id: &str,
+    ) -> CatalogResult<Option<Operation>> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT document_id,request_key,kind,request_digest,state,plan_json,
+                            COALESCE(result_json,''),created_at
+                     FROM operations
+                    WHERE document_id=?1 AND request_key=?2
+                      AND kind='agent_apply' AND state='prepared'
+                    ORDER BY created_at DESC LIMIT 2",
+                )
+                .map_err(CatalogError::from)?;
+            let mut rows = statement
+                .query(params![storage_id, request_id])
+                .map_err(CatalogError::from)?;
+            let first = rows
+                .next()
+                .map_err(CatalogError::from)?
+                .map(Self::read_operation)
+                .transpose()
+                .map_err(CatalogError::from)?;
+            if rows.next().map_err(CatalogError::from)?.is_some() {
+                return Err(CatalogError::Conflict(
+                    "pending agent request key is ambiguous across actors".into(),
+                ));
+            }
+            Ok(first)
+        })
+    }
+
+    /// Resolve a document's durable pending publication without selecting an
+    /// arbitrary actor when request keys collide. The pointer is authoritative
+    /// only when it identifies one row.
+    pub fn pending_operation(
+        &self,
+        storage_id: &str,
+        request_id: &str,
+    ) -> CatalogResult<Option<Operation>> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT document_id,request_key,kind,request_digest,state,plan_json,
+                            COALESCE(result_json,''),created_at
+                     FROM operations
+                    WHERE document_id=?1 AND request_key=?2
+                    ORDER BY created_at DESC LIMIT 2",
+                )
+                .map_err(CatalogError::from)?;
+            let mut rows = statement
+                .query(params![storage_id, request_id])
+                .map_err(CatalogError::from)?;
+            let first = rows
+                .next()
+                .map_err(CatalogError::from)?
+                .map(Self::read_operation)
+                .transpose()
+                .map_err(CatalogError::from)?;
+            if rows.next().map_err(CatalogError::from)?.is_some() {
+                return Err(CatalogError::Conflict(
+                    "pending request key is ambiguous across actors".into(),
+                ));
+            }
+            Ok(first)
         })
     }
 

@@ -58,7 +58,10 @@ impl OperationKey {
         let issued = crate::util::request_key_timestamp(&self.id).unwrap_or(0);
         Self {
             epoch: self.epoch.clone(),
-            id: format!("v2.{issued}.{}", &hex::encode(Sha256::digest(binding))[..32]),
+            id: format!(
+                "v2.{issued}.{}",
+                &hex::encode(Sha256::digest(binding))[..32]
+            ),
         }
     }
 
@@ -81,7 +84,10 @@ impl OperationKey {
         binding.push(0);
         binding.extend_from_slice(self.id.as_bytes());
         let issued = crate::util::request_key_timestamp(&self.id).unwrap_or(0);
-        format!("v2.{issued}.{}", &hex::encode(Sha256::digest(binding))[..32])
+        format!(
+            "v2.{issued}.{}",
+            &hex::encode(Sha256::digest(binding))[..32]
+        )
     }
 }
 
@@ -92,6 +98,21 @@ fn authority_scope(authority: &AgentAuthority) -> String {
         authority.owner_key.clone()
     } else {
         authority.account_id.clone()
+    }
+}
+
+fn operation_actor_key(authority: &AgentAuthority) -> String {
+    if !authority.account_id.is_empty() {
+        format!("account:{}", authority.account_id)
+    } else if !authority.link_hash.is_empty() {
+        format!("link:{}", authority.link_hash)
+    } else if !authority.owner_key.is_empty() {
+        format!(
+            "account:anonymous:{}",
+            hex::encode(Sha256::digest(authority.owner_key.as_bytes()))
+        )
+    } else {
+        "internal".into()
     }
 }
 
@@ -425,33 +446,6 @@ fn parse_intent(intent: &str) -> Result<AgentIntent, AgentError> {
         operation.validate()?;
     }
     Ok(parsed)
-}
-
-fn intent_peak(intent: &str) -> i64 {
-    serde_json::from_str::<serde_json::Value>(intent)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("peak_reserved")
-                .and_then(serde_json::Value::as_i64)
-        })
-        .unwrap_or(0)
-        .max(0)
-}
-
-async fn reserve_agent_peak(
-    room: &Room,
-    catalog: &std::sync::Arc<crate::storage::catalog::Catalog>,
-    request_id: &str,
-    bytes: i64,
-) -> Result<(), AgentError> {
-    catalog
-        .execute_catalog(room.slug.len() + request_id.len() + 64, {
-            let slug = room.slug.clone();
-            move |catalog| catalog.reserve_publication_peak(&slug, bytes)
-        })
-        .await
-        .map_err(|error| AgentError::Storage(error.to_string()))
 }
 
 /// Validate and apply a request to a source tree.  No input is normalized:
@@ -817,7 +811,7 @@ impl Room {
         let request_id_for_lookup = request_id.clone();
         let operation = catalog
             .execute_catalog(storage_id.len() + request_id.len() + 256, move |catalog| {
-                catalog.operation(&storage_id, &request_id_for_lookup)
+                catalog.pending_agent_operation(&storage_id, &request_id_for_lookup)
             })
             .await
             .map_err(|error| AgentError::Storage(error.to_string()))?;
@@ -975,7 +969,8 @@ impl Room {
             .execute_catalog(request_id.len() + digest.len() + 128, {
                 let storage_id = self.storage_id.clone();
                 let request_id = request_id.clone();
-                move |catalog| catalog.operation(&storage_id, &request_id)
+                let actor_key = operation_actor_key(&authority);
+                move |catalog| catalog.operation_for_actor(&storage_id, &request_id, &actor_key)
             })
             .await
             .map_err(|error| AgentError::Storage(error.to_string()))?;
@@ -1054,28 +1049,6 @@ impl Room {
                     .await?;
                 }
                 return Err(error);
-            }
-            if intent_peak(&operation.intent) == 0 {
-                let encoded = {
-                    let state = self.state.lock().await;
-                    session::encode_state(&state.session.doc).len()
-                };
-                let peak = self.snapshot_budget(
-                    encoded
-                        .saturating_mul(2)
-                        .saturating_add(
-                            request
-                                .patches
-                                .iter()
-                                .map(|patch| patch.exact.len() + patch.replacement.len())
-                                .sum::<usize>(),
-                        )
-                        .saturating_add(4096),
-                );
-                if let Err(error) = reserve_agent_peak(self, &catalog, &request_id, peak).await {
-                    self.fence(super::FenceReason::AgentRecoveryPending);
-                    return Err(error);
-                }
             }
             if let Some(marker) = room_marker(self, &request_id).await? {
                 if marker.digest != digest {
@@ -1210,43 +1183,6 @@ impl Room {
                 )
                 .await
                 .map_err(|error| AgentError::Storage(error.to_string()))?;
-            // Reserve the complete conservative snapshot peak while the
-            // operation owns the pending-publication slot. Object accounting
-            // deliberately credits this reservation, so session/journal
-            // writes cannot bypass owner or deployment quotas merely because
-            // the document is pending.
-            let encoded_before = {
-                let state = self.state.lock().await;
-                session::encode_state(&state.session.doc).len()
-            };
-            let peak = self.snapshot_budget(
-                encoded_before
-                    .saturating_mul(2)
-                    .saturating_add(
-                        request
-                            .patches
-                            .iter()
-                            .map(|patch| patch.exact.len() + patch.replacement.len())
-                            .sum::<usize>(),
-                    )
-                    .saturating_add(4096),
-            );
-            if let Err(error) = reserve_agent_peak(self, &catalog, &request_id, peak).await {
-                let storage_id = self.storage_id.clone();
-                let request_id_for_abort = request_id.clone();
-                let _ = catalog
-                    .execute_catalog(request_id.len() + 128, move |catalog| {
-                        catalog
-                            .abort_operation(
-                                &storage_id,
-                                &request_id_for_abort,
-                                "agent source admission failed",
-                            )
-                            .map(|_| ())
-                    })
-                    .await;
-                return Err(AgentError::Storage(error.to_string()));
-            }
             return self
                 .apply_prepared_agent(
                     request,
@@ -1283,7 +1219,8 @@ impl Room {
         let operation_request_id = request_id.clone();
         let operation = catalog
             .execute_catalog(storage_id.len() + request_id.len() + 256, move |catalog| {
-                catalog.operation(&storage_id, &operation_request_id)
+                let actor_key = operation_actor_key(&authority);
+                catalog.operation_for_actor(&storage_id, &operation_request_id, &actor_key)
             })
             .await
             .map_err(|error| AgentError::Storage(error.to_string()))?
@@ -1583,7 +1520,7 @@ impl Room {
                 false,
                 &digest,
                 acceptance.clone(),
-                authority,
+                authority.clone(),
             )
             .await
         {
@@ -1595,10 +1532,13 @@ impl Room {
                 // rolled back while its durable receipt remains committed.
                 let storage_id = self.storage_id.clone();
                 let operation_id = request_id.clone();
+                let actor_key = operation_actor_key(&authority);
                 let durable = catalog
                     .execute_catalog(
                         operation_id.len() + storage_id.len() + 128,
-                        move |catalog| catalog.operation(&storage_id, &operation_id),
+                        move |catalog| {
+                            catalog.operation_for_actor(&storage_id, &operation_id, &actor_key)
+                        },
                     )
                     .await;
                 match durable {
@@ -1710,7 +1650,8 @@ impl Room {
             .execute_catalog(request_id.len() + self.storage_id.len() + 128, {
                 let storage_id = self.storage_id.clone();
                 let request_id = request_id.to_owned();
-                move |catalog| catalog.operation(&storage_id, &request_id)
+                let actor_key = operation_actor_key(&authority);
+                move |catalog| catalog.operation_for_actor(&storage_id, &request_id, &actor_key)
             })
             .await
             .map_err(|error| AgentError::Storage(error.to_string()))?
@@ -1758,10 +1699,10 @@ impl Room {
         let storage_id = self.storage_id.clone();
         let operation_id = request_id.to_owned();
         let operation = catalog
-            .execute_catalog(
-                storage_id.len() + operation_id.len() + 128,
-                move |catalog| catalog.operation(&storage_id, &operation_id),
-            )
+            .execute_catalog(storage_id.len() + operation_id.len() + 128, {
+                let actor_key = operation_actor_key(&authority);
+                move |catalog| catalog.operation_for_actor(&storage_id, &operation_id, &actor_key)
+            })
             .await
             .map_err(|error| AgentError::Storage(error.to_string()))?
             .ok_or(AgentError::NotFound)?;
@@ -1770,12 +1711,33 @@ impl Room {
                 "agent checkpoint {checkpoint} did not settle its operation"
             )));
         }
+        let receipt = receipt_from_result(&operation.result, replay)?;
         if acceptance.is_some() {
             match super::load_catalog_comments(catalog, &self.slug).await {
                 Ok((seq, comments)) => {
                     let mut state = self.state.lock().await;
                     state.seq = seq;
                     *state.comments = comments;
+                    drop(state);
+                    if let Some(comment_id) = receipt.accepted_comment_id.as_deref() {
+                        let current = self.snapshot_for("", false).await;
+                        if let Some(comment) =
+                            current.iter().find(|item| item.comment.id == comment_id)
+                        {
+                            let event = self
+                                .comment_event_for(
+                                    &serde_json::json!({
+                                        "type": "comment",
+                                        "comment": comment,
+                                        "annotation_revision": seq,
+                                    }),
+                                    "",
+                                    false,
+                                )
+                                .await;
+                            self.broadcast(&event).await;
+                        }
+                    }
                 }
                 Err(error) => {
                     // The receipt and comment outcome already committed in
@@ -1793,7 +1755,7 @@ impl Room {
         }
         let backup = backup_key(&self.storage_id, request_id);
         let _ = self.blobs.delete(&[backup]).await;
-        receipt_from_result(&operation.result, replay)
+        Ok(receipt)
     }
 
     /// Undo an effect rejected before storage could report an ambiguous write.

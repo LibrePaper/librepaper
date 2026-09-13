@@ -309,19 +309,6 @@ impl Server {
         // at that moment keeps their words and sees the rest change under
         // them, and the write is marked with a checkpoint.
         if mine {
-            if let Err(error) = self.store.admit_replacement_upload(&key).await {
-                return match error {
-                    PutError::Quota { status, message } => {
-                        write_json(status, &json!({"error": message}))
-                    }
-                    PutError::Authorization { status, message } => {
-                        write_json(status, &json!({"error": message}))
-                    }
-                    PutError::Storage(_) => {
-                        write_json(500, &json!({"error": "could not admit the replacement"}))
-                    }
-                };
-            }
             let room = match self.rooms.try_get(&key).await {
                 Ok(room) => room,
                 Err(error) => {
@@ -380,7 +367,7 @@ impl Server {
         };
         let entry = match self
             .store
-            .put_as_actor(
+            .put_directory_as_actor(
                 Publication {
                     slug: key.clone(),
                     title: parsed.title.clone(),
@@ -392,6 +379,7 @@ impl Server {
                     owner_name: who.name.clone(),
                     peak_bytes: Some(self.exact_publication_peak(&parsed, &main)),
                 },
+                parsed.files.clone(),
                 actor,
             )
             .await
@@ -623,33 +611,6 @@ impl Server {
             .await
             .map_err(|error| write_json(409, &json!({"error": error})))?;
 
-        let request_digest = upload_digest(parsed);
-        if self.store.catalog.is_some() {
-            let actor = crate::document::store::MutationActor {
-                account_id: who.id.clone(),
-                owner_key: who.key.clone(),
-                session_generation: who.session_generation.clone(),
-                link_hash: String::new(),
-                policy_editor: true,
-                automation: false,
-                unowned_publisher: false,
-            };
-            self.store
-                .prepare_publication(&existing.slug, &request_digest, "replace", Some(&actor))
-                .await
-                .map_err(|error| write_json(409, &json!({"error": error})))?;
-            if let Err(error) = self
-                .store
-                .reserve_publication_peak(
-                    &existing.slug,
-                    self.exact_publication_peak(parsed, &main_path),
-                )
-                .await
-            {
-                let _ = self.store.abort_publication(&existing.slug, &error).await;
-                return Err(write_json(507, &json!({"error": error})));
-            }
-        }
         let mut publication_token = match room.reserve_publication_checkpoint() {
             Ok(token) => token,
             Err(error) => {
@@ -845,24 +806,6 @@ impl Server {
                 ));
             }
         };
-        if self.store.catalog.is_some() {
-            if let Err(error) = self.store.commit_publication(&existing.slug, &sha).await {
-                if let Err(rollback) = room
-                    .rollback_publication_inner(&current, &rollback_bodies, &rollback_format)
-                    .await
-                {
-                    eprintln!("warning: could not roll back {}: {rollback}", existing.slug);
-                }
-                let _ = self
-                    .store
-                    .abort_publication(&existing.slug, &format!("commit failed: {error}"))
-                    .await;
-                return Err(write_json(
-                    500,
-                    &json!({"error": "could not commit the publication"}),
-                ));
-            }
-        }
         publication_token.commit();
         room.broadcast_editors_except(
             None,

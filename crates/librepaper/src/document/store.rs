@@ -1215,6 +1215,22 @@ impl Store {
         }
     }
 
+    /// Publish a complete source directory through the catalogue's immutable
+    /// source closure. `files` contains the parsed upload's non-main paths;
+    /// the main source remains in `v.source` and is inserted exactly once.
+    pub async fn put_directory_as_actor(
+        &self,
+        v: Publication,
+        files: Vec<(String, Vec<u8>)>,
+        actor: MutationActor,
+    ) -> Result<IndexEntry, PutError> {
+        if self.catalog.is_some() {
+            self.put_catalog_files(v, files, actor).await
+        } else {
+            self.put(v).await
+        }
+    }
+
     /// Authoritative publication path for local SQLite deployments.  The
     /// compatibility `StoreState` is refreshed only for the single affected
     /// slug after the catalogue transaction commits; it is never used for
@@ -1239,7 +1255,7 @@ impl Store {
             let wanted = request_id.clone();
             let operation = catalog
                 .execute_catalog(STORE_JOB_BYTES, move |catalog| {
-                    catalog.operation(&storage_id, &wanted)
+                    catalog.pending_operation(&storage_id, &wanted)
                 })
                 .await
                 .map_err(|error| error.to_string())?
@@ -1407,6 +1423,16 @@ impl Store {
         v: Publication,
         actor: MutationActor,
     ) -> Result<IndexEntry, PutError> {
+        let files = vec![(v.main.clone(), v.source.as_bytes().to_vec())];
+        self.put_catalog_files(v, files, actor).await
+    }
+
+    async fn put_catalog_files(
+        &self,
+        v: Publication,
+        files: Vec<(String, Vec<u8>)>,
+        actor: MutationActor,
+    ) -> Result<IndexEntry, PutError> {
         let catalog = self
             .catalog
             .as_ref()
@@ -1554,81 +1580,172 @@ impl Store {
             .unwrap_or_else(|| now.clone());
 
         let source = v.source.as_bytes().to_vec();
-        let plan = source_encoding_pool()
-            .try_plan(source.clone())
-            .await
-            .map_err(|error| PutError::Storage(format!("source planning failed: {error}")))?;
-        let encoded = source_encoding_pool()
-            .try_encode_planned(source.clone(), plan, std::collections::HashSet::new())
-            .await
-            .map_err(|error| PutError::Storage(format!("source encoding failed: {error}")))?;
-        let file_digest = encoded.file_digest;
+        let mut file_inputs = std::collections::BTreeMap::<String, Vec<u8>>::new();
+        for (path, bytes) in files {
+            if path != main {
+                file_inputs.insert(path, bytes);
+            }
+        }
+        file_inputs.insert(main.clone(), source.clone());
+        if file_inputs.is_empty() {
+            return Err(PutError::Storage("source directory is empty".into()));
+        }
 
-        let recipe_id = ObjectId::new(random_storage_id())
-            .map_err(|error| PutError::Storage(error.to_string()))?;
-        let chunk_ids = encoded
-            .objects
-            .iter()
-            .map(|_| {
-                ObjectId::new(random_storage_id())
-                    .map_err(|error| PutError::Storage(error.to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut tree_files = std::collections::BTreeMap::new();
+        let mut object_ids = Vec::new();
+        let mut physical = Vec::new();
+        let mut logical_bytes = 0i64;
+        let mut main_file_digest = [0u8; 32];
+        for (path, bytes) in &file_inputs {
+            logical_bytes = logical_bytes
+                .checked_add(
+                    i64::try_from(bytes.len())
+                        .map_err(|_| PutError::Storage("source file is too large".into()))?,
+                )
+                .ok_or_else(|| PutError::Storage("source size overflow".into()))?;
+            match crate::document::paths::check(&self.config.paths(), path)
+                .map_err(|error| PutError::Storage(error.to_string()))?
+            {
+                crate::document::paths::Kind::Asset => {
+                    let object_id = ObjectId::new(random_storage_id())
+                        .map_err(|error| PutError::Storage(error.to_string()))?;
+                    let digest: [u8; 32] = Sha256::digest(bytes).into();
+                    physical.push((
+                        object_id.clone(),
+                        ObjectKind::Asset,
+                        hex::encode(digest),
+                        Some(hex::encode(digest)),
+                        bytes.clone(),
+                        "application/octet-stream",
+                    ));
+                    object_ids.push(object_id.clone());
+                    tree_files.insert(
+                        path.clone(),
+                        crate::storage::encoding::TreeFileLocator {
+                            kind: "asset".into(),
+                            file_id: String::new(),
+                            logical_digest: digest,
+                            logical_length: bytes.len() as u64,
+                            recipe: None,
+                            asset: Some(crate::storage::encoding::PhysicalLocator {
+                                object_id: BlobObjectId::parse(object_id.as_str().to_owned())
+                                    .map_err(|error| PutError::Storage(error.to_string()))?,
+                                object_digest: digest,
+                                logical_digest: Some(digest),
+                                logical_length: bytes.len() as u64,
+                                byte_length: bytes.len() as u64,
+                                encoding_version: 1,
+                            }),
+                        },
+                    );
+                }
+                crate::document::paths::Kind::Text => {
+                    let text = std::str::from_utf8(bytes).map_err(|_| {
+                        PutError::Storage(format!("text source file {path} is not UTF-8"))
+                    })?;
+                    let plan = source_encoding_pool()
+                        .try_plan(bytes.clone())
+                        .await
+                        .map_err(|error| {
+                            PutError::Storage(format!("source planning failed: {error}"))
+                        })?;
+                    let encoded = source_encoding_pool()
+                        .try_encode_planned(bytes.clone(), plan, std::collections::HashSet::new())
+                        .await
+                        .map_err(|error| {
+                            PutError::Storage(format!("source encoding failed: {error}"))
+                        })?;
+                    if path == &main {
+                        main_file_digest = encoded.file_digest;
+                    }
+                    let recipe_id = ObjectId::new(random_storage_id())
+                        .map_err(|error| PutError::Storage(error.to_string()))?;
+                    let chunk_ids = encoded
+                        .objects
+                        .iter()
+                        .map(|_| {
+                            ObjectId::new(random_storage_id())
+                                .map_err(|error| PutError::Storage(error.to_string()))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let chunk_locators = encoded
+                        .objects
+                        .iter()
+                        .zip(&chunk_ids)
+                        .map(|(object, object_id)| {
+                            let object_digest = Sha256::digest(&object.encoded).into();
+                            physical.push((
+                                object_id.clone(),
+                                ObjectKind::SourceChunk,
+                                hex::encode(object_digest),
+                                Some(hex::encode(object.digest)),
+                                object.encoded.clone(),
+                                "application/vnd.librepaper.source-chunk",
+                            ));
+                            object_ids.push(object_id.clone());
+                            Ok(crate::storage::encoding::PhysicalLocator {
+                                object_id: BlobObjectId::parse(object_id.as_str().to_owned())
+                                    .map_err(|error| PutError::Storage(error.to_string()))?,
+                                object_digest,
+                                logical_digest: Some(object.digest),
+                                logical_length: object.uncompressed_len as u64,
+                                byte_length: object.encoded.len() as u64,
+                                encoding_version: 1,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, PutError>>()?;
+                    let recipe_envelope = crate::storage::encoding::SourceRecipeEnvelope {
+                        version: crate::storage::encoding::SOURCE_ENVELOPE_VERSION,
+                        recipe: encoded.recipe.clone(),
+                        chunk_locators,
+                    };
+                    let recipe_bytes = recipe_envelope
+                        .to_bytes()
+                        .map_err(|error| PutError::Storage(error.to_string()))?;
+                    let recipe_locator = crate::storage::encoding::PhysicalLocator {
+                        object_id: BlobObjectId::parse(recipe_id.as_str().to_owned())
+                            .map_err(|error| PutError::Storage(error.to_string()))?,
+                        object_digest: Sha256::digest(&recipe_bytes).into(),
+                        logical_digest: Some(encoded.file_digest),
+                        logical_length: bytes.len() as u64,
+                        byte_length: recipe_bytes.len() as u64,
+                        encoding_version: 1,
+                    };
+                    physical.push((
+                        recipe_id.clone(),
+                        ObjectKind::SourceRecipe,
+                        hex::encode(recipe_locator.object_digest),
+                        Some(hex::encode(encoded.file_digest)),
+                        recipe_bytes.clone(),
+                        "application/vnd.librepaper.source-recipe",
+                    ));
+                    object_ids.push(recipe_id.clone());
+                    tree_files.insert(
+                        path.clone(),
+                        crate::storage::encoding::TreeFileLocator {
+                            kind: "text".into(),
+                            file_id: String::new(),
+                            logical_digest: encoded.file_digest,
+                            logical_length: text.len() as u64,
+                            recipe: Some(recipe_locator),
+                            asset: None,
+                        },
+                    );
+                }
+            }
+        }
+        if main_file_digest == [0; 32] {
+            return Err(PutError::Storage("main source file is not text".into()));
+        }
         let tree_id = ObjectId::new(random_storage_id())
             .map_err(|error| PutError::Storage(error.to_string()))?;
-
-        let chunk_locators = encoded
-            .objects
-            .iter()
-            .zip(&chunk_ids)
-            .map(|(object, object_id)| {
-                let object_digest = Sha256::digest(&object.encoded).into();
-                Ok(crate::storage::encoding::PhysicalLocator {
-                    object_id: BlobObjectId::parse(object_id.as_str().to_owned())
-                        .map_err(|error| PutError::Storage(error.to_string()))?,
-                    object_digest,
-                    logical_digest: Some(object.digest),
-                    logical_length: object.uncompressed_len as u64,
-                    byte_length: object.encoded.len() as u64,
-                    encoding_version: 1,
-                })
-            })
-            .collect::<Result<Vec<_>, PutError>>()?;
-        let recipe_envelope = crate::storage::encoding::SourceRecipeEnvelope {
-            version: crate::storage::encoding::SOURCE_ENVELOPE_VERSION,
-            recipe: encoded.recipe.clone(),
-            chunk_locators,
-        };
-        let recipe_bytes = recipe_envelope
-            .to_bytes()
-            .map_err(|error| PutError::Storage(error.to_string()))?;
-        let recipe_locator = crate::storage::encoding::PhysicalLocator {
-            object_id: BlobObjectId::parse(recipe_id.as_str().to_owned())
-                .map_err(|error| PutError::Storage(error.to_string()))?,
-            object_digest: Sha256::digest(&recipe_bytes).into(),
-            logical_digest: Some(file_digest),
-            logical_length: source.len() as u64,
-            byte_length: recipe_bytes.len() as u64,
-            encoding_version: 1,
-        };
         let mut tree_envelope = crate::storage::encoding::TreeEnvelope {
             version: crate::storage::encoding::TREE_ENVELOPE_VERSION,
             main_path: main.clone(),
             source_format: format.clone(),
             settings_json: "{}".into(),
             logical_digest: [0; 32],
-            files: std::iter::once((
-                main.clone(),
-                crate::storage::encoding::TreeFileLocator {
-                    kind: "text".into(),
-                    file_id: String::new(),
-                    logical_digest: file_digest,
-                    logical_length: source.len() as u64,
-                    recipe: Some(recipe_locator),
-                    asset: None,
-                },
-            ))
-            .collect(),
+            files: tree_files,
         };
         let logical_tree = tree_envelope
             .logical_bytes()
@@ -1639,16 +1756,35 @@ impl Store {
             .map_err(|error| PutError::Storage(error.to_string()))?;
         let tree_digest = hex::encode(tree_envelope.logical_digest);
 
-        let mut object_ids = vec![tree_id.clone(), recipe_id.clone()];
-        object_ids.extend(chunk_ids.iter().cloned());
+        object_ids.insert(0, tree_id.clone());
+        physical.insert(
+            0,
+            (
+                tree_id.clone(),
+                ObjectKind::SourceTree,
+                hex::encode(Sha256::digest(&tree_bytes)),
+                None,
+                tree_bytes.clone(),
+                "application/vnd.librepaper.source-tree",
+            ),
+        );
         let request_digest = digest_of(
             &serde_json::json!({
                 "version": 2,
                 "effect": "source_publish",
                 "slug": v.slug.clone(),
-                "source": v.source.clone(),
                 "format": format.clone(),
                 "main": main.clone(),
+                "files": file_inputs
+                    .iter()
+                    .map(|(path, bytes)| {
+                        serde_json::json!({
+                            "path": path,
+                            "digest": hex::encode(Sha256::digest(bytes)),
+                            "length": bytes.len(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
             })
             .to_string(),
         );
@@ -1721,37 +1857,6 @@ impl Store {
         };
         let operation_id = crate::storage::catalog::OperationId::new(random_storage_id())
             .map_err(|error| PutError::Storage(error.to_string()))?;
-        let physical = {
-            let mut objects = vec![
-                (
-                    tree_id.clone(),
-                    ObjectKind::SourceTree,
-                    hex::encode(Sha256::digest(&tree_bytes)),
-                    None,
-                    tree_bytes.clone(),
-                    "application/vnd.librepaper.source-tree",
-                ),
-                (
-                    recipe_id.clone(),
-                    ObjectKind::SourceRecipe,
-                    hex::encode(Sha256::digest(&recipe_bytes)),
-                    Some(hex::encode(file_digest)),
-                    recipe_bytes.clone(),
-                    "application/vnd.librepaper.source-recipe",
-                ),
-            ];
-            objects.extend(encoded.objects.iter().zip(&chunk_ids).map(|(object, id)| {
-                (
-                    id.clone(),
-                    ObjectKind::SourceChunk,
-                    hex::encode(Sha256::digest(&object.encoded)),
-                    Some(hex::encode(object.digest)),
-                    object.encoded.clone(),
-                    "application/vnd.librepaper.source-chunk",
-                )
-            }));
-            objects
-        };
         let operation_expires = now_ms
             .checked_add(3_600_000)
             .ok_or_else(|| PutError::Storage("operation expiry overflow".into()))?;
@@ -1900,13 +2005,14 @@ impl Store {
                 .unwrap_or_else(|| "Anonymous".into()),
             reason: "initial source".into(),
             source_format,
-            logical_bytes: source.len() as i64,
+            logical_bytes,
             label: None,
             journal_epoch: 0,
             journal_sequence: 0,
             metadata_json: serde_json::json!({
                 "version": 2,
-                "sourceDigest": hex::encode(file_digest),
+                "sourceDigest": hex::encode(main_file_digest),
+                "fileCount": file_inputs.len(),
             })
             .to_string(),
             eligible_after: None,
@@ -1914,21 +2020,29 @@ impl Store {
             make_current: true,
             now: checkpoint_now,
         };
+        let recipe_objects = physical
+            .iter()
+            .filter(|(_, kind, _, _, _, _)| *kind == ObjectKind::SourceRecipe)
+            .map(|(id, _, _, _, bytes, _)| (id.as_str().to_owned(), bytes.clone()))
+            .collect::<Vec<_>>();
         let proof = catalog
-            .execute_catalog(STORE_JOB_BYTES + tree_bytes.len() + recipe_bytes.len(), {
-                let operation_id = operation.id.clone();
-                let checkpoint = checkpoint.clone();
-                let tree_bytes = tree_bytes.clone();
-                let recipe_bytes = recipe_bytes.clone();
-                move |catalog| {
-                    catalog.verify_v2_source_closure_bytes(
-                        &operation_id,
-                        &checkpoint,
-                        &tree_bytes,
-                        &recipe_bytes,
-                    )
-                }
-            })
+            .execute_catalog(
+                STORE_JOB_BYTES + tree_bytes.len() + recipe_objects.len() * 256,
+                {
+                    let operation_id = operation.id.clone();
+                    let checkpoint = checkpoint.clone();
+                    let tree_bytes = tree_bytes.clone();
+                    let recipe_objects = recipe_objects.clone();
+                    move |catalog| {
+                        catalog.verify_v2_source_closure_bundle(
+                            &operation_id,
+                            &checkpoint,
+                            &tree_bytes,
+                            &recipe_objects,
+                        )
+                    }
+                },
+            )
             .await
             .map_err(|error| PutError::Storage(error.to_string()))?;
         catalog

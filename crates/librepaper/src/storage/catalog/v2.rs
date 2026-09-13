@@ -6,7 +6,7 @@
 //! in one immediate SQLite transaction.  Filesystem I/O is deliberately not
 //! performed here.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -2981,7 +2981,35 @@ impl Catalog {
     ) -> CatalogResult<VerifiedCheckpointClosure> {
         let tree = crate::storage::encoding::TreeEnvelope::from_bytes(tree_bytes)
             .map_err(|error| CatalogError::Invalid(error.to_string()))?;
-        let recipe = crate::storage::encoding::SourceRecipeEnvelope::from_bytes(recipe_bytes)
+        let recipe_id = tree
+            .files
+            .values()
+            .find_map(|file| {
+                file.recipe
+                    .as_ref()
+                    .map(|recipe| recipe.object_id.as_str().to_owned())
+            })
+            .ok_or_else(|| CatalogError::Invalid("source tree has no recipe object".into()))?;
+        self.verify_v2_source_closure_bundle(
+            operation_id,
+            checkpoint,
+            tree_bytes,
+            &[(recipe_id, recipe_bytes.to_vec())],
+        )
+    }
+
+    /// Verify every physical recipe and asset named by a canonical tree. The
+    /// caller supplies the bytes decoded from the settled recipe objects; the
+    /// tree derives the complete closure, so a caller cannot omit a sibling
+    /// file or substitute an unrelated recipe while retaining the same tree.
+    pub(crate) fn verify_v2_source_closure_bundle(
+        &self,
+        operation_id: &OperationId,
+        checkpoint: &CheckpointCommit,
+        tree_bytes: &[u8],
+        recipe_objects: &[(String, Vec<u8>)],
+    ) -> CatalogResult<VerifiedCheckpointClosure> {
+        let tree = crate::storage::encoding::TreeEnvelope::from_bytes(tree_bytes)
             .map_err(|error| CatalogError::Invalid(error.to_string()))?;
         let logical_tree = tree
             .logical_bytes()
@@ -2994,39 +3022,106 @@ impl Catalog {
                 "source tree logical digest does not match checkpoint".into(),
             ));
         }
-        if tree.files.len() != 1 {
-            return Err(CatalogError::Invalid(
-                "initial source tree must contain exactly one file".into(),
-            ));
+        let mut recipes = HashMap::new();
+        for (object_id, bytes) in recipe_objects {
+            let recipe = crate::storage::encoding::SourceRecipeEnvelope::from_bytes(bytes)
+                .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+            if recipes
+                .insert(object_id.as_str(), (recipe, bytes.as_slice()))
+                .is_some()
+            {
+                return Err(CatalogError::Invalid(
+                    "duplicate source recipe object".into(),
+                ));
+            }
         }
-        let file = tree
-            .files
-            .get(&tree.main_path)
-            .ok_or_else(|| CatalogError::Invalid("source tree main file is missing".into()))?;
-        let recipe_locator = file
-            .recipe
-            .as_ref()
-            .ok_or_else(|| CatalogError::Invalid("source tree recipe locator is missing".into()))?;
-        if recipe.recipe.file_digest != file.logical_digest
-            || recipe.recipe.uncompressed_len != file.logical_length
-        {
-            return Err(CatalogError::Conflict(
-                "source tree and recipe logical identities differ".into(),
-            ));
+        let mut expected = vec![checkpoint.tree_object_id.clone()];
+        let mut physical = HashMap::<String, (String, String, i64, Option<String>)>::new();
+        for file in tree.files.values() {
+            match file.kind.as_str() {
+                "text" => {
+                    let locator = file.recipe.as_ref().ok_or_else(|| {
+                        CatalogError::Invalid("text file recipe locator is missing".into())
+                    })?;
+                    let (recipe, bytes) =
+                        recipes.get(locator.object_id.as_str()).ok_or_else(|| {
+                            CatalogError::Conflict("source recipe bytes are missing".into())
+                        })?;
+                    if recipe.recipe.file_digest != file.logical_digest
+                        || recipe.recipe.uncompressed_len != file.logical_length
+                        || locator.object_digest != Sha256::digest(bytes).into()
+                        || locator.byte_length != bytes.len() as u64
+                    {
+                        return Err(CatalogError::Conflict(
+                            "source tree and recipe physical identity differ".into(),
+                        ));
+                    }
+                    let recipe_object_id = ObjectId::new(locator.object_id.as_str().to_owned())
+                        .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+                    expected.push(recipe_object_id);
+                    physical.insert(
+                        locator.object_id.as_str().to_owned(),
+                        (
+                            ObjectKind::SourceRecipe.as_str().into(),
+                            hex::encode(locator.object_digest),
+                            i64::try_from(locator.byte_length).map_err(|_| {
+                                CatalogError::Invalid("source recipe is too large".into())
+                            })?,
+                            locator.logical_digest.map(hex::encode),
+                        ),
+                    );
+                    for chunk in &recipe.chunk_locators {
+                        let chunk_id = ObjectId::new(chunk.object_id.as_str().to_owned())
+                            .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+                        expected.push(chunk_id);
+                        physical.insert(
+                            chunk.object_id.as_str().to_owned(),
+                            (
+                                ObjectKind::SourceChunk.as_str().into(),
+                                hex::encode(chunk.object_digest),
+                                i64::try_from(chunk.byte_length).map_err(|_| {
+                                    CatalogError::Invalid("source chunk is too large".into())
+                                })?,
+                                chunk.logical_digest.map(hex::encode),
+                            ),
+                        );
+                    }
+                }
+                "asset" => {
+                    let locator = file.asset.as_ref().ok_or_else(|| {
+                        CatalogError::Invalid("asset file locator is missing".into())
+                    })?;
+                    if locator.object_digest != file.logical_digest
+                        || locator.byte_length != file.logical_length
+                    {
+                        return Err(CatalogError::Conflict(
+                            "source tree and asset physical identity differ".into(),
+                        ));
+                    }
+                    let asset_id = ObjectId::new(locator.object_id.as_str().to_owned())
+                        .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+                    expected.push(asset_id);
+                    physical.insert(
+                        locator.object_id.as_str().to_owned(),
+                        (
+                            ObjectKind::Asset.as_str().into(),
+                            hex::encode(locator.object_digest),
+                            i64::try_from(locator.byte_length)
+                                .map_err(|_| CatalogError::Invalid("asset is too large".into()))?,
+                            locator.logical_digest.map(hex::encode),
+                        ),
+                    );
+                }
+                _ => {
+                    return Err(CatalogError::Invalid(
+                        "source tree file kind is invalid".into(),
+                    ))
+                }
+            }
         }
-        let mut derived = vec![checkpoint.tree_object_id.clone()];
-        let recipe_id = ObjectId::new(recipe_locator.object_id.as_str().to_owned())
-            .map_err(|error| CatalogError::Invalid(error.to_string()))?;
-        derived.push(recipe_id);
-        for locator in &recipe.chunk_locators {
-            derived.push(
-                ObjectId::new(locator.object_id.as_str().to_owned())
-                    .map_err(|error| CatalogError::Invalid(error.to_string()))?,
-            );
-        }
-        let expected: HashSet<&ObjectId> = derived.iter().collect();
-        let actual: HashSet<&ObjectId> = checkpoint.object_ids.iter().collect();
-        if expected != actual || derived.len() != checkpoint.object_ids.len() {
+        let expected_set: HashSet<&ObjectId> = expected.iter().collect();
+        let actual_set: HashSet<&ObjectId> = checkpoint.object_ids.iter().collect();
+        if expected_set != actual_set || expected.len() != checkpoint.object_ids.len() {
             return Err(CatalogError::Conflict(
                 "source checkpoint closure does not match decoded envelopes".into(),
             ));
@@ -3048,7 +3143,26 @@ impl Catalog {
             ));
         }
         self.with_connection(|connection| {
-            for object_id in &derived {
+            let (tree_kind, tree_digest, tree_length): (String, String, Option<i64>) = connection
+                .query_row(
+                    "SELECT kind,digest,byte_length FROM objects
+                     WHERE document_id=?1 AND id=?2 AND state='available'",
+                    params![
+                        checkpoint.document_id.as_str(),
+                        checkpoint.tree_object_id.as_str()
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(CatalogError::from)?;
+            if tree_kind != ObjectKind::SourceTree.as_str()
+                || tree_digest != physical_tree_digest
+                || tree_length != Some(tree_bytes.len() as i64)
+            {
+                return Err(CatalogError::Conflict(
+                    "settled source tree bytes do not match envelope".into(),
+                ));
+            }
+            for object_id in &checkpoint.object_ids {
                 let (kind, digest, byte_length, logical): (
                     String,
                     String,
@@ -3062,46 +3176,41 @@ impl Catalog {
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .map_err(CatalogError::from)?;
-                if object_id == &checkpoint.tree_object_id {
-                    if kind != ObjectKind::SourceTree.as_str()
-                        || digest != hex::encode(Sha256::digest(tree_bytes))
-                        || byte_length != Some(tree_bytes.len() as i64)
-                    {
-                        return Err(CatalogError::Conflict(
-                            "settled source tree bytes do not match envelope".into(),
-                        ));
-                    }
-                } else if object_id.as_str() == recipe_locator.object_id.as_str() {
-                    let expected_logical = recipe_locator.logical_digest.map(hex::encode);
-                    if kind != ObjectKind::SourceRecipe.as_str()
-                        || digest != hex::encode(Sha256::digest(recipe_bytes))
-                        || digest != hex::encode(recipe_locator.object_digest)
+                if let Some((expected_kind, expected_digest, expected_length, expected_logical)) =
+                    physical.get(object_id.as_str())
+                {
+                    if &kind != expected_kind
+                        || &digest != expected_digest
+                        || byte_length != Some(*expected_length)
                         || logical.as_deref() != expected_logical.as_deref()
-                        || byte_length != Some(recipe_bytes.len() as i64)
-                        || byte_length != i64::try_from(recipe_locator.byte_length).ok()
                     {
                         return Err(CatalogError::Conflict(
-                            "settled source recipe bytes do not match envelope".into(),
+                            "settled source child bytes do not match envelope".into(),
                         ));
                     }
-                } else {
-                    let locator = recipe
-                        .chunk_locators
-                        .iter()
-                        .find(|locator| locator.object_id.as_str() == object_id.as_str())
-                        .ok_or_else(|| {
-                            CatalogError::Conflict("source chunk locator is missing".into())
-                        })?;
-                    let expected_logical = locator.logical_digest.map(hex::encode);
-                    if kind != ObjectKind::SourceChunk.as_str()
-                        || digest != hex::encode(locator.object_digest)
-                        || logical.as_deref() != expected_logical.as_deref()
-                        || byte_length != i64::try_from(locator.byte_length).ok()
-                    {
-                        return Err(CatalogError::Conflict(
-                            "settled source chunk does not match recipe locator".into(),
-                        ));
-                    }
+                } else if object_id != &checkpoint.tree_object_id {
+                    return Err(CatalogError::Conflict(
+                        "source closure contains an unreferenced object".into(),
+                    ));
+                }
+                let leased: i64 = connection
+                    .query_row(
+                        "SELECT count(*) FROM object_leases
+                         WHERE document_id=?1 AND object_id=?2 AND operation_id=?3
+                           AND purpose IN ('write','stage') AND expires_at>?4",
+                        params![
+                            checkpoint.document_id.as_str(),
+                            object_id.as_str(),
+                            operation_id.as_str(),
+                            checkpoint.now.0,
+                        ],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if leased == 0 {
+                    return Err(CatalogError::Conflict(
+                        "source checkpoint closure is missing an active operation lease".into(),
+                    ));
                 }
             }
             Ok(())
@@ -3739,13 +3848,6 @@ impl Catalog {
         if input.work_expires_at.is_some_and(|expiry| expiry <= now) {
             return Err(CatalogError::Invalid(
                 "operation work deadline has expired".into(),
-            ));
-        }
-        if input.kind == OperationKind::AgentApply
-            && input.execution_epoch.as_deref().is_none_or(str::is_empty)
-        {
-            return Err(CatalogError::Invalid(
-                "agent source operation needs an execution epoch".into(),
             ));
         }
         validate_digest(&input.request_digest, "request digest")?;
