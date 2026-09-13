@@ -452,11 +452,14 @@ fn quota_apply_marks_live_policy_for_advisory_worker() {
     assert!(pass.blocked == 0);
     assert!(catalog.checkpoint("doc", "milestone-1").unwrap().is_some());
     assert!(catalog.checkpoint("doc", "milestone-2").unwrap().is_some());
+    // V2 keeps protection on annotation/source rows.  Checkpoint metadata
+    // reports the durable parent and does not fabricate the removed legacy
+    // protection flag.
     assert_eq!(
         catalog
             .checkpoint_retention_metadata("doc", "milestone-1")
             .unwrap(),
-        Some(("milestone-0".into(), true))
+        Some(("milestone-0".into(), false))
     );
 }
 
@@ -607,6 +610,29 @@ fn account_usage_charges_unique_physical_objects_and_not_tree_size() {
     assert_eq!(usage.charged_bytes, 34);
     assert_eq!(usage.document_count, 1);
     assert_eq!(usage.checkpoint_count, 1);
+    let mut physical_by_kind = catalog
+        .with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT kind,SUM(byte_length) FROM objects
+                 WHERE document_id='storage-1' AND state='available'
+                 GROUP BY kind ORDER BY kind",
+            )?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .unwrap();
+    physical_by_kind.sort();
+    assert_eq!(
+        physical_by_kind,
+        vec![
+            ("asset".into(), 11),
+            ("publication_html".into(), 13),
+            ("source_chunk".into(), 7),
+            ("source_tree".into(), 3),
+        ]
+    );
 }
 
 #[test]
@@ -1249,30 +1275,34 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
         .commit_operation("storage-1", &request_id, "{}", "head")
         .is_err());
     drain_document_delete(&catalog, "doc");
-    // The bounded document worker only marks roots for physical retirement.
-    // Model the separate blob-GC acknowledgement before finalization; the
-    // catalogue must not refund these bytes merely because deletion started.
+    // The bounded document worker only marks roots for physical retirement;
+    // finalization must remain blocked while the physical object is present.
+    assert!(matches!(
+        catalog.finish_delete("doc"),
+        Err(CatalogError::Conflict(_))
+    ));
+    assert_eq!(catalog.totals().unwrap(), (20, 1));
+    // Model the separate blob-GC acknowledgement through the typed claim and
+    // confirmation boundary. This is where the counters are actually
+    // settled, after physical absence has been observed.
     catalog
         .with_connection(|connection| {
             connection.execute(
-                "DELETE FROM objects WHERE document_id='storage-1'",
-                [],
-            )?;
-            connection.execute(
-                "UPDATE documents SET stored_bytes=0,reserved_bytes=0 WHERE id='storage-1'",
-                [],
-            )?;
-            connection.execute(
-                "UPDATE accounts SET stored_bytes=0,reserved_bytes=0 WHERE id='acct-1'",
-                [],
-            )?;
-            connection.execute(
-                "UPDATE server_state SET stored_bytes=0,reserved_bytes=0 WHERE id=1",
-                [],
+                "UPDATE objects SET gc_after=0 WHERE document_id='storage-1' AND id=?1",
+                [&object_id],
             )?;
             Ok(())
         })
         .unwrap();
+    let document_id = crate::storage::catalog::DocumentId::new("storage-1").unwrap();
+    let object_id = crate::storage::catalog::ObjectId::new(object_id).unwrap();
+    let now = crate::storage::catalog::UnixMillis::new(crate::util::now_millis()).unwrap();
+    assert!(catalog
+        .claim_v2_object_for_deletion(&document_id, &object_id, now, now)
+        .unwrap());
+    assert!(catalog
+        .confirm_v2_object_deleted(&document_id, &object_id)
+        .unwrap());
     catalog.finish_delete("doc").unwrap();
     assert_eq!(catalog.totals().unwrap(), (0, 0));
 }
