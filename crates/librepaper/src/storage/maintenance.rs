@@ -439,8 +439,9 @@ impl DeletionWorker {
         &self,
         now: i64,
     ) -> Result<crate::storage::maintenance_v2::GcReport, crate::storage::maintenance_v2::GcError> {
+        let adapter = crate::storage::v2_catalog::V2GcCatalogAdapter::new(self.catalog.clone());
         crate::storage::maintenance_v2::run_gc_pass(
-            self.catalog.as_ref(),
+            &adapter,
             self.blobs.as_ref(),
             now,
         )
@@ -452,8 +453,9 @@ impl DeletionWorker {
     pub async fn recover_v2_startup(
         &self,
     ) -> Result<crate::storage::maintenance_v2::RecoveryReport, crate::storage::maintenance_v2::GcError> {
+        let adapter = crate::storage::v2_catalog::V2GcCatalogAdapter::new(self.catalog.clone());
         crate::storage::maintenance_v2::recover_v2_startup(
-            self.catalog.as_ref(),
+            &adapter,
             self.blobs.as_ref(),
         )
         .await

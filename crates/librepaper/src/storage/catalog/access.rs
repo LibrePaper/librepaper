@@ -258,12 +258,25 @@ impl Catalog {
         let key: [u8; 32] = key
             .try_into()
             .map_err(|_| CatalogError::Invalid("link sealing key must be 32 bytes".into()))?;
+        let key_id = hex::encode(sha2::Sha256::digest(key))[..16].to_string();
+        let durable: (String, String) = self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT active_link_key_id,keyring_json FROM server_state WHERE id=1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(CatalogError::from)
+        })?;
+        if durable.0 != "initial" && durable.0 != key_id {
+            return Err(CatalogError::Conflict(
+                "link sealing key changed outside the deployment initializer".into(),
+            ));
+        }
         let mut keys = self
             .link_sealing_keys
             .write()
             .map_err(|_| CatalogError::Busy)?;
-        let key_id = hex::encode(sha2::Sha256::digest(key));
-        let key_id = key_id[..16].to_string();
         if let Some((_, existing)) = keys.first() {
             return if existing == &key {
                 Ok(())
@@ -271,12 +284,27 @@ impl Catalog {
                 Err(CatalogError::Conflict("link sealing key changed".into()))
             };
         }
-        keys.push((key_id.clone(), key));
+        let mut keyring: serde_json::Value = serde_json::from_str(&durable.1)
+            .map_err(|error| CatalogError::Invalid(format!("invalid durable link keyring: {error}")))?;
+        let entries = keyring
+            .get_mut("keys")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| CatalogError::Invalid("durable link keyring has no keys".into()))?;
+        if !entries.iter().any(|entry| entry.get("id").and_then(serde_json::Value::as_str) == Some(key_id.as_str())) {
+            entries.push(serde_json::json!({"id": key_id, "created_at": super::unix_millis()}));
+        }
+        let encoded = serde_json::to_string(&keyring)
+            .map_err(|error| CatalogError::Invalid(error.to_string()))?;
         self.with_connection(|connection| {
-            let keyring = serde_json::json!({"version":1,"keys":[{"id":key_id,"created_at":super::unix_millis()}]});
-            connection.execute("UPDATE server_state SET active_link_key_id=?1,keyring_json=?2,updated_at=max(updated_at,?3) WHERE id=1",params![key_id,serde_json::to_string(&keyring).map_err(|e| CatalogError::Invalid(e.to_string()))?,super::unix_millis()]).map_err(CatalogError::from)?;
+            connection
+                .execute(
+                    "UPDATE server_state SET active_link_key_id=?1,keyring_json=?2,updated_at=max(updated_at,?3) WHERE id=1",
+                    params![key_id, encoded, super::unix_millis()],
+                )
+                .map_err(CatalogError::from)?;
             Ok(())
         })?;
+        keys.push((key_id, key));
         Ok(())
     }
 
@@ -290,6 +318,31 @@ impl Catalog {
             .link_sealing_keys
             .write()
             .map_err(|_| CatalogError::Busy)?;
+        let durable: String = self.with_connection(|connection| {
+            connection
+                .query_row("SELECT keyring_json FROM server_state WHERE id=1", [], |row| row.get(0))
+                .map_err(CatalogError::from)
+        })?;
+        let mut keyring: serde_json::Value = serde_json::from_str(&durable)
+            .map_err(|error| CatalogError::Invalid(format!("invalid durable link keyring: {error}")))?;
+        let entries = keyring
+            .get_mut("keys")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| CatalogError::Invalid("durable link keyring has no keys".into()))?;
+        if !entries.iter().any(|entry| entry.get("id").and_then(serde_json::Value::as_str) == Some(id.as_str())) {
+            entries.push(serde_json::json!({"id": id, "created_at": super::unix_millis()}));
+        }
+        let encoded = serde_json::to_string(&keyring)
+            .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+        self.with_connection(|connection| {
+            connection
+                .execute(
+                    "UPDATE server_state SET keyring_json=?1,updated_at=max(updated_at,?2) WHERE id=1",
+                    params![encoded, super::unix_millis()],
+                )
+                .map_err(CatalogError::from)?;
+            Ok(())
+        })?;
         if !keys.iter().any(|(known, _)| known == &id) {
             keys.push((id.clone(), key));
         }
@@ -309,6 +362,7 @@ impl Catalog {
                     |row| row.get(0),
                 )
                 .optional()
+                .map(|value| value.filter(|id| id != "initial"))
                 .map_err(CatalogError::from)
         })
     }

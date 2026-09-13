@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
+use sha2::{Digest, Sha256};
 
 use crate::auth::{link_sealing_keyring_file, session_key_file, GithubApp, GoogleApp, Policy};
 use crate::config::Configuration;
@@ -244,22 +245,30 @@ pub async fn serve(options: ServeOptions) {
     let config = Arc::new(options.config);
     let shell = load_shell(&config).unwrap_or_else(|err| die(err));
     let catalog_path = &deployment_paths.catalog;
-    let catalog = Arc::new(
-        crate::storage::catalog::Catalog::open_with(catalog_path, durable)
-            .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
-    );
-    crate::config::DeploymentPaths::protect_file(catalog_path).unwrap_or_else(|err| die(err));
-    let catalog_nonempty = catalog
-        .totals()
-        .map(|(_, documents)| documents != 0)
+    // Establish external identities before opening the catalogue. Fresh v2
+    // creation records these exact values in server_state; existing roots
+    // must validate them instead of electing replacement identities.
+    let catalog_nonempty = crate::storage::catalog::Catalog::path_is_nonempty(catalog_path)
         .unwrap_or_else(|err| die(format!("could not inspect catalogue: {err}")));
     let deployment_id = deployment_paths
         .ensure_deployment_identity(catalog_nonempty)
         .unwrap_or_else(|err| die(err));
     let secrets = &deployment_paths.secrets;
-    let key = session_key_file(&secrets.join("session.key"), catalog_nonempty)
-        .unwrap_or_else(|err| die(err));
     let link_sealing_keys = link_sealing_keyring_file(&secrets.join("links.key"), catalog_nonempty)
+        .unwrap_or_else(|err| die(err));
+    let key_digest = hex::encode(Sha256::digest(&link_sealing_keys[0]));
+    let active_link_key_id = &key_digest[..16];
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open_with_identity(
+            catalog_path,
+            durable,
+            &deployment_id,
+            active_link_key_id,
+        )
+            .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
+    );
+    crate::config::DeploymentPaths::protect_file(catalog_path).unwrap_or_else(|err| die(err));
+    let key = session_key_file(&secrets.join("session.key"), catalog_nonempty)
         .unwrap_or_else(|err| die(err));
     catalog
         .set_link_sealing_key(&link_sealing_keys[0])

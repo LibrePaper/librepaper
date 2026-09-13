@@ -78,6 +78,24 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("../../../migrations/0002_catalog.sql")),
 ];
 
+fn validate_deployment_identity(value: &str) -> CatalogResult<()> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CatalogError::Invalid(
+            "deployment identity must be a 256-bit hexadecimal value".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_link_key_id(value: &str) -> CatalogResult<()> {
+    if value.len() != 16 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CatalogError::Invalid(
+            "link key identity must be a 64-bit hexadecimal value".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// What `by` reads as once an account's identifying attribution has been
 /// removed.  Kept as a constant so the erasure stages, the durable write
 /// boundary and the resident-room scrub all agree on one replacement.
@@ -603,6 +621,48 @@ impl Catalog {
         Self::from_connection(connection, durable)
     }
 
+    /// Open or create a v2 catalogue using identities already established by
+    /// deployment state files. Fresh creation records these values in the
+    /// singleton transaction; reopening validates the durable metadata.
+    pub fn open_with_identity(
+        path: impl AsRef<Path>,
+        durable: bool,
+        deployment_id: &str,
+        active_link_key_id: &str,
+    ) -> CatalogResult<Self> {
+        validate_deployment_identity(deployment_id)?;
+        validate_link_key_id(active_link_key_id)?;
+        let connection = Connection::open(path).map_err(CatalogError::from)?;
+        Self::from_connection_with_identity(
+            connection,
+            durable,
+            Some((deployment_id, active_link_key_id)),
+        )
+    }
+
+    /// Inspect a path before opening it so startup can establish external
+    /// identities and reject missing nonempty deployment secrets first.
+    pub fn path_is_nonempty(path: impl AsRef<Path>) -> CatalogResult<bool> {
+        if !path.as_ref().exists() {
+            return Ok(false);
+        }
+        if path
+            .as_ref()
+            .metadata()
+            .map_err(|error| CatalogError::Invalid(error.to_string()))?
+            .len()
+            == 0
+        {
+            return Ok(false);
+        }
+        let connection = Connection::open(path).map_err(CatalogError::from)?;
+        connection
+            .query_row("SELECT EXISTS(SELECT 1 FROM documents LIMIT 1)", [], |row| {
+                row.get(0)
+            })
+            .map_err(CatalogError::from)
+    }
+
     /// Open an isolated in-memory catalogue.  This is useful for contract
     /// tests; file-backed tests should still cover WAL and reopening.
     pub fn open_in_memory() -> CatalogResult<Self> {
@@ -612,7 +672,15 @@ impl Catalog {
         )
     }
 
-    fn from_connection(mut connection: Connection, durable: bool) -> CatalogResult<Self> {
+    fn from_connection(connection: Connection, durable: bool) -> CatalogResult<Self> {
+        Self::from_connection_with_identity(connection, durable, None)
+    }
+
+    fn from_connection_with_identity(
+        mut connection: Connection,
+        durable: bool,
+        identity: Option<(&str, &str)>,
+    ) -> CatalogResult<Self> {
         // `FULL` fsyncs the WAL on every commit, which is what a deployment
         // wants and what makes a file-backed test spend its time waiting on
         // the disk. `OFF` keeps the same SQL semantics without the sync.
@@ -659,8 +727,22 @@ impl Catalog {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(CatalogError::from)?;
             tx.execute_batch(sql).map_err(CatalogError::from)?;
-            let deployment_id = hex::encode(crate::auth::random_bytes(16));
+            let deployment_id = identity
+                .map(|(deployment_id, _)| deployment_id.to_owned())
+                .unwrap_or_else(|| hex::encode(crate::auth::random_bytes(16)));
             let writer_generation = hex::encode(crate::auth::random_bytes(16));
+            let active_link_key_id = identity
+                .map(|(_, key_id)| key_id.to_owned())
+                .unwrap_or_else(|| "initial".into());
+            let keyring = if active_link_key_id == "initial" {
+                r#"{"version":1,"keys":[]}"#.to_string()
+            } else {
+                serde_json::json!({
+                    "version": 1,
+                    "keys": [{"id": active_link_key_id.clone(), "created_at": unix_millis()}]
+                })
+                .to_string()
+            };
             let now = unix_millis();
             tx.execute(
                 "INSERT INTO server_state
@@ -670,8 +752,8 @@ impl Catalog {
                 params![
                     deployment_id,
                     writer_generation,
-                    "initial",
-                    r#"{"version":1,"keys":[]}"#,
+                    active_link_key_id,
+                    keyring,
                     r#"{"version":2,"state":null}"#,
                     now,
                 ],
@@ -692,6 +774,25 @@ impl Catalog {
             if singleton != 1 {
                 return Err(CatalogError::Invalid(
                     "v2 catalogue is missing its server_state singleton".into(),
+                ));
+            }
+        }
+        if let Some((deployment_id, active_link_key_id)) = identity {
+            let (stored_deployment, stored_key): (String, String) = connection
+                .query_row(
+                    "SELECT deployment_id,active_link_key_id FROM server_state WHERE id=1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(CatalogError::from)?;
+            if stored_deployment != deployment_id {
+                return Err(CatalogError::Conflict(
+                    "catalogue deployment identity disagrees with state/deployment.id".into(),
+                ));
+            }
+            if stored_key != active_link_key_id {
+                return Err(CatalogError::Conflict(
+                    "catalogue link key identity disagrees with secrets/links.key".into(),
                 ));
             }
         }
@@ -844,6 +945,41 @@ impl DerefMut for ConnectionGuard<'_> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn fresh_identity_is_persisted_and_reopen_mismatch_is_refused() {
+        let root = tempfile::tempdir().expect("catalog root");
+        let path = root.path().join("catalog.db");
+        let deployment_id = "a".repeat(64);
+        let key_id = hex::encode(Sha256::digest([7u8; 32]))[..16].to_string();
+        let catalog = Catalog::open_with_identity(&path, false, &deployment_id, &key_id)
+            .expect("fresh identity");
+        let persisted: (String, String, String) = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT deployment_id,active_link_key_id,keyring_json FROM server_state WHERE id=1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(CatalogError::from)
+            })
+            .expect("persisted identity");
+        assert_eq!(persisted.0, deployment_id);
+        assert_eq!(persisted.1, key_id);
+        assert!(persisted.2.contains(&key_id));
+        drop(catalog);
+        Catalog::open_with_identity(&path, false, &deployment_id, &key_id)
+            .expect("matching reopen");
+        assert!(Catalog::open_with_identity(&path, false, &"b".repeat(64), &key_id).is_err());
+        assert!(Catalog::open_with_identity(&path, false, &deployment_id, &"c".repeat(16)).is_err());
+    }
+}
 
 #[cfg(test)]
 mod physical_admission_tests;

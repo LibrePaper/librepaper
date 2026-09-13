@@ -334,6 +334,120 @@ fn journal_tx<T>(catalog: &Catalog, operation: impl FnOnce(&rusqlite::Transactio
     })
 }
 
+/// Async maintenance adapter. SQL remains on a blocking worker even when GC
+/// is driven by the Tokio maintenance scheduler.
+#[derive(Clone)]
+pub struct V2GcCatalogAdapter {
+    pub catalog: Arc<Catalog>,
+}
+
+impl V2GcCatalogAdapter {
+    pub fn new(catalog: Arc<Catalog>) -> Self {
+        Self { catalog }
+    }
+}
+
+async fn blocking_catalog_call<T, F, Fut>(catalog: Arc<Catalog>, operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<Catalog>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(operation(catalog))
+    })
+    .await
+    .map_err(|error| format!("catalogue maintenance task failed: {error}"))?
+}
+
+#[async_trait]
+impl V2GcCatalog for V2GcCatalogAdapter {
+    async fn heartbeat_stage_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2GcCatalog>::heartbeat_stage_leases(catalog.as_ref(), now, limit).await
+        }).await
+    }
+    async fn expire_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2GcCatalog>::expire_leases(catalog.as_ref(), now, limit).await
+        }).await
+    }
+    async fn expire_prepared_operations(&self, now: i64, limit: usize) -> Result<usize, String> {
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2GcCatalog>::expire_prepared_operations(catalog.as_ref(), now, limit).await
+        }).await
+    }
+    async fn settle_completed_inflight(&self, limit: usize) -> Result<usize, String> {
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2GcCatalog>::settle_completed_inflight(catalog.as_ref(), limit).await
+        }).await
+    }
+    async fn claim_gc(&self, now: i64, limit: usize) -> Result<Vec<GcCandidate>, String> {
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2GcCatalog>::claim_gc(catalog.as_ref(), now, limit).await
+        }).await
+    }
+    async fn settle_gc(&self, document_id: &str, object_id: &str, confirmed: bool, retry_at: i64) -> Result<i64, String> {
+        let document_id = document_id.to_owned();
+        let object_id = object_id.to_owned();
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2GcCatalog>::settle_gc(catalog.as_ref(), &document_id, &object_id, confirmed, retry_at).await
+        }).await
+    }
+}
+
+#[async_trait]
+impl V2RecoveryCatalog for V2GcCatalogAdapter {
+    async fn establish_writer_generation(&self) -> Result<String, String> {
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2RecoveryCatalog>::establish_writer_generation(catalog.as_ref()).await
+        }).await
+    }
+    async fn prepared_allocations_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<PreparedAllocation>, String> {
+        let after = after.map(str::to_owned);
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2RecoveryCatalog>::prepared_allocations_page(catalog.as_ref(), after.as_deref(), limit).await
+        }).await
+    }
+    async fn settle_allocation(&self, allocation: &PreparedAllocation, byte_length: u64, digest: &str) -> Result<(), String> {
+        let allocation = allocation.clone();
+        let digest = digest.to_owned();
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2RecoveryCatalog>::settle_allocation(catalog.as_ref(), &allocation, byte_length, &digest).await
+        }).await
+    }
+    async fn abort_absent_allocation(&self, allocation: &PreparedAllocation) -> Result<(), String> {
+        let allocation = allocation.clone();
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2RecoveryCatalog>::abort_absent_allocation(catalog.as_ref(), &allocation).await
+        }).await
+    }
+    async fn prepared_operations_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<PreparedOperation>, String> {
+        let after = after.map(str::to_owned);
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2RecoveryCatalog>::prepared_operations_page(catalog.as_ref(), after.as_deref(), limit).await
+        }).await
+    }
+    async fn abort_unacknowledged_operation(&self, operation_id: &str) -> Result<(), String> {
+        let operation_id = operation_id.to_owned();
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2RecoveryCatalog>::abort_unacknowledged_operation(catalog.as_ref(), &operation_id).await
+        }).await
+    }
+    async fn adopt_internal_operation(&self, operation: &PreparedOperation) -> Result<(), String> {
+        let operation = operation.clone();
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2RecoveryCatalog>::adopt_internal_operation(catalog.as_ref(), &operation).await
+        }).await
+    }
+    async fn defer_uncertain_operation(&self, operation_id: &str) -> Result<(), String> {
+        let operation_id = operation_id.to_owned();
+        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+            <Catalog as V2RecoveryCatalog>::defer_uncertain_operation(catalog.as_ref(), &operation_id).await
+        }).await
+    }
+}
+
 /// The catalogue-backed v2 GC implementation used by the deployment worker.
 /// Claims and settlements run in immediate transactions; no filesystem call
 /// is made while one of these transactions is open.
@@ -349,7 +463,7 @@ impl V2GcCatalog for Catalog {
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let renewed = transaction
                 .execute(
-                    "UPDATE object_leases SET expires_at=?1 WHERE purpose='stage' AND (document_id,object_id,holder_id) IN (SELECT lease.document_id,lease.object_id,lease.holder_id FROM object_leases lease JOIN operations op ON op.id=lease.operation_id AND op.document_id=lease.document_id JOIN documents d ON d.id=lease.document_id JOIN accounts a ON a.id=d.owner_id WHERE lease.purpose='stage' AND op.kind='display_publish' AND op.state='prepared' AND op.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1) AND op.work_expires_at IS NOT NULL AND op.work_expires_at>?2 AND d.status='active' AND a.status='active' ORDER BY lease.expires_at,lease.document_id,lease.object_id,lease.holder_id LIMIT ?3)",
+                    "UPDATE object_leases SET expires_at=MIN(?1,(SELECT op.work_expires_at FROM operations op WHERE op.id=object_leases.operation_id AND op.document_id=object_leases.document_id)) WHERE purpose='stage' AND expires_at>?2 AND writer_generation=(SELECT op.writer_generation FROM operations op WHERE op.id=object_leases.operation_id AND op.document_id=object_leases.document_id) AND (document_id,object_id,holder_id) IN (SELECT lease.document_id,lease.object_id,lease.holder_id FROM object_leases lease JOIN operations candidate ON candidate.id=lease.operation_id AND candidate.document_id=lease.document_id JOIN documents d ON d.id=lease.document_id JOIN accounts a ON a.id=d.owner_id JOIN objects o ON o.document_id=lease.document_id AND o.id=lease.object_id WHERE lease.purpose='stage' AND lease.expires_at>?2 AND candidate.kind='display_publish' AND candidate.state='prepared' AND candidate.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1) AND candidate.work_expires_at IS NOT NULL AND candidate.work_expires_at>?2 AND lease.writer_generation=candidate.writer_generation AND o.state IN ('allocated','available') AND d.status='active' AND a.status='active' ORDER BY lease.expires_at,lease.document_id,lease.object_id,lease.holder_id LIMIT ?3)",
                     params![now.saturating_add(READ_LEASE_MS), now, i64::try_from(limit.min(256)).unwrap_or(256)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
@@ -1299,7 +1413,7 @@ impl V2ObjectWriter {
 #[cfg(test)]
 mod aborted_inflight_tests {
     use super::*;
-    use crate::storage::blob::{write_v2_object_with_id, BlobInfo, BlobVersion, FsStore};
+    use crate::storage::blob::{BlobInfo, BlobVersion, FsStore};
     use crate::storage::maintenance_v2::run_gc_pass;
     use tokio::sync::Notify;
 
@@ -1307,6 +1421,7 @@ mod aborted_inflight_tests {
         inner: Arc<FsStore>,
         started: Arc<Notify>,
         release: Arc<Notify>,
+        finished: Arc<Notify>,
     }
 
     #[async_trait::async_trait]
@@ -1318,7 +1433,9 @@ mod aborted_inflight_tests {
         async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> crate::storage::blob::BlobResult<()> {
             self.started.notify_one();
             self.release.notified().await;
-            self.inner.put(key, body, content_type).await
+            let result = self.inner.put(key, body, content_type).await;
+            self.finished.notify_one();
+            result
         }
 
         async fn delete(&self, keys: &[String]) -> crate::storage::blob::BlobResult<()> {
@@ -1372,6 +1489,9 @@ mod aborted_inflight_tests {
                     "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,journal_epoch,first_sequence,last_sequence) VALUES(?1,?2,?3,'journal_segment','allocated',?4,1,NULL,?5,?6,1,0,1,1)",
                     params![document_id, object_id.as_str(), storage_key, digest, body.len() as i64, operation_id],
                 )?;
+                connection.execute("UPDATE documents SET reserved_bytes=?1 WHERE id=?2", params![body.len() as i64, document_id])?;
+                connection.execute("UPDATE accounts SET reserved_bytes=?1 WHERE id=?2", params![body.len() as i64, account_id])?;
+                connection.execute("UPDATE server_state SET reserved_bytes=?1 WHERE id=1", [body.len() as i64])?;
                 Ok(())
             })
             .expect("admitted allocation");
@@ -1380,20 +1500,20 @@ mod aborted_inflight_tests {
         let inner = Arc::new(FsStore::new(root.path(), false));
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
+        let finished = Arc::new(Notify::new());
         let blobs: Arc<dyn BlobStore> = Arc::new(DelayedStore {
             inner,
             started: Arc::clone(&started),
             release: Arc::clone(&release),
+            finished: Arc::clone(&finished),
         });
         let namespace = Arc::as_ptr(&catalog) as usize;
-        assert!(register_inflight(namespace, document_id, object_id.as_str(), 0, "", "", "", "", false));
-        let delayed_blobs = Arc::clone(&blobs);
+        let writer = V2ObjectWriter::new(Arc::clone(&catalog), Arc::clone(&blobs));
         let delayed_body = body.clone();
         let delayed_object = object_id.clone();
         let delayed_document = document_id.to_owned();
         let put_task = tokio::spawn(async move {
-            write_v2_object_with_id(
-                delayed_blobs.as_ref(),
+            writer.write_allocated(
                 &delayed_document,
                 delayed_object,
                 delayed_body,
@@ -1402,6 +1522,7 @@ mod aborted_inflight_tests {
             .await
         });
         started.notified().await;
+        put_task.abort();
         catalog
             .with_connection(|connection| {
                 let now = now_millis();
@@ -1410,13 +1531,19 @@ mod aborted_inflight_tests {
                     params![now, now.saturating_add(RECEIPT_RETENTION_MS), operation_id],
                 )?;
                 Ok(())
-            })
+        })
             .expect("cancel operation");
         release.notify_one();
-        let written = put_task.await.expect("physical writer task").expect("physical put");
-        complete_physical_guard(namespace, document_id, &written);
+        finished.notified().await;
+        for _ in 0..100 {
+            if !completed_inflight(namespace, 1).is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
 
-        let report = run_gc_pass(catalog.as_ref(), blobs.as_ref(), now_millis())
+        let adapter = V2GcCatalogAdapter::new(catalog.clone());
+        let report = run_gc_pass(&adapter, blobs.as_ref(), now_millis())
             .await
             .expect("aborted write is reclaimed");
         assert_eq!(report.inflight_settled, 1);
