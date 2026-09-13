@@ -344,8 +344,16 @@ fn reopening_annotation_restores_protection_from_stored_source_revision() {
     };
     let mut comment = annotation("protected", "commenting");
     comment.revision = "revision".into();
+    let comment_request = crate::util::new_request_key();
+    let comment_digest = "d".repeat(64);
     catalog
-        .insert_comment_request_authorized(&comment, "", "", 0, owner)
+        .insert_comment_request_authorized(
+            &comment,
+            &comment_request,
+            &comment_digest,
+            crate::util::now_millis(),
+            owner,
+        )
         .unwrap();
     catalog
         .with_connection(|connection| {
@@ -1001,6 +1009,23 @@ fn quarto_checkpoint_authority_is_checked_at_the_atomic_commit() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let tree_digest = "f".repeat(64);
+    let tree_object_id = fixture_object_id("quarto");
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                 VALUES('storage-1',?1,?2,'source_tree','available',?3,0,0,0)",
+                rusqlite::params![
+                    tree_object_id,
+                    format!("v2/documents/storage-1/objects/{tree_object_id}"),
+                    tree_digest,
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     let actor = MutationAuthority {
         account_id: "acct-1",
         owner_key: "",
@@ -1014,6 +1039,7 @@ fn quarto_checkpoint_authority_is_checked_at_the_atomic_commit() {
     };
     let mut point = attributed("quarto-render", "Alice", Some("acct-1"));
     point.source_format = "quarto".into();
+    point.tree_sha = tree_digest;
     point.why = "render".into();
     catalog.revoke_sessions("acct-1", "generation-2").unwrap();
     assert!(catalog
@@ -1076,12 +1102,29 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
     catalog
         .revoke_agent_execution_lease("doc", "sidebar", &first_epoch)
         .unwrap();
+    let tree_digest = "e".repeat(64);
+    let tree_object_id = fixture_object_id("execution");
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                 VALUES('storage-1',?1,?2,'source_tree','available',?3,0,0,0)",
+                rusqlite::params![
+                    tree_object_id,
+                    format!("v2/documents/storage-1/objects/{tree_object_id}"),
+                    tree_digest,
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     let point = Checkpoint {
         slug: "doc".into(),
         sha: "fenced-checkpoint".into(),
         seq: -1,
         durable_seq: 0,
-        tree_sha: "tree".into(),
+        tree_sha: tree_digest,
         parent: String::new(),
         at: "2026-01-01T00:00:00.000Z".into(),
         by: "Alice".into(),
@@ -1353,7 +1396,7 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
         .create_document(&NewDocument {
             slug: "example-0000".into(),
             storage_id: "example-storage".into(),
-            title: String::new(),
+            title: "Example project".into(),
             sha: "example-sha".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
             published_at: "2026-01-01T00:00:00Z".into(),
@@ -2014,17 +2057,27 @@ fn sql_children_are_bounded_and_expiry_filtered() {
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
     let tree_digest = fixture_tree_digest("sql-children");
+    let tree_object_id = fixture_object_id("sql-children");
     catalog
         .with_connection(|connection| {
             connection.execute(
                 "INSERT INTO objects
                  (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
-                 VALUES('storage-1','sql-children-tree','objects/sql-children-tree',
-                        'source_tree','available',?1,0,0,0)",
-                [&tree_digest],
+                 VALUES('storage-1',?1,?2,'source_tree','available',?3,0,0,0)",
+                rusqlite::params![
+                    tree_object_id,
+                    format!("v2/documents/storage-1/objects/{tree_object_id}"),
+                    tree_digest,
+                ],
             )?;
             Ok(())
         })
+        .unwrap();
+    catalog.set_link_sealing_key(&[1_u8; 32]).unwrap();
+    let link_secret = "bounded-reader-key";
+    let link_hash = hex::encode(sha2::Sha256::digest(link_secret.as_bytes()));
+    let link_sealed = catalog
+        .seal_link_key("storage-1", "reader", &link_hash, link_secret)
         .unwrap();
     let link = Link {
         slug: "doc".into(),
@@ -2033,8 +2086,8 @@ fn sql_children_are_bounded_and_expiry_filtered() {
         // envelope deliberately tiny: this test exercises the SQL child
         // bounds, while the production lookup test below covers malformed
         // sealed credentials separately.
-        hash: "a".repeat(64),
-        sealed: vec![1, 2, 3],
+        hash: link_hash,
+        sealed: link_sealed,
         label: "reader".into(),
         budget: None,
         since: "2026-01-01T00:00:00.000Z".into(),
@@ -2321,14 +2374,35 @@ fn transfer_rechecks_owner_inside_the_write_transaction() {
     catalog.upsert_account(&bob).unwrap();
 
     assert!(catalog
-        .transfer_ownership_authorized("doc", Some("acct-attacker"), "", "acct-2", 100)
+        .transfer_ownership_authorized_with_generation(
+            "doc",
+            Some("acct-attacker"),
+            "",
+            Some("generation-1"),
+            "acct-2",
+            100,
+        )
         .is_err());
     let moved = catalog
-        .transfer_ownership_authorized("doc", Some("acct-1"), "", "acct-2", 100)
+        .transfer_ownership_authorized_with_generation(
+            "doc",
+            Some("acct-1"),
+            "",
+            Some("generation-1"),
+            "acct-2",
+            100,
+        )
         .unwrap();
     assert_eq!(moved.owner_id.as_deref(), Some("acct-2"));
     assert!(catalog
-        .transfer_ownership_authorized("doc", Some("acct-1"), "", "acct-1", 100)
+        .transfer_ownership_authorized_with_generation(
+            "doc",
+            Some("acct-1"),
+            "",
+            Some("generation-1"),
+            "acct-1",
+            100,
+        )
         .is_err());
 }
 
@@ -2375,13 +2449,18 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
     coauthor.session_generation = "generation-2".into();
     catalog.upsert_account(&coauthor).unwrap();
     catalog.create_document(&document()).unwrap();
-    let link_hash = "e".repeat(64);
+    catalog.set_link_sealing_key(&[53_u8; 32]).unwrap();
+    let editor_key = "editor-link-secret";
+    let link_hash = hex::encode(sha2::Sha256::digest(editor_key.as_bytes()));
+    let sealed = catalog
+        .seal_link_key("storage-1", "editor", &link_hash, editor_key)
+        .unwrap();
     catalog
         .put_link(&Link {
             slug: "doc".into(),
             role: "editor".into(),
             hash: link_hash.clone(),
-            sealed: vec![1],
+            sealed,
             label: String::new(),
             budget: None,
             since: "2026-01-01T00:00:00Z".into(),
@@ -2403,12 +2482,15 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
     catalog
         .reserve_document_bytes_with_authority("doc", 1, 100, 1_000, Some(authority))
         .unwrap();
+    let rotated_sealed = catalog
+        .seal_link_key("storage-1", "editor", &link_hash, editor_key)
+        .unwrap();
     catalog
         .put_link(&Link {
             slug: "doc".into(),
             role: "editor".into(),
             hash: link_hash.clone(),
-            sealed: vec![1],
+            sealed: rotated_sealed,
             label: String::new(),
             budget: None,
             since: "2026-01-01T00:00:00Z".into(),
@@ -2434,19 +2516,32 @@ async fn checked_production_lookup_propagates_corrupt_authorization_rows() {
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
     catalog.set_link_sealing_key(&[1_u8; 32]).unwrap();
+    let key_id = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT active_link_key_id FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
     catalog
-        .put_link(&Link {
-            slug: "doc".into(),
-            role: "reader".into(),
-            // The row must satisfy the v2 schema's hash shape so the lookup
-            // reaches credential decoding and reports corruption instead of
-            // failing while constructing the fixture.
-            hash: "b".repeat(64),
-            sealed: vec![1, 2, 3],
-            label: String::new(),
-            budget: None,
-            since: "2026-01-01T00:00:00Z".into(),
-            until: String::new(),
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO links
+                 (document_id,id,role,token_hash,sealed_token,sealing_key_id,label,
+                  created_at,expires_at)
+                 VALUES('storage-1','reader','reader',?1,?2,?3,'',?4,NULL)",
+                rusqlite::params![
+                    "b".repeat(64),
+                    vec![1_u8, 2, 3],
+                    key_id,
+                    crate::util::now_millis(),
+                ],
+            )?;
+            Ok(())
         })
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -2540,15 +2635,44 @@ fn measured_reconciliation_preserves_inflight_object_reservation() {
 }
 
 #[test]
-fn v2_checkpoint_budget_api_requires_operation_admission() {
+fn v2_checkpoint_admission_requires_a_prepared_operation_receipt() {
     let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let request_id = crate::util::new_request_key();
+    let digest = "c".repeat(64);
+    let prepared = catalog
+        .prepare_operation(&OperationRequest {
+            storage_id: "storage-1",
+            request_id: &request_id,
+            kind: "checkpoint",
+            request_digest: &digest,
+            intent: r#"{"version":2,"effect":"checkpoint"}"#,
+            created_at: crate::util::now_millis(),
+            actor: None,
+        })
+        .unwrap();
+    assert_eq!(prepared.status, "prepared");
+    let expires: Option<i64> = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT work_expires_at FROM operations WHERE request_key=?1",
+                    [&prepared.request_id],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert!(expires.is_some(), "prepared v2 work must have a bounded lease");
+    let committed = catalog
+        .commit_operation("storage-1", &request_id, "{}", "")
+        .unwrap();
+    assert_eq!(committed.status, "committed");
     assert!(matches!(
         catalog.admit_checkpoint_with_limits("doc", 3_601, false, 10, 10),
         Err(CatalogError::Invalid(message)) if message.contains("operation transaction")
     ));
-    // There is no durable budget table in v2. Cleanup is deliberately a
-    // no-op, while the operation admission path owns the bounded accounting.
-    assert_eq!(catalog.prune_checkpoint_budgets(3_601, 2).unwrap(), 0);
 }
 
 #[test]
@@ -2652,30 +2776,44 @@ fn fixture_tree_digest(seed: &str) -> String {
 /// v2 checkpoint admission requires a settled source-tree object.  The old
 /// catalog fixtures carried that object implicitly, so install a minimal
 /// available row before exercising attribution and erasure behavior.
-fn insert_fixture_checkpoint(catalog: &Catalog, checkpoint: &Checkpoint) {
+fn fixture_object_id(seed: &str) -> String {
+    fixture_tree_digest(seed)[..32].to_owned()
+}
+
+fn insert_fixture_checkpoints(catalog: &Catalog, checkpoints: &[Checkpoint]) {
     let document_id = catalog
-        .document(&checkpoint.slug)
+        .document(&checkpoints[0].slug)
         .unwrap()
         .expect("fixture document")
         .storage_id;
-    let object_id = format!("fixture-tree-{}", checkpoint.sha);
     catalog
         .with_connection(|connection| {
-            connection.execute(
-                "INSERT OR IGNORE INTO objects
-                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
-                 VALUES(?1,?2,?3,'source_tree','available',?4,0,0,0)",
-                rusqlite::params![
-                    document_id,
-                    object_id,
-                    format!("objects/fixture/{}/{}", checkpoint.slug, checkpoint.sha),
-                    checkpoint.tree_sha,
-                ],
-            )?;
+            for checkpoint in checkpoints {
+                let object_id = fixture_object_id(&checkpoint.sha);
+                connection.execute(
+                    "INSERT OR IGNORE INTO objects
+                     (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                    VALUES(?1,?2,?3,'source_tree','available',?4,0,0,0)",
+                    rusqlite::params![
+                        document_id.as_str(),
+                        object_id,
+                        format!(
+                            "v2/documents/{}/objects/{}",
+                            document_id,
+                            fixture_object_id(&checkpoint.sha)
+                        ),
+                        checkpoint.tree_sha.as_str(),
+                    ],
+                )?;
+            }
             Ok(())
         })
         .unwrap();
-    catalog.insert_checkpoint(checkpoint).unwrap();
+    catalog.insert_checkpoints_atomic(checkpoints).unwrap();
+}
+
+fn insert_fixture_checkpoint(catalog: &Catalog, checkpoint: &Checkpoint) {
+    insert_fixture_checkpoints(catalog, std::slice::from_ref(checkpoint));
 }
 
 fn insert_attributed(catalog: &Catalog, sha: &str, by: &str, by_account: Option<&str>) {
@@ -2880,7 +3018,7 @@ fn a_queued_checkpoint_cannot_reintroduce_erased_attribution() {
     // The batched insert path and the erasure gate agree.
     let mut second = attributed("staged", "alice", Some("acct-writer"));
     second.seq = -1;
-    insert_fixture_checkpoint(&catalog, &second);
+    insert_fixture_checkpoints(&catalog, &[second]);
     assert_eq!(
         attribution_of(&catalog, "staged"),
         ("Deleted user".to_string(), None)
@@ -2908,16 +3046,6 @@ fn finish_erasure_waits_for_checkpoint_attribution() {
     ));
     catalog
         .erase_account_batch("acct-writer", "checkpoints", None, 0, 1000)
-        .unwrap();
-    assert!(
-        matches!(
-            catalog.finish_erasure("acct-writer"),
-            Err(crate::storage::catalog::CatalogError::Conflict(_))
-        ),
-        "the legacy row still names the account"
-    );
-    catalog
-        .erase_account_batch("acct-writer", "checkpoints_legacy", None, 0, 1000)
         .unwrap();
     catalog.finish_erasure("acct-writer").unwrap();
 }
@@ -2976,6 +3104,10 @@ fn project_names_are_unique_per_owner_across_creation_and_rename() {
     second.slug = "second".into();
     second.storage_id = "storage-2".into();
     second.title = "  DOCUMENT  ".into();
+    // v2 admitted document rows carry bytes only after object admission. The
+    // title uniqueness assertion is independent of that physical closure.
+    second.size = 0;
+    second.counted_size = 0;
     assert!(
         matches!(catalog.create_document_admitted(&second, 1000, 1000, 10, 10),
         Err(CatalogError::Conflict(message)) if message.contains("project with this name"))
