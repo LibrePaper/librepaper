@@ -1671,6 +1671,33 @@ impl Catalog {
                 .get_mut("authority")
                 .and_then(serde_json::Value::as_object_mut)
             {
+                if let Some(owner_credential) = input
+                    .owner_credential
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                {
+                    let digest = Sha256::digest(owner_credential.as_bytes());
+                    let derived_owner = format!("anonymous:{}", hex::encode(digest));
+                    let authority_account = authority
+                        .get("account_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    if (owner_id.starts_with("anonymous:") && owner_id != derived_owner)
+                        || (authority_account.starts_with("anonymous:")
+                            && authority_account != derived_owner)
+                    {
+                        return Err(CatalogError::refused(
+                            CatalogRefusal::ActorRights,
+                            "anonymous owner credential does not match the document account",
+                        ));
+                    }
+                    if authority_account.is_empty() {
+                        authority.insert(
+                            "account_id".into(),
+                            serde_json::Value::String(derived_owner),
+                        );
+                    }
+                }
                 let account_id = authority
                     .get("account_id")
                     .and_then(serde_json::Value::as_str)
@@ -1763,7 +1790,7 @@ impl Catalog {
                 tx,
                 document.storage_id.as_str(),
                 &operation_input.actor_key,
-                &operation_input.plan_json,
+                &operation_plan_json,
                 "editor",
             )?;
             let (owner_stored, owner_reserved): (i64, i64) = tx
