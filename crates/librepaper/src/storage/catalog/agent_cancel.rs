@@ -131,15 +131,21 @@ impl Catalog {
                     "agent cancellation rights changed",
                 ));
             }
-            let existing: Option<(String, String, String, String, Option<String>, String)> = tx.query_row(
-                "SELECT id,state,request_digest,result_json,target_request_key,plan_json
+            let existing: Option<(String, String, String, String, Option<String>, String, Option<i64>)> = tx.query_row(
+                "SELECT id,state,request_digest,result_json,target_request_key,plan_json,receipt_expires_at
                  FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3 AND kind='agent_cancel'",
                 params![document_id, actor, cancel_request_id],
-                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)),
             ).optional().map_err(CatalogError::from)?;
-            if let Some((_, state, digest, result, target, plan)) = existing {
+            if let Some((_, state, digest, result, target, plan, expires_at)) = existing {
                 if digest != request_digest || target.as_deref() != Some(target_request_id) {
                     return Err(CatalogError::Conflict("cancellation request id was reused with different content".into()));
+                }
+                if expires_at.unwrap_or_default() <= unix_millis() {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::RequestExpired,
+                        "cancellation receipt has expired; submit a new request key",
+                    ));
                 }
                 let outcome = if result.is_empty() { plan } else { result };
                 return Ok(AgentCancellation { target_request_id: target_request_id.into(), cancel_request_id: cancel_request_id.into(), request_digest: digest, kind: kind.into(), target_id: target_id.into(), status: if state == "committed" { "cancel_requested".into() } else { state }, result: outcome });
@@ -150,6 +156,9 @@ impl Catalog {
                 params![document_id, target_request_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
             ).optional().map_err(CatalogError::from)?;
             let (target_operation_id, target_state, target_result, target_kind) = target.unwrap_or_else(|| (String::new(), "missing".into(), None, kind.into()));
+            if target_state != "missing" && target_kind != kind {
+                return Err(CatalogError::Conflict("cancellation kind does not match the target operation".into()));
+            }
             let (status, result) = if target_state == "committed" {
                 let outcome = target_result.or_else(|| committed_result.map(str::to_owned)).unwrap_or_else(|| "{}".into());
                 ("already_committed", serde_json::json!({"version":2,"status":"already_committed","rollback":false,"kind":target_kind,"target_id":target_id,"outcome":serde_json::from_str::<serde_json::Value>(&outcome).unwrap_or(serde_json::Value::String(outcome))}).to_string())
