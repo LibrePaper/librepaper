@@ -55,11 +55,13 @@ fn catalog_fixture_actor() -> store::MutationActor {
 fn incompressible_source(bytes: usize) -> String {
     let mut state = 0x9e37_79b9_u64;
     let mut source = String::with_capacity(bytes);
+    const ALPHABET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     for _ in 0..bytes {
         state ^= state << 7;
         state ^= state >> 9;
         state ^= state << 8;
-        source.push((b'a' + (state as u8 % 26)) as char);
+        source.push(ALPHABET[(state as usize) % ALPHABET.len()] as char);
     }
     source
 }
@@ -778,6 +780,7 @@ async fn room_for_charges_uncached_catalog_documents() {
     let mut limits = Configuration::default();
     limits.storage.total = 20 << 20;
     limits.storage.per_owner = 20 << 20;
+    let total_limit = limits.storage.total;
     let config = Arc::new(limits);
     let (blobs, catalog) = local_catalog_store(&dir);
     let store = store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
@@ -838,7 +841,7 @@ async fn room_for_charges_uncached_catalog_documents() {
         .unwrap()
         .expect("second is present")
         .counted_size;
-    assert_eq!(room, (1 << 20) - first_size - second_size);
+    assert_eq!(room, total_limit - first_size - second_size);
 }
 
 /// A listing entry with a sealed link: the link key is unsealed after the

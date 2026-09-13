@@ -974,7 +974,7 @@ impl Store {
         if let Some(catalog) = &self.catalog {
             let owner = catalog.clone();
             let requested_slug = slug.to_owned();
-            let mut lease = catalog
+            let lease = catalog
                 .execute_catalog(slug.len() + 4096, move |_| {
                     owner.acquire_checkpoint_read(
                         &requested_slug,
@@ -984,10 +984,11 @@ impl Store {
                 })
                 .await
                 .map_err(|error| BlobError::Other(error.to_string()))?;
+            let mut lease = Some(lease);
             let result = async {
                 let (tree, envelope) = crate::document::history::load_tree_envelope(
                     self.blobs.as_ref(),
-                    &lease,
+                    lease.as_ref().expect("source read lease exists"),
                 )
                 .await
                 .map_err(BlobError::Other)?;
@@ -998,10 +999,15 @@ impl Store {
                 let recipe = file.recipe.as_ref().ok_or_else(|| {
                     BlobError::Other("current source main file has no recipe".into())
                 })?;
-                let document_id = lease.set.document_id.to_string();
+                let document_id = lease
+                    .as_ref()
+                    .expect("source read lease exists")
+                    .set
+                    .document_id
+                    .to_string();
                 let recipe_id = recipe.object_id.clone();
                 let recipe_digest = recipe.object_digest;
-                let read_set = lease.set.clone();
+                let read_set = lease.as_ref().expect("source read lease exists").set.clone();
                 let blobs = self.blobs.clone();
                 let read = async move {
                     crate::storage::encoding::read_file_v2(
@@ -1021,10 +1027,11 @@ impl Store {
                     tokio::select! {
                         result = &mut read => break result?,
                         _ = heartbeat.tick() => {
-                            lease = lease
+                            let current = lease.take().expect("source read lease exists");
+                            lease = Some(current
                                 .renew_owned(crate::util::now_millis())
                                 .await
-                                .map_err(|error| BlobError::Other(error.to_string()))?;
+                                .map_err(|error| BlobError::Other(error.to_string()))?);
                         }
                     }
                 };
@@ -1035,18 +1042,27 @@ impl Store {
                         "current source logical integrity check failed".into(),
                     ));
                 }
-                if !lease.valid_at(crate::util::now_millis()) {
+                if !lease
+                    .as_ref()
+                    .expect("source read lease exists")
+                    .valid_at(crate::util::now_millis())
+                {
                     return Err(BlobError::Other("checkpoint read lease expired".into()));
                 }
                 let _ = tree;
                 Ok(bytes)
             }
             .await;
-            let released = lease.finish().await;
+            let released = lease.map(|lease| async move { lease.finish().await });
+            let released = match released {
+                Some(release) => Some(release.await),
+                None => None,
+            };
             return match (result, released) {
-                (Ok(bytes), Ok(())) => Ok(bytes),
+                (Ok(bytes), Some(Ok(()))) => Ok(bytes),
                 (Err(error), _) => Err(error),
-                (Ok(_), Err(error)) => Err(BlobError::Other(error.to_string())),
+                (Ok(_), Some(Err(error))) => Err(BlobError::Other(error.to_string())),
+                (Ok(_), None) => Err(BlobError::Other("checkpoint read lease was lost".into())),
             };
         }
         let (digest, identity) = {
