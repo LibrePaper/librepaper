@@ -310,21 +310,6 @@ impl PostgresCatalog {
          .ok_or_else(||Error::Conflict("account is not active".into()))
     }
 
-    pub async fn account_by_provider(
-        &self,
-        provider: &str,
-        subject: &str,
-    ) -> Result<Option<AccountRecord>> {
-        sqlx::query_as::<_, AccountRecord>(
-            "SELECT * FROM accounts WHERE provider=$1 AND provider_subject=$2",
-        )
-        .bind(provider)
-        .bind(subject)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
     pub async fn account(&self, id: Uuid) -> Result<Option<AccountRecord>> {
         sqlx::query_as::<_, AccountRecord>("SELECT * FROM accounts WHERE id=$1")
             .bind(id)
@@ -585,27 +570,6 @@ impl PostgresCatalog {
         )
         .bind(document_id)
         .fetch_one(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
-    pub async fn asset_by_digest(
-        &self,
-        document_id: Uuid,
-        digest: &[u8; 32],
-        byte_length: i64,
-    ) -> Result<Option<AssetRecord>> {
-        if byte_length < 0 {
-            return Err(Error::Invalid("invalid asset byte length".into()));
-        }
-        sqlx::query_as::<_, AssetRecord>(
-            "SELECT * FROM document_assets
-             WHERE document_id=$1 AND digest=$2 AND byte_length=$3",
-        )
-        .bind(document_id)
-        .bind(digest.as_slice())
-        .bind(byte_length)
-        .fetch_optional(&self.pool)
         .await
         .map_err(Error::from)
     }
@@ -896,19 +860,6 @@ impl PostgresCatalog {
         ).bind(document_id).execute(&self.pool).await?.rows_affected()==1)
     }
 
-    pub async fn deleting_documents(
-        &self,
-        before: OffsetDateTime,
-        limit: i64,
-    ) -> Result<Vec<DocumentRecord>> {
-        if !(1..=200).contains(&limit) {
-            return Err(Error::Invalid("deletion page limit must be 1..=200".into()));
-        }
-        sqlx::query_as::<_,DocumentRecord>(
-            "SELECT * FROM documents WHERE status='deleting' AND deleted_at<=$1 ORDER BY deleted_at,id LIMIT $2",
-        ).bind(before).bind(limit).fetch_all(&self.pool).await.map_err(Error::from)
-    }
-
     pub async fn finish_document_deletion(&self, document_id: Uuid) -> Result<bool> {
         Ok(
             sqlx::query("DELETE FROM documents WHERE id=$1 AND status='deleting'")
@@ -918,30 +869,6 @@ impl PostgresCatalog {
                 .rows_affected()
                 == 1,
         )
-    }
-
-    pub async fn prune_versions(
-        &self,
-        document_id: Uuid,
-        keep_newest: i64,
-        newer_than: OffsetDateTime,
-    ) -> Result<Vec<String>> {
-        if !(0..=1000).contains(&keep_newest) {
-            return Err(Error::Invalid("invalid version retention count".into()));
-        }
-        let mut tx = self.pool.begin().await?;
-        let keys=sqlx::query_scalar::<_,String>(
-            "WITH ordinary AS (
-                SELECT v.id,v.archive_key,row_number() OVER(ORDER BY v.sequence DESC,v.id DESC) AS position
-                FROM document_versions v JOIN documents d ON d.id=v.document_id
-                WHERE v.document_id=$1 AND v.label IS NULL AND v.id IS DISTINCT FROM d.current_version_id
-             ), removed AS (
-                DELETE FROM document_versions v USING ordinary o
-                WHERE v.id=o.id AND o.position>$2 AND v.created_at<$3 RETURNING v.archive_key
-             ) SELECT archive_key FROM removed",
-        ).bind(document_id).bind(keep_newest).bind(newer_than).fetch_all(&mut *tx).await?;
-        tx.commit().await?;
-        Ok(keys)
     }
 
     pub async fn usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {

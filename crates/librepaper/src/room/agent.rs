@@ -462,14 +462,6 @@ impl From<WriteError> for AgentError {
     }
 }
 
-/// Build the canonical source tree from a live room. This is public so the
-/// endpoint can return the same source identity it used to validate the request.
-#[cfg(test)]
-pub async fn room_tree(room: &Room) -> SourceTree {
-    let _publication = room.publication_write.lock().await;
-    room_tree_locked(room).await
-}
-
 async fn room_tree_locked(room: &Room) -> SourceTree {
     let state = room.state.lock().await;
     let (canonical, _) = super::tree_of(&state.session.doc, &state.session.asset_sizes);

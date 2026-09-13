@@ -129,19 +129,6 @@ pub(super) mod counters {
         static SERIALIZATIONS: Cell<usize> = const { Cell::new(0) };
     }
 
-    pub fn reset() {
-        ENCODES.with(|count| count.set(0));
-        SERIALIZATIONS.with(|count| count.set(0));
-    }
-
-    pub fn encodes() -> usize {
-        ENCODES.with(Cell::get)
-    }
-
-    pub fn serializations() -> usize {
-        SERIALIZATIONS.with(Cell::get)
-    }
-
     pub fn note_encode() {
         ENCODES.with(|count| count.set(count.get() + 1));
     }

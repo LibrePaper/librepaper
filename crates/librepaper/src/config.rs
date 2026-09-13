@@ -4,7 +4,7 @@
 //! next build.
 
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The public static compiler distribution used when an operator does not
 /// host a mirror copy. Browsers fetch it directly; the origin never proxies
@@ -40,32 +40,6 @@ impl DeploymentPaths {
                 "server state path must be absolute: {}",
                 self.state.display()
             ));
-        }
-        Ok(())
-    }
-
-    /// Apply the private state-directory boundary before opening a catalogue
-    /// or replica. Existing directories are tightened as well; relying on the
-    /// process umask alone leaves an unsafe deployment after a permissions
-    /// change or restore.
-    pub fn prepare_state(&self) -> Result<(), String> {
-        std::fs::create_dir_all(&self.state)
-            .map_err(|err| format!("could not create {}: {err}", self.state.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.state, std::fs::Permissions::from_mode(0o700))
-                .map_err(|err| format!("could not protect {}: {err}", self.state.display()))?;
-        }
-        Ok(())
-    }
-
-    pub fn protect_file(path: &Path) -> Result<(), String> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|err| format!("could not protect {}: {err}", path.display()))?;
         }
         Ok(())
     }
@@ -122,10 +96,6 @@ pub struct Configuration {
     pub backup: BackupPolicy,
     #[serde(skip)]
     pub policy_origins: std::collections::BTreeMap<String, String>,
-
-    /// Caps the serialized seed annotations a reserved example carries, in
-    /// bytes.
-    pub max_annotations: usize,
 
     /// The only file types the reader can frame and anchor comments into. The
     /// upload page checks them before sending, and the server checks them
@@ -622,7 +592,6 @@ impl Default for Configuration {
             sockets: crate::server::socket_budget::SocketPolicy::default(),
             backup: BackupPolicy::default(),
             policy_origins: std::collections::BTreeMap::new(),
-            max_annotations: 256 * 1024,
             // What the upload form takes. Every one of these is a source
             // format `document_format` names and `storable_source` allows, so
             // the list a person is shown and the list the publish route
@@ -1123,15 +1092,6 @@ impl Configuration {
         self.max_assets = (megabytes * 1024 * 1024) as i64;
         // One figure may never be more than all of them.
         self.max_asset = self.max_asset.min(self.max_assets);
-        Ok(())
-    }
-
-    /// Parse and apply the one daily transfer budget exposed by the ordinary
-    /// command line. Bare integers are bytes; binary units are accepted for
-    /// readable operator values such as `10GiB`. Omission is represented by
-    /// `None` and remains unlimited, while an explicit zero is meaningful.
-    pub fn set_budget_transfer(&mut self, value: Option<&str>) -> Result<(), String> {
-        self.cost.transfer_bytes = value.map(parse_budget_transfer).transpose()?;
         Ok(())
     }
 

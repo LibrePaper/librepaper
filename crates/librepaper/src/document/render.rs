@@ -376,21 +376,6 @@ pub fn compile_from_files(
     }
 }
 
-/// The same, with only what the cache already holds: no fetching.
-#[cfg(test)]
-pub fn read_and_note_from_files(
-    name: &str,
-    source: &str,
-    title: &str,
-    files: &[(String, Vec<u8>)],
-) -> (Compiled, Vec<String>) {
-    let cache = Cache::discover();
-    let noted = needs::resolve_cached(cache.as_ref(), |library| {
-        compile_from_files(name, source, title, files, library, cache.as_ref())
-    });
-    (noted.compiled, noted.read)
-}
-
 /// Where a file's compile is rooted and what the compiler calls it: the file's
 /// own directory, and its name within it.
 pub fn root_and_name(file: &Path) -> Result<(PathBuf, String), String> {

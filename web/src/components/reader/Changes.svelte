@@ -21,7 +21,7 @@
   const value = (item, ...keys) => keys.map((key) => item?.[key])
     .find((answer) => answer !== undefined && answer !== null && answer !== "") ?? "";
   const idOf = (item) => String(value(item, "id", "revisionId", "revision_id"));
-  const rowId = (item) => item.__kind === "legacy" ? `legacy:${idOf(item)}` : idOf(item);
+  const rowId = (item) => item.__kind === "suggestion" ? `suggestion:${idOf(item)}` : idOf(item);
   const pathOf = (item) => value(item, "path", "file", "filePath", "sourcePath") || "Untitled";
   const authorOf = (item) => value(item, "author", "authorName", "creator") || "Unknown author";
   const sessionOf = (item) => value(item, "session", "sessionId", "revisionSession");
@@ -40,7 +40,7 @@
   });
   const allRows = $derived([
     ...revisions.map((revision) => ({ ...revision, __kind: "revision" })),
-    ...comments.filter((comment) => comment.motivation === "editing").map((comment) => ({ ...comment, __kind: "legacy" })),
+    ...comments.filter((comment) => comment.motivation === "editing").map((comment) => ({ ...comment, __kind: "suggestion" })),
   ]);
   const orderOf = (item) => fileOrder.get(String(value(item, "file_id", "fileId") || pathOf(item))) ?? Number.MAX_SAFE_INTEGER;
   const orderedRows = $derived([...allRows].sort((a, b) => orderOf(a) - orderOf(b) || pathOf(a).localeCompare(pathOf(b)) || positionOf(a) - positionOf(b) || String(value(a, "created_at", "created")).localeCompare(String(value(b, "created_at", "created"))) || rowId(a).localeCompare(rowId(b))));
@@ -54,13 +54,13 @@
   const pendingRows = $derived(filteredRows.filter(pending));
   const allPending = $derived(allRows.filter(pending).length);
   const selectedRows = $derived(filteredRows.filter((item) => checked.has(rowId(item))));
-  const active = $derived(filteredRows.some((item) => rowId(item) === expanded) ? expanded : filteredRows.some((item) => rowId(item) === String(selectedRevision)) ? String(selectedRevision) : filteredRows.some((item) => rowId(item) === `legacy:${String(selected)}`) ? `legacy:${String(selected)}` : filteredRows[0] ? rowId(filteredRows[0]) : "");
+  const active = $derived(filteredRows.some((item) => rowId(item) === expanded) ? expanded : filteredRows.some((item) => rowId(item) === String(selectedRevision)) ? String(selectedRevision) : filteredRows.some((item) => rowId(item) === `suggestion:${String(selected)}`) ? `suggestion:${String(selected)}` : filteredRows[0] ? rowId(filteredRows[0]) : "");
   const markupVisible = $derived(showMarkup === undefined ? markup : showMarkup);
   const derivedAuthors = $derived(authors.length ? authors : [...new Set(allRows.map(authorOf))]);
   const derivedFiles = $derived(files.length ? files.map((file) => file.path || file.id).filter(Boolean) : [...new Set(allRows.map(pathOf))]);
   const derivedSessions = $derived(sessions.length ? sessions : [...new Set(allRows.map(sessionOf).filter(Boolean))]);
   const rowFor = (id) => filteredRows.find((item) => rowId(item) === id);
-  const reviewAllowed = (item) => item?.__kind === "legacy" ? canModerate : canReview;
+  const reviewAllowed = (item) => item?.__kind === "suggestion" ? canModerate : canReview;
 
   $effect(() => {
     const valid = new Set(allRows.filter(pending).map(rowId));
@@ -81,15 +81,15 @@
   function activate(item, { focus = false } = {}) {
     if (!item) return;
     expanded = rowId(item); onselect?.(item);
-    if (item.__kind === "legacy") onreveal?.(item); else onrevisionreveal?.(item);
+    if (item.__kind === "suggestion") onreveal?.(item); else onrevisionreveal?.(item);
     if (focus) focusRow(rowId(item));
   }
   function reveal(item) { activate(item); }
   function toggleChecked(item) { const id = rowId(item); const next = new Set(checked); next.has(id) ? next.delete(id) : next.add(id); checked = next; }
   function decisionPromise(item, action) {
-    const callback = item.__kind === "legacy" ? (action === "accept" ? onaccept : onreject) : onrevisiondecide;
+    const callback = item.__kind === "suggestion" ? (action === "accept" ? onaccept : onreject) : onrevisiondecide;
     if (!callback) return Promise.reject(new Error("Review action is unavailable."));
-    return item.__kind === "legacy" ? callback(item) : callback(idOf(item), action);
+    return item.__kind === "suggestion" ? callback(item) : callback(idOf(item), action);
   }
   function addBusy(id) { deciding = new Set([...deciding, id]); }
   function removeBusy(id) { deciding = new Set([...deciding].filter((current) => current !== id)); }
@@ -171,7 +171,7 @@
   }
   function shortDiff(item) {
     const before = value(item, "before", "oldText", "deleted", "exact"); const after = value(item, "after", "newText", "inserted", "proposed");
-    const result = item.__kind === "legacy" ? `Proposal: ${before || "∅"} → ${after || "∅"}` : item.kind === "delete" || item.kind === "deletion" || (before && !after) ? `− ${before}` : item.kind === "insert" || item.kind === "insertion" || (!before && after) ? `+ ${after}` : before || after ? `${before || "∅"} → ${after || "∅"}` : value(item, "summary", "title") || "Text changed";
+    const result = item.__kind === "suggestion" ? `Proposal: ${before || "∅"} → ${after || "∅"}` : item.kind === "delete" || item.kind === "deletion" || (before && !after) ? `− ${before}` : item.kind === "insert" || item.kind === "insertion" || (!before && after) ? `+ ${after}` : before || after ? `${before || "∅"} → ${after || "∅"}` : value(item, "summary", "title") || "Text changed";
     return result.length > 180 ? `${result.slice(0, 177)}…` : result;
   }
   function detail(item) { const explicit = value(item, "detail", "fullText", "description"); if (explicit) return explicit; const before = value(item, "before", "oldText", "deleted", "exact"); const after = value(item, "after", "newText", "inserted", "proposed"); return before || after ? `Before:\n${before || "∅"}\n\nAfter:\n${after || "∅"}` : "Text changed"; }
@@ -204,10 +204,10 @@
   <div class="changes-list" role="list" aria-label="Revision queue">
     {#each filteredRows as item (rowId(item))}
       {@const id = rowId(item)}{@const isOpen = active === id}{@const why = blocker(item)}
-      <article class="change-row" class:active={isOpen} class:legacy={item.__kind === "legacy"} class:blocked={Boolean(why)} role="listitem">
-        <div class="row-head"><input type="checkbox" aria-label={`Select change in ${pathOf(item)}`} checked={checked.has(id)} onchange={() => toggleChecked(item)} disabled={!pending(item)} /><button id={`change-${id}`} type="button" class="row-main" aria-expanded={isOpen} aria-controls={`change-detail-${id}`} onclick={() => reveal(item)}><span class="row-kind">{item.__kind === "legacy" ? "Legacy proposal" : value(item, "kind", "type") || "Change"}</span><span class="row-diff">{shortDiff(item)}</span><span class="row-context">{pathOf(item)} · {authorOf(item)}{sessionOf(item) ? ` · ${sessionOf(item)}` : ""}{statusOf(item) !== "pending" ? ` · ${statusOf(item)}` : ""}</span></button>{#if pending(item)}<button type="button" class="btn btn-sm row-action" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button><button type="button" class="btn btn-sm row-action" aria-label={`Reject change in ${pathOf(item)}`} title={why || "Reject this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button>{/if}</div>
+      <article class="change-row" class:active={isOpen} class:suggestion={item.__kind === "suggestion"} class:blocked={Boolean(why)} role="listitem">
+        <div class="row-head"><input type="checkbox" aria-label={`Select change in ${pathOf(item)}`} checked={checked.has(id)} onchange={() => toggleChecked(item)} disabled={!pending(item)} /><button id={`change-${id}`} type="button" class="row-main" aria-expanded={isOpen} aria-controls={`change-detail-${id}`} onclick={() => reveal(item)}><span class="row-kind">{item.__kind === "suggestion" ? "Suggestion" : value(item, "kind", "type") || "Change"}</span><span class="row-diff">{shortDiff(item)}</span><span class="row-context">{pathOf(item)} · {authorOf(item)}{sessionOf(item) ? ` · ${sessionOf(item)}` : ""}{statusOf(item) !== "pending" ? ` · ${statusOf(item)}` : ""}</span></button>{#if pending(item)}<button type="button" class="btn btn-sm row-action" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button><button type="button" class="btn btn-sm row-action" aria-label={`Reject change in ${pathOf(item)}`} title={why || "Reject this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button>{/if}</div>
         {#if isOpen}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
-          {#if item.__kind === "legacy"}<CommentCard comment={item} {identity} {commentingAs} {canModerate} {went} replacement={replacements[item.id] ?? null} cardIdPrefix="changes-legacy" selected={String(item.id) === String(selected)} {onreveal} {onresolve} {ondelete} {onreply} {onaccept} {onreject} />{:else}<p>{detail(item)}</p>{#if value(item, "contextBefore", "beforeContext")}<p class="panel-muted">{value(item, "contextBefore", "beforeContext")} <mark>{value(item, "after", "newText", "inserted", "proposed") || value(item, "before", "oldText", "deleted", "exact")}</mark> {value(item, "contextAfter", "afterContext")}</p>{/if}{/if}
+          {#if item.__kind === "suggestion"}<CommentCard comment={item} {identity} {commentingAs} {canModerate} {went} replacement={replacements[item.id] ?? null} cardIdPrefix="changes-suggestion" selected={String(item.id) === String(selected)} {onreveal} {onresolve} {ondelete} {onreply} {onaccept} {onreject} />{:else}<p>{detail(item)}</p>{#if value(item, "contextBefore", "beforeContext")}<p class="panel-muted">{value(item, "contextBefore", "beforeContext")} <mark>{value(item, "after", "newText", "inserted", "proposed") || value(item, "before", "oldText", "deleted", "exact")}</mark> {value(item, "contextAfter", "afterContext")}</p>{/if}{/if}
           {#if why}<div class="conflict" role="alert"><strong>Needs attention</strong><p>{why}</p>{#if (item.affectedRevisionIds || item.dependencies)?.length}<p class="panel-muted">Affected revisions: {(item.affectedRevisionIds || item.dependencies).join(", ")}</p>{/if}<button type="button" class="btn btn-sm preset-tonal-surface" onclick={() => resolve(item)}>Resolve dependency</button></div>{/if}
         </div>{#if item.replies?.length}<details class="discussion"><summary>Discussion ({item.replies.length})</summary><ul>{#each item.replies as reply (reply.id)}<li><strong>{reply.creator || "Author"}:</strong> {reply.body}</li>{/each}</ul></details>{/if}{/if}
       </article>

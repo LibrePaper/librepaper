@@ -946,13 +946,6 @@ impl RoomSet {
         }
     }
 
-    /// How many documents this server is holding in memory, which is the
-    /// number the ceiling is on.
-    #[cfg(test)]
-    pub async fn open_count(&self) -> usize {
-        self.rooms.lock().await.len()
-    }
-
     /// Writes out every open room, for a server on its way down.
     pub async fn flush(&self) {
         let open: Vec<Arc<Room>> = self.rooms.lock().await.values().cloned().collect();
@@ -1292,7 +1285,8 @@ impl Room {
         let repair_first_save = recovered.base.is_none()
             && recovered.update_sequence <= 1
             && recovered.project_generation == 0;
-        let published_seed = if cold || repair_first_save {
+        let starter_repair = starter_bibliography(entry.as_ref()).is_some();
+        let published_seed = if cold || repair_first_save || starter_repair {
             self.published_project(document_id, entry.as_ref()).await
         } else {
             None
@@ -1314,12 +1308,37 @@ impl Room {
             state.session.durable_sequence = recovered.update_sequence;
             state.session.dirty = false;
             if repair_first_save {
-                if let Some(project) = published_seed.as_ref() {
+                if let Some((project, _)) = published_seed.as_ref() {
                     state.session.dirty =
                         hydrate_project(&state.session.doc, &project.archive, true);
                 }
             }
-        } else if let Some(project) = published_seed.as_ref() {
+            if let Some((project, bibliography_added)) = published_seed.as_ref() {
+                if *bibliography_added
+                    && !session::has_meta(
+                        &state.session.doc,
+                        session::STARTER_BIBLIOGRAPHY_REPAIRED,
+                    )
+                {
+                    if let Some(crate::storage::source_archive::SourceFile::Inline {
+                        bytes,
+                        ..
+                    }) = project.archive.files.iter().find(|file| {
+                        matches!(file, crate::storage::source_archive::SourceFile::Inline { path, .. } if path == "references.bib")
+                    }) {
+                        if !session::texts_of(&state.session.doc).contains_key("references.bib") {
+                            session::put_text(
+                                &state.session.doc,
+                                "references.bib",
+                                &String::from_utf8_lossy(bytes),
+                            );
+                        }
+                    }
+                    session::mark_meta(&state.session.doc, session::STARTER_BIBLIOGRAPHY_REPAIRED);
+                    state.session.dirty = true;
+                }
+            }
+        } else if let Some((project, _)) = published_seed.as_ref() {
             state.session.format = project.archive.source_format.clone();
             hydrate_project(&state.session.doc, &project.archive, false);
             state.session.dirty = false;
@@ -1383,7 +1402,7 @@ impl Room {
         &self,
         document_id: uuid::Uuid,
         entry: Option<&crate::document::store::IndexEntry>,
-    ) -> Option<crate::storage::source::StoredProject> {
+    ) -> Option<(crate::storage::source::StoredProject, bool)> {
         let store = self.store.get()?;
         let catalog = store.catalog.as_ref()?;
         let source = crate::storage::source::SourceStorage::new(
@@ -1393,30 +1412,22 @@ impl Room {
         );
         match source.read_current(document_id).await {
             Ok(Some(mut project)) => {
-                // The first PostgreSQL onboarding release omitted this one
-                // LaTeX starter input from its immutable archive. Its room
-                // can still be repaired without replacing the user's edited
-                // main file because the missing input ships with the binary.
-                let latex_starter = entry.is_some_and(|entry| {
-                    entry.title == "Learn LibrePaper with LaTeX"
-                        && entry.slug.starts_with("starter-4-")
-                });
-                if latex_starter
+                // The first PostgreSQL onboarding release omitted tutorial
+                // bibliographies from its immutable archives.
+                let bibliography = starter_bibliography(entry);
+                let bibliography_added = bibliography.is_some()
                     && !project.archive.files.iter().any(|file| {
                         matches!(file, crate::storage::source_archive::SourceFile::Inline { path, .. } if path == "references.bib")
-                    })
-                {
+                    });
+                if let Some(bytes) = bibliography.filter(|_| bibliography_added) {
                     project.archive.files.push(
                         crate::storage::source_archive::SourceFile::Inline {
                             path: "references.bib".into(),
-                            bytes: include_bytes!(
-                                "../../../../docs/examples/tutorial-latex/references.bib"
-                            )
-                            .to_vec(),
+                            bytes: bytes.to_vec(),
                         },
                     );
                 }
-                Some(project)
+                Some((project, bibliography_added))
             }
             Ok(None) => {
                 eprintln!("warning: no current source exists for {}", self.slug);
@@ -1469,12 +1480,6 @@ impl Room {
     /// Preserve the room's startup, corruption, and lifecycle fences too.
     async fn hold(&self) -> bool {
         !self.read_only() && self.catalog.get().is_some()
-    }
-
-    /// Every comment, for seeding and for the tests that read a room back.
-    #[cfg(test)]
-    pub async fn snapshot(&self) -> Vec<Comment> {
-        self.state.lock().await.comments.clone()
     }
 
     /// The per-caller view of the whole thread: the hello frame and the REST
@@ -2128,6 +2133,30 @@ impl Room {
 /// Populate a Yjs project from its immutable source archive. With
 /// `missing_only`, this repairs the one-update state written by releases that
 /// seeded only the main file and preserves any edit already made to that file.
+fn starter_bibliography(
+    entry: Option<&crate::document::store::IndexEntry>,
+) -> Option<&'static [u8]> {
+    let entry = entry?;
+    match entry.title.as_str() {
+        "Learn LibrePaper with Markdown" if entry.slug.starts_with("starter-1-") => Some(
+            include_bytes!("../../../../docs/examples/tutorial-markdown/references.bib"),
+        ),
+        "Learn LibrePaper with Typst" if entry.slug.starts_with("starter-2-") => Some(
+            include_bytes!("../../../../docs/examples/tutorial-typst/references.bib"),
+        ),
+        "Learn LibrePaper with HTML" if entry.slug.starts_with("starter-3-") => Some(
+            include_bytes!("../../../../docs/examples/tutorial-html/references.bib"),
+        ),
+        "Learn LibrePaper with LaTeX" if entry.slug.starts_with("starter-4-") => Some(
+            include_bytes!("../../../../docs/examples/tutorial-latex/references.bib"),
+        ),
+        "Learn LibrePaper with Quarto" if entry.slug.starts_with("starter-5-") => Some(
+            include_bytes!("../../../../docs/examples/tutorial-quarto/references.bib"),
+        ),
+        _ => None,
+    }
+}
+
 fn hydrate_project(
     doc: &yrs::Doc,
     archive: &crate::storage::source_archive::SourceArchive,

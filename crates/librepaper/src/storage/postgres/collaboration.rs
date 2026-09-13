@@ -216,25 +216,4 @@ impl PostgresCatalog {
         tx.commit().await?;
         Ok(base)
     }
-
-    pub async fn clear_expired_base_predecessor(
-        &self,
-        document_id: Uuid,
-        now: OffsetDateTime,
-    ) -> Result<Option<String>> {
-        sqlx::query_scalar::<_, String>(
-            "WITH expired AS (
-               SELECT document_id,previous_snapshot_key FROM document_bases
-               WHERE document_id=$1 AND previous_delete_after <= $2 FOR UPDATE
-             )
-             UPDATE document_bases b SET previous_snapshot_key=NULL,previous_delete_after=NULL,
-               updated_at=now() FROM expired e WHERE b.document_id=e.document_id
-             RETURNING e.previous_snapshot_key",
-        )
-        .bind(document_id)
-        .bind(now)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
 }

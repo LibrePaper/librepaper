@@ -1,0 +1,55 @@
+---
+title: "Writing around an R analysis"
+format: html
+execute:
+  cache: true
+---
+
+This example is editable as Quarto source. Saved figures stay available while
+collaborators revise this paragraph. Execute the document locally to refresh
+its analysis.
+
+```{r}
+#| label: setup
+#| include: false
+x <- 1:8
+```
+
+```{r}
+#| label: fig-first
+#| fig-cap: "The original sequence."
+plot(x)
+```
+
+The second plot uses the same plotting code after changing its input. These
+are separate cells and must retain separate results.
+
+```{r}
+#| label: change-input
+#| include: false
+x <- (1:8)^2
+```
+
+```{r}
+#| label: fig-second
+#| fig-cap: "The squared sequence."
+plot(x)
+```
+
+```{r}
+#| label: tbl-summary
+#| echo: false
+#| tbl-cap: "Summary of the current sequence."
+knitr::kable(data.frame(statistic = c("Minimum", "Maximum"), value = range(x)))
+```
+
+::: {.callout-note}
+Changing either hidden setup cell makes both saved figures potentially outdated.
+Editing this explanation keeps the figures available.
+:::
+
+```{r}
+#| label: documented-only
+#| eval: false
+stop("This example must never execute")
+```

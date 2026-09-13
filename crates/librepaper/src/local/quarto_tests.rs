@@ -501,7 +501,7 @@ fn frozen_cache_identity_covers_profiles_parameters_and_dependencies() {
     let profiles = vec!["review".to_string()];
     let dependencies = vec!["data.csv\0deadbeef".to_string()];
     let parameters_sha256 = crate::results::parameters_sha256(&parameters);
-    let computation = engine_adapter::quarto_computation_fingerprint(
+    let computation = computation_fingerprint(
         source,
         "paper.qmd",
         "html",
@@ -623,7 +623,7 @@ fn computation_fingerprint_includes_declared_snapshot_inputs() {
     let source = "```{r}\nread.csv('data/input.csv')\n```\n";
     let parameters = crate::results::parameters_sha256(&BTreeMap::new());
     let dependencies = vec!["data/input.csv\0deadbeef".to_string()];
-    let adapter = engine_adapter::quarto_computation_fingerprint(
+    let adapter = computation_fingerprint(
         source,
         "paper.qmd",
         "html",

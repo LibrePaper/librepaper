@@ -27,6 +27,10 @@ const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
                 "librepaper-icon.png",
                 include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
             ),
+            (
+                "references.bib",
+                include_bytes!("../../../../docs/examples/tutorial-markdown/references.bib"),
+            ),
         ],
     },
     Starter {
@@ -43,6 +47,10 @@ const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
                 "librepaper-icon.png",
                 include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
             ),
+            (
+                "references.bib",
+                include_bytes!("../../../../docs/examples/tutorial-typst/references.bib"),
+            ),
         ],
     },
     Starter {
@@ -58,6 +66,10 @@ const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
             (
                 "librepaper-icon.png",
                 include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
+            ),
+            (
+                "references.bib",
+                include_bytes!("../../../../docs/examples/tutorial-html/references.bib"),
             ),
         ],
     },
@@ -94,6 +106,10 @@ const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
             (
                 "librepaper-icon.png",
                 include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
+            ),
+            (
+                "references.bib",
+                include_bytes!("../../../../docs/examples/tutorial-quarto/references.bib"),
             ),
         ],
     },

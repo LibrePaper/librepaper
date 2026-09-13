@@ -132,12 +132,6 @@ export function displayOffset(projection, tokenIndex) {
   return offset;
 }
 
-export function tokenSpan(projection, tokenIndex) {
-  if (!projection || !INT(tokenIndex) || tokenIndex >= projection.tokens.length) return null;
-  const start = displayOffset(projection, tokenIndex);
-  if (start === null) return null;
-  return { start, end: start + projection.tokens[tokenIndex].offset };
-}
 
 export function hunkDisplayRange(projection, hunk) {
   if (!projection || !hunk || !INT(hunk.fromB) || !INT(hunk.toB)

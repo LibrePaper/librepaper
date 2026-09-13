@@ -8,20 +8,24 @@
   //
   // Everything arriving from the frame is untrusted. The agent shares an
   // origin with the document, and a hostile document can rewrite it.
-  let { src, docsOrigin, onmessage, path = "", grabbing = false, away = false, status, overlay } = $props();
+  let { src, docsOrigin, onmessage, onload, path = "", grabbing = false, away = false, status, overlay } = $props();
 
   let frame = $state(null);
   let viewport = $state(null);
   let heldWidth = $state(0);
   let heldHeight = $state(0);
   onMount(() => {
+    window.addEventListener("message", receive);
     const observer = new ResizeObserver(() => {
       if (away || !viewport) return;
       heldWidth = viewport.clientWidth;
       heldHeight = viewport.clientHeight;
     });
     observer.observe(viewport);
-    return () => observer.disconnect();
+    return () => {
+      window.removeEventListener("message", receive);
+      observer.disconnect();
+    };
   });
 
   /// `transfer` is for the one message that carries megabytes: a LaTeX
@@ -29,20 +33,21 @@
   /// than copying it saves the copy on every recompile. Everything else is
   /// small and is cloned, as it always was.
   export function tell(message, transfer) {
-    if (!docsOrigin || !frame?.contentWindow) return false;
-    frame.contentWindow.postMessage({ librepaper: true, ...message }, docsOrigin, transfer);
+    if (!frame?.contentWindow) return false;
+    const origin = frame.src ? new URL(frame.src).origin : docsOrigin;
+    if (!origin) return false;
+    frame.contentWindow.postMessage({ librepaper: true, ...message }, origin, transfer);
     return true;
   }
 
   function receive(event) {
-    if (!docsOrigin || event.origin !== docsOrigin || event.source !== frame?.contentWindow) return;
+    const origin = frame?.src ? new URL(frame.src).origin : docsOrigin;
+    if (!origin || event.origin !== origin || event.source !== frame?.contentWindow) return;
     const message = event.data;
     if (!message || message.librepaper !== true) return;
     onmessage(message);
   }
 </script>
-
-<svelte:window onmessage={receive} />
 
 <section class="viewport" class:away bind:this={viewport} inert={away}
          style:--held-width="{heldWidth}px" style:--held-height="{heldHeight}px">
@@ -62,6 +67,10 @@
       bind:this={frame}
       title="Document"
       {src}
+      onload={() => {
+        onload?.();
+        tell({ type: "reader-ready" });
+      }}
       style:pointer-events={grabbing ? "none" : null}
       sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
     ></iframe>

@@ -40,13 +40,6 @@ impl Drop for AssetUpload<'_> {
 impl Room {
     /* ------------------------------------------------------------- assets */
 
-    /// What this document's figures come to, which is what `max_assets` bounds
-    /// and what the owner's quota is charged for.
-    #[cfg(test)]
-    pub async fn assets_bytes(&self) -> i64 {
-        self.state.lock().await.session.asset_sizes.values().sum()
-    }
-
     /// Stores a figure and answers with its digest. The name is the client's
     /// to give -- it sets `assets[path]` in the shared document afterwards --
     /// and the bytes are the server's to keep.
@@ -169,17 +162,5 @@ impl Room {
         }
         upload.release();
         Ok((sha, size))
-    }
-
-    /// A figure's bytes, for whoever may read the document.
-    #[cfg(test)]
-    pub async fn read_asset(&self, sha: &str) -> Option<Vec<u8>> {
-        let catalog = self.catalog.get()?;
-        let document_id = uuid::Uuid::parse_str(&self.storage_id).ok()?;
-        let rows = catalog
-            .assets_by_digests(document_id, &[sha.to_owned()])
-            .await
-            .ok()?;
-        self.blobs.get(&rows.first()?.storage_key).await.ok()
     }
 }

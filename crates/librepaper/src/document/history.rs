@@ -145,17 +145,6 @@ impl Tree {
         hex::encode(Sha256::digest(self.to_bytes()))
     }
 
-    /// The digest of the source inputs, independent of the Yjs item ids used
-    /// by a live room. Native artifact publishers use this to prove that the
-    /// PDF was compiled from the exact canonical file tree they uploaded.
-    pub fn input_digest(&self) -> String {
-        let mut canonical = self.clone();
-        for entry in canonical.files.values_mut() {
-            entry.id.clear();
-        }
-        canonical.digest()
-    }
-
     pub fn to_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
     }
@@ -164,51 +153,6 @@ impl Tree {
     /// assets included, because that is what the document costs to keep.
     pub fn size(&self) -> i64 {
         self.files.values().map(|entry| entry.size).sum()
-    }
-
-    /// A checkpoint taken when a document was one text, read as what it is: a
-    /// directory of one file, at the path the document's main file has now.
-    /// The bytes were the source, so the checkpoint's own sha is the text's.
-    pub fn of_one_file(path: &str, id: &str, sha: &str, size: i64) -> Tree {
-        let mut files = BTreeMap::new();
-        files.insert(
-            path.to_string(),
-            TreeEntry {
-                kind: "text".to_string(),
-                id: id.to_string(),
-                sha: sha.to_string(),
-                size,
-            },
-        );
-        Tree {
-            main: path.to_string(),
-            files,
-            settings: None,
-        }
-    }
-
-    /// The paths whose digest differs from `parent`'s, added and removed
-    /// included, sorted. What the timeline lists on an entry.
-    pub fn changed_from(&self, parent: Option<&Tree>) -> Vec<String> {
-        let Some(parent) = parent else {
-            return self.files.keys().cloned().collect();
-        };
-        let mut moved: Vec<String> = self
-            .files
-            .iter()
-            .filter(|(path, entry)| parent.files.get(*path).map(|was| &was.sha) != Some(&entry.sha))
-            .map(|(path, _)| path.clone())
-            .collect();
-        moved.extend(
-            parent
-                .files
-                .keys()
-                .filter(|path| !self.files.contains_key(*path))
-                .cloned(),
-        );
-        moved.sort();
-        moved.dedup();
-        moved
     }
 }
 

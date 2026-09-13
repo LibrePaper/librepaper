@@ -76,22 +76,6 @@ pub async fn run(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     if request.protocol == 2 && request.builder.is_some() {
-        if request.builder.as_deref() == Some("tex")
-            && request.preset.is_none()
-            && matches!(
-                request.workspace,
-                Some(super::protocol::WorkspaceRequest::Snapshot { binding_id: None })
-            )
-        {
-            let mut legacy = request.clone();
-            legacy.kind = "tex".into();
-            legacy.engine = if request.engine.is_empty() {
-                "pdflatex".into()
-            } else {
-                request.engine.clone()
-            };
-            return native::run_job(tex_path, legacy, workspace, cancel, progress).await;
-        }
         let tools = crate::local::discovery::tool_paths(tex_path).await;
         if let Some(super::protocol::WorkspaceRequest::Snapshot {
             binding_id: Some(binding_id),
@@ -164,12 +148,6 @@ pub async fn capabilities(refresh: bool, tex_path: &[std::path::PathBuf]) -> Cap
         },
     };
     capabilities
-}
-
-/// Quarto policy support is version-gated by the adapter.  An unavailable or
-/// unparsable version stays conservative and permits project defaults only.
-pub fn quarto_supported_policies(version: Option<&str>) -> Vec<String> {
-    quarto::supported_policies(version)
 }
 
 fn unsupported(request: &JobRequest, id: &str, error: &str) -> JobOutcome {
@@ -255,44 +233,6 @@ impl QuartoInvocationPlan {
             command.arg("-P").arg(format!("{name}:{value}"));
         }
     }
-}
-
-/// Delegates source inventory to the Quarto implementation while keeping the
-/// adapter as the only caller-facing engine boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceInventory {
-    pub tree_sha256: String,
-    pub files: Vec<String>,
-}
-
-pub fn quarto_source_inventory(
-    root: &Path,
-    manifest: &[super::protocol::ManifestEntry],
-) -> Result<SourceInventory, String> {
-    quarto::inventory_manifest_impl(root, manifest)
-}
-
-pub fn quarto_source_tree_inventory(root: &Path) -> Result<SourceInventory, String> {
-    quarto::inventory_tree_impl(root)
-}
-
-pub fn quarto_computation_fingerprint(
-    source: &str,
-    entrypoint: &str,
-    format: &str,
-    profiles: &[String],
-    parameters_sha256: Option<&str>,
-    dependencies: &[String],
-) -> String {
-    let mut document = crate::quarto::parse_qmd(source, entrypoint);
-    document.dependencies = dependencies.to_vec();
-    crate::quarto::computation_fingerprint_for_format(
-        &document,
-        entrypoint,
-        format,
-        profiles,
-        parameters_sha256,
-    )
 }
 
 pub fn quarto_capture(
@@ -468,10 +408,10 @@ mod tests {
     #[test]
     fn policy_capabilities_are_version_gated() {
         assert_eq!(
-            quarto_supported_policies(Some("Quarto 1.2.9")),
+            quarto::supported_policies(Some("Quarto 1.2.9")),
             vec!["project-defaults"]
         );
-        assert!(quarto_supported_policies(Some("Quarto 1.3.0")).contains(&"frozen".into()));
-        assert_eq!(quarto_supported_policies(None), vec!["project-defaults"]);
+        assert!(quarto::supported_policies(Some("Quarto 1.3.0")).contains(&"frozen".into()));
+        assert_eq!(quarto::supported_policies(None), vec!["project-defaults"]);
     }
 }

@@ -181,22 +181,6 @@ impl PostgresCatalog {
         Ok(row)
     }
 
-    pub async fn resolve_share_link(
-        &self,
-        token_hash: [u8; 32],
-        now: OffsetDateTime,
-    ) -> Result<Option<ShareLinkRecord>> {
-        sqlx::query_as::<_, ShareLinkRecord>(
-            "SELECT * FROM share_links WHERE token_hash=$1 AND revoked_at IS NULL
-             AND (expires_at IS NULL OR expires_at>$2)",
-        )
-        .bind(token_hash.as_slice())
-        .bind(now)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
     pub async fn share_links(&self, document_id: Uuid) -> Result<Vec<ShareLinkRecord>> {
         sqlx::query_as::<_, ShareLinkRecord>(
             "SELECT * FROM share_links WHERE document_id=$1 AND revoked_at IS NULL ORDER BY created_at,id",

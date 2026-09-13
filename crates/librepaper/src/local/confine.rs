@@ -38,7 +38,6 @@ pub enum Applied {
     SandboxExec,
 }
 
-#[allow(dead_code)]
 impl Applied {
     /// The wire string `protocol::Provenance.confinement` and
     /// `protocol::Confinement.kind` use.

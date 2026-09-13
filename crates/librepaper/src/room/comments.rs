@@ -763,63 +763,6 @@ impl Room {
         event
     }
 
-    /// Validates, persists, and returns the event to broadcast. The second
-    /// result is false when the event is an error, which goes only to its
-    /// sender. `author` is the caller's own author key, and `is_owner` says
-    /// whether the caller owns the document this room belongs to; both come
-    /// from the caller's identity and are never taken from the message itself.
-    #[cfg(test)]
-    pub async fn apply(
-        &self,
-        incoming: Message,
-        address: &str,
-        author: &str,
-        via: &str,
-        budget: Option<i64>,
-        is_owner: bool,
-    ) -> (Value, bool) {
-        let command = match incoming.into_command() {
-            Ok(command) => command,
-            Err(error) => return (error.response(), false),
-        };
-        self.apply_command(command, address, author, via, budget, is_owner, "", "")
-            .await
-    }
-
-    /// Applies a command after the compatible wire adapter has validated its
-    /// discriminator and operation-specific required fields.
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(test)]
-    pub async fn apply_command(
-        &self,
-        command: Command,
-        address: &str,
-        author: &str,
-        via: &str,
-        budget: Option<i64>,
-        is_owner: bool,
-        account_id: &str,
-        session_generation: &str,
-    ) -> (Value, bool) {
-        self.apply_command_with_actor(
-            command,
-            address,
-            author,
-            via,
-            budget,
-            is_owner,
-            crate::document::store::MutationActor {
-                account_id: account_id.to_owned(),
-                owner_key: String::new(),
-                session_generation: session_generation.to_owned(),
-                link_hash: via.to_owned(),
-                policy_editor: true,
-                unowned_publisher: false,
-            },
-        )
-        .await
-    }
-
     // Wire metadata and authority remain explicit at the command boundary.
     #[allow(clippy::too_many_arguments)]
     pub async fn apply_command_with_actor(

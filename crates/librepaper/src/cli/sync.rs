@@ -420,59 +420,6 @@ impl Client {
         }
     }
 
-    /// The document this client holds, for the tests that check it against a
-    /// second peer.
-    #[cfg(test)]
-    pub fn document(&self) -> &yrs::Doc {
-        &self.doc
-    }
-
-    /// What is waiting to be sent, taken. The socket is the only other reader
-    /// of the outbox, and a test has none.
-    #[cfg(test)]
-    pub fn take_outbox(&mut self) -> Vec<Value> {
-        std::mem::take(&mut self.outbox)
-    }
-
-    /// The debounce, without the wait. `settle` does nothing until a side has
-    /// been quiet for the interval, which is a thing to make a test wait for
-    /// or a thing to say has already happened; this says it.
-    #[cfg(test)]
-    pub fn settle_now(&mut self) -> Result<(), String> {
-        if let Some(at) = self.from_session {
-            self.from_session = Some(at - self.every);
-        }
-        if let Some(at) = self.from_disk {
-            self.from_disk = Some(at - self.every);
-        }
-        self.settle()
-    }
-
-    #[cfg(test)]
-    pub fn settle_session_now(&mut self) -> Result<(), String> {
-        if let Some(at) = self.from_session {
-            self.from_session = Some(at - self.every);
-        }
-        self.settle()
-    }
-
-    #[cfg(test)]
-    pub fn mark_pending_for_test(&mut self) {
-        self.from_session = Some(Instant::now() - Duration::from_secs(1));
-        self.from_disk = Some(Instant::now());
-    }
-
-    #[cfg(test)]
-    pub fn has_pending_disk_for_test(&self) -> bool {
-        self.from_disk.is_some()
-    }
-
-    /// Reads the file now, as the watcher and the debounce together would.
-    #[cfg(test)]
-    pub fn read_now(&mut self) -> Result<(), String> {
-        self.read_file()
-    }
-
     /// Drains the outbox onto the socket. The one place this module writes to
     /// it, so everything above can be run without one.
     async fn flush(&mut self, write: &mut Socket) -> Result<(), String> {

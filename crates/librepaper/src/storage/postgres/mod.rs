@@ -1,7 +1,7 @@
 //! PostgreSQL persistence for catalog v3.
 //!
-//! This module owns connection pooling and migrations. Product repositories
-//! are split by domain as call sites leave the catalog v2 API.
+//! This module owns connection pooling and migrations. Product operations are
+//! split into focused repository modules by domain.
 
 use std::time::Duration;
 
@@ -94,13 +94,6 @@ impl PostgresCatalog {
             pool,
             policy: options.policy,
         })
-    }
-
-    pub fn from_pool(pool: PgPool) -> Self {
-        Self {
-            pool,
-            policy: StoragePolicy::default(),
-        }
     }
 
     pub fn pool(&self) -> &PgPool {
@@ -887,71 +880,6 @@ mod tests {
             .complete_job(&replacement, json!({"ok":true}))
             .await
             .unwrap();
-
-        let retention = catalog
-            .create_document(NewDocument {
-                slug: "retention".into(),
-                owner_id: account.id,
-                ownership_mode: "owned".into(),
-                title: "Retention".into(),
-                source_format: "markdown".into(),
-                main_path: "document.md".into(),
-                settings: json!({"version":1}),
-            })
-            .await
-            .unwrap();
-        let version_ids: Vec<_> = (0..60).map(|_| new_id()).collect();
-        let sequences: Vec<i64> = (1..=60).collect();
-        sqlx::query(
-            "INSERT INTO document_versions(
-               id,document_id,sequence,through_update_sequence,project_generation,
-               archive_key,archive_encoding_version,archive_digest,archive_bytes,logical_bytes,
-               reason,label,author_label,created_at)
-             SELECT id,$1,sequence,0,0,'documents/'||$1::text||'/versions/'||id::text,
-                    1,decode(repeat('11',32),'hex'),1,1,'retention',
-                    CASE WHEN sequence=1 THEN 'protected' ELSE NULL END,'Owner',
-                    now()-interval '40 days'
-             FROM unnest($2::uuid[],$3::bigint[]) AS input(id,sequence)",
-        )
-        .bind(retention.id)
-        .bind(&version_ids)
-        .bind(&sequences)
-        .execute(catalog.pool())
-        .await
-        .unwrap();
-        sqlx::query("UPDATE documents SET current_version_id=$2 WHERE id=$1")
-            .bind(retention.id)
-            .bind(version_ids[59])
-            .execute(catalog.pool())
-            .await
-            .unwrap();
-        let removed = catalog
-            .prune_versions(
-                retention.id,
-                50,
-                OffsetDateTime::now_utc() - Duration::days(30),
-            )
-            .await
-            .unwrap();
-        assert_eq!(removed.len(), 8);
-        assert_eq!(
-            catalog.versions(retention.id, 1000).await.unwrap().len(),
-            52
-        );
-        assert!(catalog
-            .version(retention.id, version_ids[0])
-            .await
-            .unwrap()
-            .is_some());
-        assert_eq!(
-            catalog
-                .current_version(retention.id)
-                .await
-                .unwrap()
-                .unwrap()
-                .id,
-            version_ids[59]
-        );
 
         // A deletion job must survive the row it deletes so its fenced claim
         // can still be completed and audited.

@@ -477,17 +477,6 @@ pub fn render_markdown(
 /// `now` is the document as it stands, rendered and with the markup taken out;
 /// empty when this machine could not render it, in which case the **Now** line
 /// is left off rather than guessed at.
-#[cfg(test)]
-pub fn render_response(
-    title: &str,
-    comments: &[Comment],
-    source: &str,
-    config: &Configuration,
-    now: &str,
-) -> String {
-    render_response_with_replacements(title, comments, source, config, now, &HashMap::new())
-}
-
 /// Response export with the inserted side of a replacement for comments whose
 /// quoted passage disappeared. The public `render_response` remains useful to
 /// callers that already have only current text; the command line supplies this

@@ -476,11 +476,6 @@ impl Store {
         Ok(Some(document.id.to_string()))
     }
 
-    #[cfg(test)]
-    pub async fn get(&self, slug: &str) -> Option<IndexEntry> {
-        self.get_result(slug).await.ok().flatten()
-    }
-
     pub async fn get_result(&self, slug: &str) -> Result<Option<IndexEntry>, CatalogError> {
         let catalog = self
             .catalog

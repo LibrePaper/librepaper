@@ -128,8 +128,7 @@ pub(crate) fn plan(
     verify_bound_manifest(&binding.root, &inventory)?;
     if let Some(expected) = options.shared_tree_sha256.as_deref() {
         let actual =
-            crate::local::quarto::inventory_manifest_impl(&binding.root, &request.manifest)?
-                .tree_sha256;
+            crate::local::quarto::inventory_manifest(&binding.root, &request.manifest)?.tree_sha256;
         if actual != expected {
             return Err("preview source inventory is stale; synchronize before previewing".into());
         }
@@ -281,7 +280,7 @@ mod tests {
             entrypoint: None,
         };
         let mut previews = Previews::default();
-        let (id, _) = previews.start(&request, &bindings).await.unwrap();
+        let id = previews.start(&request, &bindings).await.unwrap();
         let mut artifact = None;
         for _ in 0..120 {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;

@@ -158,16 +158,6 @@ impl Default for FakeRunner {
 }
 
 #[cfg(test)]
-impl FakeRunner {
-    pub fn with_delay(delay: Duration) -> Self {
-        FakeRunner {
-            delay: std::sync::Mutex::new(delay),
-            ..FakeRunner::default()
-        }
-    }
-}
-
-#[cfg(test)]
 #[async_trait::async_trait]
 impl Runner for FakeRunner {
     async fn run(
@@ -355,23 +345,6 @@ impl LocalService {
     /// for bounded retry/recovery; interrupted and unknown workspaces are
     /// removed here and are never resumed.
     ///
-    /// A service with no hosted workspaces, which only the tests build now:
-    /// both `librepaper local start` and the one inside `serve` use
-    /// `with_hosted_workspaces_and_code`.
-    #[allow(dead_code)]
-    pub fn new(
-        port: u16,
-        instance: String,
-        state_home: &std::path::Path,
-        cache_home: &std::path::Path,
-        runner: Arc<dyn Runner>,
-        fixed_code: Option<String>,
-    ) -> Self {
-        Self::build(
-            port, instance, state_home, cache_home, runner, fixed_code, None,
-        )
-    }
-
     /// The same service, additionally admitting the hosted binding for every
     /// document and executing it in a workspace under `base`. The runner
     /// handed in must have been built with the same base. `fixed_code` is
@@ -2698,7 +2671,6 @@ async fn handle_preview(
                 200,
                 &json!({
                     "id": id,
-                    "url": preview.url,
                     "state": state,
                     "engine": preview.engine,
                     "kind": preview.kind.as_str(),
@@ -2789,10 +2761,7 @@ async fn handle_preview(
         return plain(409, "Wait for the render job before starting preview");
     }
     match previews.start(&job, &inner.quarto_bindings).await {
-        Ok((id, url)) => write_json(
-            201,
-            &json!({"id":id,"url":url,"state":"starting","expires_in":3600}),
-        ),
+        Ok(id) => write_json(201, &json!({"id":id,"state":"starting","expires_in":3600})),
         Err(error) => write_json(400, &json!({"error":error})),
     }
 }

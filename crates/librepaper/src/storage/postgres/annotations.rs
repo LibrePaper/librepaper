@@ -376,24 +376,6 @@ impl PostgresCatalog {
          .fetch_all(&self.pool).await.map_err(Error::from)
     }
 
-    pub async fn resolve_annotation(
-        &self,
-        id: Uuid,
-        actor_account: Option<Uuid>,
-        actor_key: &str,
-    ) -> Result<bool> {
-        Ok(sqlx::query("UPDATE annotations SET resolved_at=now(),updated_at=now() WHERE id=$1 AND resolved_at IS NULL AND (author_account_id=$2 OR (author_account_id IS NULL AND author_key=$3))")
-            .bind(id).bind(actor_account).bind(actor_key).execute(&self.pool).await?.rows_affected()==1)
-    }
-
-    pub async fn decide_suggestion(&self, id: Uuid, state: &str) -> Result<bool> {
-        if !matches!(state, "accepted" | "rejected") {
-            return Err(Error::Invalid("invalid suggestion decision".into()));
-        }
-        Ok(sqlx::query("UPDATE annotations SET suggestion_state=$2,resolved_at=now(),updated_at=now() WHERE id=$1 AND kind='suggestion' AND suggestion_state='proposed'")
-            .bind(id).bind(state).execute(&self.pool).await?.rows_affected()==1)
-    }
-
     pub async fn replies(&self, annotation_ids: &[Uuid]) -> Result<Vec<ReplyRecord>> {
         if annotation_ids.len() > 500 {
             return Err(Error::Invalid(

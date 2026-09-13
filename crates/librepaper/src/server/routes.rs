@@ -1116,3 +1116,20 @@ impl Server {
         response
     }
 }
+
+#[cfg(test)]
+mod frame_agent_tests {
+    use super::with_agent;
+
+    #[test]
+    fn injected_agent_runs_as_a_classic_bundle() {
+        let page = with_agent(
+            b"<!doctype html><body>preview</body>",
+            "http://localhost:8081",
+        );
+        let page = String::from_utf8(page).unwrap();
+        assert!(page.contains(
+            "<script src=\"/agent.js?reader=http%3A%2F%2Flocalhost%3A8081\"></script></body>"
+        ));
+    }
+}

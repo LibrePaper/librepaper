@@ -151,18 +151,6 @@ impl PostgresCatalog {
         finish_claim(self, claim, JobStatus::Succeeded, Some(result), None, None).await
     }
 
-    pub async fn cancel_job(&self, id: Uuid) -> Result<bool> {
-        let changed = sqlx::query(
-            "UPDATE jobs SET status='cancelled',locked_by=NULL,locked_at=NULL,claim_token=NULL,
-             updated_at=now() WHERE id=$1 AND status IN ('queued','running')",
-        )
-        .bind(id)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-        Ok(changed == 1)
-    }
-
     pub async fn fail_job(
         &self,
         claim: &JobClaim,

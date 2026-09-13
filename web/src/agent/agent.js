@@ -1174,6 +1174,11 @@ import {
     if (event.source !== parent) return;
     const message = event.data;
     if (!message || message.librepaper !== true) return;
+    // The frame can finish loading and publish before Svelte has bound the
+    // iframe element used to authenticate its message source. The reader
+    // acknowledges its own load event so that readiness is never a one-shot
+    // race.
+    if (message.type === "reader-ready") publish(true);
     if (message.type === "highlight") highlight(message.ranges || []);
     if (message.type === "regions") paintRegions(message.regions || []);
     if (message.type === "redlines") {
@@ -1379,6 +1384,11 @@ import {
 
   function watch() {
     publish();
+    // The first publication runs in the child frame's load handler. The
+    // parent's iframe load handler, and therefore Svelte's authenticated
+    // frame binding, can settle just afterward. Repeat once on the next task;
+    // later publications remain mutation-driven.
+    setTimeout(() => publish(true), 0);
     observer = new MutationObserver(republish);
     observer.observe(document.body, {
       childList: true,

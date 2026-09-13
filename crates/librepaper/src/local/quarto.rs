@@ -25,8 +25,11 @@ use super::protocol::{
     MAX_LOG_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_QUARTO_OUTPUT_FILES, QUARTO_COLLECTOR_VERSION,
 };
 
-/// Compatibility name for the adapter-owned normalized inventory.
-pub use super::engine_adapter::SourceInventory;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceInventory {
+    pub tree_sha256: String,
+    pub files: Vec<String>,
+}
 
 pub const SUPPORTED_FORMATS: &[&str] = &["html", "pdf", "docx", "revealjs"];
 
@@ -553,7 +556,7 @@ pub async fn discover() -> protocol::QuartoCapabilities {
         },
         collector_versions: vec![QUARTO_COLLECTOR_VERSION.into()],
         formats: SUPPORTED_FORMATS.iter().map(|s| (*s).into()).collect(),
-        policies: engine_adapter::quarto_supported_policies(version.as_deref()),
+        policies: supported_policies(version.as_deref()),
         runtime_checks: runtime_checks().await,
     }
 }
@@ -573,6 +576,25 @@ pub(crate) fn supported_policies(version: Option<&str>) -> Vec<String> {
         );
     }
     policies
+}
+
+pub(crate) fn computation_fingerprint(
+    source: &str,
+    entrypoint: &str,
+    format: &str,
+    profiles: &[String],
+    parameters_sha256: Option<&str>,
+    dependencies: &[String],
+) -> String {
+    let mut document = crate::quarto::parse_qmd(source, entrypoint);
+    document.dependencies = dependencies.to_vec();
+    crate::quarto::computation_fingerprint_for_format(
+        &document,
+        entrypoint,
+        format,
+        profiles,
+        parameters_sha256,
+    )
 }
 
 async fn runtime_checks() -> BTreeMap<String, Tool> {
@@ -696,20 +718,6 @@ async fn bounded_version_output(path: &Path) -> Option<(String, String)> {
         String::from_utf8_lossy(&stdout).into_owned(),
         String::from_utf8_lossy(&stderr).into_owned(),
     ))
-}
-
-/// Execute a typed Quarto request against the explicitly granted linked
-/// project. Uploaded files are treated as a hash inventory and are never
-/// written through into that project.
-#[allow(dead_code)]
-pub async fn run_job(
-    request: JobRequest,
-    workspace: Workspace,
-    cancel: watch::Receiver<bool>,
-    progress: mpsc::UnboundedSender<JobStatus>,
-) -> JobOutcome {
-    let store = BindingStore::new(&crate::cli::state_home());
-    run_job_with_bindings(request, workspace, cancel, progress, &store).await
 }
 
 pub async fn run_job_with_bindings(
@@ -1409,7 +1417,7 @@ pub async fn run_job_with_bindings(
     if !source_matches {
         let parameters_sha256 = crate::results::parameters_sha256(&options.parameters);
         let profiles: Vec<String> = options.profile.iter().cloned().collect();
-        bundle.context.computation_sha256 = engine_adapter::quarto_computation_fingerprint(
+        bundle.context.computation_sha256 = computation_fingerprint(
             &source_before,
             &options.main,
             &options.format,
@@ -1604,7 +1612,7 @@ fn output_entry(bytes: &[u8]) -> OutputEntry {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn collect_bundle(
     project: &Path,
     options: &QuartoJobOptions,
@@ -1764,7 +1772,7 @@ fn collect_bundle_with_dependencies(
     // Keep the durable computation identity sensitive to every shared input
     // supplied for this invocation. The path/hash records are public source
     // identity only; private linked-project files remain in provenance.
-    let computation_sha256 = engine_adapter::quarto_computation_fingerprint(
+    let computation_sha256 = computation_fingerprint(
         &source,
         &options.main,
         format_name,
@@ -1842,7 +1850,7 @@ fn collect_bundle_with_dependencies(
 /// Import an existing render without invoking Quarto. With no source bytes
 /// available, the full artifact remains useful but cell association and
 /// freshness are explicitly unknown.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn import_artifact(
     artifact_root: &Path,
     entrypoint: &str,
@@ -2630,12 +2638,8 @@ fn local_cell(cell: crate::results::CellRecord) -> QuartoCell {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn inventory_tree(root: &Path) -> Result<SourceInventory, String> {
-    engine_adapter::quarto_source_tree_inventory(root)
-}
-
-pub(crate) fn inventory_tree_impl(root: &Path) -> Result<SourceInventory, String> {
     let mut files = Vec::new();
     walk_files(root, root, &mut files)?;
     let mut hasher = Sha256::new();
@@ -2658,14 +2662,7 @@ pub(crate) fn inventory_tree_impl(root: &Path) -> Result<SourceInventory, String
     })
 }
 
-fn inventory_manifest(
-    root: &Path,
-    manifest: &[protocol::ManifestEntry],
-) -> Result<SourceInventory, String> {
-    engine_adapter::quarto_source_inventory(root, manifest)
-}
-
-pub(crate) fn inventory_manifest_impl(
+pub(crate) fn inventory_manifest(
     root: &Path,
     manifest: &[protocol::ManifestEntry],
 ) -> Result<SourceInventory, String> {
@@ -3407,7 +3404,7 @@ fn persist_frozen_cache_identity(
     }
     let profiles: Vec<String> = options.profile.iter().cloned().collect();
     let parameters_sha256 = crate::results::parameters_sha256(&options.parameters);
-    let computation_sha256 = engine_adapter::quarto_computation_fingerprint(
+    let computation_sha256 = computation_fingerprint(
         source,
         &options.main,
         &options.format,
@@ -3472,7 +3469,7 @@ fn verify_frozen_cache_identity(
         .ok_or("frozen Quarto cache has no explicit context identity")?;
     let profiles: Vec<String> = profile.cloned().into_iter().collect();
     let parameters_sha256 = crate::results::parameters_sha256(parameters);
-    let expected = engine_adapter::quarto_computation_fingerprint(
+    let expected = computation_fingerprint(
         source,
         main,
         format,

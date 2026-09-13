@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use uuid::Uuid;
 
 use super::blob::BlobStore;
@@ -16,29 +16,6 @@ pub struct Maintenance {
 impl Maintenance {
     pub fn new(catalog: Arc<PostgresCatalog>, blobs: Arc<dyn BlobStore>) -> Self {
         Self { catalog, blobs }
-    }
-
-    pub async fn prune_document_versions(
-        &self,
-        document_id: Uuid,
-        keep_newest: i64,
-        max_age: Duration,
-    ) -> Result<usize, String> {
-        let keys = self
-            .catalog
-            .prune_versions(
-                document_id,
-                keep_newest,
-                OffsetDateTime::now_utc() - max_age,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        // Rows are already gone. Failure leaves harmless extra immutable bytes
-        // and is retried by the orphan/lifecycle sweep.
-        if !keys.is_empty() {
-            let _ = self.blobs.delete(&keys).await;
-        }
-        Ok(keys.len())
     }
 
     pub async fn delete_superseded_bases(&self, batch: i64) -> Result<usize, String> {

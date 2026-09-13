@@ -16,7 +16,6 @@
 
 // Some narrow test support APIs are intentionally compiled only into the library
 // test target; integration binaries do not consume them in that target.
-#![cfg_attr(test, allow(dead_code))]
 
 mod agent_query;
 mod auth;

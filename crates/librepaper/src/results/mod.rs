@@ -392,50 +392,6 @@ impl AssetRole {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BlobUpload {
-    pub sha256: String,
-    #[serde(default)]
-    pub mime: String,
-    /// Base64 encoded bytes. JSON keeps the upload contract deterministic and
-    /// lets the server validate every byte before making the manifest live.
-    pub data: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PublishRequest {
-    pub manifest: BundleManifest,
-    #[serde(default)]
-    pub blobs: Vec<BlobUpload>,
-    #[serde(default)]
-    pub select: bool,
-    #[serde(default)]
-    pub expected_generation: Option<u64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Selection {
-    pub document_id: String,
-    pub context_id: String,
-    pub generation: u64,
-    pub render_id: String,
-    pub source_revision: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PublishedBundle {
-    pub manifest: BundleManifest,
-    pub selected: bool,
-    pub selection: Option<Selection>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DecodedBlob {
-    pub sha256: String,
-    pub mime: String,
-    pub data: Vec<u8>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BundleError {
     Invalid(String),
@@ -564,23 +520,6 @@ pub(crate) fn parameters_sha256(parameters: &BTreeMap<String, serde_json::Value>
         material.push('\0');
     }
     sha256(material.as_bytes())
-}
-
-fn add_expected_blob(
-    expected: &mut BTreeMap<String, (u64, String)>,
-    digest: &str,
-    size: u64,
-    mime: &str,
-) -> Result<(), BundleError> {
-    if let Some((old_size, old_mime)) = expected.insert(digest.to_owned(), (size, mime.to_owned()))
-    {
-        if old_size != size || old_mime != mime {
-            return Err(BundleError::Invalid(
-                "one digest has conflicting blob descriptors".into(),
-            ));
-        }
-    }
-    Ok(())
 }
 
 impl BundleManifest {
@@ -818,72 +757,6 @@ impl BundleManifest {
 /// catalogue handle. The catalogue migration stores the same pair durably.
 pub fn document_metadata(source_format: &str) -> DocumentMetadata {
     DocumentMetadata::from_source_format(source_format)
-}
-
-/// Decode and verify upload bytes before handing them to a managed room.
-pub fn decode_uploads(
-    manifest: &BundleManifest,
-    uploads: &[BlobUpload],
-) -> Result<Vec<DecodedBlob>, BundleError> {
-    manifest.validate()?;
-    // Reject an oversized manifest before accepting or writing any blob.
-    let _ = manifest.encoded()?;
-    let mut expected = BTreeMap::<String, (u64, String)>::new();
-    if let Some(artifact) = &manifest.artifact {
-        add_expected_blob(
-            &mut expected,
-            &artifact.sha256,
-            artifact.size,
-            &artifact.mime,
-        )?;
-    }
-    for asset in &manifest.assets {
-        add_expected_blob(&mut expected, &asset.sha256, asset.size, &asset.mime)?;
-    }
-    if uploads.len() > MAX_ASSETS + 1 {
-        return Err(BundleError::TooLarge("too many blobs".into()));
-    }
-    let mut seen = BTreeSet::new();
-    let mut total = 0usize;
-    let mut decoded = Vec::with_capacity(uploads.len());
-    for upload in uploads {
-        let Some((size, expected_mime)) = expected.get(&upload.sha256) else {
-            return Err(BundleError::Invalid("unreferenced blob".into()));
-        };
-        if !seen.insert(upload.sha256.clone()) {
-            return Err(BundleError::Invalid("duplicate blob".into()));
-        }
-        let data = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            upload.data.as_bytes(),
-        )
-        .map_err(|_| BundleError::Invalid("invalid blob base64".into()))?;
-        if data.len() as u64 != *size || sha256(&data) != upload.sha256 {
-            return Err(BundleError::Invalid("blob size or digest mismatch".into()));
-        }
-        if data.len() > MAX_BLOB_BYTES {
-            return Err(BundleError::TooLarge("blob is too large".into()));
-        }
-        if !upload.mime.is_empty() && upload.mime != *expected_mime {
-            return Err(BundleError::Invalid(
-                "blob MIME does not match its descriptor".into(),
-            ));
-        }
-        total = total.saturating_add(data.len());
-        decoded.push(DecodedBlob {
-            sha256: upload.sha256.clone(),
-            mime: if upload.mime.is_empty() {
-                expected_mime.clone()
-            } else {
-                upload.mime.clone()
-            },
-            data,
-        });
-    }
-    if total > MAX_BUNDLE_BYTES {
-        return Err(BundleError::TooLarge("bundle exceeds size limit".into()));
-    }
-    Ok(decoded)
 }
 
 #[cfg(test)]

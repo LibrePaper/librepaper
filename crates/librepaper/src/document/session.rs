@@ -66,6 +66,20 @@ pub const REVISIONS: &str = "revisions";
 
 /// The key in `meta` that names the main file, by id.
 pub const MAIN: &str = "main";
+pub const STARTER_BIBLIOGRAPHY_REPAIRED: &str = "starter-bibliography-repaired-v1";
+
+pub fn has_meta(doc: &Doc, key: &str) -> bool {
+    let txn = doc.transact();
+    MapRef::root(META)
+        .get(&txn)
+        .and_then(|meta| string_at(&meta, &txn, key))
+        .is_some()
+}
+
+pub fn mark_meta(doc: &Doc, key: &str) {
+    let (_, _, _, meta) = maps(doc);
+    meta.insert(&mut doc.transact_mut(), key, "true");
+}
 
 /// A document the browser can talk to. See the note above about offsets.
 pub fn new_doc() -> Doc {
@@ -1106,19 +1120,6 @@ pub fn put_asset(doc: &Doc, path: &str, sha: &str) {
 pub fn restore(doc: &Doc, tree: &crate::document::history::Tree, bodies: &HashMap<String, String>) {
     restore_with(doc, tree, |_, entry| {
         bodies.get(&entry.sha).cloned().unwrap_or_default()
-    });
-}
-
-/// Restores a tree while supplying text by path.  A digest-keyed map is the
-/// historic API above, but a merge can produce different text for two files
-/// which happened to have the same old digest, so the room uses this form.
-pub fn restore_by_path(
-    doc: &Doc,
-    tree: &crate::document::history::Tree,
-    bodies: &HashMap<String, String>,
-) {
-    restore_with(doc, tree, |path, _| {
-        bodies.get(path).cloned().unwrap_or_default()
     });
 }
 

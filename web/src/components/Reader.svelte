@@ -1887,10 +1887,11 @@
       {
         if (format === "latex") latexOutput = buildPreferences.output === "html" ? "html" : "pdf";
         if (format === "typst") typstOutput = buildPreferences.output === "html" ? "html" : "pdf";
-        latex.cancel();
-        if (format === "latex") { latex.configure({ project: SLUG, settings: buildPreferences }); latex.setSettings(buildPreferences); }
+        if (format === "latex") latex.configure({ project: SLUG, settings: buildPreferences });
         typstPreviewMode = buildPreferences.backend === "local" && buildPreferences.tool === "calepin" ? "calepin" : "typst";
         if (buildPreferences.selection === "tool") quartoPreviewMode = buildPreferences.backend === "local" && buildPreferences.tool === "quarto" ? "quarto" : "markdown";
+        // Source hydration and later source changes own rendering. Loading an
+        // identical browser-local preference must not cancel their compile.
       }
     });
   });
@@ -2060,6 +2061,11 @@
 
   const navigateFrame = (force = false) => framePreview.navigate(force);
   const replayPreview = () => paintsTheFrame && framePreview.replay();
+  const frameLoaded = () => {
+    const first = framePreview.markReady();
+    frameReady = true;
+    if (first && !publishedMode) replayPreview();
+  };
 
   // The kind of frame follows the tree being displayed, including a
   // historical tree. This effect is also what navigates when the live main
@@ -2109,6 +2115,9 @@
   });
 
   async function paintPreview() {
+    try {
+      if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: paint requested", sourceFormat, Boolean(session));
+    } catch { /* diagnostics are optional */ }
     if (readerDisposed) return;
     clearTimeout(previewTimer);
     previewTimer = null;
@@ -2144,6 +2153,13 @@
     const snapshotNavigation = navigationGeneration;
     const snapshotSource = sourceGeneration;
     const format = renderers.formatOf(tree.main);
+    try {
+      if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: tree", tree.main, format, Object.keys(tree.texts || {}).length);
+    } catch { /* diagnostics are optional */ }
+    // The collaboration session exists before its first Yjs state arrives.
+    // Rendering that placeholder used to call the renderer registry with an
+    // empty format and permanently consume the initial paint.
+    if (!tree.main || !format) return;
     const htmlPreview = Boolean(snapshotViewing) || editing && ((format === "typst" && typstOutput === "html") || (format === "latex" && latexOutput === "html"));
     const paged = renderers.producesPdf(format) && !htmlPreview;
     const slow = format === "latex";
@@ -2160,6 +2176,9 @@
       // as a flicker rather than as progress.
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
+        try {
+          if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: assets", Object.keys(held.assets || {}).length, missing);
+        } catch { /* diagnostics are optional */ }
         if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
         if (snapshotViewing || paged || (format === "latex" && htmlPreview)) {
           if (missing.length) {
@@ -2183,6 +2202,9 @@
       // Keep a transient source identity for diagnostics and race checks. It
       // is never sent to the server as a rendering name or persisted result.
       const snapshotIdentity = snapshotViewing?.sha || (await snapshotDigest(tree, tree.assets || {}));
+      try {
+        if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: rendering", format, snapshotIdentity);
+      } catch { /* diagnostics are optional */ }
       if (readerDisposed) return;
       // A manual compile is asked for once; the flag is read here, at the
       // one call site that reaches the compiler, and cleared immediately so
@@ -2205,6 +2227,9 @@
         rendered = snapshotViewing
           ? await passages.renderTree(SLUG, { ...tree, label: title }, keyHeaders(KEY))
           : await renderers.render(tree, title, { ...renderOptions, buildPreferences, project: SLUG });
+        try {
+          if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
+        } catch { /* diagnostics are optional */ }
       } finally {
         // Only the newest compile owns the badge. An older one finishing
         // afterwards must not turn the spinner off under a newer one.
@@ -2218,7 +2243,15 @@
       // Typst may show that intermediate progress while the queued render
       // catches up. Navigation and main-file changes still invalidate it;
       // LaTeX keeps its strict source guard.
-      if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
+      if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) {
+        // Collaboration can emit a bookkeeping-only Yjs transaction while a
+        // slow compile is running. Accept the result when the canonical tree
+        // is still byte-for-byte the one that produced it.
+        const sameLatexTree = format === "latex" && mine > painted &&
+          snapshotNavigation === navigationGeneration &&
+          snapshotIdentity === await snapshotDigest(treeNow());
+        if (!sameLatexTree) return;
+      }
       painted = mine;
       if (artifact && artifactKind === "docx" && rendered.ok !== false) {
         const buffer = artifact.buffer ? artifact.buffer.slice(artifact.byteOffset, artifact.byteOffset + artifact.byteLength) : artifact;
@@ -2233,14 +2266,24 @@
         pdfFailure = false;
         pdfFailureReason = "";
         const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
-        const parsedSynctex = format === "latex" && synctex && typeof parseSynctex === "function"
-          ? await parseSynctex(synctex, Object.keys(tree.texts || {})) : null;
-        if (format === "latex" && superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
-        if (typeof activeSynctex !== "undefined") activeSynctex = parsedSynctex;
+        if (typeof activeSynctex !== "undefined") activeSynctex = null;
         const preview = { kind: "pdf", sha: snapshotIdentity, bytes: new Uint8Array(buffer.slice(0)) };
         framePreview.publish(preview);
         if (snapshotSource === sourceGeneration) {
           diagnosticPainter.rendered({ page: "", diagnostics: contextualDiagnostics });
+        }
+        // SyncTeX is navigation metadata, not part of the rendered page.
+        // Large maps can take long enough to decompress and index that
+        // awaiting them here left a finished PDF behind the placeholder.
+        if (format === "latex" && synctex && typeof parseSynctex === "function") {
+          void parseSynctex(synctex, Object.keys(tree.texts || {})).then((parsed) => {
+            if (!readerDisposed && mine === painted &&
+                snapshotNavigation === navigationGeneration && snapshotSource === sourceGeneration) {
+              activeSynctex = parsed;
+            }
+          }).catch(() => {
+            // The PDF remains useful when optional source mapping is invalid.
+          });
         }
         return;
       }
@@ -3299,6 +3342,13 @@
         handledFileTransactions = new WeakSet();
         refreshFiles();
         refreshPeers();
+        // A restored Yjs document can already contain its complete tree when
+        // the session is handed over, so no later source event is guaranteed.
+        // Render once from that hydrated tree after Svelte has applied the
+        // format and file-list state.
+        void tick().then(() => {
+          if (!readerDisposed && active === session) void paintPreview();
+        });
       },
       onSource: (active) => {
         if (mayEdit && !publicationSourceReady) {
@@ -3866,7 +3916,7 @@
             <img src={figureUrl} alt={shownFigure.path} />
           {/if}
         </div>
-      {:else if Editor}
+      {:else if Editor && session?.text}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} {tracking} {selectedRevision} onrevision={(revision) => { selectedRevision = revision.id; void showPanel("changes"); }} format={editorFormat} file={openFile} {keys} editable={mayEdit && !viewing}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
@@ -3989,7 +4039,7 @@
       <p class="text-surface-700-300 text-sm">The publisher has not published a reader version of this document.</p>
     </div></section>
   {/if}
-  <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} {grabbing}
+  <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            path={viewing?.main || previewMain} status={previewStatusControl} overlay={previewOverlay}
            away={!shown.document || unrendered || failedBeforeRender} />
 

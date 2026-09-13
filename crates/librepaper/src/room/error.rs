@@ -192,14 +192,6 @@ impl WriteError {
         self.retry() == Retry::Later
     }
 
-    /// Whether the write was refused before anything durable was touched.
-    /// Publication and rendering callers stop at the first of these rather
-    /// than registering work that never landed.
-    #[cfg(test)]
-    pub fn refused(&self) -> bool {
-        !matches!(self, Self::Storage(_))
-    }
-
     /// Whether the same write is worth sending again.
     pub fn retry(&self) -> Retry {
         match self {

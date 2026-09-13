@@ -65,13 +65,6 @@ impl Cache {
         }
     }
 
-    /// The same cache, fetching packages from another registry. For tests.
-    #[cfg(test)]
-    pub fn with_registry(mut self, base: &str) -> Cache {
-        self.registry = base.to_string();
-        self
-    }
-
     fn package_dir(&self, package: &Package) -> PathBuf {
         self.root
             .join("typst")

@@ -1,31 +1,6 @@
 use super::*;
 
 impl Room {
-    #[cfg(test)]
-    pub async fn accept_suggestion_authorized(
-        &self,
-        comment_id: &str,
-        request_id: &str,
-        by: impl Into<Attribution>,
-        account_id: &str,
-        session_generation: &str,
-    ) -> Result<Accepted, AcceptError> {
-        self.accept_suggestion_with_actor(
-            comment_id,
-            request_id,
-            by,
-            crate::document::store::MutationActor {
-                account_id: account_id.into(),
-                owner_key: String::new(),
-                session_generation: session_generation.into(),
-                link_hash: String::new(),
-                policy_editor: true,
-                unowned_publisher: false,
-            },
-        )
-        .await
-    }
-
     pub async fn accept_suggestion_with_actor(
         &self,
         comment_id: &str,
@@ -148,27 +123,6 @@ impl Room {
             sha,
             resolved_at,
         })
-    }
-
-    #[cfg(test)]
-    pub async fn reject_suggestion_authorized(
-        &self,
-        comment_id: &str,
-        account_id: &str,
-        session_generation: &str,
-    ) -> Result<Value, String> {
-        self.reject_suggestion_with_actor(
-            comment_id,
-            crate::document::store::MutationActor {
-                account_id: account_id.into(),
-                owner_key: String::new(),
-                session_generation: session_generation.into(),
-                link_hash: String::new(),
-                policy_editor: true,
-                unowned_publisher: false,
-            },
-        )
-        .await
     }
 
     pub async fn reject_suggestion_with_actor(

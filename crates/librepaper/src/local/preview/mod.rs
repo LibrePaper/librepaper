@@ -110,16 +110,6 @@ pub(crate) struct Session {
     pub project: String,
     pub binding: String,
     pub root: PathBuf,
-    /// Project-relative path to the watched document. The log pump's own
-    /// `SessionWatch` holds a copy it uses to locate and validate renders;
-    /// this copy is kept on `Session` too so a future reader of the struct
-    /// (a status field, a diagnostic) does not have to thread it back out.
-    #[allow(dead_code)]
-    pub entrypoint: String,
-    /// No managed web server runs any more: kept only for wire
-    /// compatibility with clients that still read `url` off the response.
-    /// Always empty.
-    pub url: String,
     pub started: Instant,
     /// The last `PREVIEW_LOG_CAP_BYTES` of combined stdout+stderr from the
     /// watching process.
@@ -369,7 +359,7 @@ impl Previews {
         &mut self,
         request: &PreviewRequest,
         bindings: &BindingStore,
-    ) -> Result<(String, String), String> {
+    ) -> Result<String, String> {
         let engine = if request.engine.is_empty() {
             "quarto"
         } else {
@@ -429,8 +419,6 @@ impl Previews {
                 project: request.project.clone(),
                 binding: plan.binding_id,
                 root: plan.root,
-                entrypoint: plan.entrypoint,
-                url: String::new(),
                 started: Instant::now(),
                 log,
                 latest,
@@ -438,7 +426,7 @@ impl Previews {
                 child,
             },
         );
-        Ok((id, String::new()))
+        Ok(id)
     }
 
     pub async fn stop(&mut self, id: &str) {
