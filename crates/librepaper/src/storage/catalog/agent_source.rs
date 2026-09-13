@@ -19,7 +19,7 @@ fn actor_key(actor: MutationAuthority<'_>) -> String {
     } else if !actor.link_hash.is_empty() {
         format!("link:{}", actor.link_hash)
     } else {
-        actor.owner_key.to_owned()
+        "internal".to_owned()
     }
 }
 

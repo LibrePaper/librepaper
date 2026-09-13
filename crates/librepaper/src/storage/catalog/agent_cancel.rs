@@ -109,6 +109,28 @@ impl Catalog {
                 ).map_err(CatalogError::from)?;
                 if !valid { return Err(CatalogError::refused(CatalogRefusal::ActorRights, "agent cancellation link changed")); }
             }
+            let authorized = Catalog::mutation_authorized_in_tx(
+                tx,
+                slug,
+                MutationAuthority {
+                    account_id,
+                    owner_key: "",
+                    generation,
+                    link_hash,
+                    policy_editor: true,
+                    automation: false,
+                    unowned_publisher: false,
+                    execution_epoch: "",
+                    agent_checkpoint: None,
+                },
+                "editor",
+            )?;
+            if !authorized {
+                return Err(CatalogError::refused(
+                    CatalogRefusal::ActorRights,
+                    "agent cancellation rights changed",
+                ));
+            }
             let existing: Option<(String, String, String, String, Option<String>, String)> = tx.query_row(
                 "SELECT id,state,request_digest,result_json,target_request_key,plan_json
                  FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3 AND kind='agent_cancel'",
