@@ -1113,7 +1113,8 @@ mod tests {
     fn meter(limit: u64) -> Arc<CostMeter> {
         let mut config = Configuration::default();
         config.cost.transfer_bytes = Some(limit);
-        Arc::new(CostMeter::new(&Arc::new(config), None))
+        let catalog = Arc::new(crate::storage::catalog::Catalog::open_in_memory().unwrap());
+        Arc::new(CostMeter::new(&Arc::new(config), Some(catalog)))
     }
 
     #[tokio::test]

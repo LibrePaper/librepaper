@@ -55,6 +55,9 @@ async fn mcp_propose_apply_and_retry_have_one_effect_and_bound_authority() {
     let doc = publish_mcp(&server.url).await;
     let slug = text(&doc, "slug");
     let edit = editor_key(&server.url, &slug).await;
+    assert!(!edit.is_empty());
+    let entry = server.instance.store.get_result(&slug).await.unwrap().unwrap();
+    assert_eq!(entry.link_role(&crate::server::hash_link_key(&edit), crate::util::now_unix()), Some(crate::document::store::Role::Editor));
     let read = tool(
         &server.url,
         &slug,

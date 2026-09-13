@@ -238,7 +238,7 @@ fn reply_edit_and_delete_require_author_or_editor_and_keep_attribution() {
         ..Default::default()
     };
     let comment = catalog
-        .insert_comment_authorized(&annotation("reply-auth", "commenting"), owner)
+        .insert_comment_request_authorized(&annotation("reply-auth", "commenting"), "", "", crate::util::now_millis(), owner)
         .unwrap();
     let reply = Reply {
         slug: "doc".into(),

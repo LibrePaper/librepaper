@@ -887,7 +887,7 @@ impl Catalog {
         self.with_connection(|c| {
             let mut s = c
                 .prepare(
-                    "SELECT d.slug,g.role,g.account_id,CAST(g.created_at AS TEXT) FROM grants g JOIN documents d ON d.id=g.document_id
+                    "SELECT d.slug,g.role,g.account_id,g.created_at FROM grants g JOIN documents d ON d.id=g.document_id
                 WHERE d.slug=?1 AND (?2 IS NULL OR g.role>?2 OR (g.role=?2 AND g.account_id>?3))
                 ORDER BY role,account_id LIMIT ?4",
                 )
@@ -906,7 +906,7 @@ impl Catalog {
                     slug: r.get(0).map_err(CatalogError::from)?,
                     role: r.get(1).map_err(CatalogError::from)?,
                     account_id: r.get(2).map_err(CatalogError::from)?,
-                    since: r.get(3).map_err(CatalogError::from)?,
+                    since: crate::util::format_unix_millis(r.get(3).map_err(CatalogError::from)?),
                 });
             }
             Ok(out)
@@ -991,11 +991,11 @@ impl Catalog {
 
     pub fn links(&self, slug: &str) -> CatalogResult<Vec<Link>> {
         self.with_connection(|c| {
-            let mut s = c.prepare("SELECT d.slug,l.role,l.token_hash,l.sealed_token,l.label,l.budget,CAST(l.created_at AS TEXT),COALESCE(CAST(l.expires_at AS TEXT),'') FROM links l JOIN documents d ON d.id=l.document_id JOIN accounts a ON a.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND a.status='active' ORDER BY l.role").map_err(CatalogError::from)?;
+            let mut s = c.prepare("SELECT d.slug,l.role,l.token_hash,l.sealed_token,l.label,l.budget,l.created_at,l.expires_at FROM links l JOIN documents d ON d.id=l.document_id JOIN accounts a ON a.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND a.status='active' ORDER BY l.role").map_err(CatalogError::from)?;
             let mut rows = s.query([slug]).map_err(CatalogError::from)?;
             let mut out = Vec::new();
             while let Some(r) = rows.next().map_err(CatalogError::from)? {
-                out.push(Link { slug:r.get(0).map_err(CatalogError::from)?,role:r.get(1).map_err(CatalogError::from)?,hash:r.get(2).map_err(CatalogError::from)?,sealed:r.get(3).map_err(CatalogError::from)?,label:r.get(4).map_err(CatalogError::from)?,budget:r.get(5).map_err(CatalogError::from)?,since:r.get(6).map_err(CatalogError::from)?,until:r.get(7).map_err(CatalogError::from)? });
+                out.push(Link { slug:r.get(0).map_err(CatalogError::from)?,role:r.get(1).map_err(CatalogError::from)?,hash:r.get(2).map_err(CatalogError::from)?,sealed:r.get(3).map_err(CatalogError::from)?,label:r.get(4).map_err(CatalogError::from)?,budget:r.get(5).map_err(CatalogError::from)?,since:crate::util::format_unix_millis(r.get::<_, i64>(6).map_err(CatalogError::from)?),until:r.get::<_, Option<i64>>(7).map_err(CatalogError::from)?.map_or_else(String::new, crate::util::format_unix_millis) });
             }
             Ok(out)
         })

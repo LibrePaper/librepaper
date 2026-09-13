@@ -608,11 +608,7 @@ pub async fn publish_display(
         .unwrap(),
     );
     let manifest = json!({"bundle_sha256":bundle_sha,"source_sha256":"a".repeat(64),"render_config_sha256":"b".repeat(64),"html":{"sha256":html_sha,"bytes":html.len(),"mime":"text/html"},"assets":asset_rows});
-    static DISPLAY_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let id = format!(
-        "display-{}",
-        DISPLAY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    );
+    let id = crate::util::new_request_key();
     let current: Value = client()
         .get(format!("{base}/api/documents/{slug}/publication"))
         .header("cookie", cookie)
@@ -633,8 +629,9 @@ pub async fn publish_display(
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200);
+    let status = response.status();
     let prepared: Value = response.json().await.unwrap();
+    assert_eq!(status, 200, "{prepared}");
     for (mime, body) in std::iter::once(("text/html", html))
         .chain(assets.iter().map(|(_, mime, body)| (*mime, *body)))
     {
