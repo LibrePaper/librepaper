@@ -183,6 +183,10 @@ impl Catalog {
     fn insert_checkpoint_v2_tx(tx: &Transaction<'_>, checkpoint: &Checkpoint) -> CatalogResult<()> {
         if checkpoint.sha.is_empty()
             || checkpoint.tree_sha.len() != 64
+            || !checkpoint
+                .tree_sha
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
             || checkpoint.size < 0
             || checkpoint.durable_seq < 0
         {
@@ -235,6 +239,11 @@ impl Catalog {
         };
         let (author_label, author_account_id) = Self::attribution_for_insert(tx, checkpoint)?;
         let created_at = checkpoint_time_ms(&checkpoint.at)?;
+        if created_at < 0 {
+            return Err(CatalogError::Invalid(
+                "checkpoint timestamp cannot be negative".into(),
+            ));
+        }
         let source_format = if checkpoint.source_format.is_empty() {
             "markdown"
         } else {
