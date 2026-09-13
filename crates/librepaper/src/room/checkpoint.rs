@@ -480,7 +480,7 @@ impl Room {
         // journal tail over a successfully committed checkpoint.  Agent
         // effects use the same path; the distinction is the parent operation
         // they reuse, not whether the base is needed.
-        let needs_agent_snapshot = self.catalog.get().is_some()
+        let needs_recovery_snapshot = self.catalog.get().is_some()
             || actor
                 .as_ref()
                 .and_then(|authority| authority.agent_checkpoint.as_ref())
@@ -532,7 +532,7 @@ impl Room {
                 } else {
                     state.session.format.clone()
                 };
-                let snapshot_estimate = if needs_agent_snapshot {
+                let snapshot_estimate = if needs_recovery_snapshot {
                     state.session.encoded_bound.unwrap_or(
                         tree.files.values().try_fold(0usize, |total, file| {
                             total
@@ -547,7 +547,7 @@ impl Room {
                 } else {
                     0
                 };
-                let snapshot_permit = if needs_agent_snapshot {
+                let snapshot_permit = if needs_recovery_snapshot {
                     self.journal
                         .get()
                         .map(|journal| {
@@ -563,7 +563,7 @@ impl Room {
                     None
                 };
                 let snapshot =
-                    needs_agent_snapshot.then(|| session::encode_state(&state.session.doc));
+                    needs_recovery_snapshot.then(|| session::encode_state(&state.session.doc));
                 (
                     tree,
                     bodies,
