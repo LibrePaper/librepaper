@@ -350,7 +350,7 @@ impl Catalog {
                 params![document_id, object_id],
                 |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
             ).map_err(CatalogError::from)?;
-            if object_state != "available" || object_digest != expected_digest || object_length.is_none() || allocation.is_some() || object_length.unwrap_or(-1) > expected_length {
+            if object_state != "available" || object_digest != expected_digest || object_length != Some(expected_length) || allocation.is_some() {
                 return Err(CatalogError::Conflict("agent payload physical object is not settled at the admitted digest".into()));
             }
             tx.execute(
