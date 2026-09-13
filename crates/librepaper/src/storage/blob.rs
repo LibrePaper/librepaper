@@ -106,6 +106,32 @@ pub fn validate_v2_object_key(key: &str) -> BlobResult<()> {
     ObjectId::parse(object_id.to_owned()).map(|_| ())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WrittenObject {
+    pub object_id: ObjectId,
+    pub storage_key: String,
+    pub digest: String,
+    pub byte_length: u64,
+}
+
+/// Write one physical v2 allocation and return the exact descriptor that must
+/// be settled in `objects`. The catalog row is intentionally created and
+/// settled by the caller's typed operation; a successful PUT alone is never a
+/// user-visible acknowledgement.
+pub async fn write_v2_object(
+    blobs: &dyn BlobStore,
+    document_id: &str,
+    body: Vec<u8>,
+    content_type: &str,
+) -> BlobResult<WrittenObject> {
+    let object_id = ObjectId::random();
+    let storage_key = v2_object_key(document_id, &object_id)?;
+    let digest = hex::encode(Sha256::digest(&body));
+    let byte_length = body.len() as u64;
+    blobs.put_new(&storage_key, body, content_type).await?;
+    Ok(WrittenObject { object_id, storage_key, digest, byte_length })
+}
+
 /// One object in a listing. Size is what the quotas are summed from when an
 /// index has to be rebuilt, and version is what a conditional write would be
 /// made against; a caller that only wants names ignores both.

@@ -51,6 +51,7 @@ pub enum JournalError {
     /// tells a person their document can never be saved, which is false.
     Busy(String),
     Storage(String),
+    CatalogText(String),
     Catalog(CatalogError),
 }
 
@@ -75,6 +76,7 @@ impl fmt::Display for JournalError {
             Self::Limit(message) => write!(f, "journal limit exceeded: {message}"),
             Self::Busy(message) => write!(f, "journal capacity is full: {message}"),
             Self::Storage(message) => write!(f, "journal storage error: {message}"),
+            Self::CatalogText(message) => write!(f, "journal catalogue error: {message}"),
             Self::Catalog(error) => write!(f, "journal catalogue error: {error}"),
         }
     }

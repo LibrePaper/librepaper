@@ -16,6 +16,77 @@ use super::{JournalError, JournalRecord, JournalResult, Segment};
 pub const JOURNAL_OBJECT_CONTENT_TYPE: &str = "application/vnd.librepaper.journal-segment";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalAppendAdmission {
+    pub operation_id: String,
+    pub document_id: String,
+    pub epoch: u64,
+    pub first_sequence: u64,
+    pub expected_last_sequence: u64,
+    pub source_generation: u64,
+    pub writer_generation: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalAppendRequest {
+    pub document_id: String,
+    pub actor_key: String,
+    pub request_key: String,
+    pub expected_source_generation: u64,
+    pub epoch: u64,
+    pub first_sequence: u64,
+    pub last_sequence: u64,
+}
+
+/// SQL-side hooks for the v2 append protocol. The implementation must use an
+/// immediate transaction for prepare/commit and must keep the operation row
+/// prepared until every object has settled. It also owns object/counter rows;
+/// this trait carries descriptors only, never unbounded object lists.
+#[async_trait::async_trait]
+pub trait V2JournalCatalog: Send + Sync {
+    async fn prepare_append(&self, request: JournalAppendRequest)
+        -> Result<JournalAppendAdmission, String>;
+    async fn commit_append(
+        &self,
+        admission: JournalAppendAdmission,
+        objects: Vec<WrittenJournalObject>,
+    ) -> Result<(), String>;
+    async fn abort_append(&self, operation_id: &str) -> Result<(), String>;
+}
+
+pub async fn append_segments(
+    catalog: &dyn V2JournalCatalog,
+    blobs: &dyn BlobStore,
+    request: JournalAppendRequest,
+    segments: &[Segment],
+) -> JournalResult<Vec<WrittenJournalObject>> {
+    let admission = catalog
+        .prepare_append(request)
+        .await
+        .map_err(JournalError::CatalogText)?;
+    let written = match write_segments(blobs, &admission.document_id, admission.epoch, segments).await {
+        Ok(written) => written,
+        Err(error) => {
+            let _ = catalog.abort_append(&admission.operation_id).await;
+            return Err(error);
+        }
+    };
+    let contiguous = !written.is_empty()
+        && written.first().is_some_and(|object| object.first_sequence == admission.first_sequence)
+        && written.last().is_some_and(|object| object.last_sequence == admission.expected_last_sequence)
+        && written.windows(2).all(|objects| {
+            objects[1].first_sequence <= objects[0].last_sequence.saturating_add(1)
+        });
+    if !contiguous {
+        let _ = catalog.abort_append(&admission.operation_id).await;
+        return Err(JournalError::Conflict("journal append range changed during staging".into()));
+    }
+    if let Err(error) = catalog.commit_append(admission.clone(), written.clone()).await {
+        return Err(JournalError::CatalogText(error));
+    }
+    Ok(written)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentSegment {
     pub document_id: String,
     pub epoch: u64,
