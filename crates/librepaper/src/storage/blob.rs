@@ -67,6 +67,12 @@ impl ObjectId {
     }
 }
 
+impl std::fmt::Display for ObjectId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// The only physical key layout accepted for application objects in v2.
 /// Mutable document slugs never occur in this key.
 pub fn v2_object_key(document_id: &str, object_id: &ObjectId) -> BlobResult<String> {
