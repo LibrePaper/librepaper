@@ -388,16 +388,11 @@ async fn accumulated_update_quota(journaled: bool) {
         })
         .await
         .unwrap();
-    store
-        .prepare_publication("quota-edit", &store::digest_of("A"), "publish", None)
-        .await
-        .unwrap();
     let room = rooms.get("quota-edit").await;
     room.set_main_file("A", "markdown", "main.md")
         .await
         .unwrap();
-    let sha = room.checkpoint_now("cli", "alice").await.unwrap().unwrap();
-    store.commit_publication("quota-edit", &sha).await.unwrap();
+    room.checkpoint_now("cli", "alice").await.unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     room.attach(55, tx, true).await;
     let remote = session::new_doc();

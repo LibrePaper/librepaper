@@ -292,10 +292,6 @@ async fn catalog_fixture() -> (
         )
         .await
         .unwrap();
-    store
-        .prepare_publication("accept-probe", &store::digest_of("A"), "publish", None)
-        .await
-        .unwrap();
     let rooms = room::RoomSet::new(blobs, config);
     rooms.attach_store(store.clone());
     let room = rooms.get("accept-probe").await;
@@ -303,13 +299,7 @@ async fn catalog_fixture() -> (
         .await
         .unwrap();
     let mut token = room.reserve_publication_checkpoint().unwrap();
-    let sha = room
-        .checkpoint_publication_now("cli", "alice", &mut token)
-        .await
-        .unwrap()
-        .unwrap();
-    store
-        .commit_publication("accept-probe", &sha)
+    room.checkpoint_publication_now("cli", "alice", &mut token)
         .await
         .unwrap();
     token.commit();
@@ -349,10 +339,6 @@ async fn catalog_hook_fixture() -> (
         )
         .await
         .unwrap();
-    store
-        .prepare_publication("accept-crash", &store::digest_of("A"), "publish", None)
-        .await
-        .unwrap();
     let rooms = room::RoomSet::new(hooked.clone(), config);
     rooms.attach_store(store.clone());
     let room = rooms.get("accept-crash").await;
@@ -360,13 +346,7 @@ async fn catalog_hook_fixture() -> (
         .await
         .unwrap();
     let mut token = room.reserve_publication_checkpoint().unwrap();
-    let sha = room
-        .checkpoint_publication_now("cli", "alice", &mut token)
-        .await
-        .unwrap()
-        .unwrap();
-    store
-        .commit_publication("accept-crash", &sha)
+    room.checkpoint_publication_now("cli", "alice", &mut token)
         .await
         .unwrap();
     token.commit();

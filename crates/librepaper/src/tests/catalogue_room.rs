@@ -81,24 +81,14 @@ async fn fixture(
         )
         .await
         .unwrap();
-    // The publication receipt is completed through the room, exactly as
-    // production does it: the document is `creating` until its first
-    // checkpoint commits.
-    store
-        .prepare_publication(slug, &store::digest_of("first"), "publish", None)
-        .await
-        .unwrap();
     let room = rooms.get(slug).await;
     let mut token = room.reserve_publication_checkpoint().unwrap();
     room.set_main_file("first", "markdown", "main.md")
         .await
         .unwrap();
-    let sha = room
-        .checkpoint_publication_now("seed", "alice", &mut token)
+    room.checkpoint_publication_now("seed", "alice", &mut token)
         .await
-        .unwrap()
         .unwrap();
-    store.commit_publication(slug, &sha).await.unwrap();
     token.commit();
     (dir, store, rooms, catalog, room)
 }
