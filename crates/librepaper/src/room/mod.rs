@@ -1678,13 +1678,52 @@ impl Room {
         };
 
         // A catalog checkpoint is the authoritative cold-start source when
-        // there is no newer durable journal/session snapshot.  Resolve its
-        // complete physical closure before touching the live Y.Doc; falling
-        // back to a rendered publication page would collapse a multifile
-        // source tree into one HTML file.
-        let checkpoint_point = manifest.latest().cloned();
-        let use_v2_checkpoint =
-            stored.is_none() && self.catalog.get().is_some() && checkpoint_point.is_some();
+        // there is no newer durable journal/session snapshot.  The resident
+        // manifest is only a bounded cache and may have been pruned, so read
+        // the document head from SQL instead of selecting manifest.latest().
+        // Resolve the complete physical closure before touching the live
+        // Y.Doc; falling back to a rendered publication page would collapse a
+        // multifile source tree into one HTML file.
+        let (checkpoint_point, checkpoint_lookup_failed) = if stored.is_none() {
+            match self.catalog.get() {
+                Some(catalog) => {
+                    let slug = self.slug.clone();
+                    match catalog
+                        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
+                            let Some(row) = catalog.current_checkpoint(&slug)? else {
+                                return Ok(None);
+                            };
+                            let point = Manifest::from_catalog_rows(vec![row])
+                                .map_err(crate::storage::catalog::CatalogError::Invalid)?
+                                .checkpoints
+                                .into_iter()
+                                .next()
+                                .ok_or_else(|| {
+                                    crate::storage::catalog::CatalogError::Invalid(
+                                        "current checkpoint row is empty".to_owned(),
+                                    )
+                                })?;
+                            Ok(Some(point))
+                        })
+                        .await
+                    {
+                        Ok(point) => (point, false),
+                        Err(error) => {
+                            eprintln!(
+                                "warning: could not read the current checkpoint for {}: {error}",
+                                self.slug
+                            );
+                            self.fence(FenceReason::UnreadableState);
+                            (None, true)
+                        }
+                    }
+                }
+                None => (None, false),
+            }
+        } else {
+            (None, false)
+        };
+        let use_v2_checkpoint = stored.is_none() && checkpoint_point.is_some();
         let checkpoint_seed = if use_v2_checkpoint {
             let catalog = self
                 .catalog
@@ -1711,7 +1750,7 @@ impl Room {
         } else {
             None
         };
-        let seed = if use_v2_checkpoint {
+        let seed = if use_v2_checkpoint || checkpoint_lookup_failed {
             None
         } else {
             match &stored {
@@ -1724,7 +1763,14 @@ impl Room {
         *state.manifest = manifest;
         state.manifest_version = manifest_at;
         state.session.format = format;
-        if let Some(point) = state.manifest.latest().cloned() {
+        let state_checkpoint = checkpoint_point.as_ref().cloned().or_else(|| {
+            self.catalog
+                .get()
+                .is_none()
+                .then(|| state.manifest.latest().cloned())
+                .flatten()
+        });
+        if let Some(point) = state_checkpoint {
             state.session.last_checkpoint = point.sha.clone();
             state.session.last_checkpoint_at = parse_timestamp(&point.at).unwrap_or(0);
             // A freshly loaded document has taken no edits yet, so generation

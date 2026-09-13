@@ -1671,17 +1671,25 @@ impl Catalog {
                 .get_mut("authority")
                 .and_then(serde_json::Value::as_object_mut)
             {
-                if let Some(owner_credential) = input
+                let owner_credential = input
                     .owner_credential
                     .as_deref()
-                    .filter(|value| !value.is_empty())
-                {
+                    .filter(|value| !value.is_empty());
+                let authority_account = authority
+                    .get("account_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let needs_anonymous_proof = owner_id.starts_with("anonymous:")
+                    || authority_account.starts_with("anonymous:");
+                if needs_anonymous_proof && owner_credential.is_none() {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::ActorRights,
+                        "anonymous source admission requires the verified owner credential",
+                    ));
+                }
+                if let Some(owner_credential) = owner_credential {
                     let digest = Sha256::digest(owner_credential.as_bytes());
                     let derived_owner = format!("anonymous:{}", hex::encode(digest));
-                    let authority_account = authority
-                        .get("account_id")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
                     if (owner_id.starts_with("anonymous:") && owner_id != derived_owner)
                         || (authority_account.starts_with("anonymous:")
                             && authority_account != derived_owner)
