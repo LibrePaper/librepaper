@@ -1348,7 +1348,7 @@ mod aborted_inflight_tests {
         let document_id = "aborted-document";
         let account_id = "aborted-account";
         let operation_id = "aborted-operation";
-        let object_id = ObjectId::parse("0123456789abcdef0123456789abcdef".into())
+        let object_id = ObjectId::parse("0123456789abcdef0123456789abcdef")
             .expect("object id");
         let body = b"cancelled physical payload".to_vec();
         let digest = hex::encode(Sha256::digest(&body));
