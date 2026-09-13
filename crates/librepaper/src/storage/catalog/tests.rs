@@ -1,8 +1,8 @@
 use super::{
     Account, AnnotationAuthority, Catalog, CatalogError, Checkpoint, Comment, JournalPreparation,
     DocumentId, JournalSegment, Link, MutationAuthority, NewDocument, ObjectId, OperationKind,
-    OperationRequest, OperationScope, Reply, SourceHistoryObject, SourceHistoryRecord,
-    UnixMillis, V2OperationInput,
+    OperationScope, Reply, SourceHistoryObject, SourceHistoryRecord,
+    UnixMillis, V2Operation, V2OperationInput,
 };
 use sha2::Digest;
 use std::sync::Arc;
@@ -1081,6 +1081,15 @@ fn source_history_gc_drains_a_large_orphan_encoding_across_pages() {
             Ok(())
         })
         .unwrap();
+    catalog
+        .with_connection(|db| {
+            db.execute("UPDATE documents SET stored_bytes=35 WHERE id='storage-1'", [])?;
+            db.execute("UPDATE accounts SET stored_bytes=35 WHERE id='acct-1'", [])?;
+            db.execute("UPDATE server_state SET stored_bytes=35 WHERE id=1", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(catalog.audit_v2_counters().unwrap());
     let document_id = DocumentId::new("storage-1").unwrap();
     for (_, key) in &objects {
         catalog
@@ -1115,6 +1124,7 @@ fn source_history_gc_drains_a_large_orphan_encoding_across_pages() {
         }
     }
     assert_eq!(completed, 5);
+    assert!(catalog.audit_v2_counters().unwrap());
     let remaining: i64 = catalog
         .with_connection(|db| {
             db.query_row(
@@ -1129,50 +1139,67 @@ fn source_history_gc_drains_a_large_orphan_encoding_across_pages() {
 }
 
 #[test]
-fn measurement_keeps_maintenance_borrow_releasable() {
+fn v2_settlement_releases_the_admitted_reservation() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
-    catalog.create_document(&document()).unwrap();
+    let mut v2_document = document();
+    v2_document.size = 0;
+    v2_document.counted_size = 0;
+    catalog.create_document(&v2_document).unwrap();
+    let document_id = DocumentId::new("storage-1").unwrap();
+    let now = UnixMillis::new(crate::util::now_millis()).unwrap();
+    let operation = catalog
+        .prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(document_id.clone()),
+                actor_key: "account:acct-1".into(),
+                request_key: crate::util::new_request_key(),
+                kind: OperationKind::SourcePublish,
+                request_digest: fixture_tree_digest("maintenance-borrow"),
+                plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+            },
+            now,
+        )
+        .unwrap();
+    let object_id = ObjectId::new(fixture_object_id("maintenance-borrow")).unwrap();
     catalog
-        .reserve_maintenance("compact", "doc", 100, 100, 1)
+        .allocate_v2_object_with_limits(
+            &crate::storage::catalog::V2ObjectAllocation {
+                document_id: document_id.clone(),
+                id: object_id.clone(),
+                storage_key: format!("v2/documents/{document_id}/objects/{object_id}"),
+                kind: crate::storage::catalog::ObjectKind::SourceChunk,
+                digest: fixture_tree_digest("maintenance-borrow"),
+                logical_digest: None,
+                encoding_version: 1,
+                reserved_bytes: 100,
+                operation_id: operation.id,
+                now,
+            },
+            crate::storage::catalog::V2AdmissionLimits {
+                owner_bytes: 1_000,
+                deployment_bytes: 1_000,
+                owner_documents: 1,
+            },
+        )
         .unwrap();
-    let measured = catalog
-        .record_document_measurement("doc", 10, None, None, "", "")
-        .unwrap();
-    assert_eq!(measured.counted_size, 110);
-    assert_eq!(measured.maintenance_reserved, 100);
-    let released = catalog
-        .release_maintenance("compact", "doc", 100, 2)
-        .unwrap();
-    assert_eq!(
-        (
-            released.size,
-            released.counted_size,
-            released.maintenance_reserved
-        ),
-        (10, 10, 0)
-    );
-    assert_eq!(catalog.totals().unwrap().0, 10);
-
+    let reserved = catalog.document("doc").unwrap().unwrap();
+    assert_eq!(reserved.size, 0);
+    assert_eq!(reserved.maintenance_reserved, 100);
+    assert_eq!(reserved.counted_size, 100);
     catalog
-        .reserve_maintenance("compact-2", "doc", 100, 100, 3)
+        .settle_v2_object(&document_id, &object_id, 10, now)
         .unwrap();
-    assert_eq!(catalog.reconcile("doc", 10).unwrap().counted_size, 110);
-    catalog
-        .release_maintenance("compact-2", "doc", 100, 4)
-        .unwrap();
-    assert_eq!(catalog.totals().unwrap().0, 10);
+    let settled = catalog.document("doc").unwrap().unwrap();
+    assert_eq!(settled.size, 10);
+    assert_eq!(settled.counted_size, 10);
+    assert_eq!(settled.maintenance_reserved, 0);
+    assert!(catalog.audit_v2_counters().unwrap());
 }
-
-#[test]
-fn quarto_checkpoint_authority_is_checked_at_the_atomic_commit() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    catalog.upsert_account(&account()).unwrap();
-    catalog.create_document(&document()).unwrap();
-    let tree_digest = "f".repeat(64);
-    let tree_object_id = fixture_object_id("quarto");
-    catalog
-        .with_connection(|connection| {
             connection.execute(
                 "INSERT INTO objects
                  (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
@@ -1419,33 +1446,41 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
             Ok(())
         })
         .unwrap();
-    let request_id = crate::util::new_request_key();
-    let now = crate::util::now_millis();
-    let operation_digest = "b".repeat(64);
-    catalog
-        .prepare_operation(&OperationRequest {
-            storage_id: "storage-1",
-            request_id: &request_id,
-            kind: "source_publish",
-            request_digest: &operation_digest,
-            intent: r#"{"version":2,"effect":"source_publish"}"#,
-            created_at: now,
-            actor: None,
-        })
+    let now = UnixMillis::new(crate::util::now_millis()).unwrap();
+    let operation = catalog
+        .prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(DocumentId::new("storage-1").unwrap()),
+                actor_key: "account:acct-1".into(),
+                request_key: crate::util::new_request_key(),
+                kind: OperationKind::SourcePublish,
+                request_digest: fixture_tree_digest("deletion-publication"),
+                plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+            },
+            now,
+        )
         .unwrap();
     let deleting = catalog.begin_delete("doc").unwrap();
     assert_eq!(deleting.counted_size, 20);
     assert!(deleting.pending_publication.is_none());
-    assert_eq!(
-        catalog
-            .operation("storage-1", &request_id)
-            .unwrap()
-            .unwrap()
-            .status,
-        "aborted"
-    );
+    let state: String = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT state FROM operations WHERE id=?1",
+                    [operation.id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(state, "aborted");
     assert!(catalog
-        .commit_operation("storage-1", &request_id, "{}", "head")
+        .finish_v2_operation(&operation.id, "{}", true, now)
         .is_err());
     drain_document_delete(&catalog, "doc");
     // The bounded document worker only marks roots for physical retirement;
@@ -1711,47 +1746,46 @@ fn publication_receipts_are_atomic_and_idempotent() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let document_id = DocumentId::new("storage-1").unwrap();
+    let now = UnixMillis::new(crate::util::now_millis()).unwrap();
     let request_id = crate::util::new_request_key();
-    let digest = "a".repeat(64);
-    let now = crate::util::now_millis();
-    let prepared = catalog
-        .prepare_operation(&OperationRequest {
-            storage_id: "storage-1",
-            request_id: &request_id,
-            kind: "source_publish",
-            request_digest: &digest,
-            intent: r#"{"version":2,"effect":"source_publish"}"#,
-            created_at: now,
-            actor: None,
+    let input = V2OperationInput {
+        scope: OperationScope::Document(document_id),
+        actor_key: "account:acct-1".into(),
+        request_key: request_id.clone(),
+        kind: OperationKind::SourcePublish,
+        request_digest: fixture_tree_digest("publication-receipt"),
+        plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+        expected_document_generation: None,
+        conversation_id: None,
+        execution_epoch: None,
+        work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+    };
+    let prepared = catalog.prepare_v2_operation(&input, now).unwrap();
+    assert_eq!(prepared.state, "prepared");
+    catalog
+        .finish_v2_operation(&prepared.id, r#"{"head":2}"#, true, now)
+        .unwrap();
+    let retry = catalog.prepare_v2_operation(&input, now).unwrap();
+    assert_eq!(retry, V2Operation {
+        state: "committed".into(),
+        ..prepared.clone()
+    });
+    let (state, result): (String, String) = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT state,result_json FROM operations WHERE request_key=?1",
+                    [&request_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(CatalogError::from)
         })
         .unwrap();
-    assert_eq!(prepared.status, "prepared");
-    let committed = catalog
-        .commit_operation("storage-1", &request_id, "{\"head\":2}", "")
-        .unwrap();
-    assert_eq!(committed.status, "committed");
-    let retry = catalog
-        .prepare_operation(&OperationRequest {
-            storage_id: "storage-1",
-            request_id: &request_id,
-            kind: "source_publish",
-            request_digest: &digest,
-            intent: r#"{"version":2,"effect":"source_publish"}"#,
-            created_at: now,
-            actor: None,
-        })
-        .unwrap();
-    assert_eq!(retry, committed);
-    assert_eq!(
-        catalog
-            .document("doc")
-            .unwrap()
-            .unwrap()
-            .pending_publication,
-        None
-    );
+    assert_eq!(state, "committed");
+    assert_eq!(result, r#"{"head":2}"#);
+    assert!(catalog.document("doc").unwrap().unwrap().pending_publication.is_none());
 }
-
 #[test]
 fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
     let catalog = Catalog::open_in_memory().unwrap();
@@ -1763,20 +1797,28 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
         document.title = format!("Document {index}");
         catalog.create_document(&document).unwrap();
     }
-    let now = crate::util::now_millis();
+    let now = UnixMillis::new(crate::util::now_millis()).unwrap();
     for index in 0..112 {
         let request_id = crate::util::new_request_key();
         let digest = format!("{index:064x}");
         catalog
-            .prepare_operation(&OperationRequest {
-                storage_id: &format!("storage-{index}"),
-                request_id: &request_id,
-                kind: "source_publish",
-                request_digest: &digest,
-                intent: r#"{"version":2,"effect":"source_publish"}"#,
-                created_at: now,
-                actor: None,
-            })
+            .prepare_v2_operation(
+                &V2OperationInput {
+                    scope: OperationScope::Document(
+                        DocumentId::new(format!("storage-{index}")).unwrap(),
+                    ),
+                    actor_key: "account:acct-1".into(),
+                    request_key: request_id,
+                    kind: OperationKind::SourcePublish,
+                    request_digest: digest,
+                    plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                    expected_document_generation: None,
+                    conversation_id: None,
+                    execution_epoch: None,
+                    work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+                },
+                now,
+            )
             .unwrap();
     }
     let before: i64 = catalog
@@ -1794,15 +1836,21 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
     let request_id = crate::util::new_request_key();
     let digest = "e".repeat(64);
     assert!(matches!(
-        catalog.prepare_operation(&OperationRequest {
-            storage_id: "storage-112",
-            request_id: &request_id,
-            kind: "source_publish",
-            request_digest: &digest,
-            intent: r#"{"version":2,"effect":"source_publish"}"#,
-            created_at: now,
-            actor: None,
-        }),
+        catalog.prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(DocumentId::new("storage-112").unwrap()),
+                actor_key: "account:acct-1".into(),
+                request_key: request_id.clone(),
+                kind: OperationKind::SourcePublish,
+                request_digest: digest,
+                plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+            },
+            now,
+        ),
         Err(CatalogError::Busy)
     ));
     let after: i64 = catalog
@@ -1817,34 +1865,84 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
         })
         .unwrap();
     assert_eq!(after, before);
-    assert!(catalog
-        .operation("storage-112", &request_id)
-        .unwrap()
-        .is_none());
+    let orphan: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT count(*) FROM operations WHERE request_key=?1",
+                    [&request_id],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(orphan, 0);
 }
 
 #[test]
 fn admission_and_reconciliation_keep_totals_exact() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
-    catalog.create_document(&document()).unwrap();
-    let admission = catalog.reserve("doc", 5, 100, 1000).unwrap();
-    assert_eq!(admission.counted_size, 25);
-    let reconciled = catalog.reconcile("doc", 12).unwrap();
-    assert_eq!(reconciled.size, 12);
-    assert_eq!(reconciled.counted_size, 12);
-    let totals: (i64, i64) = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT bytes, documents FROM totals WHERE id = 1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(Into::into)
-        })
+    let mut v2_document = document();
+    v2_document.size = 0;
+    v2_document.counted_size = 0;
+    catalog.create_document(&v2_document).unwrap();
+    let now = UnixMillis::new(crate::util::now_millis()).unwrap();
+    let operation = catalog
+        .prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(DocumentId::new("storage-1").unwrap()),
+                actor_key: "account:acct-1".into(),
+                request_key: crate::util::new_request_key(),
+                kind: OperationKind::SourcePublish,
+                request_digest: "a".repeat(64),
+                plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+            },
+            now,
+        )
         .unwrap();
-    assert_eq!(totals, (12, 1));
+    let object_id = ObjectId::new(fixture_object_id("admission-source")).unwrap();
+    catalog
+        .allocate_v2_object_with_limits(
+            &crate::storage::catalog::V2ObjectAllocation {
+                document_id: DocumentId::new("storage-1").unwrap(),
+                id: object_id.clone(),
+                storage_key: format!("v2/documents/storage-1/objects/{object_id}"),
+                kind: crate::storage::catalog::ObjectKind::SourceChunk,
+                digest: "b".repeat(64),
+                logical_digest: None,
+                encoding_version: 1,
+                reserved_bytes: 25,
+                operation_id: operation.id,
+                now,
+            },
+            crate::storage::catalog::V2AdmissionLimits {
+                owner_bytes: 1_000,
+                deployment_bytes: 1_000,
+                owner_documents: 1,
+            },
+        )
+        .unwrap();
+    let reserved = catalog.document("doc").unwrap().unwrap();
+    assert_eq!(reserved.counted_size, 25);
+    assert_eq!(reserved.maintenance_reserved, 25);
+    catalog
+        .settle_v2_object(
+            &DocumentId::new("storage-1").unwrap(),
+            &object_id,
+            12,
+            now,
+        )
+        .unwrap();
+    let settled = catalog.document("doc").unwrap().unwrap();
+    assert_eq!(settled.size, 12);
+    assert_eq!(settled.counted_size, 12);
+    assert_eq!(settled.maintenance_reserved, 0);
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
 #[test]
@@ -1865,32 +1963,40 @@ fn deleting_document_cannot_commit_a_prepared_publication() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
-    let request_id = crate::util::new_request_key();
-    let now = crate::util::now_millis();
-    let operation_digest = "c".repeat(64);
-    catalog
-        .prepare_operation(&OperationRequest {
-            storage_id: "storage-1",
-            request_id: &request_id,
-            kind: "source_publish",
-            request_digest: &operation_digest,
-            intent: r#"{"version":2,"effect":"source_publish"}"#,
-            created_at: now,
-            actor: None,
-        })
+    let now = UnixMillis::new(crate::util::now_millis()).unwrap();
+    let operation = catalog
+        .prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(DocumentId::new("storage-1").unwrap()),
+                actor_key: "account:acct-1".into(),
+                request_key: crate::util::new_request_key(),
+                kind: OperationKind::SourcePublish,
+                request_digest: fixture_tree_digest("deleting-publication"),
+                plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+            },
+            now,
+        )
         .unwrap();
     catalog.begin_delete("doc").unwrap();
     assert!(catalog
-        .commit_operation("storage-1", &request_id, "{}", &request_id)
+        .finish_v2_operation(&operation.id, "{}", true, now)
         .is_err());
-    assert_eq!(
-        catalog
-            .operation("storage-1", &request_id)
-            .unwrap()
-            .unwrap()
-            .status,
-        "aborted"
-    );
+    let state: String = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT state FROM operations WHERE id=?1",
+                    [operation.id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(state, "aborted");
 }
 
 #[test]
@@ -1905,241 +2011,126 @@ fn deleting_document_keeps_capacity_until_bounded_teardown_finishes() {
 }
 
 #[test]
-fn object_accounting_reserves_replaces_and_aborts_exact_deltas() {
+fn object_accounting_settles_repeated_v2_closures_without_counter_drift() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
-    catalog.create_document(&document()).unwrap();
+    let mut v2_document = document();
+    v2_document.size = 0;
+    v2_document.counted_size = 0;
+    catalog.create_document(&v2_document).unwrap();
 
-    assert_eq!(
-        catalog
-            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-                slug: "doc",
-                operation_id: "session-1",
-                object_key: "sessions/doc",
-                kind: "session",
-                new_bytes: 5,
-                owner_limit: -1,
-                total_limit: -1
-            })
-            .unwrap(),
-        5
-    );
-    catalog
-        .commit_object_change("storage-1", "session-1", "sessions/doc", "session", "v1")
-        .unwrap();
-    let committed = catalog.document("doc").unwrap().unwrap();
-    assert_eq!(committed.counted_size, 25);
-    assert_eq!(committed.maintenance_reserved, 0);
-
-    // Shrinking an existing object releases only the replacement delta.
-    assert_eq!(
-        catalog
-            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-                slug: "doc",
-                operation_id: "session-2",
-                object_key: "sessions/doc",
-                kind: "session",
-                new_bytes: 3,
-                owner_limit: -1,
-                total_limit: -1
-            })
-            .unwrap(),
-        -2
-    );
-    catalog
-        .commit_object_change("storage-1", "session-2", "sessions/doc", "session", "v2")
-        .unwrap();
-    assert_eq!(catalog.document("doc").unwrap().unwrap().counted_size, 23);
-
-    // A failed growth restores both the reservation and deployment total.
-    assert_eq!(
-        catalog
-            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-                slug: "doc",
-                operation_id: "session-3",
-                object_key: "sessions/doc",
-                kind: "session",
-                new_bytes: 9,
-                owner_limit: -1,
-                total_limit: -1
-            })
-            .unwrap(),
-        6
-    );
-    catalog
-        .abort_object_change("storage-1", "session-3", "sessions/doc")
-        .unwrap();
-    let rolled_back = catalog.document("doc").unwrap().unwrap();
-    assert_eq!(rolled_back.counted_size, 23);
-    assert_eq!(rolled_back.maintenance_reserved, 0);
-
-    // Metadata headroom belongs to the physical ledger row, not to a later
-    // replacement reservation.  Aborting that replacement must not refund
-    // the existing row's metadata charge.
-    let session_metadata = || {
-        catalog
-            .with_connection(|connection| {
-                connection
-                    .query_row(
-                        "SELECT metadata_bytes FROM object_accounting
-                         WHERE storage_id='storage-1' AND object_key='sessions/doc'",
-                        [],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .map_err(CatalogError::from)
-            })
-            .unwrap()
+    let document_id = DocumentId::new("storage-1").unwrap();
+    let now = UnixMillis::new(crate::util::now_millis()).unwrap();
+    let limits = crate::storage::catalog::V2AdmissionLimits {
+        owner_bytes: 16,
+        deployment_bytes: 16,
+        owner_documents: 1,
     };
-    // Seed a pre-existing ledger metadata charge so this check does not
-    // depend on whether the minimal fixture has reached physical accounting.
-    catalog
-        .with_connection(|connection| {
-            connection.execute(
-                "UPDATE object_accounting SET metadata_bytes=17
-             WHERE storage_id='storage-1' AND object_key='sessions/doc'",
-                [],
-            )?;
-            connection.execute(
-                "UPDATE documents SET counted_size=counted_size+17 WHERE slug='doc'",
-                [],
-            )?;
-            connection.execute("UPDATE totals SET bytes=bytes+17 WHERE id=1", [])?;
-            Ok(())
-        })
-        .unwrap();
-    let metadata_before_abort = session_metadata();
-    let counted_before_abort = catalog.document("doc").unwrap().unwrap().counted_size;
-    catalog
-        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-            slug: "doc",
-            operation_id: "session-4",
-            object_key: "sessions/doc",
-            kind: "session",
-            new_bytes: 10,
-            owner_limit: -1,
-            total_limit: -1,
-        })
-        .unwrap();
-    catalog
-        .abort_object_change("storage-1", "session-4", "sessions/doc")
-        .unwrap();
-    assert_eq!(session_metadata(), metadata_before_abort);
-    assert_eq!(
-        catalog.document("doc").unwrap().unwrap().counted_size,
-        counted_before_abort
-    );
-
-    // A zero-byte object is still an existing object after its first commit:
-    // retrying it cannot allocate a second metadata charge, and an aborted
-    // replacement cannot release the first one.
-    let empty = crate::storage::catalog::ObjectReservationRequest {
-        slug: "doc",
-        operation_id: "empty-1",
-        object_key: "objects/empty",
-        kind: "publication",
-        new_bytes: 0,
-        owner_limit: -1,
-        total_limit: -1,
-    };
-    catalog.reserve_object_change(empty).unwrap();
-    catalog
-        .commit_object_change("storage-1", "empty-1", "objects/empty", "publication", "v1")
-        .unwrap();
-    let empty_metadata = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT metadata_bytes FROM object_accounting
-             WHERE storage_id='storage-1' AND object_key='objects/empty'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(CatalogError::from)
-        })
-        .unwrap();
-    catalog
-        .with_connection(|connection| {
-            connection.execute(
-                "UPDATE object_accounting SET metadata_bytes=metadata_bytes+19
-             WHERE storage_id='storage-1' AND object_key='objects/empty'",
-                [],
-            )?;
-            connection.execute(
-                "UPDATE documents SET counted_size=counted_size+19 WHERE slug='doc'",
-                [],
-            )?;
-            connection.execute("UPDATE totals SET bytes=bytes+19 WHERE id=1", [])?;
-            Ok(())
-        })
-        .unwrap();
-    let empty_counted = catalog.document("doc").unwrap().unwrap().counted_size;
-    let retry = crate::storage::catalog::ObjectReservationRequest {
-        slug: "doc",
-        operation_id: "empty-retry",
-        object_key: "objects/empty",
-        kind: "publication",
-        new_bytes: 0,
-        owner_limit: -1,
-        total_limit: -1,
-    };
-    assert_eq!(catalog.reserve_object_change(retry).unwrap(), 0);
-    assert_eq!(
+    let mut allocate = |label: &str, reserved_bytes: i64, measured_bytes: i64| {
+        let operation = catalog
+            .prepare_v2_operation(
+                &V2OperationInput {
+                    scope: OperationScope::Document(document_id.clone()),
+                    actor_key: "account:acct-1".into(),
+                    request_key: crate::util::new_request_key(),
+                    kind: OperationKind::SourcePublish,
+                    request_digest: fixture_tree_digest(label),
+                    plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                    expected_document_generation: None,
+                    conversation_id: None,
+                    execution_epoch: None,
+                    work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+                },
+                now,
+            )
+            .unwrap();
+        let id = ObjectId::new(fixture_object_id(label)).unwrap();
         catalog
-            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-                slug: "doc",
-                operation_id: "empty-retry",
-                object_key: "objects/empty",
-                kind: "publication",
-                new_bytes: 0,
-                owner_limit: -1,
-                total_limit: -1,
-            })
-            .unwrap(),
-        0
-    );
-    catalog
-        .commit_object_change(
-            "storage-1",
-            "empty-retry",
-            "objects/empty",
-            "publication",
-            "v2",
+            .allocate_v2_object_with_limits(
+                &crate::storage::catalog::V2ObjectAllocation {
+                    document_id: document_id.clone(),
+                    id: id.clone(),
+                    storage_key: format!("v2/documents/{document_id}/objects/{id}"),
+                    kind: crate::storage::catalog::ObjectKind::SourceChunk,
+                    digest: fixture_tree_digest(label),
+                    logical_digest: None,
+                    encoding_version: 1,
+                    reserved_bytes,
+                    operation_id: operation.id,
+                    now,
+                },
+                limits,
+            )
+            .unwrap();
+        catalog
+            .settle_v2_object(&document_id, &id, measured_bytes, now)
+            .unwrap();
+    };
+
+    allocate("accounting-first", 5, 5);
+    allocate("accounting-second", 3, 3);
+    let settled = catalog.document("doc").unwrap().unwrap();
+    assert_eq!(settled.size, 8);
+    assert_eq!(settled.counted_size, 8);
+    assert_eq!(settled.maintenance_reserved, 0);
+    assert!(catalog.audit_v2_counters().unwrap());
+
+    // A refused closure must leave neither an object row nor a reservation.
+    let before = catalog.document("doc").unwrap().unwrap();
+    let operation = catalog
+        .prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(document_id.clone()),
+                actor_key: "account:acct-1".into(),
+                request_key: crate::util::new_request_key(),
+                kind: OperationKind::SourcePublish,
+                request_digest: fixture_tree_digest("accounting-refused"),
+                plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+            },
+            now,
         )
         .unwrap();
-    catalog
-        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-            slug: "doc",
-            operation_id: "empty-abort",
-            object_key: "objects/empty",
-            kind: "publication",
-            new_bytes: 1,
-            owner_limit: -1,
-            total_limit: -1,
-        })
-        .unwrap();
-    catalog
-        .abort_object_change("storage-1", "empty-abort", "objects/empty")
-        .unwrap();
-    let empty_metadata_after = catalog
+    let refused_id = ObjectId::new(fixture_object_id("accounting-refused")).unwrap();
+    assert!(catalog
+        .allocate_v2_object_with_limits(
+            &crate::storage::catalog::V2ObjectAllocation {
+                document_id: document_id.clone(),
+                id: refused_id.clone(),
+                storage_key: format!("v2/documents/{document_id}/objects/{refused_id}"),
+                kind: crate::storage::catalog::ObjectKind::SourceChunk,
+                digest: fixture_tree_digest("accounting-refused"),
+                logical_digest: None,
+                encoding_version: 1,
+                reserved_bytes: 9,
+                operation_id: operation.id,
+                now,
+            },
+            limits,
+        )
+        .is_err());
+    let after = catalog.document("doc").unwrap().unwrap();
+    assert_eq!(after.size, before.size);
+    assert_eq!(after.counted_size, before.counted_size);
+    assert_eq!(after.maintenance_reserved, before.maintenance_reserved);
+    let object_count: i64 = catalog
         .with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT metadata_bytes FROM object_accounting
-             WHERE storage_id='storage-1' AND object_key='objects/empty'",
-                    [],
-                    |row| row.get::<_, i64>(0),
+                    "SELECT count(*) FROM objects
+                     WHERE document_id='storage-1' AND id=?1",
+                    [refused_id.as_str()],
+                    |row| row.get(0),
                 )
                 .map_err(CatalogError::from)
         })
         .unwrap();
-    assert_eq!(empty_metadata_after, empty_metadata + 19);
-    assert_eq!(
-        catalog.document("doc").unwrap().unwrap().counted_size,
-        empty_counted
-    );
+    assert_eq!(object_count, 0);
+    assert!(catalog.audit_v2_counters().unwrap());
 }
-
-#[test]
 fn file_catalog_reopens_with_wal_and_journal_state() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog.db");
@@ -2320,7 +2311,8 @@ fn sql_children_are_bounded_and_expiry_filtered() {
             by_account: None,
         })
         .unwrap();
-    assert_eq!(checkpoint.seq, 0);
+    // v2 sequences are one-based; zero is reserved for the absent parent.
+    assert_eq!(checkpoint.seq, 1);
 }
 
 #[test]
@@ -2674,20 +2666,69 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
         })
         .unwrap();
 
-    let authority = MutationAuthority {
-        account_id: "acct-2",
-        owner_key: "bob",
-        generation: "generation-2",
-        link_hash: &link_hash,
+    let authority = crate::document::store::MutationActor {
+        account_id: "acct-2".into(),
+        owner_key: "bob".into(),
+        session_generation: "generation-2".into(),
+        link_hash: link_hash.clone(),
         policy_editor: true,
         automation: false,
         unowned_publisher: false,
-        execution_epoch: "",
-        agent_checkpoint: None,
     };
-    catalog
-        .reserve_document_bytes_with_authority("doc", 1, 100, 1_000, Some(authority))
-        .unwrap();
+    let admit_publication = |label: &str,
+                             actor: &crate::document::store::MutationActor|
+     -> Result<(), CatalogError> {
+        let now = UnixMillis::now();
+        let operation_id = crate::storage::catalog::OperationId::new(
+            fixture_object_id(&format!("{label}-operation")),
+        )
+        .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+        let document_id = DocumentId::new("storage-1").unwrap();
+        let operation = V2OperationInput {
+            scope: OperationScope::Document(document_id.clone()),
+            actor_key: format!("account:{}", actor.account_id),
+            request_key: crate::util::new_request_key(),
+            kind: OperationKind::DisplayPublish,
+            request_digest: fixture_tree_digest(label),
+            plan_json: r#"{"version":1,"expected_publication_id":""}"#.into(),
+            expected_document_generation: Some(0),
+            conversation_id: None,
+            execution_epoch: None,
+            work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+        };
+        let allocations = [
+            ("manifest", crate::storage::catalog::ObjectKind::PublicationManifest, 32_i64),
+            ("html", crate::storage::catalog::ObjectKind::PublicationHtml, 16_i64),
+        ]
+        .into_iter()
+        .map(|(kind_label, kind, bytes)| {
+            let id = ObjectId::new(fixture_object_id(&format!("{label}-{kind_label}"))).unwrap();
+            crate::storage::catalog::V2ObjectAllocation {
+                document_id: document_id.clone(),
+                id: id.clone(),
+                storage_key: format!("v2/documents/{document_id}/objects/{id}"),
+                kind,
+                digest: fixture_tree_digest(&format!("{label}-{kind_label}-digest")),
+                logical_digest: None,
+                encoding_version: 1,
+                reserved_bytes: bytes,
+                operation_id: operation_id.clone(),
+                now,
+            }
+        })
+        .collect::<Vec<_>>();
+        catalog.prepare_publication_bundle(
+            &operation,
+            &allocations,
+            actor,
+            crate::storage::catalog::V2AdmissionLimits {
+                owner_bytes: 1_000,
+                deployment_bytes: 1_000,
+                owner_documents: 1,
+            },
+        )
+    };
+    admit_publication("editor-before-revoke", &authority).unwrap();
     let rotated_sealed = catalog
         .seal_link_key("storage-1", "editor", &link_hash, editor_key)
         .unwrap();
@@ -2703,17 +2744,13 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
             until: "2020-01-01T00:00:00Z".into(),
         })
         .unwrap();
-    assert!(catalog
-        .reserve_document_bytes_with_authority("doc", 1, 100, 1_000, Some(authority))
-        .is_err());
-    let automation_without_link = MutationAuthority {
+    assert!(admit_publication("editor-after-revoke", &authority).is_err());
+    let automation_without_link = crate::document::store::MutationActor {
         automation: true,
         link_hash: "",
-        ..authority
+        ..authority.clone()
     };
-    assert!(catalog
-        .reserve_document_bytes_with_authority("doc", 1, 100, 1_000, Some(automation_without_link),)
-        .is_err());
+    assert!(admit_publication("automation-without-link", &automation_without_link).is_err());
 }
 
 #[tokio::test]
@@ -2802,42 +2839,68 @@ async fn bounded_listing_propagates_catalog_failure() {
 }
 
 #[test]
-fn measured_reconciliation_preserves_inflight_object_reservation() {
+fn v2_admission_keeps_inflight_reservation_until_settlement() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
-    catalog.create_document(&document()).unwrap();
+    let mut v2_document = document();
+    v2_document.size = 0;
+    v2_document.counted_size = 0;
+    catalog.create_document(&v2_document).unwrap();
+    let document_id = DocumentId::new("storage-1").unwrap();
+    let now = UnixMillis::new(crate::util::now_millis()).unwrap();
+    let operation = catalog
+        .prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(document_id.clone()),
+                actor_key: "account:acct-1".into(),
+                request_key: crate::util::new_request_key(),
+                kind: OperationKind::SourcePublish,
+                request_digest: fixture_tree_digest("inflight-reservation"),
+                plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+            },
+            now,
+        )
+        .unwrap();
+    let object_id = ObjectId::new(fixture_object_id("inflight-reservation")).unwrap();
     catalog
-        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-            slug: "doc",
-            operation_id: "pending",
-            object_key: "sessions/doc",
-            kind: "session",
-            new_bytes: 5,
-            owner_limit: -1,
-            total_limit: -1,
-        })
+        .allocate_v2_object_with_limits(
+            &crate::storage::catalog::V2ObjectAllocation {
+                document_id: document_id.clone(),
+                id: object_id.clone(),
+                storage_key: format!("v2/documents/{document_id}/objects/{object_id}"),
+                kind: crate::storage::catalog::ObjectKind::SourceChunk,
+                digest: fixture_tree_digest("inflight-reservation"),
+                logical_digest: None,
+                encoding_version: 1,
+                reserved_bytes: 25,
+                operation_id: operation.id,
+                now,
+            },
+            crate::storage::catalog::V2AdmissionLimits {
+                owner_bytes: 1_000,
+                deployment_bytes: 1_000,
+                owner_documents: 1,
+            },
+        )
         .unwrap();
-    assert_eq!(
-        catalog
-            .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-                slug: "doc",
-                operation_id: "pending",
-                object_key: "sessions/doc",
-                kind: "session",
-                new_bytes: 5,
-                owner_limit: -1,
-                total_limit: -1,
-            })
-            .unwrap(),
-        5
-    );
-
-    let measured = catalog
-        .record_document_measurement("doc", 20, None, None, "", "")
+    let reserved = catalog.document("doc").unwrap().unwrap();
+    assert_eq!(reserved.size, 0);
+    assert_eq!(reserved.counted_size, 25);
+    assert_eq!(reserved.maintenance_reserved, 25);
+    assert_eq!(catalog.catalog_allocated_bytes().unwrap(), 25);
+    catalog
+        .settle_v2_object(&document_id, &object_id, 20, now)
         .unwrap();
-    assert_eq!(measured.counted_size, 25);
-    assert_eq!(measured.maintenance_reserved, 0);
-    assert_eq!(catalog.totals().unwrap().0, 25);
+    let settled = catalog.document("doc").unwrap().unwrap();
+    assert_eq!(settled.size, 20);
+    assert_eq!(settled.counted_size, 20);
+    assert_eq!(settled.maintenance_reserved, 0);
+    assert_eq!(catalog.catalog_allocated_bytes().unwrap(), 0);
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
 #[test]
@@ -2846,19 +2909,25 @@ fn v2_checkpoint_operation_receipt_is_bounded_and_terminal() {
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
     let request_id = crate::util::new_request_key();
-    let digest = "c".repeat(64);
+    let now = UnixMillis::new(crate::util::now_millis()).unwrap();
     let prepared = catalog
-        .prepare_operation(&OperationRequest {
-            storage_id: "storage-1",
-            request_id: &request_id,
-            kind: "checkpoint",
-            request_digest: &digest,
-            intent: r#"{"version":2,"effect":"checkpoint"}"#,
-            created_at: crate::util::now_millis(),
-            actor: None,
-        })
+        .prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(DocumentId::new("storage-1").unwrap()),
+                actor_key: "account:acct-1".into(),
+                request_key: request_id.clone(),
+                kind: OperationKind::Checkpoint,
+                request_digest: "c".repeat(64),
+                plan_json: r#"{"version":2,"effect":"checkpoint"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
+            },
+            now,
+        )
         .unwrap();
-    assert_eq!(prepared.status, "prepared");
+    assert_eq!(prepared.state, "prepared");
     let expires: Option<i64> = catalog
         .with_connection(|connection| {
             connection
@@ -2871,10 +2940,9 @@ fn v2_checkpoint_operation_receipt_is_bounded_and_terminal() {
         })
         .unwrap();
     assert!(expires.is_some(), "prepared v2 work must have a bounded lease");
-    let committed = catalog
-        .commit_operation("storage-1", &request_id, "{}", "")
+    catalog
+        .finish_v2_operation(&prepared.id, "{}", true, now)
         .unwrap();
-    assert_eq!(committed.status, "committed");
     let (state, result, receipt_expires_at): (String, String, i64) = catalog
         .with_connection(|connection| {
             connection

@@ -461,10 +461,24 @@ impl Catalog {
                         "source-history object size changed".into(),
                     ));
                 }
-                tx.execute(
+                let inserted = tx.execute(
                     "INSERT OR IGNORE INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",
                     params![document_id.as_str(), checkpoint_id.as_str(), object_id],
                 ).map_err(CatalogError::from)?;
+                if inserted == 1 {
+                    tx.execute(
+                        "UPDATE documents SET checkpoint_ref_count=checkpoint_ref_count+1
+                         WHERE id=?1",
+                        [document_id.as_str()],
+                    )
+                    .map_err(CatalogError::from)?;
+                    tx.execute(
+                        "UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count+1
+                         WHERE id=1",
+                        [],
+                    )
+                    .map_err(CatalogError::from)?;
+                }
             }
         }
         Ok(())
