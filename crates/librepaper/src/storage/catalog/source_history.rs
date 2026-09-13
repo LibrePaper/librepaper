@@ -161,28 +161,43 @@ impl Catalog {
             ));
         }
         self.with_connection(|connection| {
-            let recipe: Option<(String, String, i64, i64)> = connection
+            let recipe: Option<(String, String, String, i64, i64)> = connection
                 .query_row(
-                    "SELECT storage_key,digest,COALESCE(byte_length,0),encoding_version
+                    "SELECT id,storage_key,digest,COALESCE(byte_length,0),encoding_version
                  FROM objects WHERE document_id=?1 AND kind='source_recipe'
                    AND logical_digest=?2 AND state='available' ORDER BY id LIMIT 1",
                     params![document_id.as_str(), file_digest],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(CatalogError::from)?;
-            let Some((recipe_key, recipe_digest, recipe_bytes, codec)) = recipe else {
+            let Some((recipe_id, recipe_key, recipe_digest, recipe_bytes, codec)) = recipe else {
                 return Ok(None);
             };
             let mut statement = connection
                 .prepare(
-                    "SELECT storage_key,kind,COALESCE(byte_length,0) FROM objects
-                 WHERE document_id=?1 AND kind='source_chunk' AND state='available'
-                 ORDER BY storage_key LIMIT 16384",
+                    "SELECT DISTINCT o.storage_key,o.kind,COALESCE(o.byte_length,0)
+                 FROM checkpoint_objects edge
+                 JOIN checkpoint_objects recipe_edge
+                   ON recipe_edge.document_id=edge.document_id
+                  AND recipe_edge.checkpoint_id=edge.checkpoint_id
+                  AND recipe_edge.object_id=?2
+                 JOIN objects o
+                   ON o.document_id=edge.document_id AND o.id=edge.object_id
+                 WHERE edge.document_id=?1 AND o.kind='source_chunk' AND o.state='available'
+                 ORDER BY o.storage_key LIMIT 16384",
                 )
                 .map_err(CatalogError::from)?;
             let objects = statement
-                .query_map([document_id.as_str()], |row| {
+                .query_map(params![document_id.as_str(), recipe_id], |row| {
                     Ok(SourceHistoryObject {
                         object_key: row.get(0)?,
                         kind: row.get(1)?,
