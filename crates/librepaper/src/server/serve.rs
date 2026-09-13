@@ -310,16 +310,10 @@ pub async fn serve(options: ServeOptions) {
         .await
         .unwrap_or_else(|err| die(format!("publication accounting recovery failed: {err}")));
     if let Some(catalog) = instance.store.catalog.clone() {
-        let journal = crate::storage::journal::JournalRuntime::new_with_policy(
+        let journal = Arc::new(crate::storage::journal::V2JournalRuntime::new(
             catalog,
             blobs.clone(),
-            deployment_id.clone(),
-            crate::storage::journal::CoordinatorLimits::from_persistence(&config.persistence()),
-            config.persistence(),
-            config.storage.per_owner,
-            config.storage.total,
-        )
-        .unwrap_or_else(|err| die(format!("could not initialize journal coordinator: {err}")));
+        ));
         instance.rooms.attach_journal(journal);
     }
     instance.google = google;
@@ -593,7 +587,7 @@ pub async fn serve(options: ServeOptions) {
     // the requests already in flight, and those requests still submit
     // catalogue jobs. Closing admission any earlier would fail a request that
     // was accepted before the signal. By this point the room set has been
-    // flushed and the deletion and journal workers have run their final pass,
+    // flushed and the v2 deletion worker has run its final pass,
     // so what remains is whatever is still queued or executing: this rejects
     // the queue, lets the executing transaction and its completion hook
     // finish, and only then closes SQLite.

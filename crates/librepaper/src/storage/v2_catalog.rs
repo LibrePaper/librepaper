@@ -84,13 +84,14 @@ impl V2GcCatalog for Catalog {
                 let mut statement = transaction
                     .prepare("SELECT document_id,id,storage_key,gc_after,'available' FROM objects WHERE state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NOT NULL AND gc_after<=?1 ORDER BY gc_after,document_id,id LIMIT ?2")
                     .map_err(crate::storage::catalog::CatalogError::from)?;
-                statement
+                let result = statement
                     .query_map(params![now, page_limit], |row| {
                         Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
                     })
                     .map_err(crate::storage::catalog::CatalogError::from)?
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(crate::storage::catalog::CatalogError::from)?
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                result
             };
             if rows.len() < limit {
                 let remaining = (limit - rows.len()) as i64;

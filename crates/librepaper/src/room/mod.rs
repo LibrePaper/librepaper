@@ -368,7 +368,7 @@ pub struct Room {
     catalog: Arc<std::sync::OnceLock<Arc<crate::storage::catalog::Catalog>>>,
     /// The local durable edit journal. Legacy fixtures leave this unset;
     /// production catalog-backed rooms receive it from `serve`.
-    journal: Arc<std::sync::OnceLock<Arc<crate::storage::journal::JournalRuntime>>>,
+    journal: Arc<std::sync::OnceLock<Arc<dyn crate::storage::journal::DocumentJournal>>>,
     /// Serializes session snapshots and conditional writes without blocking edits.
     session_write: Mutex<()>,
     /// Serializes mutations that must remain one publication operation from
@@ -566,7 +566,7 @@ pub struct RoomSet {
     loading: Mutex<HashMap<String, LoadingSlot>>,
     store: Arc<std::sync::OnceLock<Arc<crate::document::store::Store>>>,
     catalog: Arc<std::sync::OnceLock<Arc<crate::storage::catalog::Catalog>>>,
-    journal: Arc<std::sync::OnceLock<Arc<crate::storage::journal::JournalRuntime>>>,
+    journal: Arc<std::sync::OnceLock<Arc<dyn crate::storage::journal::DocumentJournal>>>,
     /// A local deployment has one writer, held for the lifetime of the
     /// process.  Remote stores use the per-room fenced lease below instead;
     /// keeping this separate prevents a local cold-open from manufacturing a
@@ -720,7 +720,7 @@ impl RoomSet {
     /// Attach the one deployment-wide journal before any room is loaded.
     /// Existing rooms are never created before Server::new finishes, so a
     /// once-lock keeps this setup race-free without changing RoomSet's API.
-    pub fn attach_journal(&self, journal: Arc<crate::storage::journal::JournalRuntime>) {
+    pub fn attach_journal(&self, journal: Arc<dyn crate::storage::journal::DocumentJournal>) {
         let _ = self.journal.set(journal);
     }
 
@@ -1623,7 +1623,7 @@ impl Room {
             .unwrap_or_default();
 
         let durable_journal_sequence = if let Some(journal) = self.journal.get() {
-            match journal.latest_sequence(&self.storage_id, 0) {
+            match journal.latest_sequence(&self.storage_id, 0).await {
                 Ok(sequence) => sequence,
                 Err(error) => {
                     eprintln!(
@@ -2874,6 +2874,7 @@ impl Room {
         if let Some(journal) = self.journal.get() {
             let latest = journal
                 .latest_sequence(&self.storage_id, 0)
+                .await
                 .map_err(|error| error.to_string())?;
             durable_sequence = durable_sequence.max(latest.saturating_add(1));
             journal
@@ -2887,6 +2888,7 @@ impl Room {
             // metadata.
             if journal
                 .compaction_due(&self.storage_id, 0, durable_sequence)
+                .await
                 .map_err(|error| error.to_string())?
             {
                 journal

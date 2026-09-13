@@ -6,6 +6,8 @@
 //! descriptors to the typed `journal_append`/`journal_compact` mutation.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
@@ -14,6 +16,30 @@ use crate::storage::blob::{v2_object_key, write_v2_object, BlobError, BlobStore,
 use super::{JournalError, JournalRecord, JournalResult, Segment};
 
 pub const JOURNAL_OBJECT_CONTENT_TYPE: &str = "application/vnd.librepaper.journal-segment";
+
+/// Document-facing journal boundary used by rooms. Implementations own the
+/// catalog admission and the immutable segment/base writes; rooms only supply
+/// a document id and a complete encoded snapshot. All cursor reads are async
+/// because v2 cursors come from bounded catalog pages rather than a shared
+/// deployment manifest.
+#[async_trait::async_trait]
+pub trait DocumentJournal: Send + Sync {
+    async fn latest_sequence(&self, document_id: &str, epoch: u64) -> JournalResult<u64>;
+    async fn recover_latest(&self, document_id: &str) -> JournalResult<Option<Vec<u8>>>;
+    async fn append(&self, document_id: &str, sequence: u64, body: Vec<u8>) -> JournalResult<()>;
+    async fn compaction_due(&self, document_id: &str, epoch: u64, sequence: u64) -> JournalResult<bool>;
+    async fn compact(&self, document_id: &str, epoch: u64, sequence: u64, body: Vec<u8>) -> JournalResult<()>;
+    async fn payload_bytes_in_flight(&self) -> (usize, usize);
+    fn memory(&self) -> std::sync::Arc<crate::storage::journal::MemoryBudget>;
+}
+
+/// Shared bounded memory for a document journal implementation. The v2
+/// runtime uses it for source snapshot staging and payload admission; keeping
+/// this boundary on the room-facing trait prevents unbounded cancellation
+/// retries from bypassing persistence limits.
+pub fn document_journal_memory() -> std::sync::Arc<crate::storage::journal::MemoryBudget> {
+    crate::storage::journal::MemoryBudget::new(64 * 1024 * 1024)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JournalAppendAdmission {
@@ -44,6 +70,17 @@ pub struct JournalObjectRef {
     pub epoch: u64,
     pub first_sequence: u64,
     pub last_sequence: u64,
+    pub digest: String,
+    pub byte_length: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalHead {
+    pub epoch: u64,
+    pub sequence: u64,
+    pub source_generation: u64,
+    pub base_sequence: u64,
+    pub base: Option<JournalObjectRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +98,7 @@ pub struct JournalCompactionAdmission {
 /// this trait carries descriptors only, never unbounded object lists.
 #[async_trait::async_trait]
 pub trait V2JournalCatalog: Send + Sync {
+    async fn journal_head(&self, document_id: &str) -> Result<JournalHead, String>;
     async fn prepare_append(&self, request: JournalAppendRequest)
         -> Result<JournalAppendAdmission, String>;
     async fn commit_append(
@@ -90,11 +128,19 @@ pub trait V2JournalCatalog: Send + Sync {
         new_sequence: u64,
     ) -> Result<(), String>;
     async fn abort_compaction(&self, operation_id: &str) -> Result<(), String>;
+    async fn journal_compaction_due(
+        &self,
+        document_id: &str,
+        epoch: u64,
+        sequence: u64,
+    ) -> Result<bool, String>;
 }
 
 pub struct V2JournalRuntime<C> {
-    catalog: std::sync::Arc<C>,
-    blobs: std::sync::Arc<dyn BlobStore>,
+    catalog: Arc<C>,
+    blobs: Arc<dyn BlobStore>,
+    memory: Arc<crate::storage::journal::MemoryBudget>,
+    executing_bytes: AtomicUsize,
 }
 
 impl<C> V2JournalRuntime<C>
@@ -102,7 +148,15 @@ where
     C: V2JournalCatalog + 'static,
 {
     pub fn new(catalog: std::sync::Arc<C>, blobs: std::sync::Arc<dyn BlobStore>) -> Self {
-        Self { catalog, blobs }
+        Self::with_memory(catalog, blobs, document_journal_memory())
+    }
+
+    pub fn with_memory(
+        catalog: Arc<C>,
+        blobs: Arc<dyn BlobStore>,
+        memory: Arc<crate::storage::journal::MemoryBudget>,
+    ) -> Self {
+        Self { catalog, blobs, memory, executing_bytes: AtomicUsize::new(0) }
     }
 
     pub async fn append(
@@ -144,12 +198,16 @@ where
                 if object.epoch != epoch {
                     return Err(JournalError::Corrupt("journal object epoch mismatch".into()));
                 }
-                bodies.push(
-                    self.blobs
-                        .get(&object.storage_key)
-                        .await
-                        .map_err(|error| JournalError::Storage(error.to_string()))?,
-                );
+                if object.last_sequence < first_sequence || object.first_sequence > last_sequence {
+                    return Err(JournalError::Corrupt("journal object lies outside acknowledged range".into()));
+                }
+                let bytes = self
+                    .blobs
+                    .get(&object.storage_key)
+                    .await
+                    .map_err(|error| JournalError::Storage(error.to_string()))?;
+                verify_object_bytes(object, &bytes)?;
+                bodies.push(bytes);
                 after = after.max(object.last_sequence);
             }
             if after <= previous_after {
@@ -191,6 +249,150 @@ where
         }
         Ok(written)
     }
+}
+
+#[async_trait::async_trait]
+impl<C> DocumentJournal for V2JournalRuntime<C>
+where
+    C: V2JournalCatalog + 'static,
+{
+    async fn latest_sequence(&self, document_id: &str, _epoch: u64) -> JournalResult<u64> {
+        self.catalog
+            .journal_head(document_id)
+            .await
+            .map(|head| head.sequence)
+            .map_err(JournalError::CatalogText)
+    }
+
+    async fn recover_latest(&self, document_id: &str) -> JournalResult<Option<Vec<u8>>> {
+        let head = self
+            .catalog
+            .journal_head(document_id)
+            .await
+            .map_err(JournalError::CatalogText)?;
+        if head.sequence == 0 && head.base.is_none() {
+            return Ok(None);
+        }
+        let mut base = None;
+        if let Some(reference) = &head.base {
+            if reference.epoch > head.epoch
+                || reference.last_sequence != head.base_sequence
+                || reference.first_sequence != head.base_sequence
+            {
+                return Err(JournalError::Corrupt("journal base does not match document head".into()));
+            }
+            let bytes = self
+                .blobs
+                .get(&reference.storage_key)
+                .await
+                .map_err(|error| JournalError::Storage(error.to_string()))?;
+            verify_object_bytes(reference, &bytes)?;
+            base = Some(bytes);
+        }
+        if head.sequence == head.base_sequence {
+            return base
+                .ok_or_else(|| JournalError::Corrupt("journal head has no acknowledged base".into()))
+                .map(Some);
+        }
+        let first = head.base_sequence.saturating_add(1).max(1);
+        let records = self
+            .recover(document_id, head.epoch, first, head.sequence)
+            .await?;
+        let last = records
+            .last()
+            .ok_or_else(|| JournalError::Corrupt("journal head range has no records".into()))?;
+        Ok(Some(last.payload.clone()))
+    }
+
+    async fn append(&self, document_id: &str, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
+        let head = self
+            .catalog
+            .journal_head(document_id)
+            .await
+            .map_err(JournalError::CatalogText)?;
+        if sequence != head.sequence.saturating_add(1) {
+            return Err(JournalError::Conflict("journal append is not the next sequence".into()));
+        }
+        let permit = self.memory.acquire(body.len()).await?;
+        self.executing_bytes.fetch_add(body.len(), Ordering::Relaxed);
+        let result = async {
+            let retry_id = format!("room-{document_id}-{sequence}");
+            let records = JournalRecord::chunked(document_id, sequence, &retry_id, head.epoch, body)?;
+            let segment = Segment::new(records)?;
+            let request = JournalAppendRequest {
+                document_id: document_id.to_owned(),
+                actor_key: "room".into(),
+                request_key: format!("room-{document_id}-{sequence}"),
+                expected_source_generation: head.source_generation,
+                epoch: head.epoch,
+                first_sequence: sequence,
+                last_sequence: sequence,
+                parts: Vec::new(),
+            };
+            self.append(request, &[segment]).await.map(|_| ())
+        }
+        .await;
+        self.executing_bytes.fetch_sub(permit.bytes(), Ordering::Relaxed);
+        drop(permit);
+        result
+    }
+
+    async fn compaction_due(&self, document_id: &str, _epoch: u64, sequence: u64) -> JournalResult<bool> {
+        let head = self
+            .catalog
+            .journal_head(document_id)
+            .await
+            .map_err(JournalError::CatalogText)?;
+        self.catalog
+            .journal_compaction_due(document_id, head.epoch, sequence)
+            .await
+            .map_err(JournalError::CatalogText)
+    }
+
+    async fn compact(&self, document_id: &str, _epoch: u64, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
+        let permit = self.memory.acquire(body.len()).await?;
+        self.executing_bytes.fetch_add(body.len(), Ordering::Relaxed);
+        let result = async {
+            let head = self
+                .catalog
+                .journal_head(document_id)
+                .await
+                .map_err(JournalError::CatalogText)?;
+            if sequence != head.sequence {
+                return Err(JournalError::Conflict("journal compaction cursor changed".into()));
+            }
+            self.compact(
+                document_id,
+                head.epoch,
+                sequence,
+                body,
+                "application/vnd.librepaper.journal-base",
+            )
+            .await
+            .map(|_| ())
+        }
+        .await;
+        self.executing_bytes.fetch_sub(permit.bytes(), Ordering::Relaxed);
+        drop(permit);
+        result
+    }
+
+    async fn payload_bytes_in_flight(&self) -> (usize, usize) {
+        (0, self.executing_bytes.load(Ordering::Relaxed))
+    }
+
+    fn memory(&self) -> Arc<crate::storage::journal::MemoryBudget> {
+        Arc::clone(&self.memory)
+    }
+}
+
+fn verify_object_bytes(reference: &JournalObjectRef, bytes: &[u8]) -> JournalResult<()> {
+    if bytes.len() as u64 != reference.byte_length
+        || hex::encode(Sha256::digest(bytes)) != reference.digest
+    {
+        return Err(JournalError::Corrupt("journal object digest or length mismatch".into()));
+    }
+    Ok(())
 }
 
 pub async fn append_segments(

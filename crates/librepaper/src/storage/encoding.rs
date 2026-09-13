@@ -219,15 +219,43 @@ impl TreeEnvelope {
             }
         }
         for file in self.files.values() {
-            let is_asset = file.kind == "asset";
-            if file.kind.is_empty()
-                || (is_asset && (file.asset.is_none() || file.recipe.is_some()))
-                || (!is_asset && (file.recipe.is_none() || file.asset.is_some()))
-            {
+            if file.kind != "text" && file.kind != "asset" {
                 return Err(EncodingError::InvalidRecipe("tree file locator kind is incomplete".into()));
             }
             if file.logical_length > i64::MAX as u64 {
                 return Err(EncodingError::InvalidRecipe("tree logical length exceeds SQL range".into()));
+            }
+            match file.kind.as_str() {
+                "text" => {
+                    let recipe = file.recipe.as_ref().ok_or_else(|| {
+                        EncodingError::InvalidRecipe("text file has no source recipe locator".into())
+                    })?;
+                    if file.asset.is_some()
+                        || recipe.logical_digest != Some(file.logical_digest)
+                        || recipe.logical_length != file.logical_length
+                    {
+                        return Err(EncodingError::Integrity(
+                            "text file locator is not bound to its logical recipe".into(),
+                        ));
+                    }
+                }
+                "asset" => {
+                    let asset = file.asset.as_ref().ok_or_else(|| {
+                        EncodingError::InvalidRecipe("asset file has no physical locator".into())
+                    })?;
+                    if file.recipe.is_some()
+                        || file.logical_digest != asset.object_digest
+                        || file.logical_length != asset.byte_length
+                        || asset
+                            .logical_digest
+                            .is_some_and(|digest| digest != file.logical_digest)
+                    {
+                        return Err(EncodingError::Integrity(
+                            "asset locator is not bound to its logical bytes".into(),
+                        ));
+                    }
+                }
+                _ => unreachable!("tree file kind checked above"),
             }
         }
         Ok(())
@@ -880,7 +908,7 @@ pub async fn read_file_v2(
     document_id: &str,
     recipe_object_id: &ObjectId,
     expected_recipe_digest: [u8; 32],
-    leased_objects: &[crate::storage::catalog::v2::V2Object],
+    leased_objects: &[crate::storage::catalog::V2Object],
 ) -> Result<Vec<u8>, EncodingError> {
     // Hold the bounded reconstruction slot before fetching any physical
     // payload. Otherwise concurrent callers can each materialize a full
@@ -1479,7 +1507,7 @@ mod tests {
         files.insert(
             "main.md".to_string(),
             TreeFileLocator {
-                kind: "source".into(),
+                kind: "text".into(),
                 file_id: "file-1".into(),
                 logical_digest: digest,
                 logical_length: 8,
@@ -1510,8 +1538,8 @@ mod tests {
         );
         assert_eq!(
             String::from_utf8(first.logical_bytes().expect("logical bytes")).expect("UTF-8"),
-            format!(
-                "{{\"main\":\"main.md\",\"files\":{{\"main.md\":{{\"kind\":\"source\",\"id\":\"file-1\",\"sha\":\"{}\",\"size\":8}}}}}}",
+                format!(
+                "{{\"main\":\"main.md\",\"files\":{{\"main.md\":{{\"kind\":\"text\",\"id\":\"file-1\",\"sha\":\"{}\",\"size\":8}}}}}}",
                 "07".repeat(32)
             )
         );
@@ -1519,5 +1547,68 @@ mod tests {
             first.to_bytes().expect("physical bytes"),
             second.to_bytes().expect("physical bytes")
         );
+    }
+
+    #[test]
+    fn tree_envelope_rejects_untyped_or_unbound_file_locators() {
+        let mut envelope = TreeEnvelope {
+            version: TREE_ENVELOPE_VERSION,
+            main_path: "main.md".into(),
+            source_format: "markdown".into(),
+            settings_json: "{}".into(),
+            logical_digest: [1; 32],
+            files: std::collections::BTreeMap::new(),
+        };
+        let locator = PhysicalLocator {
+            object_id: ObjectId::parse("0123456789abcdef0123456789abcdef").expect("object id"),
+            object_digest: [2; 32],
+            logical_digest: Some([1; 32]),
+            logical_length: 4,
+            byte_length: 4,
+            encoding_version: 1,
+        };
+        envelope.files.insert(
+            "main.md".into(),
+            TreeFileLocator {
+                kind: "source".into(),
+                file_id: "file".into(),
+                logical_digest: [1; 32],
+                logical_length: 4,
+                recipe: Some(locator.clone()),
+                asset: None,
+            },
+        );
+        assert!(envelope.validate().is_err());
+
+        envelope.files.get_mut("main.md").expect("file").kind = "text".into();
+        envelope
+            .files
+            .get_mut("main.md")
+            .expect("file")
+            .recipe
+            .as_mut()
+            .expect("recipe")
+            .logical_digest = Some([3; 32]);
+        assert!(envelope.validate().is_err());
+
+        envelope.files.insert(
+            "asset.bin".into(),
+            TreeFileLocator {
+                kind: "asset".into(),
+                file_id: "asset".into(),
+                logical_digest: [4; 32],
+                logical_length: 9,
+                recipe: None,
+                asset: Some(PhysicalLocator {
+                    object_id: ObjectId::parse("fedcba9876543210fedcba9876543210").expect("object id"),
+                    object_digest: [5; 32],
+                    logical_digest: None,
+                    logical_length: 9,
+                    byte_length: 9,
+                    encoding_version: 1,
+                }),
+            },
+        );
+        assert!(envelope.validate().is_err());
     }
 }
