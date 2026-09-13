@@ -40,7 +40,7 @@ async fn per_owner_byte_quota_is_refused() {
     assert_eq!(status, 507, "got {status} {payload}");
     assert_eq!(
         text(&payload, "error"),
-        "storage quota is used up; delete a document first"
+        "your storage quota is used up; delete a document first"
     );
 }
 
@@ -69,7 +69,7 @@ async fn document_count_limit_is_refused() {
     assert_eq!(status, 507, "got {status} {payload}");
     assert_eq!(
         text(&payload, "error"),
-        "storage quota is used up; delete a document first"
+        "you have reached the document limit; delete one first"
     );
 }
 
@@ -152,7 +152,7 @@ async fn global_total_quota_is_refused() {
     assert_eq!(status, 507, "got {status} {payload}");
     assert_eq!(
         text(&payload, "error"),
-        "storage quota is used up; delete a document first"
+        "this deployment has no room left"
     );
 }
 

@@ -2,7 +2,7 @@ use serde_json::json;
 
 use super::*;
 use crate::config::Configuration;
-use crate::document::store::Publication;
+use crate::document::store::{MutationActor, Publication};
 
 async fn rendered_publication_id(base: &str, slug: &str) -> String {
     let published = publish_display(
@@ -391,18 +391,30 @@ async fn legacy_listing_pages_without_repeating_documents() {
 #[tokio::test]
 async fn shell_routes() {
     let server = new_test_server().await;
+    get_json_as(&session_as(TEST_PUBLISHER), &server.url, "/api/me").await;
     // The reader shell loads the document through the authenticated API.
     let slug = "a-paper-abcdefghij";
     server
         .instance
         .store
-        .put(Publication {
-            slug: slug.into(),
-            title: "A Paper".into(),
-            source: "<p>p</p>".into(),
-            source_format: "html".into(),
-            ..Publication::default()
-        })
+        .put_as_actor(
+            Publication {
+                slug: slug.into(),
+                title: "A Paper".into(),
+                source: "<p>p</p>".into(),
+                source_format: "html".into(),
+                ..Publication::default()
+            },
+            MutationActor {
+                account_id: format!("github:{TEST_PUBLISHER}"),
+                owner_key: TEST_PUBLISHER.into(),
+                session_generation: "test-session-generation".into(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
         .await
         .unwrap();
     // The pages, and the bundle the reader loads: the bundler decides that

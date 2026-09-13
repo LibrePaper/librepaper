@@ -7,7 +7,7 @@ use serde_json::json;
 use super::*;
 use crate::auth::Policy;
 use crate::config::Configuration;
-use crate::document::store::{self, Publication};
+use crate::document::store::{self, MutationActor, Publication};
 
 /// The sandbox shape: any signed-in GitHub account may publish, so several
 /// publishers share one deployment.
@@ -56,18 +56,32 @@ async fn listing_shows_only_your_own_uploads() {
     let mine = publish_as(&server.url, "alice", "Alice Paper", None).await;
     let theirs = publish_as(&server.url, "bob", "Bob Paper", None).await;
 
-    // An example belongs to everyone, and a document published before
-    // ownership was recorded belongs to no one in particular.
+    // These rows model an administrative example and a document imported
+    // before the listing was rebuilt. Both are inserted through the explicit
+    // authenticated fixture actor; the example flag below makes the first
+    // visible to every account.
     let store = &server.instance.store;
+    let alice_actor = MutationActor {
+        account_id: "github:alice".into(),
+        owner_key: "alice".into(),
+        session_generation: "test-session-generation".into(),
+        link_hash: String::new(),
+        policy_editor: true,
+        automation: false,
+        unowned_publisher: false,
+    };
     store
-        .put(Publication {
-            slug: "example-doc".into(),
-            title: "Example".into(),
-            source: "<p>e</p>".into(),
-            source_format: "html".into(),
-            peak_bytes: Some(1 << 20),
-            ..Default::default()
-        })
+        .put_as_actor(
+            Publication {
+                slug: "example-doc".into(),
+                title: "Example".into(),
+                source: "<p>e</p>".into(),
+                source_format: "html".into(),
+                peak_bytes: Some(1 << 20),
+                ..Default::default()
+            },
+            alice_actor.clone(),
+        )
         .await
         .unwrap();
     store
@@ -100,14 +114,17 @@ async fn listing_shows_only_your_own_uploads() {
     example.example = true;
     catalog.update_document(&example).unwrap();
     store
-        .put(Publication {
-            slug: "legacy-doc".into(),
-            title: "Legacy".into(),
-            source: "<p>l</p>".into(),
-            source_format: "html".into(),
-            peak_bytes: Some(1 << 20),
-            ..Default::default()
-        })
+        .put_as_actor(
+            Publication {
+                slug: "legacy-doc".into(),
+                title: "Legacy".into(),
+                source: "<p>l</p>".into(),
+                source_format: "html".into(),
+                peak_bytes: Some(1 << 20),
+                ..Default::default()
+            },
+            alice_actor,
+        )
         .await
         .unwrap();
     store
