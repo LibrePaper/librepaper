@@ -3012,13 +3012,31 @@ impl Room {
         // asset), though, and those changes still need a fresh journal
         // cursor.  Never reuse a durable sequence merely because the in
         // memory generation did not move with that internal mutation.
-        let mut durable_sequence = generation.saturating_add(1);
+        let catalog_journal_head = if let Some(catalog) = self.catalog.get() {
+            let document_id = crate::storage::catalog::DocumentId::new(self.storage_id.clone())
+                .map_err(|error| WriteError::Storage(error.to_string()))?;
+            Some(
+                catalog
+                    .execute_catalog(256, move |catalog| {
+                        catalog.v2_document_journal_head(&document_id)
+                    })
+                    .await
+                    .map_err(WriteError::from)?,
+            )
+        } else {
+            None
+        };
+        let mut durable_sequence = catalog_journal_head
+            .map(|(_, sequence)| sequence.saturating_add(1))
+            .unwrap_or_else(|| generation.saturating_add(1));
         if let Some(journal) = self.journal.get() {
-            let latest = journal
-                .latest_sequence(&self.storage_id, 0)
-                .await
-                .map_err(|error| error.to_string())?;
-            durable_sequence = durable_sequence.max(latest.saturating_add(1));
+            if catalog_journal_head.is_none() {
+                let latest = journal
+                    .latest_sequence(&self.storage_id, 0)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                durable_sequence = latest.saturating_add(1);
+            }
             journal
                 .append_with_dependencies(
                     &self.storage_id,

@@ -373,6 +373,30 @@ impl Room {
             .await
     }
 
+    /// Publication checkpoint with the authenticated mutation authority that
+    /// admitted the upload.  Existing internal callers retain the system
+    /// checkpoint path above, while HTTP replacements must carry their live
+    /// account/session fence through the final v2 transaction.
+    pub(crate) async fn checkpoint_publication_now_locked_as_actor(
+        &self,
+        why: &str,
+        by: impl Into<Attribution>,
+        token: &mut PublicationCheckpointToken,
+        actor: crate::storage::catalog::MutationAuthority<'_>,
+    ) -> Result<Option<String>, WriteError> {
+        let attribution = by.into();
+        self.checkpoint_impl_locked(
+            why,
+            &attribution,
+            false,
+            false,
+            None,
+            Some(token),
+            Some(actor),
+        )
+        .await
+    }
+
     /// Takes a checkpoint event even when its tree has the same content as a
     /// checkpoint already in the manifest. A restore is an event in the
     /// linear history, and deduplicating it would make restoring to an old
@@ -2020,8 +2044,6 @@ impl Room {
             state.session.pending_checkpoint_since = 0;
         }
         drop(state);
-        self.record_size_now(Some(checkpoint.id.as_str()), format, &tree.main)
-            .await;
         Ok(Some(checkpoint.id.as_str().to_string()))
     }
 

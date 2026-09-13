@@ -778,10 +778,21 @@ impl Server {
                 .unwrap_or_else(|_| crate::document::session::encode_state(&state.session.doc))
         };
         let sha = match room
-            .checkpoint_publication_now_locked(
+            .checkpoint_publication_now_locked_as_actor(
                 "cli",
                 crate::room::Attribution::account(&who.id, &who.key),
                 &mut publication_token,
+                crate::storage::catalog::MutationAuthority {
+                    account_id: &who.id,
+                    owner_key: &who.key,
+                    generation: &who.session_generation,
+                    link_hash: "",
+                    policy_editor: true,
+                    automation: false,
+                    unowned_publisher: false,
+                    execution_epoch: "",
+                    agent_checkpoint: None,
+                },
             )
             .await
         {
