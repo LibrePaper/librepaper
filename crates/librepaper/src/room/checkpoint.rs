@@ -1173,6 +1173,9 @@ impl Room {
         };
         use sha2::{Digest, Sha256};
 
+        if !self.hold().await {
+            return Err(self.fenced());
+        }
         let document_id = DocumentId::new(self.storage_id.clone())
             .map_err(|error| WriteError::Storage(error.to_string()))?;
         let now_ms = crate::util::now_millis();
