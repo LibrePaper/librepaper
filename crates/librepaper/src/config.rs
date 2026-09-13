@@ -1144,14 +1144,14 @@ impl Configuration {
         }
         add(
             "backup.temporary_bytes",
-            json!(crate::storage::backup::BACKUP_TEMP_RESERVATION_BYTES),
+            json!(crate::storage::backup_v2::BACKUP_TEMP_RESERVATION_BYTES),
             "bytes",
             "backup",
             None,
         );
         add(
             "backup.emergency_headroom_bytes",
-            json!(crate::storage::backup::BACKUP_EMERGENCY_HEADROOM_BYTES),
+            json!(crate::storage::backup_v2::BACKUP_EMERGENCY_HEADROOM_BYTES),
             "bytes",
             "primary volume",
             None,
