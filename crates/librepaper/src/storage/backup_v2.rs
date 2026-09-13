@@ -272,6 +272,8 @@ pub async fn create_backup(
                 &catalog_key,
                 &catalog_file.path,
                 "application/vnd.sqlite3",
+                manifest.catalog_length,
+                &manifest.catalog_digest,
             )
             .await?;
         } else {
@@ -368,22 +370,18 @@ pub trait V2RestoreCatalog: Send + Sync {
         snapshot_revision: i64,
         catalog_bytes: Vec<u8>,
     ) -> Result<(), String>;
-    /// Install a catalog image staged in a bounded temporary file. The
-    /// default keeps small test adapters compatible; local production restore
-    /// overrides this to validate and rename the file without materializing
-    /// the image.
+    /// Install a catalog image staged in a bounded temporary file. Adapters
+    /// supporting large snapshots must override this method. The default is
+    /// deliberately an error so a restore cannot materialize an unbounded
+    /// SQLite image in the request heap.
     async fn install_catalog_snapshot_file(
         &self,
         deployment_id: &str,
         snapshot_revision: i64,
         path: PathBuf,
     ) -> Result<(), String> {
-        let bytes = tokio::task::spawn_blocking(move || fs::read(path))
-            .await
-            .map_err(|error| format!("catalog snapshot read task failed: {error}"))?
-            .map_err(|error| error.to_string())?;
-        self.install_catalog_snapshot(deployment_id, snapshot_revision, bytes)
-            .await
+        let _ = (deployment_id, snapshot_revision, path);
+        Err("restore adapter does not support file catalog installation".into())
     }
     /// A restored catalogue contains the source backup operation copied by
     /// the SQLite image.  It belongs to the source deployment and must be
@@ -644,6 +642,8 @@ async fn put_new_file_destination(
     key: &str,
     source: &Path,
     content_type: &str,
+    expected_length: u64,
+    expected_digest: &str,
 ) -> Result<(), BackupV2Error> {
     if destination
         .exists(key)
@@ -655,14 +655,57 @@ async fn put_new_file_destination(
     let key = key.to_owned();
     let source = source.to_owned();
     let content_type = content_type.to_owned();
+    let key_for_put = key.clone();
+    let destination_for_put = Arc::clone(&destination);
     tokio::spawn(async move {
-        destination
-            .put_file(&key, &source, &content_type)
+        destination_for_put
+            .put_file(&key_for_put, &source, &content_type)
             .await
             .map_err(|error| BackupV2Error::Storage(error.to_string()))
     })
     .await
-    .map_err(|error| BackupV2Error::Storage(format!("backup snapshot task failed: {error}")))?
+    .map_err(|error| BackupV2Error::Storage(format!("backup snapshot task failed: {error}")))??;
+    verify_destination_file(destination, &key, expected_length, expected_digest).await
+}
+
+async fn verify_destination_file(
+    destination: Arc<dyn BlobStore>,
+    key: &str,
+    expected_length: u64,
+    expected_digest: &str,
+) -> Result<(), BackupV2Error> {
+    let actual_length = destination
+        .length(key)
+        .await
+        .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+    if actual_length != expected_length {
+        return Err(BackupV2Error::Corrupt(format!(
+            "destination file {key} has length {actual_length}, expected {expected_length}"
+        )));
+    }
+    let mut digest = Sha256::new();
+    let mut offset = 0_u64;
+    while offset < expected_length {
+        let end = offset.saturating_add(64 * 1024).min(expected_length);
+        let chunk = destination
+            .get_range(key, offset..end)
+            .await
+            .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+        if chunk.len() as u64 != end - offset {
+            return Err(BackupV2Error::Corrupt(format!(
+                "destination file {key} returned a short range"
+            )));
+        }
+        digest.update(&chunk);
+        offset = end;
+    }
+    let actual_digest = hex::encode(digest.finalize());
+    if actual_digest != expected_digest {
+        return Err(BackupV2Error::Corrupt(format!(
+            "destination file {key} digest mismatch"
+        )));
+    }
+    Ok(())
 }
 
 async fn copy_file_payload(
@@ -1591,6 +1634,8 @@ mod tests {
     struct FileStreamingStore {
         inner: MemoryStore,
         lengths: Arc<Mutex<Vec<u64>>>,
+        files: Arc<Mutex<HashMap<String, u64>>>,
+        corrupt: bool,
     }
 
     #[async_trait::async_trait]
@@ -1618,7 +1663,40 @@ mod tests {
                 .map_err(crate::storage::blob::BlobError::from)?
                 .len();
             self.lengths.lock().unwrap().push(length);
-            self.inner.put(key, Vec::new(), "application/octet-stream").await
+            self.files.lock().unwrap().insert(key.to_owned(), length);
+            Ok(())
+        }
+
+        async fn length(&self, key: &str) -> crate::storage::blob::BlobResult<u64> {
+            self.files
+                .lock()
+                .unwrap()
+                .get(key)
+                .copied()
+                .ok_or(crate::storage::blob::BlobError::NotFound)
+        }
+
+        async fn get_range(
+            &self,
+            key: &str,
+            range: std::ops::Range<u64>,
+        ) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            let length = self.length(key).await?;
+            if range.start > range.end || range.end > length || range.end - range.start > 64 * 1024 {
+                return Err(crate::storage::blob::BlobError::Other("invalid test range".into()));
+            }
+            let mut bytes = vec![0_u8; (range.end - range.start) as usize];
+            if self.corrupt && range.start == 0 && !bytes.is_empty() {
+                bytes[0] = 1;
+            }
+            Ok(bytes)
+        }
+
+        async fn exists(&self, key: &str) -> crate::storage::blob::BlobResult<bool> {
+            if self.files.lock().unwrap().contains_key(key) {
+                return Ok(true);
+            }
+            self.inner.exists(key).await
         }
 
         async fn delete(&self, keys: &[String]) -> crate::storage::blob::BlobResult<()> {
@@ -1701,6 +1779,17 @@ mod tests {
         ) -> Result<(), String> {
             self.events.lock().unwrap().push("install_catalog");
             Ok(())
+        }
+
+        async fn install_catalog_snapshot_file(
+            &self,
+            deployment_id: &str,
+            snapshot_revision: i64,
+            path: PathBuf,
+        ) -> Result<(), String> {
+            let bytes = fs::read(path).map_err(|error| error.to_string())?;
+            self.install_catalog_snapshot(deployment_id, snapshot_revision, bytes)
+                .await
         }
 
         async fn abort_restored_backup(&self, _operation_id: &str) -> Result<(), String> {
@@ -1873,10 +1962,11 @@ mod tests {
         let mut snapshot = sample_snapshot(object);
         snapshot.catalog_bytes.clear();
         snapshot.object_count = 0;
+        let byte_length = MAX_CATALOG_SNAPSHOT_BYTES as u64 + 1;
         snapshot.catalog_file = Some(BackupCatalogFile {
             path: snapshot_file,
-            digest: "a".repeat(64),
-            byte_length: MAX_CATALOG_SNAPSHOT_BYTES as u64 + 1,
+            digest: digest_zeroes(byte_length),
+            byte_length: byte_length,
         });
         let events = Arc::new(Mutex::new(Vec::new()));
         let catalog = MockBackupCatalog {
@@ -1889,6 +1979,8 @@ mod tests {
         let destination: Arc<dyn BlobStore> = Arc::new(FileStreamingStore {
             inner: MemoryStore(Arc::new(Mutex::new(HashMap::new()))),
             lengths: Arc::clone(&lengths),
+            files: Arc::new(Mutex::new(HashMap::new())),
+            corrupt: false,
         });
         let manifest = create_backup(
             &catalog,
@@ -1899,8 +1991,62 @@ mod tests {
         )
         .await
         .expect("streamed large catalog backup");
-        assert_eq!(manifest.catalog_length, MAX_CATALOG_SNAPSHOT_BYTES as u64 + 1);
-        assert_eq!(lengths.lock().unwrap().as_slice(), &[MAX_CATALOG_SNAPSHOT_BYTES as u64 + 1]);
+        assert_eq!(manifest.catalog_length, byte_length);
+        assert_eq!(lengths.lock().unwrap().as_slice(), &[byte_length]);
+    }
+
+    #[tokio::test]
+    async fn file_snapshot_rejects_corrupt_destination_bytes() {
+        let (object, _) = sample_object();
+        let snapshot_path = tempfile::tempdir().expect("snapshot directory");
+        let snapshot_file = snapshot_path.path().join("catalog.db");
+        let byte_length = 64 * 1024 + 1;
+        std::fs::File::create(&snapshot_file)
+            .expect("snapshot file")
+            .set_len(byte_length)
+            .expect("sparse snapshot");
+        let mut snapshot = sample_snapshot(object);
+        snapshot.catalog_bytes.clear();
+        snapshot.object_count = 0;
+        snapshot.catalog_file = Some(BackupCatalogFile {
+            path: snapshot_file,
+            digest: digest_zeroes(byte_length),
+            byte_length,
+        });
+        let catalog = MockBackupCatalog {
+            snapshot,
+            objects: Vec::new(),
+            events: Arc::new(Mutex::new(Vec::new())),
+        };
+        let destination: Arc<dyn BlobStore> = Arc::new(FileStreamingStore {
+            inner: MemoryStore(Arc::new(Mutex::new(HashMap::new()))),
+            lengths: Arc::new(Mutex::new(Vec::new())),
+            files: Arc::new(Mutex::new(HashMap::new())),
+            corrupt: true,
+        });
+        assert!(matches!(
+            create_backup(
+                &catalog,
+                Arc::new(MemoryStore(Arc::new(Mutex::new(HashMap::new())))),
+                destination,
+                "corrupt-file",
+                1,
+            )
+            .await,
+            Err(BackupV2Error::Corrupt(_))
+        ));
+    }
+
+    fn digest_zeroes(length: u64) -> String {
+        let mut digest = Sha256::new();
+        let chunk = [0_u8; 64 * 1024];
+        let mut remaining = length;
+        while remaining > 0 {
+            let count = remaining.min(chunk.len() as u64) as usize;
+            digest.update(&chunk[..count]);
+            remaining -= count as u64;
+        }
+        hex::encode(digest.finalize())
     }
 
     #[tokio::test]
