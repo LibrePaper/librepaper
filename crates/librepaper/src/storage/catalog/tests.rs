@@ -1774,7 +1774,12 @@ fn publication_receipts_are_atomic_and_idempotent() {
     let prepared = catalog.prepare_v2_operation(&input, now).unwrap();
     assert_eq!(prepared.state, "prepared");
     catalog
-        .finish_v2_operation(&prepared.id, r#"{"head":2}"#, true, now)
+        .finish_v2_operation(
+            &prepared.id,
+            r#"{"version":2,"head":2}"#,
+            true,
+            now,
+        )
         .unwrap();
     let retry = catalog.prepare_v2_operation(&input, now).unwrap();
     assert_eq!(retry, V2Operation {
@@ -1793,7 +1798,7 @@ fn publication_receipts_are_atomic_and_idempotent() {
         })
         .unwrap();
     assert_eq!(state, "committed");
-    assert_eq!(result, r#"{"head":2}"#);
+    assert_eq!(result, r#"{"version":2,"head":2}"#);
     assert!(catalog.document("doc").unwrap().unwrap().pending_publication.is_none());
 }
 #[test]
@@ -2901,7 +2906,20 @@ fn v2_admission_keeps_inflight_reservation_until_settlement() {
     assert_eq!(reserved.size, 0);
     assert_eq!(reserved.counted_size, 25);
     assert_eq!(reserved.maintenance_reserved, 25);
-    assert_eq!(catalog.catalog_allocated_bytes().unwrap(), 25);
+    let accounted = || {
+        catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT stored_bytes+reserved_bytes FROM server_state WHERE id=1",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(CatalogError::from)
+            })
+            .unwrap()
+    };
+    assert_eq!(accounted(), 25);
     catalog
         .settle_v2_object(&document_id, &object_id, 20, now)
         .unwrap();
@@ -2909,7 +2927,7 @@ fn v2_admission_keeps_inflight_reservation_until_settlement() {
     assert_eq!(settled.size, 20);
     assert_eq!(settled.counted_size, 20);
     assert_eq!(settled.maintenance_reserved, 0);
-    assert_eq!(catalog.catalog_allocated_bytes().unwrap(), 0);
+    assert_eq!(accounted(), 20);
     assert!(catalog.audit_v2_counters().unwrap());
 }
 
@@ -2951,7 +2969,7 @@ fn v2_checkpoint_operation_receipt_is_bounded_and_terminal() {
         .unwrap();
     assert!(expires.is_some(), "prepared v2 work must have a bounded lease");
     catalog
-        .finish_v2_operation(&prepared.id, "{}", true, now)
+        .finish_v2_operation(&prepared.id, r#"{"version":2}"#, true, now)
         .unwrap();
     let (state, result, receipt_expires_at): (String, String, i64) = catalog
         .with_connection(|connection| {

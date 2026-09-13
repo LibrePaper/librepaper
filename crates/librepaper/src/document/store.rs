@@ -971,6 +971,63 @@ impl Store {
     /// has one unversioned key instead, which is read when there is nothing
     /// under the digest.
     pub async fn read_source(&self, slug: &str) -> Result<Vec<u8>, BlobError> {
+        if let Some(catalog) = &self.catalog {
+            let owner = catalog.clone();
+            let requested_slug = slug.to_owned();
+            let mut lease = catalog
+                .execute_catalog(slug.len() + 4096, move |_| {
+                    owner.acquire_checkpoint_read(
+                        &requested_slug,
+                        None,
+                        crate::util::now_millis(),
+                    )
+                })
+                .await
+                .map_err(|error| BlobError::Other(error.to_string()))?;
+            let result = async {
+                let (tree, envelope) = crate::document::history::load_tree_envelope(
+                    self.blobs.as_ref(),
+                    &lease,
+                )
+                .await
+                .map_err(BlobError::Other)?;
+                let file = envelope
+                    .files
+                    .get(&envelope.main_path)
+                    .ok_or_else(|| BlobError::Other("current source main file is absent".into()))?;
+                let recipe = file.recipe.as_ref().ok_or_else(|| {
+                    BlobError::Other("current source main file has no recipe".into())
+                })?;
+                let bytes = crate::storage::encoding::read_file_v2(
+                    self.blobs.as_ref(),
+                    lease.set.document_id.as_str(),
+                    &recipe.object_id,
+                    recipe.object_digest,
+                    &lease.set.objects,
+                )
+                .await
+                .map_err(|error| BlobError::Other(error.to_string()))?;
+                if bytes.len() as u64 != file.logical_length
+                    || Sha256::digest(&bytes).as_slice() != file.logical_digest
+                {
+                    return Err(BlobError::Other(
+                        "current source logical integrity check failed".into(),
+                    ));
+                }
+                if !lease.valid_at(crate::util::now_millis()) {
+                    return Err(BlobError::Other("checkpoint read lease expired".into()));
+                }
+                let _ = tree;
+                Ok(bytes)
+            }
+            .await;
+            let released = lease.finish().await;
+            return match (result, released) {
+                (Ok(bytes), Ok(())) => Ok(bytes),
+                (Err(error), _) => Err(error),
+                (Ok(_), Err(error)) => Err(BlobError::Other(error.to_string())),
+            };
+        }
         // In catalogue mode `state.entries` is only a lazily filled
         // compatibility cache -- it starts empty and gains a slug only once
         // something else has already touched it -- so a document nobody has
