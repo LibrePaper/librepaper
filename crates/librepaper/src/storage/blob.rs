@@ -1362,6 +1362,7 @@ pub async fn clear_storage(blobs: &dyn BlobStore) {
 /// compatibility `clear_storage` wrapper above remains best-effort for old
 /// callers, while destructive local reset uses this checked variant.
 pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
+    const RESET_PAGE: usize = 256;
     for prefix in [
         "content/",
         "journal/",
@@ -1373,28 +1374,61 @@ pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
         "sources/",
         "examples/",
     ] {
-        let found = blobs.list(prefix).await?;
-        let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
-        if !keys.is_empty() {
+        let mut after = None;
+        loop {
+            let page = blobs.list_page(prefix, after.as_deref(), RESET_PAGE).await?;
+            if page.is_empty() {
+                break;
+            }
+            if page.len() > RESET_PAGE {
+                return Err(BlobError::Other(format!(
+                    "seed reset received an oversized page under {prefix}"
+                )));
+            }
+            let keys: Vec<String> = page.into_iter().map(|object| object.key).collect();
+            let last = keys
+                .last()
+                .cloned()
+                .ok_or_else(|| BlobError::Other("seed reset received an empty object page".into()))?;
+            if after.as_deref().is_some_and(|cursor| last.as_str() <= cursor) {
+                return Err(BlobError::Other(format!(
+                    "seed reset object cursor did not advance under {prefix}"
+                )));
+            }
             let outcomes = blobs.delete_each(&keys).await?;
+            if outcomes.len() != keys.len() {
+                return Err(BlobError::Other(format!(
+                    "seed reset received incomplete deletion results under {prefix}"
+                )));
+            }
             if let Some(failed) = outcomes.iter().find(|outcome| !outcome.confirmed()) {
                 return Err(BlobError::Other(format!(
                     "seed reset could not confirm removal under {prefix}: {}",
                     failed.why()
                 )));
             }
-            if !blobs.list(prefix).await?.is_empty() {
-                return Err(BlobError::Other(format!(
-                    "seed reset found objects remaining under {prefix}"
-                )));
-            }
+            after = Some(last);
         }
     }
     let outcome = blobs.delete_each(&[INDEX_KEY.to_string()]).await?;
+    if outcome.len() != 1 {
+        return Err(BlobError::Other(
+            "seed reset received an incomplete legacy-index deletion result".into(),
+        ));
+    }
     if outcome.iter().any(|item| !item.confirmed()) {
         return Err(BlobError::Other(
             "seed reset could not confirm removal of the legacy index".into(),
         ));
+    }
+    match blobs.get(INDEX_KEY).await {
+        Ok(_) => {
+            return Err(BlobError::Other(
+                "seed reset found the legacy index still present".into(),
+            ));
+        }
+        Err(BlobError::NotFound) => {}
+        Err(error) => return Err(error),
     }
     Ok(())
 }
@@ -1607,6 +1641,7 @@ pub async fn take_room_lease(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn disk_guard_resolves_a_new_relative_store_to_current_directory() {
@@ -1704,6 +1739,78 @@ mod tests {
             blobs.put(".object.tmp-123-4", b"nope".to_vec(), "").await,
             Err(BlobError::Other(message)) if message.contains("reserved")
         ));
+    }
+
+    #[tokio::test]
+    async fn checked_seed_cleanup_is_paged_and_resumable_after_delete_failure() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let blobs = FlakyDeleteStore {
+            inner: FsStore::new(directory.path(), true),
+            fail_next: AtomicUsize::new(1),
+        };
+        for index in 0..600u32 {
+            let document = format!("{index:064x}");
+            let object = format!("{index:064x}");
+            blobs
+                .put(
+                    &format!("v2/documents/{document}/objects/{object}"),
+                    vec![index as u8],
+                    "application/octet-stream",
+                )
+                .await
+                .expect("seed fixture object");
+        }
+        blobs
+            .put(INDEX_KEY, b"legacy index".to_vec(), "application/json")
+            .await
+            .expect("legacy index");
+
+        assert!(clear_storage_checked(&blobs).await.is_err());
+        assert!(!blobs.inner.list("v2/").await.unwrap().is_empty());
+        clear_storage_checked(&blobs)
+            .await
+            .expect("retry seed cleanup");
+        assert!(blobs.inner.list("v2/").await.unwrap().is_empty());
+        assert!(matches!(blobs.get(INDEX_KEY).await, Err(BlobError::NotFound)));
+    }
+
+    struct FlakyDeleteStore {
+        inner: FsStore,
+        fail_next: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl BlobStore for FlakyDeleteStore {
+        async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
+            self.inner.get(key).await
+        }
+
+        async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
+            self.inner.put(key, body, content_type).await
+        }
+
+        async fn delete(&self, keys: &[String]) -> BlobResult<()> {
+            if self.fail_next.swap(0, Ordering::SeqCst) != 0 {
+                return Err(BlobError::Other("injected seed cleanup failure".into()));
+            }
+            self.inner.delete(keys).await
+        }
+
+        async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
+            self.inner.list(prefix).await
+        }
+
+        async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
+            self.inner.swap(key, body, expect).await
+        }
+
+        async fn get_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
+            self.inner.get_versioned(key).await
+        }
+
+        fn describe(&self) -> String {
+            self.inner.describe()
+        }
     }
 
     #[test]

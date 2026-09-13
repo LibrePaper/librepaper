@@ -237,11 +237,11 @@ fn reset_catalog(catalog: &crate::storage::catalog::Catalog) -> Result<(), Strin
                          publication_id=NULL, published_at=NULL;
                      DELETE FROM object_leases;
                      DELETE FROM checkpoint_objects;
-                     DELETE FROM checkpoints;
                      DELETE FROM replies;
+                     DELETE FROM annotations;
+                     DELETE FROM checkpoints;
                      DELETE FROM grants;
                      DELETE FROM links;
-                     DELETE FROM annotations;
                      DELETE FROM objects;
                      DELETE FROM operations;
                      DELETE FROM documents;

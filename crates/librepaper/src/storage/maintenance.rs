@@ -304,6 +304,7 @@ pub fn document_object_key_for(slug: &str, storage_id: &str, object_key: &str) -
 
 /// Add one durable job.  The object is charged until the worker confirms its
 /// deletion; this operation deliberately does not inspect the object store.
+#[cfg(test)]
 pub fn enqueue_deletion(
     catalog: &Catalog,
     slug: &str,
@@ -334,6 +335,7 @@ pub fn enqueue_deletion(
 /// idempotent step instead of leaving part of a page queued.  A caller
 /// cancelled after dispatch still gets the rows, which is what the worker
 /// needs; nothing is charged or refunded here.
+#[cfg(test)]
 pub async fn enqueue_deletions_async(
     catalog: &Arc<Catalog>,
     slug: String,
@@ -626,6 +628,7 @@ impl DeletionWorker {
 
     /// Process a bounded pass.  A missing object is a successful idempotent
     /// deletion because BlobStore::delete has that contract.
+    #[cfg(test)]
     pub async fn run_once(&self, now: i64) -> MaintenanceResult<DeletionReport> {
         if now < 0 {
             return Err(MaintenanceError::Invalid(
@@ -972,6 +975,7 @@ pub fn enqueue_journal_retirement(
         .map_err(MaintenanceError::from)
 }
 
+#[cfg(test)]
 pub struct JournalRetirementWorker {
     catalog: Arc<Catalog>,
     blobs: Arc<dyn BlobStore>,
@@ -979,6 +983,7 @@ pub struct JournalRetirementWorker {
     retirement_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
+#[cfg(test)]
 impl JournalRetirementWorker {
     pub fn new(
         catalog: Arc<Catalog>,

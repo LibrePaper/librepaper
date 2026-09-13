@@ -22,18 +22,26 @@ use crate::storage::blob::{
 use crate::storage::catalog::{Catalog, CatalogError, CatalogResult};
 
 mod budget;
+#[cfg(test)]
 mod coordinator;
+#[cfg(test)]
 mod recovery;
+#[cfg(test)]
 mod runtime;
 mod segment;
+#[cfg(test)]
 mod store;
 mod v2;
 
 pub use budget::*;
+#[cfg(test)]
 pub use coordinator::*;
+#[cfg(test)]
 pub use recovery::*;
+#[cfg(test)]
 pub use runtime::*;
 pub use segment::*;
+#[cfg(test)]
 pub use store::*;
 pub use v2::*;
 
@@ -112,8 +120,10 @@ impl From<BlobError> for JournalError {
 
 pub type JournalResult<T> = Result<T, JournalError>;
 
+#[cfg(test)]
 impl JournalRuntime {}
 
+#[cfg(test)]
 impl JournalStore {}
 
 #[cfg(test)]
