@@ -3553,3 +3553,34 @@ fn internal_checkpoint_fence_requires_a_live_document_owner() {
         .require_internal_checkpoint_authority("doc")
         .is_err());
 }
+
+#[test]
+fn agent_operation_plan_is_versioned_without_persisting_bearer_credentials() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let request_id = crate::util::new_request_key();
+    let operation = catalog
+        .prepare_operation(&OperationRequest {
+            storage_id: "storage-1",
+            request_id: &request_id,
+            kind: "agent_apply",
+            request_digest: &"a".repeat(64),
+            intent: r#"{"actor":{"account_id":"acct-1","generation":"generation-1","owner_key":"transient-secret"},"before_tree":"before","after_tree":"after"}"#,
+            created_at: crate::util::now_millis(),
+            actor: None,
+        })
+        .unwrap();
+    let plan: serde_json::Value = serde_json::from_str(&operation.intent).unwrap();
+    assert_eq!(plan.get("version").and_then(serde_json::Value::as_i64), Some(2));
+    assert!(plan
+        .get("actor")
+        .and_then(|actor| actor.get("owner_key"))
+        .is_none());
+    assert_eq!(
+        plan.get("actor")
+            .and_then(|actor| actor.get("generation"))
+            .and_then(serde_json::Value::as_str),
+        Some("generation-1")
+    );
+}
