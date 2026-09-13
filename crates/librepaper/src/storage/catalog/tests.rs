@@ -1,7 +1,8 @@
 use super::{
     Account, AnnotationAuthority, Catalog, CatalogError, Checkpoint, Comment, JournalPreparation,
-    JournalSegment, Link, MutationAuthority, NewDocument, OperationRequest, Reply,
-    SourceHistoryObject, SourceHistoryRecord,
+    DocumentId, JournalSegment, Link, MutationAuthority, NewDocument, ObjectId, OperationKind,
+    OperationRequest, OperationScope, Reply, SourceHistoryObject, SourceHistoryRecord,
+    UnixMillis, V2OperationInput,
 };
 use sha2::Digest;
 
@@ -858,22 +859,74 @@ fn source_history_writer_lease_rejects_an_object_already_queued_for_deletion() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let now = crate::util::now_millis();
+    let request_key = crate::util::new_request_key();
+    let operation = catalog
+        .prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(DocumentId::new("storage-1").unwrap()),
+                actor_key: "test-source-writer".into(),
+                request_key,
+                kind: OperationKind::SourcePublish,
+                request_digest: "a".repeat(64),
+                plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis::new(now + 120_000).unwrap()),
+            },
+            UnixMillis::new(now).unwrap(),
+        )
+        .unwrap();
     for (directory, kind) in [("chunks", "source_chunk"), ("assets", "asset")] {
+        let object_id = fixture_object_id(directory);
+        let object_key = format!("v2/documents/storage-1/objects/{object_id}");
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO objects
+                     (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                     VALUES('storage-1',?1,?2,?3,'available',?4,7,0,?5)",
+                    rusqlite::params![
+                        object_id,
+                        object_key,
+                        kind,
+                        "b".repeat(64),
+                        now,
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
         let object = SourceHistoryObject {
-            object_key: format!("content/storage-1/{directory}/queued"),
+            object_key: object_key.clone(),
             kind: kind.into(),
             bytes: 7,
         };
         catalog
-            .queue_delete(&super::PendingDelete {
-                slug: "doc".into(),
-                object_key: object.object_key.clone(),
-                bytes: object.bytes,
-                queued_at: 1,
-                delete_after: 1,
+            .with_connection(|connection| {
+                connection.execute(
+                    "UPDATE objects SET gc_after=0 WHERE document_id='storage-1' AND id=?1",
+                    [&object_id],
+                )?;
+                Ok(())
             })
             .unwrap();
-        let result = catalog.begin_source_history_lease("storage-1", "operation", &[object], 1, 2);
+        assert!(catalog
+            .claim_v2_object_for_deletion(
+                &DocumentId::new("storage-1").unwrap(),
+                &ObjectId::new(object_id).unwrap(),
+                UnixMillis::new(now).unwrap(),
+                UnixMillis::new(now).unwrap(),
+            )
+            .unwrap());
+        let result = catalog.begin_source_history_lease(
+            "storage-1",
+            operation.id.as_str(),
+            &[object],
+            now,
+            now + 1_000,
+        );
         assert!(matches!(result, Err(CatalogError::Conflict(_))));
     }
 }
