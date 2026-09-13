@@ -418,4 +418,264 @@ CREATE TABLE agent_objects (
     id TEXT NOT NULL,
     kind TEXT NOT NULL,
     payload BLOB NOT NULL,
-
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY(slug, actor, id, kind)
+);
+CREATE INDEX agent_objects_expiry ON agent_objects(expires_at);
+CREATE INDEX agent_receipts_expiry ON catalog_operations(created_at)
+    WHERE kind IN ('agent_apply','agent_annotations','agent_cancel') AND status <> 'prepared';
+CREATE TABLE agent_cancellations (
+    storage_id TEXT NOT NULL REFERENCES documents(storage_id) ON DELETE CASCADE,
+    target_request_id TEXT NOT NULL,
+    cancel_request_id TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(storage_id, cancel_request_id),
+    UNIQUE(storage_id, cancel_request_id)
+);
+CREATE INDEX agent_cancellations_expiry ON agent_cancellations(created_at);
+CREATE INDEX agent_cancellations_target ON agent_cancellations(storage_id, target_request_id);
+CREATE TABLE agent_execution_leases (
+    slug TEXT NOT NULL REFERENCES documents(slug) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL,
+    execution_epoch TEXT NOT NULL,
+    issued_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    PRIMARY KEY (slug, conversation_id)
+);
+CREATE UNIQUE INDEX agent_execution_leases_epoch
+    ON agent_execution_leases(slug, conversation_id, execution_epoch);
+CREATE TABLE account_quota_preferences (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    payload TEXT NOT NULL CHECK (length(CAST(payload AS BLOB)) <= 65536),
+    policy_generation TEXT NOT NULL,
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0)
+) WITHOUT ROWID;
+CREATE TABLE source_history_encodings (
+    storage_id TEXT NOT NULL REFERENCES documents(storage_id) ON DELETE CASCADE,
+    file_digest TEXT NOT NULL,
+    recipe_key TEXT NOT NULL,
+    recipe_digest TEXT NOT NULL,
+    codec INTEGER NOT NULL CHECK (codec > 0),
+    uncompressed_bytes INTEGER NOT NULL CHECK (uncompressed_bytes >= 0),
+    recipe_bytes INTEGER NOT NULL CHECK (recipe_bytes >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    PRIMARY KEY (storage_id, file_digest)
+) WITHOUT ROWID;
+CREATE TABLE source_history_objects (
+    storage_id TEXT NOT NULL,
+    file_digest TEXT NOT NULL,
+    object_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    bytes INTEGER NOT NULL CHECK (bytes >= 0),
+    PRIMARY KEY (storage_id, file_digest, object_key),
+    FOREIGN KEY (storage_id, file_digest)
+        REFERENCES source_history_encodings(storage_id, file_digest)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE INDEX source_history_objects_by_object
+    ON source_history_objects(storage_id, object_key);
+CREATE TABLE source_history_checkpoint_files (
+    storage_id TEXT NOT NULL,
+    checkpoint_sha TEXT NOT NULL,
+    file_digest TEXT NOT NULL,
+    PRIMARY KEY (storage_id, checkpoint_sha, file_digest),
+    FOREIGN KEY (storage_id, file_digest)
+        REFERENCES source_history_encodings(storage_id, file_digest)
+        ON DELETE RESTRICT
+) WITHOUT ROWID;
+CREATE INDEX source_history_checkpoint_files_by_digest
+    ON source_history_checkpoint_files(storage_id, file_digest);
+CREATE TRIGGER source_history_document_removed
+BEFORE DELETE ON documents
+BEGIN
+    DELETE FROM source_history_checkpoint_files WHERE storage_id=OLD.storage_id;
+END;
+CREATE TABLE source_history_write_leases (
+    storage_id TEXT NOT NULL REFERENCES documents(storage_id) ON DELETE CASCADE,
+    operation_id TEXT NOT NULL,
+    object_key TEXT NOT NULL,
+    bytes INTEGER NOT NULL CHECK (bytes >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at >= created_at),
+    PRIMARY KEY (storage_id, operation_id, object_key)
+) WITHOUT ROWID;
+CREATE INDEX source_history_write_leases_expiry
+    ON source_history_write_leases(expires_at, storage_id);
+CREATE INDEX source_history_write_leases_by_object
+    ON source_history_write_leases(storage_id, object_key);
+CREATE TRIGGER source_history_checkpoint_removed
+AFTER DELETE ON checkpoints
+BEGIN
+    DELETE FROM source_history_checkpoint_files
+     WHERE storage_id=(SELECT storage_id FROM documents WHERE slug=OLD.slug)
+       AND checkpoint_sha=OLD.sha;
+    INSERT INTO pending_deletes(slug,object_key,bytes,queued_at,delete_after)
+    SELECT OLD.slug,o.object_key,o.bytes,unixepoch(),unixepoch()
+      FROM source_history_objects o
+      JOIN source_history_encodings e
+        ON e.storage_id=o.storage_id AND e.file_digest=o.file_digest
+     WHERE o.storage_id=(SELECT storage_id FROM documents WHERE slug=OLD.slug)
+       -- An encoded chunk/recipe can be shared by more than one file digest.
+       -- It is reclaimable only when no retained checkpoint names *any*
+       -- encoding that owns this physical key.
+       AND NOT EXISTS (SELECT 1
+                      FROM source_history_objects o2
+                      JOIN source_history_checkpoint_files r
+                        ON r.storage_id=o2.storage_id
+                       AND r.file_digest=o2.file_digest
+                      WHERE o2.storage_id=o.storage_id
+                        AND o2.object_key=o.object_key)
+       AND NOT EXISTS (SELECT 1 FROM source_history_write_leases l
+                      WHERE l.storage_id=o.storage_id AND l.object_key=o.object_key)
+    ON CONFLICT(slug,object_key) DO UPDATE SET
+      bytes=excluded.bytes,
+      delete_after=MIN(pending_deletes.delete_after,excluded.delete_after);
+    DELETE FROM source_history_encodings
+     WHERE storage_id=(SELECT storage_id FROM documents WHERE slug=OLD.slug)
+       AND NOT EXISTS (SELECT 1 FROM source_history_checkpoint_files r
+                      WHERE r.storage_id=source_history_encodings.storage_id
+                        AND r.file_digest=source_history_encodings.file_digest)
+       AND NOT EXISTS (SELECT 1
+                      FROM source_history_objects o
+                      JOIN source_history_write_leases l
+                        ON l.storage_id=o.storage_id
+                       AND l.object_key=o.object_key
+                      WHERE o.storage_id=source_history_encodings.storage_id
+                        AND o.file_digest=source_history_encodings.file_digest);
+END;
+CREATE TABLE quota_retention_jobs (
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    generation TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 0),
+    payload TEXT NOT NULL CHECK (length(CAST(payload AS BLOB)) <= 65536),
+    candidate_fingerprint TEXT NOT NULL,
+    -- -1 means this job has no deployment hard-count override.  A nonnegative
+    -- value is persisted so the worker can enforce the cap after the grace
+    -- window, even though the live server configuration may have changed.
+    hard_count_limit INTEGER NOT NULL DEFAULT -1 CHECK (hard_count_limit >= -1),
+    -- Pressure jobs have a distinct eviction policy; this is not encoded by
+    -- pretending the deployment count limit is zero.
+    pressure INTEGER NOT NULL DEFAULT 0 CHECK (pressure IN (0, 1)),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'grace', 'running', 'complete', 'stale')),
+    grace_until INTEGER NOT NULL CHECK (grace_until >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    completed_at INTEGER,
+    PRIMARY KEY (account_id, generation)
+) WITHOUT ROWID;
+CREATE INDEX quota_retention_jobs_due ON quota_retention_jobs(status, grace_until);
+CREATE TABLE quota_retention_candidates (
+    account_id TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    sha TEXT NOT NULL,
+    planned_seq INTEGER NOT NULL DEFAULT -1,
+    planned_parent TEXT NOT NULL DEFAULT '',
+    planned_tree_sha TEXT NOT NULL DEFAULT '',
+    planned_at TEXT NOT NULL DEFAULT '',
+    planned_label TEXT NOT NULL DEFAULT '',
+    planned_why TEXT NOT NULL DEFAULT '',
+    grace_until INTEGER NOT NULL CHECK (grace_until >= 0),
+    pressure_class INTEGER NOT NULL DEFAULT 0 CHECK (pressure_class IN (0, 1)),
+    pressure_ordinal INTEGER NOT NULL DEFAULT 0 CHECK (pressure_ordinal >= 0),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'removed', 'blocked')),
+    PRIMARY KEY (account_id, generation, slug, sha),
+    FOREIGN KEY (account_id, generation)
+        REFERENCES quota_retention_jobs(account_id, generation) ON DELETE CASCADE,
+    FOREIGN KEY (slug) REFERENCES documents(slug) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE INDEX quota_retention_candidates_due
+    ON quota_retention_candidates(status, grace_until, slug, sha);
+CREATE TABLE checkpoint_retention (
+    slug TEXT NOT NULL,
+    sha TEXT NOT NULL,
+    original_parent TEXT NOT NULL DEFAULT '',
+    ancestry_gap INTEGER NOT NULL DEFAULT 0 CHECK (ancestry_gap IN (0, 1)),
+    grace_until INTEGER NOT NULL DEFAULT 0 CHECK (grace_until >= 0),
+    lease_until INTEGER NOT NULL DEFAULT 0 CHECK (lease_until >= 0),
+    PRIMARY KEY (slug, sha),
+    FOREIGN KEY (slug, sha) REFERENCES checkpoints(slug, sha) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE document_retention_policy (
+    slug TEXT PRIMARY KEY REFERENCES documents(slug) ON DELETE CASCADE,
+    mode TEXT NOT NULL CHECK (mode IN ('balanced', 'custom')),
+    policy_version INTEGER NOT NULL DEFAULT 1 CHECK (policy_version >= 1),
+    enrolled_at INTEGER NOT NULL CHECK (enrolled_at >= 0),
+    last_scheduled_at INTEGER NOT NULL DEFAULT 0 CHECK (last_scheduled_at >= 0)
+) WITHOUT ROWID;
+CREATE TABLE checkpoint_asset_refs (
+    storage_id TEXT NOT NULL REFERENCES documents(storage_id) ON DELETE CASCADE,
+    checkpoint_sha TEXT NOT NULL,
+    object_key TEXT NOT NULL,
+    bytes INTEGER NOT NULL CHECK (bytes >= 0),
+    PRIMARY KEY (storage_id, checkpoint_sha, object_key)
+) WITHOUT ROWID;
+CREATE INDEX checkpoint_asset_refs_by_object
+    ON checkpoint_asset_refs(storage_id, object_key);
+CREATE TABLE checkpoint_asset_sets (
+    storage_id TEXT NOT NULL REFERENCES documents(storage_id) ON DELETE CASCADE,
+    checkpoint_sha TEXT NOT NULL,
+    asset_count INTEGER NOT NULL CHECK (asset_count >= 0),
+    PRIMARY KEY (storage_id, checkpoint_sha)
+) WITHOUT ROWID;
+CREATE TRIGGER checkpoint_asset_removed
+AFTER DELETE ON checkpoints
+BEGIN
+    -- Queueing is deliberately not physical deletion. The ledger stays
+    -- charged until the deletion worker confirms physical reclamation.
+    INSERT INTO pending_deletes(slug,object_key,bytes,queued_at,delete_after)
+    SELECT OLD.slug,r.object_key,r.bytes,unixepoch(),unixepoch()
+      FROM checkpoint_asset_refs r
+     WHERE r.storage_id=(SELECT storage_id FROM documents WHERE slug=OLD.slug)
+       AND r.checkpoint_sha=OLD.sha
+       AND NOT EXISTS (
+           SELECT 1
+             FROM checkpoint_asset_refs retained
+             JOIN checkpoints c ON c.slug=OLD.slug
+                              AND c.sha=retained.checkpoint_sha
+            WHERE retained.storage_id=r.storage_id
+              AND retained.object_key=r.object_key
+       )
+       AND NOT EXISTS (
+           SELECT 1 FROM source_history_write_leases l
+            WHERE l.storage_id=r.storage_id AND l.object_key=r.object_key
+       )
+       -- If the live journal is ahead of the remaining durable checkpoints,
+       -- do not even create a pending row: the next publication must be able
+       -- to lease this asset. The object ledger remains charged until a later
+       -- live-root reconciliation can queue it safely.
+       AND COALESCE((
+             SELECT MAX(c.last_sequence)
+               FROM journal_segment_coverage c
+              WHERE c.storage_id=r.storage_id OR c.storage_id=''
+       ),0) <= COALESCE((
+             SELECT MAX(c.durable_seq)
+               FROM checkpoints c
+              WHERE c.slug=OLD.slug
+       ),0)
+       AND COALESCE((
+             SELECT MAX(b.sequence)
+               FROM journal_bases b
+              WHERE b.storage_id=r.storage_id OR b.storage_id=''
+       ),0) <= COALESCE((
+             SELECT MAX(c.durable_seq)
+               FROM checkpoints c
+              WHERE c.slug=OLD.slug
+       ),0)
+    ON CONFLICT(slug,object_key) DO UPDATE SET
+      bytes=excluded.bytes,
+      delete_after=MIN(pending_deletes.delete_after,excluded.delete_after);
+    DELETE FROM checkpoint_asset_refs
+     WHERE storage_id=(SELECT storage_id FROM documents WHERE slug=OLD.slug)
+       AND checkpoint_sha=OLD.sha;
+    DELETE FROM checkpoint_asset_sets
+     WHERE storage_id=(SELECT storage_id FROM documents WHERE slug=OLD.slug)
+       AND checkpoint_sha=OLD.sha;
+END;

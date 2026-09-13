@@ -255,6 +255,13 @@ fn validate_key(key: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_document_id(value: &str) -> Result<()> {
+    if value.is_empty() || value.len() > 128 || value.contains('/') || value.contains('\\') || value.contains('\0') || value == "." || value == ".." {
+        return Err(Error::Invalid(format!("invalid document storage ID `{value}`")));
+    }
+    Ok(())
+}
+
 fn write_object(root: &Path, key: &str, bytes: &[u8]) -> Result<()> {
     validate_key(key)?;
     let path = objects_path(root).join(key);
@@ -272,12 +279,18 @@ fn write_object(root: &Path, key: &str, bytes: &[u8]) -> Result<()> {
     let mut file = match options.open(&temp) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            let existing = fs::read(&temp)?; if existing != bytes { return Err(Error::Invalid(format!("temporary target object collision: {key}"))); }
-            match fs::hard_link(&temp, &path) {
-                Ok(()) => { fs::remove_file(&temp)?; return Ok(()); }
-                Err(link) if link.kind() == io::ErrorKind::AlreadyExists => { let final_bytes=fs::read(&path)?; if final_bytes != bytes { return Err(Error::Invalid(format!("target object collision with different bytes: {key}"))); } let _=fs::remove_file(&temp); return Ok(()); }
-                Err(link) => return Err(link.into()),
+            let existing = fs::read(&temp)?;
+            if existing == bytes {
+                match fs::hard_link(&temp, &path) {
+                    Ok(()) => { fs::remove_file(&temp)?; return Ok(()); }
+                    Err(link) if link.kind() == io::ErrorKind::AlreadyExists => { let final_bytes=fs::read(&path)?; if final_bytes != bytes { return Err(Error::Invalid(format!("target object collision with different bytes: {key}"))); } let _=fs::remove_file(&temp); return Ok(()); }
+                    Err(link) => return Err(link.into()),
+                }
             }
+            // A killed conversion may leave a truncated staging inode. It is
+            // safe to discard it while holding the deployment writer lock.
+            fs::remove_file(&temp)?;
+            options.open(&temp)?
         }
         Err(e) => return Err(e.into()),
     };
@@ -296,9 +309,53 @@ fn write_object(root: &Path, key: &str, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn write_file_no_replace(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent)=path.parent() { fs::create_dir_all(parent)?; }
+    if path.exists() {
+        let metadata=fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() { return Err(Error::Invalid(format!("target secret path is not a regular file: {}",path.display()))); }
+        if fs::read(path)? != bytes { return Err(Error::Invalid(format!("target secret collision with different bytes: {}",path.display()))); }
+        return Ok(());
+    }
+    let name=path.file_name().and_then(|v|v.to_str()).unwrap_or("secret");
+    let temp=path.with_file_name(format!(".{name}.tmp"));
+    let mut file=OpenOptions::new().write(true).create_new(true).open(&temp)?;
+    file.write_all(bytes)?; file.sync_all()?; drop(file);
+    match fs::hard_link(&temp,path) {
+        Ok(()) => { fs::remove_file(&temp)?; }
+        Err(e) if e.kind()==io::ErrorKind::AlreadyExists => {
+            let existing=fs::read(path)?; if existing != bytes { return Err(Error::Invalid(format!("target secret collision with different bytes: {}",path.display()))); }
+            let _=fs::remove_file(&temp);
+        }
+        Err(e) => { let _=fs::remove_file(&temp); return Err(e.into()); }
+    }
+    if let Some(parent)=path.parent() { File::open(parent)?.sync_all()?; }
+    Ok(())
+}
+
+fn copy_secrets(source_root: &Path, target_root: &Path) -> Result<u64> {
+    let source=source_root.join("secrets");
+    if !source.exists() { return Ok(0); }
+    if fs::symlink_metadata(&source)?.file_type().is_symlink() { return Err(Error::Invalid("source secrets directory is a symlink".into())); }
+    let target=target_root.join("secrets"); fs::create_dir_all(&target)?;
+    let mut stack=vec![source]; let mut copied=0u64;
+    while let Some(directory)=stack.pop() {
+        for entry in fs::read_dir(&directory)? {
+            let entry=entry?; let path=entry.path(); let metadata=fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() { return Err(Error::Invalid(format!("source secret is a symlink: {}",path.display()))); }
+            if metadata.is_dir() { stack.push(path); continue; }
+            if !metadata.is_file() { return Err(Error::Invalid(format!("source secret is not a regular file: {}",path.display()))); }
+            let relative=path.strip_prefix(source_root).map_err(|_|Error::Invalid("secret path escaped source root".into()))?;
+            let destination=target_root.join(relative); reject_path_symlinks(target_root,&destination)?;
+            let bytes=fs::read(&path)?; write_file_no_replace(&destination,&bytes)?; copied=copied.checked_add(1).ok_or_else(||Error::Invalid("secret count overflow".into()))?;
+        }
+    }
+    Ok(copied)
+}
+
 fn reject_path_symlinks(root: &Path, path: &Path) -> Result<()> {
     let relative=path.strip_prefix(root).map_err(|_| Error::Invalid("object path escaped root".into()))?; let mut current=root.to_path_buf();
-    for component in relative.components() { current.push(component.as_os_str()); if current.exists() && fs::symlink_metadata(&current)?.file_type().is_symlink() { return Err(Error::Invalid(format!("symlink ancestor in object path: {}", current.display()))); } }
+    for component in relative.components() { current.push(component.as_os_str()); if let Ok(metadata)=fs::symlink_metadata(&current) { if metadata.file_type().is_symlink() { return Err(Error::Invalid(format!("symlink ancestor in object path: {}", current.display()))); } } }
     Ok(())
 }
 
@@ -496,6 +553,8 @@ fn make_plan(connection: &Connection, allowlist: &[String], explicit_key: Option
     let mut exclusions = Vec::new();
     let mut errors = inspect_unresolved(connection)?;
     for doc in all {
+        if let Err(error)=validate_document_id(&doc.storage_id) { errors.push(error.to_string()); continue; }
+        if let Err(error)=validate_key(&doc.main_path) { errors.push(format!("document {} has invalid main path: {error}",doc.storage_id)); continue; }
         if partial && !allowed.contains(doc.storage_id.as_str()) {
             exclusions.push(Exclusion { storage_id: doc.storage_id, slug: doc.slug, reason: "excluded by explicit document allowlist".into() });
             continue;
@@ -674,19 +733,19 @@ struct SourceTree { main: String, files: Vec<SourceFile>, settings: Option<Value
 // These wire structs mirror storage/encoding.rs. Keeping the converter
 // standalone avoids linking the server crate while preserving the v2 reader
 // contract exactly.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 enum V2Codec { WholeZstd, ChunkedZstd }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct V2ChunkRef { digest: [u8;32], length: u32 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct V2Recipe { version: u16, profile_id: u16, codec: V2Codec, uncompressed_len: u64, file_digest: [u8;32], chunks: Vec<V2ChunkRef> }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct V2Locator { object_id: String, object_digest: [u8;32], logical_digest: Option<[u8;32]>, logical_length: u64, byte_length: u64, encoding_version: u16 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct V2RecipeEnvelope { version: u16, recipe: V2Recipe, chunk_locators: Vec<V2Locator> }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct V2TreeFileLocator { kind: String, file_id: String, logical_digest: [u8;32], logical_length: u64, recipe: Option<V2Locator>, asset: Option<V2Locator> }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct V2TreeEnvelope { version: u16, main_path: String, source_format: String, settings_json: String, logical_digest: [u8;32], files: BTreeMap<String,V2TreeFileLocator> }
 
 fn digest_array(hex_digest: &str, field: &str) -> Result<[u8;32]> { let bytes=hex::decode(hex_digest).map_err(|e|Error::Invalid(format!("{field} is not hexadecimal: {e}")))?; bytes.try_into().map_err(|_|Error::Invalid(format!("{field} is not a SHA-256 digest"))) }
@@ -754,15 +813,21 @@ fn decode_recipe(bytes: &[u8]) -> Result<RecipeInfo> {
 
 fn source_history_file(source_root: &Path, connection: &Connection, doc: &SourceDocument, digest: &str) -> Result<Option<Vec<u8>>> {
     if !has_table(connection, "source_history_encodings")? { return Ok(None); }
-    let row: Option<(String, i64)> = connection.query_row("SELECT recipe_key,codec FROM source_history_encodings WHERE storage_id=?1 AND file_digest=?2", params![doc.storage_id,digest], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
-    let Some((recipe_key, _codec)) = row else { return Ok(None); };
+    let row: Option<(String,String,i64,i64,i64)> = connection.query_row("SELECT recipe_key,recipe_digest,codec,uncompressed_bytes,recipe_bytes FROM source_history_encodings WHERE storage_id=?1 AND file_digest=?2", params![doc.storage_id,digest], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    let Some((recipe_key,recipe_digest,codec,uncompressed_bytes,recipe_byte_count)) = row else { return Ok(None); };
+    if codec <= 0 || uncompressed_bytes < 0 || recipe_byte_count < 0 { return Err(Error::Invalid(format!("source history encoding for {digest} has invalid accounting"))); }
     let recipe_bytes = read_object(source_root, &recipe_key)?;
+    if recipe_bytes.len() as i64 != recipe_byte_count || sha256(&recipe_bytes) != recipe_digest { return Err(Error::Invalid(format!("source history recipe {recipe_key} failed descriptor integrity"))); }
     let recipe = decode_recipe(&recipe_bytes)?;
-    if recipe.file_digest != digest { return Err(Error::Invalid(format!("source recipe for {digest} has a different digest"))); }
+    if recipe.file_digest != digest || recipe.uncompressed_len as i64 != uncompressed_bytes { return Err(Error::Invalid(format!("source recipe for {digest} has inconsistent metadata"))); }
     let mut encoded_by_digest = HashMap::new();
     if has_table(connection, "source_history_objects")? {
-        let mut st = connection.prepare("SELECT object_key FROM source_history_objects WHERE storage_id=?1 AND file_digest=?2 ORDER BY object_key")?;
-        for row in st.query_map(params![doc.storage_id,digest], |r| r.get::<_,String>(0))? { let key = row?; encoded_by_digest.insert(key.clone(), read_object(source_root, &key)?); }
+        let mut st = connection.prepare("SELECT object_key,kind,bytes FROM source_history_objects WHERE storage_id=?1 AND file_digest=?2 ORDER BY object_key")?;
+        for row in st.query_map(params![doc.storage_id,digest], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?)))? {
+            let (key,kind,accounted)=row?; if kind != "source_chunk" || accounted < 0 { return Err(Error::Invalid(format!("source history object {key} has unsupported kind or size"))); }
+            let bytes=read_object(source_root,&key)?; if accounted > 0 && accounted != bytes.len() as i64 { return Err(Error::Invalid(format!("source history object {key} has incorrect byte accounting"))); }
+            encoded_by_digest.insert(key, bytes);
+        }
     }
     let mut out = Vec::with_capacity(recipe.uncompressed_len as usize);
     for (chunk_digest, expected_len) in &recipe.chunks {
@@ -806,32 +871,54 @@ fn object_record(doc: &SourceDocument, id: String, kind: &str, bytes: Vec<u8>, l
 
 fn convert_checkpoint(source_root: &Path, source: &Connection, doc: &SourceDocument, point: SourceCheckpoint) -> Result<ConvertedCheckpoint> {
     let tree = load_tree(source_root, doc, &point.tree_sha, &point.source_format, Some(source))?;
-    let mut records = Vec::new(); let mut object_ids = BTreeSet::new(); let mut tree_files = Vec::new(); let mut logical_bytes = 0i64;
+    #[derive(Serialize)]
+    struct LogicalFile { kind: String, #[serde(default, skip_serializing_if = "String::is_empty")] id: String, sha: String, size: i64 }
+    #[derive(Serialize)]
+    struct LogicalSettings { engine: String }
+    #[derive(Serialize)]
+    struct LogicalTree { main: String, files: BTreeMap<String, LogicalFile>, #[serde(skip_serializing_if = "Option::is_none")] settings: Option<LogicalSettings> }
+    let mut records = Vec::new(); let mut object_ids = BTreeSet::new(); let mut tree_files = BTreeMap::new(); let mut logical_files = BTreeMap::new(); let mut logical_bytes = 0i64;
     for file in tree.files {
         validate_key(&file.path)?;
         let kind = if file.kind == "asset" { "asset" } else { "text" };
         let bytes = read_file_bytes(source_root, doc, &file.sha, kind, &point.source_format, Some(source))?;
         if bytes.len() as i64 != file.size || sha256(&bytes) != file.sha { return Err(Error::Invalid(format!("checkpoint {} file {} failed byte verification", point.id, file.path))); }
         logical_bytes = logical_bytes.checked_add(file.size).ok_or_else(|| Error::Invalid("checkpoint logical byte overflow".into()))?;
+        let logical_digest = digest_array(&file.sha, "source file digest")?;
+        logical_files.insert(file.path.clone(), LogicalFile { kind: if kind == "asset" { "asset" } else { "source" }.into(), id: file.id.clone(), sha: file.sha.clone(), size: file.size });
         if kind == "asset" {
             let object_id = deterministic_id("asset", &format!("{}:{}", doc.storage_id, file.sha));
-            let record = object_record(doc, object_id.clone(), "asset", bytes, None); object_ids.insert(object_id.clone()); records.push(record);
-            tree_files.push(json!({"path":file.path,"kind":"asset","id":file.id,"digest":file.sha,"size":file.size,"object_id":object_id}));
+            let object_digest = sha256(&bytes);
+            let record = object_record(doc, object_id.clone(), "asset", bytes, Some(file.sha.clone())); object_ids.insert(object_id.clone()); records.push(record);
+            let locator = V2Locator { object_id: object_id.clone(), object_digest: digest_array(&object_digest, "asset object digest")?, logical_digest: Some(logical_digest), logical_length: file.size as u64, byte_length: file.size as u64, encoding_version: 1 };
+            tree_files.insert(file.path.clone(), V2TreeFileLocator { kind: "asset".into(), file_id: file.id, logical_digest, logical_length: file.size as u64, recipe: None, asset: Some(locator) });
         } else {
             let chunk_id = deterministic_id("source-chunk", &format!("{}:{}", doc.storage_id, file.sha));
             let recipe_id = deterministic_id("source-recipe", &format!("{}:{}", doc.storage_id, file.sha));
-            let chunk = object_record(doc, chunk_id.clone(), "source_chunk", bytes.clone(), Some(file.sha.clone()));
-            let recipe_body = json_text(&json!({"version":1,"file_digest":file.sha,"uncompressed_length":file.size,"chunks":[{"digest":file.sha,"length":file.size,"object_id":chunk_id}]}), 64*1024*1024, "source recipe")?.into_bytes();
-            let recipe = object_record(doc, recipe_id.clone(), "source_recipe", recipe_body, Some(file.sha.clone()));
+            let compressed = zstd::stream::encode_all(bytes.as_slice(), 3).map_err(|e| Error::Invalid(format!("source file {} could not be zstd encoded: {e}", file.path)))?;
+            let compressed_digest = sha256(&compressed);
+            let chunk = object_record(doc, chunk_id.clone(), "source_chunk", compressed.clone(), Some(file.sha.clone()));
+            let chunk_locator = V2Locator { object_id: chunk_id.clone(), object_digest: digest_array(&compressed_digest, "source chunk object digest")?, logical_digest: Some(logical_digest), logical_length: file.size as u64, byte_length: compressed.len() as u64, encoding_version: 1 };
+            let recipe_wire = V2RecipeEnvelope { version: 1, recipe: V2Recipe { version: 1, profile_id: 1, codec: V2Codec::WholeZstd, uncompressed_len: file.size as u64, file_digest: logical_digest, chunks: vec![V2ChunkRef { digest: logical_digest, length: u32::try_from(file.size).map_err(|_| Error::Invalid(format!("source file {} exceeds recipe chunk length", file.path)))? }] }, chunk_locators: vec![chunk_locator.clone()] };
+            let recipe_body = serde_json::to_vec(&recipe_wire)?;
+            if recipe_body.len() > 64*1024*1024 { return Err(Error::Invalid("source recipe exceeds 64 MiB".into())); }
+            let recipe = object_record(doc, recipe_id.clone(), "source_recipe", recipe_body.clone(), Some(file.sha.clone()));
             object_ids.insert(chunk_id.clone()); object_ids.insert(recipe_id.clone()); records.push(chunk); records.push(recipe);
-            tree_files.push(json!({"path":file.path,"kind":"text","id":file.id,"digest":file.sha,"size":file.size,"recipe_object_id":recipe_id,"chunk_object_ids":[chunk_id]}));
+            let recipe_locator = V2Locator { object_id: recipe_id, object_digest: digest_array(&sha256(&recipe_body), "source recipe object digest")?, logical_digest: Some(logical_digest), logical_length: file.size as u64, byte_length: recipe_body.len() as u64, encoding_version: 1 };
+            tree_files.insert(file.path.clone(), V2TreeFileLocator { kind: "source".into(), file_id: file.id, logical_digest, logical_length: file.size as u64, recipe: Some(recipe_locator), asset: None });
         }
     }
-    let tree_envelope = json!({"version":1,"main":tree.main,"files":tree_files,"settings":tree.settings,"source_tree_digest":point.tree_sha});
-    let tree_bytes = json_text(&tree_envelope, 16*1024*1024, "source tree envelope")?.into_bytes();
+    if tree_files.is_empty() || !tree_files.contains_key(&tree.main) { return Err(Error::Invalid(format!("checkpoint {} tree has no main file", point.id))); }
+    let settings_json = match tree.settings { Some(value) => json_text(&value, 16*1024*1024, "tree settings")?, None => "{\"version\":1}".into() };
+    let logical_settings = serde_json::from_str::<Value>(&settings_json).ok().and_then(|value| value.get("engine").and_then(Value::as_str).map(str::to_owned)).filter(|engine| !engine.is_empty()).map(|engine| LogicalSettings { engine });
+    let logical_body = serde_json::to_vec(&LogicalTree { main: tree.main.clone(), files: logical_files, settings: logical_settings })?;
+    let logical_digest: [u8;32] = Sha256::digest(&logical_body).into();
+    let tree_envelope = V2TreeEnvelope { version: 1, main_path: tree.main, source_format: point.source_format.clone(), settings_json, logical_digest, files: tree_files };
+    let tree_bytes = serde_json::to_vec(&tree_envelope)?;
+    if tree_bytes.len() > 16*1024*1024 { return Err(Error::Invalid("source tree envelope exceeds 16 MiB".into())); }
     let tree_id = deterministic_id("source-tree", &format!("{}:{}", doc.storage_id, point.tree_sha));
-    let tree_record = object_record(doc, tree_id.clone(), "source_tree", tree_bytes, Some(sha256(&serde_json::to_vec(&tree_envelope)?)));
-    let tree_digest = tree_record.digest.clone(); object_ids.insert(tree_id.clone()); records.push(tree_record);
+    let tree_record = object_record(doc, tree_id.clone(), "source_tree", tree_bytes, Some(hex::encode(logical_digest)));
+    let tree_digest = hex::encode(logical_digest); object_ids.insert(tree_id.clone()); records.push(tree_record);
     // The write order is intentionally stable: chunks, recipes, then tree. It
     // makes a resumed conversion easy to inspect and keeps object accounting
     // deterministic even when files are shared by many checkpoints.
@@ -870,9 +957,23 @@ fn decode_segment(bytes: &[u8]) -> Result<Vec<JournalRecord>> {
 
 fn decode_base(bytes: &[u8]) -> Result<(String, u64, u64, Vec<u8>)> {
     let mut c=Cursor::new(bytes); if c.take(4)? != b"KJBS" || c.u16()? != 1 { return Err(Error::Invalid("unsupported journal base format".into())); }
-    let _format=c.u16()?; let storage=c.text()?; let epoch=c.u64()?; let sequence=c.u64()?; let n=c.u32()? as usize; let digest=c.text()?; let payload=c.take(n)?.to_vec();
-    if c.offset != bytes.len() || digest != sha256(&payload) || payload.is_empty() { return Err(Error::Invalid("invalid journal base integrity".into())); }
+    if c.u16()? != 2 { return Err(Error::Invalid("unsupported journal base segment format".into())); }
+    let storage=c.text()?; let epoch=c.u64()?; let sequence=c.u64()?; let n=c.u32()? as usize; let digest=c.text()?; let payload=c.take(n)?.to_vec();
+    if c.offset != bytes.len() || storage.is_empty() || sequence == 0 || digest != sha256(&payload) || payload.is_empty() { return Err(Error::Invalid("invalid journal base integrity".into())); }
     Ok((storage,epoch,sequence,payload))
+}
+
+fn encode_recovery_base(storage_id: &str, epoch: u64, sequence: u64, payload: &[u8]) -> Result<Vec<u8>> {
+    if storage_id.is_empty() || storage_id.len() > u16::MAX as usize || sequence == 0 || payload.is_empty() || payload.len() > u32::MAX as usize {
+        return Err(Error::Invalid("invalid reconstructed journal base identity or size".into()));
+    }
+    let digest=sha256(payload);
+    let mut out=Vec::with_capacity(64+storage_id.len()+digest.len()+payload.len());
+    out.extend_from_slice(b"KJBS"); out.extend_from_slice(&1u16.to_le_bytes()); out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&(storage_id.len() as u16).to_le_bytes()); out.extend_from_slice(storage_id.as_bytes());
+    out.extend_from_slice(&epoch.to_le_bytes()); out.extend_from_slice(&sequence.to_le_bytes()); out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(digest.len() as u16).to_le_bytes()); out.extend_from_slice(digest.as_bytes()); out.extend_from_slice(payload);
+    Ok(out)
 }
 
 #[derive(Clone, Debug)]
@@ -934,7 +1035,7 @@ fn journal_replay(source_root: &Path, source: &Connection, doc: &SourceDocument)
     if latest.is_none() && updates.is_empty() {
         let session=read_object_optional(source_root,&format!("sessions/{}",doc.slug))?;
         let Some(session)=session.filter(|bytes|!bytes.is_empty()) else { return Ok(None); };
-        let ydoc=Doc::new(); let update=Update::decode_v1(&session).map_err(|e|Error::Invalid(format!("live session CRDT is invalid: {e}")))?; ydoc.transact_mut().apply_update(update).map_err(|e|Error::Invalid(format!("live session cannot be applied: {e}")))?; let payload=ydoc.transact().encode_state_as_update_v1(&yrs::StateVector::default()); return Ok(Some(ReplayedJournal {payload,epoch:0,sequence:0}));
+        let ydoc=Doc::new(); let update=Update::decode_v1(&session).map_err(|e|Error::Invalid(format!("live session CRDT is invalid: {e}")))?; ydoc.transact_mut().apply_update(update).map_err(|e|Error::Invalid(format!("live session cannot be applied: {e}")))?; let payload=ydoc.transact().encode_state_as_update_v1(&yrs::StateVector::default()); return Ok(Some(ReplayedJournal {payload,epoch:0,sequence:1}));
     }
     let ydoc=Doc::new();
     if let Some((_,_,payload))=&latest { let update=Update::decode_v1(payload).map_err(|e|Error::Invalid(format!("journal base CRDT is invalid: {e}")))?; ydoc.transact_mut().apply_update(update).map_err(|e|Error::Invalid(format!("journal base cannot be applied: {e}")))?; }
@@ -970,18 +1071,18 @@ fn convert_document(source_root: &Path, target_root: &Path, source: &Connection,
         for record in &converted_point.objects { write_object(target_root, &record.key, &record.bytes)?; all_objects.entry(record.id.clone()).or_insert_with(||record.clone()); }
         converted.push(converted_point);
     }
-    let journal_record=journal.as_ref().map(|state| { let mut record=object_record(doc,deterministic_id("journal-base",&doc.storage_id),"journal_base",state.payload.clone(),None); record.journal=Some((state.epoch as i64,0,state.sequence as i64)); record });
+    let journal_record=if let Some(state)=journal.as_ref() { let encoded=encode_recovery_base(&doc.storage_id,state.epoch,state.sequence,&state.payload)?; let mut record=object_record(doc,deterministic_id("journal-base",&doc.storage_id),"journal_base",encoded,None); record.journal=Some((state.epoch as i64,state.sequence as i64,state.sequence as i64)); Some(record) } else { None };
     if let Some(record)=&journal_record { write_object(target_root,&record.key,&record.bytes)?; all_objects.entry(record.id.clone()).or_insert_with(||record.clone()); }
     let tx=target.transaction()?;
     for record in all_objects.values() { insert_object(&tx,record,record.journal)?; }
-    if let Some(record)=&journal_record { if let Some(state)=&journal { tx.execute("UPDATE objects SET journal_epoch=?3,first_sequence=0,last_sequence=?4,live_root=1 WHERE document_id=?1 AND id=?2",params![doc.storage_id,record.id,state.epoch as i64,state.sequence as i64])?; } }
+    if let Some(record)=&journal_record { if let Some(state)=&journal { tx.execute("UPDATE objects SET journal_epoch=?3,first_sequence=?4,last_sequence=?5,live_root=1 WHERE document_id=?1 AND id=?2",params![doc.storage_id,record.id,state.epoch as i64,state.sequence as i64,state.sequence as i64])?; } }
     let mut closure_count=0u64;
     let mut checkpoint_ids=HashSet::new();
     for item in &converted {
         if !checkpoint_ids.insert(item.point.id.clone()) { return Err(Error::Invalid(format!("duplicate checkpoint id {}",item.point.id))); }
         let author=target_account_exists(&tx,item.point.by_account.as_deref())?;
         let metadata=json_text(&json!({"version":1,"git_commit":item.point.commit,"dirty":item.point.dirty,"changed":item.point.changed,"original_parent":item.point.parent}),65536,"checkpoint metadata")?;
-        tx.execute("INSERT OR IGNORE INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,0,?14,?15)",params![doc.storage_id,item.point.id,item.point.seq.max(1),item.tree_id,item.tree_digest,item.point.parent,item.point.at,author,item.point.by,item.point.why,item.point.source_format,item.logical_bytes,item.point.label,metadata,now_ms()+30*24*60*60*1000])?;
+        tx.execute("INSERT OR IGNORE INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,0,?14,?15)",params![doc.storage_id,item.point.id,item.point.seq.max(1),item.tree_id,item.tree_digest,item.point.parent,item.point.at,author,item.point.by,item.point.why,item.point.source_format,item.logical_bytes,item.point.label,metadata,now_ms()+30*24*60*60*1000])?;
         for object_id in &item.object_ids { tx.execute("INSERT OR IGNORE INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![doc.storage_id,item.point.id,object_id])?; closure_count+=1; }
         tx.execute("UPDATE checkpoints SET journal_epoch=0,journal_sequence=0 WHERE document_id=?1 AND id=?2",params![doc.storage_id,item.point.id])?;
     }
@@ -1079,10 +1180,45 @@ fn recompute_counters(target: &mut Connection) -> Result<Counts> {
 }
 
 fn verify_target(target_root: &Path, target: &Connection) -> Result<Verification> {
-    let mut statement=target.prepare("SELECT document_id,id,storage_key,digest,byte_length,state FROM objects ORDER BY document_id,id")?; for row in statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?)))? {let (doc,id,key,digest,length,state)=row?;if state!="available"||length<0{return Err(Error::Invalid(format!("target object {doc}/{id} is not settled")));}let bytes=read_target_object(target_root,&key)?;if bytes.len() as i64!=length || sha256(&bytes)!=digest{return Err(Error::Invalid(format!("target object {key} failed final digest verification")));}}
+    let mut statement=target.prepare("SELECT document_id,id,storage_key,digest,byte_length,state FROM objects ORDER BY document_id,id")?;
+    for row in statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?)))? {
+        let (doc,id,key,digest,length,state)=row?;
+        if state!="available"||length<0{return Err(Error::Invalid(format!("target object {doc}/{id} is not settled")));}
+        let bytes=read_target_object(target_root,&key)?;
+        if bytes.len() as i64!=length || sha256(&bytes)!=digest{return Err(Error::Invalid(format!("target object {key} failed final digest verification")));}
+    }
     let mut fk=target.prepare("PRAGMA foreign_key_check")?; if fk.query([])?.next()?.is_some(){return Err(Error::Invalid("target foreign_key_check reported violations".into()));}
     let integrity:String=target.query_row("PRAGMA integrity_check",[],|r|r.get(0))?; if integrity!="ok"{return Err(Error::Invalid(format!("target integrity_check failed: {integrity}")));}
-    let counters: (i64,i64,i64,i64,i64,i64)=target.query_row("SELECT stored_bytes,reserved_bytes,document_count,agent_payload_bytes,agent_payload_count,checkpoint_ref_count FROM server_state WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?; let expected:(i64,i64,i64,i64,i64,i64)=target.query_row("SELECT COALESCE(SUM(stored_bytes),0),COALESCE(SUM(reserved_bytes),0),COUNT(*),COALESCE(SUM(agent_payload_bytes),0),COALESCE(SUM(agent_payload_count),0),COALESCE(SUM(checkpoint_ref_count),0) FROM documents",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?; if counters!=expected{return Err(Error::Invalid("target cached counters do not equal defining rows".into()));}
+
+    // Verify every document's cached counters independently from the server
+    // aggregate. This catches a balanced aggregate hiding a per-document
+    // accounting error.
+    let mut docs=target.prepare("SELECT id,stored_bytes,reserved_bytes,agent_payload_bytes,agent_payload_count,checkpoint_ref_count FROM documents ORDER BY id")?;
+    for row in docs.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?)))? {
+        let (id,stored,reserved,agent_bytes,agent_count,refs)=row?;
+        let actual:(i64,i64,i64,i64)=target.query_row("SELECT COALESCE(SUM(byte_length),0),COALESCE(SUM(reserved_bytes),0),COALESCE(SUM(CASE WHEN kind='agent_payload' THEN COALESCE(byte_length,0)+reserved_bytes ELSE 0 END),0),COALESCE(SUM(CASE WHEN kind='agent_payload' THEN 1 ELSE 0 END),0) FROM objects WHERE document_id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+        let actual_refs:i64=target.query_row("SELECT COUNT(*) FROM checkpoint_objects WHERE document_id=?1",[&id],|r|r.get(0))?;
+        if (stored,reserved,agent_bytes,agent_count)!=(actual.0,actual.1,actual.2,actual.3)||refs!=actual_refs{return Err(Error::Invalid(format!("document {id} cached counters do not equal objects/checkpoint closure")));}
+        let journal:Option<String>=target.query_row("SELECT journal_base_object_id FROM documents WHERE id=?1",[&id],|r|r.get(0)).optional()?.flatten();
+        if let Some(object_id)=journal { let kind:String=target.query_row("SELECT kind FROM objects WHERE document_id=?1 AND id=?2",params![id,object_id],|r|r.get(0))?; if kind!="journal_base"{return Err(Error::Invalid(format!("document {id} journal base has wrong object kind")));} }
+    }
+    // Account totals and document totals are independently defining rows.
+    let mut accounts=target.prepare("SELECT id,stored_bytes,reserved_bytes,document_count FROM accounts ORDER BY id")?;
+    for row in accounts.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?)))? {
+        let (id,stored,reserved,count)=row?; let actual:(i64,i64,i64)=target.query_row("SELECT COALESCE(SUM(stored_bytes),0),COALESCE(SUM(reserved_bytes),0),COUNT(*) FROM documents WHERE owner_id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?; if (stored,reserved,count)!=(actual.0,actual.1,actual.2){return Err(Error::Invalid(format!("account {id} cached counters do not equal documents")));}
+    }
+    let counters:(i64,i64,i64,i64,i64,i64)=target.query_row("SELECT stored_bytes,reserved_bytes,document_count,agent_payload_bytes,agent_payload_count,checkpoint_ref_count FROM server_state WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
+    let expected:(i64,i64,i64,i64,i64,i64)=target.query_row("SELECT COALESCE(SUM(stored_bytes),0),COALESCE(SUM(reserved_bytes),0),COUNT(*),COALESCE(SUM(agent_payload_bytes),0),COALESCE(SUM(agent_payload_count),0),COALESCE(SUM(checkpoint_ref_count),0) FROM documents",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
+    if counters!=expected{return Err(Error::Invalid("target cached server counters do not equal documents".into()));}
+    let account_totals:(i64,i64,i64)=target.query_row("SELECT COALESCE(SUM(stored_bytes),0),COALESCE(SUM(reserved_bytes),0),COALESCE(SUM(document_count),0) FROM accounts",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?; if account_totals!=(expected.0,expected.1,expected.2){return Err(Error::Invalid("account totals do not equal document totals".into()));}
+
+    // Every checkpoint must retain its tree edge and every referenced object;
+    // the tree itself must be in the same document namespace.
+    let mut checkpoints=target.prepare("SELECT document_id,id,tree_object_id FROM checkpoints ORDER BY document_id,id")?;
+    for row in checkpoints.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))? {
+        let (doc,id,tree)=row?; let tree_count:i64=target.query_row("SELECT COUNT(*) FROM checkpoint_objects WHERE document_id=?1 AND checkpoint_id=?2 AND object_id=?3",params![doc,id,tree],|r|r.get(0))?; if tree_count!=1{return Err(Error::Invalid(format!("checkpoint {doc}/{id} is missing its tree object closure")));}
+        let refs:i64=target.query_row("SELECT COUNT(*) FROM checkpoint_objects co JOIN objects o ON o.document_id=co.document_id AND o.id=co.object_id WHERE co.document_id=?1 AND co.checkpoint_id=?2 AND o.state='available'",params![doc,id],|r|r.get(0))?; let declared:i64=target.query_row("SELECT COUNT(*) FROM checkpoint_objects WHERE document_id=?1 AND checkpoint_id=?2",params![doc,id],|r|r.get(0))?; if refs!=declared{return Err(Error::Invalid(format!("checkpoint {doc}/{id} references an unavailable object")));}
+    }
     Ok(Verification {source_integrity:"ok".into(),target_integrity:"ok".into(),physical_digests:true,foreign_keys:true,counters:true,complete_manifest:false})
 }
 
@@ -1097,7 +1233,7 @@ fn run(args: Args) -> Result<()> {
     if !plan.errors.is_empty(){return Err(Error::Invalid(plan.errors.join("; ")));}
     fs::create_dir_all(&target)?; let _target_lock=Lock::target(&read_lock_path(&target))?; let manifest_path=target.join(MANIFEST_FILE); let target_id; let mut manifest;
     let mut target_db=if args.resume { let bytes=fs::read(&manifest_path)?;manifest=serde_json::from_slice::<Manifest>(&bytes)?;if manifest.source_identity!=source_id||manifest.source_schema_fingerprint!=schema||manifest.source_catalog_digest!=source_digest{return Err(Error::Invalid("resume manifest does not match source identity/schema/catalog snapshot".into()));}target_id=manifest.target_identity.clone();open_target_existing(&target,&manifest)? } else {target_id=target_identity(&target,&source_id)?;manifest=new_manifest(&source,&target,source_id.clone(),source_digest.clone(),schema.clone(),target_id.clone(),&plan,&args.documents);let db=initialize_target(&target,&target_id)?;sync_json(&manifest_path,&manifest)?;db};
-    if target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM server_state WHERE id=1",[],|r|r.get(0))? != 1{return Err(Error::Invalid("target server_state singleton is missing".into()));} import_keyring(&source_db,&mut target_db,&plan.active_key); insert_accounts(&source_db,&mut target_db,&plan.documents)?; insert_documents(&source_db,&mut target_db,&plan.documents)?; import_sharing(&source_db,&mut target_db,&plan.documents)?; manifest.phase="static".into();manifest.updated_at=now_ms();sync_json(&manifest_path,&manifest)?;
+    if target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM server_state WHERE id=1",[],|r|r.get(0))? != 1{return Err(Error::Invalid("target server_state singleton is missing".into()));} let _secret_count=copy_secrets(&source,&target)?; import_keyring(&source_db,&mut target_db,&plan.active_key)?; insert_accounts(&source_db,&mut target_db,&plan.documents)?; insert_documents(&source_db,&mut target_db,&plan.documents)?; import_sharing(&source_db,&mut target_db,&plan.documents)?; manifest.phase="static".into();manifest.updated_at=now_ms();sync_json(&manifest_path,&manifest)?;
     let mut progress=HashMap::new(); for doc in &plan.documents {let p=manifest.documents.entry(doc.storage_id.clone()).or_default();if p.status=="complete"{continue;}if let Err(e)=convert_document(&source,&target,&source_db,&mut target_db,doc,p){p.status="error".into();p.error=Some(e.to_string());manifest.errors.push(format!("{}: {e}",doc.storage_id));sync_json(&manifest_path,&manifest)?;return Err(e);}p.status="complete".into();p.cursor="document-complete".into();manifest.updated_at=now_ms();sync_json(&manifest_path,&manifest)?;}
     for doc in &plan.documents {convert_publication(&source,&source_db,&target,&mut target_db,doc)?;}
     import_annotations(&source_db,&mut target_db,&plan.documents,&mut progress)?; for (doc_id,annotation_progress) in progress {if let Some(saved)=manifest.documents.get_mut(&doc_id){saved.annotations=annotation_progress.annotations;}} manifest.phase="reconciled".into();manifest.counts=recompute_counters(&mut target_db)?;manifest.verification=verify_target(&target,&target_db)?;manifest.verification.complete_manifest=true;manifest.complete=true;manifest.phase="complete".into();manifest.updated_at=now_ms();sync_json(&manifest_path,&manifest)?;println!("conversion complete: {}",manifest_path.display());Ok(())
@@ -1155,9 +1291,10 @@ mod tests {
         source_db.execute("INSERT INTO link_keyring(key_id,status,created_at) VALUES('legacy','primary',0)",[]).expect("key");
         source_db.execute("INSERT INTO documents(slug,storage_id,title,sha,created_at,published_at,updated_at,example,owner_key,owner_id,status,size,counted_size,maintenance_reserved,comment_seq,last_auto_checkpoint_at,pending_publication,last_publication_id,source_format,main) VALUES('paper','doc-1','Paper','', '2026-01-01T00:00:00Z','','2026-01-01T00:00:00Z',0,'acct','acct','active',0,0,0,0,0,NULL,'','markdown','paper.md')",[]).expect("document");
         let ydoc=Doc::new(); let text=ydoc.get_or_insert_text("body"); {let mut txn=ydoc.transact_mut(); text.insert(&mut txn,0,"hello");} let session=ydoc.transact().encode_state_as_update_v1(&yrs::StateVector::default()); std::fs::create_dir_all(source.path().join("objects/sessions")).expect("session dir"); std::fs::write(source.path().join("objects/sessions/paper"),session).expect("session");
+        let source_bytes=b"# hello\n"; let source_sha=sha256(source_bytes); std::fs::create_dir_all(source.path().join("objects/content/doc-1/blobs")).expect("source blob dir"); std::fs::write(source.path().join(format!("objects/content/doc-1/blobs/{source_sha}")),source_bytes).expect("source blob"); let tree=json!({"main":"paper.md","files":{"paper.md":{"kind":"text","id":"file-1","sha":source_sha,"size":source_bytes.len()}},"settings":{"engine":"markdown"}}); let tree_bytes=serde_json::to_vec(&tree).expect("tree"); let tree_sha=sha256(&tree_bytes); std::fs::create_dir_all(source.path().join("objects/content/doc-1/trees")).expect("source tree dir"); std::fs::write(source.path().join(format!("objects/content/doc-1/trees/{tree_sha}")),tree_bytes).expect("source tree"); source_db.execute("INSERT INTO checkpoints(slug,sha,seq,durable_seq,tree_sha,parent,at,by,why,source_format,size,label,git_commit,dirty,changed,by_account) VALUES('paper','cp-1',1,1,?1,'','2026-01-01T00:00:00Z','Vincent','initial','markdown',?2,'','',0,'[]','acct')",params![tree_sha,source_bytes.len() as i64]).expect("checkpoint");
         let args=Args{source_data:source.path().to_path_buf(),target_data:target.path().join("v2"),dry_run:false,resume:false,documents:Vec::new(),active_link_key:None}; run(args).expect("conversion");
-        let target_db=Connection::open(target.path().join("v2/catalog.db")).expect("target catalog"); assert_eq!(target_db.query_row::<i64,_,_>("PRAGMA user_version",[],|r|r.get(0)).expect("version"),2); assert_eq!(target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM documents",[],|r|r.get(0)).expect("document"),1); assert!(target.path().join("v2/conversion-manifest.json").is_file());
-        let args=Args{source_data:source.path().to_path_buf(),target_data:target.path().join("v2"),dry_run:false,resume:true,documents:Vec::new(),active_link_key:None}; run(args).expect("resume"); assert_eq!(target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM objects",[],|r|r.get(0)).expect("objects"),1);
+        let target_db=Connection::open(target.path().join("v2/catalog.db")).expect("target catalog"); assert_eq!(target_db.query_row::<i64,_,_>("PRAGMA user_version",[],|r|r.get(0)).expect("version"),2); assert_eq!(target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM documents",[],|r|r.get(0)).expect("document"),1); assert!(target.path().join("v2/conversion-manifest.json").is_file()); let (tree_id,tree_digest):(String,String)=target_db.query_row("SELECT tree_object_id,tree_digest FROM checkpoints",[],|r|Ok((r.get(0)?,r.get(1)?))).expect("checkpoint"); let tree_key:String=target_db.query_row("SELECT storage_key FROM objects WHERE id=?1",[&tree_id],|r|r.get(0)).expect("tree object"); let tree_wire:V2TreeEnvelope=serde_json::from_slice(&read_target_object(&target.path().join("v2"),&tree_key).expect("tree bytes")).expect("v2 tree envelope"); assert_eq!(tree_wire.version,1); assert_eq!(tree_digest,hex::encode(tree_wire.logical_digest)); let source_file=tree_wire.files.get("paper.md").expect("main file"); let recipe=source_file.recipe.as_ref().expect("recipe locator"); let recipe_bytes=read_target_object(&target.path().join("v2"),&format!("v2/documents/doc-1/objects/{}",recipe.object_id)).expect("recipe bytes"); let recipe_wire:V2RecipeEnvelope=serde_json::from_slice(&recipe_bytes).expect("v2 recipe envelope"); assert_eq!(recipe_wire.recipe.file_digest,source_file.logical_digest); let journal_key:String=target_db.query_row("SELECT storage_key FROM objects WHERE kind='journal_base'",[],|r|r.get(0)).expect("journal base"); let journal=read_target_object(&target.path().join("v2"),&journal_key).expect("journal bytes"); let (_,epoch,sequence,_)=decode_base(&journal).expect("recovery base envelope"); assert_eq!((epoch,sequence),(0,1));
+        let args=Args{source_data:source.path().to_path_buf(),target_data:target.path().join("v2"),dry_run:false,resume:true,documents:Vec::new(),active_link_key:None}; run(args).expect("resume"); assert_eq!(target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM objects",[],|r|r.get(0)).expect("objects"),4);
     }
 
     #[test]
