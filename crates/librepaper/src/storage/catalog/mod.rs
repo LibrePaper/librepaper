@@ -31,6 +31,7 @@ mod comments;
 mod documents;
 mod execution;
 mod journal;
+mod link_rotation;
 mod operations;
 mod pressure;
 mod publication;

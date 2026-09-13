@@ -1744,78 +1744,65 @@ fn link_key_rotation_resumes_after_a_bounded_batch() {
     let path = directory.path().join("catalog.db");
     let old = [17_u8; 32];
     let new = [19_u8; 32];
+    let operation_id;
     {
         let catalog = Catalog::open(&path).unwrap();
         catalog.upsert_account(&account()).unwrap();
-        catalog.create_document(&document()).unwrap();
         catalog.set_link_sealing_key(&old).unwrap();
         for index in 0..401 {
+            let storage_id = format!("storage-{index:03}");
+            let slug = format!("doc-{index:03}");
+            catalog.with_connection(|db| {
+                db.execute("INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path)
+                    VALUES(?1,?2,'acct-1','owned',?2,?2,'active',1,1,'markdown','main.md')",rusqlite::params![storage_id,slug])?;
+                Ok(())
+            }).unwrap();
             let plaintext = format!("reader-key-{index}");
             let digest = hex::encode(sha2::Sha256::digest(plaintext.as_bytes()));
-            let sealed = catalog
-                .seal_link_key(
-                    "storage-1",
-                    &format!("role-{index:03}"),
-                    &digest,
-                    &plaintext,
-                )
-                .unwrap();
-            catalog
-                .put_link(&Link {
-                    slug: "doc".into(),
-                    role: format!("role-{index:03}"),
-                    hash: digest,
-                    sealed,
-                    label: String::new(),
-                    budget: None,
-                    since: "2026-01-01T00:00:00Z".into(),
-                    until: String::new(),
-                })
-                .unwrap();
+            let sealed = catalog.seal_link_key(&storage_id,"reader",&digest,&plaintext).unwrap();
+            catalog.put_link(&Link { slug,role:"reader".into(),hash:digest,sealed,label:String::new(),budget:None,
+                since:"2026-01-01T00:00:00Z".into(),until:String::new() }).unwrap();
         }
         let first = catalog.rotate_link_sealing_key_batch(&new).unwrap();
-        assert_eq!(first.status, "running");
-        assert_eq!(first.processed, 200);
-        assert_eq!(first.cursor_role.as_deref(), Some("role-199"));
-        let running: String = catalog
-            .with_connection(|connection| {
-                connection
-                    .query_row(
-                        "SELECT status FROM link_key_rotations WHERE id=?1",
-                        [&first.id],
-                        |row| row.get(0),
-                    )
-                    .map_err(crate::storage::catalog::CatalogError::from)
-            })
-            .unwrap();
-        assert_eq!(running, "running");
+        assert_eq!(first.status,"running");
+        assert_eq!(first.processed,200);
+        assert_eq!(first.cursor_document_id.as_deref(),Some("storage-199"));
+        operation_id = first.id;
+        let running: String = catalog.with_connection(|db| Ok(db.query_row("SELECT state FROM operations WHERE id=?1",[&operation_id],|row|row.get(0))?)).unwrap();
+        assert_eq!(running,"prepared");
     }
+    // SQL selects the new primary even while old envelopes remain. Restoring
+    // all persisted secrets makes the durable cursor resumable before traffic.
     let reopened = Catalog::open(&path).unwrap();
-    reopened.set_link_sealing_key(&old).unwrap();
-    reopened.add_link_decryption_key(&new).unwrap();
-    let mut processed = 0;
-    loop {
-        let progress = reopened.rotate_link_sealing_key_batch(&new).unwrap();
-        processed += progress.processed;
-        if progress.status == "committed" {
-            break;
-        }
+    assert_eq!(Catalog::persisted_primary_link_key_id(&path).unwrap(),link_key_id_for_test(&new));
+    reopened.set_link_sealing_key(&new).unwrap();
+    assert!(reopened.resume_link_key_rotation().is_err(), "missing source secret must not silently finish a rotation");
+    reopened.add_link_decryption_key(&old).unwrap();
+    assert_eq!(reopened.resume_link_key_rotation().unwrap(),Some(201));
+    reopened.with_connection(|db| {
+        let (state,completed,expiry):(String,i64,i64)=db.query_row("SELECT state,completed_at,receipt_expires_at FROM operations WHERE id=?1",[&operation_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+        assert_eq!(state,"committed");
+        assert_eq!(expiry-completed,604800000);
+        assert_eq!(db.query_row("SELECT count(*) FROM links WHERE sealing_key_id<>?1",[link_key_id_for_test(&new)],|row|row.get::<_,i64>(0))?,0);
+        Ok(())
+    }).unwrap();
+    for index in [0,199,200,400] {
+        let link = reopened.links(&format!("doc-{index:03}")).unwrap().remove(0);
+        assert_eq!(reopened.open_link_key(&format!("storage-{index:03}"),"reader",&link.hash,&link.sealed).unwrap(),format!("reader-key-{index}"));
     }
-    assert_eq!(processed, 201);
-    assert_eq!(reopened.links("doc").unwrap().len(), 401);
-    reopened
-        .with_connection(|connection| {
-            let old_rows: i64 = connection
-                .query_row(
-                    "SELECT COUNT(*) FROM links WHERE key_id <> ?1",
-                    [link_key_id_for_test(&new)],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)?;
-            assert_eq!(old_rows, 0);
-            Ok(())
-        })
-        .unwrap();
+    assert_eq!(reopened.rotate_link_sealing_key(&new).unwrap(),0);
+}
+
+#[test]
+fn link_key_rotation_without_links_persists_primary_and_receipt() {
+    let catalog=Catalog::open_in_memory().unwrap();
+    let old=[23_u8;32]; let new=[29_u8;32];
+    catalog.set_link_sealing_key(&old).unwrap();
+    let result=catalog.rotate_link_sealing_key_batch(&new).unwrap();
+    assert_eq!(result.status,"committed");
+    assert_eq!(result.processed,0);
+    assert_eq!(catalog.link_keyring_primary_id().unwrap(),Some(link_key_id_for_test(&new)));
+    assert_eq!(catalog.resume_link_key_rotation().unwrap(),None);
 }
 
 fn link_key_id_for_test(key: &[u8; 32]) -> String {

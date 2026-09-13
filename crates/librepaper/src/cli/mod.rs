@@ -1013,8 +1013,6 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
             let _writer_lock =
                 crate::server::serve::acquire_writer_lock(&root.join("state/writer.lock"))
                     .unwrap_or_else(|error| die(error));
-            let catalog = crate::storage::catalog::Catalog::open(root.join("catalog.db"))
-                .unwrap_or_else(|error| die(format!("could not open catalogue: {error}")));
             let key_path = root.join("secrets/links.key");
             let keys = crate::auth::link_sealing_keyring_file(&key_path, true)
                 .unwrap_or_else(|error| die(error));
@@ -1022,13 +1020,22 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                 use sha2::Digest;
                 hex::encode(sha2::Sha256::digest(key))[..16].to_string()
             };
-            let durable_primary = catalog
-                .link_keyring_primary_id()
+            let durable_primary = crate::storage::catalog::Catalog::persisted_primary_link_key_id(root.join("catalog.db"))
                 .unwrap_or_else(|error| die(error.to_string()));
-            let source_index = durable_primary
-                .as_deref()
-                .and_then(|primary| keys.iter().position(|key| key_id(key) == primary))
-                .unwrap_or(0);
+            let source_index = keys.iter().position(|key|key_id(key)==durable_primary)
+                .unwrap_or_else(||die("durable primary link key is missing from deployment secrets"));
+            let deployment_id = crate::config::DeploymentPaths::local(&root)
+                .ensure_deployment_identity(true).unwrap_or_else(|error|die(error));
+            let catalog = crate::storage::catalog::Catalog::open_with_identity(root.join("catalog.db"),true,&deployment_id,&durable_primary)
+                .unwrap_or_else(|error|die(format!("could not open catalogue: {error}")));
+            catalog.set_link_sealing_key(&keys[source_index]).unwrap_or_else(|error|die(error.to_string()));
+            for key in &keys {
+                catalog.add_link_decryption_key(key).unwrap_or_else(|error|die(error.to_string()));
+            }
+            if let Some(changed) = catalog.resume_link_key_rotation().unwrap_or_else(|error|die(error.to_string())) {
+                println!("resealed {changed} remaining links");
+                return;
+            }
             let source = keys[source_index].clone();
             let destination = if key_id(&keys[0]) != key_id(&source) {
                 keys[0].clone()

@@ -4,16 +4,14 @@
 
 use super::*;
 
-pub(super) type ActiveLinkRotation = (String, String, String, Option<String>, Option<String>);
-
 /// Durable progress returned by one link-key rotation worker invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LinkKeyRotationProgress {
     pub id: String,
     pub status: String,
     pub processed: u32,
-    pub cursor_slug: Option<String>,
-    pub cursor_role: Option<String>,
+    pub cursor_document_id: Option<String>,
+    pub cursor_link_id: Option<String>,
 }
 
 pub(super) fn link_key_id(key: &[u8; 32]) -> String {
@@ -456,27 +454,6 @@ impl Catalog {
             return Err(CatalogError::Invalid("sealed link digest mismatch".into()));
         }
         Ok(plaintext)
-    }
-
-    /// Complete a link-key rotation, retaining the old key for decryption.
-    ///
-    /// The convenience API deliberately performs the work through the
-    /// bounded worker below.  Each invocation commits at most 200 links, so
-    /// a process death leaves a durable cursor rather than one giant SQLite
-    /// transaction to replay.
-    pub fn rotate_link_sealing_key(&self, _new_key: &[u8]) -> CatalogResult<u32> {
-        Err(CatalogError::Invalid(
-            "link-key rotation is managed by the v2 keyring initializer".into(),
-        ))
-    }
-
-    pub fn rotate_link_sealing_key_batch(
-        &self,
-        _new_key: &[u8],
-    ) -> CatalogResult<LinkKeyRotationProgress> {
-        Err(CatalogError::Invalid(
-            "link-key rotation is managed by the v2 keyring initializer".into(),
-        ))
     }
 
     pub fn update_document_access(

@@ -256,14 +256,21 @@ pub async fn serve(options: ServeOptions) {
     let secrets = &deployment_paths.secrets;
     let link_sealing_keys = link_sealing_keyring_file(&secrets.join("links.key"), catalog_nonempty)
         .unwrap_or_else(|err| die(err));
-    let key_digest = hex::encode(Sha256::digest(&link_sealing_keys[0]));
-    let active_link_key_id = &key_digest[..16];
+    let key_id = |key: &[u8]| hex::encode(Sha256::digest(key))[..16].to_string();
+    let active_link_key_id = if catalog_nonempty {
+        crate::storage::catalog::Catalog::persisted_primary_link_key_id(catalog_path)
+            .unwrap_or_else(|error| die(format!("could not inspect durable link key: {error}")))
+    } else {
+        key_id(&link_sealing_keys[0])
+    };
+    let primary_key = link_sealing_keys.iter().find(|key|key_id(key)==active_link_key_id)
+        .unwrap_or_else(||die("durable primary link key is missing from deployment secrets"));
     let catalog = Arc::new(
         crate::storage::catalog::Catalog::open_with_identity(
             catalog_path,
             durable,
             &deployment_id,
-            active_link_key_id,
+            &active_link_key_id,
         )
             .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
     );
@@ -271,13 +278,15 @@ pub async fn serve(options: ServeOptions) {
     let key = session_key_file(&secrets.join("session.key"), catalog_nonempty)
         .unwrap_or_else(|err| die(err));
     catalog
-        .set_link_sealing_key(&link_sealing_keys[0])
+        .set_link_sealing_key(primary_key)
         .unwrap_or_else(|err| die(format!("could not configure link sealing: {err}")));
-    for old in link_sealing_keys.iter().skip(1) {
+    for old in link_sealing_keys.iter().filter(|key| key_id(key)!=active_link_key_id) {
         catalog
             .add_link_decryption_key(old)
             .unwrap_or_else(|err| die(format!("could not configure old link key: {err}")));
     }
+    catalog.resume_link_key_rotation()
+        .unwrap_or_else(|error| die(format!("could not resume link-key rotation: {error}")));
     let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
         .await
         .unwrap_or_else(|err| die(err));
