@@ -21,14 +21,13 @@ IDs recorded by the manifest and are content checked before every retry.
 Partial conversion requires one or more explicit `--document STORAGE_ID`
 arguments. The completion manifest records every excluded document and remains
 incomplete if any selected document or dependency cannot be verified. A
-successful conversion includes the v1 DDL fixture at `fixtures/catalog-v1.sql`
-and uses the checked-in v2 DDL artifact; neither file is loaded from a runtime
-working directory.
+successful conversion is checked against the v1 DDL fixture at
+`fixtures/catalog-v1.sql` and initializes from the checked-in v2 DDL artifact;
+neither file is loaded from a runtime working directory or copied into the
+destination deployment.
 
-The crate is intentionally outside the production server crate. Add
-`tools/catalog-v1-import` to the workspace only when the root agent is ready to
-build the converter; this tool does not participate in server startup or v1
-writes.
+The crate is intentionally standalone and outside the production server
+runtime. It does not participate in server startup or v1 writes.
 
 ## Section 20 implementation checklist
 
