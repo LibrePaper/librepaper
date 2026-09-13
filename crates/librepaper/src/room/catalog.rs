@@ -1190,74 +1190,83 @@ fn load_catalog_comments_blocking(
     let rows = catalog.comments(slug, None, 500)?;
     let mut comments = Vec::with_capacity(rows.len());
     for row in rows {
-        let region = row
-            .region
-            .map(|raw| {
-                serde_json::from_str::<Region>(&raw).map_err(|err| {
-                    crate::storage::catalog::CatalogError::Invalid(format!(
-                        "comment region is invalid: {err}"
-                    ))
-                })
-            })
-            .transpose()?;
-        let source = row.source_path.map(|path| SourceAnchor {
-            path,
-            exact: row.source_exact.unwrap_or_default(),
-            prefix: row.source_prefix.unwrap_or_default(),
-            suffix: row.source_suffix.unwrap_or_default(),
-            position: row.source_position,
-        });
-        let output_anchor = row
-            .quarto_output
-            .map(|raw| {
-                serde_json::from_str::<QuartoOutputAnchor>(&raw).map_err(|err| {
-                    crate::storage::catalog::CatalogError::Invalid(format!(
-                        "comment Quarto output anchor is invalid: {err}"
-                    ))
-                })
-            })
-            .transpose()?;
         let replies = catalog.replies(slug, &row.id, 100)?;
-        comments.push(Comment {
-            id: row.id,
-            seq: row.seq,
-            motivation: row.motivation,
-            publication_id: row.publication_id,
-            body: row.body,
-            creator: row.creator,
-            author: row.author,
-            via: row.via,
-            created: row.created,
-            exact: row.exact,
-            prefix: row.prefix,
-            suffix: row.suffix,
-            position: row.position,
-            point: row.point,
-            color: row.color.clone(),
-            region,
-            output_anchor,
-            source,
-            proposed: row.proposed,
-            pass: row.pass,
-            outcome: row.outcome,
-            accept_request: row.accept_request,
-            revision: row.revision,
-            resolved: row.resolved,
-            resolved_at: row.resolved_at,
-            resolved_in: row.resolved_in,
-            replies: replies
-                .into_iter()
-                .map(|reply| Reply {
-                    id: reply.id,
-                    body: reply.body,
-                    creator: reply.creator,
-                    author: reply.author,
-                    created: reply.created,
-                })
-                .collect(),
-        });
+        comments.push(room_comment_from_catalog_row(row, replies)?);
     }
     Ok((annotation_seq, comments))
+}
+
+/// Convert the canonical catalogue representation to the client-visible room
+/// representation. Acceptance versioning uses this exact conversion too.
+pub(crate) fn room_comment_from_catalog_row(
+    row: crate::storage::catalog::Comment,
+    replies: Vec<crate::storage::catalog::Reply>,
+) -> crate::storage::catalog::CatalogResult<Comment> {
+    let region = row
+        .region
+        .map(|raw| {
+            serde_json::from_str::<Region>(&raw).map_err(|err| {
+                crate::storage::catalog::CatalogError::Invalid(format!(
+                    "comment region is invalid: {err}"
+                ))
+            })
+        })
+        .transpose()?;
+    let source = row.source_path.map(|path| SourceAnchor {
+        path,
+        exact: row.source_exact.unwrap_or_default(),
+        prefix: row.source_prefix.unwrap_or_default(),
+        suffix: row.source_suffix.unwrap_or_default(),
+        position: row.source_position,
+    });
+    let output_anchor = row
+        .quarto_output
+        .map(|raw| {
+            serde_json::from_str::<QuartoOutputAnchor>(&raw).map_err(|err| {
+                crate::storage::catalog::CatalogError::Invalid(format!(
+                    "comment Quarto output anchor is invalid: {err}"
+                ))
+            })
+        })
+        .transpose()?;
+    Ok(Comment {
+        id: row.id,
+        seq: row.seq,
+        motivation: row.motivation,
+        publication_id: row.publication_id,
+        body: row.body,
+        creator: row.creator,
+        author: row.author,
+        via: row.via,
+        created: row.created,
+        exact: row.exact,
+        prefix: row.prefix,
+        suffix: row.suffix,
+        position: row.position,
+        point: row.point,
+        color: row.color,
+        region,
+        output_anchor,
+        source,
+        proposed: row.proposed,
+        pass: row.pass,
+        outcome: row.outcome,
+        accept_request: row.accept_request,
+        revision: row.revision,
+        resolved: row.resolved,
+        resolved_at: row.resolved_at,
+        resolved_in: row.resolved_in,
+        replies: replies
+            .into_iter()
+            .map(|reply| Reply {
+                id: reply.id,
+                body: reply.body,
+                creator: reply.creator,
+                author: reply.author,
+                created: reply.created,
+            })
+            .collect(),
+    })
 }
 
 /// What one catalogue comment row costs as an owned job input.

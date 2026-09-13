@@ -38,13 +38,10 @@ fn definitive_checkpoint_catalog_error(error: &crate::storage::catalog::CatalogE
             | crate::storage::catalog::CatalogError::Invalid(_)
             | crate::storage::catalog::CatalogError::Refused(_, _)
             | crate::storage::catalog::CatalogError::NotFound => true,
-            crate::storage::catalog::CatalogError::Sql(error) => {
-                let text = error.to_string().to_ascii_lowercase();
-                !text.contains("busy")
-                    && !text.contains("locked")
-                    && !text.contains("disk i/o")
-                    && !text.contains("ioerr")
-            }
+            crate::storage::catalog::CatalogError::Sql(
+                rusqlite::Error::SqliteFailure(error, _),
+            ) => error.code == rusqlite::ErrorCode::ConstraintViolation,
+            crate::storage::catalog::CatalogError::Sql(_) => false,
             crate::storage::catalog::CatalogError::Busy
             | crate::storage::catalog::CatalogError::Closed => false,
         },

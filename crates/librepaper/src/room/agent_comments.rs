@@ -17,6 +17,14 @@ pub(crate) fn comment_version(comment: &Comment) -> String {
     request_digest(&json!(comment))
 }
 
+pub(crate) fn catalog_comment_version(
+    row: crate::storage::catalog::Comment,
+    replies: Vec<crate::storage::catalog::Reply>,
+) -> crate::storage::catalog::CatalogResult<String> {
+    let comment = super::catalog::room_comment_from_catalog_row(row, replies)?;
+    Ok(comment_version(&comment))
+}
+
 impl Room {
     /// Ensure that a captured tree has a retained checkpoint. Content lookup
     /// makes a retry after a lost receipt a no-op even if the live tree moved.

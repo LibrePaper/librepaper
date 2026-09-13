@@ -697,6 +697,26 @@ fn operation_authorized_in_tx(
 }
 
 impl Catalog {
+    pub(crate) fn current_checkpoint_journal_fence(
+        &self,
+        slug: &str,
+    ) -> CatalogResult<Option<(i64, i64)>> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT c.journal_epoch,c.journal_sequence
+                       FROM checkpoints c
+                       JOIN documents d ON d.id=c.document_id
+                      WHERE d.slug=?1 AND d.status <> 'deleting'
+                        AND c.id=d.current_checkpoint_id",
+                    [slug],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(CatalogError::from)
+        })
+    }
+
     pub(crate) fn v2_document_source_generation(&self, document_id: &DocumentId) -> CatalogResult<i64> {
         self.with_connection(|db| {
             db.query_row(
@@ -3627,7 +3647,7 @@ impl Catalog {
                             .and_then(serde_json::Value::as_str)
                             .filter(|value| !value.is_empty())
                             .ok_or_else(|| CatalogError::Invalid("agent acceptance version is missing".into()))?;
-                        let current_version = super::comments::comment_version_for_document_tx(
+                        let current_version = Self::comment_version_for_document_tx(
                             tx,
                             checkpoint.document_id.as_str(),
                             comment_id,
