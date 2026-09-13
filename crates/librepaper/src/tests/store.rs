@@ -538,8 +538,8 @@ async fn catalog_concurrent_admission_is_atomic() {
     // The physical v2 closure (tree plus source chunks) therefore admits one
     // concurrent request and rejects the other, without relying on legacy
     // source-byte accounting.
-    limits.storage.total = 1_000_000;
-    limits.storage.per_owner = 1_000_000;
+    limits.storage.total = 4 << 20;
+    limits.storage.per_owner = 4 << 20;
     let config = Arc::new(limits);
     let (blobs, catalog) = local_catalog_store(&dir);
     let first_catalog =
@@ -558,7 +558,7 @@ async fn catalog_concurrent_admission_is_atomic() {
         store::Publication {
             slug: "left".into(),
             title: "left".into(),
-            source: "12345".repeat(120_000),
+            source: "12345".repeat(400_000),
             owner: "alice".into(),
             ..Default::default()
         },
@@ -568,7 +568,7 @@ async fn catalog_concurrent_admission_is_atomic() {
         store::Publication {
             slug: "right".into(),
             title: "right".into(),
-            source: "12345".repeat(120_000),
+            source: "12345".repeat(400_000),
             owner: "alice".into(),
             ..Default::default()
         },
@@ -588,8 +588,11 @@ async fn catalog_concurrent_admission_is_atomic() {
 async fn catalog_replacement_preserves_accounting_on_quota_failure() {
     let dir = tempfile::tempdir().unwrap();
     let mut limits = Configuration::default();
-    limits.storage.total = 4096;
-    limits.storage.per_owner = 4096;
+    // The v2 closure includes the recipe and tree objects in addition to the
+    // source bytes. Keep the ceiling above that settled closure while leaving
+    // room for the high-water replacement reservation to be refused below.
+    limits.storage.total = 256 << 10;
+    limits.storage.per_owner = 256 << 10;
     let config = Arc::new(limits);
     let (blobs, catalog) = local_catalog_store(&dir);
     let store = store::Store::open_with_catalog(blobs, config, catalog.clone())
@@ -605,8 +608,8 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
             },
             catalog_fixture_actor(),
         )
-    .await
-    .unwrap();
+        .await
+        .unwrap();
     store
         .put_as_actor(
             store::Publication {
@@ -617,16 +620,21 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
             },
             catalog_fixture_actor(),
         )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
     let settled = catalog.document("replace").unwrap().unwrap();
-    assert_eq!(settled.size, 8);
+    let checkpoint = catalog
+        .checkpoint("replace", &settled.sha)
+        .unwrap()
+        .expect("settled replacement checkpoint");
+    assert_eq!(checkpoint.size, 8);
+    assert!(settled.size >= checkpoint.size);
     assert_eq!(catalog.totals().unwrap(), (settled.counted_size, 1));
     let refused = store
         .put_as_actor(
             store::Publication {
                 slug: "replace".into(),
-                source: "123456789".repeat(2048),
+                source: "123456789".repeat(256 << 10),
                 owner: "alice".into(),
                 ..Default::default()
             },
@@ -638,7 +646,14 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
         Err(crate::document::store::PutError::Quota { .. })
     ));
     let document = catalog.document("replace").unwrap().unwrap();
-    assert_eq!(document.size, 8);
+    assert_eq!(
+        catalog
+            .checkpoint("replace", &document.sha)
+            .unwrap()
+            .expect("replacement checkpoint remains after refusal")
+            .size,
+        8
+    );
     assert_eq!(document.counted_size, settled.counted_size);
     assert_eq!(catalog.totals().unwrap(), (settled.counted_size, 1));
 }
@@ -717,8 +732,8 @@ async fn catalog_removal_worker_resumes_after_reopen() {
 async fn room_for_charges_uncached_catalog_documents() {
     let dir = tempfile::tempdir().unwrap();
     let mut limits = Configuration::default();
-    limits.storage.total = 1 << 20;
-    limits.storage.per_owner = 1 << 20;
+    limits.storage.total = 20 << 20;
+    limits.storage.per_owner = 20 << 20;
     let config = Arc::new(limits);
     let (blobs, catalog) = local_catalog_store(&dir);
     let store = store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
@@ -814,7 +829,7 @@ async fn a_sealed_link_is_opened_outside_the_connection_closure() {
         hex::encode(sha2::Sha256::digest(secret.as_bytes()))
     };
     store
-        .modify("linked", |entry| {
+        .modify_as_owner("linked", &catalog_fixture_actor(), |entry| {
             entry.set_link(store::LinkGrant {
                 role: "editor".into(),
                 hash: hash.clone(),
