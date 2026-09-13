@@ -1,7 +1,7 @@
 use super::{
     Account, AnnotationAuthority, Catalog, CatalogError, Checkpoint, Comment, JournalPreparation,
     DocumentId, JournalSegment, Link, MutationAuthority, NewDocument, ObjectId, OperationKind,
-    OperationScope, Reply, SourceHistoryObject, SourceHistoryRecord,
+    OperationRequest, OperationScope, Reply, SourceHistoryObject, SourceHistoryRecord,
     UnixMillis, V2Operation, V2OperationInput,
 };
 use sha2::Digest;
@@ -2943,7 +2943,7 @@ fn v2_checkpoint_operation_receipt_is_bounded_and_terminal() {
             connection
                 .query_row(
                     "SELECT work_expires_at FROM operations WHERE request_key=?1",
-                    [&prepared.request_id],
+                    [&request_id],
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)
