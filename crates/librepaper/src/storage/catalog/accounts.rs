@@ -1171,6 +1171,7 @@ impl Catalog {
                                  SELECT o.id, o.state, o.kind
                                  FROM operations o
                                  WHERE o.account_id=?1 AND o.id>?2
+                                   AND o.kind NOT IN ('erase_account','erase_document')
                                  ORDER BY o.id LIMIT ?3
                                )
                                UNION
@@ -1178,6 +1179,7 @@ impl Catalog {
                                  SELECT o.id, o.state, o.kind
                                  FROM operations o
                                  WHERE o.actor_key IN (?1, 'account:' || ?1) AND o.id>?2
+                                   AND o.kind NOT IN ('erase_account','erase_document')
                                  ORDER BY o.id LIMIT ?3
                                )
                              )

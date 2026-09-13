@@ -194,6 +194,23 @@ fn erasure_pass_sql(
                     // A pinned terminal receipt is a durable retry condition. It
                     // must yield this account without advancing its cursor or
                     // starving unrelated accounts in the same pass.
+                    Err(CatalogError::Conflict(message))
+                        if stages[index] == "annotations"
+                            && message == "annotation gained a reply during account erasure" =>
+                    {
+                        // A reply may have landed after the child-drain phase
+                        // but before parent deletion. Rewind to that bounded
+                        // phase; the next pass drains children and retries the
+                        // parent, instead of leaving the cursor permanently on
+                        // an annotation that can never be deleted.
+                        index = stages
+                            .iter()
+                            .position(|stage| *stage == "annotation_replies")
+                            .expect("annotation-replies stage is present");
+                        cursor = None;
+                        catalog.erasure_batch(&id, stages[index], None, now, rows)?;
+                        continue;
+                    }
                     Err(CatalogError::Conflict(_)) => break,
                     Err(error) => return Err(error),
                 };
