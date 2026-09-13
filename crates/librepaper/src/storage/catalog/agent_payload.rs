@@ -200,14 +200,15 @@ impl Catalog {
             } else {
                 plan["object_id"] = serde_json::Value::String(object_id.as_str().to_owned());
             }
-            let plan_json = serde_json::to_string(&plan)
-                .map_err(|_| CatalogError::Invalid("agent payload plan is invalid".into()))?;
             if plan.get("object_id").and_then(serde_json::Value::as_str) != Some(object_id.as_str()) {
                 return Err(CatalogError::Invalid("agent payload plan object id mismatch".into()));
             }
             plan["physical_digest"] = serde_json::Value::String(input.physical_digest.clone());
             plan["logical_digest"] = serde_json::Value::String(input.logical_digest.clone());
             plan["expires_at"] = serde_json::json!(input.expires_at.0);
+            plan["reserved_bytes"] = serde_json::json!(input.reserved_bytes);
+            let plan_json = serde_json::to_string(&plan)
+                .map_err(|_| CatalogError::Invalid("agent payload plan is invalid".into()))?;
             let owner_id: String = tx.query_row("SELECT owner_id FROM documents WHERE id=?1", [&document_id], |row| row.get(0)).map_err(CatalogError::from)?;
             let (doc_reserved, doc_agent_bytes, doc_agent_count): (i64,i64,i64) = tx.query_row("SELECT reserved_bytes,agent_payload_bytes,agent_payload_count FROM documents WHERE id=?1", [&document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(CatalogError::from)?;
             let (owner_stored, owner_reserved): (i64,i64) = tx.query_row("SELECT stored_bytes,reserved_bytes FROM accounts WHERE id=?1", [&owner_id], |row| Ok((row.get(0)?,row.get(1)?))).map_err(CatalogError::from)?;
@@ -339,11 +340,11 @@ impl Catalog {
                 .ok_or_else(|| CatalogError::Invalid("agent payload plan lacks object id".into()))?;
             let expected_digest = plan.get("physical_digest").and_then(serde_json::Value::as_str)
                 .ok_or_else(|| CatalogError::Invalid("agent payload plan lacks physical digest".into()))?;
-            let expected_length: i64 = tx.query_row(
-                "SELECT reserved_bytes FROM objects WHERE document_id=?1 AND id=?2 AND kind='agent_payload' AND allocation_operation_id=?3",
-                params![document_id, object_id, operation_id.as_str()],
-                |row| row.get(0),
-            ).map_err(CatalogError::from)?;
+            let expected_length = plan.get("reserved_bytes").and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| CatalogError::Invalid("agent payload plan lacks admitted length".into()))?;
+            if expected_length < 0 {
+                return Err(CatalogError::Invalid("agent payload admitted length is negative".into()));
+            }
             let (object_state, object_digest, object_length, allocation): (String,String,Option<i64>,Option<String>) = tx.query_row(
                 "SELECT state,digest,byte_length,allocation_operation_id FROM objects WHERE document_id=?1 AND id=?2 AND kind='agent_payload'",
                 params![document_id, object_id],
@@ -357,8 +358,8 @@ impl Catalog {
                 params![document_id, object_id, expected_digest],
             ).map_err(CatalogError::from)?;
             tx.execute(
-                "UPDATE object_leases SET expires_at=?1 WHERE document_id=?2 AND object_id=?3 AND operation_id=?4 AND purpose='stage' AND expires_at<?1",
-                params![work_expires_at, document_id, object_id, operation_id.as_str()],
+                "DELETE FROM object_leases WHERE document_id=?1 AND object_id=?2 AND operation_id=?3 AND purpose='stage'",
+                params![document_id, object_id, operation_id.as_str()],
             ).map_err(CatalogError::from)?;
             let changed = tx.execute(
                 "UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?2+3600000,updated_at=max(updated_at,?2) WHERE id=?3 AND state='prepared'",

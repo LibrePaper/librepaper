@@ -538,7 +538,7 @@ fn resolve_journal_dependencies(
             .query_row(
                 "SELECT id,kind,digest,byte_length FROM objects
                  WHERE document_id=?1 AND state='available'
-                   AND kind IN ('asset','publication_asset')
+                   AND kind='asset' AND encoding_version=1
                    AND digest=?3 AND byte_length=?4 ORDER BY id LIMIT 1",
                 params![document_id, hint.kind, hint.digest, bytes],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
