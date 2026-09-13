@@ -989,6 +989,20 @@ impl Catalog {
         } else {
             request.intent.to_owned()
         };
+        let expected_document_generation = if kind == OperationKind::AgentApply {
+            Some(self.with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT source_generation FROM documents
+                          WHERE id=?1 AND status<>'deleting'",
+                        [document_id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)
+            })?)
+        } else {
+            None
+        };
         let operation = self.prepare_v2_operation(
             &V2OperationInput {
                 scope: OperationScope::Document(document_id.clone()),
@@ -997,7 +1011,7 @@ impl Catalog {
                 kind,
                 request_digest: request.request_digest.to_owned(),
                 plan_json: canonical_intent.clone(),
-                expected_document_generation: None,
+                expected_document_generation,
                 conversation_id: None,
                 execution_epoch: None,
                 work_expires_at: None,

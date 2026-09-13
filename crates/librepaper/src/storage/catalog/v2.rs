@@ -2931,9 +2931,7 @@ impl Catalog {
                 "SELECT source_generation, json_extract(?2,'$.closure_digest'), json_extract(?2,'$.tree_digest') FROM documents WHERE id=?1 AND status <> 'deleting'",
                 params![checkpoint.document_id.as_str(), plan_json], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             ).map_err(CatalogError::from)?;
-            if kind != OperationKind::AgentApply.as_str()
-                && expected_generation != Some(source_generation)
-            {
+            if expected_generation != Some(source_generation) {
                 return Err(CatalogError::Conflict("source generation changed".into()));
             }
             if kind != OperationKind::AgentApply.as_str() {
@@ -3248,29 +3246,6 @@ impl Catalog {
                 }
                 let agent_plan = serde_json::from_str::<serde_json::Value>(&agent_plan_json)
                     .map_err(|_| CatalogError::Invalid("invalid agent source plan".into()))?;
-                let before_tree = agent_plan
-                    .get("before_tree")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| {
-                        CatalogError::Invalid("agent source plan has no base tree".into())
-                    })?;
-                let current_tree: Option<String> = tx
-                    .query_row(
-                        "SELECT c.tree_digest
-                           FROM documents d
-                           LEFT JOIN checkpoints c
-                             ON c.document_id=d.id AND c.id=d.current_checkpoint_id
-                          WHERE d.id=?1 AND d.status<>'deleting'",
-                        [checkpoint.document_id.as_str()],
-                        |row| row.get(0),
-                    )
-                    .map_err(CatalogError::from)?;
-                if current_tree.as_deref() != Some(before_tree) {
-                    return Err(CatalogError::Conflict(
-                        "agent source base checkpoint changed".into(),
-                    ));
-                }
                 if agent_plan
                     .get("after_tree")
                     .and_then(serde_json::Value::as_str)
@@ -3392,9 +3367,7 @@ impl Catalog {
                    FROM documents WHERE id=?1 AND status<>'deleting'",
                 [checkpoint.document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
             ).map_err(CatalogError::from)?;
-            if kind != OperationKind::AgentApply.as_str()
-                && expected_generation != Some(source_generation)
-            {
+            if expected_generation != Some(source_generation) {
                 return Err(CatalogError::Conflict("source generation changed".into()));
             }
             if checkpoint.journal_epoch != journal_epoch
