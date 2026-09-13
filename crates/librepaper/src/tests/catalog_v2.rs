@@ -58,6 +58,50 @@ fn v2_document_lookup_selects_requested_slug_and_hides_erased_owner() {
 }
 
 #[test]
+fn v2_link_rotation_invalidates_bookmarks_without_changing_link_identity() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    account(&catalog);
+    document(&catalog, "links", "Links");
+    catalog.with_connection(|db| {
+        db.execute("UPDATE documents SET status='active' WHERE id='links'", [])?;
+        db.execute("UPDATE accounts SET bookmarks_json='{\"version\":1,\"items\":[]}' WHERE id='owner'", [])?;
+        Ok(())
+    }).unwrap();
+    catalog.set_link_sealing_key(&[42; 32]).unwrap();
+    let mut link = Link {
+        slug: "links".into(), role: "reader".into(),
+        hash: crate::server::hash_link_key("first secret"),
+        sealed: Vec::new(), label: "Read".into(), budget: None,
+        since: crate::util::timestamp(), until: String::new(),
+    };
+    link.sealed = catalog.seal_link_key("links", &link.role, &link.hash, "first secret").unwrap();
+    catalog.put_link(&link).unwrap();
+    let identity = || catalog.with_connection(|db| {
+        db.query_row("SELECT id,credential_generation FROM links WHERE document_id='links'", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))).map_err(CatalogError::from)
+    }).unwrap();
+    let first = identity();
+    let mut guest = Guest { slug: "links".into(), account_id: "owner".into(), since: crate::util::timestamp(), link_hash: link.hash.clone() };
+    catalog.pin_guest(&guest).unwrap();
+    link.label = "Renamed".into();
+    catalog.put_link(&link).unwrap();
+    assert_eq!(identity(), first);
+    link.hash = crate::server::hash_link_key("replacement secret");
+    link.sealed = catalog.seal_link_key("links", &link.role, &link.hash, "replacement secret").unwrap();
+    catalog.put_link(&link).unwrap();
+    assert_eq!(identity(), (first.0, first.1 + 1));
+    assert!(catalog.pin_guest(&guest).is_err(), "old credential cannot repin");
+    guest.link_hash = link.hash.clone();
+    catalog.pin_guest(&guest).unwrap();
+    catalog.with_connection(|db| {
+        let pinned: i64 = db.query_row("SELECT json_extract(bookmarks_json,'$.items[0].credential_generation') FROM accounts WHERE id='owner'", [], |row| row.get(0))?;
+        assert_eq!(pinned, first.1 + 1);
+        db.execute("UPDATE links SET created_at=0,expires_at=1 WHERE document_id='links'", [])?;
+        Ok(())
+    }).unwrap();
+    assert!(catalog.pin_guest(&guest).is_err(), "expired credential cannot pin");
+}
+
+#[test]
 fn v2_reopens_with_exact_inventory_and_preserves_singleton() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("catalog.db");

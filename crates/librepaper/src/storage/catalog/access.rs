@@ -607,7 +607,9 @@ impl Catalog {
             if expires_at.is_some_and(|expires_at| expires_at < created_at) { return Err(CatalogError::Invalid("link expiry precedes creation".into())); }
             tx.execute("INSERT INTO links(document_id,id,role,token_hash,sealed_token,sealing_key_id,label,budget,created_at,expires_at)
                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
-                ON CONFLICT(document_id,role) DO UPDATE SET token_hash=excluded.token_hash,sealed_token=excluded.sealed_token,
+                ON CONFLICT(document_id,role) DO UPDATE SET
+                credential_generation=links.credential_generation+CASE WHEN links.token_hash<>excluded.token_hash THEN 1 ELSE 0 END,
+                token_hash=excluded.token_hash,sealed_token=excluded.sealed_token,
                 label=excluded.label,budget=excluded.budget,expires_at=excluded.expires_at,sealing_key_id=excluded.sealing_key_id",
                 params![document_id, format!("{}-{}", link.role, hex::encode(crate::auth::random_bytes(8))), link.role, link.hash, link.sealed, key_id, link.label, link.budget, created_at, expires_at]).map_err(CatalogError::from)?;
             Ok(link.clone())
@@ -652,7 +654,7 @@ impl Catalog {
         self.immediate(|tx| {
             let status: Option<String> = tx.query_row("SELECT status FROM accounts WHERE id=?1", [&guest.account_id], |r| r.get(0)).optional().map_err(CatalogError::from)?;
             if status.as_deref() != Some("active") { return Err(CatalogError::Conflict("guest account is not active".into())); }
-            let (document_id,link_id,generation): (String,String,i64) = tx.query_row("SELECT d.id,l.id,l.credential_generation FROM documents d JOIN accounts a ON a.id=d.owner_id JOIN links l ON l.document_id=d.id WHERE d.slug=?1 AND d.status='active' AND a.status='active' AND l.token_hash=?2", params![guest.slug,guest.link_hash], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            let (document_id,link_id,generation): (String,String,i64) = tx.query_row("SELECT d.id,l.id,l.credential_generation FROM documents d JOIN accounts a ON a.id=d.owner_id JOIN links l ON l.document_id=d.id WHERE d.slug=?1 AND d.status='active' AND a.status='active' AND l.token_hash=?2 AND (l.expires_at IS NULL OR l.expires_at>?3)", params![guest.slug,guest.link_hash,unix_millis()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
             let payload: String = tx.query_row("SELECT bookmarks_json FROM accounts WHERE id=?1", [&guest.account_id], |r| r.get(0)).map_err(CatalogError::from)?;
             let mut json: serde_json::Value = serde_json::from_str(&payload).map_err(|e| CatalogError::Invalid(format!("invalid bookmarks: {e}")))?;
             let items = json.get_mut("items").and_then(serde_json::Value::as_array_mut).ok_or_else(|| CatalogError::Invalid("bookmarks_json has invalid shape".into()))?;
