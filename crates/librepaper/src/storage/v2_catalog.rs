@@ -758,7 +758,7 @@ async fn heartbeat_stage_leases_page(
         .saturating_add(cursor_object.as_deref().map_or(0, str::len))
         .saturating_add(cursor_holder.as_deref().map_or(0, str::len));
     catalog
-        .execute_catalog(input_bytes, move |catalog| {
+        .execute_catalog(input_bytes, move |_catalog| {
             catalog.with_connection(|connection| {
                 let transaction = connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)

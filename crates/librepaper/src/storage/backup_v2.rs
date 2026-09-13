@@ -777,7 +777,7 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
             .state
             .join(format!(".backup-v2-{}.db", std::process::id()));
         let catalog = Arc::clone(&self.catalog);
-        let (operation_id, deployment_id, revision) = catalog
+        let (operation_id, deployment_id, _revision) = catalog
             .execute_catalog(4096, move |catalog| {
                 catalog
                     .with_connection(|connection| {
