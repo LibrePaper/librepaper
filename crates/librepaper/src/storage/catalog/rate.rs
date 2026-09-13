@@ -127,4 +127,107 @@ mod tests {
         assert!(reserve(&state, "account:a", "checkpoint", 1).is_ok());
         drop(owner);
     }
+
+    #[test]
+    fn committed_reservation_does_not_reset_at_window_boundary() {
+        let state = Arc::new(Mutex::new(ProcessRateState::default()));
+        let mut first = reserve(&state, "account:boundary", "source_upload", 1).unwrap();
+        first.commit();
+        {
+            let mut state = state.lock().unwrap();
+            let bucket = state
+                .buckets
+                .get_mut("source_upload\0account:boundary")
+                .unwrap();
+            // A monotonic sample crossing the nominal window boundary refills
+            // continuously. It must not create a fresh fixed window merely
+            // because a wall-clock hour changed.
+            bucket.sampled = Instant::now() - WINDOW;
+        }
+        let mut at_boundary = reserve(&state, "account:boundary", "source_upload", 1).unwrap();
+        at_boundary.commit();
+        assert!(reserve(&state, "account:boundary", "source_upload", 1).is_err());
+    }
+
+    #[test]
+    fn refill_is_fractional_and_continuous() {
+        let state = Arc::new(Mutex::new(ProcessRateState::default()));
+        for _ in 0..4 {
+            let mut reservation = reserve(&state, "account:fraction", "source_upload", 4).unwrap();
+            reservation.commit();
+        }
+        {
+            let mut state = state.lock().unwrap();
+            let bucket = state
+                .buckets
+                .get_mut("source_upload\0account:fraction")
+                .unwrap();
+            bucket.sampled = Instant::now() - WINDOW / 8;
+        }
+        assert!(reserve(&state, "account:fraction", "source_upload", 4).is_err());
+        let fractional_tokens = state
+            .lock()
+            .unwrap()
+            .buckets
+            .get("source_upload\0account:fraction")
+            .unwrap()
+            .tokens;
+        assert!(fractional_tokens > 0.45 && fractional_tokens < 0.60);
+
+        {
+            let mut state = state.lock().unwrap();
+            let bucket = state
+                .buckets
+                .get_mut("source_upload\0account:fraction")
+                .unwrap();
+            bucket.sampled = Instant::now() - WINDOW / 8;
+        }
+        let mut refilled = reserve(&state, "account:fraction", "source_upload", 4).unwrap();
+        refilled.commit();
+    }
+
+    #[test]
+    fn dropped_reservation_refunds_original_owner_and_action() {
+        let state = Arc::new(Mutex::new(ProcessRateState::default()));
+        let original = reserve(&state, "account:original", "source_upload", 1).unwrap();
+        let mut unrelated_owner = reserve(&state, "account:unrelated", "source_upload", 1).unwrap();
+        unrelated_owner.commit();
+        let mut unrelated_action = reserve(&state, "account:original", "checkpoint", 1).unwrap();
+        unrelated_action.commit();
+
+        drop(original);
+        let mut refunded = reserve(&state, "account:original", "source_upload", 1).unwrap();
+        refunded.commit();
+        assert!(reserve(&state, "account:original", "checkpoint", 1).is_err());
+    }
+
+    #[test]
+    fn expired_entries_make_room_without_exceeding_bound() {
+        let state = Arc::new(Mutex::new(ProcessRateState::default()));
+        let now = Instant::now();
+        {
+            let mut state = state.lock().unwrap();
+            for index in 0..MAX_ENTRIES {
+                state.buckets.insert(
+                    format!("source_upload\0account:{index}"),
+                    Bucket {
+                        tokens: 1.0,
+                        sampled: now,
+                        limit: 1,
+                    },
+                );
+            }
+        }
+        assert!(reserve(&state, "account:new", "source_upload", 1).is_err());
+        {
+            let mut state = state.lock().unwrap();
+            let expired_at = Instant::now() - IDLE_EXPIRY;
+            for bucket in state.buckets.values_mut() {
+                bucket.sampled = expired_at;
+            }
+        }
+        let mut reservation = reserve(&state, "account:new", "source_upload", 1).unwrap();
+        reservation.commit();
+        assert_eq!(state.lock().unwrap().buckets.len(), 1);
+    }
 }
