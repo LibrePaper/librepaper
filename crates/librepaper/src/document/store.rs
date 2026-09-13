@@ -1049,31 +1049,11 @@ impl Store {
                 (Ok(_), Err(error)) => Err(BlobError::Other(error.to_string())),
             };
         }
-        // In catalogue mode `state.entries` is only a lazily filled
-        // compatibility cache -- it starts empty and gains a slug only once
-        // something else has already touched it -- so a document nobody has
-        // looked up since startup would answer not-found here even though
-        // the catalogue has it. The catalogue, when there is one, is asked
-        // directly instead.
-        let (digest, identity) = match &self.catalog {
-            Some(catalog) => {
-                let document = document_row(catalog, slug)
-                    .await
-                    .map_err(|error| BlobError::Other(error.to_string()))?
-                    .ok_or(BlobError::NotFound)?;
-                let identity = if document.storage_id.is_empty() {
-                    slug.to_string()
-                } else {
-                    document.storage_id
-                };
-                (document.sha, identity)
-            }
-            None => {
-                let state = self.state.lock().await;
-                match state.entries.get(slug) {
-                    Some(entry) => (entry.sha.clone(), slug.to_string()),
-                    None => return Err(BlobError::NotFound),
-                }
+        let (digest, identity) = {
+            let state = self.state.lock().await;
+            match state.entries.get(slug) {
+                Some(entry) => (entry.sha.clone(), slug.to_string()),
+                None => return Err(BlobError::NotFound),
             }
         };
         self.blobs.get(&source_key(&identity, &digest)).await
