@@ -279,10 +279,9 @@ async fn refused_upload_writes_nothing() {
     );
 }
 
-/// A parsed publication reserves its complete known object peak before the
-/// source/tree/session objects are materialized. A source that merely fits
-/// the raw byte ceiling therefore cannot leave a partial catalogue row or
-/// object behind when the peak does not fit.
+/// An encoded physical closure exceeding the quota is refused before any
+/// object PUT. High-entropy text keeps this about physical bytes rather than
+/// assuming that compressible source consumes its logical length on disk.
 #[tokio::test]
 async fn large_publication_is_refused_before_object_materialization() {
     let ceiling = 600 * 1024;
@@ -293,27 +292,33 @@ async fn large_publication_is_refused_before_object_materialization() {
         uploads_per_hour: 50,
     })
     .await;
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut random = 0x123456789abcdef0_u64;
+    let source: String = (0..ceiling as usize * 2).map(|_| {
+        random ^= random << 13;
+        random ^= random >> 7;
+        random ^= random << 17;
+        alphabet[(random >> 32) as usize & 63] as char
+    }).collect();
     let (status, payload) = post(
         &server.url,
         "/api/documents",
-        json!({"title": "Large", "html": "x".repeat(ceiling as usize)}),
+        json!({"title": "Large", "html": source}),
     )
     .await;
     assert_eq!(status, 507, "got {status} {payload}");
-    assert!(server
-        .instance
-        .store
-        .catalog
-        .as_ref()
-        .unwrap()
-        .document("large")
-        .unwrap()
-        .is_none());
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let (documents, objects): (i64, i64) = catalog.with_connection(|connection| {
+        Ok((connection.query_row("SELECT count(*) FROM documents", [], |row| row.get(0))?,
+            connection.query_row("SELECT count(*) FROM objects", [], |row| row.get(0))?))
+    }).unwrap();
+    assert_eq!((documents, objects), (0, 0));
+    assert!(catalog.audit_v2_counters().unwrap());
     assert!(server
         .instance
         .store
         .blobs
-        .list("documents/")
+        .list("v2/documents/")
         .await
         .unwrap()
         .is_empty());
