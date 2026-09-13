@@ -95,6 +95,7 @@ impl Room {
             let generation = authority.generation.clone();
             let link_hash = authority.link_hash.clone();
             let execution_epoch = authority.execution_epoch.clone();
+            let operation_scope = authority.operation_scope.clone();
             let policy_editor = authority.policy_editor;
             let automation = authority.automation;
             catalog
@@ -115,13 +116,20 @@ impl Room {
                         actor,
                         &request,
                         source_generation,
+                        &operation_scope,
                     )
                 })
                 .await
                 .map_err(|error| error.to_string())?
         };
         if prepared.state == "committed" {
-            let actor_key = format!("account:{}", authority.account_id);
+            let actor_key = if !authority.account_id.is_empty() {
+                format!("account:{}", authority.account_id)
+            } else if !authority.link_hash.is_empty() {
+                format!("link:{}", authority.link_hash)
+            } else {
+                return Err("checkpoint actor is missing".into());
+            };
             let operation = catalog
                 .execute_catalog(512, {
                     let storage_id = self.storage_id.clone();

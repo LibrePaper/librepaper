@@ -38,6 +38,19 @@ const CHECKPOINT_SELECT: &str = "SELECT d.slug,c.id,c.seq,c.journal_sequence,c.t
      FROM checkpoints c JOIN documents d ON d.id=c.document_id
      JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'";
 
+fn checkpoint_actor_key(actor: MutationAuthority<'_>) -> CatalogResult<String> {
+    if !actor.account_id.is_empty() {
+        Ok(format!("account:{}", actor.account_id))
+    } else if !actor.link_hash.is_empty() {
+        Ok(format!("link:{}", actor.link_hash))
+    } else {
+        Err(CatalogError::refused(
+            CatalogRefusal::ActorRights,
+            "checkpoint actor is missing",
+        ))
+    }
+}
+
 impl Catalog {
     /// Prepare the source-writer row used by an MCP checkpoint before the
     /// physical closure is encoded.  The checkpoint writer reuses this row in
@@ -50,17 +63,21 @@ impl Catalog {
         actor: MutationAuthority<'_>,
         request: &AgentCheckpointCommit,
         source_generation: i64,
+        operation_scope: &str,
     ) -> CatalogResult<V2Operation> {
-        let actor_key = if !actor.account_id.is_empty() {
-            format!("account:{}", actor.account_id)
-        } else if !actor.link_hash.is_empty() {
-            format!("link:{}", actor.link_hash)
-        } else {
-            return Err(CatalogError::refused(
-                CatalogRefusal::ActorRights,
-                "checkpoint actor is missing",
+        let actor_key = checkpoint_actor_key(actor)?;
+        if request.digest.len() != 64
+            || !request
+                .digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(CatalogError::Invalid(
+                "invalid checkpoint request digest".into(),
             ));
-        };
+        }
+        let issued = crate::util::request_key_timestamp(&request.request_id)
+            .ok_or_else(|| CatalogError::Invalid("invalid checkpoint request key".into()))?;
         let authority = serde_json::json!({
             "account_id": actor.account_id,
             "session_generation": actor.generation,
@@ -68,12 +85,15 @@ impl Catalog {
             "policy_editor": actor.policy_editor,
             "automation": actor.automation,
             "execution_epoch": actor.execution_epoch,
+            "operation_scope": operation_scope,
         });
+        let actor_proof = authority.clone();
         let plan_json = serde_json::json!({
             "version": 2,
             "effect": "checkpoint",
             "before_tree": request.source_revision,
             "after_tree": request.source_revision,
+            "actor": actor_proof,
             "authority": authority,
         })
         .to_string();
@@ -83,22 +103,176 @@ impl Catalog {
                 .checked_add(120_000)
                 .ok_or_else(|| CatalogError::Invalid("checkpoint deadline overflow".into()))?,
         )?;
-        self.prepare_v2_operation(
-            &V2OperationInput {
+        if issued > now.0.saturating_add(60_000) || now.0.saturating_sub(issued) > 15 * 60_000 {
+            return Err(CatalogError::refused(
+                CatalogRefusal::RequestExpired,
+                "checkpoint request is outside its admission window",
+            ));
+        }
+        self.immediate(|tx| {
+            let slug: String = tx
+                .query_row(
+                    "SELECT slug FROM documents WHERE id=?1",
+                    [document_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if !Self::mutation_authorized_in_tx(tx, &slug, actor, "editor")? {
+                return Err(CatalogError::refused(
+                    CatalogRefusal::ActorRights,
+                    "checkpoint authority changed",
+                ));
+            }
+            let current_source_generation: i64 = tx
+                .query_row(
+                    "SELECT source_generation FROM documents
+                     WHERE id=?1 AND status IN ('active','creating')",
+                    [document_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if current_source_generation != source_generation {
+                return Err(CatalogError::Conflict(
+                    "source generation changed before checkpoint admission".into(),
+                ));
+            }
+            if Self::agent_cancellation_active_tx(
+                tx,
+                document_id.as_str(),
+                &request.request_id,
+                &actor_key,
+            )? {
+                return Err(CatalogError::Conflict(
+                    "checkpoint operation was cancelled".into(),
+                ));
+            }
+            let writer_generation: String = tx
+                .query_row(
+                    "SELECT writer_generation FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            let existing: Option<(
+                String,
+                String,
+                String,
+                String,
+                String,
+                Option<i64>,
+                Option<i64>,
+            )> = tx
+                .query_row(
+                    "SELECT id,kind,state,request_digest,writer_generation,
+                            work_expires_at,receipt_expires_at
+                       FROM operations
+                      WHERE document_id=?1 AND actor_key=?2 AND request_key=?3",
+                    params![document_id.as_str(), actor_key, request.request_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(CatalogError::from)?;
+            if let Some((id, kind, state, digest, generation, work_deadline, receipt_expiry)) =
+                existing
+            {
+                if kind != OperationKind::AgentApply.as_str() || digest != request.digest {
+                    return Err(CatalogError::Conflict(
+                        "checkpoint key was reused with different content".into(),
+                    ));
+                }
+                if generation != writer_generation {
+                    return Err(CatalogError::Conflict(
+                        "checkpoint operation belongs to an obsolete writer generation".into(),
+                    ));
+                }
+                if state == "committed" {
+                    if receipt_expiry.is_none_or(|expiry| expiry <= now.0) {
+                        return Err(CatalogError::refused(
+                            CatalogRefusal::RequestExpired,
+                            "checkpoint receipt has expired; submit a new request key",
+                        ));
+                    }
+                } else if state == "prepared" {
+                    if work_deadline.is_none_or(|deadline| deadline <= now.0) {
+                        return Err(CatalogError::refused(
+                            CatalogRefusal::RequestExpired,
+                            "checkpoint operation has expired",
+                        ));
+                    }
+                } else {
+                    return Err(CatalogError::Conflict(
+                        "checkpoint operation is not resumable".into(),
+                    ));
+                }
+                return Ok(V2Operation {
+                    id: OperationId::new(id)
+                        .map_err(|error| CatalogError::Invalid(error.to_string()))?,
+                    scope: OperationScope::Document(document_id.clone()),
+                    actor_key: actor_key.clone(),
+                    request_key: request.request_id.clone(),
+                    kind,
+                    state,
+                    request_digest: digest,
+                    writer_generation: generation,
+                });
+            }
+            Self::admit_operation_slot(
+                tx,
+                Some(document_id.as_str()),
+                OperationKind::AgentApply.as_str(),
+            )?;
+            tx.execute(
+                "INSERT INTO operations
+                 (id,document_id,actor_key,request_key,kind,request_digest,state,
+                  writer_generation,expected_document_generation,execution_epoch,
+                  plan_json,created_at,updated_at,work_expires_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,'prepared',?7,?8,?9,?10,?11,?11,?12)",
+                params![
+                    hex::encode(crate::auth::random_bytes(16)),
+                    document_id.as_str(),
+                    actor_key,
+                    request.request_id,
+                    OperationKind::AgentApply.as_str(),
+                    request.digest,
+                    writer_generation,
+                    source_generation,
+                    (!actor.execution_epoch.is_empty()).then_some(actor.execution_epoch),
+                    plan_json,
+                    now.0,
+                    expires.0,
+                ],
+            )
+            .map_err(CatalogError::from)?;
+            Ok(V2Operation {
+                id: OperationId::new(
+                    tx.query_row(
+                        "SELECT id FROM operations
+                          WHERE document_id=?1 AND actor_key=?2 AND request_key=?3",
+                        params![document_id.as_str(), actor_key, request.request_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(CatalogError::from)?,
+                )
+                .map_err(|error| CatalogError::Invalid(error.to_string()))?,
                 scope: OperationScope::Document(document_id.clone()),
                 actor_key,
                 request_key: request.request_id.clone(),
-                kind: OperationKind::AgentApply,
+                kind: OperationKind::AgentApply.as_str().into(),
+                state: "prepared".into(),
                 request_digest: request.digest.clone(),
-                plan_json,
-                expected_document_generation: Some(source_generation),
-                conversation_id: None,
-                execution_epoch: (!actor.execution_epoch.is_empty())
-                    .then(|| actor.execution_epoch.to_owned()),
-                work_expires_at: Some(expires),
-            },
-            now,
-        )
+                writer_generation,
+            })
+        })
     }
 
     /// Record an actor-scoped receipt for an already retained checkpoint.

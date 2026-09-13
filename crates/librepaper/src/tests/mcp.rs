@@ -422,8 +422,53 @@ async fn mcp_accept_and_checkpoint_replay_retained_effects() {
     )
     .await;
     assert_eq!(first["status"], "committed", "{first}");
+    let mut changed = checkpoint.clone();
+    changed["why"] = json!("different request digest");
+    let (_, reused) = call(
+        &server.url,
+        &slug,
+        &key,
+        &request(
+            "tools/call",
+            json!({"name":"document_comment","arguments":changed}),
+        ),
+    )
+    .await;
+    assert_eq!(reused["error"]["code"], "operation_key_reused", "{reused}");
     let second = tool(&server.url, &slug, &key, "document_comment", checkpoint).await;
     assert_eq!(first["checkpoint_id"], second["checkpoint_id"], "{second}");
+    let directory = server.stop().await;
+    let blobs: std::sync::Arc<dyn crate::storage::blob::BlobStore> =
+        std::sync::Arc::new(crate::storage::blob::FsStore::new(
+            directory.path().join("objects"),
+            true,
+        ));
+    let catalog = std::sync::Arc::new(
+        crate::storage::catalog::Catalog::open(directory.path().join("catalog.sqlite"))
+            .expect("reopen checkpoint catalog"),
+    );
+    catalog
+        .set_link_sealing_key(TEST_KEY)
+        .expect("reopen test link sealing");
+    let store = std::sync::Arc::new(
+        crate::document::store::Store::open_with_catalog(
+            blobs.clone(),
+            std::sync::Arc::new(crate::config::Configuration::default()),
+            catalog,
+        )
+        .await
+        .expect("reopen checkpoint store"),
+    );
+    let rooms = crate::room::RoomSet::new(
+        blobs,
+        std::sync::Arc::new(crate::config::Configuration::default()),
+    );
+    rooms.attach_store(store);
+    let reopened = rooms.get(&slug).await;
+    assert_eq!(
+        reopened.source().await,
+        "# Intro\n\nAccepted text\n\nA live MCP edit\n"
+    );
 }
 
 #[tokio::test]
