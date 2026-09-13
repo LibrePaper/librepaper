@@ -6,10 +6,30 @@
 
 use super::*;
 
+fn checkpoint_time_ms(value: &str) -> CatalogResult<i64> {
+    if value.is_empty() {
+        return Ok(super::unix_millis());
+    }
+    if let Ok(number) = value.parse::<i64>() {
+        return if number < 10_000_000_000 {
+            number
+                .checked_mul(1_000)
+                .ok_or_else(|| CatalogError::Invalid("checkpoint timestamp overflow".into()))
+        } else {
+            Ok(number)
+        };
+    }
+    crate::util::parse_timestamp(value)
+        .and_then(|seconds| seconds.checked_mul(1_000))
+        .ok_or_else(|| CatalogError::Invalid("checkpoint timestamp is invalid".into()))
+}
+
 const CHECKPOINT_SELECT: &str = "SELECT d.slug,c.id,c.seq,c.journal_sequence,c.tree_digest,
             COALESCE(c.parent_id,''),CAST(c.created_at AS TEXT),c.author_label,
-            c.reason,c.source_format,c.logical_bytes,COALESCE(c.label,''),'',0,
-            NULL,c.author_account_id
+            c.reason,c.source_format,c.logical_bytes,COALESCE(c.label,''),
+            COALESCE(json_extract(c.metadata_json,'$.gitCommit'),''),
+            COALESCE(json_extract(c.metadata_json,'$.dirty'),0),
+            json_extract(c.metadata_json,'$.changed'),c.author_account_id
      FROM checkpoints c JOIN documents d ON d.id=c.document_id";
 
 impl Catalog {
@@ -178,7 +198,8 @@ impl Catalog {
         let tree_object_id: String = tx
             .query_row(
                 "SELECT id FROM objects WHERE document_id=?1 AND kind='source_tree'
-                 AND digest=?2 AND state='available'",
+                 AND (digest=?2 OR logical_digest=?2) AND state='available'
+                 ORDER BY CASE WHEN logical_digest=?2 THEN 0 ELSE 1 END LIMIT 1",
                 params![document_id, checkpoint.tree_sha],
                 |row| row.get(0),
             )
@@ -213,21 +234,33 @@ impl Catalog {
             .map_err(CatalogError::from)?
         };
         let (author_label, author_account_id) = Self::attribution_for_insert(tx, checkpoint)?;
-        let created_at = checkpoint
-            .at
-            .parse::<i64>()
-            .unwrap_or_else(|_| super::unix_millis());
+        let created_at = checkpoint_time_ms(&checkpoint.at)?;
         let source_format = if checkpoint.source_format.is_empty() {
             "markdown"
         } else {
             checkpoint.source_format.as_str()
         };
+        if !matches!(
+            source_format,
+            "markdown" | "html" | "typst" | "latex" | "quarto"
+        ) {
+            return Err(CatalogError::Invalid(
+                "unsupported checkpoint source format".into(),
+            ));
+        }
+        let metadata = serde_json::json!({
+            "version": 1,
+            "gitCommit": checkpoint.git_commit,
+            "dirty": checkpoint.dirty,
+            "changed": checkpoint.changed,
+        })
+        .to_string();
         tx.execute(
             r#"INSERT INTO checkpoints
              (document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,
               author_account_id,author_label,reason,source_format,logical_bytes,label,
               journal_epoch,journal_sequence,metadata_json,eligible_after)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,?14,?15,'{"version":1}',NULL)"#,
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,?14,?15,?16,NULL)"#,
             params![
                 document_id,
                 checkpoint.sha,
@@ -252,6 +285,7 @@ impl Catalog {
                 },
                 checkpoint.durable_seq,
                 checkpoint.durable_seq,
+                metadata,
             ],
         )
         .map_err(CatalogError::from)?;
@@ -483,7 +517,7 @@ impl Catalog {
             let document_id = self.with_connection(|connection| {
                 connection
                     .query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| {
-                        row.get(0)
+                        row.get::<_, String>(0)
                     })
                     .map_err(CatalogError::from)
             })?;
@@ -620,7 +654,7 @@ impl Catalog {
         let document_id = self.with_connection(|connection| {
             connection
                 .query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| {
-                    row.get(0)
+                    row.get::<_, String>(0)
                 })
                 .map_err(CatalogError::from)
         })?;

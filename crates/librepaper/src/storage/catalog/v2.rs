@@ -9,12 +9,12 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
-use super::{unix_millis, Catalog, CatalogError, CatalogResult};
+use super::{unix_millis, Catalog, CatalogError, CatalogRefusal, CatalogResult, MutationAuthority};
 
 pub const MAX_CHECKPOINT_OBJECTS: usize = 16_384;
 pub const MAX_DOCUMENT_CHECKPOINT_REFS: i64 = 1_048_576;
@@ -545,7 +545,8 @@ fn operation_authorized_in_tx(
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
     let generation = authorization
-        .get("generation")
+        .get("session_generation")
+        .or_else(|| authorization.get("generation"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
     let link_hash = authorization
@@ -553,13 +554,16 @@ fn operation_authorized_in_tx(
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
     let expected_actor = if !account_id.is_empty() {
-        account_id.to_owned()
+        format!("account:{account_id}")
     } else if !link_hash.is_empty() {
         format!("link:{link_hash}")
     } else {
         owner_key.to_owned()
     };
-    if expected_actor != actor_key {
+    let legacy_account_actor = !account_id.is_empty()
+        && authorization.get("session_generation").is_none()
+        && actor_key == account_id;
+    if expected_actor != actor_key && !legacy_account_actor {
         return Err(CatalogError::refused(
             CatalogRefusal::ActorRights,
             "operation actor proof changed",
@@ -595,7 +599,7 @@ fn operation_authorized_in_tx(
             .unwrap_or(""),
         agent_checkpoint: None,
     };
-    if Self::mutation_authorized_in_tx(tx, &slug, authority, required_role)? {
+    if Catalog::mutation_authorized_in_tx(tx, &slug, authority, required_role)? {
         Ok(())
     } else {
         Err(CatalogError::refused(
@@ -628,6 +632,11 @@ impl Catalog {
         let value: serde_json::Value = serde_json::from_slice(manifest_bytes).map_err(|error| {
             CatalogError::Invalid(format!("invalid publication manifest: {error}"))
         })?;
+        if value.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+            return Err(CatalogError::Invalid(
+                "publication manifest version must be 1".into(),
+            ));
+        }
         let html = value.get("html").ok_or_else(|| {
             CatalogError::Invalid("publication manifest has no html object".into())
         })?;
@@ -648,10 +657,20 @@ impl Catalog {
                 "publication html length is negative".into(),
             ));
         }
-        let mut object_ids = vec![
-            manifest_object_id.clone(),
-            ObjectId::new(html_id.to_owned()).map_err(|e| CatalogError::Invalid(e.to_string()))?,
-        ];
+        if html_bytes > 16 * 1024 * 1024
+            || html.get("mime").and_then(serde_json::Value::as_str) != Some("text/html")
+            || html_digest.len() != 64
+            || !html_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(CatalogError::Invalid(
+                "invalid publication html descriptor".into(),
+            ));
+        }
+        let html_object_id =
+            ObjectId::new(html_id.to_owned()).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+        let mut object_ids = vec![manifest_object_id.clone(), html_object_id.clone()];
         let assets = value
             .get("assets")
             .and_then(serde_json::Value::as_array)
@@ -663,22 +682,70 @@ impl Catalog {
                 "publication asset count exceeds 512".into(),
             ));
         }
+        let mut asset_ids = Vec::with_capacity(assets.len());
+        let mut paths = HashSet::new();
+        let mut total_asset_bytes = 0i64;
         for asset in assets {
             let object = asset.get("object").unwrap_or(asset);
+            let path = asset
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| CatalogError::Invalid("publication asset path is missing".into()))?;
+            if path.is_empty()
+                || path.len() > 512
+                || path.starts_with('/')
+                || path.contains('\\')
+                || path
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+                || !paths.insert(path.to_owned())
+            {
+                return Err(CatalogError::Invalid(
+                    "invalid or duplicate publication asset path".into(),
+                ));
+            }
             let id = object
                 .get("object_id")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| {
                     CatalogError::Invalid("publication asset object id is missing".into())
                 })?;
-            object_ids.push(
-                ObjectId::new(id.to_owned()).map_err(|e| CatalogError::Invalid(e.to_string()))?,
-            );
+            let object_id =
+                ObjectId::new(id.to_owned()).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            let bytes = object
+                .get("bytes")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| {
+                    CatalogError::Invalid("publication asset length is missing".into())
+                })?;
+            let digest = object
+                .get("sha256")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    CatalogError::Invalid("publication asset digest is missing".into())
+                })?;
+            if bytes < 0
+                || bytes > 64 * 1024 * 1024
+                || digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(CatalogError::Invalid(
+                    "invalid publication asset descriptor".into(),
+                ));
+            }
+            total_asset_bytes = total_asset_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| CatalogError::Invalid("publication asset size overflow".into()))?;
+            asset_ids.push(object_id.clone());
+            if !object_ids.iter().any(|existing| existing == &object_id) {
+                object_ids.push(object_id);
+            }
         }
-        let distinct: HashSet<&ObjectId> = object_ids.iter().collect();
-        if distinct.len() != object_ids.len() {
+        if total_asset_bytes > 256 * 1024 * 1024 {
             return Err(CatalogError::Invalid(
-                "publication manifest repeats an object".into(),
+                "publication asset bundle is too large".into(),
             ));
         }
         self.with_connection(|connection| {
@@ -695,7 +762,7 @@ impl Catalog {
             {
                 return Err(CatalogError::Conflict("publication manifest bytes do not match the settled object".into()));
             }
-            let html_id = object_ids.get(1).ok_or(CatalogError::NotFound)?;
+            let html_id = &html_object_id;
             let (kind, digest, bytes): (String, String, Option<i64>) = connection
                 .query_row(
                     "SELECT kind,digest,byte_length FROM objects WHERE document_id=?1 AND id=?2 AND state='available'",
@@ -719,7 +786,7 @@ impl Catalog {
                 if bytes < 0 {
                     return Err(CatalogError::Invalid("publication asset length is negative".into()));
                 }
-                let object_id = object_ids.get(index + 2).ok_or(CatalogError::NotFound)?;
+                let object_id = asset_ids.get(index).ok_or(CatalogError::NotFound)?;
                 let (kind, actual_digest, actual_bytes): (String, String, Option<i64>) = connection
                     .query_row(
                         "SELECT kind,digest,byte_length FROM objects WHERE document_id=?1 AND id=?2 AND state='available'",

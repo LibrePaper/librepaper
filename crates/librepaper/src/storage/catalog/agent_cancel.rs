@@ -26,7 +26,7 @@ fn read_cancellation(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentCancellat
 
 fn actor_key(account_id: &str, link_hash: &str) -> String {
     if !account_id.is_empty() {
-        account_id.to_owned()
+        format!("account:{account_id}")
     } else if !link_hash.is_empty() {
         format!("link:{link_hash}")
     } else {
@@ -109,7 +109,7 @@ impl Catalog {
                 ).map_err(CatalogError::from)?;
                 if !valid { return Err(CatalogError::refused(CatalogRefusal::ActorRights, "agent cancellation link changed")); }
             }
-            let existing: Option<(String, String, String, String, String, String)> = tx.query_row(
+            let existing: Option<(String, String, String, String, Option<String>, String)> = tx.query_row(
                 "SELECT id,state,request_digest,result_json,target_request_key,plan_json
                  FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3 AND kind='agent_cancel'",
                 params![document_id, actor, cancel_request_id],

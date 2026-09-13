@@ -117,7 +117,7 @@ fn context(comment: &Comment) -> String {
         .to_string()
 }
 
-fn insert_comment_tx(
+pub(super) fn insert_comment_tx(
     tx: &Transaction<'_>,
     comment: &Comment,
     authority: AnnotationAuthority<'_>,
@@ -482,7 +482,7 @@ impl Catalog {
     pub fn insert_reply(&self, reply: &Reply) -> CatalogResult<Reply> {
         self.insert_reply_authorized(reply, AnnotationAuthority::default())
     }
-    fn insert_reply_tx(
+    pub(super) fn insert_reply_tx(
         tx: &Transaction<'_>,
         reply: &Reply,
         authority: AnnotationAuthority<'_>,

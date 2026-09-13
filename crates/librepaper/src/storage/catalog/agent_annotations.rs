@@ -14,7 +14,7 @@ pub struct AgentAnnotationAuthority {
 
 fn actor_key(authority: &AgentAnnotationAuthority) -> String {
     if !authority.account_id.is_empty() {
-        authority.account_id.clone()
+        format!("account:{}", authority.account_id)
     } else if !authority.link_hash.is_empty() {
         format!("link:{}", authority.link_hash)
     } else {
@@ -133,9 +133,9 @@ impl Catalog {
             for id in deletes {
                 tx.execute("DELETE FROM annotations WHERE document_id=?1 AND id=?2", params![document_id,id]).map_err(CatalogError::from)?;
             }
-            let annotation_authority = AnnotationAuthority { account_id:&authority.account_id, generation:&authority.generation, link_hash:&authority.link_hash, policy_comment:authority.policy_comment, require_editor:authority.require_editor, execution_epoch:&authority.execution_epoch };
-            for row in rows { if row.slug != slug { return Err(CatalogError::Invalid("wrong comment document".into())); } Self::insert_comment_tx(tx,row,annotation_authority)?; }
-            for reply in replies { if reply.slug != slug { return Err(CatalogError::Invalid("wrong reply document".into())); } Self::insert_reply_tx(tx,reply,annotation_authority)?; }
+            let annotation_authority = AnnotationAuthority { account_id:&authority.account_id, generation:&authority.generation };
+            for row in rows { if row.slug != slug { return Err(CatalogError::Invalid("wrong comment document".into())); } super::comments::insert_comment_tx(tx,row,annotation_authority)?; }
+            for reply in replies { if reply.slug != slug { return Err(CatalogError::Invalid("wrong reply document".into())); } Catalog::insert_reply_tx(tx,reply,annotation_authority)?; }
             let result = if receipt.is_empty() { serde_json::json!({"version":2,"request_id":request_id}).to_string() } else { receipt.to_owned() };
             valid_json(&result)?;
             tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'", params![result,now,now.saturating_add(3_600_000),operation_id]).map_err(CatalogError::from)?;
