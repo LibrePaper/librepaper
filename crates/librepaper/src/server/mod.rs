@@ -327,7 +327,7 @@ impl Server {
         let accounts = Arc::new(GithubAccounts::new(&app));
         let cost = Arc::new(cost::CostMeter::new(&config, store.catalog.clone()));
         let socket_budget = socket_budget::SocketBudget::new(config.sockets);
-        let mcp_capacity = mcp::Capacity::with_payload_memory(config.persistence().max_staging_bytes);
+        let mcp_capacity = mcp::Capacity::with_payload_memory(cost.incoming_memory());
         Server {
             store,
             rooms,

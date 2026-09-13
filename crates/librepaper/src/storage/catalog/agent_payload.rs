@@ -270,7 +270,7 @@ impl Catalog {
             };
             let request_key = natural_key(&document_id, &actor_key, agent_id, agent_kind);
             let row: Option<(String,String,String,String,String,i64,i64,String,String,i64)> = tx.query_row(
-                "SELECT op.id,o.id,o.storage_key,o.digest,COALESCE(o.logical_digest,''),o.byte_length,o.reserved_bytes,s.writer_generation,op.plan_json,CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER) FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state='committed' AND o.kind='agent_payload' AND o.state='available' AND o.byte_length IS NOT NULL AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?4",
+                "SELECT op.id,o.id,o.storage_key,o.digest,COALESCE(o.logical_digest,''),o.byte_length,o.reserved_bytes,s.writer_generation,op.plan_json,CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER) FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state='committed' AND op.writer_generation=s.writer_generation AND op.work_expires_at>?4 AND o.kind='agent_payload' AND o.state='available' AND o.byte_length IS NOT NULL AND o.byte_length=CAST(json_extract(op.plan_json,'$.reserved_bytes') AS INTEGER) AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?4",
                 params![document_id, actor_key, request_key, now.0],
                 |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?)),
             ).optional().map_err(CatalogError::from)?;
@@ -399,7 +399,7 @@ impl Catalog {
             };
             let request_key = natural_key(&document_id, &actor_key, agent_id, agent_kind);
             let present: i64 = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state='committed' AND op.receipt_expires_at>?4 AND o.kind='agent_payload' AND o.state='available' AND o.live_root=1)",
+                "SELECT EXISTS(SELECT 1 FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state='committed' AND op.writer_generation=s.writer_generation AND op.work_expires_at>?4 AND op.receipt_expires_at>?4 AND o.kind='agent_payload' AND o.state='available' AND o.live_root=1 AND o.byte_length=CAST(json_extract(op.plan_json,'$.reserved_bytes') AS INTEGER) AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?4)",
                 params![document_id, actor_key, request_key, now.0],
                 |row| row.get(0),
             ).map_err(CatalogError::from)?;

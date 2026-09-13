@@ -135,6 +135,12 @@ pub struct CostMeter {
 }
 
 impl CostMeter {
+    /// The deployment-wide byte budget used while a request is decoded.
+    /// MCP payload serialization and reads must share this budget with the
+    /// ordinary HTTP request path rather than creating a second staging pool.
+    pub(crate) fn incoming_memory(&self) -> Arc<tokio::sync::Semaphore> {
+        Arc::clone(&self.incoming_memory)
+    }
     pub fn new(
         config: &Arc<Configuration>,
         catalog: Option<Arc<crate::storage::catalog::Catalog>>,
