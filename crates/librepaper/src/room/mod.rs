@@ -1894,9 +1894,9 @@ impl Room {
     /// its size, and a checkpoint has to record what the document costs -- so
     /// the answer is read from where the bytes are, which is the store.
     ///
-    /// One listing per room rather than one request per figure, and a failure
-    /// is not fatal: a size this does not know reads as zero, which
-    /// under-counts a quota rather than refusing a document.
+    /// Legacy rooms use one blob listing. Catalogue rooms resolve their
+    /// current physical assets through one bounded v2 query and fence on a
+    /// missing or unreadable asset instead of deriving an under-sized tree.
     async fn load_asset_sizes(&self) {
         if self.catalog.get().is_none() {
             if let Ok(found) = self
