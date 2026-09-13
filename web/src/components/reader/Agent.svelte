@@ -373,9 +373,9 @@
   <PanelHeader title="Agent" />
   <Tabs class="agent-tabs-root" value={tab} onValueChange={({ value }) => tab = value}
         ids={{ trigger: value => `agent-tab-${value}`, content: value => `agent-pane-${value}` }}>
-    <Tabs.List class="agent-tabs" aria-label="Agent">
+    <Tabs.List class="panel-tabs agent-tabs" aria-label="Agent">
       {#each [{id:"connection",label:"Connection"},{id:"chat",label:"Chat"},{id:"tasks",label:"Tasks"}] as item}
-        <Tabs.Trigger class="agent-tab" value={item.id}>{item.label}</Tabs.Trigger>
+        <Tabs.Trigger class="agent-tab" value={item.id} title={item.label}>{item.label}</Tabs.Trigger>
       {/each}
       <Tabs.Indicator class="agent-tab-indicator" />
     </Tabs.List>
@@ -491,8 +491,8 @@
   .agent-panel { display:flex; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 3); overflow:hidden; }
   .agent-panel > :global(*) { flex-shrink:0; }
   .agent-panel :global(.agent-tabs-root) { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 3); }
-  .agent-panel :global(.agent-tabs) { position:relative; display:flex; flex-shrink:0; border-bottom:1px solid var(--color-surface-300-700); }
-  .agent-panel :global(.agent-tab) { flex:1; min-width:0; padding:calc(var(--spacing) * 2) var(--spacing); cursor:pointer; color:var(--color-surface-500-500); }
+  /* Layout, truncation and the narrow-panel step live on .panel-tabs. */
+  .agent-panel :global(.agent-tab) { color:var(--color-surface-500-500); }
   .agent-panel :global(.agent-tab[data-selected]) { color:var(--color-primary-700-300); font-weight:700; background:color-mix(in srgb, var(--color-primary-500) 18%, transparent); box-shadow:inset 0 -3px 0 var(--color-primary-500); }
   .agent-panel :global(.agent-tab-indicator) { height:3px; bottom:0; background:var(--color-primary-500); }
   .agent-panel :global([role="tabpanel"]) { flex:1 1 0; min-height:0; overflow-y:auto; }

@@ -101,6 +101,10 @@ try {
   await until("source and files",()=>b.evaluate("document.querySelector('.cm-editor') && document.querySelectorAll('.explorer-row').length > 60"), 10000);
   const flush = () => b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const click = async (selector) => { await b.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); await flush(); };
+  const clickText = async (selector, label) => {
+    await b.evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].find(node => node.textContent.trim().startsWith(${JSON.stringify(label)})).click()`);
+    await flush();
+  };
   const nav = (name) => `.mobile-pane-nav [aria-label="${name}"]`;
   const visible = (selector) => b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); return Boolean(node?.getClientRects().length && getComputedStyle(node).visibility !== 'hidden'); })()`);
   const bounded = async () => {
@@ -122,11 +126,18 @@ try {
   assert.ok(sourceTop > 0);
   const filesTop = await b.evaluate('document.querySelector(".explorer-scroll").scrollTop');
   assert.ok(filesTop > 0);
+  // A menu panel paints its own surface. Skeleton owns the content element, so
+  // the chrome is easy to lose to scoping: catch a see-through menu here.
+  await clickText('.menubar-item', 'File');
+  await until('file menu', () => b.evaluate('Boolean(document.querySelector(".explorer-menu[data-state=open]"))'), 3000);
+  const menuChrome = await b.evaluate(`(() => { const style = getComputedStyle(document.querySelector('.explorer-menu[data-state=open]'));
+    return {background:style.backgroundColor, shadow:style.boxShadow}; })()`);
+  assert.notEqual(menuChrome.background, 'rgba(0, 0, 0, 0)', 'the menu is opaque: ' + JSON.stringify(menuChrome));
+  assert.notEqual(menuChrome.shadow, 'none', 'the menu keeps its shadow');
+  await click('body');
+
   await click('.sidebar-activity [aria-label="Collaboration"]');
-  const selectDiscussionTab = async (label) => {
-    await b.evaluate(`Array.from(document.querySelectorAll('.collab-tabs [role="tab"]')).find(node => node.textContent.trim().startsWith(${JSON.stringify(label)})).click()`);
-    await flush();
-  };
+  const selectDiscussionTab = (label) => clickText('.collab-tabs [role="tab"]', label);
   const frameMessage = async (message) => {
     await b.evaluate(`window.dispatchEvent(new MessageEvent('message', { origin:location.origin,
       source:document.querySelector('.viewport iframe').contentWindow,
@@ -134,6 +145,25 @@ try {
     await flush();
   };
   await until('collaboration tabs', () => b.evaluate('document.querySelectorAll(".collab-tabs [role=tab]").length === 3'), 3000);
+  // The sidebar can be dragged down to PANES.sidebar.min. The tab row has to
+  // stay a single row there rather than overflow or wrap, and a label that is
+  // too wide to fit has to keep its full text reachable as a tooltip.
+  const tabRow = async (width) => {
+    await b.evaluate(`document.querySelector('[style*="--librepaper-sidebar"]').style.setProperty("--librepaper-sidebar", "${width}px")`);
+    await flush();
+    return b.evaluate(`(() => { const bar = document.querySelector(".collab-tabs");
+      const tabs = [...bar.querySelectorAll('[role="tab"]')];
+      return { overflow: bar.scrollWidth - bar.clientWidth, rows: new Set(tabs.map(t => t.offsetTop)).size,
+        tabs: tabs.map(t => ({ label: t.textContent.trim(), title: t.title, clipped: t.scrollWidth > t.clientWidth })) }; })()`);
+  };
+  const narrowTabs = await tabRow(240);
+  assert.ok(narrowTabs.overflow <= 1, 'the tab row fits the narrowest sidebar: ' + JSON.stringify(narrowTabs));
+  assert.equal(narrowTabs.rows, 1, 'the tabs stay on one row: ' + JSON.stringify(narrowTabs));
+  for (const tab of narrowTabs.tabs) {
+    assert.equal(tab.title, tab.label, 'a truncated tab still says what it is: ' + JSON.stringify(tab));
+  }
+  await b.evaluate('document.querySelector(\'[style*="--librepaper-sidebar"]\').style.removeProperty("--librepaper-sidebar")');
+  await flush();
   await b.evaluate(`window.roomReceive({type:'hello',comments:[
     {id:'point',seq:1,motivation:'commenting',exact:'',point:true,position:0,suffix:'A long document',body:'Point discussion',resolved:true,replies:[]},
     {id:'plain-highlight',seq:2,motivation:'highlighting',exact:'long',position:2,color:'#aabbcc',body:'',replies:[]},

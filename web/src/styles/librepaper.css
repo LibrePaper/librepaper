@@ -196,6 +196,37 @@ main.reader {
 .panel-muted { color: var(--panel-muted); }
 .panel-meta { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
 .panel :where(input, textarea, select) { font-family: inherit; font-size: inherit; }
+/* Two sidebar panels head themselves with a row of tabs, and the sidebar
+   narrows to PANES.sidebar.min (240px), so the row has to survive there:
+   equal shares that are allowed to shrink, one line, and an ellipsis once a
+   label outgrows its share. At that minimum the longer labels do still clip,
+   which is why each tab carries its own text as a title. The query below
+   measures the tab row, not the sidebar, so keep the gutters here as well --
+   a panel that adds its own inset would compress at a different width. Keep
+   the whole recipe here rather than in each panel: written twice it drifts,
+   and note the query only ever resolves for descendants of the container,
+   never for the tab row that declares it. */
+.panel-tabs {
+  container-type: inline-size;
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-surface-300-700);
+}
+.panel-tabs > :where([role="tab"]) {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: --spacing(2) --spacing(1);
+  cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@container (max-width: 15rem) {
+  .panel-tabs > :where([role="tab"]) { padding-inline: 2px; font-size: 0.8125rem; }
+}
 /* A dropdown needs the same room between its words and its edge that every
    button and text field has. Skeleton leaves a select's inline padding unset
    deliberately -- the padding is also what the native arrow is drawn in, and
