@@ -61,7 +61,8 @@ impl Catalog {
         self.with_connection(|connection| {
             let source_format: String = connection
                 .query_row(
-                    "SELECT source_format FROM documents WHERE slug=?1",
+                    "SELECT d.source_format FROM documents d JOIN accounts a ON a.id=d.owner_id
+                     WHERE d.slug=?1 AND a.status='active'",
                     [slug],
                     |row| row.get(0),
                 )
@@ -450,7 +451,8 @@ impl Catalog {
         self.with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT slug FROM documents WHERE id=?1",
+                    "SELECT d.slug FROM documents d JOIN accounts a ON a.id=d.owner_id
+                     WHERE d.id=?1 AND a.status='active'",
                     [storage_id],
                     |row| row.get(0),
                 )
@@ -469,7 +471,7 @@ impl Catalog {
         let cursor_slug = cursor.map(|(_, slug)| slug);
         self.with_connection(|connection| {
             let mut statement = connection
-                .prepare(&format!("{} WHERE status='active' AND (?1 IS NULL OR updated_at<?1 OR (updated_at=?1 AND slug<?2)) ORDER BY updated_at DESC,slug DESC LIMIT ?3", Self::DOCUMENT_SELECT))
+                .prepare(&format!("{} WHERE d.status='active' AND (?1 IS NULL OR d.updated_at<?1 OR (d.updated_at=?1 AND d.slug<?2)) ORDER BY d.updated_at DESC,d.slug DESC LIMIT ?3", Self::DOCUMENT_SELECT))
                 .map_err(CatalogError::from)?;
             let mut rows = statement
                 .query(params![cursor_at, cursor_slug, limit])
@@ -546,11 +548,11 @@ impl Catalog {
         })
     }
 
-    const DOCUMENT_SELECT: &'static str =
-        "SELECT slug,id,title,'',CAST(created_at AS TEXT),COALESCE(CAST(published_at AS TEXT),''),CAST(updated_at AS TEXT),
-                ownership_mode='example','',owner_id,status,stored_bytes,stored_bytes+reserved_bytes,
-                reserved_bytes,next_annotation_seq,last_checkpoint_at,NULL,COALESCE(publication_id,''),source_format,main_path
-         FROM documents";
+    pub(super) const DOCUMENT_SELECT: &'static str =
+        "SELECT d.slug,d.id,d.title,'',CAST(d.created_at AS TEXT),COALESCE(CAST(d.published_at AS TEXT),''),CAST(d.updated_at AS TEXT),
+                d.ownership_mode='example','',d.owner_id,d.status,d.stored_bytes,d.stored_bytes+d.reserved_bytes,
+                d.reserved_bytes,d.next_annotation_seq,d.last_checkpoint_at,NULL,COALESCE(d.publication_id,''),d.source_format,d.main_path
+         FROM documents d JOIN accounts a ON a.id=d.owner_id AND a.status='active'";
 
     pub(super) fn document_in_tx(tx: &Transaction<'_>, slug: &str) -> CatalogResult<Document> {
         tx.query_row(

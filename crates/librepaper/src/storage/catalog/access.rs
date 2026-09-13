@@ -215,8 +215,8 @@ impl Catalog {
             if actor.unowned_publisher && actor.policy_editor {
                 return tx
                     .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM documents
-                           WHERE slug=?1 AND status='active'
+                        "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=d.owner_id
+                           WHERE d.slug=?1 AND d.status='active' AND a.status='active'
                              AND ownership_mode IN ('open','example'))",
                         [slug],
                         |row| row.get::<_, bool>(0),
@@ -404,487 +404,34 @@ impl Catalog {
     /// bounded worker below.  Each invocation commits at most 200 links, so
     /// a process death leaves a durable cursor rather than one giant SQLite
     /// transaction to replay.
-    pub fn rotate_link_sealing_key(&self, new_key: &[u8]) -> CatalogResult<u32> {
-        let mut processed: u32 = 0;
-        loop {
-            let progress = self.rotate_link_sealing_key_batch(new_key)?;
-            processed = processed.saturating_add(progress.processed);
-            if progress.status == "committed" {
-                return Ok(processed);
-            }
-        }
+    pub fn rotate_link_sealing_key(&self, _new_key: &[u8]) -> CatalogResult<u32> {
+        Err(CatalogError::Invalid(
+            "link-key rotation is managed by the v2 keyring initializer".into(),
+        ))
     }
 
-    /// Run one durable, lexicographically ordered rotation batch.  The
-    /// `link_key_rotations` row is the recovery record: callers may stop after
-    /// any successful batch and resume later with the same destination key.
     pub fn rotate_link_sealing_key_batch(
         &self,
-        new_key: &[u8],
+        _new_key: &[u8],
     ) -> CatalogResult<LinkKeyRotationProgress> {
-        const BATCH_SIZE: i64 = 200;
-        let new_key: [u8; 32] = new_key
-            .try_into()
-            .map_err(|_| CatalogError::Invalid("link sealing key must be 32 bytes".into()))?;
-        let new_id = link_key_id(&new_key);
-        let mut keys = self
-            .link_sealing_keys
-            .write()
-            .map_err(|_| CatalogError::Busy)?;
-        if keys.is_empty() {
-            return Err(CatalogError::Invalid(
-                "link sealing key is not configured".into(),
-            ));
-        }
-        let current_id = keys[0].0.clone();
-        if keys[0].1 == new_key {
-            return Ok(LinkKeyRotationProgress {
-                id: String::new(),
-                status: "committed".into(),
-                processed: 0,
-                cursor_slug: None,
-                cursor_role: None,
-            });
-        }
-        let mut connection = self.lock_connection()?;
-        let tx = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(CatalogError::from)?;
-        let active: Option<ActiveLinkRotation> = tx
-            .query_row(
-                "SELECT id,from_key_id,to_key_id,cursor_slug,cursor_role
-                 FROM link_key_rotations
-                 WHERE status IN ('prepared','running')
-                 ORDER BY created_at,id LIMIT 1",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(CatalogError::from)?;
-        let (rotation_id, old_id, cursor_slug, cursor_role) = if let Some((
-            id,
-            from_id,
-            to_id,
-            cursor_slug,
-            cursor_role,
-        )) = active
-        {
-            if to_id != new_id {
-                return Err(CatalogError::Conflict(
-                    "a different link-key rotation is already running".into(),
-                ));
-            }
-            (id, from_id, cursor_slug, cursor_role)
-        } else {
-            let all_new: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM links WHERE key_id <> ?1",
-                    [&new_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if all_new == 0 {
-                tx.execute(
-                    "INSERT INTO link_keyring(key_id,status,created_at) VALUES(?1,'primary',unixepoch())
-                     ON CONFLICT(key_id) DO UPDATE SET status='primary',retired_at=NULL",
-                    [&new_id],
-                )
-                .map_err(CatalogError::from)?;
-                tx.commit().map_err(CatalogError::from)?;
-                if let Some(position) = keys.iter().position(|(id, _)| id == &new_id) {
-                    let key = keys.remove(position);
-                    keys.insert(0, key);
-                } else {
-                    keys.insert(0, (new_id.clone(), new_key));
-                }
-                return Ok(LinkKeyRotationProgress {
-                    id: String::new(),
-                    status: "committed".into(),
-                    processed: 0,
-                    cursor_slug: None,
-                    cursor_role: None,
-                });
-            }
-            let id = hex::encode(crate::auth::random_bytes(16));
-            tx.execute(
-                "INSERT INTO link_key_rotations
-                 (id,from_key_id,to_key_id,status,created_at,updated_at)
-                 VALUES(?1,?2,?3,'running',unixepoch(),unixepoch())",
-                params![id, current_id, new_id],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "INSERT INTO link_keyring(key_id,status,created_at)
-                 VALUES(?1,'decrypt',unixepoch())
-                 ON CONFLICT(key_id) DO NOTHING",
-                [&new_id],
-            )
-            .map_err(CatalogError::from)?;
-            (id, current_id, None, None)
-        };
-        let old_key = keys
-            .iter()
-            .find(|(id, _)| id == &old_id)
-            .map(|(_, key)| *key)
-            .ok_or_else(|| {
-                CatalogError::Invalid(format!(
-                    "link rotation needs source key {old_id}, but it is not configured"
-                ))
-            })?;
-        let mut statement = tx
-            .prepare(
-                "SELECT d.storage_id,l.slug,l.role,l.hash,l.sealed
-                 FROM links l JOIN documents d ON d.slug=l.slug
-                 WHERE l.key_id <> ?1
-                   AND (?2 IS NULL OR l.slug > ?2 OR (l.slug = ?2 AND l.role > ?3))
-                 ORDER BY l.slug,l.role LIMIT ?4",
-            )
-            .map_err(CatalogError::from)?;
-        let rows = statement
-            .query_map(
-                params![
-                    new_id,
-                    cursor_slug.as_deref(),
-                    cursor_role.as_deref(),
-                    BATCH_SIZE
-                ],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Vec<u8>>(4)?,
-                    ))
-                },
-            )
-            .map_err(CatalogError::from)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(CatalogError::from)?;
-        drop(statement);
-        if rows.is_empty() {
-            let remaining: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM links WHERE key_id <> ?1",
-                    [&new_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if remaining != 0 {
-                return Err(CatalogError::Conflict(
-                    "link-key rotation cursor passed an unprocessed row".into(),
-                ));
-            }
-            tx.execute(
-                "UPDATE link_keyring SET status='decrypt',retired_at=NULL WHERE key_id=?1",
-                [&old_id],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "INSERT INTO link_keyring(key_id,status,created_at) VALUES(?1,'primary',unixepoch())
-                 ON CONFLICT(key_id) DO UPDATE SET status='primary',retired_at=NULL",
-                [&new_id],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE link_key_rotations SET status='committed',updated_at=unixepoch()
-                 WHERE id=?1",
-                [&rotation_id],
-            )
-            .map_err(CatalogError::from)?;
-            tx.commit().map_err(CatalogError::from)?;
-            promote_link_key(&mut keys, new_id, new_key);
-            return Ok(LinkKeyRotationProgress {
-                id: rotation_id,
-                status: "committed".into(),
-                processed: 0,
-                cursor_slug,
-                cursor_role,
-            });
-        }
-        for (storage_id, slug, role, digest, envelope) in &rows {
-            let plaintext = open_link_envelope(&old_key, storage_id, role, digest, envelope)?;
-            let next = seal_link_envelope(&new_key, &new_id, storage_id, role, digest, &plaintext)?;
-            tx.execute(
-                "UPDATE links SET sealed=?3,key_id=?4 WHERE slug=?1 AND role=?2 AND key_id <> ?4",
-                params![slug, role, next, new_id],
-            )
-            .map_err(CatalogError::from)?;
-        }
-        let (last_slug, last_role) = rows
-            .last()
-            .map(|row| (row.1.as_str(), row.2.as_str()))
-            .ok_or_else(|| CatalogError::Invalid("empty link-key rotation batch".into()))?;
-        tx.execute(
-            "UPDATE link_key_rotations SET cursor_slug=?2,cursor_role=?3,status='running',updated_at=unixepoch()
-             WHERE id=?1",
-            params![rotation_id, last_slug, last_role],
-        )
-        .map_err(CatalogError::from)?;
-        tx.commit().map_err(CatalogError::from)?;
-        Ok(LinkKeyRotationProgress {
-            id: rotation_id,
-            status: "running".into(),
-            processed: rows.len() as u32,
-            cursor_slug: Some(last_slug.to_string()),
-            cursor_role: Some(last_role.to_string()),
-        })
+        Err(CatalogError::Invalid(
+            "link-key rotation is managed by the v2 keyring initializer".into(),
+        ))
     }
 
-    /// Update a document and only the access rows whose values changed.  This
-    /// is the catalogue-backed Store mutation primitive: callers may stage a
-    /// complete compatibility view, but the transaction never drops and
-    /// recreates unrelated grants, links, or guest pins.
     pub fn update_document_access(
         &self,
-        document: &Document,
-        grants: &[Grant],
-        links: &[Link],
-        guests: &[Guest],
-        actor: Option<(&str, &str, &str)>,
+        _document: &Document,
+        _grants: &[Grant],
+        _links: &[Link],
+        _guests: &[Guest],
+        _actor: Option<(&str, &str, &str)>,
     ) -> CatalogResult<Document> {
-        if document.size < 0
-            || document.counted_size < document.size
-            || document.maintenance_reserved < 0
-            || document.maintenance_reserved > document.counted_size
-        {
-            return Err(CatalogError::Invalid("invalid document accounting".into()));
-        }
-        self.immediate(|tx| {
-            if let Some((account_id, owner_key, generation)) = actor {
-                let allowed: bool = if account_id.is_empty() {
-                    tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM documents WHERE slug=?1
-                         AND owner_id IS NULL AND owner_key=?2 AND status='active'
-                         AND pending_publication IS NULL)",
-                        params![document.slug, owner_key],
-                        |row| row.get(0),
-                    )
-                    .map_err(CatalogError::from)?
-                } else {
-                    tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=d.owner_id
-                         WHERE d.slug=?1 AND d.owner_id=?2 AND d.status='active'
-                         AND d.pending_publication IS NULL AND a.status='active'
-                         AND a.session_generation=?3)",
-                        params![document.slug, account_id, generation],
-                        |row| row.get(0),
-                    )
-                    .map_err(CatalogError::from)?
-                };
-                if !allowed {
-                    return Err(CatalogError::Conflict(
-                        "actor ownership or session generation changed".into(),
-                    ));
-                }
-            }
-            let old_counted: i64 = tx
-                .query_row(
-                    "SELECT counted_size FROM documents WHERE slug = ?1 AND status = 'active'",
-                    [&document.slug],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(CatalogError::from)?
-                .ok_or(CatalogError::NotFound)?;
-            if let Some(owner_id) = document.owner_id.as_deref() {
-                let status: Option<String> = tx
-                    .query_row(
-                        "SELECT status FROM accounts WHERE id = ?1",
-                        [owner_id],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(CatalogError::from)?;
-                if status.as_deref() != Some("active") {
-                    return Err(CatalogError::Conflict("owner account is not active".into()));
-                }
-            }
-            let changed = tx
-                .execute(
-                    "UPDATE documents SET title=?2, sha=?3, updated_at=?4,
-                            example=?5, owner_key=?6, owner_id=?7, size=?8,
-                            counted_size=?9, source_format=?10, main=?11
-                     WHERE slug=?1 AND status='active'",
-                    params![
-                        document.slug,
-                        document.title,
-                        document.sha,
-                        document.updated_at,
-                        document.example as i64,
-                        document.owner_key,
-                        document.owner_id,
-                        document.size,
-                        document.counted_size,
-                        document.source_format,
-                        document.main,
-                    ],
-                )
-                .map_err(CatalogError::from)?;
-            if changed != 1 {
-                return Err(CatalogError::NotFound);
-            }
-            tx.execute(
-                "UPDATE totals SET bytes = bytes + ?1 WHERE id = 1",
-                [document.counted_size - old_counted],
-            )
-            .map_err(CatalogError::from)?;
-
-            let desired_grants: HashSet<(&str, &str)> = grants
-                .iter()
-                .map(|grant| (grant.role.as_str(), grant.account_id.as_str()))
-                .collect();
-            let existing_grants: Vec<(String, String)> = {
-                let mut statement = tx
-                    .prepare("SELECT role, account_id FROM grants WHERE slug=?1")
-                    .map_err(CatalogError::from)?;
-                let rows = statement
-                    .query_map([document.slug.as_str()], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
-                    })
-                    .map_err(CatalogError::from)?;
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(CatalogError::from)?
-            };
-            for (role, account_id) in existing_grants {
-                if !desired_grants.contains(&(role.as_str(), account_id.as_str())) {
-                    tx.execute(
-                        "DELETE FROM grants WHERE slug=?1 AND role=?2 AND account_id=?3",
-                        params![document.slug, role, account_id],
-                    )
-                    .map_err(CatalogError::from)?;
-                }
-            }
-            for grant in grants {
-                let active: Option<String> = tx
-                    .query_row(
-                        "SELECT status FROM accounts WHERE id=?1",
-                        [&grant.account_id],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(CatalogError::from)?;
-                if active.as_deref() != Some("active") {
-                    return Err(CatalogError::Conflict("grantee is not active".into()));
-                }
-                tx.execute(
-                    "INSERT INTO grants(slug,role,account_id,since) VALUES(?1,?2,?3,?4)
-                     ON CONFLICT(slug,role,account_id) DO UPDATE SET since=excluded.since",
-                    params![document.slug, grant.role, grant.account_id, grant.since],
-                )
-                .map_err(CatalogError::from)?;
-            }
-
-            let desired_links: HashSet<&str> =
-                links.iter().map(|link| link.role.as_str()).collect();
-            let existing_links: Vec<String> = {
-                let mut statement = tx
-                    .prepare("SELECT role FROM links WHERE slug=?1")
-                    .map_err(CatalogError::from)?;
-                let rows = statement
-                    .query_map([document.slug.as_str()], |row| row.get(0))
-                    .map_err(CatalogError::from)?;
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(CatalogError::from)?
-            };
-            for role in existing_links {
-                if !desired_links.contains(role.as_str()) {
-                    tx.execute(
-                        "DELETE FROM links WHERE slug=?1 AND role=?2",
-                        params![document.slug, role],
-                    )
-                    .map_err(CatalogError::from)?;
-                }
-            }
-            for link in links {
-                if link.hash.is_empty() || link.sealed.is_empty() {
-                    return Err(CatalogError::Invalid("invalid link".into()));
-                }
-                let key_id = envelope_key_id(&link.sealed);
-                tx.execute(
-                    "INSERT INTO links(slug,role,hash,sealed,key_id,label,budget,since,until)
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
-                     ON CONFLICT(slug,role) DO UPDATE SET hash=excluded.hash,
-                       sealed=excluded.sealed,label=excluded.label,budget=excluded.budget,
-                       since=excluded.since,until=excluded.until,key_id=excluded.key_id",
-                    params![
-                        document.slug,
-                        link.role,
-                        link.hash,
-                        link.sealed,
-                        key_id,
-                        link.label,
-                        link.budget,
-                        link.since,
-                        link.until,
-                    ],
-                )
-                .map_err(CatalogError::from)?;
-            }
-
-            let desired_guests: HashSet<(&str, &str)> = guests
-                .iter()
-                .map(|guest| (guest.account_id.as_str(), guest.link_hash.as_str()))
-                .collect();
-            let existing_guests: Vec<(String, String)> = {
-                let mut statement = tx
-                    .prepare("SELECT account_id, link_hash FROM guests WHERE slug=?1")
-                    .map_err(CatalogError::from)?;
-                let rows = statement
-                    .query_map([document.slug.as_str()], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
-                    })
-                    .map_err(CatalogError::from)?;
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(CatalogError::from)?
-            };
-            for (account_id, link_hash) in existing_guests {
-                if !desired_guests.contains(&(account_id.as_str(), link_hash.as_str())) {
-                    tx.execute(
-                        "DELETE FROM guests WHERE slug=?1 AND account_id=?2 AND link_hash=?3",
-                        params![document.slug, account_id, link_hash],
-                    )
-                    .map_err(CatalogError::from)?;
-                }
-            }
-            for guest in guests {
-                let active: Option<String> = tx
-                    .query_row(
-                        "SELECT status FROM accounts WHERE id=?1",
-                        [&guest.account_id],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(CatalogError::from)?;
-                if active.as_deref() != Some("active") {
-                    return Err(CatalogError::Conflict("guest account is not active".into()));
-                }
-                tx.execute(
-                    "INSERT INTO guests(slug,account_id,since,link_hash) VALUES(?1,?2,?3,?4)
-                     ON CONFLICT(slug,account_id,link_hash) DO UPDATE SET since=excluded.since",
-                    params![
-                        document.slug,
-                        guest.account_id,
-                        guest.since,
-                        guest.link_hash
-                    ],
-                )
-                .map_err(CatalogError::from)?;
-            }
-            Self::document_in_tx(tx, &document.slug)
-        })
+        Err(CatalogError::Invalid(
+            "bulk access replacement was removed; mutate v2 grants and links individually".into(),
+        ))
     }
 
-    /// Return active documents visible to an owner, grant holder, guest pin,
-    /// or the public examples branch.  Cursor ordering is stable and indexed.
     pub fn grant(
         &self,
         slug: &str,
@@ -948,9 +495,12 @@ impl Catalog {
     pub fn revoke_grant(&self, slug: &str, role: &str, account_id: &str) -> CatalogResult<bool> {
         self.immediate(|tx| {
             let document_id: String = tx
-                .query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT d.id FROM documents d JOIN accounts a ON a.id=d.owner_id
+                            WHERE d.slug=?1 AND d.status='active' AND a.status='active'",
+                    [slug],
+                    |row| row.get(0),
+                )
                 .map_err(CatalogError::from)?;
             let n = tx
                 .execute(
@@ -1013,7 +563,8 @@ impl Catalog {
         }
         self.immediate(|tx| {
             let key_id = envelope_key_id(&link.sealed);
-            let document_id: String = tx.query_row("SELECT id FROM documents WHERE slug=?1", [&link.slug], |row| row.get(0)).map_err(CatalogError::from)?;
+            let document_id: String = tx.query_row("SELECT d.id FROM documents d JOIN accounts a ON a.id=d.owner_id
+                WHERE d.slug=?1 AND d.status='active' AND a.status='active'", [&link.slug], |row| row.get(0)).map_err(CatalogError::from)?;
             let created_at = link_time(&link.since)?;
             let expires_at = if link.until.is_empty() { None } else { Some(link_time(&link.until)?) };
             if expires_at.is_some_and(|expires_at| expires_at < created_at) { return Err(CatalogError::Invalid("link expiry precedes creation".into())); }
@@ -1045,7 +596,7 @@ impl Catalog {
 
     pub fn links(&self, slug: &str) -> CatalogResult<Vec<Link>> {
         self.with_connection(|c| {
-            let mut s = c.prepare("SELECT d.slug,l.role,l.token_hash,l.sealed_token,l.label,l.budget,CAST(l.created_at AS TEXT),COALESCE(CAST(l.expires_at AS TEXT),'') FROM links l JOIN documents d ON d.id=l.document_id WHERE d.slug=?1 ORDER BY l.role").map_err(CatalogError::from)?;
+            let mut s = c.prepare("SELECT d.slug,l.role,l.token_hash,l.sealed_token,l.label,l.budget,CAST(l.created_at AS TEXT),COALESCE(CAST(l.expires_at AS TEXT),'') FROM links l JOIN documents d ON d.id=l.document_id JOIN accounts a ON a.id=d.owner_id WHERE d.slug=?1 AND d.status='active' AND a.status='active' ORDER BY l.role").map_err(CatalogError::from)?;
             let mut rows = s.query([slug]).map_err(CatalogError::from)?;
             let mut out = Vec::new();
             while let Some(r) = rows.next().map_err(CatalogError::from)? {
@@ -1064,7 +615,7 @@ impl Catalog {
         self.immediate(|tx| {
             let status: Option<String> = tx.query_row("SELECT status FROM accounts WHERE id=?1", [&guest.account_id], |r| r.get(0)).optional().map_err(CatalogError::from)?;
             if status.as_deref() != Some("active") { return Err(CatalogError::Conflict("guest account is not active".into())); }
-            let (document_id,link_id,generation): (String,String,i64) = tx.query_row("SELECT d.id,l.id,l.credential_generation FROM documents d JOIN links l ON l.document_id=d.id WHERE d.slug=?1 AND d.status='active' AND l.token_hash=?2", params![guest.slug,guest.link_hash], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            let (document_id,link_id,generation): (String,String,i64) = tx.query_row("SELECT d.id,l.id,l.credential_generation FROM documents d JOIN accounts a ON a.id=d.owner_id JOIN links l ON l.document_id=d.id WHERE d.slug=?1 AND d.status='active' AND a.status='active' AND l.token_hash=?2", params![guest.slug,guest.link_hash], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
             let payload: String = tx.query_row("SELECT bookmarks_json FROM accounts WHERE id=?1", [&guest.account_id], |r| r.get(0)).map_err(CatalogError::from)?;
             let mut json: serde_json::Value = serde_json::from_str(&payload).map_err(|e| CatalogError::Invalid(format!("invalid bookmarks: {e}")))?;
             let items = json.get_mut("items").and_then(serde_json::Value::as_array_mut).ok_or_else(|| CatalogError::Invalid("bookmarks_json has invalid shape".into()))?;
@@ -1173,7 +724,7 @@ impl Catalog {
                     "SELECT d.slug,d.id,d.title,d.created_at,d.published_at,d.updated_at,
                         d.ownership_mode,d.owner_id,d.status,d.stored_bytes,d.reserved_bytes,
                         d.source_format,d.main_path
-                 FROM documents d
+                 FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'
                  WHERE d.status='active'
                    AND (?2 IS NULL OR d.updated_at<?2 OR (d.updated_at=?2 AND d.slug<?3))
                    AND (d.ownership_mode='open'
