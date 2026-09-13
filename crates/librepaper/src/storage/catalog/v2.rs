@@ -626,6 +626,51 @@ impl Catalog {
         })
     }
 
+    /// Delete one retained checkpoint and its flattened dependency edges.
+    /// The current checkpoint, protected annotations, and active roots remain
+    /// ineligible; byte counters are decremented by the exact edge count.
+    pub fn delete_v2_checkpoint(&self, document_id: &DocumentId, checkpoint_id: &CheckpointId, now: UnixMillis) -> CatalogResult<bool> {
+        self.immediate(|tx| {
+            let current: Option<String> = tx.query_row("SELECT current_checkpoint_id FROM documents WHERE id=?1 AND status <> 'deleting'", [document_id.as_str()], |row| row.get(0)).optional().map_err(CatalogError::from)?;
+            if current.as_deref() == Some(checkpoint_id.as_str()) { return Ok(false); }
+            let protected: i64 = tx.query_row("SELECT count(*) FROM annotations WHERE document_id=?1 AND protected_checkpoint_id=?2 OR (document_id=?1 AND protected_checkpoint_id IS NOT NULL AND protected_checkpoint_id=?2)", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            if protected != 0 { return Ok(false); }
+            let labeled: i64 = tx.query_row("SELECT count(*) FROM checkpoints WHERE document_id=?1 AND id=?2 AND label IS NOT NULL", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            if labeled != 0 { return Ok(false); }
+            let edges: i64 = tx.query_row("SELECT count(*) FROM checkpoint_objects WHERE document_id=?1 AND checkpoint_id=?2", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            if edges == 0 { return Ok(false); }
+            tx.execute("DELETE FROM checkpoints WHERE document_id=?1 AND id=?2", params![document_id.as_str(),checkpoint_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE documents SET checkpoint_ref_count=checkpoint_ref_count-?1,updated_at=max(updated_at,?2) WHERE id=?3", params![edges,now.0,document_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count-?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1", params![edges,now.0]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE objects SET gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END WHERE document_id=?2 AND state='available' AND live_root=0 AND publication_root=0 AND id NOT IN (SELECT object_id FROM checkpoint_objects WHERE document_id=?2)", params![now.0.saturating_add(900_000),document_id.as_str()]).map_err(CatalogError::from)?;
+            Ok(true)
+        })
+    }
+
+    /// Atomically activate a settled rendered publication and complete its
+    /// prepared operation. The old bundle remains charged until GC confirms
+    /// deletion after the supersession grace period.
+    pub fn activate_v2_publication(&self, document_id: &DocumentId, operation_id: &OperationId, expected_publication_id: Option<&str>, publication_id: &str, manifest_object_id: &ObjectId, now: UnixMillis, result_json: &str) -> CatalogResult<()> {
+        validate_json(result_json, "publication result", 65_536)?;
+        if publication_id.is_empty() { return Err(CatalogError::Invalid("publication id is empty".into())); }
+        self.immediate(|tx| {
+            let (state,kind,generation): (String,String,String) = tx.query_row("SELECT state,kind,writer_generation FROM operations WHERE id=?1 AND document_id=?2", params![operation_id.as_str(),document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(CatalogError::from)?;
+            if state != "prepared" || kind != OperationKind::DisplayPublish.as_str() { return Err(CatalogError::Conflict("publication operation is not prepared".into())); }
+            let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
+            if generation != current_generation { return Err(CatalogError::Conflict("publication belongs to an obsolete writer generation".into())); }
+            let current: Option<String> = tx.query_row("SELECT publication_id FROM documents WHERE id=?1", [document_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
+            if current.as_deref() != expected_publication_id { return Err(CatalogError::Conflict("publication head changed".into())); }
+            let old_object: Option<String> = tx.query_row("SELECT publication_object_id FROM documents WHERE id=?1", [document_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
+            let available: i64 = tx.query_row("SELECT count(*) FROM objects WHERE document_id=?1 AND id=?2 AND kind='publication_manifest' AND state='available'", params![document_id.as_str(),manifest_object_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
+            if available != 1 { return Err(CatalogError::Conflict("publication manifest is unavailable".into())); }
+            if let Some(old) = old_object { tx.execute("UPDATE objects SET publication_root=0,gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END WHERE document_id=?2 AND id=?3", params![now.0.saturating_add(900_000),document_id.as_str(),old]).map_err(CatalogError::from)?; }
+            tx.execute("UPDATE objects SET publication_root=1,gc_after=NULL WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),manifest_object_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE documents SET publication_id=?1,publication_object_id=?2,published_at=?3,updated_at=max(updated_at,?3) WHERE id=?4", params![publication_id,manifest_object_id.as_str(),now.0,document_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?2,updated_at=max(updated_at,?2) WHERE id=?3 AND state='prepared'", params![result_json,now.0,operation_id.as_str()]).map_err(CatalogError::from)?;
+            Ok(())
+        })
+    }
+
     /// Recompute cache values for audit tooling.  This is intentionally an
     /// explicit verifier and is never called by ordinary admission.
     pub fn audit_v2_counters(&self) -> CatalogResult<bool> {

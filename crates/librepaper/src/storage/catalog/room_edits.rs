@@ -58,7 +58,8 @@ impl Catalog {
             let (new_pending,new_writing) = if writing { (0,bytes) } else { (bytes,old_writing) };
             let new_charge = new_pending.checked_add(new_writing).ok_or_else(|| CatalogError::Invalid("room reservation overflow".into()))?;
             let delta = new_charge.checked_sub(replaced).ok_or_else(|| CatalogError::Invalid("room reservation underflow".into()))?;
-            state.owner_bytes.insert(owner_id.clone(), state.owner_bytes.get(&owner_id).copied().unwrap_or(0).checked_add(delta).ok_or_else(|| CatalogError::Invalid("owner room reservation overflow".into()))?);
+            let owner_total = state.owner_bytes.get(&owner_id).copied().unwrap_or(0).checked_add(delta).ok_or_else(|| CatalogError::Invalid("owner room reservation overflow".into()))?;
+            state.owner_bytes.insert(owner_id.clone(), owner_total);
             state.deployment_bytes = state.deployment_bytes.checked_add(delta).ok_or_else(|| CatalogError::Invalid("deployment room reservation overflow".into()))?;
             state.documents.insert(document_id, RoomReservationEntry { owner_id, pending_bytes:new_pending, writing_bytes:new_writing, generation });
             Ok(RoomEditReservation { previous_bytes: old_pending, generation })
