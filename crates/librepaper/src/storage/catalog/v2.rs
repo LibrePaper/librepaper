@@ -3143,7 +3143,12 @@ impl Catalog {
         }
         let expected_set: HashSet<&ObjectId> = expected.iter().collect();
         let actual_set: HashSet<&ObjectId> = checkpoint.object_ids.iter().collect();
-        if expected_set != actual_set || expected.len() != checkpoint.object_ids.len() {
+        // A recipe may reference the same physical chunk more than once. The
+        // checkpoint closure stores each immutable object once, while the
+        // decoded recipe retains every occurrence so reconstruction preserves
+        // order. Compare the distinct physical identity sets, not occurrence
+        // counts.
+        if expected_set != actual_set || expected_set.len() != actual_set.len() {
             return Err(CatalogError::Conflict(
                 "source checkpoint closure does not match decoded envelopes".into(),
             ));
