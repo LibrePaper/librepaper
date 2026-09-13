@@ -389,6 +389,18 @@ impl DeletionWorker {
         .await
     }
 
+    /// Reconcile guarded v2 allocations and prepared work after the process
+    /// has acquired the deployment writer lock and before serving traffic.
+    pub async fn recover_v2_startup(
+        &self,
+    ) -> Result<crate::storage::maintenance_v2::RecoveryReport, crate::storage::maintenance_v2::GcError> {
+        crate::storage::maintenance_v2::recover_v2_startup(
+            self.catalog.as_ref(),
+            self.blobs.as_ref(),
+        )
+        .await
+    }
+
     async fn due(&self, now: i64) -> MaintenanceResult<Vec<PendingDeletion>> {
         let max_jobs = self.limits.max_jobs;
         self.catalog
