@@ -79,32 +79,6 @@ impl FenceReason {
     }
 }
 
-/// Which ceiling a write ran into. Separate from [`SizeRefusal`] because a
-/// quota is an account's or a deployment's budget, which somebody can free,
-/// while a size refusal is about this one document being too large to save.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum QuotaKind {
-    /// The owner's byte allowance.
-    Owner,
-    /// The whole deployment's byte allowance.
-    Deployment,
-    /// The owner may not have another document.
-    Documents,
-    /// Too many uploads in this hour.
-    UploadRate,
-}
-
-impl QuotaKind {
-    fn message(self) -> &'static str {
-        match self {
-            Self::Owner => "your storage quota is used up; delete a document first",
-            Self::Deployment => "this deployment has no room left",
-            Self::Documents => "you have reached the document limit; delete one first",
-            Self::UploadRate => "too many uploads this hour; try later",
-        }
-    }
-}
-
 /// Which figure ceiling a figure upload ran into. Separate from
 /// [`SizeRefusal`], which is about the document's own text and snapshot: the
 /// wording a person reads has to name the right ceiling, and the two are
@@ -187,15 +161,10 @@ pub enum Retry {
 /// Why a room write did not happen.
 #[derive(Clone, Debug)]
 pub enum WriteError {
-    /// A finite request key or replay receipt has expired.
-    RequestExpired,
     /// This server may not write this room at all.
     ReadOnly(FenceReason),
     /// The caller's rights, or the session those rights were granted in,
     /// no longer admit this write.
-    PermissionDenied,
-    /// An account or deployment allowance is used up.
-    Quota(QuotaKind),
     /// Past a configured ceiling. No retry helps (track 10's type).
     Size(SizeRefusal),
     /// Past one of the figure ceilings.
@@ -206,7 +175,6 @@ pub enum WriteError {
     RateLimited,
     /// This server momentarily has no capacity at all; the peer is asked to
     /// reconnect rather than told its document is too large.
-    ServerBusy,
     /// The document, checkpoint or comment named is not there.
     NotFound,
     /// The input describes a state the document has moved on from.
@@ -237,13 +205,9 @@ impl WriteError {
         match self {
             Self::ReadOnly(reason) if reason.temporary() => Retry::Later,
             Self::ReadOnly(_) => Retry::No,
-            Self::PermissionDenied | Self::NotFound | Self::Invalid(_) | Self::RequestExpired => {
-                Retry::No
-            }
-            Self::Quota(QuotaKind::UploadRate) => Retry::Later,
-            Self::Quota(_) => Retry::No,
+            Self::NotFound | Self::Invalid(_) => Retry::No,
             Self::Size(_) | Self::Figure(_) | Self::Document(_) => Retry::No,
-            Self::RateLimited | Self::ServerBusy => Retry::Later,
+            Self::RateLimited => Retry::Later,
             // A stale input has to be rebuilt against the current document
             // before it can be sent again, so the same bytes never help.
             Self::Conflict(_) => Retry::No,
@@ -258,15 +222,10 @@ impl WriteError {
         match self {
             Self::ReadOnly(FenceReason::Deleted) | Self::NotFound => 404,
             Self::ReadOnly(_) => 503,
-            Self::PermissionDenied => 403,
-            Self::RequestExpired => 410,
-            Self::Quota(QuotaKind::UploadRate) => 429,
-            Self::Quota(_) => 507,
             Self::Size(_) | Self::Figure(_) => 413,
             Self::Document(DocumentLimit::Quota) => 507,
             Self::Document(_) => 413,
             Self::RateLimited => 429,
-            Self::ServerBusy => 503,
             Self::Conflict(_) => 409,
             Self::Invalid(_) => 400,
             Self::Storage(_) => 503,
@@ -278,14 +237,10 @@ impl WriteError {
     pub fn client_message(&self) -> String {
         match self {
             Self::ReadOnly(reason) => reason.message().to_string(),
-            Self::PermissionDenied => "edit access changed".into(),
-            Self::RequestExpired => "request has expired; submit a new request key".into(),
-            Self::Quota(kind) => kind.message().to_string(),
             Self::Size(refusal) => refusal.message(),
             Self::Figure(limit) => limit.message(),
             Self::Document(limit) => limit.message().to_string(),
             Self::RateLimited => "too many updates".into(),
-            Self::ServerBusy => super::BUSY_REFUSAL.to_string(),
             Self::NotFound => "not found".into(),
             Self::Conflict(why) | Self::Invalid(why) => why.clone(),
             Self::Storage(_) => "storage temporarily unavailable".into(),

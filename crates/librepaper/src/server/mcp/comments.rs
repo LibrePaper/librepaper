@@ -324,8 +324,6 @@ impl Server {
             link_hash: who.link.clone(),
             policy_comment: who.at_least(Role::Commenter),
             require_editor: action == "reject",
-            parent_request_id: String::new(),
-            execution_epoch: runner_execution_epoch(headers),
         };
         room.apply_agent_annotations(
             batch,

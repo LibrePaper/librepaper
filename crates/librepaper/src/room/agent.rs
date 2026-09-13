@@ -579,9 +579,54 @@ impl Room {
             let state = self.state.lock().await;
             session::encode_diff(&state.session.doc, &before_vector).map_err(AgentError::Storage)?
         };
-        self.write_session_inner(false, true)
-            .await
-            .map_err(AgentError::from)?;
+        let actor = crate::document::store::MutationActor {
+            account_id: authority.account_id.clone(),
+            owner_key: authority.owner_key.clone(),
+            session_generation: authority.generation.clone(),
+            link_hash: authority.link_hash.clone(),
+            policy_editor: authority.policy_editor,
+            unowned_publisher: authority.unowned_publisher,
+        };
+        let prospective_acceptance = if let Some(acceptance) = &request.acceptance {
+            let mut comment = self
+                .state
+                .lock()
+                .await
+                .comments
+                .iter()
+                .find(|comment| comment.id == acceptance.comment_id)
+                .cloned()
+                .ok_or_else(|| AgentError::Conflict("suggestion disappeared".into()))?;
+            if super::agent_comments::comment_version(&comment) != acceptance.expected_version
+                || !comment.outcome.is_empty()
+            {
+                return Err(AgentError::Conflict("suggestion changed".into()));
+            }
+            comment.outcome = "accepted".into();
+            comment.resolved = true;
+            comment.resolved_at = Some(crate::util::timestamp());
+            Some(comment)
+        } else {
+            None
+        };
+        self.write_session_inner_with_acceptance(
+            false,
+            true,
+            prospective_acceptance
+                .as_ref()
+                .map(|comment| (comment, &actor)),
+        )
+        .await
+        .map_err(AgentError::from)?;
+        if let Some(updated) = &prospective_acceptance {
+            let mut state = self.state.lock().await;
+            let comment = state
+                .comments
+                .iter_mut()
+                .find(|comment| comment.id == updated.id)
+                .ok_or_else(|| AgentError::Conflict("suggestion disappeared".into()))?;
+            *comment = updated.clone();
+        }
         let checkpoint = self
             .checkpoint_now(
                 "cli",
@@ -599,34 +644,15 @@ impl Room {
                     .iter_mut()
                     .find(|comment| comment.id == acceptance.comment_id)
                     .ok_or_else(|| AgentError::Conflict("suggestion disappeared".into()))?;
-                if super::agent_comments::comment_version(comment) != acceptance.expected_version
-                    || !comment.outcome.is_empty()
-                {
-                    return Err(AgentError::Conflict("suggestion changed".into()));
-                }
-                comment.outcome = "accepted".into();
-                comment.resolved = true;
-                comment.resolved_at = Some(crate::util::timestamp());
                 comment.resolved_in = checkpoint.clone().unwrap_or_default();
                 comment.clone()
             };
             if let Some(catalog) = self.catalog.get() {
                 let row = super::catalog::catalog_comment_row(&self.slug, &updated)
                     .map_err(AgentError::Storage)?;
-                super::catalog::update_comment_row(
-                    catalog,
-                    row,
-                    crate::document::store::MutationActor {
-                        account_id: authority.account_id.clone(),
-                        owner_key: authority.owner_key.clone(),
-                        session_generation: authority.generation.clone(),
-                        link_hash: authority.link_hash.clone(),
-                        policy_editor: authority.policy_editor,
-                        unowned_publisher: authority.unowned_publisher,
-                    },
-                )
-                .await
-                .map_err(AgentError::Storage)?;
+                super::catalog::update_comment_row(catalog, row, actor)
+                    .await
+                    .map_err(AgentError::Storage)?;
             }
             accepted_comment_id = Some(acceptance.comment_id.clone());
         }

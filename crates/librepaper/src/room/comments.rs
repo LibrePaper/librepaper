@@ -1262,11 +1262,7 @@ impl Room {
                 if let Err(error) = persisted {
                     let (mut response, _) = fail(&error.client_message());
                     response["status"] = json!(error.status());
-                    response["code"] = json!(if matches!(error, WriteError::RequestExpired) {
-                        "request_expired"
-                    } else {
-                        "annotation_refused"
-                    });
+                    response["code"] = json!("annotation_refused");
                     response["retryable"] = json!(error.is_temporary());
                     return (response, false);
                 }
@@ -1528,11 +1524,7 @@ impl Room {
                 if let Err(error) = persisted {
                     let (mut response, _) = fail(&error.client_message());
                     response["status"] = json!(error.status());
-                    response["code"] = json!(if matches!(error, WriteError::RequestExpired) {
-                        "request_expired"
-                    } else {
-                        "annotation_refused"
-                    });
+                    response["code"] = json!("annotation_refused");
                     response["retryable"] = json!(error.is_temporary());
                     return (response, false);
                 }

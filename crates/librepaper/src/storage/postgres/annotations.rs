@@ -77,6 +77,75 @@ pub struct ReplyRecord {
 }
 
 impl PostgresCatalog {
+    /// Persists a collaboration update and accepts the suggestion that caused it in
+    /// one transaction. A failed or concurrent decision therefore cannot leave the
+    /// source changed while the suggestion remains proposed (or vice versa).
+    pub async fn append_update_and_accept_suggestion(
+        &self,
+        id: Uuid,
+        input: NewAnnotation,
+        bytes: &[u8],
+        actor: &MutationAuthorization,
+    ) -> Result<i64> {
+        validate(&input)?;
+        if input.kind != "suggestion"
+            || input.context.get("outcome").and_then(Value::as_str) != Some("accepted")
+            || bytes.is_empty()
+            || bytes.len() > 4 * 1024 * 1024
+        {
+            return Err(Error::Invalid("invalid suggestion acceptance".into()));
+        }
+        let mut tx = self.pool.begin().await?;
+        let active: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM documents WHERE id=$1 AND status='active' FOR UPDATE",
+        )
+        .bind(input.document_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if active.is_none() {
+            return Err(Error::NotFound);
+        }
+        Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, true).await?;
+        let changed = sqlx::query(
+            "UPDATE annotations SET body=$3,author_account_id=$4,author_key=$5,author_label=$6,
+             selector=$7,context=$8,publication_id=$9,proposed_text=$10,
+             suggestion_state='accepted',resolved_at=COALESCE(resolved_at,now()),updated_at=now()
+             WHERE id=$1 AND document_id=$2 AND kind='suggestion' AND suggestion_state='proposed'",
+        )
+        .bind(id)
+        .bind(input.document_id)
+        .bind(input.body)
+        .bind(input.author_account_id)
+        .bind(input.author_key)
+        .bind(input.author_label)
+        .bind(input.selector)
+        .bind(input.context)
+        .bind(input.publication_id)
+        .bind(input.proposed_text)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(Error::Conflict("suggestion changed".into()));
+        }
+        let sequence = sqlx::query_scalar::<_, i64>(
+            "WITH advanced AS (
+               UPDATE documents SET update_sequence=update_sequence+1,updated_at=now()
+               WHERE id=$1 AND status='active' RETURNING id,update_sequence
+             ), inserted AS (
+               INSERT INTO document_updates(document_id,update_sequence,update_bytes)
+               SELECT id,update_sequence,$2 FROM advanced RETURNING update_sequence
+             ) SELECT update_sequence FROM inserted",
+        )
+        .bind(input.document_id)
+        .bind(bytes)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        tx.commit().await?;
+        Ok(sequence)
+    }
+
     async fn authorize_annotation_mutation(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
@@ -209,7 +278,7 @@ impl PostgresCatalog {
         validate(&input)?;
         let mut tx = self.pool.begin().await?;
         Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, false).await?;
-        let changed = sqlx::query("UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6,selector=$7,context=$8,publication_id=$9,proposed_text=$10,suggestion_state=CASE WHEN $2='suggestion' THEN COALESCE(suggestion_state,'proposed') ELSE NULL END,resolved_at=CASE WHEN $11 THEN COALESCE(resolved_at,now()) ELSE NULL END,updated_at=now() WHERE id=$1 AND document_id=$12")
+        let changed = sqlx::query("UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6,selector=$7,context=$8,publication_id=$9,proposed_text=$10,suggestion_state=CASE WHEN $2='suggestion' THEN CASE WHEN $11 AND $8->>'outcome' IN ('accepted','rejected') THEN $8->>'outcome' ELSE COALESCE(suggestion_state,'proposed') END ELSE NULL END,resolved_at=CASE WHEN $11 THEN COALESCE(resolved_at,now()) ELSE NULL END,updated_at=now() WHERE id=$1 AND document_id=$12")
             .bind(id).bind(input.kind).bind(input.body).bind(input.author_account_id).bind(input.author_key)
             .bind(input.author_label).bind(input.selector).bind(input.context).bind(input.publication_id)
             .bind(input.proposed_text).bind(resolved).bind(input.document_id).execute(&mut *tx).await?.rows_affected()==1;

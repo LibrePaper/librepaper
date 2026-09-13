@@ -158,10 +158,38 @@ impl PostgresCatalog {
         .bind(input.publisher_label)
         .fetch_one(&mut *tx)
         .await?;
-        for file in input.files {
-            sqlx::query("INSERT INTO publication_files(publication_id,path,storage_key,digest,byte_length,media_type) VALUES($1,$2,$3,$4,$5,$6)")
-                .bind(id).bind(file.path).bind(file.storage_key).bind(file.digest.as_slice())
-                .bind(file.byte_length).bind(file.media_type).execute(&mut *tx).await?;
+        if !input.files.is_empty() {
+            let paths: Vec<String> = input.files.iter().map(|file| file.path.clone()).collect();
+            let keys: Vec<String> = input
+                .files
+                .iter()
+                .map(|file| file.storage_key.clone())
+                .collect();
+            let digests: Vec<Vec<u8>> = input
+                .files
+                .iter()
+                .map(|file| file.digest.to_vec())
+                .collect();
+            let lengths: Vec<i64> = input.files.iter().map(|file| file.byte_length).collect();
+            let media_types: Vec<String> = input
+                .files
+                .iter()
+                .map(|file| file.media_type.clone())
+                .collect();
+            sqlx::query(
+                "INSERT INTO publication_files(publication_id,path,storage_key,digest,byte_length,media_type)
+                 SELECT $1,input.path,input.storage_key,input.digest,input.byte_length,input.media_type
+                 FROM unnest($2::text[],$3::text[],$4::bytea[],$5::bigint[],$6::text[])
+                   AS input(path,storage_key,digest,byte_length,media_type)",
+            )
+            .bind(id)
+            .bind(paths)
+            .bind(keys)
+            .bind(digests)
+            .bind(lengths)
+            .bind(media_types)
+            .execute(&mut *tx)
+            .await?;
         }
         sqlx::query("UPDATE documents SET current_publication_id=$2,updated_at=now() WHERE id=$1")
             .bind(input.document_id)

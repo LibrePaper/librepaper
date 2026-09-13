@@ -69,17 +69,31 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     let rows=sqlx::query(
         "SELECT archive_key key,archive_bytes bytes,encode(archive_digest,'hex') digest FROM document_versions
          UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM document_assets
+         UNION ALL SELECT manifest_key,0,encode(manifest_digest,'hex') FROM publications
          UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM publication_files
-         UNION ALL SELECT snapshot_key,snapshot_bytes,encode(snapshot_digest,'hex') FROM document_bases"
+         UNION ALL SELECT snapshot_key,snapshot_bytes,encode(snapshot_digest,'hex') FROM document_bases
+         UNION ALL SELECT previous_snapshot_key,0,'' FROM document_bases WHERE previous_snapshot_key IS NOT NULL"
     ).fetch_all(&mut *connection).await.map_err(|e|e.to_string())?;
-    let references = rows
-        .into_iter()
-        .map(|r| Reference {
-            key: r.get("key"),
-            bytes: r.get("bytes"),
-            sha256: r.get("digest"),
-        })
-        .collect::<Vec<_>>();
+    let mut by_key: std::collections::BTreeMap<String, Reference> =
+        std::collections::BTreeMap::new();
+    for row in rows {
+        let reference = Reference {
+            key: row.get("key"),
+            bytes: row.get("bytes"),
+            sha256: row.get("digest"),
+        };
+        if let Some(existing) = by_key.get(&reference.key) {
+            if existing.bytes != reference.bytes || existing.sha256 != reference.sha256 {
+                return Err(format!(
+                    "database records conflicting metadata for object {}",
+                    reference.key
+                ));
+            }
+        } else {
+            by_key.insert(reference.key.clone(), reference);
+        }
+    }
+    let references = by_key.into_values().collect::<Vec<_>>();
     let dump = destination.join("database.dump");
     let status = tokio::process::Command::new("pg_dump")
         .args(["--format=custom", "--snapshot", &snapshot, "--file"])

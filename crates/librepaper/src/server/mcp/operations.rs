@@ -139,20 +139,6 @@ impl Server {
         Ok(())
     }
 
-    pub(super) async fn mcp_cancelled_children(
-        &self,
-        slug: &str,
-        actor: &str,
-        key: &OperationKey,
-        result: Value,
-    ) -> Result<Value, Failure> {
-        if result["status"] != "cancel_requested" {
-            return Ok(result);
-        }
-        let _ = (slug, actor, key);
-        Ok(result)
-    }
-
     /// Private staging has no annotation rows, but its terminal receipt uses
     /// the same transactional authority/cancellation boundary. A separate
     /// object write would race cancellation between its check and commit.
@@ -940,8 +926,6 @@ impl Server {
                         link_hash: who.link.clone(),
                         policy_comment: true,
                         require_editor: false,
-                        parent_request_id: candidate.parent_request_id.clone(),
-                        execution_epoch: runner_execution_epoch(headers),
                     },
                 )
                 .await

@@ -97,27 +97,37 @@ impl Room {
             session::encode_diff(&state.session.doc, &before).map_err(AcceptError::Failed)?
         };
 
-        self.write_session_inner(false, true)
+        let resolved_at = timestamp();
+        let mut updated = comment.clone();
+        updated.outcome = "accepted".into();
+        updated.resolved = true;
+        updated.resolved_at = Some(resolved_at.clone());
+        updated.accept_request = request_id.into();
+        self.write_session_inner_with_acceptance(false, true, Some((&updated, &actor)))
             .await
             .map_err(AcceptError::from)?;
-        let sha = self
-            .checkpoint_now("accept", by)
-            .await
-            .map_err(AcceptError::from)?
-            .ok_or_else(|| AcceptError::Failed("acceptance checkpoint was not created".into()))?;
-        let resolved_at = timestamp();
-        let updated = {
+        {
             let mut state = self.state.lock().await;
             let item = state
                 .comments
                 .iter_mut()
                 .find(|item| item.id == comment_id)
                 .ok_or_else(|| AcceptError::Failed("suggestion disappeared".into()))?;
-            item.outcome = "accepted".into();
-            item.resolved = true;
-            item.resolved_at = Some(resolved_at.clone());
+            *item = updated.clone();
+        }
+        let sha = self
+            .checkpoint_now("accept", by)
+            .await
+            .map_err(AcceptError::from)?
+            .ok_or_else(|| AcceptError::Failed("acceptance checkpoint was not created".into()))?;
+        updated = {
+            let mut state = self.state.lock().await;
+            let item = state
+                .comments
+                .iter_mut()
+                .find(|item| item.id == comment_id)
+                .ok_or_else(|| AcceptError::Failed("suggestion disappeared".into()))?;
             item.resolved_in = sha.clone();
-            item.accept_request = request_id.into();
             item.clone()
         };
         if let Some(catalog) = self.catalog.get() {

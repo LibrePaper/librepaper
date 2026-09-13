@@ -102,6 +102,7 @@ impl PostgresCatalog {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn activate_collaboration_base(
         &self,
         document_id: Uuid,

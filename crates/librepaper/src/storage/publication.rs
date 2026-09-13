@@ -1,5 +1,6 @@
 //! Blob-first publication staging and atomic PostgreSQL activation.
 
+use futures_util::{stream, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -126,33 +127,45 @@ impl PublicationStorage {
             .check_storage_admission(input.document_id, total_bytes.unwrap() as i64)
             .await?;
         let staging_id = super::postgres::new_id();
-        let mut manifest_files = Vec::with_capacity(input.files.len());
-        let mut rows = Vec::with_capacity(input.files.len());
-        for file in input.files {
-            let digest: [u8; 32] = Sha256::digest(&file.bytes).into();
-            let key = format!(
-                "documents/{}/publications/{staging_id}/files/{}",
-                input.document_id, file.path
-            );
-            self.blobs
-                .put_new(&key, file.bytes.clone(), &file.media_type)
-                .await?;
-            verify(self.blobs.as_ref(), &key, &digest, file.bytes.len() as u64).await?;
-            manifest_files.push(ManifestFile {
-                path: file.path.clone(),
-                storage_key: key.clone(),
-                digest: hex::encode(digest),
-                bytes: file.bytes.len() as u64,
-                media_type: file.media_type.clone(),
-            });
-            rows.push(NewPublicationFile {
-                path: file.path,
-                storage_key: key,
-                digest,
-                byte_length: file.bytes.len() as i64,
-                media_type: file.media_type,
-            });
-        }
+        // Blob I/O happens before the database transaction and is independent
+        // per immutable file. Bound concurrency so a maximum-size publication
+        // does not turn 4,096 provider round trips into a serial critical path.
+        let uploaded: Vec<(ManifestFile, NewPublicationFile)> =
+            stream::iter(input.files.into_iter().map(|file| {
+                let blobs = self.blobs.clone();
+                let document_id = input.document_id;
+                async move {
+                    let digest: [u8; 32] = Sha256::digest(&file.bytes).into();
+                    let key = format!(
+                        "documents/{document_id}/publications/{staging_id}/files/{}",
+                        file.path
+                    );
+                    blobs
+                        .put_new(&key, file.bytes.clone(), &file.media_type)
+                        .await?;
+                    verify(blobs.as_ref(), &key, &digest, file.bytes.len() as u64).await?;
+                    Ok::<_, Error>((
+                        ManifestFile {
+                            path: file.path.clone(),
+                            storage_key: key.clone(),
+                            digest: hex::encode(digest),
+                            bytes: file.bytes.len() as u64,
+                            media_type: file.media_type.clone(),
+                        },
+                        NewPublicationFile {
+                            path: file.path,
+                            storage_key: key,
+                            digest,
+                            byte_length: file.bytes.len() as i64,
+                            media_type: file.media_type,
+                        },
+                    ))
+                }
+            }))
+            .buffer_unordered(16)
+            .try_collect()
+            .await?;
+        let (mut manifest_files, rows): (Vec<_>, Vec<_>) = uploaded.into_iter().unzip();
         manifest_files.sort_by(|a, b| a.path.cmp(&b.path));
         let manifest = serde_json::to_vec(&Manifest {
             version: 1,

@@ -390,12 +390,6 @@ pub(crate) const ENCODED_CEILING_REFUSAL: &str =
     "this document's saved state has reached the largest size this deployment can durably \
      save; its edit history counts towards that as well as its text";
 
-/// What a peer is told when this server is merely full. It is a separate
-/// message because reporting saturation as a size limit tells a person their
-/// document can never be saved, which is false.
-pub(crate) const BUSY_REFUSAL: &str =
-    "this server has no free capacity to save right now; reconnect to continue editing";
-
 /// What accepting a suggestion did.
 pub enum Accepted {
     /// The edit landed: `update` is the Yjs update every socket is sent,
@@ -1590,80 +1584,6 @@ impl Room {
         self.state.lock().await.session.format.clone()
     }
 
-    /// Writes a source into the live document, as an edit rather than as a
-    /// substitution: the common prefix and suffix are left alone, so an editor
-    /// typing elsewhere at that moment keeps their words and their caret and
-    /// sees the rest change under them. This is how a command-line publish, a
-    /// `sync` write and a restore all reach the document.
-    ///
-    /// Returns the update to relay, which is what the sockets are sent. An
-    /// empty update is a valid outcome -- writing the source a document
-    /// already holds changes nothing -- so a refusal is an `Err`, never an
-    /// empty `Vec`.
-    #[cfg(test)]
-    pub async fn set_source(&self, source: &str, format: &str) -> Result<Vec<u8>, WriteError> {
-        self.set_main_file(source, format, "").await
-    }
-
-    /// Writes a source into the named main file. A directory publish knows
-    /// what its document is called; other callers supply the implied name.
-    pub async fn set_main_file(
-        &self,
-        source: &str,
-        format: &str,
-        named: &str,
-    ) -> Result<Vec<u8>, WriteError> {
-        let _publication_writer = self.publication_write.lock().await;
-        if self.read_only() {
-            // Another server owns this room; writing our copy would only
-            // diverge from the one that is actually being persisted, and
-            // `persist` would refuse it anyway (R23).
-            return Err(self.fenced());
-        }
-        let mut state = self.state.lock().await;
-        if self.read_only() {
-            return Err(self.fenced());
-        }
-        let before = session::encode_vector(&state.session.doc);
-        // What the main file is called, for the one case where there is not
-        // one yet: a document being published for the first time. It follows
-        // from what the document is written in, which is the same name the
-        // migration gives a document that predates directories.
-        let implied = if !format.is_empty() {
-            format.to_string()
-        } else if !named.is_empty() {
-            // No format was given, but the main file's own name was --
-            // deriving from its extension keeps the two from disagreeing
-            // when a caller names a file without also spelling out its
-            // format (R27).
-            let derived = format_from_path(named);
-            if derived.is_empty() {
-                state.session.format.clone()
-            } else {
-                derived
-            }
-        } else {
-            state.session.format.clone()
-        };
-        self.checked_edit(&state.session.doc, |candidate| {
-            session::replace_text(candidate, source, &main_path_for(named, &implied));
-            Ok::<_, WriteError>(())
-        })?;
-        if !format.is_empty() {
-            state.session.format = format.to_string();
-        } else if !named.is_empty() {
-            let derived = format_from_path(named);
-            if !derived.is_empty() {
-                state.session.format = derived;
-            }
-        }
-        state.session.mark_dirty(now_unix());
-        state.session.generation += 1;
-        state.session.updated_at = now_unix();
-        Ok(session::encode_diff(&state.session.doc, &before)
-            .unwrap_or_else(|_| session::encode_state(&state.session.doc)))
-    }
-
     /// What a socket is answered with on `y-open`: everything the document
     /// holds, or -- when the socket says what it already has -- only the rest.
     /// The second result is how many people are here.
@@ -1793,7 +1713,7 @@ impl Room {
             // that cannot be persisted could never be acknowledged and relaying
             // it would show every peer a document this server cannot save.
             let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-            let admitted_bound = {
+            {
                 let known = match state.session.encoded_bound {
                     Some(bound) => bound,
                     None => {
@@ -1820,8 +1740,7 @@ impl Room {
                     }
                     exact
                 }
-            };
-            admitted_bound
+            }
         };
         // Read before the update is applied, so a change to the shared
         // main-file pointer can be told from a document that already opened
@@ -1920,6 +1839,16 @@ impl Room {
         only_dirty: bool,
         acknowledge: bool,
     ) -> Result<Option<(i64, i64)>, WriteError> {
+        self.write_session_inner_with_acceptance(only_dirty, acknowledge, None)
+            .await
+    }
+
+    pub(crate) async fn write_session_inner_with_acceptance(
+        &self,
+        only_dirty: bool,
+        acknowledge: bool,
+        acceptance: Option<(&Comment, &crate::document::store::MutationActor)>,
+    ) -> Result<Option<(i64, i64)>, WriteError> {
         let _writer = self.session_write.lock().await;
         if self.read_only() {
             return Err(self.fenced());
@@ -1957,14 +1886,28 @@ impl Room {
             (body, generation, durable)
         };
         let size = body.len() as i64;
-        let collaboration = crate::storage::collaboration::CollaborationStorage::new(
-            catalog.clone(),
-            self.blobs.clone(),
-        );
-        let durable_sequence = collaboration
-            .append(document_id, &body)
-            .await
-            .map_err(|error| WriteError::Storage(error.to_string()))?;
+        let durable_sequence = if let Some((comment, actor)) = acceptance {
+            let comment_id = uuid::Uuid::parse_str(&comment.id)
+                .map_err(|_| WriteError::Invalid("annotation id is invalid".into()))?;
+            catalog
+                .append_update_and_accept_suggestion(
+                    comment_id,
+                    catalog::annotation_input(document_id, comment)?,
+                    &body,
+                    &catalog::mutation_authorization(actor)?,
+                )
+                .await
+                .map_err(|error| WriteError::Storage(error.to_string()))?
+        } else {
+            let collaboration = crate::storage::collaboration::CollaborationStorage::new(
+                catalog.clone(),
+                self.blobs.clone(),
+            );
+            collaboration
+                .append(document_id, &body)
+                .await
+                .map_err(|error| WriteError::Storage(error.to_string()))?
+        };
         if durable_sequence % 100 == 0 {
             catalog
                 .enqueue_job(crate::storage::postgres::NewJob {

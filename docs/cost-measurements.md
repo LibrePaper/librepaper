@@ -23,34 +23,49 @@ identical latency on a low-end shared VM.
 
 | Operation | Load | p50 | p95 | p99 |
 |---|---:|---:|---:|---:|
-| Update append | 1 room | 0.66 ms | 1.16 ms | 1.75 ms |
-| Update append | 20 rooms | 1.44 ms | 3.05 ms | 12.52 ms |
-| Update append | 100 rooms | 2.97 ms | 4.79 ms | 7.10 ms |
-| Room reconstruction | 20 rooms | 1.12 ms | 1.50 ms | 1.50 ms |
-| Room reconstruction | 100 rooms | 0.37 ms | 1.19 ms | 1.39 ms |
+| Update append | 1 room | 6.68 ms | 12.16 ms | 12.25 ms |
+| Update append | 20 rooms | 7.94 ms | 26.96 ms | 34.02 ms |
+| Update append | 100 rooms | 20.18 ms | 51.33 ms | 71.03 ms |
+| Room reconstruction | 20 rooms | 1.06 ms | 1.35 ms | 1.35 ms |
+| Room reconstruction | 100 rooms | 0.34 ms | 1.19 ms | 1.37 ms |
 
 | Product operation | Input | Elapsed |
 |---|---:|---:|
-| Create source version | 100 KiB inline | 14.0 ms |
-| Create source version | 1 MiB inline | 18.0 ms |
-| Create source version | 4 MiB inline | 34.8 ms |
-| Create version | 1 asset reference | 20.9 ms |
-| Create version | 100 asset references | 27.9 ms |
-| Create version | 512 asset references | 50.5 ms |
-| Claim jobs | 1 worker / 100 jobs | 5.0 ms |
-| Claim jobs | 4 workers / 400 jobs | 9.9 ms |
-| Claim jobs | 16 workers / 1,600 jobs | 17.9 ms |
+| Create source version | 100 KiB inline | 31.5 ms |
+| Create source version | 1 MiB inline | 15.9 ms |
+| Create source version | 4 MiB inline | 35.3 ms |
+| Create version | 1 asset reference | 52.8 ms |
+| Create version | 100 asset references | 25.2 ms |
+| Create version | 512 asset references | 63.2 ms |
+| Publish and activate | 4,096 files | 190.3 ms |
+| Read document page | 200 rows | 3.88 ms |
+| Read annotation timeline | 500 rows | 1.66 ms |
+| Claim jobs | 1 worker / 100 jobs | 6.5 ms |
+| Claim jobs | 4 workers / 400 jobs | 18.0 ms |
+| Claim jobs | 16 workers / 1,600 jobs | 28.5 ms |
 
-The 10,000-document/500,000-version fixture occupied 301,495,987 PostgreSQL
-bytes and loaded in 13.6 seconds. That is about 30.2 KiB per active document at
+The 10,000-document/500,000-version fixture occupied 304,914,959 PostgreSQL
+bytes and loaded in 23.6 seconds. That is about 30.5 KiB per active document at
 50 retained versions, including indexes and page overhead. Every measured
 ordinary product operation stayed below the 250 ms target. Update
-acknowledgment p95 at 100 active rooms was 4.79 ms against the 100 ms target.
+acknowledgment p95 at 100 active rooms was 51.33 ms against the 100 ms target.
+The run was performed while other compilation and container work shared the
+host; its result is above the aspirational 50 ms interactive database target by
+1.33 ms and is retained as measured rather than adjusted.
 
 The asset fixture creates each digest once and later versions reuse it. Asset
 bodies are not copied into source archives: the archive with 512 references
 was 23,996 bytes. A repeated edit to that project writes one small compressed
 archive and performs no asset PUT.
+
+The backup/restore check used 1,000 documents, 1,000 distinct zero-byte
+immutable archives, PostgreSQL custom dump format, and the same local
+filesystem. Creating and verifying the recovery point took 256 ms; restoring
+it into an empty database and new object directory took 954 ms. The restored
+database contained all 1,000 versions. Its dump was 130,846 bytes and its
+manifest was 186,409 bytes. This fixture measures per-object traversal and
+schema restoration; the 500,000-version database-size fixture above remains
+the database scaling measurement.
 
 ## Capacity and cost model
 
@@ -87,7 +102,7 @@ enforce a provider account budget.
 ## Deployment checks
 
 Before production release, repeat this fixture on the intended smallest VM and
-S3-compatible provider and record publication-at-limit, timeline/listing,
-backup, restore, object-operation, and transfer measurements. Provider alerts
+S3-compatible provider and record object-operation and transfer measurements.
+Provider alerts
 or caps must be verified in that deployment. Those are deployment results and
 cannot be demonstrated by this local repository run.

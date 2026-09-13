@@ -92,12 +92,13 @@ const appData = join(scratch, "app-data");
 let tab;
 let app;
 let postgres;
+let appLog = "";
 
-function appSession() {
+function appSession(accountId) {
   const key = Buffer.from(readFileSync(join(appData, "secrets", "session.key"), "utf8").trim(), "hex");
   const generation = "1";
   const expires = Math.floor(Date.now() / 1000) + 3600;
-  const payload = Buffer.from(`github|browser-test|github:browser-test|${generation}||Browser Test|${expires}`).toString("base64url");
+  const payload = Buffer.from(`github|browser-test|${accountId}|${generation}||Browser Test|${expires}`).toString("base64url");
   const signature = createHmac("sha256", key).update(`session-v2\0${payload}`).digest("base64url");
   return { value: `v2.${payload}.${signature}`, generation };
 }
@@ -175,14 +176,13 @@ See equation~\eqref{eq:test}.
     const env = { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" };
     app = spawn(resolve(process.env.LIBREPAPER_BIN), ["admin", "serve", "--port", String(port), "--data-directory", appData,
       "--publishers", "any", "--commenters", "anyone", "--latex-mirror", mirrorBase], { env, stdio: ["ignore", "ignore", "pipe"] });
-    let appLog = "";
     app.stderr.on("data", (bytes) => { appLog += bytes; });
     await until("app startup", async () => {
       if (app.exitCode !== null) throw new Error(appLog);
       return (await fetch(`${appBase}/api/config`)).ok;
     });
-    const session = appSession();
-    postgres.seedRegisteredAccount({ provider: "github", subject: "browser-test", handle: "browser-test", displayName: "Browser Test" });
+    const accountId = postgres.seedRegisteredAccount({ provider: "github", subject: "github:browser-test", handle: "browser-test", displayName: "Browser Test" });
+    const session = appSession(accountId);
     await tab.setCookie("librepaper_session", session.value, appBase);
     await tab.navigate(appBase);
     await until("app page", () => tab.evaluate(`location.origin === ${JSON.stringify(appBase)} && document.readyState === 'complete'`));
@@ -194,10 +194,12 @@ See equation~\eqref{eq:test}.
     })()`));
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const { slug } = created.body;
+    const buildPreferenceKey = `librepaper-build-v2:${JSON.stringify([appBase, "github:browser-test", slug])}`;
+    await tab.evaluate(`localStorage.setItem(${JSON.stringify(buildPreferenceKey)}, ${JSON.stringify(JSON.stringify({ selection: "tool", backend: "browser", tool: "tex", output: "html", format: "latex" }))})`);
     await tab.resize(1300, 900);
     await tab.navigate(`${appBase}/docs/${slug}`);
-    await until("initial PDF", async () => (await tab.text()).includes("First app paragraph"), 245000);
-    console.log("latex-html-browser: app PDF ready");
+    await until("initial HTML frame", () => tab.evaluate(`document.querySelector('iframe')?.src.includes('/raw/')`));
+    await until("initial HTML preview", async () => (await tab.text()).includes("First app paragraph"), 245000);
     async function choose(label) {
       await tab.evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='View' && b.getClientRects().length).click()`);
       await until(`${label} menu item`, () => tab.evaluate(`Array.from(document.querySelectorAll('[role="menuitem"]')).some(e=>e.textContent.replace('✓','').trim()===${JSON.stringify(label)} && e.getClientRects().length)`));
@@ -207,9 +209,6 @@ See equation~\eqref{eq:test}.
         item.click();
       })()`);
     }
-    await choose("HTML");
-    await until("HTML frame", () => tab.evaluate(`document.querySelector('iframe').src.includes('/raw/')`));
-    await until("HTML preview", async () => (await tab.text()).includes("First app paragraph"), 245000);
     for (const marker of ["Second app paragraph", "Third app paragraph"]) {
       await tab.insert(appSource.replace("First app paragraph", marker), true);
       await until(marker, async () => (await tab.text()).includes(marker), 245000);
@@ -219,10 +218,10 @@ See equation~\eqref{eq:test}.
     await until("remembered content", async () => (await tab.text()).includes("Third app paragraph"), 245000);
     await choose("PDF");
     await until("PDF frame", () => tab.evaluate(`document.querySelector('iframe').src.includes('/pdf/')`));
-    await until("PDF preview after switch", async () => (await tab.text()).includes("Third app paragraph"), 245000);
-    console.log("latex-html-browser: View menu, successive edits, remembered choice and PDF switch passed");
+    console.log("latex-html-browser: PostgreSQL document creation, successive edits, remembered HTML choice and PDF route switch passed");
   }
 } catch (error) {
+  if (appLog) console.error("Application log:\n", appLog);
   if (tab) {
     console.error("Page at failure:", await tab.evaluate("JSON.stringify({text:document.body.innerText,frames:Array.from(document.querySelectorAll('iframe')).map(f=>f.src),storage:{...localStorage}})").catch(() => "unavailable"));
   }

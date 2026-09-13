@@ -9,7 +9,7 @@ use crate::storage::postgres::{
     AnnotationRecord, MutationAuthorization, NewAnnotation, NewReply, PostgresCatalog, ReplyRecord,
 };
 
-fn mutation_authorization(
+pub(super) fn mutation_authorization(
     actor: &crate::document::store::MutationActor,
 ) -> Result<MutationAuthorization, WriteError> {
     let account_id = if actor.account_id.is_empty() {
@@ -292,7 +292,10 @@ pub(super) fn request_digest(value: &Value) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn annotation_input(document_id: Uuid, comment: &Comment) -> Result<NewAnnotation, WriteError> {
+pub(super) fn annotation_input(
+    document_id: Uuid,
+    comment: &Comment,
+) -> Result<NewAnnotation, WriteError> {
     let kind = if comment.proposed.is_some() {
         "suggestion"
     } else if comment.motivation == "highlighting" {

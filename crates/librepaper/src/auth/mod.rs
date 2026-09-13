@@ -456,11 +456,13 @@ fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
     let [provider, handle, id, generation, picture, name] = fields[..] else {
         return Identity::anonymous();
     };
+    let provider_identity = id
+        .strip_prefix(&format!("{provider}:"))
+        .is_some_and(|subject| !subject.is_empty());
+    let catalog_identity = uuid::Uuid::parse_str(id).is_ok();
     if !matches!(provider, PROVIDER_GITHUB | PROVIDER_GOOGLE)
         || handle.is_empty()
-        || id
-            .strip_prefix(&format!("{provider}:"))
-            .is_none_or(str::is_empty)
+        || (!provider_identity && !catalog_identity)
     {
         return Identity::anonymous();
     }

@@ -12,6 +12,7 @@ use time::OffsetDateTime;
 use super::{NewAccount, NewDocument, NewJob, PostgresCatalog, PostgresOptions, StoragePolicy};
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::collaboration::CollaborationStorage;
+use crate::storage::publication::{PublicationFile, PublicationStorage, Publish};
 use crate::storage::source::{CommitProject, ProjectFile, SourceStorage};
 use crate::storage::source_archive::ArchiveLimits;
 
@@ -197,6 +198,45 @@ async fn catalog_v3_release_benchmark() {
         job_results.push(json!({"workers":workers,"claimed":claimed,"elapsed_us":micros(started)}));
     }
 
+    let publication_storage = PublicationStorage::new(catalog.clone(), blobs.clone());
+    let publication_files = (0..4096)
+        .map(|index| PublicationFile {
+            path: format!("files/{index}.txt"),
+            bytes: b"x".to_vec(),
+            media_type: "text/plain".into(),
+        })
+        .collect();
+    let publication_started = Instant::now();
+    let publication = publication_storage
+        .publish(Publish {
+            document_id: documents[2].id,
+            source_version_id: None,
+            request_key: "benchmark-files-limit".into(),
+            expected_current_id: None,
+            publisher_account_id: Some(owner.id),
+            publisher_label: "Benchmark".into(),
+            files: publication_files,
+        })
+        .await
+        .expect("publication at file limit");
+    let publication_result = json!({
+        "files":4096,
+        "logical_bytes":4096,
+        "elapsed_us":micros(publication_started),
+        "stored_files":catalog.publication_files(publication.id).await.expect("publication files").len()
+    });
+
+    sqlx::query("INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context)
+        SELECT gen_random_uuid(),$1,'comment','benchmark',$2,'benchmark','Benchmark','{}'::jsonb,'{\"version\":1}'::jsonb
+        FROM generate_series(1,500)")
+        .bind(documents[3].id).bind(owner.id).execute(catalog.pool()).await.expect("timeline fixtures");
+    let timeline_started = Instant::now();
+    let timeline = catalog
+        .annotations(documents[3].id, None, None, 500)
+        .await
+        .expect("annotation timeline");
+    let timeline_us = micros(timeline_started);
+
     let scale_started = Instant::now();
     sqlx::query("UPDATE documents SET current_version_id=NULL,current_publication_id=NULL")
         .execute(catalog.pool())
@@ -229,6 +269,12 @@ async fn catalog_v3_release_benchmark() {
         .fetch_one(catalog.pool())
         .await
         .expect("database size");
+    let listing_started = Instant::now();
+    let listing = catalog
+        .list_documents(None, 200)
+        .await
+        .expect("document listing");
+    let listing_us = micros(listing_started);
     let report = json!({
         "measured_at":OffsetDateTime::now_utc().to_string(),
         "profile":"release",
@@ -237,6 +283,11 @@ async fn catalog_v3_release_benchmark() {
         "source_versions":source_results,
         "asset_versions":asset_results,
         "job_claims":job_results,
+        "publication":publication_result,
+        "bounded_reads":{
+            "document_listing":{"rows":listing.len(),"elapsed_us":listing_us},
+            "annotation_timeline":{"rows":timeline.len(),"elapsed_us":timeline_us}
+        },
         "scale":{"documents":10_000,"versions":500_000,"load_us":micros(scale_started),"database_bytes":database_bytes}
     });
     let output = serde_json::to_string_pretty(&report).expect("report json");

@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 //! The resident-memory estimate `RoomSet` admission is decided on.
 //!
 //! This is an admission measure, not an allocator reading and not the storage

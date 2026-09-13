@@ -27,6 +27,16 @@ fn credentials_cannot_cross_purposes() {
 }
 
 #[test]
+fn established_catalog_account_uuid_survives_session_round_trip() {
+    let key = [11; 32];
+    let mut who = Identity::github("alice", "provider-subject");
+    who.id = uuid::Uuid::now_v7().to_string();
+    who.session_generation = "4".into();
+    let session = sign_session(&key, &who, now_unix() + 3600);
+    assert_eq!(read_session(&key, &session), who);
+}
+
+#[test]
 fn pictures_travel_in_current_credentials() {
     let key = [3; 32];
     let expiry = now_unix() + 3600;

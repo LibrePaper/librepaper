@@ -74,8 +74,6 @@ pub enum PublicationError {
     Missing,
     Conflict,
     TooLarge,
-    Expired,
-    Quota,
     Denied,
     Storage(String),
 }
@@ -86,8 +84,6 @@ impl std::fmt::Display for PublicationError {
             Self::Missing => f.write_str("publication object is missing"),
             Self::Conflict => f.write_str("publication changed; retry with the current version"),
             Self::TooLarge => f.write_str("publication exceeds its size limit"),
-            Self::Expired => f.write_str("publication retry key expired; start a new request"),
-            Self::Quota => f.write_str("publication storage quota is used up"),
             Self::Denied => f.write_str("publication access changed"),
         }
     }
@@ -393,8 +389,6 @@ pub(super) fn publication_error(error: PublicationError) -> Reply {
         PublicationError::Missing => 404,
         PublicationError::Conflict => 409,
         PublicationError::TooLarge => 413,
-        PublicationError::Expired => 410,
-        PublicationError::Quota => 507,
         PublicationError::Denied => 403,
         PublicationError::Invalid(_) => 400,
         PublicationError::Storage(_) => 503,

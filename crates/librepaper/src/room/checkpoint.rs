@@ -306,16 +306,6 @@ impl Room {
         state.session.mark_dirty(now_unix());
         Ok(())
     }
-    pub async fn add_text(&self, path: &str, body: &str) -> Result<(), WriteError> {
-        let mut state = self.state.lock().await;
-        self.checked_edit(&state.session.doc, |doc| {
-            session::put_text(doc, path, body);
-            Ok::<_, WriteError>(())
-        })?;
-        state.session.generation += 1;
-        state.session.mark_dirty(now_unix());
-        Ok(())
-    }
     pub async fn manifest(&self) -> Manifest {
         let Some(catalog) = self.catalog.get() else {
             return self.state.lock().await.manifest.clone();

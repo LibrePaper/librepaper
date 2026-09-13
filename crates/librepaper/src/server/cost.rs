@@ -45,28 +45,6 @@ struct Durable {
     response_size_histogram: [[u64; 7]; CLASSES],
 }
 
-fn decode_durable(saved: &str) -> Result<Durable, String> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Envelope {
-        version: u32,
-        state: Value,
-    }
-    let envelope: Envelope = serde_json::from_str(saved).map_err(|error| error.to_string())?;
-    if envelope.version != 2 {
-        return Err("unsupported cost state version".into());
-    }
-    let durable: Durable = if envelope.state.is_null() {
-        Durable::default()
-    } else {
-        serde_json::from_value(envelope.state).map_err(|error| error.to_string())?
-    };
-    if durable.minutes.len() > 1442 {
-        return Err("cost state exceeds its rolling window bound".into());
-    }
-    Ok(durable)
-}
-
 struct RequestBucket {
     tokens: f64,
     sampled: std::time::Instant,

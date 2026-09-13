@@ -18,10 +18,12 @@ export function postgresTestDatabase(label) {
   return {
     url: url.toString(),
     seedRegisteredAccount({ provider, subject, handle, displayName }) {
+      const id = randomUUID();
       execFileSync("psql", [url.toString(), "-v", "ON_ERROR_STOP=1", "-c", `INSERT INTO accounts
         (id, kind, provider, provider_subject, handle, display_name, status, session_generation)
-        VALUES (${sqlLiteral(randomUUID())}, 'registered', ${sqlLiteral(provider)}, ${sqlLiteral(subject)},
+        VALUES (${sqlLiteral(id)}, 'registered', ${sqlLiteral(provider)}, ${sqlLiteral(subject)},
           ${sqlLiteral(handle)}, ${sqlLiteral(displayName)}, 'active', 1)`], { stdio: "ignore" });
+      return id;
     },
     drop() {
       execFileSync("psql", [administrativeUrl, "-v", "ON_ERROR_STOP=1", "-c",

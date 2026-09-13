@@ -240,10 +240,6 @@ enum AuthenticationFailure {
     Unavailable,
 }
 
-/// Declared input for a server-side catalogue job: an account id or a slug
-/// and no payload.
-pub(crate) const SERVER_JOB_BYTES: usize = 512;
-
 /// Read one account row off the runtime worker.
 pub(crate) async fn account_row(
     catalog: &Arc<crate::storage::postgres::PostgresCatalog>,

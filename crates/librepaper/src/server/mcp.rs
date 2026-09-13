@@ -330,6 +330,7 @@ impl Server {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn mcp_store<T: Serialize>(
         &self,
         slug: &str,

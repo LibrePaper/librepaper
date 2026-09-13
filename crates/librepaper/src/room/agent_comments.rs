@@ -7,8 +7,6 @@ pub(crate) struct AgentAnnotationAuthority {
     pub link_hash: String,
     pub policy_comment: bool,
     pub require_editor: bool,
-    pub parent_request_id: String,
-    pub execution_epoch: String,
 }
 
 pub(crate) struct AnnotationBatch {

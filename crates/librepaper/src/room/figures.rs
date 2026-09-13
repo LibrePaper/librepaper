@@ -38,30 +38,6 @@ impl Drop for AssetUpload<'_> {
 }
 
 impl Room {
-    /// Names a figure in the document, at a path. The bytes are already in the
-    /// store; this is what makes them a figure of this document.
-    pub async fn name_asset(&self, path: &str, sha: &str) -> Result<(), WriteError> {
-        let _publication_writer = self.publication_write.lock().await;
-        let _assets_writer = self.assets_write.lock().await;
-        if self.read_only() {
-            // Another server owns this room; naming a figure in our copy
-            // would only diverge from the one being persisted (R23).
-            return Err(self.fenced());
-        }
-        let mut state = self.state.lock().await;
-        if self.read_only() {
-            return Err(self.fenced());
-        }
-        self.checked_edit(&state.session.doc, |candidate| {
-            session::put_asset(candidate, path, sha);
-            Ok::<_, WriteError>(())
-        })?;
-        state.session.mark_dirty(now_unix());
-        state.session.generation += 1;
-        state.session.updated_at = now_unix();
-        Ok(())
-    }
-
     /* ------------------------------------------------------------- assets */
 
     /// What this document's figures come to, which is what `max_assets` bounds

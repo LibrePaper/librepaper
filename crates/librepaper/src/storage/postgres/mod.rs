@@ -424,6 +424,63 @@ mod tests {
             catalog.replies(&[annotation.id]).await.unwrap()[0].id,
             reply.id
         );
+        let suggestion_id = new_id();
+        let mut suggestion = NewAnnotation {
+            document_id: first.id,
+            kind: "suggestion".into(),
+            body: "Change this".into(),
+            author_account_id: Some(account.id),
+            author_key: format!("account:{}", account.id),
+            author_label: "Owner".into(),
+            selector: json!({"exact":"Paper"}),
+            context: json!({"version":1,"outcome":""}),
+            source_version_id: None,
+            source_update_sequence: Some(0),
+            source_project_generation: Some(0),
+            source_state_vector: None,
+            publication_id: None,
+            proposed_text: Some("Article".into()),
+        };
+        catalog
+            .put_annotation_authorized(suggestion_id, suggestion.clone(), &owner_actor, true)
+            .await
+            .unwrap();
+        suggestion.context = json!({"version":1,"outcome":"accepted"});
+        let accepted_sequence = catalog
+            .append_update_and_accept_suggestion(
+                suggestion_id,
+                suggestion.clone(),
+                b"accepted-suggestion-update",
+                &owner_actor,
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted_sequence, 1);
+        assert!(catalog
+            .append_update_and_accept_suggestion(
+                suggestion_id,
+                suggestion,
+                b"must-not-be-inserted",
+                &owner_actor,
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            catalog
+                .annotations(first.id, None, None, 500)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == suggestion_id)
+                .unwrap()
+                .suggestion_state
+                .as_deref(),
+            Some("accepted")
+        );
+        assert_eq!(
+            catalog.updates_after(first.id, 0, 10).await.unwrap().len(),
+            1
+        );
 
         let asset = NewAsset {
             document_id: first.id,
@@ -605,16 +662,16 @@ mod tests {
 
         let collaboration = CollaborationStorage::new(Arc::new(catalog.clone()), blobs.clone());
         let sequence = collaboration.append(first.id, b"update-one").await.unwrap();
-        assert_eq!(sequence, 1);
+        assert_eq!(sequence, 2);
         let before = collaboration.recover(first.id).await.unwrap();
         assert!(before.base.is_none());
-        assert_eq!(before.updates[0].update_bytes, b"update-one");
+        assert_eq!(before.updates[1].update_bytes, b"update-one");
         let (base, second_sequence) = tokio::join!(
             collaboration.compact(first.id, sequence, 0, b"base-state"),
             collaboration.append(first.id, b"update-two")
         );
         assert!(base.unwrap().is_some());
-        assert_eq!(second_sequence.unwrap(), 2);
+        assert_eq!(second_sequence.unwrap(), 3);
         let recovered = collaboration.recover(first.id).await.unwrap();
         assert_eq!(recovered.base.as_deref(), Some(b"base-state".as_slice()));
         assert_eq!(recovered.updates.len(), 1);
