@@ -1,6 +1,6 @@
 use super::{
     Account, AnnotationAuthority, Catalog, CatalogError, Checkpoint, Comment, JournalPreparation,
-    DocumentId, JournalSegment, Link, MutationAuthority, NewDocument, ObjectId, OperationKind,
+    DocumentId, Link, MutationAuthority, NewDocument, ObjectId, OperationKind,
     OperationRequest, OperationScope, Reply, SourceHistoryObject, SourceHistoryRecord,
     UnixMillis, V2Operation, V2OperationInput,
 };
