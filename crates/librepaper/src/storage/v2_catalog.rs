@@ -1704,8 +1704,8 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             resolved_dependencies.extend(resolve_journal_dependencies(tx, &request.document_id, &request.dependency_hints)?);
             let mut dependency_ids = std::collections::HashSet::with_capacity(resolved_dependencies.len());
             resolved_dependencies.retain(|dependency| dependency_ids.insert(dependency.object_id.clone()));
-            if resolved_dependencies.len() > 512 {
-                return Err(crate::storage::catalog::CatalogError::Invalid("journal dependency closure exceeds 512 objects".into()));
+            if resolved_dependencies.len() > 4_096 {
+                return Err(crate::storage::catalog::CatalogError::Invalid("journal dependency closure exceeds 4096 objects".into()));
             }
             for dependency in &resolved_dependencies {
                 if dependency.byte_length > 64 * 1024 * 1024
@@ -1745,11 +1745,8 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             // object closure exceed the 64 KiB plan bound.  The stage lease
             // rows retain the admission identity; commit re-reads those
             // canonical rows in the same transaction before rooting them.
-            let dependency_ids = resolved_dependencies
-                .iter()
-                .map(|dependency| dependency.object_id.as_str())
-                .collect::<Vec<_>>();
-            let mut plan = serde_json::json!({"version":1,"epoch":request.epoch,"first_sequence":request.first_sequence,"last_sequence":request.last_sequence,"parts":request.parts.iter().map(|part| serde_json::json!({"first":part.first_sequence,"last":part.last_sequence,"digest":part.digest,"bytes":part.byte_length})).collect::<Vec<_>>(),"dependency_ids":dependency_ids});
+            let dependency_digest = journal_dependency_digest(&resolved_dependencies);
+            let mut plan = serde_json::json!({"version":1,"epoch":request.epoch,"first_sequence":request.first_sequence,"last_sequence":request.last_sequence,"parts":request.parts.iter().map(|part| serde_json::json!({"first":part.first_sequence,"last":part.last_sequence,"digest":part.digest,"bytes":part.byte_length})).collect::<Vec<_>>(),"dependency_count":resolved_dependencies.len(),"dependency_digest":dependency_digest});
             tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,?3,?4,'journal_append',?5,'prepared',?6,?7,?8,?9,?9,?10)", params![operation_id,request.document_id,request.actor_key,request.request_key,journal_request_digest(&request),writer_generation,source_generation,plan.to_string(),now,now.saturating_add(3_600_000)]).map_err(crate::storage::catalog::CatalogError::from)?;
             let mut allocations = Vec::with_capacity(request.parts.len());
             let mut reserved = 0i64;
@@ -1869,44 +1866,55 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
                    AND kind IN ('asset','publication_asset','source_chunk','source_recipe','source_tree')",
                 params![now.saturating_add(900_000), admission.document_id],
             ).map_err(crate::storage::catalog::CatalogError::from)?;
-            let dependency_ids = plan
-                .get("dependency_ids")
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal dependency plan is incomplete".into()))?;
-            if dependency_ids.len() > 512 {
-                return Err(crate::storage::catalog::CatalogError::Invalid("journal dependency closure exceeds 512 objects".into()));
+            let expected_count = plan
+                .get("dependency_count")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal dependency count is missing".into()))?;
+            let expected_digest = plan
+                .get("dependency_digest")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal dependency digest is missing".into()))?;
+            let mut dependency_rows = Vec::new();
+            {
+                let mut statement = tx.prepare(
+                    "SELECT l.object_id,o.kind,o.digest,o.byte_length
+                     FROM object_leases l JOIN objects o
+                       ON o.document_id=l.document_id AND o.id=l.object_id
+                     WHERE l.document_id=?1 AND l.operation_id=?2 AND l.purpose='stage'
+                       AND l.writer_generation=?3 AND l.expires_at>?4
+                       AND o.state='available'
+                     ORDER BY l.object_id",
+                ).map_err(crate::storage::catalog::CatalogError::from)?;
+                let rows = statement.query_map(
+                    params![admission.document_id, admission.operation_id, operation_generation, now],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?)),
+                ).map_err(crate::storage::catalog::CatalogError::from)?;
+                for row in rows {
+                    let (object_id, kind, digest, bytes) = row.map_err(crate::storage::catalog::CatalogError::from)?;
+                    let bytes = u64::try_from(bytes).map_err(|_| crate::storage::catalog::CatalogError::Conflict("journal dependency has invalid length".into()))?;
+                    if !matches!(kind.as_str(), "asset" | "publication_asset" | "source_chunk" | "source_recipe" | "source_tree") {
+                        return Err(crate::storage::catalog::CatalogError::Conflict("journal dependency has invalid kind".into()));
+                    }
+                    dependency_rows.push((object_id, kind, digest, bytes));
+                    if dependency_rows.len() > 4_096 {
+                        return Err(crate::storage::catalog::CatalogError::Invalid("journal dependency closure exceeds 4096 objects".into()));
+                    }
+                }
             }
-            let mut seen_dependencies = std::collections::HashSet::with_capacity(dependency_ids.len());
-            for dependency in dependency_ids {
-                let object_id = dependency
-                    .as_str()
-                    .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal dependency plan is incomplete".into()))?;
-                if !seen_dependencies.insert(object_id) {
-                    return Err(crate::storage::catalog::CatalogError::Conflict("journal dependency plan contains a duplicate object".into()));
-                }
-                let exact: Option<(String, String, i64)> = tx
-                    .query_row(
-                        "SELECT o.kind,o.digest,o.byte_length
-                         FROM objects o JOIN object_leases l
-                           ON l.document_id=o.document_id AND l.object_id=o.id
-                         WHERE o.document_id=?1 AND o.id=?2 AND o.state='available'
-                           AND o.kind IN ('asset','publication_asset','source_chunk','source_recipe','source_tree')
-                           AND l.operation_id=?3 AND l.purpose='stage'",
-                        params![admission.document_id, object_id, admission.operation_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )
-                    .optional()
-                    .map_err(crate::storage::catalog::CatalogError::from)?;
-                if exact.is_none() {
-                    return Err(crate::storage::catalog::CatalogError::Conflict("journal dependency lease or object changed before acknowledgement".into()));
-                }
+            if dependency_rows.len() as u64 != expected_count
+                || journal_dependency_digest_rows(&mut dependency_rows) != expected_digest
+            {
+                return Err(crate::storage::catalog::CatalogError::Conflict("journal dependency lease closure changed before acknowledgement".into()));
+            }
+            for (object_id, _, _, _) in &dependency_rows {
                 let changed = tx.execute(
                     "UPDATE objects SET live_root=1
                      WHERE document_id=?1 AND id=?2 AND state='available'
                        AND EXISTS (SELECT 1 FROM object_leases l
                                    WHERE l.document_id=objects.document_id AND l.object_id=objects.id
-                                     AND l.operation_id=?3 AND l.purpose='stage')",
-                    params![admission.document_id, object_id, admission.operation_id],
+                                     AND l.operation_id=?3 AND l.writer_generation=?4
+                                     AND l.expires_at>?5 AND l.purpose='stage')",
+                    params![admission.document_id, object_id, admission.operation_id, operation_generation, now],
                 ).map_err(crate::storage::catalog::CatalogError::from)?;
                 if changed != 1 {
                     return Err(crate::storage::catalog::CatalogError::Conflict("journal dependency changed before acknowledgement".into()));
@@ -1981,9 +1989,6 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             let (epoch, sequence, generation, writer_generation, owner_id, owner_stored, owner_reserved, server_stored, server_reserved): (i64,i64,i64,String,String,i64,i64,i64,i64) = tx.query_row("SELECT d.journal_epoch,d.journal_sequence,d.source_generation,s.writer_generation,d.owner_id,a.stored_bytes,a.reserved_bytes,s.stored_bytes,s.reserved_bytes FROM documents d JOIN accounts a ON a.id=d.owner_id AND a.status='active' CROSS JOIN server_state s WHERE d.id=?1 AND d.status='active'", [&document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?))).map_err(crate::storage::catalog::CatalogError::from)?;
             if u64::try_from(epoch).ok() != Some(expected_epoch) || u64::try_from(sequence).ok() != Some(expected_sequence) { return Err(crate::storage::catalog::CatalogError::Conflict("journal compaction head changed".into())); }
             let resolved_dependencies = resolve_journal_dependencies(tx, &document_id, &dependencies)?;
-            if resolved_dependencies.len() > 512 {
-                return Err(crate::storage::catalog::CatalogError::Invalid("journal dependency closure exceeds 512 objects".into()));
-            }
             let bytes_i64 = i64::try_from(byte_length).map_err(|_| crate::storage::catalog::CatalogError::Invalid("journal base is too large".into()))?;
             let owner_ram = reservations.owner_bytes.get(&owner_id).copied().unwrap_or(0);
             let owner_after = owner_stored.checked_add(owner_reserved).and_then(|value| value.checked_add(owner_ram)).and_then(|value| value.checked_add(bytes_i64)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("owner quota accounting overflow".into()))?;
@@ -1994,17 +1999,17 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             let operation_id = journal_operation_id();
             let now = now_millis();
             Catalog::admit_operation_slot(tx, Some(&document_id), "journal_compact")?;
-            let dependency_ids = resolved_dependencies
-                .iter()
-                .map(|dependency| dependency.object_id.as_str())
-                .collect::<Vec<_>>();
-            let initial_plan = serde_json::json!({"version":1,"epoch":expected_epoch,"sequence":expected_sequence,"digest":digest,"bytes":byte_length,"dependency_ids":dependency_ids}).to_string();
+            if resolved_dependencies.len() > 4_096 {
+                return Err(crate::storage::catalog::CatalogError::Invalid("journal dependency closure exceeds 4096 objects".into()));
+            }
+            let dependency_digest = journal_dependency_digest(&resolved_dependencies);
+            let initial_plan = serde_json::json!({"version":1,"epoch":expected_epoch,"sequence":expected_sequence,"digest":digest,"bytes":byte_length,"dependency_count":resolved_dependencies.len(),"dependency_digest":dependency_digest}).to_string();
             tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,'room',?3,'journal_compact',?4,'prepared',?5,?6,?7,?8,?8,?9)", params![operation_id,document_id,format!("compact-{expected_epoch}-{expected_sequence}"),request_digest,writer_generation,generation,initial_plan,now,now.saturating_add(3_600_000)]).map_err(crate::storage::catalog::CatalogError::from)?;
             let object_id = ObjectId::random();
             let storage_key = crate::storage::blob::v2_object_key(&document_id, &object_id).map_err(|error| crate::storage::catalog::CatalogError::Invalid(error.to_string()))?;
             let bytes = bytes_i64;
             let new_epoch = expected_epoch.saturating_add(1);
-            let plan = serde_json::json!({"version":1,"epoch":expected_epoch,"sequence":expected_sequence,"digest":digest,"bytes":byte_length,"dependency_ids":dependency_ids,"objects":[{"id":object_id.as_str(),"digest":digest,"bytes":byte_length,"epoch":new_epoch,"first":expected_sequence,"last":expected_sequence}]}).to_string();
+            let plan = serde_json::json!({"version":1,"epoch":expected_epoch,"sequence":expected_sequence,"digest":digest,"bytes":byte_length,"dependency_count":resolved_dependencies.len(),"dependency_digest":dependency_digest,"objects":[{"id":object_id.as_str(),"digest":digest,"bytes":byte_length,"epoch":new_epoch,"first":expected_sequence,"last":expected_sequence}]}).to_string();
             tx.execute("UPDATE operations SET plan_json=?1 WHERE id=?2 AND state='prepared'", params![plan, operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute("INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,journal_epoch,first_sequence,last_sequence) VALUES(?1,?2,?3,'journal_base','allocated',?4,1,NULL,?5,?6,?7,?8,?9,?9)", params![document_id,object_id.as_str(),storage_key,digest,bytes,operation_id,now,new_epoch,expected_sequence]).map_err(crate::storage::catalog::CatalogError::from)?;
             for dependency in &resolved_dependencies {
@@ -2066,31 +2071,58 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
                    AND kind IN ('asset','publication_asset','source_chunk','source_recipe','source_tree')",
                 params![now.saturating_add(900_000), admission.document_id],
             ).map_err(crate::storage::catalog::CatalogError::from)?;
-            let dependency_ids = plan
-                .get("dependency_ids")
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal compaction dependency plan is incomplete".into()))?;
-            if dependency_ids.len() > 512 {
-                return Err(crate::storage::catalog::CatalogError::Invalid("journal dependency closure exceeds 512 objects".into()));
-            }
-            let mut seen_dependencies = std::collections::HashSet::with_capacity(dependency_ids.len());
-            for dependency in dependency_ids {
-                let object_id = dependency
-                    .as_str()
-                    .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal compaction dependency plan is incomplete".into()))?;
-                if !seen_dependencies.insert(object_id) {
-                    return Err(crate::storage::catalog::CatalogError::Conflict("journal compaction dependency plan contains a duplicate object".into()));
+            let expected_count = plan
+                .get("dependency_count")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal compaction dependency count is missing".into()))?;
+            let expected_digest = plan
+                .get("dependency_digest")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| crate::storage::catalog::CatalogError::Conflict("journal compaction dependency digest is missing".into()))?;
+            let mut dependency_rows = Vec::new();
+            {
+                let mut statement = tx.prepare(
+                    "SELECT l.object_id,o.kind,o.digest,o.byte_length
+                     FROM object_leases l JOIN objects o
+                       ON o.document_id=l.document_id AND o.id=l.object_id
+                     WHERE l.document_id=?1 AND l.operation_id=?2 AND l.purpose='stage'
+                       AND l.writer_generation=?3 AND l.expires_at>?4
+                       AND o.state='available'
+                     ORDER BY l.object_id",
+                ).map_err(crate::storage::catalog::CatalogError::from)?;
+                let rows = statement.query_map(
+                    params![admission.document_id, admission.operation_id, operation_generation, now],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?)),
+                ).map_err(crate::storage::catalog::CatalogError::from)?;
+                for row in rows {
+                    let (object_id, kind, digest, bytes) = row.map_err(crate::storage::catalog::CatalogError::from)?;
+                    let bytes = u64::try_from(bytes).map_err(|_| crate::storage::catalog::CatalogError::Conflict("journal dependency has invalid length".into()))?;
+                    if !matches!(kind.as_str(), "asset" | "publication_asset" | "source_chunk" | "source_recipe" | "source_tree") {
+                        return Err(crate::storage::catalog::CatalogError::Conflict("journal dependency has invalid kind".into()));
+                    }
+                    dependency_rows.push((object_id, kind, digest, bytes));
+                    if dependency_rows.len() > 4_096 {
+                        return Err(crate::storage::catalog::CatalogError::Invalid("journal dependency closure exceeds 4096 objects".into()));
+                    }
                 }
+            }
+            if dependency_rows.len() as u64 != expected_count
+                || journal_dependency_digest_rows(&mut dependency_rows) != expected_digest
+            {
+                return Err(crate::storage::catalog::CatalogError::Conflict("journal compaction dependency lease closure changed before acknowledgement".into()));
+            }
+            for (object_id, _, _, _) in &dependency_rows {
                 let changed = tx.execute(
                     "UPDATE objects SET live_root=1
                      WHERE document_id=?1 AND id=?2 AND state='available'
                        AND EXISTS (SELECT 1 FROM object_leases l
                                    WHERE l.document_id=objects.document_id AND l.object_id=objects.id
-                                     AND l.operation_id=?3 AND l.purpose='stage')",
-                    params![admission.document_id, object_id, admission.operation_id],
+                                     AND l.operation_id=?3 AND l.writer_generation=?4
+                                     AND l.expires_at>?5 AND l.purpose='stage')",
+                    params![admission.document_id, object_id, admission.operation_id, operation_generation, now],
                 ).map_err(crate::storage::catalog::CatalogError::from)?;
                 if changed != 1 {
-                    return Err(crate::storage::catalog::CatalogError::Conflict("journal compaction dependency lease or object changed before acknowledgement".into()));
+                    return Err(crate::storage::catalog::CatalogError::Conflict("journal compaction dependency changed before acknowledgement".into()));
                 }
             }
             tx.execute("UPDATE objects SET live_root=0,gc_after=?1 WHERE document_id=?2 AND kind IN ('journal_segment','journal_base') AND state='available' AND live_root=1 AND id<>?3 AND (journal_epoch<?4 OR (journal_epoch=?4 AND last_sequence<=?5))", params![now.saturating_add(900_000),admission.document_id,admission.base_allocation.object_id.as_str(),new_epoch as i64,new_sequence as i64]).map_err(crate::storage::catalog::CatalogError::from)?;
@@ -2165,6 +2197,51 @@ fn journal_plan_contains_object(
                         && object.get("last").and_then(serde_json::Value::as_u64) == Some(last_sequence)
                 })
         })
+}
+
+/// A compact, order-independent identity for the dependency closure persisted
+/// in a prepared journal operation.  The physical rows and leases remain the
+/// source of descriptors; the operation stores only this count and digest so
+/// large source closures cannot overflow the bounded plan column.
+fn journal_dependency_digest(dependencies: &[crate::storage::journal::JournalDependency]) -> String {
+    let mut entries = dependencies
+        .iter()
+        .map(|dependency| {
+            (
+                dependency.object_id.as_str().to_owned(),
+                dependency.kind.clone(),
+                dependency.digest.clone(),
+                dependency.byte_length,
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut bytes = Vec::new();
+    for (object_id, kind, digest, length) in entries {
+        bytes.extend_from_slice(object_id.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(kind.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(digest.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&length.to_le_bytes());
+    }
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn journal_dependency_digest_rows(rows: &mut [(String, String, String, u64)]) -> String {
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut bytes = Vec::new();
+    for (object_id, kind, digest, length) in rows {
+        bytes.extend_from_slice(object_id.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(kind.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(digest.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&length.to_le_bytes());
+    }
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn prepared_kind(value: &str) -> Result<PreparedKind, String> {
