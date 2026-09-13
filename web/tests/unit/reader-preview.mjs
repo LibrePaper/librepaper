@@ -43,9 +43,9 @@ assert.doesNotMatch(readerSource, /say\(error\.message \|\| "could not render", 
 assert.doesNotMatch(readerSource, /nothing to jump to here/);
 assert.match(readerSource, /failureDiagnostics[\s\S]*?severity: "error"[\s\S]*?diagnosticPainter\.rendered\(\{ page: null, diagnostics: failureDiagnostics \}\)/);
 assert.match(readerSource, /let quartoExecutionApproved = \$state\(false\)/);
-assert.match(readerSource, /async function runQuartoLocally\(\)[\s\S]*?quartoExecutionApproved = true/);
+assert.match(readerSource, /async function runQuartoLocally\(\)[\s\S]*?await setQuartoPreviewMode\("quarto"\)[\s\S]*?quartoExecutionApproved = true[\s\S]*?await tick\(\)[\s\S]*?quartoPreviewController\.start\(\)/);
 assert.match(readerSource, /Quarto can execute arbitrary code[\s\S]*?Run Quarto locally/);
-assert.match(readerSource, /\{#snippet previewStatusControl\(\)\}[\s\S]*?!quartoExecutionApproved\}[\s\S]*?<button[\s\S]*?runQuartoLocally\(\)[\s\S]*?>Run Quarto locally<\/button>/);
+assert.match(readerSource, /\{#snippet previewStatusControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !viewing && !quartoExecutionApproved\}[\s\S]*?<button[\s\S]*?runQuartoLocally\(\)[\s\S]*?>Run Quarto locally<\/button>/);
 assert.match(readerSource, /format === "quarto" && \(typeof quartoExecutionApproved === "undefined" \|\| !quartoExecutionApproved\)[\s\S]*?backend: "browser", tool: "markdown"/);
 const agentSource = await readFile(new URL("../../src/agent/agent.js", import.meta.url), "utf8");
 assert.match(agentSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*?height: auto;/);

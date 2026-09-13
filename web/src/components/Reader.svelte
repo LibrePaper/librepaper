@@ -245,8 +245,9 @@
 
   async function runQuartoLocally() {
     if (!await ensureLocalApp()) return;
+    await setQuartoPreviewMode("quarto");
     quartoExecutionApproved = true;
-    quartoPreviewMode = "quarto";
+    await tick();
     if (quartoLiveActive) await quartoPreviewController.start();
   }
 
@@ -3997,7 +3998,7 @@
     </div>
   {/snippet}
   {#snippet previewStatusControl()}
-    {#if sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !quartoExecutionApproved}
+    {#if sourceFormat === "quarto" && mayEdit && !viewing && !quartoExecutionApproved}
       <button class="btn btn-sm preset-filled-primary-500" title="Quarto can execute arbitrary code from this document on your computer" onclick={() => void runQuartoLocally()}>Run Quarto locally</button>
     {:else}
       <PreviewStatus label={previewStatusLabel} busy={previewBusy}
