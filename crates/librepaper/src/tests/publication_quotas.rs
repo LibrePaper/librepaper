@@ -64,6 +64,12 @@ fn bundle(html: &[u8], assets: &[(&str, &str, &[u8])]) -> Value {
         .unwrap(),
     );
     json!({
+        // V2 publication manifests carry their immutable identity and
+        // attribution in the manifest itself. The old quota fixture omitted
+        // these fields because the legacy route minted them server-side.
+        "publication_id": hex::encode(crate::auth::random_bytes(16)),
+        "published_at": "2026-01-01T00:00:00Z",
+        "publisher": "test-publisher",
         "bundle_sha256": bundle_sha256,
         "source_sha256": "a".repeat(64), "render_config_sha256": "b".repeat(64),
         "html": {"sha256": html_sha, "bytes": html.len(), "mime": "text/html"}, "assets": assets,
@@ -115,6 +121,10 @@ async fn prepare(
     bundle: &Value,
     expected: Option<&str>,
 ) -> (u16, Value) {
+    let mut manifest = bundle.clone();
+    // The v2 publication identity is bound to the idempotency request. The
+    // legacy fixture let the server invent this field after staging.
+    manifest["publication_id"] = json!(id);
     request(
         base,
         (cookie, link),
@@ -123,7 +133,7 @@ async fn prepare(
         id,
         reqwest::Method::POST,
         (
-            serde_json::to_vec(&json!({"manifest":bundle,"expected_publication_id":expected}))
+            serde_json::to_vec(&json!({"manifest":manifest,"expected_publication_id":expected}))
                 .unwrap(),
             "application/json",
         ),
@@ -159,6 +169,8 @@ async fn activate(
     bundle: &Value,
     expected: Option<&str>,
 ) -> (u16, Value) {
+    let mut manifest = bundle.clone();
+    manifest["publication_id"] = json!(id);
     request(
         base,
         (cookie, link),
@@ -167,7 +179,7 @@ async fn activate(
         id,
         reqwest::Method::POST,
         (
-            serde_json::to_vec(&json!({"manifest":bundle,"expected_publication_id":expected}))
+            serde_json::to_vec(&json!({"manifest":manifest,"expected_publication_id":expected}))
                 .unwrap(),
             "application/json",
         ),

@@ -195,11 +195,32 @@ async fn published_delivery_excludes_source_and_revalidates_stable_assets() {
     // the object after the final publish: a conditional response must not
     // read it, while a normal delivery would fail here.
     let entry = server.instance.store.get(&slug).await.unwrap();
-    let object = crate::server::publication::PublicationStore::object_key(
-        &entry.storage_id,
-        &hex::encode(Sha256::digest(image)),
-    );
-    std::fs::remove_file(server.dir.path().join("objects").join(object)).unwrap();
+    let object_digest = hex::encode(Sha256::digest(image));
+    let object_key: String = server
+        .instance
+        .store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT storage_key FROM objects
+                     WHERE document_id=?1 AND kind='publication_asset' AND digest=?2
+                       AND state='available'",
+                    rusqlite::params![entry.storage_id, object_digest],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    server
+        .instance
+        .store
+        .blobs
+        .delete(std::slice::from_ref(&object_key))
+        .await
+        .unwrap();
     let bodyless = client()
         .get(format!("{}{}", server.url, asset))
         .header(
