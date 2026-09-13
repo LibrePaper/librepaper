@@ -326,6 +326,28 @@ impl Catalog {
         payload: &str,
         updated_at: i64,
     ) -> CatalogResult<QuotaPreferencesRecord> {
+        self.save_quota_preferences_in_session(account_id, None, expected, payload, updated_at)
+    }
+
+    pub fn save_quota_preferences_authorized(
+        &self,
+        account_id: &str,
+        generation: &str,
+        expected: i64,
+        payload: &str,
+        updated_at: i64,
+    ) -> CatalogResult<QuotaPreferencesRecord> {
+        self.save_quota_preferences_in_session(account_id, Some(generation), expected, payload, updated_at)
+    }
+
+    fn save_quota_preferences_in_session(
+        &self,
+        account_id: &str,
+        generation: Option<&str>,
+        expected: i64,
+        payload: &str,
+        updated_at: i64,
+    ) -> CatalogResult<QuotaPreferencesRecord> {
         if account_id.is_empty() || payload.is_empty() || payload.len() > 65_536 || updated_at < 0 {
             return Err(CatalogError::Invalid(
                 "invalid quota preference record".into(),
@@ -336,6 +358,15 @@ impl Catalog {
                 .map_err(|error| CatalogError::Invalid(error.to_string()))?;
         preferences.validate().map_err(CatalogError::Invalid)?;
         self.immediate(|tx| {
+            if let Some(generation) = generation {
+                let live: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND status='active' AND session_generation=?2)",
+                    params![account_id, generation], |row| row.get(0),
+                )?;
+                if !live {
+                    return Err(CatalogError::refused(CatalogRefusal::ActorRights, "account session changed"));
+                }
+            }
             let current: Option<i64> = tx
                 .query_row(
                     "SELECT preferences_revision

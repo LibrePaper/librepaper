@@ -40,7 +40,7 @@ fn usage_json(usage: &AccountStorageUsage) -> Value {
 }
 impl Server {
     #[allow(clippy::result_large_err)] // Route errors are ready-to-return HTTP responses.
-    async fn quota_account(&self, headers: &HeaderMap, arrival: &Arrival) -> Result<String, Reply> {
+    async fn quota_account(&self, headers: &HeaderMap, arrival: &Arrival) -> Result<(String, String), Reply> {
         if Self::is_automation(headers) {
             return Err(write_json(
                 403,
@@ -67,7 +67,7 @@ impl Server {
                 ))
             }
         };
-        Ok(identity.id)
+        Ok((identity.id, identity.session_generation))
     }
 
     #[allow(clippy::result_large_err)] // As quota_account: avoid boxing the HTTP response.
@@ -111,7 +111,7 @@ impl Server {
         request: Request<Body>,
         arrival: &Arrival,
     ) -> Reply {
-        let account_id = match self.quota_account(request.headers(), arrival).await {
+        let (account_id, _) = match self.quota_account(request.headers(), arrival).await {
             Ok(id) => id,
             Err(reply) => return reply,
         };
@@ -142,7 +142,7 @@ impl Server {
         request: Request<Body>,
         arrival: &Arrival,
     ) -> Reply {
-        let account_id = match self.quota_account(request.headers(), arrival).await {
+        let (account_id, _) = match self.quota_account(request.headers(), arrival).await {
             Ok(id) => id,
             Err(reply) => return reply,
         };
@@ -215,7 +215,7 @@ impl Server {
         request: Request<Body>,
         arrival: &Arrival,
     ) -> Reply {
-        let account_id = match self.quota_account(request.headers(), arrival).await {
+        let (account_id, generation) = match self.quota_account(request.headers(), arrival).await {
             Ok(id) => id,
             Err(reply) => return reply,
         };
@@ -239,10 +239,11 @@ impl Server {
         };
         let saved = catalog
             .execute_catalog(
-                SERVER_JOB_BYTES + account_id.len() + payload.len(),
+                SERVER_JOB_BYTES + account_id.len() + generation.len() + payload.len(),
                 move |catalog| {
-                    catalog.save_quota_preferences_advisory(
+                    catalog.save_quota_preferences_authorized(
                         &account_id,
+                        &generation,
                         asked.revision,
                         &payload,
                         crate::util::now_millis(),
@@ -255,6 +256,9 @@ impl Server {
                 200,
                 &json!({"status":"saved", "revision":record.revision, "graceMs":86_400_000}),
             ),
+            Err(crate::storage::catalog::CatalogExecError::Catalog(
+                crate::storage::catalog::CatalogError::Refused(_, error),
+            )) => write_json(403, &json!({"error":error})),
             Err(crate::storage::catalog::CatalogExecError::Catalog(
                 crate::storage::catalog::CatalogError::Conflict(error),
             )) => write_json(409, &json!({"error":error})),

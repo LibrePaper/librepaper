@@ -134,6 +134,26 @@ fn v2_document_cursors_preserve_subsecond_order() {
 }
 
 #[test]
+fn quota_policy_write_rechecks_session_before_changing_retention() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    account(&catalog);
+    document(&catalog, "quota", "Quota");
+    let payload = serde_json::to_string(&crate::document::quota::QuotaPreferences::default()).unwrap();
+    catalog.with_connection(|db| {
+        db.execute("UPDATE accounts SET session_generation='rotated' WHERE id='owner'", [])?;
+        db.execute("UPDATE documents SET status='active',retention_due_at=999 WHERE id='quota'", [])?;
+        Ok(())
+    }).unwrap();
+    assert!(matches!(catalog.save_quota_preferences_authorized("owner", "session", 0, &payload, 1), Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))));
+    catalog.with_connection(|db| {
+        assert_eq!(db.query_row("SELECT preferences_revision FROM accounts WHERE id='owner'", [], |row| row.get::<_, i64>(0))?, 0);
+        assert_eq!(db.query_row("SELECT retention_due_at FROM documents WHERE id='quota'", [], |row| row.get::<_, i64>(0))?, 999);
+        Ok(())
+    }).unwrap();
+    assert_eq!(catalog.save_quota_preferences_authorized("owner", "rotated", 0, &payload, 1).unwrap().revision, 1);
+}
+
+#[test]
 fn v2_reopens_with_exact_inventory_and_preserves_singleton() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("catalog.db");
