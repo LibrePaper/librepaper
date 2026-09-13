@@ -1,7 +1,7 @@
 # Catalog v3 cost and performance measurements
 
-Measured 2026-09-13 from revision `b3e029fa` plus the Catalog v3 implementation
-in this worktree. The reproducible fixture is
+Measured 2026-09-13 from the Catalog v3 implementation with bounded
+collaboration-backlog admission. The reproducible fixture is
 `storage::postgres::benchmarks::catalog_v3_release_benchmark`; its machine
 readable result is [catalog-v3-measurements-20260913.json](catalog-v3-measurements-20260913.json).
 
@@ -23,35 +23,35 @@ identical latency on a low-end shared VM.
 
 | Operation | Load | p50 | p95 | p99 |
 |---|---:|---:|---:|---:|
-| Update append | 1 room | 6.68 ms | 12.16 ms | 12.25 ms |
-| Update append | 20 rooms | 7.94 ms | 26.96 ms | 34.02 ms |
-| Update append | 100 rooms | 20.18 ms | 51.33 ms | 71.03 ms |
-| Room reconstruction | 20 rooms | 1.06 ms | 1.35 ms | 1.35 ms |
-| Room reconstruction | 100 rooms | 0.34 ms | 1.19 ms | 1.37 ms |
+| Update append | 1 room | 0.87 ms | 8.87 ms | 8.89 ms |
+| Update append | 20 rooms | 6.21 ms | 18.70 ms | 21.43 ms |
+| Update append | 100 rooms | 13.59 ms | 28.24 ms | 54.35 ms |
+| Room reconstruction | 20 rooms | 1.06 ms | 1.27 ms | 1.27 ms |
+| Room reconstruction | 100 rooms | 0.37 ms | 1.04 ms | 1.20 ms |
 
 | Product operation | Input | Elapsed |
 |---|---:|---:|
-| Create source version | 100 KiB inline | 31.5 ms |
-| Create source version | 1 MiB inline | 15.9 ms |
-| Create source version | 4 MiB inline | 35.3 ms |
-| Create version | 1 asset reference | 52.8 ms |
-| Create version | 100 asset references | 25.2 ms |
-| Create version | 512 asset references | 63.2 ms |
-| Publish and activate | 4,096 files | 190.3 ms |
-| Read document page | 200 rows | 3.88 ms |
+| Create source version | 100 KiB inline | 28.2 ms |
+| Create source version | 1 MiB inline | 17.0 ms |
+| Create source version | 4 MiB inline | 29.3 ms |
+| Create version | 1 asset reference | 17.9 ms |
+| Create version | 100 asset references | 28.7 ms |
+| Create version | 512 asset references | 65.6 ms |
+| Publish and activate | 4,096 files | 203.7 ms |
+| Publish and activate | 256 MiB | 538.3 ms |
+| Read document page | 200 rows | 6.34 ms |
 | Read annotation timeline | 500 rows | 1.66 ms |
-| Claim jobs | 1 worker / 100 jobs | 6.5 ms |
-| Claim jobs | 4 workers / 400 jobs | 18.0 ms |
-| Claim jobs | 16 workers / 1,600 jobs | 28.5 ms |
+| Claim jobs | 1 worker / 100 jobs | 6.9 ms |
+| Claim jobs | 4 workers / 400 jobs | 13.3 ms |
+| Claim jobs | 16 workers / 1,600 jobs | 22.1 ms |
 
-The 10,000-document/500,000-version fixture occupied 304,914,959 PostgreSQL
-bytes and loaded in 23.6 seconds. That is about 30.5 KiB per active document at
-50 retained versions, including indexes and page overhead. Every measured
-ordinary product operation stayed below the 250 ms target. Update
-acknowledgment p95 at 100 active rooms was 51.33 ms against the 100 ms target.
-The run was performed while other compilation and container work shared the
-host; its result is above the aspirational 50 ms interactive database target by
-1.33 ms and is retained as measured rather than adjusted.
+The 10,000-document/500,000-version fixture occupied 301,810,191 PostgreSQL
+bytes and loaded in 13.6 seconds. That is about 30.2 KiB per active document at
+50 retained versions, including indexes and page overhead. Update acknowledgment
+p95 at 100 active rooms was 28.24 ms, below both the 50 ms interactive target
+and the 100 ms acknowledgment gate. The 256 MiB publication measurement
+includes hashing, filesystem transfer, and verification outside the final
+PostgreSQL transaction.
 
 The asset fixture creates each digest once and later versions reuse it. Asset
 bodies are not copied into source archives: the archive with 512 references

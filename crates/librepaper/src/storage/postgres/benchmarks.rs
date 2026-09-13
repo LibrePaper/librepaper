@@ -38,6 +38,8 @@ async fn catalog_v3_release_benchmark() {
         deployment_bytes: i64::MAX / 4,
         asset_uploads_per_hour: 100_000,
         versions_per_hour: 100_000,
+        max_uncompacted_updates: 1_000_000,
+        max_uncompacted_bytes: i64::MAX / 4,
     };
     let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
     catalog.migrate().await.expect("migrate");
@@ -225,6 +227,29 @@ async fn catalog_v3_release_benchmark() {
         "elapsed_us":micros(publication_started),
         "stored_files":catalog.publication_files(publication.id).await.expect("publication files").len()
     });
+    let publication_byte_started = Instant::now();
+    let publication_at_byte_limit = publication_storage
+        .publish(Publish {
+            document_id: documents[4].id,
+            source_version_id: None,
+            request_key: "benchmark-byte-limit".into(),
+            expected_current_id: None,
+            publisher_account_id: Some(owner.id),
+            publisher_label: "Benchmark".into(),
+            files: vec![PublicationFile {
+                path: "maximum.bin".into(),
+                bytes: vec![0x5a; 256 * 1024 * 1024],
+                media_type: "application/octet-stream".into(),
+            }],
+        })
+        .await
+        .expect("publication at byte limit");
+    let publication_byte_result = json!({
+        "files":1,
+        "logical_bytes":256 * 1024 * 1024_u64,
+        "elapsed_us":micros(publication_byte_started),
+        "stored_files":catalog.publication_files(publication_at_byte_limit.id).await.expect("publication files").len()
+    });
 
     sqlx::query("INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context)
         SELECT gen_random_uuid(),$1,'comment','benchmark',$2,'benchmark','Benchmark','{}'::jsonb,'{\"version\":1}'::jsonb
@@ -283,7 +308,7 @@ async fn catalog_v3_release_benchmark() {
         "source_versions":source_results,
         "asset_versions":asset_results,
         "job_claims":job_results,
-        "publication":publication_result,
+        "publications":{"file_limit":publication_result,"byte_limit":publication_byte_result},
         "bounded_reads":{
             "document_listing":{"rows":listing.len(),"elapsed_us":listing_us},
             "annotation_timeline":{"rows":timeline.len(),"elapsed_us":timeline_us}

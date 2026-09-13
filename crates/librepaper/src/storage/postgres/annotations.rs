@@ -96,15 +96,8 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid suggestion acceptance".into()));
         }
         let mut tx = self.pool.begin().await?;
-        let active: Option<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM documents WHERE id=$1 AND status='active' FOR UPDATE",
-        )
-        .bind(input.document_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if active.is_none() {
-            return Err(Error::NotFound);
-        }
+        self.lock_collaboration_capacity(&mut tx, input.document_id, bytes.len())
+            .await?;
         Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, true).await?;
         let changed = sqlx::query(
             "UPDATE annotations SET body=$3,author_account_id=$4,author_key=$5,author_label=$6,
@@ -130,7 +123,10 @@ impl PostgresCatalog {
         }
         let sequence = sqlx::query_scalar::<_, i64>(
             "WITH advanced AS (
-               UPDATE documents SET update_sequence=update_sequence+1,updated_at=now()
+               UPDATE documents SET update_sequence=update_sequence+1,
+                 uncompacted_update_count=uncompacted_update_count+1,
+                 uncompacted_update_bytes=uncompacted_update_bytes+octet_length($2::bytea),
+                 updated_at=now()
                WHERE id=$1 AND status='active' RETURNING id,update_sequence
              ), inserted AS (
                INSERT INTO document_updates(document_id,update_sequence,update_bytes)

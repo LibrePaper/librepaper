@@ -251,6 +251,8 @@ pub async fn serve(options: ServeOptions) {
         deployment_bytes: config.storage.total,
         asset_uploads_per_hour: config.storage.uploads_per_hour as i64,
         versions_per_hour: config.rate_per_hour,
+        max_uncompacted_updates: 1_000,
+        max_uncompacted_bytes: config.persistence().max_staging_bytes as i64,
     };
     let catalog = Arc::new(
         crate::storage::postgres::PostgresCatalog::connect(database)

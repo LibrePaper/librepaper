@@ -1,127 +1,135 @@
 {
   "asset_versions": [
     {
-      "archive_bytes": 376,
+      "archive_bytes": 375,
       "asset_references": 1,
-      "elapsed_us": 52800
+      "elapsed_us": 17862
     },
     {
-      "archive_bytes": 4787,
+      "archive_bytes": 4783,
       "asset_references": 100,
-      "elapsed_us": 25156
+      "elapsed_us": 28656
     },
     {
-      "archive_bytes": 24003,
+      "archive_bytes": 24017,
       "asset_references": 512,
-      "elapsed_us": 63230
+      "elapsed_us": 65550
     }
   ],
   "bounded_reads": {
     "annotation_timeline": {
-      "elapsed_us": 1660,
+      "elapsed_us": 1662,
       "rows": 500
     },
     "document_listing": {
-      "elapsed_us": 3884,
+      "elapsed_us": 6340,
       "rows": 200
     }
   },
   "job_claims": [
     {
       "claimed": 100,
-      "elapsed_us": 6522,
+      "elapsed_us": 6874,
       "workers": 1
     },
     {
       "claimed": 400,
-      "elapsed_us": 17959,
+      "elapsed_us": 13277,
       "workers": 4
     },
     {
       "claimed": 1600,
-      "elapsed_us": 28461,
+      "elapsed_us": 22070,
       "workers": 16
     }
   ],
-  "measured_at": "2026-09-13 16:03:22.374982359 +00:00:00",
+  "measured_at": "2026-09-13 16:51:53.525652331 +00:00:00",
   "postgres_version": "17.11",
   "profile": "release",
-  "publication": {
-    "elapsed_us": 190299,
-    "files": 4096,
-    "logical_bytes": 4096,
-    "stored_files": 4096
+  "publications": {
+    "byte_limit": {
+      "elapsed_us": 538258,
+      "files": 1,
+      "logical_bytes": 268435456,
+      "stored_files": 1
+    },
+    "file_limit": {
+      "elapsed_us": 203659,
+      "files": 4096,
+      "logical_bytes": 4096,
+      "stored_files": 4096
+    }
   },
   "rooms": [
     {
       "active_rooms": 1,
       "append": {
-        "p50_us": 6678,
-        "p95_us": 12157,
-        "p99_us": 12253,
+        "p50_us": 866,
+        "p95_us": 8868,
+        "p99_us": 8891,
         "samples": 30
       },
-      "append_batch_us": 171170,
+      "append_batch_us": 73577,
       "reconstruction": {
-        "p50_us": 1042,
-        "p95_us": 1042,
-        "p99_us": 1042,
+        "p50_us": 1244,
+        "p95_us": 1244,
+        "p99_us": 1244,
         "samples": 1
       }
     },
     {
       "active_rooms": 20,
       "append": {
-        "p50_us": 7937,
-        "p95_us": 26963,
-        "p99_us": 34017,
+        "p50_us": 6205,
+        "p95_us": 18704,
+        "p99_us": 21432,
         "samples": 600
       },
-      "append_batch_us": 305835,
+      "append_batch_us": 230014,
       "reconstruction": {
-        "p50_us": 1056,
-        "p95_us": 1345,
-        "p99_us": 1345,
+        "p50_us": 1055,
+        "p95_us": 1272,
+        "p99_us": 1272,
         "samples": 20
       }
     },
     {
       "active_rooms": 100,
       "append": {
-        "p50_us": 20175,
-        "p95_us": 51325,
-        "p99_us": 71027,
+        "p50_us": 13586,
+        "p95_us": 28240,
+        "p99_us": 54353,
         "samples": 3000
       },
-      "append_batch_us": 1211950,
+      "append_batch_us": 786708,
       "reconstruction": {
-        "p50_us": 338,
-        "p95_us": 1193,
-        "p99_us": 1372,
+        "p50_us": 372,
+        "p95_us": 1043,
+        "p99_us": 1196,
         "samples": 100
       }
     }
   ],
   "scale": {
-    "database_bytes": 304914959,
+    "database_bytes": 301810191,
     "documents": 10000,
-    "load_us": 23613950,
+    "load_us": 13589805,
     "versions": 500000
   },
   "source_versions": [
     {
       "archive_bytes": 253,
-      "elapsed_us": 31519,
+      "elapsed_us": 28247,
       "inline_bytes": 102400
     },
     {
       "archive_bytes": 291,
-      "elapsed_us": 15898,
+      "elapsed_us": 17029,
       "inline_bytes": 1048576
     },
     {
-      "archive_bytes": 273,
-      "elapsed_us": 35305,
+      "archive_bytes": 274,
+      "elapsed_us": 29280,
       "inline_bytes": 4194304
     }
   ]

@@ -90,7 +90,7 @@ impl Worker {
             }
         }
     }
-    async fn execute(&self, claim: &JobClaim) -> Result<(), String> {
+    pub(crate) async fn execute(&self, claim: &JobClaim) -> Result<(), String> {
         match claim.job.kind.as_str() {
             "source_compaction" => self.compact(claim).await,
             "document_deletion" => self.delete_document(claim).await,

@@ -1,6 +1,7 @@
 # Catalog v3: PostgreSQL and simple immutable storage
 
-Status: proposed replacement architecture. This specification starts from the
+Status: implemented replacement architecture; provider-specific deployment
+acceptance remains an operator release check. This specification starts from the
 product's requirements rather than preserving catalog v2's schema, storage
 protocols, or invariants. LibrePaper is unreleased software; implementation may
 make breaking changes and need not convert a catalog v2 deployment.
@@ -213,6 +214,8 @@ create table documents (
     source_format text not null check (source_format in ('markdown','html','typst','latex','quarto')),
     main_path text not null,
     update_sequence bigint not null default 0,
+    uncompacted_update_count bigint not null default 0,
+    uncompacted_update_bytes bigint not null default 0,
     project_generation bigint not null default 0,
     current_version_id uuid,
     current_publication_id uuid,
@@ -454,8 +457,10 @@ collaboration prefix for older keys that are neither current nor the protected
 predecessor. The baseline key contains `base_id`; no undefined collaboration
 epoch participates in its identity.
 
-The application enforces maximum update bytes, maximum un-compacted bytes, and
-maximum updates per document. When a document exceeds a soft threshold it
+The application enforces maximum update bytes, maximum uncompacted bytes, and
+maximum updates per document. The document row holds the uncompacted count and
+byte total so admission is O(1); append advances them in the update transaction,
+and compaction recomputes them from the uncovered tail in its transaction. When a document exceeds a soft threshold it
 queues compaction. At the hard durable threshold the browser and in-memory CRDT
 continue accepting local keystrokes, but the room reports degraded durability,
 buffers only within its existing memory bounds, and retries persistence after

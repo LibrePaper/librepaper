@@ -42,6 +42,8 @@ pub struct StoragePolicy {
     pub deployment_bytes: i64,
     pub asset_uploads_per_hour: i64,
     pub versions_per_hour: i64,
+    pub max_uncompacted_updates: i64,
+    pub max_uncompacted_bytes: i64,
 }
 
 impl Default for StoragePolicy {
@@ -51,6 +53,8 @@ impl Default for StoragePolicy {
             deployment_bytes: 5 * 1024 * 1024 * 1024,
             asset_uploads_per_hour: 30,
             versions_per_hour: 30,
+            max_uncompacted_updates: 1_000,
+            max_uncompacted_bytes: 512 * 1024 * 1024,
         }
     }
 }
@@ -164,18 +168,53 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
 
     use serde_json::json;
     use time::{Duration, OffsetDateTime};
 
     use super::*;
-    use crate::storage::blob::{BlobStore, FsStore};
+    use crate::storage::blob::{BlobError, BlobInfo, BlobResult, BlobStore, FsStore};
     use crate::storage::collaboration::CollaborationStorage;
     use crate::storage::maintenance::Maintenance;
     use crate::storage::publication::{PublicationFile, PublicationStorage, Publish};
     use crate::storage::source::{CommitProject, ProjectFile, SourceStorage};
     use crate::storage::source_archive::ArchiveLimits;
+    use crate::storage::worker::Worker;
+
+    struct PartialDeleteStore {
+        inner: FsStore,
+        fail_once: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl BlobStore for PartialDeleteStore {
+        async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
+            self.inner.get(key).await
+        }
+        async fn put_new(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
+            self.inner.put_new(key, body, content_type).await
+        }
+        async fn delete(&self, keys: &[String]) -> BlobResult<()> {
+            if self.fail_once.swap(false, Ordering::SeqCst) && !keys.is_empty() {
+                self.inner.delete(&keys[..1]).await?;
+                return Err(BlobError::Other("injected partial deletion".into()));
+            }
+            self.inner.delete(keys).await
+        }
+        async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
+            self.inner.list(prefix).await
+        }
+        fn describe(&self) -> String {
+            self.inner.describe()
+        }
+        fn is_local(&self) -> bool {
+            true
+        }
+    }
 
     #[tokio::test]
     async fn postgres_v3_contract() {
@@ -481,6 +520,41 @@ mod tests {
             catalog.updates_after(first.id, 0, 10).await.unwrap().len(),
             1
         );
+        let limited = PostgresCatalog {
+            pool: catalog.pool.clone(),
+            policy: StoragePolicy {
+                max_uncompacted_updates: 1,
+                max_uncompacted_bytes: i64::MAX / 4,
+                ..catalog.policy
+            },
+        };
+        assert!(matches!(
+            limited.append_update(first.id, b"over-cap").await,
+            Err(Error::Conflict(message)) if message.contains("requires compaction")
+        ));
+        let durable: (i64, i64, i64) = sqlx::query_as(
+            "SELECT update_sequence,uncompacted_update_count,uncompacted_update_bytes
+             FROM documents WHERE id=$1",
+        )
+        .bind(first.id)
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(durable.0, 1, "a refused update must not advance the stream");
+        assert_eq!(durable.1, 1);
+        assert_eq!(durable.2, b"accepted-suggestion-update".len() as i64);
+        let byte_limited = PostgresCatalog {
+            pool: catalog.pool.clone(),
+            policy: StoragePolicy {
+                max_uncompacted_updates: i64::MAX / 4,
+                max_uncompacted_bytes: durable.2,
+                ..catalog.policy
+            },
+        };
+        assert!(matches!(
+            byte_limited.append_update(first.id, b"over-byte-cap").await,
+            Err(Error::Conflict(message)) if message.contains("requires compaction")
+        ));
 
         let asset = NewAsset {
             document_id: first.id,
@@ -540,6 +614,44 @@ mod tests {
             "unchanged asset must not be uploaded twice"
         );
         assert_eq!(catalog.versions(first.id, 10).await.unwrap().len(), 2);
+        let concurrent_commit = |marker: &'static [u8]| {
+            let storage = SourceStorage::new(
+                Arc::new(catalog.clone()),
+                blobs.clone(),
+                ArchiveLimits::default(),
+            );
+            async move {
+                storage
+                    .commit_project(CommitProject {
+                        document_id: first.id,
+                        files: vec![ProjectFile {
+                            path: "paper.qmd".into(),
+                            bytes: marker.to_vec(),
+                            media_type: "text/markdown".into(),
+                        }],
+                        through_update_sequence: 1,
+                        project_generation: 0,
+                        reason: "concurrent version".into(),
+                        label: None,
+                        author_account_id: Some(account.id),
+                        author_label: "Owner".into(),
+                        make_current: true,
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+        let (left, right) = tokio::join!(
+            concurrent_commit(b"# Concurrent A\n"),
+            concurrent_commit(b"# Concurrent B\n")
+        );
+        assert_ne!(left.version.sequence, right.version.sequence);
+        assert_eq!(
+            [left.version.sequence, right.version.sequence]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            [3, 4].into_iter().collect()
+        );
 
         let orphan_id = new_id();
         let orphan_key = format!("documents/{}/versions/{orphan_id}.tar.zst", first.id);
@@ -676,6 +788,14 @@ mod tests {
         assert_eq!(recovered.base.as_deref(), Some(b"base-state".as_slice()));
         assert_eq!(recovered.updates.len(), 1);
         assert_eq!(recovered.updates[0].update_bytes, b"update-two");
+        let backlog: (i64, i64) = sqlx::query_as(
+            "SELECT uncompacted_update_count,uncompacted_update_bytes FROM documents WHERE id=$1",
+        )
+        .bind(first.id)
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(backlog, (1, b"update-two".len() as i64));
         assert!(collaboration
             .compact(first.id, 0, 0, b"stale-base")
             .await
@@ -847,6 +967,21 @@ mod tests {
             })
             .await
             .unwrap();
+        let deletion_root = tempfile::tempdir().unwrap();
+        let deletion_blobs: Arc<dyn BlobStore> = Arc::new(PartialDeleteStore {
+            inner: FsStore::new(deletion_root.path(), false),
+            fail_once: AtomicBool::new(true),
+        });
+        let deletion_keys = [
+            format!("documents/{}/assets/{}", disposable.id, new_id()),
+            format!("documents/{}/versions/{}.tar.zst", disposable.id, new_id()),
+        ];
+        for key in &deletion_keys {
+            deletion_blobs
+                .put_new(key, b"delete-me".to_vec(), "application/octet-stream")
+                .await
+                .unwrap();
+        }
         catalog.mark_document_deleting(disposable.id).await.unwrap();
         let deletion = catalog
             .enqueue_job(NewJob {
@@ -869,10 +1004,19 @@ mod tests {
             .into_iter()
             .find(|claim| claim.job.id == deletion.id)
             .unwrap();
-        assert!(catalog
-            .finish_document_deletion(disposable.id)
-            .await
-            .unwrap());
+        let worker = Worker::new(Arc::new(catalog.clone()), deletion_blobs.clone());
+        assert!(worker.execute(&deletion_claim).await.is_err());
+        assert!(catalog.document(disposable.id).await.unwrap().is_some());
+        assert_eq!(
+            deletion_blobs
+                .list(&format!("documents/{}/", disposable.id))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        worker.execute(&deletion_claim).await.unwrap();
+        assert!(catalog.document(disposable.id).await.unwrap().is_none());
         let completed = catalog
             .complete_job(&deletion_claim, json!({"deleted":true}))
             .await

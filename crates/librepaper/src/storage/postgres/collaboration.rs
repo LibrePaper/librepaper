@@ -36,13 +36,43 @@ pub struct CollaborationState {
 }
 
 impl PostgresCatalog {
+    pub(super) async fn lock_collaboration_capacity(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        incoming_bytes: usize,
+    ) -> Result<()> {
+        let backlog: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT uncompacted_update_count,uncompacted_update_bytes FROM documents
+             WHERE id=$1 AND status='active' FOR UPDATE",
+        )
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let (count, stored) = backlog.ok_or(Error::NotFound)?;
+        if count >= self.policy.max_uncompacted_updates
+            || stored.saturating_add(incoming_bytes as i64) > self.policy.max_uncompacted_bytes
+        {
+            return Err(Error::Conflict(
+                "collaboration backlog requires compaction".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn append_update(&self, document_id: Uuid, bytes: &[u8]) -> Result<i64> {
         if bytes.is_empty() || bytes.len() > 4 * 1024 * 1024 {
             return Err(Error::Invalid("CRDT update size is outside limits".into()));
         }
-        sqlx::query_scalar::<_, i64>(
+        let mut tx = self.pool.begin().await?;
+        self.lock_collaboration_capacity(&mut tx, document_id, bytes.len())
+            .await?;
+        let sequence = sqlx::query_scalar::<_, i64>(
             "WITH advanced AS (
-               UPDATE documents SET update_sequence=update_sequence+1,updated_at=now()
+               UPDATE documents SET update_sequence=update_sequence+1,
+                 uncompacted_update_count=uncompacted_update_count+1,
+                 uncompacted_update_bytes=uncompacted_update_bytes+octet_length($2::bytea),
+                 updated_at=now()
                WHERE id=$1 AND status='active' RETURNING id,update_sequence
              ), inserted AS (
                INSERT INTO document_updates(document_id,update_sequence,update_bytes)
@@ -52,9 +82,11 @@ impl PostgresCatalog {
         )
         .bind(document_id)
         .bind(bytes)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?
-        .ok_or(Error::NotFound)
+        .ok_or(Error::NotFound)?;
+        tx.commit().await?;
+        Ok(sequence)
     }
 
     pub async fn updates_after(
@@ -166,6 +198,18 @@ impl PostgresCatalog {
             )
             .bind(document_id)
             .bind(through_update_sequence)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE documents d SET
+                   uncompacted_update_count=s.remaining_count,
+                   uncompacted_update_bytes=s.remaining_bytes
+                 FROM (SELECT count(*)::bigint remaining_count,
+                              COALESCE(sum(octet_length(update_bytes)),0)::bigint remaining_bytes
+                       FROM document_updates WHERE document_id=$1) s
+                 WHERE d.id=$1",
+            )
+            .bind(document_id)
             .execute(&mut *tx)
             .await?;
         }

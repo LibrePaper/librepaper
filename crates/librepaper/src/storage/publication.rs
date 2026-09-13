@@ -135,29 +135,33 @@ impl PublicationStorage {
                 let blobs = self.blobs.clone();
                 let document_id = input.document_id;
                 async move {
-                    let digest: [u8; 32] = Sha256::digest(&file.bytes).into();
+                    let PublicationFile {
+                        path,
+                        bytes,
+                        media_type,
+                    } = file;
+                    let byte_length = bytes.len();
+                    let digest: [u8; 32] = Sha256::digest(&bytes).into();
                     let key = format!(
                         "documents/{document_id}/publications/{staging_id}/files/{}",
-                        file.path
+                        path
                     );
-                    blobs
-                        .put_new(&key, file.bytes.clone(), &file.media_type)
-                        .await?;
-                    verify(blobs.as_ref(), &key, &digest, file.bytes.len() as u64).await?;
+                    blobs.put_new(&key, bytes, &media_type).await?;
+                    verify(blobs.as_ref(), &key, &digest, byte_length as u64).await?;
                     Ok::<_, Error>((
                         ManifestFile {
-                            path: file.path.clone(),
+                            path: path.clone(),
                             storage_key: key.clone(),
                             digest: hex::encode(digest),
-                            bytes: file.bytes.len() as u64,
-                            media_type: file.media_type.clone(),
+                            bytes: byte_length as u64,
+                            media_type: media_type.clone(),
                         },
                         NewPublicationFile {
-                            path: file.path,
+                            path,
                             storage_key: key,
                             digest,
-                            byte_length: file.bytes.len() as i64,
-                            media_type: file.media_type,
+                            byte_length: byte_length as i64,
+                            media_type,
                         },
                     ))
                 }
