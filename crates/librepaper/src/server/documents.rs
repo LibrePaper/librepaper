@@ -230,7 +230,10 @@ impl Server {
                     let targeted = room.comment_event_for(&result, &author, may_edit).await;
                     return write_json(200, &targeted);
                 }
-                write_json(400, &result)
+                let status = result.get("status").and_then(Value::as_u64)
+                    .filter(|status| matches!(status, 400 | 403 | 404 | 409 | 410 | 503))
+                    .unwrap_or(400) as u16;
+                write_json(status, &result)
             }
             _ => plain(405, "method not allowed"),
         }

@@ -1381,11 +1381,15 @@ impl Room {
                     .await
                     .map(|created| added.created = created)
                 } else {
-                    self.persist_comments(seq, prepared).await
+                    self.persist_comments(seq, prepared).await.map_err(WriteError::from)
                 };
                 state = self.state.lock().await;
-                if persisted.is_err() {
-                    return fail(UNSAVED);
+                if let Err(error) = persisted {
+                    let (mut response, _) = fail(&error.client_message());
+                    response["status"] = json!(error.status());
+                    response["code"] = json!(if matches!(error, WriteError::RequestExpired) { "request_expired" } else { "annotation_refused" });
+                    response["retryable"] = json!(error.is_temporary());
+                    return (response, false);
                 }
                 if self.catalog.get().is_some() {
                     if let Some(target) =
@@ -1658,10 +1662,14 @@ impl Room {
                         }
                     }
                 } else {
-                    self.persist_comments(next_seq, prepared).await
+                    self.persist_comments(next_seq, prepared).await.map_err(WriteError::from)
                 };
-                if persisted.is_err() {
-                    return fail(UNSAVED);
+                if let Err(error) = persisted {
+                    let (mut response, _) = fail(&error.client_message());
+                    response["status"] = json!(error.status());
+                    response["code"] = json!(if matches!(error, WriteError::RequestExpired) { "request_expired" } else { "annotation_refused" });
+                    response["retryable"] = json!(error.is_temporary());
+                    return (response, false);
                 }
                 (
                     json!({"type": "comment", "comment": added, "temp_id": temp_id,

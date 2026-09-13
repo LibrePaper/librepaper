@@ -44,9 +44,44 @@ fn validate_new_request_key(key: &str) -> CatalogResult<()> {
         CatalogError::Invalid("request key must be v2.<issued-milliseconds>.<nonce32>".into())
     })?;
     let now = unix_millis();
-    if issued > now.saturating_add(60_000) || now.saturating_sub(issued) > 15 * 60_000 {
+    if now.saturating_sub(issued) > 15 * 60_000 {
+        return Err(CatalogError::refused(
+            CatalogRefusal::RequestExpired,
+            "request key has expired; submit a new request key",
+        ));
+    }
+    if issued > now.saturating_add(60_000) {
         return Err(CatalogError::Invalid(
             "request key is outside the admission freshness window".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Receipt lifetime is enforced on reads, independently of worker cleanup.
+/// Call only after checking the caller's current document authority.
+fn validate_receipt_window(
+    tx: &Transaction<'_>,
+    document_id: &str,
+    actor: &str,
+    request_key: &str,
+) -> CatalogResult<()> {
+    if crate::util::request_key_timestamp(request_key).is_none() {
+        return Err(CatalogError::Invalid("malformed request key".into()));
+    }
+    let expired: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM operations
+         WHERE COALESCE(document_id,'')=?1 AND COALESCE(account_id,'')=''
+           AND actor_key=?2 AND request_key=?3
+           AND ((state<>'prepared' AND receipt_expires_at<=?4)
+             OR (state='prepared' AND work_expires_at<=?4)))",
+        params![document_id, actor, request_key, unix_millis()],
+        |row| row.get(0),
+    )?;
+    if expired {
+        return Err(CatalogError::refused(
+            CatalogRefusal::RequestExpired,
+            "request receipt has expired; submit a new request key",
         ));
     }
     Ok(())
@@ -296,11 +331,13 @@ impl Catalog {
             let document_id = document_id(tx, &comment.slug)?;
             annotation_account_authorized(tx, &document_id, authority)?;
             let actor = annotation_actor(authority);
+            validate_receipt_window(tx, &document_id, &actor, request_id)?;
             let existing: Option<(String, String, String, String)> = tx
                 .query_row(
                     "SELECT id,state,request_digest,plan_json
                      FROM operations
-                     WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                     WHERE COALESCE(document_id,'')=?1 AND COALESCE(account_id,'')=''
+                       AND actor_key=?2 AND request_key=?3
                        AND kind='agent_annotations'",
                     params![document_id, actor, request_id],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
@@ -412,7 +449,9 @@ impl Catalog {
                 .prepare(&format!("{COMMENT_SELECT} WHERE d.slug=?1 AND a.id=?2"))
                 .map_err(CatalogError::from)?;
             s.query_row(params![slug, id], Self::read_comment)
-                .map_err(CatalogError::from)
+                .optional()
+                .map_err(CatalogError::from)?
+                .ok_or(CatalogError::NotFound)
         })
     }
     pub fn resolve_comment(
@@ -480,11 +519,13 @@ impl Catalog {
             let doc = document_id(tx, slug)?;
             annotation_account_authorized(tx, &doc, authority)?;
             let actor = annotation_actor(authority);
+            validate_receipt_window(tx, &doc, &actor, request_id)?;
             let existing: Option<(String, String, String, String)> = tx
                 .query_row(
                     "SELECT id,state,request_digest,plan_json
                      FROM operations
-                     WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                     WHERE COALESCE(document_id,'')=?1 AND COALESCE(account_id,'')=''
+                       AND actor_key=?2 AND request_key=?3
                        AND kind='agent_annotations'",
                     params![doc, actor, request_id],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
@@ -808,11 +849,13 @@ impl Catalog {
             let document_id = document_id(tx, &reply.slug)?;
             annotation_account_authorized(tx, &document_id, authority)?;
             let actor = annotation_actor(authority);
+            validate_receipt_window(tx, &document_id, &actor, request_id)?;
             let existing: Option<(String, String, String, String)> = tx
                 .query_row(
                     "SELECT id,state,request_digest,plan_json
                      FROM operations
-                     WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
+                     WHERE COALESCE(document_id,'')=?1 AND COALESCE(account_id,'')=''
+                       AND actor_key=?2 AND request_key=?3
                        AND kind='agent_annotations'",
                     params![document_id, actor, request_id],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),

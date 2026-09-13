@@ -2895,6 +2895,18 @@ fn annotation_receipt_rechecks_live_link_and_preserves_seven_day_window() {
         let (created,completed,expiry):(i64,i64,i64) = db.query_row("SELECT created_at,completed_at,receipt_expires_at FROM operations WHERE request_key=?1",[&key],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
         assert_eq!(created,now);
         assert_eq!(expiry-completed,7*24*60*60*1000);
+        Ok(())
+    }).unwrap();
+    // Expiry is effective even if the maintenance worker has not removed the receipt.
+    catalog.with_connection(|db| {
+        db.execute("UPDATE operations SET created_at=1,updated_at=1,completed_at=1,receipt_expires_at=2 WHERE request_key=?1",[&key])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(catalog.insert_comment_request_authorized(&comment, &key, &digest, now, authority).unwrap_err().refusal(), super::CatalogRefusal::RequestExpired);
+    let forgotten_key = format!("v2.1.{}", "a".repeat(32));
+    assert_eq!(catalog.insert_comment_request_authorized(&annotation("never-inserted", "commenting"), &forgotten_key, &digest, now, authority).unwrap_err().refusal(), super::CatalogRefusal::RequestExpired);
+    assert!(matches!(catalog.comment("doc", "never-inserted"), Err(CatalogError::NotFound)));
+    catalog.with_connection(|db| {
         db.execute("DELETE FROM links WHERE token_hash=?1",[&link])?;
         Ok(())
     }).unwrap();

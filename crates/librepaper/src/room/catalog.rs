@@ -1311,7 +1311,7 @@ pub(super) async fn insert_comment_request(
     digest: String,
     at: i64,
     actor: crate::document::store::MutationActor,
-) -> Result<(i64, String), String> {
+) -> Result<(i64, String), crate::room::WriteError> {
     let input_bytes = comment_row_bytes(&row)
         + request_id.len()
         + digest.len()
@@ -1338,7 +1338,7 @@ pub(super) async fn insert_comment_request(
                 .map(|row| (row.seq, row.created))
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(crate::room::WriteError::from)
 }
 
 /// Write one comment row back.
@@ -1422,7 +1422,7 @@ pub(super) async fn insert_reply_request(
     digest: String,
     at: i64,
     actor: crate::document::store::MutationActor,
-) -> Result<String, String> {
+) -> Result<String, crate::room::WriteError> {
     let input_bytes = DESCRIPTOR_BYTES
         + row.slug.len()
         + row.comment_id.len()
@@ -1453,7 +1453,7 @@ pub(super) async fn insert_reply_request(
                 .map(|row| row.created)
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(crate::room::WriteError::from)
 }
 
 /// The suggestion-accept cluster, through the boundary.

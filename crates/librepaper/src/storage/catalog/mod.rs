@@ -124,6 +124,8 @@ impl std::error::Error for CatalogError {}
 /// fails if a message in this module is reworded out of its class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CatalogRefusal {
+    /// A finite replay receipt or a forgotten request key has expired.
+    RequestExpired,
     /// The owner's byte allowance is used up.
     OwnerBytes,
     /// The deployment's byte allowance is used up.

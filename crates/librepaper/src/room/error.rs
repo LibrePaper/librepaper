@@ -187,6 +187,8 @@ pub enum Retry {
 /// Why a room write did not happen.
 #[derive(Clone, Debug)]
 pub enum WriteError {
+    /// A finite request key or replay receipt has expired.
+    RequestExpired,
     /// This server may not write this room at all.
     ReadOnly(FenceReason),
     /// The caller's rights, or the session those rights were granted in,
@@ -237,7 +239,7 @@ impl WriteError {
         match self {
             Self::ReadOnly(reason) if reason.temporary() => Retry::Later,
             Self::ReadOnly(_) => Retry::No,
-            Self::PermissionDenied | Self::NotFound | Self::Invalid(_) => Retry::No,
+            Self::PermissionDenied | Self::NotFound | Self::Invalid(_) | Self::RequestExpired => Retry::No,
             Self::Quota(QuotaKind::UploadRate) => Retry::Later,
             Self::Quota(_) => Retry::No,
             Self::Size(_) | Self::Figure(_) | Self::Document(_) => Retry::No,
@@ -258,6 +260,7 @@ impl WriteError {
             Self::ReadOnly(FenceReason::Deleted) | Self::NotFound => 404,
             Self::ReadOnly(_) => 503,
             Self::PermissionDenied => 403,
+            Self::RequestExpired => 410,
             Self::Quota(QuotaKind::UploadRate) => 429,
             Self::Quota(_) => 507,
             Self::Size(_) | Self::Figure(_) => 413,
@@ -278,6 +281,7 @@ impl WriteError {
         match self {
             Self::ReadOnly(reason) => reason.message().to_string(),
             Self::PermissionDenied => "edit access changed".into(),
+            Self::RequestExpired => "request has expired; submit a new request key".into(),
             Self::Quota(kind) => kind.message().to_string(),
             Self::Size(refusal) => WriteRefusal::Permanent(*refusal).message(),
             Self::Figure(limit) => limit.message(),
@@ -366,6 +370,7 @@ impl From<CatalogError> for WriteError {
                 CatalogRefusal::OwnerDocuments => Self::Quota(QuotaKind::Documents),
                 CatalogRefusal::UploadRate => Self::Quota(QuotaKind::UploadRate),
                 CatalogRefusal::ActorRights => Self::PermissionDenied,
+                CatalogRefusal::RequestExpired => Self::RequestExpired,
                 CatalogRefusal::Other => Self::Conflict(why),
             },
             CatalogError::Sql(err) => Self::Storage(err.to_string()),
