@@ -33,11 +33,11 @@ fn millis(value: &str) -> i64 {
                 value
             }
         })
-        .or_else(|| crate::util::parse_timestamp(value).map(|value| value.saturating_mul(1_000)))
+        .or_else(|| crate::util::parse_timestamp_millis(value))
         .unwrap_or(0)
 }
 fn timestamp(value: i64) -> String {
-    crate::util::format_unix(value.saturating_div(1_000))
+    crate::util::format_unix_millis(value)
 }
 fn validate_new_request_key(key: &str) -> CatalogResult<()> {
     let issued = crate::util::request_key_timestamp(key).ok_or_else(|| {
@@ -89,6 +89,10 @@ fn validate_receipt_window(
 fn annotation_actor(authority: AnnotationAuthority<'_>) -> String {
     if !authority.account_id.is_empty() {
         format!("account:{}", authority.account_id)
+    } else if !authority.automation && !authority.author_key.is_empty() {
+        // A shared commenter link grants permission; the server-verified
+        // visitor identity supplies the distinct idempotency namespace.
+        format!("visitor:{}", hex::encode(sha2::Sha256::digest(authority.author_key.as_bytes())))
     } else if !authority.link_hash.is_empty() {
         format!("link:{}", authority.link_hash)
     } else {
@@ -235,13 +239,14 @@ fn annotation_protection_from_stored(
     if revision.is_empty() {
         return Ok(None);
     }
-    tx.query_row(
+    let retained: Option<String> = tx.query_row(
         "SELECT id FROM checkpoints WHERE document_id=?1 AND id=?2",
         params![document, revision],
         |row| row.get(0),
-    )
-    .optional()
-    .map_err(CatalogError::from)
+    ).optional()?;
+    retained.map(Some).ok_or_else(|| CatalogError::Conflict(
+        "the annotation's source checkpoint was pruned; it cannot be reopened".into(),
+    ))
 }
 
 fn selector(comment: &Comment) -> String {
@@ -575,7 +580,10 @@ impl Catalog {
                 params![doc, comment.id],
                 |row| row.get(0),
             )?;
-            existing.or(annotation_protection_from_stored(tx, &doc, &comment.id)?)
+            match existing {
+                Some(checkpoint) => Some(checkpoint),
+                None => annotation_protection_from_stored(tx, &doc, &comment.id)?,
+            }
         };
         let changed = tx
             .execute(
@@ -1203,5 +1211,49 @@ impl Catalog {
     pub fn replies(&self, slug: &str, comment_id: &str, limit: u32) -> CatalogResult<Vec<Reply>> {
         let limit = i64::from(limit.clamp(1, 100));
         self.with_connection(|c|{let doc=document_id_connection(c,slug)?;let mut s=c.prepare("SELECT ?1,annotation_id,id,body,author_label,author_key,created_at FROM replies WHERE document_id=?2 AND annotation_id=?3 ORDER BY created_at,id LIMIT ?4").map_err(CatalogError::from)?;let mut rows=s.query(params![slug,doc,comment_id,limit]).map_err(CatalogError::from)?;let mut out=Vec::new();while let Some(r)=rows.next().map_err(CatalogError::from)?{out.push(Reply{slug:r.get(0)?,comment_id:r.get(1)?,id:r.get(2)?,body:r.get(3)?,creator:r.get(4)?,author:r.get(5)?,created:timestamp(r.get::<_,i64>(6)?)});}Ok(out)})
+    }
+}
+
+#[cfg(test)]
+mod v2_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn shared_link_visitors_have_distinct_receipt_scopes() {
+        let first = AnnotationAuthority { author_key: "verified-visitor-a", link_hash: "same-link", ..Default::default() };
+        let second = AnnotationAuthority { author_key: "verified-visitor-b", ..first };
+        assert_ne!(annotation_actor(first), annotation_actor(second));
+        assert!(!annotation_actor(first).contains("verified-visitor-a"));
+        let account = AnnotationAuthority { account_id: "acct-1", ..first };
+        assert_eq!(annotation_actor(account), "account:acct-1");
+    }
+
+    #[test]
+    fn annotation_millisecond_timestamp_roundtrips() {
+        let original = "2026-09-13T01:02:03.456Z";
+        assert_eq!(timestamp(millis(original)), original);
+    }
+
+    #[test]
+    fn reopening_pruned_source_preserves_resolved_annotation() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        catalog.upsert_account(&super::super::tests::account()).unwrap();
+        catalog.create_document(&super::super::tests::document()).unwrap();
+        let authority = AnnotationAuthority {
+            account_id: "acct-1", generation: "generation-1", ..Default::default()
+        };
+        let mut comment = super::super::tests::annotation("pruned", "commenting");
+        comment.resolved = true;
+        comment.resolved_at = Some("2026-09-13T01:02:03.456Z".into());
+        comment.resolved_in = "later-checkpoint".into();
+        let key = crate::util::new_request_key();
+        let mut stored = catalog.insert_comment_request_authorized(
+            &comment, &key, &"a".repeat(64), crate::util::now_millis(), authority,
+        ).unwrap();
+        assert!(stored.resolved);
+        stored.resolved = false;
+        stored.resolved_at = None;
+        assert!(matches!(catalog.update_comment_authorized(&stored, authority), Err(CatalogError::Conflict(_))));
+        assert!(catalog.comment("doc", "pruned").unwrap().resolved);
     }
 }
