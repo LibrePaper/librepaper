@@ -1475,9 +1475,9 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
     let plans = catalog
         .with_connection(|connection| {
             let queries = [
-                "EXPLAIN QUERY PLAN SELECT d.slug FROM documents d CROSS JOIN grants g ON g.slug=d.slug AND g.account_id='acct-1' WHERE d.status='active' AND d.pending_publication IS NULL ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
-                "EXPLAIN QUERY PLAN SELECT d.slug FROM documents d CROSS JOIN guests ge ON ge.slug=d.slug AND ge.account_id='acct-1' CROSS JOIN links l ON l.slug=d.slug AND l.hash=ge.link_hash WHERE d.status='active' AND d.pending_publication IS NULL AND l.until='' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
-                "EXPLAIN QUERY PLAN SELECT d.slug FROM documents d INDEXED BY documents_active_example_updated WHERE d.status='active' AND d.pending_publication IS NULL AND d.example=1 ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
+                "EXPLAIN QUERY PLAN SELECT d.slug FROM grants g JOIN documents d ON d.id=g.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE d.status='active' AND g.account_id='acct-1' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
+                "EXPLAIN QUERY PLAN SELECT d.slug FROM links l JOIN documents d ON d.id=l.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE d.status='active' AND l.credential_generation>0 ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
+                "EXPLAIN QUERY PLAN SELECT d.slug FROM documents d INDEXED BY documents_examples WHERE d.status='active' AND d.ownership_mode='example' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
             ];
             Ok(queries
                 .iter()
