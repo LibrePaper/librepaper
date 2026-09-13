@@ -30,7 +30,14 @@ use crate::storage::backup::verify_local_backup;
 use crate::storage::blob::{clear_storage_checked, release_room_locks};
 use crate::storage::{open_storage, StorageOptions};
 use crate::util::timestamp;
-use crate::util::{die, new_id};
+#[cfg(not(test))]
+use crate::util::die;
+use crate::util::new_id;
+
+#[cfg(test)]
+fn die(message: impl std::fmt::Display) -> ! {
+    panic!("{message}");
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct SeedAnnotation {
@@ -935,7 +942,7 @@ async fn publish_seed_display(
     })
     .map_err(|error| error.to_string())?;
     let manifest = crate::server::publication::PublicationManifest {
-        publication_id: crate::util::new_request_key(),
+        publication_id: crate::storage::catalog::ObjectId::random().to_string(),
         bundle_sha256: crate::document::store::digest_of_bytes(&bundle),
         source_sha256: crate::document::store::digest_of(source),
         render_config_sha256: crate::document::store::digest_of(format),
@@ -957,7 +964,7 @@ async fn publish_seed_display(
     };
     let publication = crate::server::publication::PublicationStore::for_store(store.clone())
         .with_actor(publication_actor);
-    let request_id = manifest.publication_id.clone();
+    let request_id = crate::util::new_request_key();
     let missing = publication
         .prepare(
             storage_id,
@@ -983,14 +990,19 @@ async fn publish_seed_display(
                 .map_err(|error| error.to_string())?;
             continue;
         }
-        let Some((asset, (_, bytes))) = manifest.assets.iter().find_map(|asset| {
-            assets
-                .iter()
-                .find(|(_, bytes)| {
-                    crate::document::store::digest_of_bytes(bytes) == asset.object.sha256
-                })
-                .map(|entry| (asset, entry))
-        }) else {
+        let Some((asset, (_, bytes))) = manifest
+            .assets
+            .iter()
+            .filter(|asset| asset.object.sha256 == hash)
+            .find_map(|asset| {
+                assets
+                    .iter()
+                    .find(|(_, bytes)| {
+                        crate::document::store::digest_of_bytes(bytes) == asset.object.sha256
+                    })
+                    .map(|entry| (asset, entry))
+            })
+        else {
             return Err(format!("publication asset {hash} has no source bytes"));
         };
         publication
@@ -1072,7 +1084,7 @@ mod catalog_seed_tests {
         SeedDocument {
             file: file.display().to_string(),
             files: Vec::new(),
-            assets: vec!["asset.txt".into()],
+            assets: vec!["asset.txt".into(), "style.css".into()],
             title: "Catalog seed fixture",
             annotations: vec![SeedAnnotation {
                 motivation: "commenting",
@@ -1088,9 +1100,10 @@ mod catalog_seed_tests {
     #[tokio::test]
     async fn catalog_seed_uses_system_owner_and_publishes_typed_annotations() {
         let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("example.html");
-        std::fs::write(&source, "<p>seed phrase</p>").unwrap();
+        let source = root.path().join("example.md");
+        std::fs::write(&source, "seed phrase").unwrap();
         std::fs::write(root.path().join("asset.txt"), "seed asset").unwrap();
+        std::fs::write(root.path().join("style.css"), "body { color: red; }").unwrap();
         let catalog = Arc::new(
             crate::storage::catalog::Catalog::open(root.path().join("catalog.db")).unwrap(),
         );
@@ -1127,11 +1140,18 @@ mod catalog_seed_tests {
             .expect("seed display publication");
         assert!(!manifest.publication_id.is_empty());
         assert_eq!(manifest.html.mime, "text/html");
-        assert_eq!(manifest.assets.len(), 1);
+        assert_eq!(manifest.assets.len(), 2);
         let (_, html) = publication.deliver(&row.storage_id, "index.html").await.unwrap();
-        assert!(String::from_utf8(html).unwrap().contains("seed phrase"));
+        let html = String::from_utf8(html).unwrap();
+        assert!(html.contains("seed phrase"));
+        assert!(
+            html.contains("<p>"),
+            "seed served source markdown instead of rendered HTML: {html}"
+        );
         let (_, asset) = publication.deliver(&row.storage_id, "asset.txt").await.unwrap();
         assert_eq!(asset, b"seed asset");
+        let (_, stylesheet) = publication.deliver(&row.storage_id, "style.css").await.unwrap();
+        assert_eq!(stylesheet, b"body { color: red; }");
         let kind: String = catalog
             .with_connection(|connection| {
                 connection
@@ -1149,15 +1169,16 @@ mod catalog_seed_tests {
     #[tokio::test]
     async fn catalog_seed_with_owner_keeps_anonymous_owner_kind() {
         let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("owned.html");
-        std::fs::write(&source, "<p>seed phrase</p>").unwrap();
+        let source = root.path().join("owned.md");
+        std::fs::write(&source, "seed phrase").unwrap();
         std::fs::write(root.path().join("asset.txt"), "seed asset").unwrap();
+        std::fs::write(root.path().join("style.css"), "body { color: red; }").unwrap();
         let catalog = Arc::new(
             crate::storage::catalog::Catalog::open(root.path().join("catalog.db")).unwrap(),
         );
         let blobs = Arc::new(crate::storage::blob::FsStore::new(root.path(), true));
         seed_with_store(
-            blobs,
+            blobs.clone(),
             Arc::new(Configuration::default()),
             "Alice",
             &[document(&source)],
