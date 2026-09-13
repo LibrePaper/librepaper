@@ -1636,6 +1636,7 @@ mod tests {
         lengths: Arc<Mutex<Vec<u64>>>,
         files: Arc<Mutex<HashMap<String, u64>>>,
         corrupt: bool,
+        truncate: bool,
     }
 
     #[async_trait::async_trait]
@@ -1663,7 +1664,8 @@ mod tests {
                 .map_err(crate::storage::blob::BlobError::from)?
                 .len();
             self.lengths.lock().unwrap().push(length);
-            self.files.lock().unwrap().insert(key.to_owned(), length);
+            let stored_length = if self.truncate { 0 } else { length };
+            self.files.lock().unwrap().insert(key.to_owned(), stored_length);
             Ok(())
         }
 
@@ -1981,6 +1983,7 @@ mod tests {
             lengths: Arc::clone(&lengths),
             files: Arc::new(Mutex::new(HashMap::new())),
             corrupt: false,
+            truncate: false,
         });
         let manifest = create_backup(
             &catalog,
@@ -2023,6 +2026,7 @@ mod tests {
             lengths: Arc::new(Mutex::new(Vec::new())),
             files: Arc::new(Mutex::new(HashMap::new())),
             corrupt: true,
+            truncate: false,
         });
         assert!(matches!(
             create_backup(
@@ -2030,6 +2034,49 @@ mod tests {
                 Arc::new(MemoryStore(Arc::new(Mutex::new(HashMap::new())))),
                 destination,
                 "corrupt-file",
+                1,
+            )
+            .await,
+            Err(BackupV2Error::Corrupt(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_snapshot_rejects_empty_destination_bytes() {
+        let (object, _) = sample_object();
+        let snapshot_path = tempfile::tempdir().expect("snapshot directory");
+        let snapshot_file = snapshot_path.path().join("catalog.db");
+        let byte_length = 64 * 1024 + 1;
+        std::fs::File::create(&snapshot_file)
+            .expect("snapshot file")
+            .set_len(byte_length)
+            .expect("sparse snapshot");
+        let mut snapshot = sample_snapshot(object);
+        snapshot.catalog_bytes.clear();
+        snapshot.object_count = 0;
+        snapshot.catalog_file = Some(BackupCatalogFile {
+            path: snapshot_file,
+            digest: digest_zeroes(byte_length),
+            byte_length,
+        });
+        let catalog = MockBackupCatalog {
+            snapshot,
+            objects: Vec::new(),
+            events: Arc::new(Mutex::new(Vec::new())),
+        };
+        let destination: Arc<dyn BlobStore> = Arc::new(FileStreamingStore {
+            inner: MemoryStore(Arc::new(Mutex::new(HashMap::new()))),
+            lengths: Arc::new(Mutex::new(Vec::new())),
+            files: Arc::new(Mutex::new(HashMap::new())),
+            corrupt: false,
+            truncate: true,
+        });
+        assert!(matches!(
+            create_backup(
+                &catalog,
+                Arc::new(MemoryStore(Arc::new(Mutex::new(HashMap::new())))),
+                destination,
+                "empty-file",
                 1,
             )
             .await,
