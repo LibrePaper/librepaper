@@ -1062,6 +1062,10 @@ async fn recovery_aborts_a_current_swap_that_never_reached_blob_cas() {
         })
         .unwrap();
     assert_eq!(remaining, 0, "missing publication bytes stayed allocated");
+    // Recovery held the deployment writer lock directly. Release it before
+    // starting the replacement HTTP process, which must acquire that same
+    // lock for serving mutations.
+    drop(_writer_lock);
     let (restarted_url, _restarted) = server_over(server_dir.path(), Configuration::default()).await;
     let current: Value = client()
         .get(format!("{restarted_url}/api/documents/{slug}/publication"))
