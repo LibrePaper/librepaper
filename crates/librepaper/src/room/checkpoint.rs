@@ -1991,12 +1991,35 @@ impl Room {
             now: UnixMillis::new(crate::util::now_millis())
                 .map_err(|error| WriteError::Storage(error.to_string()))?,
         };
+        let tree_bytes_for_verify = physical
+            .iter()
+            .find(|object| object.kind == ObjectKind::SourceTree)
+            .map(|object| object.bytes.clone())
+            .ok_or_else(|| WriteError::Storage("checkpoint tree object is missing".into()))?;
+        let recipe_objects_for_verify = physical
+            .iter()
+            .filter(|object| object.kind == ObjectKind::SourceRecipe)
+            .map(|object| (object.id.as_str().to_owned(), object.bytes.clone()))
+            .collect::<Vec<_>>();
+        let proof_input_bytes = tree_bytes_for_verify.len().saturating_add(
+            recipe_objects_for_verify
+                .iter()
+                .map(|(_, bytes)| bytes.len())
+                .sum::<usize>(),
+        );
         let checkpoint_for_verify = checkpoint.clone();
         let proof = catalog
-            .execute_catalog(checkpoint.object_ids.len() * 128 + 512, {
+            .execute_catalog(proof_input_bytes.saturating_add(512), {
                 let operation_id = admitted_operation.id.clone();
+                let tree_bytes = tree_bytes_for_verify;
+                let recipe_objects = recipe_objects_for_verify;
                 move |catalog| {
-                    catalog.verify_v2_checkpoint_closure(&operation_id, &checkpoint_for_verify)
+                    catalog.verify_v2_source_closure_bundle(
+                        &operation_id,
+                        &checkpoint_for_verify,
+                        &tree_bytes,
+                        &recipe_objects,
+                    )
                 }
             })
             .await
