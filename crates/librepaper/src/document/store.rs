@@ -37,10 +37,9 @@ use crate::storage::blob::{
 };
 use crate::storage::catalog::{
     Account, Catalog, CatalogError, CheckpointCommit, CheckpointId, DocumentId, ObjectId,
-    ObjectKind, OperationKind, SourceFormat, UnixMillis,
-    V2AdmissionLimits, V2ObjectAllocation, V2OperationInput, V2SourceAdmissionInput,
+    ObjectKind, OperationKind, SourceFormat, UnixMillis, V2AdmissionLimits, V2ObjectAllocation,
+    V2OperationInput, V2SourceAdmissionInput,
 };
-use crate::util::new_id;
 use crate::util::{now_unix, parse_timestamp, timestamp};
 
 const MAX_LINKS_PER_RESULT: i64 = 16;
@@ -497,11 +496,6 @@ pub struct Publication {
     pub owner: String,
     pub owner_id: String,
     pub owner_name: String,
-    /// A caller that has already parsed a complete directory can provide its
-    /// exact initial object peak.  Direct
-    /// Store users leave this unset and retain the legacy source-only
-    /// admission contract.
-    pub peak_bytes: Option<i64>,
 }
 
 /// What `put` returns when a storage rule refuses an upload: the HTTP status
@@ -562,18 +556,24 @@ fn source_put_error(error: CatalogError) -> PutError {
                 message: "request receipt has expired",
             }
         }
-        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::OwnerBytes, _) => PutError::Quota {
-            status: 507,
-            message: "your storage quota is used up; delete a document first",
-        },
-        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::DeploymentBytes, _) => PutError::Quota {
-            status: 507,
-            message: "this deployment has no room left",
-        },
-        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::OwnerDocuments, _) => PutError::Quota {
-            status: 507,
-            message: "you have reached the document limit; delete one first",
-        },
+        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::OwnerBytes, _) => {
+            PutError::Quota {
+                status: 507,
+                message: "your storage quota is used up; delete a document first",
+            }
+        }
+        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::DeploymentBytes, _) => {
+            PutError::Quota {
+                status: 507,
+                message: "this deployment has no room left",
+            }
+        }
+        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::OwnerDocuments, _) => {
+            PutError::Quota {
+                status: 507,
+                message: "you have reached the document limit; delete one first",
+            }
+        }
         CatalogError::Refused(crate::storage::catalog::CatalogRefusal::UploadRate, _) => {
             PutError::Quota {
                 status: 429,
@@ -586,7 +586,9 @@ fn source_put_error(error: CatalogError) -> PutError {
         },
         CatalogError::Conflict(message) => PutError::Authorization {
             status: 409,
-            message: if message == "A project with this name already exists. Choose a different name." {
+            message: if message
+                == "A project with this name already exists. Choose a different name."
+            {
                 "A project with this name already exists. Choose a different name."
             } else {
                 "the document changed; reload it before retrying"
@@ -602,30 +604,6 @@ fn source_put_error(error: CatalogError) -> PutError {
 const STORE_JOB_BYTES: usize = 512;
 
 impl Store {
-    pub async fn admit_replacement_upload(&self, slug: &str) -> Result<(), PutError> {
-        let Some(catalog) = &self.catalog else {
-            return Ok(());
-        };
-        let slug = slug.to_string();
-        let uploads_per_hour = self.config.storage.uploads_per_hour;
-        catalog
-            .execute_catalog(STORE_JOB_BYTES + slug.len(), move |catalog| {
-                catalog.admit_document_upload(&slug, uploads_per_hour)
-            })
-            .await
-            .map_err(crate::storage::catalog::CatalogError::from)
-            .map_err(|error| match error {
-                crate::storage::catalog::CatalogError::Refused(
-                    crate::storage::catalog::CatalogRefusal::UploadRate,
-                    _,
-                ) => PutError::Quota {
-                    status: 429,
-                    message: "too many uploads this hour; try later",
-                },
-                other => PutError::Storage(other.to_string()),
-            })
-    }
-
     pub async fn begin_delete(&self, slug: &str) -> Result<Option<String>, String> {
         let Some(catalog) = &self.catalog else {
             return Ok(None);
@@ -856,11 +834,7 @@ impl Store {
             let requested_slug = slug.to_owned();
             let lease = catalog
                 .execute_catalog(slug.len() + 4096, move |_| {
-                    owner.acquire_checkpoint_read(
-                        &requested_slug,
-                        None,
-                        crate::util::now_millis(),
-                    )
+                    owner.acquire_checkpoint_read(&requested_slug, None, crate::util::now_millis())
                 })
                 .await
                 .map_err(|error| BlobError::Other(error.to_string()))?;
@@ -930,11 +904,15 @@ impl Store {
                 None => match heartbeat.await {
                     Ok(Ok(lease)) => Some(lease),
                     Ok(Err(error)) => {
-                        if result.is_ok() { return Err(error); }
+                        if result.is_ok() {
+                            return Err(error);
+                        }
                         None
                     }
                     Err(error) => {
-                        if result.is_ok() { return Err(BlobError::Other(error.to_string())); }
+                        if result.is_ok() {
+                            return Err(BlobError::Other(error.to_string()));
+                        }
                         None
                     }
                 },
@@ -942,7 +920,7 @@ impl Store {
                 Some(Ok(Err(_))) | Some(Err(_)) => None,
             };
             let released = match lease {
-                Some(mut lease) => {
+                Some(lease) => {
                     if result.is_ok() && !lease.valid_at(crate::util::now_millis()) {
                         return Err(BlobError::Other("checkpoint read lease expired".into()));
                     }
@@ -1262,8 +1240,8 @@ impl Store {
         };
         if actor.account_id.starts_with("system:") {
             if actor.account_id != "system:examples"
-                || actor.owner_key != ""
-                || actor.link_hash != ""
+                || !actor.owner_key.is_empty()
+                || !actor.link_hash.is_empty()
                 || !actor.policy_editor
                 || actor.automation
                 || !v.owner_id.is_empty()
@@ -1379,7 +1357,6 @@ impl Store {
                 "source_upload",
                 self.config.storage.uploads_per_hour,
             )
-            .map_err(crate::storage::catalog::CatalogError::from)
             .map_err(source_put_error)?;
         let created_at = existing
             .as_ref()
@@ -1543,7 +1520,9 @@ impl Store {
                         path.clone(),
                         crate::storage::encoding::TreeFileLocator {
                             kind: "text".into(),
-                            file_id: String::new(),
+                            // Hydration must retain this tree digest: assigning an ID
+                            // only when the room loads changes otherwise identical inputs.
+                            file_id: crate::document::session::mint_id(),
                             logical_digest: encoded.file_digest,
                             logical_length: text.len() as u64,
                             recipe: Some(recipe_locator),
@@ -2561,7 +2540,7 @@ impl Store {
                 self.blobs.clone(),
                 crate::storage::maintenance::DeletionLimits::default(),
             )
-                .map_err(|err| err.to_string())?;
+            .map_err(|err| err.to_string())?;
             gc_worker
                 .run_v2_once(crate::util::now_millis())
                 .await

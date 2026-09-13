@@ -517,7 +517,8 @@ mod refusal_tests {
     #[test]
     fn expired_catalog_request_is_gone_and_cannot_be_retried() {
         let error = WriteError::from(crate::storage::catalog::CatalogError::refused(
-            crate::storage::catalog::CatalogRefusal::RequestExpired, "arbitrary wording",
+            crate::storage::catalog::CatalogRefusal::RequestExpired,
+            "arbitrary wording",
         ));
         assert_eq!(status_of(&error), 410);
         assert!(!error.is_temporary());

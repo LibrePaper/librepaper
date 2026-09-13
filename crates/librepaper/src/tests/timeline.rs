@@ -590,16 +590,38 @@ async fn cached_checkpoint_rechecks_labels_access_and_manifest_membership() {
             .0,
         404
     );
-    // Retire authoritative catalogue membership while storage and the
-    // resident manifest/source caches still contain this checkpoint.
-    server
-        .instance
-        .store
-        .catalog
-        .as_ref()
-        .unwrap()
-        .delete_checkpoint(&slug, &sha)
+    // V2 protects labelled points and the current head. Make a new head,
+    // remove the old label, and let retention remove catalogue membership
+    // while the cached source bytes remain available.
+    let room = server.instance.rooms.get(&slug).await;
+    room.set_source("# A newer head", "markdown").await.unwrap();
+    room.checkpoint_now("fixture", TEST_PUBLISHER)
+        .await
         .unwrap();
+    assert_eq!(
+        patch_label(&owner, &server.url, &slug, &sha, "").await.0,
+        200
+    );
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE documents SET retention_json=?1,retention_revision=retention_revision+1,
+             retention_due_at=0 WHERE slug=?2",
+                (
+                    r#"{"version":1,"profile":"custom","maxRoutineCount":0}"#,
+                    &slug,
+                ),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let now = crate::util::now_millis();
+    catalog
+        .schedule_document_balanced(&slug, now, Default::default())
+        .unwrap();
+    catalog.run_retention_pass(now + 86_400_001, 32).unwrap();
+    assert!(catalog.checkpoint(&slug, &sha).unwrap().is_none());
     assert_eq!(
         get_checkpoint(&owner, &server.url, &slug, &sha).await.0,
         404

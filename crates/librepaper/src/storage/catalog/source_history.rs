@@ -328,21 +328,34 @@ impl Catalog {
         }
         self.immediate(|tx| {
             let expires_at = source_lease_deadline(tx, storage_id, operation_id, now, expires_at)?;
-            let generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0))?;
+            let generation: String = tx.query_row(
+                "SELECT writer_generation FROM server_state WHERE id=1",
+                [],
+                |r| r.get(0),
+            )?;
             let invalid: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM object_leases l JOIN objects o
                    ON o.document_id=l.document_id AND o.id=l.object_id
                  WHERE l.document_id=?1 AND l.operation_id=?2 AND l.purpose='write'
                    AND (l.writer_generation<>?3 OR l.expires_at<=?4 OR o.state='deleting'))",
-                params![document_id.as_str(), operation.as_str(), generation, now], |r| r.get(0),
+                params![document_id.as_str(), operation.as_str(), generation, now],
+                |r| r.get(0),
             )?;
-            if invalid { return Err(CatalogError::Conflict("source-history lease has expired or changed".into())); }
+            if invalid {
+                return Err(CatalogError::Conflict(
+                    "source-history lease has expired or changed".into(),
+                ));
+            }
             let changed = tx.execute(
                 "UPDATE object_leases SET expires_at=?1 WHERE document_id=?2 AND operation_id=?3
                  AND purpose='write' AND writer_generation=?4 AND expires_at>?5",
                 params![expires_at, document_id.as_str(), operation.as_str(), generation, now],
             ).map_err(CatalogError::from)?;
-            if changed == 0 { return Err(CatalogError::Conflict("source-history lease has expired".into())); }
+            if changed == 0 {
+                return Err(CatalogError::Conflict(
+                    "source-history lease has expired".into(),
+                ));
+            }
             Ok(())
         })
     }
@@ -357,7 +370,13 @@ impl Catalog {
         let operation = OperationId::new(operation_id.to_owned())
             .map_err(|e| CatalogError::Invalid(e.to_string()))?;
         let now = unix_millis();
-        source_lease_deadline(tx, storage_id, operation_id, now, now.saturating_add(120_000))?;
+        source_lease_deadline(
+            tx,
+            storage_id,
+            operation_id,
+            now,
+            now.saturating_add(120_000),
+        )?;
         let active: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM object_leases l JOIN operations o
                  ON o.document_id=l.document_id AND o.id=l.operation_id
@@ -529,7 +548,11 @@ impl Catalog {
 /// Resolve the finite protection window under the same transaction as the
 /// lease write. A changed owner lifecycle or writer invalidates renewal.
 fn source_lease_deadline(
-    tx: &Transaction<'_>, document_id: &str, operation_id: &str, now: i64, requested: i64,
+    tx: &Transaction<'_>,
+    document_id: &str,
+    operation_id: &str,
+    now: i64,
+    requested: i64,
 ) -> CatalogResult<i64> {
     let deadline: Option<i64> = tx.query_row(
         "SELECT op.work_expires_at FROM operations op
@@ -541,8 +564,13 @@ fn source_lease_deadline(
            AND d.status IN ('creating','active') AND a.status='active'",
         params![document_id, operation_id], |row| row.get::<_, Option<i64>>(0),
     ).optional()?.flatten();
-    let deadline = deadline.ok_or_else(|| CatalogError::Conflict("source operation is no longer live".into()))?;
+    let deadline = deadline
+        .ok_or_else(|| CatalogError::Conflict("source operation is no longer live".into()))?;
     let expiry = requested.min(now.saturating_add(120_000)).min(deadline);
-    if expiry <= now { return Err(CatalogError::Conflict("source operation has expired".into())); }
+    if expiry <= now {
+        return Err(CatalogError::Conflict(
+            "source operation has expired".into(),
+        ));
+    }
     Ok(expiry)
 }

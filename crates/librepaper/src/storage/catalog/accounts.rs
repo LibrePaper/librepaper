@@ -156,38 +156,6 @@ impl Catalog {
             .optional()?
             .ok_or(CatalogError::NotFound)
     }
-    pub(super) fn owner_admission_bytes_on(
-        connection: &Connection,
-        owner_id: Option<&str>,
-        _owner_key: &str,
-    ) -> CatalogResult<(i64, bool)> {
-        let owner = owner_id
-            .ok_or_else(|| CatalogError::Invalid("every v2 document requires an account".into()))?;
-        Ok((
-            connection.query_row(
-                "SELECT stored_bytes+reserved_bytes
-                    FROM accounts
-                    WHERE id=?1",
-                [owner],
-                |row| row.get(0),
-            )?,
-            true,
-        ))
-    }
-    pub(super) fn deployment_admission_bytes_on(
-        connection: &Connection,
-    ) -> CatalogResult<(i64, bool)> {
-        Ok((
-            connection.query_row(
-                "SELECT stored_bytes+reserved_bytes
-                    FROM server_state
-                    WHERE id=1",
-                [],
-                |row| row.get(0),
-            )?,
-            true,
-        ))
-    }
     /// Advisory remaining allocation headroom. Existing immutable bytes stay
     /// charged throughout a replacement and cannot be subtracted prospectively.
     pub fn physical_room_for(
@@ -223,35 +191,6 @@ impl Catalog {
                 global.min(owner_limit.saturating_sub(owner)).max(0)
             }))
         })
-    }
-    pub(super) fn enforce_physical_quota_on(
-        connection: &Connection,
-        slug: &str,
-        owner_limit: i64,
-        total_limit: i64,
-    ) -> CatalogResult<()> {
-        let (owner_bytes, global_bytes): (i64, i64) = connection.query_row(
-            "SELECT a.stored_bytes+a.reserved_bytes,s.stored_bytes+s.reserved_bytes
-                    FROM documents d
-                    JOIN accounts a ON a.id=d.owner_id
-                    CROSS JOIN server_state s
-                    WHERE d.slug=?1",
-            [slug],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        if owner_limit >= 0 && owner_bytes > owner_limit {
-            return Err(CatalogError::refused(
-                CatalogRefusal::OwnerBytes,
-                "owner storage quota exceeded",
-            ));
-        }
-        if total_limit >= 0 && global_bytes > total_limit {
-            return Err(CatalogError::refused(
-                CatalogRefusal::DeploymentBytes,
-                "deployment storage quota exceeded",
-            ));
-        }
-        Ok(())
     }
 
     /// Advisory bytes that would lose their final checkpoint reference. This
@@ -337,7 +276,13 @@ impl Catalog {
         payload: &str,
         updated_at: i64,
     ) -> CatalogResult<QuotaPreferencesRecord> {
-        self.save_quota_preferences_in_session(account_id, Some(generation), expected, payload, updated_at)
+        self.save_quota_preferences_in_session(
+            account_id,
+            Some(generation),
+            expected,
+            payload,
+            updated_at,
+        )
     }
 
     fn save_quota_preferences_in_session(
@@ -715,7 +660,7 @@ impl Catalog {
             if status != "erasing" {
                 return Err(CatalogError::Conflict("account is not erasing".into()));
             }
-            update_erasure_progress(&tx, id, stage, cursor, updated_at)?;
+            update_erasure_progress(tx, id, stage, cursor, updated_at)?;
             Ok(limit.min(MAX_ERASURE_BATCH))
         })
     }
@@ -789,22 +734,9 @@ impl Catalog {
                             |row| row.get::<_, String>(0),
                         )?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
-                    let last = rows.last().cloned();
+                    let mut last = None;
                     let mut changed = 0u32;
                     for document_id in rows.drain(..) {
-                        let updated = tx.execute(
-                            "UPDATE documents SET status='deleting', source_generation=source_generation+1,
-                             publication_id=NULL,
-                             publication_object_id=NULL, published_at=NULL,
-                             current_checkpoint_id=NULL, journal_base_object_id=NULL,
-                             journal_base_sequence=0
-                             WHERE id=?1 AND owner_id=?2 AND status IN ('active','creating')",
-                            params![document_id, id],
-                        )?;
-                        changed = changed.saturating_add(updated as u32);
-                        if updated == 0 {
-                            continue;
-                        }
                         // The v2 deletion worker settles this durable
                         // erase_document receipt after object/journal
                         // reclamation. Keep it distinct from ordinary
@@ -821,6 +753,16 @@ impl Catalog {
                             .optional()
                             .map_err(CatalogError::from)?;
                         if existing.is_none() {
+                            // Preserve the work already admitted if the global
+                            // prepared-operation budget fills during this batch.
+                            // Leave the next document untouched and retry it once
+                            // the document worker has released capacity.
+                            match Self::admit_operation_slot(tx, Some(&document_id), "erase_document")
+                            {
+                                Ok(()) => {}
+                                Err(CatalogError::Busy) if changed > 0 => break,
+                                Err(error) => return Err(error),
+                            }
                             let digest = Sha256::digest(document_id.as_bytes());
                             let digest_hex = hex::encode(digest);
                             let request_key = format!("erase-document:{}", &digest_hex[..32]);
@@ -839,7 +781,6 @@ impl Catalog {
                                 "document_id": document_id,
                             })
                             .to_string();
-                            Self::admit_operation_slot(tx, Some(&document_id), "erase_document")?;
                             tx.execute(
                                 "INSERT INTO operations
                                  (id,document_id,actor_key,request_key,kind,request_digest,
@@ -857,6 +798,17 @@ impl Catalog {
                                 ],
                             )?;
                         }
+                        let updated = tx.execute(
+                            "UPDATE documents SET status='deleting', source_generation=source_generation+1,
+                             publication_id=NULL,
+                             publication_object_id=NULL, published_at=NULL,
+                             current_checkpoint_id=NULL, journal_base_object_id=NULL,
+                             journal_base_sequence=0
+                             WHERE id=?1 AND owner_id=?2 AND status IN ('active','creating')",
+                            params![document_id, id],
+                        )?;
+                        changed = changed.saturating_add(updated as u32);
+                        last = Some(document_id);
                     }
                     (
                         last.map(|document_id| serde_json::json!([document_id]).to_string()),
@@ -1419,7 +1371,7 @@ impl Catalog {
             };
             let n = n_and_cursor.1;
             let next_cursor = n_and_cursor.0;
-            update_erasure_progress(&tx, id, stage, next_cursor.as_deref(), updated_at)?;
+            update_erasure_progress(tx, id, stage, next_cursor.as_deref(), updated_at)?;
             Ok(n)
         })
     }

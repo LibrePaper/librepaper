@@ -1,39 +1,44 @@
-//! Completion-first local backup and restore.
+//! Legacy backup verification for conversion and historical format tests.
 //!
-//! A backup is not advertised by the presence of copied objects.  The
-//! manifest is written last and `complete` is set only after every requested
-//! object has been read back and its digest checked.  This makes interrupted
-//! copies ordinary private garbage that can be cleaned up, rather than a
-//! recovery point that may silently lose acknowledged work.
+//! Conversion verifies the completed manifest and every referenced object
+//! before replacing old state. Live backup creation and restore use
+//! `backup_v2`; the old blob-copy protocol remains only in its format tests.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
-use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
+#[cfg(test)]
+use std::path::PathBuf;
+use std::path::{Component, Path};
 
+#[cfg(test)]
 use fs2::FileExt;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
 use crate::config::DeploymentPaths;
-use crate::storage::blob::{BlobError, BlobStore};
+use crate::storage::blob::BlobError;
+#[cfg(test)]
+use crate::storage::blob::BlobStore;
 use crate::storage::catalog::Catalog;
 use crate::storage::journal::ManifestShard;
 
+#[cfg(test)]
 pub const BACKUP_FORMAT: u16 = 1;
 pub const MAX_BACKUP_OBJECTS: usize = 1_000_000;
 pub const BACKUP_MANIFEST_NAME: &str = "manifest.json";
 /// The blob-key prefix a `BackupOwnership` is exclusive over.
+#[cfg(test)]
 pub const BACKUP_NAMESPACE: &str = "recovery/";
 pub const LOCAL_BACKUP_FORMAT: u16 = 1;
-pub const LOCAL_BACKUP_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// A backup must leave room for SQLite/VACUUM scratch files and an interrupted
 /// operation on the primary volume. This is an internal guardrail, not a
 /// second operator-facing storage quota.
 pub const BACKUP_TEMP_RESERVATION_BYTES: u64 = 64 * 1024 * 1024;
 pub const BACKUP_EMERGENCY_HEADROOM_BYTES: u64 = 256 * 1024 * 1024;
-pub const BACKUP_WARNING_COUNT: usize = 10;
 
 #[derive(Debug)]
 pub enum BackupError {
@@ -214,6 +219,7 @@ fn local_manifest_valid(manifest: &LocalBackupManifest) -> BackupResult<()> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(test)]
 pub struct BackupObject {
     pub source_key: String,
     pub backup_key: String,
@@ -222,6 +228,7 @@ pub struct BackupObject {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(test)]
 pub struct BackupManifest {
     pub format_version: u16,
     pub backup_id: String,
@@ -236,6 +243,7 @@ pub struct BackupManifest {
     pub objects: Vec<BackupObject>,
 }
 
+#[cfg(test)]
 impl BackupManifest {
     fn validate(&self) -> BackupResult<()> {
         if self.format_version != BACKUP_FORMAT
@@ -278,6 +286,7 @@ impl BackupManifest {
     }
 }
 
+#[cfg(test)]
 fn backup_prefix(backup_id: &str) -> BackupResult<String> {
     if backup_id.is_empty()
         || backup_id.contains('/')
@@ -309,6 +318,7 @@ fn backup_prefix(backup_id: &str) -> BackupResult<String> {
 /// behind. It says nothing about an unrelated process on another host writing
 /// the same bucket, which stays unsupported: distributed ownership would
 /// need conditional claims, fencing and stale-owner recovery.
+#[cfg(test)]
 pub struct BackupOwnership {
     /// Held for the lifetime of the capability; dropping it releases the lock.
     _writer_lock: File,
@@ -319,6 +329,7 @@ pub struct BackupOwnership {
     in_flight: std::sync::Mutex<HashSet<String>>,
 }
 
+#[cfg(test)]
 impl BackupOwnership {
     /// Take the deployment writer lock and with it authority over the backup
     /// namespace. Fails while any other process holds the lock.
@@ -359,11 +370,13 @@ impl BackupOwnership {
 
 /// The in-process half of ownership for one backup id, released on drop so a
 /// failed or cancelled attempt does not strand the id.
+#[cfg(test)]
 struct BackupClaim<'a> {
     owner: &'a BackupOwnership,
     backup_id: String,
 }
 
+#[cfg(test)]
 impl Drop for BackupClaim<'_> {
     fn drop(&mut self) {
         self.owner
@@ -374,6 +387,7 @@ impl Drop for BackupClaim<'_> {
     }
 }
 
+#[cfg(test)]
 fn backup_object_key(backup_id: &str, source_key: &str) -> BackupResult<String> {
     let prefix = backup_prefix(backup_id)?;
     if source_key.is_empty() || source_key.starts_with("recovery/") || source_key.contains("..") {
@@ -390,52 +404,7 @@ fn digest(body: &[u8]) -> String {
     hex::encode(Sha256::digest(body))
 }
 
-/// Durable objects reachable from the current catalogue. This graph is
-/// preserved verbatim in every recovery point so source history and in-flight
-/// source writes remain restorable.
-fn catalog_referenced_object_keys(connection: &Connection) -> BackupResult<HashSet<String>> {
-    let mut referenced = HashSet::new();
-    for sql in [
-        "SELECT object_key FROM checkpoint_asset_refs",
-        "SELECT object_key FROM source_history_objects",
-        "SELECT object_key FROM source_history_write_leases",
-        "SELECT object_key FROM object_accounting",
-    ] {
-        let mut statement = connection
-            .prepare(sql)
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        for row in rows {
-            referenced.insert(row.map_err(|error| BackupError::Storage(error.to_string()))?);
-        }
-    }
-    Ok(referenced)
-}
-
-/// Check every catalogue-reachable object before copying a recovery point.
-fn verify_referenced_object_graph(objects_path: &Path, keys: &HashSet<String>) -> BackupResult<()> {
-    for key in keys {
-        if !local_relative_valid(key) {
-            return Err(BackupError::Corrupt(format!(
-                "input graph references unsafe object key {key:?}"
-            )));
-        }
-        let path = objects_path.join(key);
-        let metadata = fs::symlink_metadata(&path).map_err(|error| {
-            BackupError::Corrupt(format!("input graph object {}: {error}", path.display()))
-        })?;
-        if !metadata.file_type().is_file() {
-            return Err(BackupError::Corrupt(format!(
-                "input graph object is not a regular file: {}",
-                path.display()
-            )));
-        }
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 fn local_available_space(path: &Path) -> BackupResult<u64> {
     fs2::available_space(path).map_err(|error| BackupError::Storage(error.to_string()))
 }
@@ -444,10 +413,12 @@ fn local_available_space(path: &Path) -> BackupResult<u64> {
 /// free-space observation and reservation are held together for the complete
 /// operation, so two backup/restore workers cannot both spend the same
 /// temporary headroom between their checks.
+#[cfg(test)]
 struct CapacityReservation {
     _locks: Vec<(PathBuf, File)>,
 }
 
+#[cfg(test)]
 impl CapacityReservation {
     /// Release one directory's admission lock after its scratch work is
     /// complete, while retaining the destination lock for the copy itself.
@@ -459,61 +430,7 @@ impl CapacityReservation {
     }
 }
 
-/// Take the live-volume lock only for one destination write.  A backup that
-/// shares a filesystem with its source checks the emergency margin immediately
-/// before each write, so concurrent accepted blob writes can proceed between
-/// payload files without allowing this copy to spend that margin unchecked.
-fn reserve_payload_write(path: &Path, bytes: u64, purpose: &str) -> BackupResult<File> {
-    let path = path
-        .canonicalize()
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    let lock_path = path.join(".librepaper-capacity.lock");
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    lock.lock_exclusive()
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    let required = bytes
-        .saturating_add(BACKUP_TEMP_RESERVATION_BYTES)
-        .saturating_add(BACKUP_EMERGENCY_HEADROOM_BYTES);
-    let available = local_available_space(&path)?;
-    if available < required {
-        return Err(BackupError::Invalid(format!(
-            "{purpose} requires {required} bytes, but only {available} bytes are available"
-        )));
-    }
-    Ok(lock)
-}
-
-fn write_payload(destination: &Path, body: &[u8], live_root: Option<&Path>) -> BackupResult<()> {
-    let _live_lock = live_root
-        .map(|root| reserve_payload_write(root, body.len() as u64, "backup payload"))
-        .transpose()?;
-    durable_write(destination, body)
-}
-
-fn copy_record_with_capacity(
-    source_root: &Path,
-    destination_root: &Path,
-    record: &LocalFile,
-    live_root: Option<&Path>,
-) -> BackupResult<()> {
-    let source = source_root.join(&record.relative);
-    let destination = destination_root.join(&record.relative);
-    let body = fs::read(&source).map_err(|error| BackupError::Storage(error.to_string()))?;
-    if body.len() as u64 != record.length || digest(&body) != record.digest {
-        return Err(BackupError::Corrupt(format!(
-            "source file {} changed during backup",
-            source.display()
-        )));
-    }
-    write_payload(&destination, &body, live_root)
-}
-
+#[cfg(test)]
 fn reserve_capacity(
     path: &Path,
     required: u64,
@@ -527,6 +444,7 @@ fn reserve_capacity(
 /// space check, so a backup whose source and destination share a volume cannot
 /// spend the same headroom twice. Lock paths are ordered to keep two
 /// operations from deadlocking when they name the directories in reverse.
+#[cfg(test)]
 fn reserve_capacities(
     requests: &[(&Path, u64)],
     purpose: &str,
@@ -584,6 +502,7 @@ fn reserve_capacities(
     Ok(CapacityReservation { _locks: held })
 }
 
+#[cfg(test)]
 fn capacity_volume_key(path: &Path) -> BackupResult<String> {
     #[cfg(unix)]
     {
@@ -598,6 +517,7 @@ fn capacity_volume_key(path: &Path) -> BackupResult<String> {
     }
 }
 
+#[cfg(test)]
 pub struct BackupRequest<'a> {
     pub backup_id: &'a str,
     pub deployment_id: &'a str,
@@ -722,6 +642,7 @@ pub async fn read_manifest(blobs: &dyn BlobStore, backup_id: &str) -> BackupResu
     Ok(manifest)
 }
 
+#[cfg(test)]
 async fn verify_objects(blobs: &dyn BlobStore, manifest: &BackupManifest) -> BackupResult<()> {
     manifest.validate()?;
     for object in &manifest.objects {
@@ -802,50 +723,7 @@ pub async fn remove_incomplete_backup(
     Ok(count)
 }
 
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-fn durable_write(path: &Path, bytes: &[u8]) -> BackupResult<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| BackupError::Invalid("backup file has no parent".into()))?;
-    create_private_dir_all(parent).map_err(|error| BackupError::Storage(error.to_string()))?;
-    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-    write_private_file(&temporary, bytes)
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    let file = File::open(&temporary).map_err(|error| BackupError::Storage(error.to_string()))?;
-    file.sync_all()
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    fs::rename(&temporary, path).map_err(|error| BackupError::Storage(error.to_string()))?;
-    DeploymentPaths::protect_file(path).map_err(BackupError::Storage)?;
-    File::open(parent)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    Ok(())
-}
-
-fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true).mode(0o600);
-        let mut file = options.open(path)?;
-        std::io::Write::write_all(&mut file, bytes)?;
-        file.sync_all()
-    }
-    #[cfg(not(unix))]
-    {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        std::io::Write::write_all(&mut file, bytes)?;
-        file.sync_all()
-    }
-}
-
+#[cfg(test)]
 fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
     if path.as_os_str().is_empty() || path == Path::new(".") {
         return Ok(());
@@ -872,86 +750,7 @@ fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn protect_tree_directories(root: &Path) -> BackupResult<()> {
-    protect_directory(root)?;
-    for entry in fs::read_dir(root).map_err(|error| BackupError::Storage(error.to_string()))? {
-        let entry = entry.map_err(|error| BackupError::Storage(error.to_string()))?;
-        let kind = entry
-            .file_type()
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        if kind.is_dir() {
-            protect_tree_directories(&entry.path())?;
-        }
-    }
-    Ok(())
-}
-
-fn file_record(root: &Path, relative: &str) -> BackupResult<LocalFile> {
-    if !local_relative_valid(relative) {
-        return Err(BackupError::Invalid("unsafe local backup path".into()));
-    }
-    let path = root.join(relative);
-    let metadata = fs::symlink_metadata(&path)
-        .map_err(|error| BackupError::Storage(format!("{}: {error}", path.display())))?;
-    if !metadata.file_type().is_file() {
-        return Err(BackupError::Invalid(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
-    let body = fs::read(&path).map_err(|error| BackupError::Storage(error.to_string()))?;
-    Ok(LocalFile {
-        relative: relative.to_owned(),
-        digest: digest(&body),
-        length: body.len() as u64,
-    })
-}
-
-fn copy_record(
-    source_root: &Path,
-    destination_root: &Path,
-    record: &LocalFile,
-) -> BackupResult<()> {
-    let source = source_root.join(&record.relative);
-    let destination = destination_root.join(&record.relative);
-    let body = fs::read(&source).map_err(|error| BackupError::Storage(error.to_string()))?;
-    if body.len() as u64 != record.length || digest(&body) != record.digest {
-        return Err(BackupError::Corrupt(format!(
-            "source file {} changed during backup",
-            source.display()
-        )));
-    }
-    durable_write(&destination, &body)
-}
-
-fn walk_regular_files(root: &Path, relative: &Path, output: &mut Vec<String>) -> BackupResult<()> {
-    let directory = root.join(relative);
-    let entries = fs::read_dir(&directory)
-        .map_err(|error| BackupError::Storage(format!("{}: {error}", directory.display())))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| BackupError::Storage(error.to_string()))?;
-        if entry.file_name().to_str() == Some(".librepaper-capacity.lock") {
-            continue;
-        }
-        let file_type = entry
-            .file_type()
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        let child = relative.join(entry.file_name());
-        if file_type.is_symlink() {
-            return Err(BackupError::Invalid(format!(
-                "symlink in local object store: {}",
-                root.join(&child).display()
-            )));
-        }
-        if file_type.is_dir() {
-            walk_regular_files(root, &child, output)?;
-        } else if file_type.is_file() {
-            output.push(child.to_string_lossy().replace('\\', "/"));
-        }
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 fn acquire_offline_lock(paths: &DeploymentPaths) -> BackupResult<File> {
     let parent = paths
         .writer_lock
@@ -979,18 +778,6 @@ fn verify_local_file(root: &Path, record: &LocalFile) -> BackupResult<()> {
             path.display()
         )));
     }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn protect_directory(path: &Path) -> BackupResult<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .map_err(|error| BackupError::Storage(format!("{}: {error}", path.display())))
-}
-
-#[cfg(not(unix))]
-fn protect_directory(_path: &Path) -> BackupResult<()> {
     Ok(())
 }
 
@@ -1431,294 +1218,6 @@ pub fn read_local_manifest(backup_dir: &Path) -> BackupResult<LocalBackupManifes
     Ok(manifest)
 }
 
-/// Create a complete local recovery point while holding the deployment writer
-/// lock. The SQLite image is produced with `VACUUM INTO`, so it is consistent
-/// even when the source database is in WAL mode. The completion manifest is
-/// published last.
-#[cfg(test)]
-pub fn create_local_backup(
-    paths: &DeploymentPaths,
-    catalog: &Catalog,
-    backup_root: &Path,
-    backup_id: &str,
-    created_at: i64,
-) -> BackupResult<LocalBackupManifest> {
-    let (catalog_path, objects_path, secrets_path, deployment_path) = (
-        &paths.catalog,
-        &paths.objects,
-        &paths.secrets,
-        &paths.deployment,
-    );
-    if !local_backup_id_valid(backup_id) || created_at < 0 {
-        return Err(BackupError::Invalid("invalid local backup request".into()));
-    }
-    let deployment_absolute = deployment_path
-        .canonicalize()
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    let backup_absolute = if backup_root.exists() {
-        backup_root
-            .canonicalize()
-            .map_err(|error| BackupError::Storage(error.to_string()))?
-    } else if backup_root.is_absolute() {
-        backup_root.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|error| BackupError::Storage(error.to_string()))?
-            .join(backup_root)
-    };
-    if backup_absolute.starts_with(&deployment_absolute) {
-        return Err(BackupError::Invalid(
-            "backup destination must not be inside the live deployment".into(),
-        ));
-    }
-    // The same lock the remote API requires as ownership evidence, held here
-    // for the whole offline copy.
-    let _ownership = BackupOwnership::acquire(paths)?;
-    paths.prepare_state().map_err(BackupError::Invalid)?;
-    let deployment_id = fs::read_to_string(&paths.deployment_identity)
-        .map_err(|error| BackupError::Storage(error.to_string()))?
-        .trim()
-        .to_owned();
-    if deployment_id.len() != 64 || !deployment_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(BackupError::Invalid(
-            "deployment identity is invalid".into(),
-        ));
-    }
-    fs::create_dir_all(objects_path).map_err(|error| BackupError::Storage(error.to_string()))?;
-    fs::create_dir_all(backup_root).map_err(|error| BackupError::Storage(error.to_string()))?;
-    let mut source_object_paths = Vec::new();
-    walk_regular_files(objects_path, Path::new(""), &mut source_object_paths)?;
-    let protected_inputs = catalog
-        .with_connection(|connection| {
-            catalog_referenced_object_keys(connection)
-                .map_err(|error| crate::storage::catalog::CatalogError::Invalid(error.to_string()))
-        })
-        .map_err(|error| BackupError::Storage(error.to_string()))?;
-    verify_referenced_object_graph(objects_path, &protected_inputs)?;
-    source_object_paths.retain(|path| !path.starts_with("recovery/") && path != "index.json");
-    let object_input_bytes = source_object_paths
-        .iter()
-        .map(|relative| {
-            fs::metadata(objects_path.join(relative))
-                .map(|metadata| metadata.len())
-                .map_err(|error| BackupError::Storage(error.to_string()))
-        })
-        .collect::<BackupResult<Vec<_>>>()?
-        .into_iter()
-        .sum::<u64>();
-    let fixed_input_bytes = fs::metadata(catalog_path)
-        .map_err(|error| BackupError::Storage(error.to_string()))?
-        .len()
-        .saturating_add(
-            fs::metadata(&paths.deployment_identity)
-                .map_err(|error| BackupError::Storage(error.to_string()))?
-                .len(),
-        );
-    let fixed_input_bytes = fixed_input_bytes.saturating_add(
-        ["session.key", "links.key"]
-            .into_iter()
-            .map(|name| {
-                fs::metadata(secrets_path.join(name))
-                    .map(|metadata| metadata.len())
-                    .map_err(|error| BackupError::Storage(error.to_string()))
-            })
-            .collect::<BackupResult<Vec<_>>>()?
-            .into_iter()
-            .sum::<u64>(),
-    );
-    let estimated_input_bytes = fixed_input_bytes.saturating_add(object_input_bytes);
-    // A backup destination may be on another volume, but the live deployment
-    // must retain its own emergency floor while VACUUM and encoding scratch
-    // files exist. Hold both locks through admission, then reacquire the live
-    // lock around each same-volume payload write so accepted blob writes can
-    // proceed between files.
-    let mut capacity = reserve_capacities(
-        &[
-            (
-                objects_path,
-                BACKUP_TEMP_RESERVATION_BYTES.saturating_add(BACKUP_EMERGENCY_HEADROOM_BYTES),
-            ),
-            (
-                backup_root,
-                estimated_input_bytes.saturating_add(BACKUP_TEMP_RESERVATION_BYTES),
-            ),
-        ],
-        "backup",
-    )?;
-    let target = backup_root.join(backup_id);
-    if target.exists() {
-        return Err(BackupError::Invalid("backup id already exists".into()));
-    }
-    let temporary = backup_root.join(format!(".{backup_id}.partial-{}", std::process::id()));
-    if temporary.exists() {
-        return Err(BackupError::Invalid("partial backup already exists".into()));
-    }
-    create_private_dir_all(&temporary).map_err(|error| BackupError::Storage(error.to_string()))?;
-    protect_directory(&temporary)?;
-    let live_payload_lock = if capacity_volume_key(
-        &objects_path
-            .canonicalize()
-            .map_err(|error| BackupError::Storage(error.to_string()))?,
-    )? == capacity_volume_key(
-        &backup_root
-            .canonicalize()
-            .map_err(|error| BackupError::Storage(error.to_string()))?,
-    )? {
-        Some(objects_path.as_path())
-    } else {
-        None
-    };
-    let result = (|| {
-        let snapshot_path = temporary.join("catalog.db");
-        let snapshot = catalog
-            .write_backup_snapshot(&snapshot_path)
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        File::open(&snapshot_path)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        let snapshot_connection = Connection::open(&snapshot_path)
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        snapshot_connection
-            .execute_batch("PRAGMA wal_checkpoint(FULL);")
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        // Check the live catalog against the same object tree that is about to
-        // be copied. This catches a missing object before a complete marker
-        // can be published, rather than producing a restore that fails later.
-        verify_catalog_references(&snapshot_connection, objects_path)?;
-        // VACUUM is the only live-volume allocation in this copy. Release its
-        // source lock before potentially long object reads so accepted blob
-        // writes can proceed; copy_record still verifies every source digest
-        // and fails closed if one races this backup.
-        capacity.release_path(objects_path);
-        let source_objects = source_object_paths
-            .iter()
-            .map(|relative| file_record(objects_path, relative))
-            .collect::<BackupResult<Vec<_>>>()?;
-        for record in &source_objects {
-            copy_record_with_capacity(
-                objects_path,
-                &temporary.join("objects"),
-                record,
-                live_payload_lock,
-            )?;
-        }
-        // Object records are rooted at the backup directory, while the source
-        // records above are rooted at the live object store.
-        let objects = source_objects
-            .into_iter()
-            .map(|record| LocalFile {
-                relative: format!("objects/{}", record.relative),
-                ..record
-            })
-            .collect();
-        let secret_names = ["session.key", "links.key"];
-        let mut secrets = Vec::new();
-        for name in secret_names {
-            let record = file_record(secrets_path, name)?;
-            let destination = temporary.join("secrets").join(name);
-            let body = fs::read(secrets_path.join(name))
-                .map_err(|error| BackupError::Storage(error.to_string()))?;
-            write_payload(&destination, &body, live_payload_lock)?;
-            DeploymentPaths::protect_file(&destination).map_err(BackupError::Storage)?;
-            secrets.push(LocalFile {
-                relative: format!("secrets/{name}"),
-                ..record
-            });
-        }
-        let identity_body = fs::read(&paths.deployment_identity)
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        let identity = LocalFile {
-            relative: "state/deployment.id".into(),
-            digest: digest(&identity_body),
-            length: identity_body.len() as u64,
-        };
-        write_payload(
-            &temporary.join(&identity.relative),
-            &identity_body,
-            live_payload_lock,
-        )?;
-        DeploymentPaths::protect_file(&temporary.join(&identity.relative))
-            .map_err(BackupError::Storage)?;
-        DeploymentPaths::local(&temporary)
-            .prepare_state()
-            .map_err(BackupError::Storage)?;
-        let catalog = file_record(&temporary, "catalog.db")?;
-        DeploymentPaths::protect_file(&temporary.join("catalog.db"))
-            .map_err(BackupError::Storage)?;
-        let manifest = LocalBackupManifest {
-            format_version: LOCAL_BACKUP_FORMAT,
-            backup_id: backup_id.to_owned(),
-            deployment_id,
-            schema_version: snapshot.schema_version,
-            head_revision: snapshot.head_revision,
-            restore_point: backup_id.to_owned(),
-            secret_versions: secrets.iter().map(|file| file.digest.clone()).collect(),
-            created_at,
-            expires_at: created_at.saturating_add(LOCAL_BACKUP_RETENTION_SECONDS),
-            complete: true,
-            catalog,
-            objects,
-            secrets,
-            identity,
-            logical_input_bytes: 0,
-            bytes_written: 0,
-            full_copy: true,
-        };
-        let logical_input_bytes = std::iter::once(&manifest.catalog)
-            .chain(std::iter::once(&manifest.identity))
-            .chain(manifest.objects.iter())
-            .chain(manifest.secrets.iter())
-            .map(|file| file.length)
-            .sum::<u64>();
-        let mut manifest = manifest;
-        manifest.logical_input_bytes = logical_input_bytes;
-        // The completion manifest is itself part of the backup payload. Its
-        // byte count changes the JSON length, so settle the self-reference
-        // before publishing it.
-        for _ in 0..4 {
-            let manifest_bytes = serde_json::to_vec(&manifest)
-                .map_err(|error| BackupError::Json(error.to_string()))?;
-            let written = logical_input_bytes.saturating_add(manifest_bytes.len() as u64);
-            if manifest.bytes_written == written {
-                break;
-            }
-            manifest.bytes_written = written;
-        }
-        local_manifest_valid(&manifest)?;
-        for file in std::iter::once(&manifest.catalog)
-            .chain(std::iter::once(&manifest.identity))
-            .chain(manifest.objects.iter())
-            .chain(manifest.secrets.iter())
-        {
-            verify_local_file(&temporary, file)?;
-        }
-        let body =
-            serde_json::to_vec(&manifest).map_err(|error| BackupError::Json(error.to_string()))?;
-        if manifest.bytes_written != logical_input_bytes.saturating_add(body.len() as u64) {
-            return Err(BackupError::Corrupt(
-                "backup manifest byte count changed while encoding".into(),
-            ));
-        }
-        write_payload(
-            &temporary.join(BACKUP_MANIFEST_NAME),
-            &body,
-            live_payload_lock,
-        )?;
-        protect_tree_directories(&temporary)?;
-        protect_directory(&temporary)?;
-        fs::rename(&temporary, &target).map_err(|error| BackupError::Storage(error.to_string()))?;
-        protect_directory(&target)?;
-        File::open(backup_root)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        Ok(manifest)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&temporary);
-    }
-    result
-}
-
 /// Return the digest of the same consistent SQLite image used by local
 /// backups.  Callers use this to compare a verified recovery point with the
 /// current catalogue, including authoritative rows that do not advance the
@@ -1783,205 +1282,11 @@ pub fn verify_local_backup(backup_dir: &Path) -> BackupResult<LocalBackupManifes
     Ok(manifest)
 }
 
-fn completed_backups_for_deployment(
-    backup_root: &Path,
-    deployment_id: &str,
-) -> BackupResult<usize> {
-    let entries = match fs::read_dir(backup_root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(BackupError::Storage(error.to_string())),
-    };
-    let mut count = 0usize;
-    for entry in entries {
-        let entry = entry.map_err(|error| BackupError::Storage(error.to_string()))?;
-        if !entry
-            .file_type()
-            .map_err(|error| BackupError::Storage(error.to_string()))?
-            .is_dir()
-        {
-            continue;
-        }
-        let Ok(manifest) = read_local_manifest(&entry.path()) else {
-            continue;
-        };
-        if manifest.deployment_id == deployment_id {
-            count = count.saturating_add(1);
-        }
-    }
-    Ok(count)
-}
-
-/// Restore into a new directory. Validation happens before any destination
-/// files are written; the populated temporary tree is renamed into place only
-/// after every digest and the SQLite integrity check succeeds.
-#[cfg(test)]
-pub fn restore_local_backup(
-    backup_dir: &Path,
-    destination: &Path,
-) -> BackupResult<LocalBackupManifest> {
-    let manifest = verify_local_backup(backup_dir)?;
-    let backup_catalog = Connection::open(backup_dir.join(&manifest.catalog.relative))
-        .map_err(|error| BackupError::Corrupt(error.to_string()))?;
-    let protected_inputs = catalog_referenced_object_keys(&backup_catalog)?;
-    verify_referenced_object_graph(&backup_dir.join("objects"), &protected_inputs)?;
-    if destination.exists() {
-        return Err(BackupError::Invalid(
-            "restore destination already exists".into(),
-        ));
-    }
-    let parent = destination
-        .parent()
-        .ok_or_else(|| BackupError::Invalid("restore destination has no parent".into()))?;
-    fs::create_dir_all(parent).map_err(|error| BackupError::Storage(error.to_string()))?;
-    let logical_input_bytes = if manifest.logical_input_bytes == 0 {
-        std::iter::once(&manifest.catalog)
-            .chain(std::iter::once(&manifest.identity))
-            .chain(manifest.objects.iter())
-            .chain(manifest.secrets.iter())
-            .map(|file| file.length)
-            .sum()
-    } else {
-        manifest.logical_input_bytes
-    };
-    let _capacity = reserve_capacity(
-        parent,
-        logical_input_bytes.saturating_add(BACKUP_TEMP_RESERVATION_BYTES),
-        "restore destination",
-    )?;
-    let temporary = parent.join(format!(".librepaper-restore-{}", std::process::id()));
-    if temporary.exists() {
-        return Err(BackupError::Invalid(
-            "restore temporary path already exists".into(),
-        ));
-    }
-    create_private_dir_all(&temporary).map_err(|error| BackupError::Storage(error.to_string()))?;
-    let result = (|| {
-        for file in std::iter::once(&manifest.catalog)
-            .chain(std::iter::once(&manifest.identity))
-            .chain(manifest.objects.iter())
-            .chain(manifest.secrets.iter())
-        {
-            copy_record(backup_dir, &temporary, file)?;
-            verify_local_file(&temporary, file)?;
-        }
-        let restored_catalog = Connection::open(temporary.join(&manifest.catalog.relative))
-            .map_err(|error| BackupError::Corrupt(error.to_string()))?;
-        Catalog::verify_backup_snapshot(&temporary.join(&manifest.catalog.relative))
-            .map_err(|error| BackupError::Corrupt(error.to_string()))?;
-        verify_catalog_references(&restored_catalog, &temporary.join("objects"))?;
-        protect_tree_directories(&temporary)?;
-        fs::rename(&temporary, destination)
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        File::open(parent)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| BackupError::Storage(error.to_string()))?;
-        DeploymentPaths::protect_file(&destination.join("catalog.db"))
-            .map_err(BackupError::Storage)?;
-        DeploymentPaths::protect_file(&destination.join("state/deployment.id"))
-            .map_err(BackupError::Storage)?;
-        for secret in ["session.key", "links.key"] {
-            DeploymentPaths::protect_file(&destination.join("secrets").join(secret))
-                .map_err(BackupError::Storage)?;
-        }
-        DeploymentPaths::local(destination)
-            .prepare_state()
-            .map_err(BackupError::Storage)?;
-        Ok(manifest)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&temporary);
-    }
-    result
-}
-
-#[cfg(test)]
-pub async fn backup_cli(
-    storage: crate::storage::StorageOptions,
-    output: String,
-    id: String,
-    policy: crate::config::BackupPolicy,
-) {
-    let paths = storage
-        .paths()
-        .unwrap_or_else(|error| crate::util::die(error));
-    let backup_id = if id.is_empty() {
-        format!("backup-{}", unix_now())
-    } else {
-        id
-    };
-    let catalog =
-        std::sync::Arc::new(Catalog::open(&paths.catalog).unwrap_or_else(|error| {
-            crate::util::die(format!("could not open catalogue: {error}"))
-        }));
-    let backup_paths = paths.clone();
-    let backup_root = PathBuf::from(&output);
-    let job_id = backup_id.clone();
-    let manifest = catalog
-        .execute_catalog(
-            backup_root.as_os_str().len() + job_id.len(),
-            move |catalog| {
-                create_local_backup(&backup_paths, catalog, &backup_root, &job_id, unix_now())
-                    .map_err(|error| {
-                        crate::storage::catalog::CatalogError::Invalid(error.to_string())
-                    })
-            },
-        )
-        .await
-        .unwrap_or_else(|error| crate::util::die(format!("could not create backup: {error}")));
-    catalog.shutdown().await;
-    let backup_count =
-        completed_backups_for_deployment(Path::new(&output), &manifest.deployment_id).unwrap_or(0);
-    println!(
-        "completed local backup {} at {}/{}; logical input bytes: {}; bytes written: {}; mode: new full copy",
-        manifest.backup_id,
-        output,
-        manifest.backup_id,
-        manifest.logical_input_bytes,
-        manifest.bytes_written,
-    );
-    if backup_count > policy.warning_count {
-        eprintln!(
-            "warning: backup destination contains {} uniquely named backups for this deployment (configured warning threshold: {})",
-            backup_count, policy.warning_count
-        );
-    }
-    // Keep the machine-readable completion event free of filesystem paths and
-    // secrets. Operators can correlate its safe counter with policy metadata.
-    println!(
-        "{}",
-        serde_json::json!({
-            "event": "backup_completed",
-            "backup_id": manifest.backup_id,
-            "deployment_id": manifest.deployment_id,
-            "counter": backup_count,
-            "completed_backups": backup_count,
-            "logical_input_bytes": manifest.logical_input_bytes,
-            "bytes_written": manifest.bytes_written,
-            "full_copy": manifest.full_copy,
-            "destination_class": policy.destination_class,
-            "frequency_seconds": policy.frequency,
-            "retained_count": policy.retained_count,
-            "encrypted": policy.encrypted,
-        })
-    );
-}
-
-#[cfg(test)]
-pub async fn restore_cli(backup: String, destination: String) {
-    let manifest = restore_local_backup(Path::new(&backup), Path::new(&destination))
-        .unwrap_or_else(|error| crate::util::die(format!("could not restore backup: {error}")));
-    println!("restored backup {} to {}", manifest.backup_id, destination);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{link_sealing_keyring_file, session_key_file};
     use crate::config::DeploymentPaths;
     use crate::storage::blob::{BlobInfo, BlobResult, BlobStore, BlobVersion, FsStore};
-    use crate::storage::catalog::{Account, Catalog};
-    use crate::storage::journal::{finalize_manifest_shard, ManifestShard};
     use async_trait::async_trait;
     use tempfile::TempDir;
     use tokio::sync::oneshot;
@@ -2429,9 +1734,4 @@ mod tests {
             b"keep me"
         );
     }
-
-
-
-
-
 }

@@ -65,37 +65,76 @@ async fn refinement_preserves_identity_and_refuses_stale_or_decided_proposals() 
 
 #[tokio::test]
 async fn refinement_requires_the_author_or_an_editor() {
-    let server = new_test_server().await;
+    let server = test_server_with(
+        crate::config::Configuration::default(),
+        crate::auth::Policy::parse("any"),
+        crate::auth::Policy::parse("anyone"),
+        true,
+    )
+    .await;
     let document = publish_with_source(&server.url).await;
-    let room = server.instance.rooms.get(&text(&document, "slug")).await;
-    let (created, ok) = room
-        .apply(
-            serde_json::from_value(json!({
-                "type":"comment","motivation":"editing","exact":"world","proposed":"Earth",
-                "source":{"path":"main.md","exact":"world"},"revision":"a".repeat(64)
-            }))
-            .unwrap(),
-            "",
-            "author-a",
-            "",
-            None,
-            false,
-        )
-        .await;
-    assert!(ok, "{created}");
-    let request: crate::room::Message = serde_json::from_value(json!({
+    let path = format!("/api/documents/{}/comments", text(&document, "slug"));
+    let (status, grant) = post(
+        &server.url,
+        &format!("/api/documents/{}/share", text(&document, "slug")),
+        json!({"link":{"role":"commenter","until":"never"}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{grant}");
+    let key = text(&grant, "key");
+    let edit_key = editor_key(&server.url, &text(&document, "slug")).await;
+    let revision = text(&document, "sha");
+    let author = session_as("author-a");
+    let stranger = session_as("author-b");
+    let (status, created) = post_keyed(
+        &author,
+        &edit_key,
+        &server.url,
+        &path,
+        json!({
+            "type":"comment","motivation":"editing","exact":"world","proposed":"Earth",
+            "source":{"path":"main.md","exact":"world"},"revision":revision
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{created}");
+    let request = json!({
         "type":"refine","comment_id":created["comment"]["id"],"proposed":"planet Earth",
-        "expected_proposed":"Earth","revision":"a".repeat(64)
-    }))
-    .unwrap();
-    let (denied, ok) = room
-        .apply(request.clone(), "", "author-b", "", None, false)
-        .await;
-    assert!(!ok, "{denied}");
-    let (_, ok) = room.apply(request.clone(), "", "", "", None, false).await;
-    assert!(!ok);
-    let (refined, ok) = room.apply(request, "", "author-a", "", None, false).await;
-    assert!(ok, "{refined}");
+        "expected_proposed":"Earth","revision":revision,
+        "request_id":crate::util::new_request_key()
+    });
+    let (status, denied) = post_keyed(&stranger, &key, &server.url, &path, request.clone()).await;
+    assert_ne!(status, 200, "{denied}");
+    let (status, denied) = post_keyed("", &key, &server.url, &path, request.clone()).await;
+    assert_ne!(status, 200, "{denied}");
+    let (status, refined) = post_keyed(&author, &key, &server.url, &path, request).await;
+    assert_eq!(status, 200, "{refined}");
+    // Authorship permits refinement, but a commenter link still cannot
+    // disclose editorial source fields in its response.
+    assert!(refined["comment"].get("proposed").is_none());
+    assert!(refined["comment"].get("source").is_none());
+    let (status, listing) = get_json_as(&session_as(TEST_PUBLISHER), &server.url, &path).await;
+    assert_eq!(status, 200, "{listing}");
+    assert_eq!(listing["comments"][0]["id"], created["comment"]["id"]);
+    assert_eq!(listing["comments"][0]["proposed"], "planet Earth");
+
+    let (status, refined) = post_keyed(
+        &stranger,
+        &edit_key,
+        &server.url,
+        &path,
+        json!({
+            "type":"refine","comment_id":created["comment"]["id"],
+            "proposed":"our planet","expected_proposed":"planet Earth",
+            "revision":revision,"request_id":crate::util::new_request_key()
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "an editor may refine another author's suggestion: {refined}"
+    );
+    assert_eq!(refined["comment"]["proposed"], "our planet");
 }
 
 #[tokio::test]
@@ -119,7 +158,11 @@ async fn assistant_batch_reports_partial_anchor_results_and_persists_pass() {
     )
     .await;
     assert_eq!(response.0, 200, "{}", response.1);
-    assert_eq!(response.1["results"][0]["status"], "created");
+    assert_eq!(
+        response.1["results"][0]["status"], "created",
+        "{}",
+        response.1
+    );
     assert_eq!(response.1["results"][1]["status"], "anchor-not-found");
     let pass = text(&response.1, "pass");
     let (status, snapshot) = get_json_keyed(
@@ -196,6 +239,25 @@ async fn assistant_revision_survives_restore_before_a_merge_accept() {
         .content_sha()
         .to_string();
 
+    // Complete retention before the suggestion protects its source point.
+    let catalog = server.instance.store.catalog.as_ref().expect("catalog");
+    catalog.with_connection(|connection| {
+        connection.execute("UPDATE documents SET retention_json=?1,retention_revision=retention_revision+1,retention_due_at=0 WHERE slug=?2",
+            rusqlite::params![json!({"version":1,"profile":"custom","maxRoutineCount":0}).to_string(), slug])?;
+        Ok(())
+    }).unwrap();
+    let now = crate::util::now_millis();
+    catalog
+        .schedule_document_balanced(&slug, now, Default::default())
+        .unwrap();
+    catalog.run_retention_pass(now + 86_400_001, 32).unwrap();
+    assert!(catalog.checkpoint(&slug, &old.sha).unwrap().is_none());
+    assert!(catalog.checkpoint(&slug, &revision).unwrap().is_none());
+    assert!(catalog
+        .checkpoint_by_content_sha(&slug, &revision)
+        .unwrap()
+        .is_some());
+
     let key = editor_key(&server.url, &slug).await;
     let (status, result) = post_keyed(
         &session_as(TEST_PUBLISHER),
@@ -219,18 +281,8 @@ async fn assistant_revision_survives_restore_before_a_merge_accept() {
     .await;
     assert_eq!(status, 200, "{result}");
     let comment_id = text(&result["results"][0], "id");
+    assert!(!comment_id.is_empty(), "{result}");
 
-    // Retain only the restore event for this content, and force the cold
-    // catalog lookup rather than finding the original publish event in memory.
-    let catalog = server.instance.store.catalog.as_ref().expect("catalog");
-    assert!(catalog
-        .delete_checkpoint(&slug, &old.sha)
-        .expect("prune original"));
-    assert!(catalog.checkpoint(&slug, &revision).unwrap().is_none());
-    assert!(catalog
-        .checkpoint_by_content_sha(&slug, &revision)
-        .unwrap()
-        .is_some());
     room.state.lock().await.manifest.checkpoints.clear();
 
     // The inserted word makes the original phrase unavailable, so acceptance

@@ -1,9 +1,22 @@
 //! Leased checkpoint reads. The closure and its leases are captured together,
 //! so retention and GC cannot remove bytes between lookup and a physical read.
-use super::{Catalog, CatalogError, CatalogResult, DocumentId, MutationAuthority, ObjectId, V2Object};
+use super::{
+    Catalog, CatalogError, CatalogResult, DocumentId, MutationAuthority, ObjectId, V2Object,
+};
 use crate::document::store::MutationActor;
 use rusqlite::{params, OptionalExtension};
 use std::sync::Arc;
+
+type SourceReadObjectRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    i64,
+);
 
 const LEASE_MS: i64 = 120_000;
 const MAX_CLOSURE: usize = 16_384;
@@ -89,9 +102,7 @@ impl CheckpointReadLease {
     pub async fn finish(mut self) -> Result<(), super::CatalogExecError> {
         let catalog = self.guard.catalog.clone();
         catalog
-            .execute_catalog(4096, move |_| {
-                self.guard.release()
-            })
+            .execute_catalog(4096, move |_| self.guard.release())
             .await
     }
 }
@@ -214,9 +225,10 @@ impl SourceAssetReadLease {
         self.guard.expires_at = 0;
         Ok(())
     }
-
 }
 
+// All persisted lease fences are rechecked together at this SQL boundary.
+#[allow(clippy::too_many_arguments)]
 fn renew_source_record(
     catalog: &Catalog,
     slug: &str,
@@ -231,74 +243,74 @@ fn renew_source_record(
     extend: bool,
 ) -> CatalogResult<()> {
     catalog.immediate(|tx| {
-            let authority = MutationAuthority {
-                account_id: &actor.account_id,
-                owner_key: &actor.owner_key,
-                generation: &actor.session_generation,
-                link_hash: &actor.link_hash,
-                policy_editor: actor.policy_editor,
-                automation: actor.automation,
-                unowned_publisher: actor.unowned_publisher,
-                execution_epoch: "",
-                agent_checkpoint: None,
-            };
-            if !Catalog::mutation_authorized_in_tx(tx, slug, authority, "editor")? {
-                return Err(CatalogError::Refused(
-                    super::CatalogRefusal::ActorRights,
-                    "source asset read authority changed".into(),
-                ));
-            }
-            let current_generation: String = tx.query_row(
-                "SELECT writer_generation FROM server_state WHERE id=1",
-                [],
-                |row| row.get(0),
-            )?;
-            if current_generation != lease_generation || now >= current_expiry {
-                return Err(CatalogError::Conflict("source asset read lease expired".into()));
-            }
-            if extend {
-                let changed = tx.execute(
-                    "UPDATE object_leases SET expires_at=?1
+        let authority = MutationAuthority {
+            account_id: &actor.account_id,
+            owner_key: &actor.owner_key,
+            generation: &actor.session_generation,
+            link_hash: &actor.link_hash,
+            policy_editor: actor.policy_editor,
+            automation: actor.automation,
+            unowned_publisher: actor.unowned_publisher,
+            execution_epoch: "",
+            agent_checkpoint: None,
+        };
+        if !Catalog::mutation_authorized_in_tx(tx, slug, authority, "editor")? {
+            return Err(CatalogError::Refused(
+                super::CatalogRefusal::ActorRights,
+                "source asset read authority changed".into(),
+            ));
+        }
+        let current_generation: String = tx.query_row(
+            "SELECT writer_generation FROM server_state WHERE id=1",
+            [],
+            |row| row.get(0),
+        )?;
+        if current_generation != lease_generation || now >= current_expiry {
+            return Err(CatalogError::Conflict(
+                "source asset read lease expired".into(),
+            ));
+        }
+        if extend {
+            let changed = tx.execute(
+                "UPDATE object_leases SET expires_at=?1
                        WHERE document_id=?2 AND object_id=?3 AND holder_id=?4
                          AND writer_generation=?5 AND expires_at>?6
                          AND EXISTS(SELECT 1 FROM objects
                                     WHERE document_id=?2 AND id=?3
                                       AND kind='asset' AND state='available')",
-                    rusqlite::params![
-                        expires,
-                        document_id,
-                        object_id,
-                        holder,
-                        lease_generation,
-                        now,
-                    ],
-                )?;
-                if changed != 1 {
-                    return Err(CatalogError::Conflict("source asset read lease was lost".into()));
-                }
-            } else {
-                let live: bool = tx.query_row(
-                    "SELECT EXISTS(
+                rusqlite::params![
+                    expires,
+                    document_id,
+                    object_id,
+                    holder,
+                    lease_generation,
+                    now,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(CatalogError::Conflict(
+                    "source asset read lease was lost".into(),
+                ));
+            }
+        } else {
+            let live: bool = tx.query_row(
+                "SELECT EXISTS(
                        SELECT 1 FROM object_leases l
                        JOIN objects o ON o.document_id=l.document_id AND o.id=l.object_id
                       WHERE l.document_id=?1 AND l.object_id=?2 AND l.holder_id=?3
                         AND l.writer_generation=?4 AND l.expires_at>?5
                         AND o.kind='asset' AND o.state='available')",
-                    rusqlite::params![
-                        document_id,
-                        object_id,
-                        holder,
-                        lease_generation,
-                        now,
-                    ],
-                    |row| row.get(0),
-                )?;
-                if !live {
-                    return Err(CatalogError::Conflict("source asset read lease was lost".into()));
-                }
+                rusqlite::params![document_id, object_id, holder, lease_generation, now,],
+                |row| row.get(0),
+            )?;
+            if !live {
+                return Err(CatalogError::Conflict(
+                    "source asset read lease was lost".into(),
+                ));
             }
-            Ok(())
-        })
+        }
+        Ok(())
+    })
 }
 impl std::ops::Deref for SourceAssetReadLease {
     type Target = ObjectReadLease;
@@ -314,7 +326,9 @@ impl std::ops::DerefMut for SourceAssetReadLease {
 impl PublicationReadLease {
     pub async fn finish(mut self) -> Result<(), super::CatalogExecError> {
         let catalog = self.guard.catalog.clone();
-        catalog.execute_catalog(4096, move |_| self.guard.release()).await
+        catalog
+            .execute_catalog(4096, move |_| self.guard.release())
+            .await
     }
 }
 impl std::ops::Deref for PublicationReadLease {
@@ -349,14 +363,18 @@ impl Catalog {
         now: i64,
     ) -> CatalogResult<SourceAssetReadLease> {
         if slug.is_empty() || slug.len() > 256 {
-            return Err(CatalogError::Invalid("invalid source asset document slug".into()));
+            return Err(CatalogError::Invalid(
+                "invalid source asset document slug".into(),
+            ));
         }
         if digest.len() != 64
             || !digest
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         {
-            return Err(CatalogError::Invalid("source asset digest must be lowercase SHA-256 hex".into()));
+            return Err(CatalogError::Invalid(
+                "source asset digest must be lowercase SHA-256 hex".into(),
+            ));
         }
         let expires_at = deadline(now)?;
         let holder = hex::encode(crate::auth::random_bytes(16));
@@ -379,7 +397,7 @@ impl Catalog {
                     "source asset read is not authorized".into(),
                 ));
             }
-            let selected: Option<(String, String, String, String, String, String, Option<i64>, i64)> = tx
+            let selected: Option<SourceReadObjectRow> = tx
                 .query_row(
                     "SELECT d.id,o.id,o.storage_key,o.kind,o.state,o.digest,o.byte_length,o.reserved_bytes
                        FROM documents d

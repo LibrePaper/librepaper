@@ -42,7 +42,10 @@ async fn delete_expired_removes_only_what_is_old() {
         .await;
         assert_eq!(status, 201, "fixture publication failed: {response}");
         let slug = text(&response, "slug");
-        assert!(!slug.is_empty(), "fixture publication omitted slug: {response}");
+        assert!(
+            !slug.is_empty(),
+            "fixture publication omitted slug: {response}"
+        );
         let catalog = server.instance.store.catalog.as_ref().unwrap();
         let document = catalog.document(&slug).unwrap().unwrap();
         let old_at = (now - age_days * 86_400) * 1_000;

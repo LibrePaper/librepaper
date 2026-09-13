@@ -80,42 +80,6 @@ impl SourceHistoryLeaseGuard {
         }
     }
 
-    /// Add objects discovered from an immutable checkpoint tree to the same
-    /// operation lease. The tree lease is installed before the first tree
-    /// read; extending it after the tree is known keeps the source plan
-    /// bounded without opening a second heartbeat/finish lifetime.
-    pub(super) async fn extend(
-        &self,
-        objects: Vec<crate::storage::catalog::SourceHistoryObject>,
-        created_at: i64,
-        expires_at: i64,
-    ) -> Result<(), WriteError> {
-        let input_bytes = self.storage_id.len()
-            + self.operation_id.len()
-            + DESCRIPTOR_BYTES
-            + objects
-                .iter()
-                .map(|object| object.object_key.len() + object.kind.len() + 16)
-                .sum::<usize>();
-        let storage_id = self.storage_id.clone();
-        let operation_id = self.operation_id.clone();
-        self.catalog
-            .execute_catalog(
-                input_bytes,
-                move |catalog| {
-                    catalog.begin_source_history_lease(
-                        &storage_id,
-                        &operation_id,
-                        &objects,
-                        created_at,
-                        expires_at,
-                    )
-                },
-            )
-            .await
-            .map_err(WriteError::from)
-    }
-
     pub(super) async fn finish(mut self) -> Result<(), WriteError> {
         if let Some(heartbeat) = self.heartbeat.take() {
             heartbeat.abort();
@@ -826,18 +790,15 @@ pub(super) async fn begin_source_history_lease(
     let lease_storage_id = storage_id.clone();
     let lease_operation_id = operation_id.clone();
     catalog
-        .execute_catalog(
-            input_bytes,
-            move |catalog| {
-                catalog.begin_source_history_lease(
-                    &lease_storage_id,
-                    &lease_operation_id,
-                    &objects,
-                    created_at,
-                    expires_at,
-                )
-            },
-        )
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog.begin_source_history_lease(
+                &lease_storage_id,
+                &lease_operation_id,
+                &objects,
+                created_at,
+                expires_at,
+            )
+        })
         .await
         .map_err(WriteError::from)?;
     Ok(SourceHistoryLeaseGuard::new(
@@ -909,10 +870,9 @@ pub(super) async fn read_source_object_sizes(
         let input_bytes =
             storage_id.len() + DESCRIPTOR_BYTES + keys.iter().map(String::len).sum::<usize>();
         let found = catalog
-            .execute_catalog(
-                input_bytes,
-                move |catalog| catalog.source_history_object_sizes(&storage_id, &keys),
-            )
+            .execute_catalog(input_bytes, move |catalog| {
+                catalog.source_history_object_sizes(&storage_id, &keys)
+            })
             .await
             .map_err(WriteError::from)?;
         sizes.extend(found);
@@ -1009,12 +969,9 @@ pub(super) async fn shed_checkpoints_to_limits(
     let input_bytes = slug.len() + DESCRIPTOR_BYTES + protected.len();
     let slug = slug.to_string();
     catalog
-        .execute_catalog(
-            input_bytes,
-            move |catalog| {
-                catalog.shed_checkpoints_to_limits(&slug, keep_count, ceiling, &protected)
-            },
-        )
+        .execute_catalog(input_bytes, move |catalog| {
+            catalog.shed_checkpoints_to_limits(&slug, keep_count, ceiling, &protected)
+        })
         .await
         .map_err(|error| error.to_string())
 }
@@ -1031,21 +988,18 @@ pub(super) async fn delete_checkpoints(
     let input_bytes = slug.len() + DESCRIPTOR_BYTES + shas.iter().map(String::len).sum::<usize>();
     let slug_owned = slug.to_string();
     let reported = catalog
-        .execute_catalog(
-            input_bytes,
-            move |catalog| {
-                // Source-history edges and their pending deletion handoff
-                // move with the checkpoint row in one SQLite transaction.
-                // The existing object worker keeps accounting until the
-                // physical delete is confirmed.
-                catalog.delete_checkpoints_with_source_history(
-                    &slug_owned,
-                    &shas,
-                    crate::util::now_unix(),
-                    crate::util::now_unix(),
-                )
-            },
-        )
+        .execute_catalog(input_bytes, move |catalog| {
+            // Source-history edges and their pending deletion handoff
+            // move with the checkpoint row in one SQLite transaction.
+            // The existing object worker keeps accounting until the
+            // physical delete is confirmed.
+            catalog.delete_checkpoints_with_source_history(
+                &slug_owned,
+                &shas,
+                crate::util::now_unix(),
+                crate::util::now_unix(),
+            )
+        })
         .await;
     match reported {
         Ok(removed) => removed,
@@ -1298,21 +1252,6 @@ pub(super) async fn count_catalog_comments(
         .map_err(|error| error.to_string())
 }
 
-/// Insert one comment with no request receipt.  Only the seeding path uses
-/// this; every request-serving insert carries a receipt.
-pub(super) async fn insert_comment_row(
-    catalog: &Arc<Catalog>,
-    row: crate::storage::catalog::Comment,
-) -> Result<i64, String> {
-    let input_bytes = comment_row_bytes(&row);
-    catalog
-        .execute_catalog(input_bytes, move |catalog| {
-            catalog.insert_comment(&row).map(|row| row.seq)
-        })
-        .await
-        .map_err(|error| error.to_string())
-}
-
 /// Insert one comment under its request receipt, which is what makes a retry
 /// of the same request return the first insert rather than a second comment.
 pub(super) async fn insert_comment_request(
@@ -1322,6 +1261,7 @@ pub(super) async fn insert_comment_request(
     digest: String,
     at: i64,
     actor: crate::document::store::MutationActor,
+    require_editor: bool,
 ) -> Result<(i64, String), crate::room::WriteError> {
     let input_bytes = comment_row_bytes(&row)
         + request_id.len()
@@ -1343,7 +1283,7 @@ pub(super) async fn insert_comment_request(
                         link_hash: &actor.link_hash,
                         policy_comment: actor.policy_editor,
                         automation: actor.automation,
-                        require_editor: false,
+                        require_editor,
                     },
                 )
                 .map(|row| (row.seq, row.created))
@@ -1467,13 +1407,92 @@ pub(super) async fn insert_reply_request(
         .map_err(crate::room::WriteError::from)
 }
 
-/// The suggestion-accept cluster, through the boundary.
-///
-/// Every one of these carries the acceptance receipt — the request id and the
-/// digest of what was asked for — so cancellation needs no completion hook
-/// here: a caller that disappears leaves a durable receipt, and the retry
-/// resumes from it rather than applying the proposal a second time. That is
-/// the same reconciliation the crash path already used.
+/// A dispatched receipt insertion can outlive its awaiting caller. Share the
+/// cleanup claim with the caller's guard so exactly one side aborts an empty
+/// receipt, while the catalogue predicate preserves any staged update.
+struct SuggestionBeginCleanup {
+    slug: String,
+    comment_id: String,
+    request_id: String,
+    digest: String,
+    actor: crate::document::store::MutationActor,
+    slot: Arc<ReservationSlot<()>>,
+    #[cfg(test)]
+    gate: Option<Arc<AcceptanceReceiptGate>>,
+}
+
+impl crate::storage::catalog::CatalogServiceCompletion for SuggestionBeginCleanup {
+    fn complete(
+        self: Box<Self>,
+        outcome: crate::storage::catalog::CatalogOutcome<'_>,
+        catalog: &Catalog,
+    ) {
+        if matches!(outcome, crate::storage::catalog::CatalogOutcome::Committed)
+            && self.slot.on_completion().is_some()
+        {
+            if let Err(error) = catalog.abort_unstaged_suggestion_accept(
+                &self.slug,
+                &self.comment_id,
+                &self.request_id,
+                &self.digest,
+                AnnotationAuthority {
+                    account_id: &self.actor.account_id,
+                    author_key: &self.actor.owner_key,
+                    generation: &self.actor.session_generation,
+                    link_hash: &self.actor.link_hash,
+                    policy_comment: self.actor.policy_editor,
+                    automation: self.actor.automation,
+                    require_editor: true,
+                },
+            ) {
+                eprintln!(
+                    "warning: could not release cancelled acceptance for {}: {error}",
+                    self.slug
+                );
+            }
+        }
+        #[cfg(test)]
+        if let Some(gate) = self.gate {
+            gate.completed.notify_one();
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct AcceptanceReceiptGate {
+    slug: String,
+    pub(crate) reached: tokio::sync::Notify,
+    pub(crate) completed: tokio::sync::Notify,
+    pub(crate) resume: std::sync::mpsc::Sender<()>,
+    receiver: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[cfg(test)]
+impl AcceptanceReceiptGate {
+    pub(crate) fn new(slug: &str) -> Arc<Self> {
+        let (resume, receiver) = std::sync::mpsc::channel();
+        Arc::new(Self {
+            slug: slug.into(),
+            reached: tokio::sync::Notify::new(),
+            completed: tokio::sync::Notify::new(),
+            resume,
+            receiver: std::sync::Mutex::new(receiver),
+        })
+    }
+    fn park(&self) {
+        self.reached.notify_one();
+        self.receiver
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("acceptance receipt test releases the dispatched job");
+    }
+}
+
+#[cfg(test)]
+pub(crate) static BEFORE_ACCEPTANCE_RECEIPT: std::sync::Mutex<Option<Arc<AcceptanceReceiptGate>>> =
+    std::sync::Mutex::new(None);
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn begin_suggestion_accept(
     catalog: &Arc<Catalog>,
@@ -1483,6 +1502,7 @@ pub(super) async fn begin_suggestion_accept(
     digest: &str,
     at: i64,
     actor: crate::document::store::MutationActor,
+    slot: Arc<ReservationSlot<()>>,
 ) -> Result<Option<crate::storage::catalog::Comment>, String> {
     let slug = slug.to_string();
     let comment_id = comment_id.to_string();
@@ -1494,26 +1514,61 @@ pub(super) async fn begin_suggestion_accept(
         + digest.len()
         + actor.account_id.len()
         + actor.session_generation.len()
+        + actor.owner_key.len()
+        + actor.link_hash.len()
         + DESCRIPTOR_BYTES;
+    #[cfg(test)]
+    let gate = BEFORE_ACCEPTANCE_RECEIPT
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|gate| gate.slug == slug)
+        .cloned();
+    #[cfg(test)]
+    let job_gate = gate.clone();
+    let cleanup = SuggestionBeginCleanup {
+        slug: slug.clone(),
+        comment_id: comment_id.clone(),
+        request_id: request_id.clone(),
+        digest: digest.clone(),
+        actor: actor.clone(),
+        slot: slot.clone(),
+        #[cfg(test)]
+        gate,
+    };
     catalog
-        .execute_catalog(input_bytes, move |catalog| {
-            catalog.begin_suggestion_accept_authorized(
-                &slug,
-                &comment_id,
-                &request_id,
-                &digest,
-                at.saturating_mul(1000),
-                crate::storage::catalog::AnnotationAuthority {
-                    account_id: &actor.account_id,
-                    author_key: &actor.owner_key,
-                    generation: &actor.session_generation,
-                    link_hash: &actor.link_hash,
-                    policy_comment: actor.policy_editor,
-                    automation: actor.automation,
-                    require_editor: true,
-                },
-            )
-        })
+        .reserve_execution(input_bytes.saturating_mul(2))
+        .await
+        .map_err(|error| error.to_string())?
+        .execute_catalog_with_completion(
+            move |catalog| {
+                #[cfg(test)]
+                if let Some(gate) = job_gate {
+                    gate.park();
+                }
+                let result = catalog.begin_suggestion_accept_authorized(
+                    &slug,
+                    &comment_id,
+                    &request_id,
+                    &digest,
+                    at.saturating_mul(1000),
+                    crate::storage::catalog::AnnotationAuthority {
+                        account_id: &actor.account_id,
+                        author_key: &actor.owner_key,
+                        generation: &actor.session_generation,
+                        link_hash: &actor.link_hash,
+                        policy_comment: actor.policy_editor,
+                        automation: actor.automation,
+                        require_editor: true,
+                    },
+                )?;
+                if result.is_none() {
+                    slot.record(());
+                }
+                Ok(result)
+            },
+            cleanup,
+        )
         .await
         .map_err(|error| error.to_string())
 }
@@ -1657,6 +1712,8 @@ pub(super) async fn stage_suggestion_accept_update(
 /// Record the accept checkpoint in the receipt and settle the comment, in one
 /// job: they were two transactions and remain two, but a caller that goes
 /// away between them no longer leaves the second unissued.
+// Keep the explicit fields at this authenticated transaction boundary.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn record_and_finish_suggestion_accept(
     catalog: &Arc<Catalog>,
     slug: &str,
@@ -1709,6 +1766,9 @@ pub(super) async fn record_and_finish_suggestion_accept(
         .map_err(|error| error.to_string())
 }
 
+// Keep the explicit fields at this authenticated transaction boundary.
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn finish_suggestion_accept(
     catalog: &Arc<Catalog>,
     slug: &str,
@@ -2198,41 +2258,28 @@ pub(super) async fn save_catalog_manifest_with_assets(
     let assets = assets.to_vec();
     let lease_operation = lease_operation.map(str::to_owned);
     catalog
-        .execute_catalog(
-            input_bytes,
-            move |catalog| {
-                // A publication has a prepared receipt.  Keep its checkpoint
-                // descriptor in that receipt until the final commit
-                // transaction; ordinary checkpoints retain the direct atomic
-                // insert path.
-                if catalog
-                    .document(&slug_owned)?
-                    .and_then(|document| document.pending_publication)
-                    .is_some()
+        .execute_catalog(input_bytes, move |catalog| {
+            // A publication has a prepared receipt.  Keep its checkpoint
+            // descriptor in that receipt until the final commit
+            // transaction; ordinary checkpoints retain the direct atomic
+            // insert path.
+            if catalog
+                .document(&slug_owned)?
+                .and_then(|document| document.pending_publication)
+                .is_some()
+            {
+                if actor
+                    .as_ref()
+                    .is_some_and(|actor| actor.agent_checkpoint.is_some())
                 {
-                    if actor
-                        .as_ref()
-                        .is_some_and(|actor| actor.agent_checkpoint.is_some())
-                    {
-                        return Err(crate::storage::catalog::CatalogError::Conflict(
-                            "publication must finish before agent checkpoint".into(),
-                        ));
-                    }
-                    if let Some(row) = rows.last() {
-                        catalog.stage_publication_checkpoint_with_sources_assets_and_quota(
-                            &slug_owned,
-                            row,
-                            actor.as_ref().map(OwnedAuthority::borrow),
-                            &sources,
-                            &assets,
-                            lease_operation.as_deref(),
-                            owner_limit,
-                            total_limit,
-                        )?;
-                    }
-                } else {
-                    catalog.insert_checkpoints_atomic_with_sources_assets_and_quota(
-                        &rows,
+                    return Err(crate::storage::catalog::CatalogError::Conflict(
+                        "publication must finish before agent checkpoint".into(),
+                    ));
+                }
+                if let Some(row) = rows.last() {
+                    catalog.stage_publication_checkpoint_with_sources_assets_and_quota(
+                        &slug_owned,
+                        row,
                         actor.as_ref().map(OwnedAuthority::borrow),
                         &sources,
                         &assets,
@@ -2241,9 +2288,19 @@ pub(super) async fn save_catalog_manifest_with_assets(
                         total_limit,
                     )?;
                 }
-                Ok(())
-            },
-        )
+            } else {
+                catalog.insert_checkpoints_atomic_with_sources_assets_and_quota(
+                    &rows,
+                    actor.as_ref().map(OwnedAuthority::borrow),
+                    &sources,
+                    &assets,
+                    lease_operation.as_deref(),
+                    owner_limit,
+                    total_limit,
+                )?;
+            }
+            Ok(())
+        })
         .await
         // A quota or a lost right refused here is exactly what the caller has
         // to tell a client apart; keep it typed rather than flattening it.

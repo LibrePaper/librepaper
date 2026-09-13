@@ -11,6 +11,37 @@ use crate::room::{Message, RoomSet, SourceAnchor};
 use crate::storage::blob::{self, BlobStore};
 use crate::storage::catalog::{Account, Catalog, MutationAuthority, NewDocument, OperationRequest};
 
+async fn recover_startup(store: &store::Store) {
+    crate::storage::maintenance_v2::recover_v2_startup(
+        store.catalog.as_ref().unwrap().as_ref(),
+        store.blobs.as_ref(),
+    )
+    .await
+    .expect("v2 startup recovery");
+}
+
+fn assert_no_pending_agent_operation(store: &store::Store) {
+    let pending: i64 = store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT count(*) FROM operations o JOIN documents d ON d.id=o.document_id
+             WHERE d.slug='agent-room' AND o.kind='agent_apply' AND o.state='prepared'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(
+        pending, 0,
+        "refused source edits must release their operation slot"
+    );
+}
+
 fn account() -> Account {
     Account {
         id: "acct-agent".into(),
@@ -79,18 +110,30 @@ async fn room_fixture_config(
             .expect("store"),
     );
     store
-        .put(Publication {
-            slug: "agent-room".into(),
-            source: "A".into(),
-            source_format: "markdown".into(),
-            owner: "agent".into(),
-            owner_id: "acct-agent".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            Publication {
+                slug: "agent-room".into(),
+                source: "A".into(),
+                source_format: "markdown".into(),
+                owner: "agent".into(),
+                owner_id: "acct-agent".into(),
+                ..Default::default()
+            },
+            store::MutationActor {
+                account_id: "acct-agent".into(),
+                session_generation: "gen-1".into(),
+                policy_editor: true,
+                owner_key: String::new(),
+                link_hash: String::new(),
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
         .await
         .expect("publication");
     let rooms = RoomSet::new(blobs, config);
     rooms.attach_store(store.clone());
+    super::room::attach_fixture_journal(&rooms, &store, store.blobs.clone());
     let room = rooms.get("agent-room").await;
     room.set_main_file("A", "markdown", "main.md")
         .await
@@ -123,7 +166,7 @@ fn source_request(
     PatchRequest {
         operation: OperationKey {
             epoch: "epoch-1".into(),
-            id: key_id.into(),
+            id: crate::util::new_request_key(),
         },
         base_tree: room_tree.digest(),
         consistency: Consistency::ExactTree,
@@ -137,25 +180,17 @@ fn source_request(
             replacement: replacement.into(),
             affinity: Affinity::Before,
         }],
-        request_digest: format!("digest-{key_id}"),
+        request_digest: {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(key_id.as_bytes()))
+        },
         acceptance,
     }
 }
 
-fn marker_mac_for_test(secret: &str, digest: &str, after_tree: &str) -> String {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC key");
-    mac.update(b"librepaper-agent-marker-v1\0");
-    mac.update(digest.as_bytes());
-    mac.update(&[0]);
-    mac.update(after_tree.as_bytes());
-    hex::encode(mac.finalize().into_bytes())
-}
-
-async fn prepare_durable_agent_effect(
+async fn prepare_uncommitted_agent_effect(
     revoked: bool,
-    marked: bool,
+    staged: bool,
 ) -> (
     tempfile::TempDir,
     Arc<store::Store>,
@@ -168,7 +203,11 @@ async fn prepare_durable_agent_effect(
     let before_state = room.open_state(None).await.0;
     room.set_source("B", "markdown").await.expect("edit source");
     let after_tree = agent::room_tree(&room).await;
-    let after_state = room.open_state(None).await.0;
+    let candidate = crate::storage::encoding::encode_source(b"B")
+        .unwrap()
+        .objects
+        .remove(0)
+        .encoded;
     let catalog = store.catalog.as_ref().expect("catalogue").clone();
     let storage_id = catalog
         .document("agent-room")
@@ -177,12 +216,7 @@ async fn prepare_durable_agent_effect(
         .storage_id;
     let key = OperationKey {
         epoch: "epoch-1".into(),
-        id: if revoked {
-            "startup-revoke"
-        } else {
-            "startup-commit"
-        }
-        .into(),
+        id: crate::util::new_request_key(),
     };
     let request_id = key.scoped_request_id(&authority.operation_scope);
     let secret = "a".repeat(64);
@@ -212,9 +246,9 @@ async fn prepare_durable_agent_effect(
             storage_id: &storage_id,
             request_id: &request_id,
             kind: "agent_apply",
-            request_digest: "startup-digest",
+            request_digest: &"b".repeat(64),
             intent: &intent,
-            created_at: crate::util::now_unix(),
+            created_at: crate::util::now_millis(),
             actor: None,
         })
         .expect("prepare operation");
@@ -223,32 +257,54 @@ async fn prepare_durable_agent_effect(
         .put(&backup, before_state.clone(), "application/octet-stream")
         .await
         .expect("backup");
-    let durable = session::new_doc();
-    session::apply_update(&durable, if marked { &after_state } else { &before_state })
-        .expect("durable source");
-    if marked {
-        use yrs::{Map, RootRef, Transact};
-        let mut txn = durable.transact_mut();
-        let meta = yrs::MapRef::root(session::META)
-            .get(&txn)
-            .expect("metadata map");
-        let marker = serde_json::json!({
-            "digest": "startup-digest",
-            "after_tree": after_tree.digest(),
-            "mac": marker_mac_for_test(&secret, "startup-digest", &after_tree.digest()),
-        })
-        .to_string();
-        meta.insert(&mut txn, format!("agent.operation.{request_id}"), marker);
+    if staged {
+        // A crash may leave a complete candidate object on disk, but only
+        // the atomic checkpoint transaction can make it the document head.
+        use crate::storage::catalog::{
+            DocumentId, ObjectKind, OperationId, UnixMillis, V2AdmissionLimits, V2ObjectAllocation,
+        };
+        use sha2::{Digest, Sha256};
+        let object_id =
+            crate::storage::catalog::ObjectId::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        let key = format!("v2/documents/{storage_id}/objects/{object_id}");
+        let operation_id: String = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT id FROM operations WHERE document_id=?1 AND request_key=?2",
+                        rusqlite::params![storage_id, request_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .unwrap();
+        catalog
+            .allocate_v2_object_with_limits(
+                &V2ObjectAllocation {
+                    document_id: DocumentId::new(storage_id.clone()).unwrap(),
+                    id: object_id,
+                    storage_key: key.clone(),
+                    kind: ObjectKind::SourceChunk,
+                    digest: hex::encode(Sha256::digest(&candidate)),
+                    logical_digest: None,
+                    encoding_version: 1,
+                    reserved_bytes: candidate.len() as i64,
+                    operation_id: OperationId::new(operation_id).unwrap(),
+                    now: UnixMillis::new(crate::util::now_millis()).unwrap(),
+                },
+                V2AdmissionLimits {
+                    owner_bytes: i64::MAX,
+                    deployment_bytes: i64::MAX,
+                    owner_documents: i64::MAX,
+                },
+            )
+            .unwrap();
+        store
+            .blobs
+            .put(&key, candidate, "application/octet-stream")
+            .await
+            .unwrap();
     }
-    store
-        .blobs
-        .put(
-            &blob::session_key("agent-room"),
-            session::encode_state(&durable),
-            "application/octet-stream",
-        )
-        .await
-        .expect("durable source");
     if revoked {
         catalog
             .revoke_sessions("acct-agent", "gen-revoked")
@@ -265,11 +321,28 @@ async fn prepare_durable_agent_effect(
 }
 
 #[tokio::test]
-async fn startup_reconciles_durable_marked_agent_effect_once() {
-    let (dir, store, storage_id, request_id, _authority) =
-        prepare_durable_agent_effect(false, true).await;
+async fn startup_preserves_committed_agent_effect_once() {
+    let (dir, store, rooms, room, authority) = room_fixture().await;
+    let tree = agent::room_tree(&room).await;
+    let request = source_request(&tree, "startup-commit", "B", None);
+    let request_id = request
+        .operation
+        .scoped_request_id(&authority.operation_scope);
+    room.apply_agent_request(request, authority).await.unwrap();
+    let storage_id = store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .document("agent-room")
+        .unwrap()
+        .unwrap()
+        .storage_id;
+    drop(room);
+    drop(rooms);
+    recover_startup(&store).await;
     let reopened = RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
+    super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
     let room = reopened.get("agent-room").await;
     assert_eq!(room.source().await, "B");
     let operation = store
@@ -289,11 +362,37 @@ async fn startup_reconciles_durable_marked_agent_effect_once() {
 }
 
 #[tokio::test]
-async fn startup_rolls_back_marked_effect_when_actor_was_revoked() {
-    let (dir, store, storage_id, request_id, _authority) =
-        prepare_durable_agent_effect(true, true).await;
+async fn startup_discards_uncommitted_candidate_even_with_valid_actor() {
+    let (_dir, store, storage_id, request_id, _authority) =
+        prepare_uncommitted_agent_effect(false, true).await;
+    recover_startup(&store).await;
     let reopened = RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
+    super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
+    assert_eq!(
+        reopened.try_get("agent-room").await.unwrap().source().await,
+        "A"
+    );
+    let catalog = store.catalog.as_ref().unwrap();
+    assert_eq!(
+        catalog
+            .operation(&storage_id, &request_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "aborted"
+    );
+    assert!(catalog.audit_v2_counters().unwrap());
+}
+
+#[tokio::test]
+async fn startup_discards_uncommitted_candidate_when_actor_was_revoked() {
+    let (dir, store, storage_id, request_id, _authority) =
+        prepare_uncommitted_agent_effect(true, true).await;
+    recover_startup(&store).await;
+    let reopened = RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
+    reopened.attach_store(store.clone());
+    super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
     let room = reopened.get("agent-room").await;
     assert_eq!(room.source().await, "A");
     let operation = store
@@ -308,9 +407,9 @@ async fn startup_rolls_back_marked_effect_when_actor_was_revoked() {
 }
 
 #[tokio::test]
-async fn startup_rolls_back_marked_effect_when_runner_epoch_was_revoked() {
+async fn startup_discards_uncommitted_candidate_when_runner_epoch_was_revoked() {
     let (dir, store, storage_id, request_id, authority) =
-        prepare_durable_agent_effect(false, true).await;
+        prepare_uncommitted_agent_effect(false, true).await;
     store
         .catalog
         .as_ref()
@@ -321,8 +420,10 @@ async fn startup_rolls_back_marked_effect_when_runner_epoch_was_revoked() {
             &authority.execution_epoch,
         )
         .expect("revoke execution lease");
+    recover_startup(&store).await;
     let reopened = RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
+    super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
     let room = reopened.get("agent-room").await;
     assert_eq!(room.source().await, "A");
     let operation = store
@@ -337,11 +438,13 @@ async fn startup_rolls_back_marked_effect_when_runner_epoch_was_revoked() {
 }
 
 #[tokio::test]
-async fn startup_aborts_unmarked_agent_operation_without_source_effect() {
+async fn startup_aborts_agent_operation_before_candidate_write() {
     let (dir, store, storage_id, request_id, _authority) =
-        prepare_durable_agent_effect(false, false).await;
+        prepare_uncommitted_agent_effect(false, false).await;
+    recover_startup(&store).await;
     let reopened = RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
+    super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
     let room = reopened.get("agent-room").await;
     assert_eq!(room.source().await, "A");
     let operation = store
@@ -352,55 +455,34 @@ async fn startup_aborts_unmarked_agent_operation_without_source_effect() {
         .expect("operation lookup")
         .expect("operation");
     assert_eq!(operation.status, "aborted");
-    assert!(store
-        .blobs
-        .get(&format!("agent-backups/{storage_id}/{request_id}"))
-        .await
-        .is_err());
+    assert!(store.catalog.as_ref().unwrap().audit_v2_counters().unwrap());
     drop(dir);
 }
 
 #[tokio::test]
-async fn corrupted_agent_marker_fences_room_admission() {
-    let (dir, store, _storage_id, request_id, _authority) =
-        prepare_durable_agent_effect(false, true).await;
-    let raw = store
-        .blobs
-        .get(&blob::session_key("agent-room"))
+async fn corrupted_agent_checkpoint_base_fences_room_mutations() {
+    let (dir, store, rooms, room, authority) = room_fixture().await;
+    let tree = agent::room_tree(&room).await;
+    room.apply_agent_request(source_request(&tree, "corruption", "B", None), authority)
         .await
-        .expect("session");
-    let corrupted = session::new_doc();
-    session::apply_update(&corrupted, &raw).expect("decode session");
-    {
-        use yrs::{Map, RootRef, Transact};
-        let mut txn = corrupted.transact_mut();
-        let meta = yrs::MapRef::root(session::META)
-            .get(&txn)
-            .expect("metadata map");
-        meta.insert(
-            &mut txn,
-            format!("agent.operation.{request_id}"),
-            serde_json::json!({
-                "digest": "startup-digest",
-                "after_tree": "wrong-tree",
-                "mac": "00"
-            })
-            .to_string(),
-        );
-    }
+        .unwrap();
+    let key: String = store.catalog.as_ref().unwrap().with_connection(|connection| {
+        connection.query_row("SELECT o.storage_key FROM documents d JOIN objects o ON o.document_id=d.id AND o.id=d.journal_base_object_id WHERE d.slug='agent-room'", [], |row| row.get(0)).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
+    drop(room);
+    drop(rooms);
     store
         .blobs
-        .put(
-            &blob::session_key("agent-room"),
-            session::encode_state(&corrupted),
-            "application/octet-stream",
-        )
+        .put(&key, b"corrupt base".to_vec(), "application/octet-stream")
         .await
-        .expect("corrupted session");
+        .unwrap();
+    recover_startup(&store).await;
     let reopened = RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
+    super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
     reopened.attach_store(store);
-    let _room = reopened.get("agent-room").await;
-    assert!(reopened.try_get("agent-room").await.is_err());
+    let room = reopened.get("agent-room").await;
+    assert!(room.read_only());
+    assert!(room.set_source("C", "markdown").await.is_err());
     drop(dir);
 }
 
@@ -414,14 +496,7 @@ async fn source_size_refusal_releases_pending_operation_slot() {
     let tree = agent::room_tree(&room).await;
     let request = source_request(&tree, "oversize", "BB", None);
     assert!(room.apply_agent_request(request, authority).await.is_err());
-    let document = store
-        .catalog
-        .as_ref()
-        .expect("catalogue")
-        .document("agent-room")
-        .expect("document lookup")
-        .expect("document");
-    assert!(document.pending_publication.is_none());
+    assert_no_pending_agent_operation(&store);
     drop(dir);
 }
 
@@ -443,6 +518,7 @@ async fn source_receipt_and_replay_survive_room_restart() {
         .await
         .expect("release room lease");
     let reopened = RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
+    super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
     reopened.attach_store(store);
     let room = reopened.get("agent-room").await;
     assert_eq!(room.source().await, "B");
@@ -492,7 +568,7 @@ async fn accepted_source_receipt_reloads_comment_outcome_after_restart() {
     let (dir, store, rooms, room, authority) = room_fixture().await;
     let tree = agent::room_tree(&room).await;
     let (payload, ok) = room
-        .apply(
+        .apply_command(
             Message {
                 kind: "comment".into(),
                 motivation: "editing".into(),
@@ -506,12 +582,16 @@ async fn accepted_source_receipt_reloads_comment_outcome_after_restart() {
                     position: Some(0),
                 }),
                 ..Default::default()
-            },
+            }
+            .into_command()
+            .unwrap(),
             "127.0.0.1",
             "acct-agent",
             "",
             None,
             true,
+            "acct-agent",
+            "gen-1",
         )
         .await;
     assert!(ok);
@@ -540,6 +620,7 @@ async fn accepted_source_receipt_reloads_comment_outcome_after_restart() {
         .await
         .expect("release room lease");
     let reopened = RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
+    super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
     reopened.attach_store(store);
     let room = reopened.get("agent-room").await;
     assert_eq!(room.source().await, "AA");
@@ -557,15 +638,16 @@ fn source_receipt_reopens_and_rejects_digest_reuse() {
     let catalog = Catalog::open(&path).expect("catalogue");
     catalog.upsert_account(&account()).expect("account");
     catalog.create_document(&document()).expect("document");
-    let intent = r#"{"agent":true,"before_tree":"before","after_tree":"after","marker_secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+    let request_id = crate::util::new_request_key();
+    let intent = r#"{"agent":true,"before_tree":"before","after_tree":"after","marker_secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","actor":{"account_id":"acct-agent","generation":"gen-1"}}"#;
     catalog
         .prepare_operation(&OperationRequest {
             storage_id: "agent-storage",
-            request_id: "agent-request",
+            request_id: &request_id,
             kind: "agent_apply",
-            request_digest: "digest-a",
+            request_digest: &"a".repeat(64),
             intent,
-            created_at: 1,
+            created_at: crate::util::now_millis(),
             actor: None,
         })
         .expect("prepare");
@@ -583,9 +665,9 @@ fn source_receipt_reopens_and_rejects_digest_reuse() {
     let committed = catalog
         .commit_agent_source_operation(
             "agent-storage",
-            "agent-request",
-            "digest-a",
-            "receipt",
+            &request_id,
+            &"a".repeat(64),
+            r#"{"version":2,"receipt":"source"}"#,
             None,
             "",
             authority,
@@ -598,9 +680,9 @@ fn source_receipt_reopens_and_rejects_digest_reuse() {
     let replay = reopened
         .commit_agent_source_operation(
             "agent-storage",
-            "agent-request",
-            "digest-a",
-            "receipt",
+            &request_id,
+            &"a".repeat(64),
+            r#"{"version":2,"receipt":"source"}"#,
             None,
             "",
             authority,
@@ -609,9 +691,9 @@ fn source_receipt_reopens_and_rejects_digest_reuse() {
     assert_eq!(replay.status, "committed");
     let conflict = reopened.commit_agent_source_operation(
         "agent-storage",
-        "agent-request",
-        "digest-b",
-        "receipt",
+        &request_id,
+        &"b".repeat(64),
+        r#"{"version":2,"receipt":"source"}"#,
         None,
         "",
         authority,
@@ -640,15 +722,7 @@ async fn encoded_size_refusal_aborts_agent_intent_without_changing_live_source()
     assert!(error.to_string().contains("edit history"), "{error}");
     assert_eq!(room.open_state(None).await.0, before);
     assert!(!room.read_only());
-    assert!(store
-        .catalog
-        .as_ref()
-        .unwrap()
-        .document("agent-room")
-        .unwrap()
-        .unwrap()
-        .pending_publication
-        .is_none());
+    assert_no_pending_agent_operation(&store);
     room.apply_agent_request(
         source_request(&tree, "after-encoded-refusal", "B", None),
         authority,

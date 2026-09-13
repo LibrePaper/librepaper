@@ -93,7 +93,10 @@ fn annotation_actor(authority: AnnotationAuthority<'_>) -> String {
     } else if !authority.automation && !authority.author_key.is_empty() {
         // A shared commenter link grants permission; the server-verified
         // visitor identity supplies the distinct idempotency namespace.
-        format!("visitor:{}", hex::encode(sha2::Sha256::digest(authority.author_key.as_bytes())))
+        format!(
+            "visitor:{}",
+            hex::encode(sha2::Sha256::digest(authority.author_key.as_bytes()))
+        )
     } else if !authority.link_hash.is_empty() {
         format!("link:{}", authority.link_hash)
     } else {
@@ -282,12 +285,13 @@ fn annotation_protection(
         return Ok(None);
     }
     tx.query_row(
-        "SELECT id FROM checkpoints WHERE document_id=?1 AND id=?2",
+        "SELECT id FROM checkpoints WHERE document_id=?1 AND (id=?2 OR tree_digest=?2)
+         ORDER BY CASE WHEN id=?2 THEN 0 ELSE 1 END,seq DESC LIMIT 1",
         params![document, comment.revision],
         |row| row.get(0),
     )
-        .optional()
-        .map_err(CatalogError::from)
+    .optional()
+    .map_err(CatalogError::from)
 }
 
 fn annotation_protection_from_stored(
@@ -304,14 +308,19 @@ fn annotation_protection_from_stored(
     if revision.is_empty() {
         return Ok(None);
     }
-    let retained: Option<String> = tx.query_row(
-        "SELECT id FROM checkpoints WHERE document_id=?1 AND id=?2",
-        params![document, revision],
-        |row| row.get(0),
-    ).optional()?;
-    retained.map(Some).ok_or_else(|| CatalogError::Conflict(
-        "the annotation's source checkpoint was pruned; it cannot be reopened".into(),
-    ))
+    let retained: Option<String> = tx
+        .query_row(
+            "SELECT id FROM checkpoints WHERE document_id=?1 AND (id=?2 OR tree_digest=?2)
+         ORDER BY CASE WHEN id=?2 THEN 0 ELSE 1 END,seq DESC LIMIT 1",
+            params![document, revision],
+            |row| row.get(0),
+        )
+        .optional()?;
+    retained.map(Some).ok_or_else(|| {
+        CatalogError::Conflict(
+            "the annotation's source checkpoint was pruned; it cannot be reopened".into(),
+        )
+    })
 }
 
 fn selector(comment: &Comment) -> String {
@@ -332,10 +341,13 @@ pub(super) fn insert_comment_tx(
     annotation_account_authorized(tx, &doc, authority)?;
     let occupied: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM annotations WHERE document_id=?1 AND id=?2)",
-        params![doc, comment.id], |row| row.get(0),
+        params![doc, comment.id],
+        |row| row.get(0),
     )?;
     if occupied {
-        return Err(CatalogError::Conflict("annotation submission id is already in use".into()));
+        return Err(CatalogError::Conflict(
+            "annotation submission id is already in use".into(),
+        ));
     }
     let count: i64 = tx
         .query_row(
@@ -647,14 +659,15 @@ impl Catalog {
         let protected: Option<String> = if comment.resolved {
             None
         } else {
-            let existing: Option<String> = tx.query_row(
-                "SELECT protected_checkpoint_id FROM annotations WHERE document_id=?1 AND id=?2",
+            let (existing, was_resolved): (Option<String>, bool) = tx.query_row(
+                "SELECT protected_checkpoint_id,resolved_at IS NOT NULL FROM annotations WHERE document_id=?1 AND id=?2",
                 params![doc, comment.id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             match existing {
                 Some(checkpoint) => Some(checkpoint),
-                None => annotation_protection_from_stored(tx, &doc, &comment.id)?,
+                None if was_resolved => annotation_protection_from_stored(tx, &doc, &comment.id)?,
+                None => None,
             }
         };
         let changed = tx
@@ -779,6 +792,11 @@ impl Catalog {
                 if state == "committed" {
                     return Self::comment_in_tx(tx, slug, comment_id).map(Some);
                 }
+                if state == "aborted" {
+                    return Err(CatalogError::Conflict(
+                        "acceptance was aborted; submit a new request key".into(),
+                    ));
+                }
                 return Ok(None);
             }
             validate_new_request_key(request_id)?;
@@ -872,6 +890,8 @@ impl Catalog {
         )
     }
 
+    // Keep the actor, request identity, and effect fences explicit at the transaction boundary.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_suggestion_accept_checkpoint_authorized(
         &self,
         slug: &str,
@@ -1009,6 +1029,8 @@ impl Catalog {
     /// Admit the post-accept CRDT state as a physical agent payload.  The
     /// bytes are written by the room's V2ObjectWriter after this transaction;
     /// operation JSON carries only the immutable object identity.
+    // Keep the actor, request identity, and effect fences explicit at the transaction boundary.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn allocate_suggestion_accept_update_authorized(
         &self,
         slug: &str,
@@ -1402,6 +1424,42 @@ impl Catalog {
                 .transpose()
         })
     }
+    /// Release a failed acceptance only while it has no durable replay payload.
+    /// The predicate and terminal transition share one transaction so cleanup
+    /// cannot discard an update staged by a concurrent retry.
+    pub(crate) fn abort_unstaged_suggestion_accept(
+        &self,
+        slug: &str,
+        comment_id: &str,
+        request_id: &str,
+        request_digest: &str,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<bool> {
+        let now = UnixMillis::now().0;
+        let expires = now
+            .checked_add(7 * 24 * 60 * 60 * 1_000)
+            .ok_or_else(|| CatalogError::Invalid("acceptance receipt expiry overflow".into()))?;
+        self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
+            let doc = document_id(tx, slug)?;
+            annotation_account_authorized(tx, &doc, authority)?;
+            let changed = tx.execute(
+                "UPDATE operations SET state='aborted',
+                     result_json='{\"version\":2,\"error\":\"acceptance_not_staged\"}',
+                     completed_at=?6,updated_at=max(updated_at,?6),
+                     receipt_expires_at=?7,work_expires_at=NULL
+                 WHERE document_id=?1 AND account_id IS NULL AND actor_key=?2
+                   AND request_key=?3 AND request_digest=?4 AND kind='agent_apply'
+                   AND state='prepared' AND json_extract(plan_json,'$.commentId')=?5
+                   AND json_extract(plan_json,'$.update_object_id') IS NULL
+                   AND writer_generation=(SELECT writer_generation FROM server_state WHERE id=1)
+                   AND NOT EXISTS(SELECT 1 FROM objects WHERE allocation_operation_id=operations.id)",
+                params![doc, annotation_actor(authority), request_id, request_digest, comment_id, now, expires],
+            )?;
+            Ok(changed == 1)
+        })
+    }
+
     pub fn pending_suggestion_accept(&self, slug: &str, comment_id: &str) -> CatalogResult<bool> {
         self.with_connection(|c|{let doc=document_id_connection(c,slug)?;c.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE document_id=?1 AND kind='agent_apply' AND state='prepared' AND json_extract(plan_json,'$.commentId')=?2)",params![doc,comment_id],|r|r.get(0)).map_err(CatalogError::from)})
     }
@@ -1498,6 +1556,8 @@ impl Catalog {
         )
     }
 
+    // Keep the actor, request identity, and effect fences explicit at the transaction boundary.
+    #[allow(clippy::too_many_arguments)]
     pub fn finish_suggestion_accept_authorized(
         &self,
         slug: &str,
@@ -1544,7 +1604,10 @@ impl Catalog {
             if changed != 1 {
                 return Err(CatalogError::NotFound);
             }
-            tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=?1", [doc.as_str()])?;
+            tx.execute(
+                "UPDATE documents SET retention_due_at=0 WHERE id=?1",
+                [doc.as_str()],
+            )?;
             let done = unix_millis();
             let result = serde_json::json!({
                 "version": 1,
@@ -1573,6 +1636,8 @@ impl Catalog {
     /// The checkpoint commit already made the source durable; keeping this
     /// receipt transition together prevents a retry from observing a half
     /// updated annotation and keeps the exact actor scoped throughout.
+    // Keep the actor, request identity, and effect fences explicit at the transaction boundary.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_and_finish_suggestion_accept_authorized(
         &self,
         slug: &str,
@@ -1810,7 +1875,11 @@ impl Catalog {
         comment_id: &str,
     ) -> CatalogResult<String> {
         let slug: String = tx
-            .query_row("SELECT slug FROM documents WHERE id=?1", [document_id], |row| row.get(0))
+            .query_row(
+                "SELECT slug FROM documents WHERE id=?1",
+                [document_id],
+                |row| row.get(0),
+            )
             .map_err(CatalogError::from)?;
         let comment = Self::comment_in_tx(tx, &slug, comment_id)?;
         let mut statement = tx
@@ -1853,7 +1922,9 @@ impl Catalog {
             params![doc, reply.comment_id, reply.id], |row| row.get(0),
         )?;
         if occupied {
-            return Err(CatalogError::Conflict("reply submission id is already in use".into()));
+            return Err(CatalogError::Conflict(
+                "reply submission id is already in use".into(),
+            ));
         }
         let exists: i64 = tx
             .query_row(
@@ -1893,7 +1964,9 @@ impl Catalog {
         }
         let at = millis(&reply.created);
         tx.execute("INSERT INTO replies(document_id,annotation_id,id,body,author_account_id,author_key,author_label,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8)",params![doc,reply.comment_id,reply.id,reply.body,(!authority.account_id.is_empty()).then_some(authority.account_id),reply.author,reply.creator,at]).map_err(CatalogError::from)?;
-        Ok(reply.clone())
+        let mut inserted = reply.clone();
+        inserted.created = timestamp(at);
+        Ok(inserted)
     }
     fn insert_reply_authorized(
         &self,
@@ -2087,13 +2160,7 @@ impl Catalog {
                 .execute(
                     "UPDATE replies SET body=?4,updated_at=?5
                      WHERE document_id=?1 AND annotation_id=?2 AND id=?3",
-                    params![
-                        doc,
-                        reply.comment_id,
-                        reply.id,
-                        reply.body,
-                        at
-                    ],
+                    params![doc, reply.comment_id, reply.id, reply.body, at],
                 )
                 .map_err(CatalogError::from)?;
             if changed != 1 {
@@ -2134,11 +2201,21 @@ mod v2_provenance_tests {
 
     #[test]
     fn shared_link_visitors_have_distinct_receipt_scopes() {
-        let first = AnnotationAuthority { author_key: "verified-visitor-a", link_hash: "same-link", ..Default::default() };
-        let second = AnnotationAuthority { author_key: "verified-visitor-b", ..first };
+        let first = AnnotationAuthority {
+            author_key: "verified-visitor-a",
+            link_hash: "same-link",
+            ..Default::default()
+        };
+        let second = AnnotationAuthority {
+            author_key: "verified-visitor-b",
+            ..first
+        };
         assert_ne!(annotation_actor(first), annotation_actor(second));
         assert!(!annotation_actor(first).contains("verified-visitor-a"));
-        let account = AnnotationAuthority { account_id: "acct-1", ..first };
+        let account = AnnotationAuthority {
+            account_id: "acct-1",
+            ..first
+        };
         assert_eq!(annotation_actor(account), "account:acct-1");
     }
 
@@ -2151,23 +2228,39 @@ mod v2_provenance_tests {
     #[test]
     fn reopening_pruned_source_preserves_resolved_annotation() {
         let catalog = Catalog::open_in_memory().unwrap();
-        catalog.upsert_account(&super::super::tests::account()).unwrap();
-        catalog.create_document(&super::super::tests::document()).unwrap();
+        catalog
+            .upsert_account(&super::super::tests::account())
+            .unwrap();
+        catalog
+            .create_document(&super::super::tests::document())
+            .unwrap();
         let authority = AnnotationAuthority {
-            account_id: "acct-1", generation: "generation-1", ..Default::default()
+            account_id: "acct-1",
+            generation: "generation-1",
+            ..Default::default()
         };
         let mut comment = super::super::tests::annotation("pruned", "commenting");
+        comment.revision = "b".repeat(64);
         comment.resolved = true;
         comment.resolved_at = Some("2026-09-13T01:02:03.456Z".into());
         comment.resolved_in = "later-checkpoint".into();
         let key = crate::util::new_request_key();
-        let mut stored = catalog.insert_comment_request_authorized(
-            &comment, &key, &"a".repeat(64), crate::util::now_millis(), authority,
-        ).unwrap();
+        let mut stored = catalog
+            .insert_comment_request_authorized(
+                &comment,
+                &key,
+                &"a".repeat(64),
+                crate::util::now_millis(),
+                authority,
+            )
+            .unwrap();
         assert!(stored.resolved);
         stored.resolved = false;
         stored.resolved_at = None;
-        assert!(matches!(catalog.update_comment_authorized(&stored, authority), Err(CatalogError::Conflict(_))));
+        assert!(matches!(
+            catalog.update_comment_authorized(&stored, authority),
+            Err(CatalogError::Conflict(_))
+        ));
         assert!(catalog.comment("doc", "pruned").unwrap().resolved);
     }
 }

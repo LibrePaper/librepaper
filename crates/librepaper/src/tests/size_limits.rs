@@ -247,7 +247,6 @@ mod room_fixture {
                     source: source.into(),
                     source_format: "markdown".into(),
                     owner: "alice".into(),
-                    peak_bytes: Some(8 * 1024 * 1024),
                     ..Default::default()
                 },
                 store::MutationActor {

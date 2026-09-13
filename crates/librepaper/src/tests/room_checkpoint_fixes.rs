@@ -1,6 +1,8 @@
 //! Regression coverage for checkpoint durability and retention edge cases.
 
-use super::room::{fixture, HookStore, object_write_prefix, recovered_session, attach_fixture_journal};
+use super::room::{
+    attach_fixture_journal, fixture, object_write_prefix, recovered_session, HookStore,
+};
 use crate::config::Configuration;
 use crate::document::session;
 use crate::room::{self, Outgoing};
@@ -13,8 +15,17 @@ async fn hard_quota_refusal_keeps_existing_checkpoints() {
     config.storage.per_owner = 32 * 1024;
     let (_dir, store, rooms) = fixture(config).await;
     let room = rooms.get("probe").await;
-    let previous = store.catalog.as_ref().unwrap().document("probe").unwrap().unwrap().sha;
-    room.set_source(&"x".repeat(64 * 1024), "markdown").await.unwrap();
+    let previous = store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .document("probe")
+        .unwrap()
+        .unwrap()
+        .sha;
+    room.set_source(&"x".repeat(64 * 1024), "markdown")
+        .await
+        .unwrap();
     let error = room.checkpoint_now("cli", "alice").await.unwrap_err();
     assert_eq!(error.status(), 507);
     let catalog = store.catalog.as_ref().unwrap();
@@ -71,12 +82,65 @@ async fn duplicate_checkpoint_persists_current_crdt_state() {
         .await
         .unwrap()
         .unwrap();
-    assert_ne!(sha, room.manifest().await.checkpoints[0].sha, "returning to A is a new checkpoint event");
+    assert_ne!(
+        sha,
+        room.manifest().await.checkpoints[0].sha,
+        "returning to A is a new checkpoint event"
+    );
     let recovered = recovered_session(&store, "probe").await;
     let captured = session::new_doc();
     session::apply_update(&captured, &expected).unwrap();
     assert_eq!(session::text_of(&recovered), "A");
-    assert_eq!(session::encode_vector(&recovered), session::encode_vector(&captured));
+    assert_eq!(
+        session::encode_vector(&recovered),
+        session::encode_vector(&captured)
+    );
+}
+
+/// A best-effort manifest refresh may fail after the new event commits.
+/// An unchanged checkpoint must retain that event even if cached history only
+/// contains an older event with the same content.
+#[tokio::test]
+async fn unchanged_checkpoint_keeps_current_event_with_stale_manifest() {
+    let (_dir, store, rooms) = fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
+    let initial = room.manifest().await.latest().unwrap().clone();
+    room.set_source("B", "markdown").await.unwrap();
+    room.checkpoint_now("comment", "alice").await.unwrap();
+    room.set_source("A", "markdown").await.unwrap();
+    let current = room
+        .checkpoint_now("comment", "alice")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(current, initial.sha);
+    let catalog = store.catalog.as_ref().unwrap();
+    assert_eq!(catalog.document("probe").unwrap().unwrap().sha, current);
+    let count = catalog.checkpoints("probe", None, 100).unwrap().len();
+    {
+        let mut state = room.state.lock().await;
+        assert_eq!(state.session.last_checkpoint, current);
+        assert!(state.session.last_tree.is_some());
+        // Reproduce the cache left behind when the post-commit reload fails.
+        state
+            .manifest
+            .checkpoints
+            .retain(|point| point.sha != current);
+        assert!(state
+            .manifest
+            .checkpoints
+            .iter()
+            .any(|point| point.sha == initial.sha));
+    }
+
+    let unchanged = room.checkpoint_now("comment", "alice").await.unwrap();
+    assert_eq!(unchanged.as_deref(), Some(current.as_str()));
+    assert_eq!(room.state.lock().await.session.last_checkpoint, current);
+    assert_eq!(catalog.document("probe").unwrap().unwrap().sha, current);
+    assert_eq!(
+        catalog.checkpoints("probe", None, 100).unwrap().len(),
+        count
+    );
 }
 
 /// The history tree can be captured as B while the session snapshot later
@@ -101,10 +165,7 @@ async fn checkpoint_tree_and_session_generation_do_not_cross() {
     // Native source history is addressed by recipes, not legacy whole-file
     // blobs. Pausing the recipe write keeps B in flight while C advances the
     // live generation.
-    *hooked.pause.lock().unwrap() = Some((
-        "put".into(),
-        object_write_prefix(&store, "probe"),
-    ));
+    *hooked.pause.lock().unwrap() = Some(("put".into(), object_write_prefix(&store, "probe")));
     let task = tokio::spawn({
         let room = room.clone();
         async move { room.checkpoint_now("cli", "alice").await }
@@ -134,7 +195,9 @@ async fn catalogue_retention_sheds_history_beyond_resident_tail() {
     let (_dir, store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     for seq in 1..70 {
-        room.set_source(&format!("revision {seq}"), "markdown").await.unwrap();
+        room.set_source(&format!("revision {seq}"), "markdown")
+            .await
+            .unwrap();
         room.checkpoint_now("quiet", "alice").await.unwrap();
     }
     assert_eq!(room.state.lock().await.manifest.checkpoints.len(), 64);
@@ -145,10 +208,14 @@ async fn catalogue_retention_sheds_history_beyond_resident_tail() {
         Ok(())
     }).unwrap();
     let now = crate::util::now_millis();
-    catalog.schedule_document_balanced("probe", now, Default::default()).unwrap();
+    catalog
+        .schedule_document_balanced("probe", now, Default::default())
+        .unwrap();
     let mut removed = 0;
     for pass in 0..3 {
-        let result = catalog.run_retention_pass(now + 86_400_001 + pass * 60_001, 32).unwrap();
+        let result = catalog
+            .run_retention_pass(now + 86_400_001 + pass * 60_001, 32)
+            .unwrap();
         assert!(result.removed.len() <= 32);
         removed += result.removed.len();
     }
@@ -156,7 +223,10 @@ async fn catalogue_retention_sheds_history_beyond_resident_tail() {
     let retained = catalog.checkpoints_tail("probe", 100).unwrap();
     assert_eq!(retained.len(), 5);
     for (offset, point) in retained.iter().enumerate() {
-        assert_eq!(super::harness::checkpoint_text(&store, "probe", &point.sha).await, format!("revision {}", 65 + offset));
+        assert_eq!(
+            super::harness::checkpoint_text(&store, "probe", &point.sha).await,
+            format!("revision {}", 65 + offset)
+        );
     }
     assert!(catalog.audit_v2_counters().unwrap());
 }

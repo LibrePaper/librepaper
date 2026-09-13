@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use super::room::{fixture, HookStore};
+use super::room::{
+    attach_fixture_journal, fixture as room_fixture, object_write_prefix, HookStore,
+};
 use crate::config::Configuration;
 use crate::document::session;
 use crate::document::store;
@@ -15,7 +17,7 @@ fn catalog_actor() -> store::MutationActor {
     store::MutationActor {
         account_id: "github:alice".into(),
         owner_key: "alice".into(),
-        session_generation: "suggestion-fixture-generation".into(),
+        session_generation: "room-test-session".into(),
         link_hash: String::new(),
         policy_editor: true,
         automation: false,
@@ -34,9 +36,147 @@ fn catalog_account() -> Account {
         last_seen: "2026-01-01T00:00:00.000Z".into(),
         plan: "free".into(),
         status: "active".into(),
-        session_generation: "suggestion-fixture-generation".into(),
+        session_generation: "room-test-session".into(),
         erasure_cursor: None,
     }
+}
+
+async fn fixture(config: Configuration) -> (tempfile::TempDir, Arc<store::Store>, room::RoomSet) {
+    let (dir, store, rooms) = room_fixture(config).await;
+    let catalog = store.catalog.as_ref().unwrap();
+    catalog.set_link_sealing_key(&[42; 32]).unwrap();
+    let hash = crate::server::hash_link_key("suggestion reviewer");
+    let sealed = catalog
+        .seal_link_key(
+            &catalog.document("probe").unwrap().unwrap().storage_id,
+            "commenter",
+            &hash,
+            "suggestion reviewer",
+        )
+        .unwrap();
+    catalog
+        .put_link(&crate::storage::catalog::Link {
+            slug: "probe".into(),
+            role: "commenter".into(),
+            hash,
+            sealed,
+            label: "Reviewer".into(),
+            budget: None,
+            since: crate::util::timestamp(),
+            until: String::new(),
+        })
+        .unwrap();
+    (dir, store, rooms)
+}
+
+async fn apply_message(
+    room: &room::Room,
+    mut message: room::Message,
+    address: &str,
+    author: &str,
+    via: &str,
+    budget: Option<i64>,
+    is_owner: bool,
+) -> (serde_json::Value, bool) {
+    message.request_id = crate::util::new_request_key();
+    let mut actor = catalog_actor();
+    if !is_owner {
+        actor.account_id.clear();
+        actor.session_generation.clear();
+        actor.link_hash = crate::server::hash_link_key("suggestion reviewer");
+    }
+    room.apply_command_with_actor(
+        message.into_command().unwrap(),
+        address,
+        author,
+        via,
+        budget,
+        is_owner,
+        actor,
+    )
+    .await
+}
+
+// Descriptive test intents retain one valid wire request key across retries,
+// including reopening a room within the same test.
+fn request_key(intent: &str) -> String {
+    static KEYS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    KEYS.get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .entry(intent.into())
+        .or_insert_with(crate::util::new_request_key)
+        .clone()
+}
+
+async fn accept(
+    room: &room::Room,
+    comment: &str,
+    intent: &str,
+) -> Result<room::Accepted, room::AcceptError> {
+    room.accept_suggestion_authorized(
+        comment,
+        &request_key(intent),
+        "alice",
+        "github:alice",
+        "room-test-session",
+    )
+    .await
+}
+
+struct CheckpointPause(Arc<room::ReservationGate>);
+impl CheckpointPause {
+    fn new(slug: &str) -> Self {
+        let gate = room::ReservationGate::new(slug);
+        *room::after_checkpoint_admission_gate().lock().unwrap() = Some(gate.clone());
+        Self(gate)
+    }
+    async fn reached(&self) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), self.0.reached.notified())
+            .await
+            .unwrap();
+    }
+    fn resume(&self) {
+        *room::after_checkpoint_admission_gate().lock().unwrap() = None;
+        self.0.resume.add_permits(1);
+    }
+}
+impl Drop for CheckpointPause {
+    fn drop(&mut self) {
+        self.resume();
+    }
+}
+
+fn fail_checkpoint_objects(hooked: &HookStore, store: &store::Store, slug: &str) {
+    *hooked.fail.lock().unwrap() = Some(
+        object_write_prefix(store, slug)
+            .trim_end_matches('*')
+            .into(),
+    );
+}
+
+async fn fail_staged_accept(
+    room: &Arc<room::Room>,
+    hooked: &HookStore,
+    store: &store::Store,
+    id: &str,
+    intent: &'static str,
+) {
+    let gate = CheckpointPause::new("probe");
+    let task = tokio::spawn({
+        let room = room.clone();
+        let id = id.to_owned();
+        async move { accept(&room, &id, intent).await }
+    });
+    gate.reached().await;
+    fail_checkpoint_objects(hooked, store, "probe");
+    gate.resume();
+    assert!(
+        task.await.unwrap().is_err(),
+        "the staged checkpoint failure must surface"
+    );
+    *hooked.fail.lock().unwrap() = None;
 }
 
 fn source_anchor(exact: &str) -> room::SourceAnchor {
@@ -50,24 +190,24 @@ fn source_anchor(exact: &str) -> room::SourceAnchor {
 }
 
 async fn add_suggestion(room: &room::Room, proposed: &str) -> String {
-    let (payload, ok) = room
-        .apply(
-            room::Message {
-                kind: "comment".into(),
-                motivation: "editing".into(),
-                exact: "A".into(),
-                proposed: Some(proposed.into()),
-                source: Some(source_anchor("A")),
-                temp_id: crate::util::new_id(),
-                ..Default::default()
-            },
-            "127.0.0.1",
-            "github:reviewer",
-            "",
-            None,
-            false,
-        )
-        .await;
+    let (payload, ok) = apply_message(
+        room,
+        room::Message {
+            kind: "comment".into(),
+            motivation: "editing".into(),
+            exact: "A".into(),
+            proposed: Some(proposed.into()),
+            source: Some(source_anchor("A")),
+            temp_id: crate::util::new_id(),
+            ..Default::default()
+        },
+        "127.0.0.1",
+        "github:reviewer",
+        "",
+        None,
+        false,
+    )
+    .await;
     assert!(ok, "{payload}");
     payload["comment"]["id"].as_str().unwrap().to_string()
 }
@@ -77,21 +217,21 @@ async fn resolving_a_suggestion_requires_editor_rights() {
     let (_dir, _store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     let id = add_suggestion(&room, "B").await;
-    let (payload, ok) = room
-        .apply(
-            room::Message {
-                kind: "resolve".into(),
-                comment_id: id,
-                resolved: true,
-                ..Default::default()
-            },
-            "127.0.0.1",
-            "github:reviewer",
-            "",
-            None,
-            false,
-        )
-        .await;
+    let (payload, ok) = apply_message(
+        &room,
+        room::Message {
+            kind: "resolve".into(),
+            comment_id: id,
+            resolved: true,
+            ..Default::default()
+        },
+        "127.0.0.1",
+        "github:reviewer",
+        "",
+        None,
+        false,
+    )
+    .await;
     assert!(!ok);
     assert_eq!(payload["message"], "only an editor may decide a suggestion");
 }
@@ -101,43 +241,43 @@ async fn over_cap_suggestion_anchor_and_proposal_are_refused() {
     let (_dir, _store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
     let too_long = "x".repeat(1001);
-    let (payload, ok) = room
-        .apply(
-            room::Message {
-                kind: "comment".into(),
-                motivation: "editing".into(),
-                exact: "A".into(),
-                proposed: Some("B".into()),
-                source: Some(source_anchor(&too_long)),
-                ..Default::default()
-            },
-            "127.0.0.1",
-            "github:reviewer",
-            "",
-            None,
-            false,
-        )
-        .await;
+    let (payload, ok) = apply_message(
+        &room,
+        room::Message {
+            kind: "comment".into(),
+            motivation: "editing".into(),
+            exact: "A".into(),
+            proposed: Some("B".into()),
+            source: Some(source_anchor(&too_long)),
+            ..Default::default()
+        },
+        "127.0.0.1",
+        "github:reviewer",
+        "",
+        None,
+        false,
+    )
+    .await;
     assert!(!ok);
     assert_eq!(payload["message"], "the source anchor is too long");
 
-    let (payload, ok) = room
-        .apply(
-            room::Message {
-                kind: "comment".into(),
-                motivation: "editing".into(),
-                exact: "A".into(),
-                proposed: Some(too_long),
-                source: Some(source_anchor("A")),
-                ..Default::default()
-            },
-            "127.0.0.1",
-            "github:reviewer",
-            "",
-            None,
-            false,
-        )
-        .await;
+    let (payload, ok) = apply_message(
+        &room,
+        room::Message {
+            kind: "comment".into(),
+            motivation: "editing".into(),
+            exact: "A".into(),
+            proposed: Some(too_long),
+            source: Some(source_anchor("A")),
+            ..Default::default()
+        },
+        "127.0.0.1",
+        "github:reviewer",
+        "",
+        None,
+        false,
+    )
+    .await;
     assert!(!ok);
     assert_eq!(payload["message"], "the suggestion is too long");
 }
@@ -162,6 +302,7 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
             store::Publication {
                 slug: "accept-receipt".into(),
                 source: "A".into(),
+                main: "main.md".into(),
                 source_format: "markdown".into(),
                 owner: "alice".into(),
                 ..Default::default()
@@ -175,44 +316,44 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
     let comment_request = crate::util::new_request_key();
     let authority = crate::storage::catalog::AnnotationAuthority {
         account_id: "github:alice",
-        generation: "suggestion-fixture-generation",
+        generation: "room-test-session",
         policy_comment: true,
         require_editor: true,
         ..Default::default()
     };
     let comment = crate::storage::catalog::Comment {
-            slug: "accept-receipt".into(),
-            id: "comment-1".into(),
-            seq: -1,
-            motivation: "editing".into(),
-            body: String::new(),
-            creator: "reviewer".into(),
-            author: "github:reviewer".into(),
-            via: String::new(),
-            created: crate::util::timestamp(),
-            publication_id: String::new(),
-            exact: "A".into(),
-            prefix: String::new(),
-            suffix: String::new(),
-            position: Some(0),
-            point: false,
-            color: None,
-            region: None,
-            quarto_output: None,
-            source_path: Some("main.md".into()),
-            source_exact: Some("A".into()),
-            source_prefix: Some(String::new()),
-            source_suffix: Some(String::new()),
-            source_position: Some(0),
-            proposed: Some("B".into()),
-            outcome: String::new(),
-            accept_request: String::new(),
-            revision: String::new(),
-            pass: String::new(),
-            resolved: false,
-            resolved_at: None,
-            resolved_in: String::new(),
-        };
+        slug: "accept-receipt".into(),
+        id: "comment-1".into(),
+        seq: -1,
+        motivation: "editing".into(),
+        body: String::new(),
+        creator: "reviewer".into(),
+        author: "github:reviewer".into(),
+        via: String::new(),
+        created: crate::util::timestamp(),
+        publication_id: String::new(),
+        exact: "A".into(),
+        prefix: String::new(),
+        suffix: String::new(),
+        position: Some(0),
+        point: false,
+        color: None,
+        region: None,
+        quarto_output: None,
+        source_path: Some("main.md".into()),
+        source_exact: Some("A".into()),
+        source_prefix: Some(String::new()),
+        source_suffix: Some(String::new()),
+        source_position: Some(0),
+        proposed: Some("B".into()),
+        outcome: String::new(),
+        accept_request: String::new(),
+        revision: String::new(),
+        pass: String::new(),
+        resolved: false,
+        resolved_at: None,
+        resolved_in: String::new(),
+    };
     catalog
         .insert_comment_request_authorized(
             &comment,
@@ -285,7 +426,7 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
 }
 
 #[tokio::test]
-async fn failed_accept_compensates_without_losing_a_concurrent_keystroke() {
+async fn failed_accept_retries_without_losing_a_concurrent_keystroke() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     store
         .blobs
@@ -294,25 +435,22 @@ async fn failed_accept_compensates_without_losing_a_concurrent_keystroke() {
         .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
-    rooms.attach_store(store);
+    rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
     let room = rooms.get("probe").await;
     let id = add_suggestion(&room, "B").await;
-    *hooked.pause.lock().unwrap() = Some((
-        "put".into(),
-        blob::content_recipe_key("probe", &store::digest_of("B")),
-    ));
-    *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
+    let gate = CheckpointPause::new("probe");
 
-    let accept = tokio::spawn({
+    let accepting = tokio::spawn({
         let room = room.clone();
-        async move { room.accept_suggestion(&id, "accept-failure", "alice").await }
+        let id = id.clone();
+        async move { accept(&room, &id, "accept-failure").await }
     });
-    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
-        .await
-        .unwrap();
+    gate.reached().await;
     room.set_source("A!", "markdown").await.unwrap();
-    hooked.resume.notify_one();
-    let result = accept.await.unwrap();
+    fail_checkpoint_objects(&hooked, &store, "probe");
+    gate.resume();
+    let result = accepting.await.unwrap();
     assert!(
         result.is_err(),
         "the injected checkpoint failure must surface"
@@ -320,8 +458,11 @@ async fn failed_accept_compensates_without_losing_a_concurrent_keystroke() {
     assert_eq!(
         room.source().await,
         "A!",
-        "the concurrent edit survived rollback"
+        "the concurrent edit survives the staged failure"
     );
+    *hooked.fail.lock().unwrap() = None;
+    assert!(accept(&room, &id, "accept-failure").await.is_ok());
+    assert_eq!(room.source().await, "A!");
 }
 
 async fn catalog_fixture() -> (
@@ -346,26 +487,23 @@ async fn catalog_fixture() -> (
             store::Publication {
                 slug: "accept-probe".into(),
                 source: "A".into(),
+                main: "main.md".into(),
                 source_format: "markdown".into(),
                 owner: "alice".into(),
-                peak_bytes: Some(8192),
                 ..Default::default()
             },
             catalog_actor(),
         )
         .await
         .unwrap();
-    let rooms = room::RoomSet::new(blobs, config);
+    let rooms = room::RoomSet::new(blobs.clone(), config);
     rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, blobs);
     let room = rooms.get("accept-probe").await;
     room.set_main_file("A", "markdown", "main.md")
         .await
         .unwrap();
-    let mut token = room.reserve_publication_checkpoint().unwrap();
-    room.checkpoint_publication_now("cli", "alice", &mut token)
-        .await
-        .unwrap();
-    token.commit();
+    room.checkpoint_now("cli", "alice").await.unwrap();
     (dir, store, rooms, room)
 }
 
@@ -393,9 +531,9 @@ async fn catalog_hook_fixture() -> (
             store::Publication {
                 slug: "accept-crash".into(),
                 source: "A".into(),
+                main: "main.md".into(),
                 source_format: "markdown".into(),
                 owner: "alice".into(),
-                peak_bytes: Some(8192),
                 ..Default::default()
             },
             catalog_actor(),
@@ -404,36 +542,33 @@ async fn catalog_hook_fixture() -> (
         .unwrap();
     let rooms = room::RoomSet::new(hooked.clone(), config);
     rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
     let room = rooms.get("accept-crash").await;
     room.set_main_file("A", "markdown", "main.md")
         .await
         .unwrap();
-    let mut token = room.reserve_publication_checkpoint().unwrap();
-    room.checkpoint_publication_now("cli", "alice", &mut token)
-        .await
-        .unwrap();
-    token.commit();
+    room.checkpoint_now("cli", "alice").await.unwrap();
     (dir, store, hooked, rooms, room)
 }
 
 async fn add_catalog_suggestion(room: &room::Room) -> String {
-    let (payload, ok) = room
-        .apply(
-            room::Message {
-                kind: "comment".into(),
-                motivation: "editing".into(),
-                exact: "A".into(),
-                proposed: Some("AA".into()),
-                source: Some(source_anchor("A")),
-                ..Default::default()
-            },
-            "127.0.0.1",
-            "alice",
-            "",
-            None,
-            true,
-        )
-        .await;
+    let (payload, ok) = apply_message(
+        room,
+        room::Message {
+            kind: "comment".into(),
+            motivation: "editing".into(),
+            exact: "A".into(),
+            proposed: Some("AA".into()),
+            source: Some(source_anchor("A")),
+            ..Default::default()
+        },
+        "127.0.0.1",
+        "alice",
+        "",
+        None,
+        true,
+    )
+    .await;
     assert!(ok, "{payload}");
     payload["comment"]["id"].as_str().unwrap().to_string()
 }
@@ -444,26 +579,20 @@ async fn staged_accept_rejects_conflicting_request_and_retry_reuses_update() {
     let id = add_catalog_suggestion(&room).await;
     let conn = rusqlite::Connection::open(dir.path().join("catalog.db")).unwrap();
     conn.execute_batch(
-        "CREATE TRIGGER fail_accept BEFORE UPDATE ON comments
-         WHEN NEW.outcome='accepted' BEGIN
+        "CREATE TRIGGER fail_accept BEFORE UPDATE ON annotations
+         WHEN NEW.suggestion_state='accepted' BEGIN
          SELECT RAISE(ABORT,'injected receipt failure'); END;",
     )
     .unwrap();
-    assert!(room
-        .accept_suggestion(&id, "accept-retry", "alice")
-        .await
-        .is_err());
+    assert!(accept(&room, &id, "accept-retry").await.is_err());
     assert_eq!(room.source().await, "AA");
-    assert!(room.reject_suggestion(&id).await.is_err());
     assert!(room
-        .accept_suggestion(&id, "a-different-request", "alice")
+        .reject_suggestion_authorized(&id, "github:alice", "room-test-session")
         .await
         .is_err());
+    assert!(accept(&room, &id, "a-different-request").await.is_err());
     conn.execute_batch("DROP TRIGGER fail_accept;").unwrap();
-    assert!(room
-        .accept_suggestion(&id, "accept-retry", "alice")
-        .await
-        .is_ok());
+    assert!(accept(&room, &id, "accept-retry").await.is_ok());
     assert_eq!(room.source().await, "AA");
 }
 
@@ -473,15 +602,12 @@ async fn receipt_failure_survives_room_reload_before_retry() {
     let id = add_catalog_suggestion(&room).await;
     let conn = rusqlite::Connection::open(dir.path().join("catalog.db")).unwrap();
     conn.execute_batch(
-        "CREATE TRIGGER fail_accept BEFORE UPDATE ON comments
-         WHEN NEW.outcome='accepted' BEGIN
+        "CREATE TRIGGER fail_accept BEFORE UPDATE ON annotations
+         WHEN NEW.suggestion_state='accepted' BEGIN
          SELECT RAISE(ABORT,'injected receipt failure'); END;",
     )
     .unwrap();
-    assert!(room
-        .accept_suggestion(&id, "accept-reload", "alice")
-        .await
-        .is_err());
+    assert!(accept(&room, &id, "accept-reload").await.is_err());
     assert_eq!(room.source().await, "AA");
     conn.execute_batch("DROP TRIGGER fail_accept;").unwrap();
 
@@ -492,12 +618,10 @@ async fn receipt_failure_survives_room_reload_before_retry() {
         .await
         .unwrap();
     let reopened = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
-    reopened.attach_store(store);
+    reopened.attach_store(store.clone());
+    attach_fixture_journal(&reopened, &store, store.blobs.clone());
     let room = reopened.get("accept-probe").await;
-    assert!(room
-        .accept_suggestion(&id, "accept-reload", "alice")
-        .await
-        .is_ok());
+    assert!(accept(&room, &id, "accept-reload").await.is_ok());
     assert_eq!(room.source().await, "AA");
 }
 
@@ -506,47 +630,83 @@ async fn stale_accept_does_not_leave_an_unstaged_receipt_lock() {
     let (_dir, _store, _rooms, room) = catalog_fixture().await;
     let id = add_catalog_suggestion(&room).await;
     room.set_source("unrelated", "markdown").await.unwrap();
+    assert!(accept(&room, &id, "stale-accept").await.is_err());
+    assert!(matches!(
+        accept(&room, &id, "stale-accept").await,
+        Err(room::AcceptError::Failed(message)) if message.contains("acceptance was aborted")
+    ));
     assert!(room
-        .accept_suggestion(&id, "stale-accept", "alice")
+        .reject_suggestion_authorized(&id, "github:alice", "room-test-session")
         .await
-        .is_err());
-    assert!(room.reject_suggestion(&id).await.is_ok());
+        .is_ok());
+}
+
+#[tokio::test]
+async fn cancellation_during_receipt_insertion_releases_the_unstaged_lock() {
+    let (_dir, store, _rooms, room) = catalog_fixture().await;
+    let id = add_catalog_suggestion(&room).await;
+    let gate = room::AcceptanceReceiptGate::new("accept-probe");
+    *room::before_acceptance_receipt_gate().lock().unwrap() = Some(gate.clone());
+    let accepting = tokio::spawn({
+        let room = room.clone();
+        let id = id.clone();
+        async move { accept(&room, &id, "cancel-dispatched-accept").await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.reached.notified())
+        .await
+        .expect("receipt insertion has been dispatched to the catalogue worker");
+    accepting.abort();
+    assert!(matches!(accepting.await, Err(error) if error.is_cancelled()));
+    gate.resume.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.completed.notified())
+        .await
+        .expect("the detached insertion and its cleanup both finish");
+    *room::before_acceptance_receipt_gate().lock().unwrap() = None;
+    let catalog = store.catalog.as_ref().unwrap();
+    let state = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT state FROM operations WHERE request_key=?1",
+                    [request_key("cancel-dispatched-accept")],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(
+        state, "aborted",
+        "the job committed its receipt and completion released it"
+    );
+    assert!(!catalog
+        .pending_suggestion_accept("accept-probe", &id)
+        .unwrap());
+    assert_eq!(room.source().await, "A");
+    assert!(room
+        .reject_suggestion_authorized(&id, "github:alice", "room-test-session")
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
 async fn staged_accept_replays_unsaved_preaccept_state_after_reload() {
-    let (dir, store, hooked, _rooms, room) = catalog_hook_fixture().await;
-    let catalog = crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap();
-    let storage_id = catalog
-        .document("accept-crash")
-        .unwrap()
-        .unwrap()
-        .storage_id;
+    let (_dir, store, hooked, _rooms, room) = catalog_hook_fixture().await;
     room.set_source("A!", "markdown").await.unwrap();
     let id = add_catalog_suggestion(&room).await;
 
     // The merge produces AA!; pause exactly after the prepared receipt and
     // live CRDT apply, then cancel the task to model a process crash before
     // the checkpoint can persist the session.
-    *hooked.pause.lock().unwrap() = Some((
-        "put".into(),
-        blob::content_recipe_key(&storage_id, &store::digest_of("AA!")),
-    ));
-    *hooked.fail.lock().unwrap() = Some(blob::history_index_key("accept-crash"));
+    let gate = CheckpointPause::new("accept-crash");
     let request_comment = id.clone();
     let task = tokio::spawn({
         let room = room.clone();
-        async move {
-            room.accept_suggestion(&request_comment, "accept-crash-retry", "alice")
-                .await
-        }
+        async move { accept(&room, &request_comment, "accept-crash-retry").await }
     });
-    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
-        .await
-        .unwrap();
+    gate.reached().await;
     task.abort();
     let _ = task.await;
-    hooked.resume.notify_one();
+    gate.resume();
     *hooked.fail.lock().unwrap() = None;
 
     store
@@ -555,11 +715,11 @@ async fn staged_accept_replays_unsaved_preaccept_state_after_reload() {
         .await
         .unwrap();
     let reopened = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
-    reopened.attach_store(store);
+    reopened.attach_store(store.clone());
+    attach_fixture_journal(&reopened, &store, store.blobs.clone());
     let reopened_room = reopened.get("accept-crash").await;
     assert_eq!(reopened_room.source().await, "A");
-    assert!(reopened_room
-        .accept_suggestion(&id, "accept-crash-retry", "alice")
+    assert!(accept(&reopened_room, &id, "accept-crash-retry")
         .await
         .is_ok());
     assert_eq!(reopened_room.source().await, "AA!");
@@ -575,7 +735,8 @@ async fn failed_accept_broadcasts_a_sequence_a_peer_can_replay() {
         .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
-    rooms.attach_store(store);
+    rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
     let room = rooms.get("probe").await;
     let id = add_suggestion(&room, "B").await;
     let initial = room.open_state(None).await.0;
@@ -583,20 +744,16 @@ async fn failed_accept_broadcasts_a_sequence_a_peer_can_replay() {
     session::apply_update(&peer, &initial).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     room.attach(99, tx, true).await;
-    *hooked.pause.lock().unwrap() = Some((
-        "put".into(),
-        blob::content_recipe_key("probe", &store::digest_of("B")),
-    ));
-    *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
+    let gate = CheckpointPause::new("probe");
     let task = tokio::spawn({
         let room = room.clone();
-        async move { room.accept_suggestion(&id, "accept-peer", "alice").await }
+        let id = id.clone();
+        async move { accept(&room, &id, "accept-peer").await }
     });
-    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
-        .await
-        .unwrap();
+    gate.reached().await;
     room.set_source("A!", "markdown").await.unwrap();
-    hooked.resume.notify_one();
+    fail_checkpoint_objects(&hooked, &store, "probe");
+    gate.resume();
     assert!(task.await.unwrap().is_err());
 
     for _ in 0..2 {
@@ -616,7 +773,7 @@ async fn failed_accept_broadcasts_a_sequence_a_peer_can_replay() {
 }
 
 #[tokio::test]
-async fn review_failed_deletion_accept_restores_repeated_passage() {
+async fn failed_deletion_accept_retries_the_first_repeated_passage_once() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     store
         .blobs
@@ -625,25 +782,24 @@ async fn review_failed_deletion_accept_restores_repeated_passage() {
         .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
-    rooms.attach_store(store);
+    rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
     let room = rooms.get("probe").await;
     room.set_source("A A", "markdown").await.unwrap();
     room.checkpoint_now("cli", "alice").await.unwrap();
     let id = add_suggestion(&room, "").await;
-    *hooked.fail.lock().unwrap() = Some("content/".into());
-    let result = room
-        .accept_suggestion(&id, "failed-deletion", "alice")
-        .await;
-    assert!(result.is_err());
+    fail_staged_accept(&room, &hooked, &store, &id, "failed-deletion").await;
+    assert_eq!(room.source().await, " A");
+    assert!(accept(&room, &id, "failed-deletion").await.is_ok());
     assert_eq!(
         room.source().await,
-        "A A",
-        "failed deletion acceptance must restore the original text"
+        " A",
+        "retry must not delete the remaining repeated passage"
     );
 }
 
 #[tokio::test]
-async fn failed_deletion_restores_the_later_repeated_passage() {
+async fn failed_deletion_accept_retries_the_later_repeated_passage_once() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     store
         .blobs
@@ -652,41 +808,44 @@ async fn failed_deletion_restores_the_later_repeated_passage() {
         .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
-    rooms.attach_store(store);
+    rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
     let room = rooms.get("probe").await;
     room.set_source("A A", "markdown").await.unwrap();
     room.checkpoint_now("cli", "alice").await.unwrap();
-    let (payload, ok) = room
-        .apply(
-            room::Message {
-                kind: "comment".into(),
-                motivation: "editing".into(),
+    let (payload, ok) = apply_message(
+        &room,
+        room::Message {
+            kind: "comment".into(),
+            motivation: "editing".into(),
+            exact: "A".into(),
+            proposed: Some(String::new()),
+            source: Some(room::SourceAnchor {
+                path: "main.md".into(),
                 exact: "A".into(),
-                proposed: Some(String::new()),
-                source: Some(room::SourceAnchor {
-                    path: "main.md".into(),
-                    exact: "A".into(),
-                    prefix: String::new(),
-                    suffix: String::new(),
-                    position: Some(2),
-                }),
-                ..Default::default()
-            },
-            "127.0.0.1",
-            "github:reviewer",
-            "",
-            None,
-            false,
-        )
-        .await;
+                prefix: String::new(),
+                suffix: String::new(),
+                position: Some(2),
+            }),
+            ..Default::default()
+        },
+        "127.0.0.1",
+        "github:reviewer",
+        "",
+        None,
+        false,
+    )
+    .await;
     assert!(ok, "{payload}");
     let id = payload["comment"]["id"].as_str().unwrap();
-    *hooked.fail.lock().unwrap() = Some("content/".into());
-    assert!(room
-        .accept_suggestion(id, "failed-later-deletion", "alice")
-        .await
-        .is_err());
-    assert_eq!(room.source().await, "A A");
+    fail_staged_accept(&room, &hooked, &store, id, "failed-later-deletion").await;
+    assert_eq!(room.source().await, "A ");
+    assert!(accept(&room, id, "failed-later-deletion").await.is_ok());
+    assert_eq!(
+        room.source().await,
+        "A ",
+        "retry must not delete the remaining repeated passage"
+    );
 }
 
 #[tokio::test]
@@ -700,54 +859,58 @@ async fn failed_deletion_follows_a_concurrent_insert_before_the_anchor() {
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
     let room = rooms.get("probe").await;
     room.set_source("A A", "markdown").await.unwrap();
     room.checkpoint_now("cli", "alice").await.unwrap();
-    let (payload, ok) = room
-        .apply(
-            room::Message {
-                kind: "comment".into(),
-                motivation: "editing".into(),
+    let (payload, ok) = apply_message(
+        &room,
+        room::Message {
+            kind: "comment".into(),
+            motivation: "editing".into(),
+            exact: "A".into(),
+            proposed: Some(String::new()),
+            source: Some(room::SourceAnchor {
+                path: "main.md".into(),
                 exact: "A".into(),
-                proposed: Some(String::new()),
-                source: Some(room::SourceAnchor {
-                    path: "main.md".into(),
-                    exact: "A".into(),
-                    prefix: String::new(),
-                    suffix: String::new(),
-                    position: Some(2),
-                }),
-                ..Default::default()
-            },
-            "127.0.0.1",
-            "github:reviewer",
-            "",
-            None,
-            false,
-        )
-        .await;
+                prefix: String::new(),
+                suffix: String::new(),
+                position: Some(2),
+            }),
+            ..Default::default()
+        },
+        "127.0.0.1",
+        "github:reviewer",
+        "",
+        None,
+        false,
+    )
+    .await;
     assert!(ok, "{payload}");
     let id = payload["comment"]["id"].as_str().unwrap().to_string();
-    *hooked.pause.lock().unwrap() = Some((
-        "put".into(),
-        blob::content_recipe_key("probe", &store::digest_of("A ")),
-    ));
-    *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
+    let gate = CheckpointPause::new("probe");
     let task = tokio::spawn({
         let room = room.clone();
-        async move { room.accept_suggestion(&id, "failed-insert", "alice").await }
+        let id = id.clone();
+        async move { accept(&room, &id, "failed-insert").await }
     });
-    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
-        .await
-        .unwrap();
+    gate.reached().await;
     room.set_source("!A ", "markdown").await.unwrap();
-    hooked.resume.notify_one();
+    fail_checkpoint_objects(&hooked, &store, "probe");
+    gate.resume();
     assert!(task.await.unwrap().is_err());
-    assert_eq!(room.source().await, "!A A");
+    assert_eq!(room.source().await, "!A ");
+    *hooked.fail.lock().unwrap() = None;
+    assert!(accept(&room, &id, "failed-insert").await.is_ok());
+    assert_eq!(
+        room.source().await,
+        "!A ",
+        "retry preserves the concurrent prefix and does not delete twice"
+    );
 }
 
 #[tokio::test]
-async fn failed_deletion_rollback_converges_for_a_peer() {
+async fn failed_deletion_staging_converges_for_a_peer() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     store
         .blobs
@@ -756,33 +919,34 @@ async fn failed_deletion_rollback_converges_for_a_peer() {
         .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
-    rooms.attach_store(store);
+    rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
     let room = rooms.get("probe").await;
     room.set_source("A A", "markdown").await.unwrap();
     room.checkpoint_now("cli", "alice").await.unwrap();
-    let (payload, ok) = room
-        .apply(
-            room::Message {
-                kind: "comment".into(),
-                motivation: "editing".into(),
+    let (payload, ok) = apply_message(
+        &room,
+        room::Message {
+            kind: "comment".into(),
+            motivation: "editing".into(),
+            exact: "A".into(),
+            proposed: Some(String::new()),
+            source: Some(room::SourceAnchor {
+                path: "main.md".into(),
                 exact: "A".into(),
-                proposed: Some(String::new()),
-                source: Some(room::SourceAnchor {
-                    path: "main.md".into(),
-                    exact: "A".into(),
-                    prefix: String::new(),
-                    suffix: String::new(),
-                    position: Some(2),
-                }),
-                ..Default::default()
-            },
-            "127.0.0.1",
-            "github:reviewer",
-            "",
-            None,
-            false,
-        )
-        .await;
+                prefix: String::new(),
+                suffix: String::new(),
+                position: Some(2),
+            }),
+            ..Default::default()
+        },
+        "127.0.0.1",
+        "github:reviewer",
+        "",
+        None,
+        false,
+    )
+    .await;
     assert!(ok, "{payload}");
     let id = payload["comment"]["id"].as_str().unwrap().to_string();
     let initial = room.open_state(None).await.0;
@@ -790,22 +954,15 @@ async fn failed_deletion_rollback_converges_for_a_peer() {
     session::apply_update(&peer, &initial).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     room.attach(99, tx, true).await;
-    *hooked.pause.lock().unwrap() = Some((
-        "put".into(),
-        blob::content_recipe_key("probe", &store::digest_of("A ")),
-    ));
-    *hooked.fail.lock().unwrap() = Some(blob::history_index_key("probe"));
+    let gate = CheckpointPause::new("probe");
     let task = tokio::spawn({
         let room = room.clone();
-        async move {
-            room.accept_suggestion(&id, "failed-peer-deletion", "alice")
-                .await
-        }
+        let id = id.clone();
+        async move { accept(&room, &id, "failed-peer-deletion").await }
     });
-    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
-        .await
-        .unwrap();
-    hooked.resume.notify_one();
+    gate.reached().await;
+    fail_checkpoint_objects(&hooked, &store, "probe");
+    gate.resume();
     assert!(task.await.unwrap().is_err());
     for _ in 0..2 {
         let frame = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
@@ -820,5 +977,8 @@ async fn failed_deletion_rollback_converges_for_a_peer() {
             }
         }
     }
-    assert_eq!(session::text_of(&peer), "A A");
+    assert_eq!(session::text_of(&peer), "A ");
+    *hooked.fail.lock().unwrap() = None;
+    assert!(accept(&room, &id, "failed-peer-deletion").await.is_ok());
+    assert_eq!(room.source().await, session::text_of(&peer));
 }

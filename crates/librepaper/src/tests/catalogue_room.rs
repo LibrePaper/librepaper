@@ -42,7 +42,7 @@ async fn fixture(
     Arc<room::Room>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), false));
     let catalog = Arc::new(Catalog::open(dir.path().join("catalog.db")).unwrap());
     catalog
         .upsert_account(&Account {
@@ -65,8 +65,9 @@ async fn fixture(
             .await
             .unwrap(),
     );
-    let rooms = RoomSet::new(blobs, config);
+    let rooms = RoomSet::new(blobs.clone(), config);
     rooms.attach_store(store.clone());
+    super::room::attach_fixture_journal(&rooms, &store, blobs);
     store
         .put_as_actor(
             store::Publication {
@@ -74,7 +75,6 @@ async fn fixture(
                 source: "first".into(),
                 source_format: "markdown".into(),
                 owner: "alice".into(),
-                peak_bytes: Some(1 << 20),
                 ..Default::default()
             },
             fixture_actor(),
@@ -82,14 +82,6 @@ async fn fixture(
         .await
         .unwrap();
     let room = rooms.get(slug).await;
-    let mut token = room.reserve_publication_checkpoint().unwrap();
-    room.set_main_file("first", "markdown", "main.md")
-        .await
-        .unwrap();
-    room.checkpoint_publication_now("seed", "alice", &mut token)
-        .await
-        .unwrap();
-    token.commit();
     (dir, store, rooms, catalog, room)
 }
 
@@ -102,18 +94,12 @@ fn pending_reservation(catalog: &Catalog, slug: &str) -> Option<i64> {
         .expect("the document is in the catalogue")
         .storage_id;
     catalog
-        .with_connection(|connection| {
-            use rusqlite::OptionalExtension;
-            connection
-                .query_row(
-                    "SELECT pending_bytes FROM room_edit_reservations WHERE storage_id=?1",
-                    [&storage_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
+        .room_reservations
+        .lock()
         .unwrap()
+        .documents
+        .get(&storage_id)
+        .map(|reservation| reservation.pending_bytes)
 }
 
 /// A job that holds the catalogue connection until it is told to let go. This
@@ -354,66 +340,43 @@ async fn an_applied_edit_keeps_its_reservation() {
     );
 }
 
-/// A checkpoint cancelled while its budget admission is in SQL must give the
-/// hour's bucket back, or the next checkpoint of a document at its limit is
-/// refused for a checkpoint that never happened.
+/// Cancelling after rate admission returns both process-local tokens, leaving
+/// capacity for the next checkpoint without committing an operation or root.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_checkpoint_cancelled_during_admission_refunds_its_budget() {
     let mut config = Configuration::default();
-    config.session.checkpoint_owner_per_hour = 2;
+    config.session.checkpoint_owner_per_hour = 1;
     let (_dir, _store, _rooms, catalog, room) = fixture("cancel-checkpoint", config).await;
     room.set_source("second", "markdown").await.unwrap();
-    let spent = charged_checkpoint_budget(&catalog);
-
+    let before = room.manifest().await.latest().unwrap().sha.clone();
     let gate = room::ReservationGate::new("cancel-checkpoint");
     *room::after_checkpoint_admission_gate().lock().unwrap() = Some(gate.clone());
     let checkpointing = tokio::spawn({
         let room = room.clone();
         async move { room.checkpoint_now("cancelled", "alice").await }
     });
-    let charged = catalog.clone();
-    until("the checkpoint budget to be charged", || {
-        charged_checkpoint_budget(&charged) > spent
-    })
-    .await;
-
+    tokio::time::timeout(Duration::from_secs(20), gate.reached.notified())
+        .await
+        .expect("checkpoint reaches rate admission");
+    assert!(catalog
+        .reserve_process_rate("account:github:alice", "checkpoint_owner", 1)
+        .is_err());
     checkpointing.abort();
     let _ = checkpointing.await;
     *room::after_checkpoint_admission_gate().lock().unwrap() = None;
     gate.resume.add_permits(1);
-    until("the cancelled checkpoint's budget to be refunded", || {
-        charged_checkpoint_budget(&catalog) == spent
-    })
-    .await;
-
-    // The seeding checkpoint spent one of the two admissions. If the
-    // cancelled one had kept the other there would be none left, and this
-    // would answer `None` rather than a new checkpoint.
+    let returned = catalog
+        .reserve_process_rate("account:github:alice", "checkpoint_owner", 1)
+        .expect("cancellation refunds the owner token");
+    drop(returned);
+    assert_eq!(room.manifest().await.latest().unwrap().sha, before);
     room.set_source("third", "markdown").await.unwrap();
-    let sha = room
+    assert!(room
         .checkpoint_now("after", "alice")
         .await
-        .expect("the checkpoint after a cancelled one still runs");
-    assert!(
-        sha.is_some(),
-        "a cancelled checkpoint must refund the budget bucket it charged"
-    );
-}
-
-/// The hour's charged owner checkpoint budget, which is what a cancelled
-/// publication must give back.
-fn charged_checkpoint_budget(catalog: &Catalog) -> i64 {
-    catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT COALESCE(SUM(used),0) FROM checkpoint_budgets WHERE scope='owner'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
         .unwrap()
+        .is_some());
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
 /// The responsiveness the boundary exists for: SQL parked on a blocking

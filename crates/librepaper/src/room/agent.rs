@@ -769,7 +769,7 @@ async fn abort_agent_operation(
 ) -> Result<(), AgentError> {
     let storage_id = room.storage_id.clone();
     let request_id = request_id.to_owned();
-    let reason = reason.to_owned();
+    let reason = serde_json::json!({"version": 2, "reason": reason}).to_string();
     let operation_id = request_id.clone();
     catalog
         .execute_catalog(operation_id.len() + reason.len() + 128, move |catalog| {
@@ -1587,7 +1587,7 @@ impl Room {
                             .abort_operation(
                                 &storage_id,
                                 &request_id_for_abort,
-                                "agent source receipt authorization failed; source rolled back",
+                                r#"{"version":2,"reason":"agent source receipt authorization failed; source rolled back"}"#,
                             )
                             .map(|_| ())
                     })
@@ -1771,68 +1771,6 @@ impl Room {
         let backup = backup_key(&self.storage_id, request_id);
         let _ = self.blobs.delete(&[backup]).await;
         Ok(receipt)
-    }
-
-    /// Undo an effect rejected before storage could report an ambiguous write.
-    /// Patches are reversed in ascending source order so each offset still
-    /// addresses the original text after all lower ranges have been restored.
-    async fn rollback_agent_memory(
-        &self,
-        request: &PatchRequest,
-        tree: &SourceTree,
-        request_id: &str,
-    ) -> Result<(), AgentError> {
-        use yrs::{Map, Out, RootRef, Text, Transact};
-        let mut state = self.state.lock().await;
-        self.checked_edit(&state.session.doc, |candidate| {
-            let files = yrs::MapRef::root(session::FILES)
-                .get(&candidate.transact())
-                .ok_or_else(|| AgentError::Storage("files map is absent during rollback".into()))?;
-            let paths = yrs::MapRef::root(session::PATHS)
-                .get(&candidate.transact())
-                .ok_or_else(|| AgentError::Storage("paths map is absent during rollback".into()))?;
-            let meta = yrs::MapRef::root(session::META)
-                .get(&candidate.transact())
-                .ok_or_else(|| AgentError::Storage("meta map is absent during rollback".into()))?;
-            let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
-            for patch in &request.patches {
-                by_path.entry(&patch.path).or_default().push(patch);
-            }
-            let mut txn = candidate.transact_mut();
-            for (path, mut patches) in by_path {
-                patches.sort_by_key(|patch| patch.start);
-                let file_id = paths
-                    .iter(&txn)
-                    .find_map(|(id, value)| match value {
-                        Out::Any(value) if value.to_string() == path => Some(id.to_string()),
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        AgentError::Storage(format!("file is absent during rollback: {path}"))
-                    })?;
-                let Some(Out::YText(text)) = files.get(&txn, &file_id) else {
-                    return Err(AgentError::Storage(format!(
-                        "file is absent during rollback: {path}"
-                    )));
-                };
-                for patch in patches {
-                    let at = byte_to_utf16(&tree.files[path].text, patch.start);
-                    let length = patch.replacement.encode_utf16().count();
-                    text.remove_range(&mut txn, at as u32, length as u32);
-                    if !patch.exact.is_empty() {
-                        text.insert(&mut txn, at as u32, &patch.exact);
-                    }
-                }
-            }
-            meta.remove(&mut txn, &marker_key(request_id));
-            drop(txn);
-
-            Ok::<_, AgentError>(())
-        })?;
-        state.session.mark_dirty(crate::util::now_unix());
-        state.session.generation = state.session.generation.saturating_add(1);
-        state.session.updated_at = crate::util::now_unix();
-        Ok(())
     }
 }
 

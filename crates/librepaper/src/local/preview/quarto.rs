@@ -158,6 +158,21 @@ pub(crate) fn plan(
     if kind == ArtifactKind::Html {
         command.arg("-M").arg("embed-resources:true");
     }
+    // The confined process receives only explicit environment variables.
+    // Keep runtime caches inside the writable Quarto project, rather than
+    // requiring access to the caller's home directory.
+    let cache = binding.root.join(".quarto").join("preview-cache");
+    std::fs::create_dir_all(&cache).map_err(|error| error.to_string())?;
+    command.env("DENO_DIR", cache.join("deno"));
+    command.env("XDG_CACHE_HOME", &cache);
+    if let Some(path) = std::env::var_os("PATH") {
+        let paths: Vec<_> = std::env::split_paths(&path)
+            .filter(|path| path.is_absolute())
+            .collect();
+        if let Ok(path) = std::env::join_paths(paths) {
+            command.env("PATH", path);
+        }
+    }
     let confinement = crate::local::confine::detect();
     if !confinement.available {
         return Err(format!(

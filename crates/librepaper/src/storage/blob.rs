@@ -40,7 +40,9 @@ impl ObjectId {
             || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
             || value.bytes().any(|byte| byte.is_ascii_uppercase())
         {
-            return Err(BlobError::Other("object id must be 32 lowercase hex digits".into()));
+            return Err(BlobError::Other(
+                "object id must be 32 lowercase hex digits".into(),
+            ));
         }
         Ok(Self(value))
     }
@@ -79,7 +81,10 @@ impl<'de> serde::Deserialize<'de> for ObjectId {
 /// Mutable document slugs never occur in this key.
 pub fn v2_object_key(document_id: &str, object_id: &ObjectId) -> BlobResult<String> {
     validate_document_id(document_id)?;
-    Ok(format!("v2/documents/{document_id}/objects/{}", object_id.as_str()))
+    Ok(format!(
+        "v2/documents/{document_id}/objects/{}",
+        object_id.as_str()
+    ))
 }
 
 pub fn validate_document_id(document_id: &str) -> BlobResult<()> {
@@ -103,15 +108,21 @@ pub fn validate_v2_object_key(key: &str) -> BlobResult<()> {
 pub fn parse_v2_object_key(key: &str) -> BlobResult<(String, ObjectId)> {
     let mut components = key.split('/');
     if components.next() != Some("v2") || components.next() != Some("documents") {
-        return Err(BlobError::Other("object key is outside the v2 namespace".into()));
+        return Err(BlobError::Other(
+            "object key is outside the v2 namespace".into(),
+        ));
     }
     let document_id = components.next().unwrap_or_default();
     if components.next() != Some("objects") {
-        return Err(BlobError::Other("object key is outside the v2 namespace".into()));
+        return Err(BlobError::Other(
+            "object key is outside the v2 namespace".into(),
+        ));
     }
     let object_id = components.next().unwrap_or_default();
     if components.next().is_some() {
-        return Err(BlobError::Other("object key has unexpected components".into()));
+        return Err(BlobError::Other(
+            "object key has unexpected components".into(),
+        ));
     }
     validate_document_id(document_id)?;
     ObjectId::parse(object_id.to_owned()).map(|object_id| (document_id.to_owned(), object_id))
@@ -129,16 +140,6 @@ pub struct WrittenObject {
 /// be settled in `objects`. The catalog row is intentionally created and
 /// settled by the caller's typed operation; a successful PUT alone is never a
 /// user-visible acknowledgement.
-pub async fn write_v2_object(
-    blobs: &dyn BlobStore,
-    document_id: &str,
-    body: Vec<u8>,
-    content_type: &str,
-) -> BlobResult<WrittenObject> {
-    let object_id = ObjectId::random();
-    write_v2_object_with_id(blobs, document_id, object_id, body, content_type).await
-}
-
 pub async fn write_v2_object_with_id(
     blobs: &dyn BlobStore,
     document_id: &str,
@@ -150,7 +151,12 @@ pub async fn write_v2_object_with_id(
     let digest = hex::encode(Sha256::digest(&body));
     let byte_length = body.len() as u64;
     blobs.put_new(&storage_key, body, content_type).await?;
-    Ok(WrittenObject { object_id, storage_key, digest, byte_length })
+    Ok(WrittenObject {
+        object_id,
+        storage_key,
+        digest,
+        byte_length,
+    })
 }
 
 /// One object in a listing. Size is what the quotas are summed from when an
@@ -274,7 +280,9 @@ pub trait BlobStore: Send + Sync {
     /// the complete file in memory. Backends must opt into this operation;
     /// silently reading an unbounded snapshot into the request heap is unsafe.
     async fn put_file(&self, _key: &str, _path: &Path, _content_type: &str) -> BlobResult<()> {
-        Err(BlobError::Other("streaming file upload is unsupported by this store".into()))
+        Err(BlobError::Other(
+            "streaming file upload is unsupported by this store".into(),
+        ))
     }
     /// Publish an immutable v2 object. Implementations with an atomic
     /// no-replace primitive should override this; the default remains useful
@@ -1444,7 +1452,9 @@ pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
     ] {
         let mut after = None;
         loop {
-            let page = blobs.list_page(prefix, after.as_deref(), RESET_PAGE).await?;
+            let page = blobs
+                .list_page(prefix, after.as_deref(), RESET_PAGE)
+                .await?;
             if page.is_empty() {
                 break;
             }
@@ -1454,11 +1464,13 @@ pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
                 )));
             }
             let keys: Vec<String> = page.into_iter().map(|object| object.key).collect();
-            let last = keys
-                .last()
-                .cloned()
-                .ok_or_else(|| BlobError::Other("seed reset received an empty object page".into()))?;
-            if after.as_deref().is_some_and(|cursor| last.as_str() <= cursor) {
+            let last = keys.last().cloned().ok_or_else(|| {
+                BlobError::Other("seed reset received an empty object page".into())
+            })?;
+            if after
+                .as_deref()
+                .is_some_and(|cursor| last.as_str() <= cursor)
+            {
                 return Err(BlobError::Other(format!(
                     "seed reset object cursor did not advance under {prefix}"
                 )));
@@ -1830,12 +1842,13 @@ mod tests {
     async fn checked_seed_cleanup_is_paged_and_resumable_after_delete_failure() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let blobs = FlakyDeleteStore {
-            inner: FsStore::new(directory.path(), true),
+            // This exercises deletion failure and paging, not power-loss durability.
+            inner: FsStore::new(directory.path(), false),
             fail_next: AtomicUsize::new(1),
         };
         for index in 0..600u32 {
-            let document = format!("{index:064x}");
-            let object = format!("{index:064x}");
+            let document = format!("{index:032x}");
+            let object = format!("{index:032x}");
             blobs
                 .put(
                     &format!("v2/documents/{document}/objects/{object}"),
@@ -1856,7 +1869,10 @@ mod tests {
             .await
             .expect("retry seed cleanup");
         assert!(blobs.inner.list("v2/").await.unwrap().is_empty());
-        assert!(matches!(blobs.get(INDEX_KEY).await, Err(BlobError::NotFound)));
+        assert!(matches!(
+            blobs.get(INDEX_KEY).await,
+            Err(BlobError::NotFound)
+        ));
     }
 
     struct FlakyDeleteStore {

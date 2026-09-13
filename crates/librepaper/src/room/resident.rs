@@ -197,6 +197,18 @@ mod tests {
 
     use std::sync::Arc;
 
+    fn actor() -> MutationActor {
+        MutationActor {
+            account_id: "alice".into(),
+            owner_key: String::new(),
+            session_generation: "resident-fixture-session".into(),
+            link_hash: String::new(),
+            policy_editor: true,
+            automation: false,
+            unowned_publisher: false,
+        }
+    }
+
     /// A room seeded and checkpointed once, the shape the room tests use.
     async fn fixture(config: Configuration) -> (tempfile::TempDir, Arc<Store>, RoomSet, Arc<Room>) {
         let directory = tempfile::tempdir().unwrap();
@@ -215,7 +227,10 @@ mod tests {
                     email: None,
                     plan: "default".into(),
                     session_generation: "resident-fixture-session".into(),
-                    preferences_json: r#"{"version":2}"#.into(),
+                    preferences_json: serde_json::to_string(
+                        &crate::document::quota::QuotaPreferences::default(),
+                    )
+                    .unwrap(),
                     bookmarks_json: r#"{"version":1}"#.into(),
                     onboarding_json: r#"{"version":1}"#.into(),
                 },
@@ -245,22 +260,14 @@ mod tests {
         store
             .put_as_actor(
                 store::Publication {
-                slug: "probe".into(),
-                source: "alpha".into(),
-                source_format: "markdown".into(),
-                owner: "alice".into(),
-                owner_id: "alice".into(),
-                ..Default::default()
+                    slug: "probe".into(),
+                    source: "alpha".into(),
+                    source_format: "markdown".into(),
+                    owner: "alice".into(),
+                    owner_id: "alice".into(),
+                    ..Default::default()
                 },
-                MutationActor {
-                    account_id: "alice".into(),
-                    owner_key: String::new(),
-                    session_generation: "resident-fixture-session".into(),
-                    link_hash: String::new(),
-                    policy_editor: true,
-                    automation: false,
-                    unowned_publisher: false,
-                },
+                actor(),
             )
             .await
             .unwrap();
@@ -287,6 +294,15 @@ mod tests {
             .saturating_add(serde_json::to_vec(&*state.comments).unwrap().len())
             .saturating_add(serde_json::to_vec(&*state.manifest).unwrap().len())
             .saturating_add(state.session.asset_sizes.len() * entry)
+    }
+
+    /// Admission and a no-op checkpoint must leave every component cached.
+    async fn assert_cached(room: &Room) -> usize {
+        let (bytes, encodes, serializations) = measure(room).await;
+        assert_eq!(encodes, 0);
+        assert_eq!(serializations, 0);
+        assert_eq!(bytes, recomputed(room).await);
+        bytes
     }
 
     /// Assert that a mutation was noticed: the next estimate re-measures, and
@@ -320,7 +336,7 @@ mod tests {
             region: None,
             output_anchor: None,
             source: (motivation == "editing").then(|| SourceAnchor {
-                path: "main.md".into(),
+                path: "index.md".into(),
                 exact: "alpha".into(),
                 position: Some(0),
                 ..Default::default()
@@ -447,7 +463,7 @@ mod tests {
     #[tokio::test]
     async fn comment_mutations_invalidate_the_comment_estimate() {
         let (_directory, _store, _rooms, room) = fixture(Configuration::default()).await;
-        let empty = assert_invalidated(&room, "a loaded room").await;
+        let empty = assert_cached(&room).await;
 
         apply(&room, comment("commenting", "a remark", "add")).await;
         let added = assert_invalidated(&room, "adding a comment").await;
@@ -473,7 +489,7 @@ mod tests {
             Command::Anchor {
                 comment_id: id.clone(),
                 source: SourceAnchor {
-                    path: "main.md".into(),
+                    path: "index.md".into(),
                     exact: "alpha".into(),
                     prefix: "a longer prefix than before".into(),
                     position: Some(0),
@@ -522,7 +538,9 @@ mod tests {
         let (_directory, _store, _rooms, room) = fixture(Configuration::default()).await;
         apply(&room, comment("editing", "", "reject-me")).await;
         let id = room.state.lock().await.comments[0].id.clone();
-        room.reject_suggestion(&id).await.unwrap();
+        room.reject_suggestion_authorized(&id, "alice", "resident-fixture-session")
+            .await
+            .unwrap();
         assert_invalidated(&room, "rejecting a suggestion").await;
 
         apply(&room, comment("editing", "", "accept-me")).await;
@@ -535,12 +553,21 @@ mod tests {
             .find(|item| item.outcome != "rejected" && item.motivation == "editing")
             .map(|item| item.id.clone())
             .unwrap();
-        assert!(
-            room.accept_suggestion(&id, &crate::util::new_request_key(), "alice")
-                .await
-                .is_ok(),
-            "the suggestion must apply to the seeded source"
-        );
+        room.accept_suggestion_authorized(
+            &id,
+            &crate::util::new_request_key(),
+            "alice",
+            "alice",
+            "resident-fixture-session",
+        )
+        .await
+        .unwrap_or_else(|error| match error {
+            crate::room::AcceptError::Stale => panic!("the seeded suggestion must not be stale"),
+            crate::room::AcceptError::Refused(message)
+            | crate::room::AcceptError::Failed(message) => {
+                panic!("the suggestion must apply to the seeded source: {message}")
+            }
+        });
         assert_invalidated(&room, "accepting a suggestion").await;
     }
 
@@ -548,11 +575,8 @@ mod tests {
     /// manifest, which is the estimate's other cached component.
     #[tokio::test]
     async fn manifest_mutations_invalidate_the_manifest_estimate() {
-        let mut config = Configuration::default();
-        // Small enough that the checkpoints below cross it and prune.
-        config.session.history_max = 3;
-        let (_directory, _store, _rooms, room) = fixture(config).await;
-        let first = assert_invalidated(&room, "a checkpointed room").await;
+        let (_directory, store, _rooms, room) = fixture(Configuration::default()).await;
+        let first = assert_cached(&room).await;
         let sha = room.state.lock().await.session.last_checkpoint.clone();
 
         room.set_source("alpha beta", "markdown").await.unwrap();
@@ -568,16 +592,55 @@ mod tests {
         room.restore_and_checkpoint(&point, "alice").await.unwrap();
         assert_invalidated(&room, "restoring a checkpoint").await;
 
-        // Cross the history ceiling: the manifest is pruned in place.
+        // Build enough routine history for the v2 maintenance policy to thin.
         for revision in 0..4 {
             room.set_source(&format!("revision {revision}"), "markdown")
                 .await
                 .unwrap();
             room.checkpoint_now("cli", "alice").await.unwrap();
         }
-        let pruned = assert_invalidated(&room, "pruning the manifest").await;
-        assert_eq!(room.manifest().await.checkpoints.len(), 3);
-        assert!(pruned > 0);
+        let before_pruning = assert_invalidated(&room, "taking routine checkpoints").await;
+        let before_count = room.manifest().await.checkpoints.len();
+        let catalog = store.catalog.as_ref().unwrap();
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "UPDATE documents SET retention_json=?1,retention_revision=retention_revision+1,retention_due_at=0 WHERE slug='probe'",
+                    [r#"{"version":1,"profile":"custom","maxRoutineCount":1}"#],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let now = crate::util::now_millis();
+        catalog
+            .schedule_document_balanced("probe", now, Default::default())
+            .unwrap();
+        assert!(catalog
+            .run_retention_pass(now, 32)
+            .unwrap()
+            .removed
+            .is_empty());
+        let pass = catalog.run_retention_pass(now + 86_400_001, 32).unwrap();
+        assert!(
+            !pass.removed.is_empty(),
+            "retention must remove routine history after grace"
+        );
+        room.refresh_retained_manifest().await;
+        let pruned = assert_invalidated(&room, "refreshing the pruned manifest").await;
+        let manifest = room.manifest().await;
+        assert_eq!(
+            manifest.checkpoints.len(),
+            before_count - pass.removed.len()
+        );
+        assert_eq!(
+            manifest.checkpoints.len(),
+            3,
+            "retain the current, labelled, and newest routine checkpoints"
+        );
+        assert!(
+            pruned < before_pruning,
+            "removed history must stop being counted"
+        );
     }
 
     /// Input assets are counted from map cardinality rather than
@@ -586,9 +649,9 @@ mod tests {
     async fn asset_writes_move_the_estimate() {
         let (_directory, _store, _rooms, room) = fixture(Configuration::default()).await;
         let entry = std::mem::size_of::<(String, i64)>();
-        let before = assert_invalidated(&room, "a room with no figures").await;
+        let before = assert_cached(&room).await;
         let (sha, _) = room
-            .put_asset(b"a figure".to_vec(), (1 << 20, 1 << 20))
+            .put_asset_authorized(b"a figure".to_vec(), (1 << 20, 1 << 20), &actor())
             .await
             .unwrap();
         let uploaded = room.resident_bytes().await;
@@ -607,7 +670,7 @@ mod tests {
     #[tokio::test]
     async fn source_edits_re_encode_once_and_only_once() {
         let (_directory, _store, _rooms, room) = fixture(Configuration::default()).await;
-        let before = assert_invalidated(&room, "a seeded room").await;
+        let before = assert_cached(&room).await;
         room.set_source("alpha and a good deal more text", "markdown")
             .await
             .unwrap();

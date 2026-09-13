@@ -7,15 +7,20 @@
 //! the request and check manifest membership before using the cache.
 
 use sha2::Digest;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
+#[cfg(test)]
 use futures_util::future::join_all;
 use tokio::sync::{watch, Semaphore};
 
 use crate::document::history::{Checkpoint, Tree};
-use crate::storage::blob::{blob_key, checkpoint_key, BlobError, BlobResult, BlobStore};
+#[cfg(test)]
+use crate::storage::blob::{blob_key, checkpoint_key};
+use crate::storage::blob::{BlobError, BlobResult, BlobStore};
 
 /// A bounded cache for immutable checkpoint objects.
 ///
@@ -312,6 +317,7 @@ impl CheckpointCache {
     /// Reads a checkpoint's tree and all its text bodies. Authorization and
     /// manifest membership remain the caller's responsibility.
     ///
+    #[cfg(test)]
     pub async fn load_checkpoint(
         &self,
         blobs: &dyn BlobStore,
@@ -326,6 +332,7 @@ impl CheckpointCache {
 
     /// As [`load_checkpoint`], with the committed source-history digests
     /// supplied by the caller's catalogue lease.
+    #[cfg(test)]
     pub async fn load_checkpoint_with_native_digests(
         &self,
         blobs: &dyn BlobStore,

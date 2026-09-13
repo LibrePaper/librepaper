@@ -141,8 +141,16 @@ async fn an_authenticated_editor_can_update_inputs_but_cannot_upload_renderings(
     .await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
-    let sha = server.instance.store.catalog.as_ref().unwrap()
-        .checkpoints(&slug, None, 1).unwrap().remove(0).sha;
+    let sha = server
+        .instance
+        .store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .checkpoints(&slug, None, 1)
+        .unwrap()
+        .remove(0)
+        .sha;
     let (_, shared) = post_as(
         &session_as(TEST_PUBLISHER),
         &server.url,
@@ -233,7 +241,10 @@ async fn the_same_figure_twice_is_stored_once() {
     assert_eq!(stored.len(), 1, "the same bytes were stored twice");
     assert_eq!(stored[0].1, bytes.len() as i64);
     assert!(stored[0].0.starts_with("v2/documents/"));
-    assert_eq!(server.instance.store.blobs.get(&stored[0].0).await.unwrap(), bytes);
+    assert_eq!(
+        server.instance.store.blobs.get(&stored[0].0).await.unwrap(),
+        bytes
+    );
 }
 
 /* ------------------------------------------------------------------- rights */

@@ -403,7 +403,11 @@ async fn concurrent_updates_cannot_pass_the_size_limit() {
 async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
     let (_dir, store, original_rooms) = super::room::fixture(Configuration::default()).await;
     drop(original_rooms);
-    store.blobs.delete(&[crate::storage::blob::room_lock_key("probe")]).await.unwrap();
+    store
+        .blobs
+        .delete(&[crate::storage::blob::room_lock_key("probe")])
+        .await
+        .unwrap();
     let hooked = super::room::HookStore::new(store.blobs.clone());
     let rooms = crate::room::RoomSet::new(hooked.clone(), store.config.clone());
     rooms.attach_store(store.clone());
@@ -412,7 +416,11 @@ async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
     let catalog = store.catalog.as_ref().unwrap();
     let before = catalog.checkpoints("probe", None, 100).unwrap();
     room.set_source("edited", "markdown").await.unwrap();
-    *hooked.fail.lock().unwrap() = Some(super::room::object_write_prefix(&store, "probe").trim_end_matches('*').to_owned());
+    *hooked.fail.lock().unwrap() = Some(
+        super::room::object_write_prefix(&store, "probe")
+            .trim_end_matches('*')
+            .to_owned(),
+    );
     assert!(room.persist().await.is_err());
     assert_eq!(room.source().await, "edited");
     assert_eq!(catalog.checkpoints("probe", None, 100).unwrap(), before);
@@ -1212,7 +1220,11 @@ async fn a_second_process_over_the_same_storage_does_not_write() {
 async fn a_former_writer_generation_cannot_publish_after_being_fenced() {
     let (_dir, store, original_rooms) = super::room::fixture(Configuration::default()).await;
     drop(original_rooms);
-    store.blobs.delete(&[crate::storage::blob::room_lock_key("probe")]).await.unwrap();
+    store
+        .blobs
+        .delete(&[crate::storage::blob::room_lock_key("probe")])
+        .await
+        .unwrap();
     let hooked = super::room::HookStore::new(store.blobs.clone());
     let rooms = crate::room::RoomSet::new(hooked.clone(), store.config.clone());
     rooms.attach_store(store.clone());
@@ -1224,16 +1236,32 @@ async fn a_former_writer_generation_cannot_publish_after_being_fenced() {
     let before = super::room::recovered_session(&store, "probe").await;
     let vector = crate::document::session::encode_vector(&before);
     room.set_source("stale writer", "markdown").await.unwrap();
-    *hooked.pause.lock().unwrap() = Some(("put".into(), super::room::object_write_prefix(&store, "probe")));
+    *hooked.pause.lock().unwrap() = Some((
+        "put".into(),
+        super::room::object_write_prefix(&store, "probe"),
+    ));
     let writer = room.clone();
     let pending = tokio::spawn(async move { writer.persist().await });
-    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified()).await.unwrap();
-    catalog.with_connection(|connection| {
-        connection.execute("UPDATE server_state SET writer_generation='replacement-generation' WHERE id=1", [])?;
-        Ok(())
-    }).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE server_state SET writer_generation='replacement-generation' WHERE id=1",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     hooked.resume.notify_one();
-    assert!(tokio::time::timeout(std::time::Duration::from_secs(2), pending).await.unwrap().unwrap().is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), pending)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
     let recovered = super::room::recovered_session(&store, "probe").await;
     assert_eq!(crate::document::session::encode_vector(&recovered), vector);
     assert!(catalog.audit_v2_counters().unwrap());

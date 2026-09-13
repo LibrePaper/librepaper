@@ -3,6 +3,16 @@
 //! The descriptor is stored as an ordinary physical object. Only its identity
 //! and the authority fence belong in the operation plan.
 
+type PublicationOperationRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<i64>,
+);
+
 use super::*;
 
 pub(crate) struct PublicationWork {
@@ -10,7 +20,6 @@ pub(crate) struct PublicationWork {
     pub state: String,
     pub request_digest: String,
     pub plan: serde_json::Value,
-    pub result: Option<serde_json::Value>,
     pub objects: Vec<V2Object>,
     pub lease_expires_at: i64,
 }
@@ -28,14 +37,14 @@ impl Catalog {
     ) -> CatalogResult<Option<PublicationWork>> {
         let actor_key = publication_actor_key(actor)?;
         self.immediate(|tx| {
-            let row: Option<(String, String, String, String, Option<String>, String, Option<i64>, Option<i64>)> = tx.query_row(
-                "SELECT id,state,request_digest,plan_json,result_json,writer_generation,work_expires_at,receipt_expires_at
+            let row: Option<PublicationOperationRow> = tx.query_row(
+                "SELECT id,state,request_digest,plan_json,writer_generation,work_expires_at,receipt_expires_at
                    FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3
                     AND kind='display_publish'",
                 params![document.as_str(), actor_key, request_key],
-                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)),
             ).optional()?;
-            let Some((id,state,request_digest,plan,result,generation,deadline,receipt_expiry)) = row else {
+            let Some((id,state,request_digest,plan,generation,deadline,receipt_expiry)) = row else {
                 let conflicting: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3)",
                     params![document.as_str(),actor_key,request_key], |row| row.get(0),
@@ -62,11 +71,10 @@ impl Catalog {
             }
             let operation_id = OperationId::new(id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
             let plan: serde_json::Value = serde_json::from_str(&plan).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-            let result = result.map(|raw| serde_json::from_str(&raw).map_err(|e| CatalogError::Invalid(e.to_string()))).transpose()?;
             if plan.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
                 return Err(CatalogError::Invalid("unsupported publication plan version".into()));
             }
-            let mut work = PublicationWork { operation_id, state, request_digest, plan, result,
+            let mut work = PublicationWork { operation_id, state, request_digest, plan,
                 objects:Vec::new(), lease_expires_at:0 };
             if work.state != "prepared" { return Ok(Some(work)); }
             let current_generation: String = tx.query_row(
@@ -132,6 +140,7 @@ impl Catalog {
     /// Reserve the complete bundle before its first PUT. Every byte reserved
     /// here has a corresponding allocation row, including the manifest itself.
     /// The caller retains the operation handle for retry and expiry cleanup.
+    #[cfg(test)]
     pub(crate) fn reserve_publication_bundle(
         &self,
         allocations: &[V2ObjectAllocation],
@@ -581,10 +590,19 @@ mod tests {
             db.execute("UPDATE operations SET state='committed',completed_at=2,receipt_expires_at=10,result_json='{\"version\":1}'", [])?;
             Ok(())
         }).unwrap();
-        assert!(catalog.publication_work(&allocations[0].document_id, &key, &actor, UnixMillis(9)).unwrap().is_some());
-        assert!(matches!(catalog.publication_work(&allocations[0].document_id, &key, &actor, UnixMillis(10)), Err(CatalogError::Refused(CatalogRefusal::RequestExpired, _))));
+        assert!(catalog
+            .publication_work(&allocations[0].document_id, &key, &actor, UnixMillis(9))
+            .unwrap()
+            .is_some());
+        assert!(matches!(
+            catalog.publication_work(&allocations[0].document_id, &key, &actor, UnixMillis(10)),
+            Err(CatalogError::Refused(CatalogRefusal::RequestExpired, _))
+        ));
         actor.session_generation = "revoked".into();
-        assert!(matches!(catalog.publication_work(&allocations[0].document_id, &key, &actor, UnixMillis(10)), Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))));
+        assert!(matches!(
+            catalog.publication_work(&allocations[0].document_id, &key, &actor, UnixMillis(10)),
+            Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))
+        ));
     }
 
     #[test]

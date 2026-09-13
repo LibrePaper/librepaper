@@ -17,13 +17,7 @@ pub(crate) async fn run_plan_logged(
     deadline: Instant,
 ) -> (Outcome, Vec<u8>) {
     let mut command = Command::new(&plan.executable);
-    command
-        .args(&plan.args)
-        .current_dir(&plan.cwd)
-        .env_clear()
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    command.args(&plan.args).current_dir(&plan.cwd).env_clear();
     for key in [
         "HOME",
         "USERPROFILE",
@@ -41,20 +35,27 @@ pub(crate) async fn run_plan_logged(
             command.env(key, value);
         }
     }
-    if let Some(path) = std::env::var_os("PATH") {
+    if let Some(path) = plan
+        .environment
+        .get("PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))
+    {
         let paths: Vec<_> = std::env::split_paths(&path)
             .filter(|path| path.is_absolute())
+            // Profile symlinks can live outside the sandbox's mounted roots;
+            // their canonical Nix store directories remain readable inside it.
+            .map(|path| path.canonicalize().unwrap_or(path))
             .collect();
         if let Ok(path) = std::env::join_paths(paths) {
             command.env("PATH", path);
         }
     }
-    command
-        .env("openin_any", "p")
-        .env("openout_any", "p")
-        .envs(&plan.environment);
-    #[cfg(unix)]
-    command.process_group(0);
+    command.env("openin_any", "p").env("openout_any", "p").envs(
+        plan.environment
+            .iter()
+            .filter(|(key, _)| key.as_str() != "PATH"),
+    );
     if confine::detect().available {
         if let Err(error) = confine::wrap(
             &mut command,
@@ -71,6 +72,14 @@ pub(crate) async fn run_plan_logged(
             );
         }
     }
+    // Wrapping replaces Command, so configure descriptors and the process
+    // group on the final command used for bounded capture and cancellation.
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
     native::run_confined_logged(command, &mut cancel, deadline).await
 }
 

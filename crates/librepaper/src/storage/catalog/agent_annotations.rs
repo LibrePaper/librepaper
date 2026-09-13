@@ -1,6 +1,8 @@
 //! Atomic annotation effects and replay receipts for v2 agent operations.
 use super::*;
 
+type AnnotationReceiptRow = (String, String, String, Option<String>, Option<i64>);
+
 #[derive(Clone)]
 pub struct AgentAnnotationAuthority {
     pub account_id: String,
@@ -105,7 +107,7 @@ fn receipt_in_tx(
         return Err(CatalogError::Invalid("invalid request digest".into()));
     }
     let actor = actor_key(authority)?;
-    let existing: Option<(String, String, String, Option<String>, Option<i64>)> = tx
+    let existing: Option<AnnotationReceiptRow> = tx
         .query_row(
             "SELECT kind,state,request_digest,result_json,receipt_expires_at FROM operations
          WHERE document_id=?1 AND account_id IS NULL AND actor_key=?2 AND request_key=?3",
@@ -157,14 +159,6 @@ fn receipt_in_tx(
 }
 
 impl Catalog {
-    pub fn agent_annotation_authorized(
-        &self,
-        slug: &str,
-        authority: &AgentAnnotationAuthority,
-    ) -> CatalogResult<()> {
-        self.immediate(|tx| authorize(tx, slug, authority).map(|_| ()))
-    }
-
     pub fn agent_annotation_receipt(
         &self,
         slug: &str,

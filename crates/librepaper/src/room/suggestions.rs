@@ -3,6 +3,88 @@
 
 use super::*;
 
+/// Own the empty receipt until a replayable update has been allocated. Normal
+/// planning errors await cleanup; cancellation queues the same conditional
+/// transaction without doing blocking catalogue work on the runtime thread.
+struct UnstagedAcceptance {
+    catalog: Arc<crate::storage::catalog::Catalog>,
+    slug: String,
+    comment_id: String,
+    request_id: String,
+    digest: String,
+    actor: crate::document::store::MutationActor,
+    slot: Arc<ReservationSlot<()>>,
+    armed: bool,
+}
+
+impl UnstagedAcceptance {
+    async fn cleanup(&mut self) -> Result<(), String> {
+        let slug = self.slug.clone();
+        let comment_id = self.comment_id.clone();
+        let request_id = self.request_id.clone();
+        let digest = self.digest.clone();
+        let actor = self.actor.clone();
+        let bytes = slug.len()
+            + comment_id.len()
+            + request_id.len()
+            + digest.len()
+            + actor.account_id.len()
+            + actor.owner_key.len()
+            + actor.session_generation.len()
+            + actor.link_hash.len()
+            + DESCRIPTOR_BYTES;
+        self.catalog
+            .execute_catalog(bytes, move |catalog| {
+                catalog.abort_unstaged_suggestion_accept(
+                    &slug,
+                    &comment_id,
+                    &request_id,
+                    &digest,
+                    crate::storage::catalog::AnnotationAuthority {
+                        account_id: &actor.account_id,
+                        author_key: &actor.owner_key,
+                        generation: &actor.session_generation,
+                        link_hash: &actor.link_hash,
+                        policy_comment: actor.policy_editor,
+                        automation: actor.automation,
+                        require_editor: true,
+                    },
+                )
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        self.armed = false;
+        self.slot.keep();
+        Ok(())
+    }
+}
+
+impl Drop for UnstagedAcceptance {
+    fn drop(&mut self) {
+        if !self.armed || self.slot.abandon().is_none() {
+            return;
+        }
+        let mut cleanup = Self {
+            catalog: self.catalog.clone(),
+            slug: self.slug.clone(),
+            comment_id: self.comment_id.clone(),
+            request_id: self.request_id.clone(),
+            digest: self.digest.clone(),
+            actor: self.actor.clone(),
+            slot: self.slot.clone(),
+            armed: false,
+        };
+        tokio::spawn(async move {
+            if let Err(error) = cleanup.cleanup().await {
+                eprintln!(
+                    "warning: could not release unstaged acceptance for {}: {error}",
+                    cleanup.slug
+                );
+            }
+        });
+    }
+}
+
 /// A deleted passage has no text to match during rollback. Capture its
 /// CRDT position so repeated passages and preceding edits remain distinct.
 fn sticky_index_at_path(
@@ -274,9 +356,21 @@ impl Room {
             "by": by.display(),
             "proposed": comment.proposed.clone(),
         }));
+        let mut unstaged_acceptance = None;
         let staged_update = if let (Some(catalog), false) =
             (self.catalog.get(), request_id.is_empty())
         {
+            let slot = Arc::new(ReservationSlot::default());
+            unstaged_acceptance = Some(UnstagedAcceptance {
+                catalog: catalog.clone(),
+                slug: self.slug.clone(),
+                comment_id: comment_id.to_owned(),
+                request_id: request_id.to_owned(),
+                digest: acceptance_digest.clone(),
+                actor: mutation_actor.clone(),
+                slot: slot.clone(),
+                armed: true,
+            });
             match begin_suggestion_accept(
                 catalog,
                 &self.slug,
@@ -285,6 +379,7 @@ impl Room {
                 &acceptance_digest,
                 now_unix(),
                 mutation_actor.clone(),
+                slot,
             )
             .await
             .map_err(AcceptError::Failed)?
@@ -478,240 +573,264 @@ impl Room {
             None
         };
 
-        // Step 2 of the spec: the passage as the live text has it now. A
-        // first look, without the lock held across the storage read below:
-        // it decides whether the checkpoint the suggestion was made on is
-        // needed at all. The edit itself is computed again under the lock
-        // that applies it, because `restore_write` keeps restores out but
-        // not keystrokes, and an offset measured before an `await` is an
-        // offset into a text that may since have moved.
-        let base_text = if staged_update.is_some() {
-            None
-        } else {
-            let live_text_at_first = {
-                let state = self.state.lock().await;
-                session::texts_of(&state.session.doc)
-                    .get(&source.path)
-                    .cloned()
-                    .unwrap_or_default()
-            };
-            if locate_anchor(&live_text_at_first, &source).is_some() {
+        let mut rollback_position = None;
+        let planned_update = async {
+            // Step 2 of the spec: the passage as the live text has it now. A
+            // first look, without the lock held across the storage read below:
+            // it decides whether the checkpoint the suggestion was made on is
+            // needed at all. The edit itself is computed again under the lock
+            // that applies it, because `restore_write` keeps restores out but
+            // not keystrokes, and an offset measured before an `await` is an
+            // offset into a text that may since have moved.
+            let base_text = if staged_update.is_some() {
                 None
             } else {
-                // Step 3: the passage is not where it was. Merge against the
-                // checkpoint the suggestion was made on, the same three-way merge
-                // `librepaper sync` uses for a stale file.
-                let mut base_point = {
+                let live_text_at_first = {
                     let state = self.state.lock().await;
-                    state
-                        .manifest
-                        .checkpoints
-                        .iter()
-                        .find(|point| {
-                            point.sha == comment.revision || point.content_sha() == comment.revision
-                        })
+                    session::texts_of(&state.session.doc)
+                        .get(&source.path)
                         .cloned()
+                        .unwrap_or_default()
                 };
-                // A resident room intentionally keeps only a bounded history
-                // tail. Resolve an older suggestion base from SQLite so cold
-                // restart and long-lived documents do not turn a valid request
-                // into a spurious stale error.
-                if base_point.is_none() {
-                    if let Some(catalog) = self.catalog.get() {
-                        let point =
-                            read_checkpoint_by_content_sha(catalog, &self.slug, &comment.revision)
-                                .await
-                                .map_err(AcceptError::Failed)?;
-                        base_point = point.map(|point| crate::document::history::Checkpoint {
-                            sha: point.sha,
-                            tree_sha: point.tree_sha,
-                            parent: point.parent.clone(),
-                            at: point.at,
-                            by: point.by,
-                            by_account: point.by_account,
-                            why: point.why,
-                            source_format: point.source_format,
-                            size: point.size,
-                            label: point.label,
-                            commit: point.git_commit,
-                            dirty: point.dirty,
-                            tree: true,
-                            changed: point
-                                .changed
-                                .and_then(|value| serde_json::from_str(&value).ok())
-                                .unwrap_or_default(),
-                            seq: point.seq,
-                            original_parent: point.parent.clone(),
-                            ancestry_gap: false,
-                        });
-                    }
-                }
-                let Some(base_point) = base_point else {
-                    return Err(AcceptError::Stale);
-                };
-                let (base_tree, base_bodies) = self
-                    .checkpoint_texts(&base_point)
-                    .await
-                    .map_err(AcceptError::Failed)?;
-                let Some(base_text) = base_tree
-                    .files
-                    .get(&source.path)
-                    .and_then(|entry| base_bodies.get(&entry.sha))
-                    .cloned()
-                else {
-                    return Err(AcceptError::Stale);
-                };
-                Some(base_text)
-            }
-        };
-
-        let mut rollback_position = None;
-        let update = if let Some(update) = staged_update {
-            update
-        } else {
-            // Plan the edit on a scratch Y.Doc first. This produces the exact
-            // CRDT update without mutating the live document, so the prepared
-            // receipt can durably record it before the live apply below.
-            let update = {
-                let state = self.state.lock().await;
-                let live_text = session::texts_of(&state.session.doc)
-                    .get(&source.path)
-                    .cloned()
-                    .unwrap_or_default();
-                let edits = if let Some(at) = locate_anchor(&live_text, &source) {
-                    if proposed.is_empty() {
-                        rollback_position = sticky_index_at_path(
-                            &state.session.doc,
-                            &source.path,
-                            at as u32,
-                            yrs::Assoc::Before,
-                        );
-                    }
-                    vec![wasm_helpers::text::Edit {
-                        at,
-                        delete: len16(&source.exact),
-                        insert: proposed.clone(),
-                    }]
+                if locate_anchor(&live_text_at_first, &source).is_some() {
+                    None
                 } else {
-                    // Found a moment ago and gone now is a keystroke that
-                    // landed in between; retrying takes the merge path.
-                    let Some(base_text) = base_text.as_deref() else {
+                    // Step 3: the passage is not where it was. Merge against the
+                    // checkpoint the suggestion was made on, the same three-way merge
+                    // `librepaper sync` uses for a stale file.
+                    let mut base_point = {
+                        let state = self.state.lock().await;
+                        state
+                            .manifest
+                            .checkpoints
+                            .iter()
+                            .find(|point| {
+                                point.sha == comment.revision
+                                    || point.content_sha() == comment.revision
+                            })
+                            .cloned()
+                    };
+                    // A resident room intentionally keeps only a bounded history
+                    // tail. Resolve an older suggestion base from SQLite so cold
+                    // restart and long-lived documents do not turn a valid request
+                    // into a spurious stale error.
+                    if base_point.is_none() {
+                        if let Some(catalog) = self.catalog.get() {
+                            let point = read_checkpoint_by_content_sha(
+                                catalog,
+                                &self.slug,
+                                &comment.revision,
+                            )
+                            .await
+                            .map_err(AcceptError::Failed)?;
+                            base_point = point.map(|point| crate::document::history::Checkpoint {
+                                sha: point.sha,
+                                tree_sha: point.tree_sha,
+                                parent: point.parent.clone(),
+                                at: point.at,
+                                by: point.by,
+                                by_account: point.by_account,
+                                why: point.why,
+                                source_format: point.source_format,
+                                size: point.size,
+                                label: point.label,
+                                commit: point.git_commit,
+                                dirty: point.dirty,
+                                tree: true,
+                                changed: point
+                                    .changed
+                                    .and_then(|value| serde_json::from_str(&value).ok())
+                                    .unwrap_or_default(),
+                                seq: point.seq,
+                                original_parent: point.parent.clone(),
+                                ancestry_gap: false,
+                            });
+                        }
+                    }
+                    let Some(base_point) = base_point else {
                         return Err(AcceptError::Stale);
                     };
-                    let Some(base_at) = locate_anchor(base_text, &source) else {
+                    let (base_tree, base_bodies) = self
+                        .checkpoint_texts(&base_point)
+                        .await
+                        .map_err(AcceptError::Failed)?;
+                    let Some(base_text) = base_tree
+                        .files
+                        .get(&source.path)
+                        .and_then(|entry| base_bodies.get(&entry.sha))
+                        .cloned()
+                    else {
                         return Err(AcceptError::Stale);
                     };
-                    let remote = apply_edit_str(
-                        base_text,
-                        &wasm_helpers::text::Edit {
-                            at: base_at,
-                            delete: len16(&source.exact),
-                            insert: proposed.clone(),
-                        },
-                    );
-                    let merged = wasm_helpers::text::merge(base_text, &live_text, &remote);
-                    if !merged.conflicts.is_empty() {
-                        return Err(AcceptError::Stale);
-                    }
-                    wasm_helpers::text::diff(&live_text, &merged.text)
-                };
-                let scratch = session::new_doc();
-                session::apply_update(&scratch, &session::encode_state(&state.session.doc))
-                    .map_err(AcceptError::Failed)?;
-                let planned = session::apply_path_edits(&scratch, &source.path, &edits)
-                    .ok_or(AcceptError::Stale)?;
-                // The scratch copy is the candidate state, so the encoded
-                // ceiling is decided here -- before the live document takes
-                // the edit and before any peer is shown it. An acceptance
-                // that could not be journalled would be acknowledged to the
-                // editor and then lost.
-                let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-                let encoded = session::encode_state(&scratch);
-                if encoded.len() > ceiling {
-                    return Err(AcceptError::Refused(
-                        crate::config::WriteRefusal::Permanent(
-                            crate::config::SizeRefusal::Encoded {
-                                bytes: encoded.len(),
-                                ceiling,
-                            },
-                        )
-                        .message(),
-                    ));
-                }
-                // A diff can refer to Yjs structs created by an unsaved
-                // keystroke immediately before accept.  If the process dies
-                // before the checkpoint writes that session, replaying only
-                // the diff against the old session leaves those structs
-                // missing.  A prepared catalogue receipt therefore carries
-                // the complete post-accept state, which is itself an
-                // idempotent Yjs update and includes every dependency.
-                if self.catalog.get().is_some() && !request_id.is_empty() {
-                    encoded
-                } else {
-                    planned
+                    Some(base_text)
                 }
             };
-            if let (Some(catalog), false) = (self.catalog.get(), request_id.is_empty()) {
-                let limits = crate::storage::catalog::V2AdmissionLimits {
-                    owner_bytes: self.config.storage.per_owner.max(0),
-                    deployment_bytes: self.config.storage.total.max(0),
-                    owner_documents: self.config.storage.documents_per_owner.max(1) as i64,
+
+            let update = if let Some(update) = staged_update {
+                update
+            } else {
+                // Plan the edit on a scratch Y.Doc first. This produces the exact
+                // CRDT update without mutating the live document, so the prepared
+                // receipt can durably record it before the live apply below.
+                let update = {
+                    let state = self.state.lock().await;
+                    let live_text = session::texts_of(&state.session.doc)
+                        .get(&source.path)
+                        .cloned()
+                        .unwrap_or_default();
+                    let edits = if let Some(at) = locate_anchor(&live_text, &source) {
+                        if proposed.is_empty() {
+                            rollback_position = sticky_index_at_path(
+                                &state.session.doc,
+                                &source.path,
+                                at as u32,
+                                yrs::Assoc::Before,
+                            );
+                        }
+                        vec![wasm_helpers::text::Edit {
+                            at,
+                            delete: len16(&source.exact),
+                            insert: proposed.clone(),
+                        }]
+                    } else {
+                        // Found a moment ago and gone now is a keystroke that
+                        // landed in between; retrying takes the merge path.
+                        let Some(base_text) = base_text.as_deref() else {
+                            return Err(AcceptError::Stale);
+                        };
+                        let Some(base_at) = locate_anchor(base_text, &source) else {
+                            return Err(AcceptError::Stale);
+                        };
+                        let remote = apply_edit_str(
+                            base_text,
+                            &wasm_helpers::text::Edit {
+                                at: base_at,
+                                delete: len16(&source.exact),
+                                insert: proposed.clone(),
+                            },
+                        );
+                        let merged = wasm_helpers::text::merge(base_text, &live_text, &remote);
+                        if !merged.conflicts.is_empty() {
+                            return Err(AcceptError::Stale);
+                        }
+                        wasm_helpers::text::diff(&live_text, &merged.text)
+                    };
+                    let scratch = session::new_doc();
+                    session::apply_update(&scratch, &session::encode_state(&state.session.doc))
+                        .map_err(AcceptError::Failed)?;
+                    let planned = session::apply_path_edits(&scratch, &source.path, &edits)
+                        .ok_or(AcceptError::Stale)?;
+                    // The scratch copy is the candidate state, so the encoded
+                    // ceiling is decided here -- before the live document takes
+                    // the edit and before any peer is shown it. An acceptance
+                    // that could not be journalled would be acknowledged to the
+                    // editor and then lost.
+                    let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+                    let encoded = session::encode_state(&scratch);
+                    if encoded.len() > ceiling {
+                        return Err(AcceptError::Refused(
+                            crate::config::WriteRefusal::Permanent(
+                                crate::config::SizeRefusal::Encoded {
+                                    bytes: encoded.len(),
+                                    ceiling,
+                                },
+                            )
+                            .message(),
+                        ));
+                    }
+                    // A diff can refer to Yjs structs created by an unsaved
+                    // keystroke immediately before accept.  If the process dies
+                    // before the checkpoint writes that session, replaying only
+                    // the diff against the old session leaves those structs
+                    // missing.  A prepared catalogue receipt therefore carries
+                    // the complete post-accept state, which is itself an
+                    // idempotent Yjs update and includes every dependency.
+                    if self.catalog.get().is_some() && !request_id.is_empty() {
+                        encoded
+                    } else {
+                        planned
+                    }
                 };
-                let payload_permit = self
-                    .journal
-                    .get()
-                    .map(|journal| {
-                        journal
-                            .memory()
-                            .try_acquire(crate::config::PersistenceLimits::staging_cost(
-                                update.len(),
-                            ))
-                            .map_err(|error| AcceptError::Failed(error.to_string()))
-                    })
-                    .transpose()?;
-                let (allocation, _holder) = stage_suggestion_accept_update(
-                    catalog,
-                    &self.slug,
-                    comment_id,
-                    request_id,
-                    &acceptance_digest,
-                    &update,
-                    mutation_actor.clone(),
-                    limits,
-                )
-                .await
-                .map_err(AcceptError::Failed)?;
-                let writer = crate::storage::v2_catalog::V2ObjectWriter::new(
-                    std::sync::Arc::clone(catalog),
-                    std::sync::Arc::clone(&self.blobs),
-                );
-                let object_id =
-                    crate::storage::blob::ObjectId::parse(allocation.id.as_str().to_owned())
-                        .map_err(|error| AcceptError::Failed(error.to_string()))?;
-                if let Some(permit) = payload_permit {
-                    writer
-                        .write_allocated_with_guard(
-                            allocation.document_id.as_str(),
-                            object_id,
-                            update.clone(),
-                            "application/vnd.librepaper.agent-payload",
-                            permit,
-                        )
-                        .await
-                        .map_err(AcceptError::Failed)?;
-                } else {
-                    writer
-                        .write_allocated(
-                            allocation.document_id.as_str(),
-                            object_id,
-                            update.clone(),
-                            "application/vnd.librepaper.agent-payload",
-                        )
-                        .await
-                        .map_err(AcceptError::Failed)?;
+                if let (Some(catalog), false) = (self.catalog.get(), request_id.is_empty()) {
+                    let limits = crate::storage::catalog::V2AdmissionLimits {
+                        owner_bytes: self.config.storage.per_owner.max(0),
+                        deployment_bytes: self.config.storage.total.max(0),
+                        owner_documents: self.config.storage.documents_per_owner.max(1) as i64,
+                    };
+                    let payload_permit = self
+                        .journal
+                        .get()
+                        .map(|journal| {
+                            journal
+                                .memory()
+                                .try_acquire(crate::config::PersistenceLimits::staging_cost(
+                                    update.len(),
+                                ))
+                                .map_err(|error| AcceptError::Failed(error.to_string()))
+                        })
+                        .transpose()?;
+                    // From this point an in-flight allocation may outlive the caller.
+                    // Preserve its receipt on cancellation; completed failures still
+                    // run the conditional cleanup below.
+                    if let Some(cleanup) = unstaged_acceptance.as_mut() {
+                        cleanup.armed = false;
+                    }
+                    let (allocation, _holder) = stage_suggestion_accept_update(
+                        catalog,
+                        &self.slug,
+                        comment_id,
+                        request_id,
+                        &acceptance_digest,
+                        &update,
+                        mutation_actor.clone(),
+                        limits,
+                    )
+                    .await
+                    .map_err(AcceptError::Failed)?;
+                    let writer = crate::storage::v2_catalog::V2ObjectWriter::new(
+                        std::sync::Arc::clone(catalog),
+                        std::sync::Arc::clone(&self.blobs),
+                    );
+                    let object_id =
+                        crate::storage::blob::ObjectId::parse(allocation.id.as_str().to_owned())
+                            .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                    if let Some(permit) = payload_permit {
+                        writer
+                            .write_allocated_with_guard(
+                                allocation.document_id.as_str(),
+                                object_id,
+                                update.clone(),
+                                "application/vnd.librepaper.agent-payload",
+                                permit,
+                            )
+                            .await
+                            .map_err(AcceptError::Failed)?;
+                    } else {
+                        writer
+                            .write_allocated(
+                                allocation.document_id.as_str(),
+                                object_id,
+                                update.clone(),
+                                "application/vnd.librepaper.agent-payload",
+                            )
+                            .await
+                            .map_err(AcceptError::Failed)?;
+                    }
                 }
+                update
+            };
+            Ok::<_, AcceptError>(update)
+        }
+        .await;
+        let update = match planned_update {
+            Ok(update) => update,
+            Err(error) => {
+                if let Some(cleanup) = unstaged_acceptance.as_mut() {
+                    cleanup.armed = true;
+                    cleanup.cleanup().await.map_err(AcceptError::Failed)?;
+                }
+                return Err(error);
             }
-            update
         };
         {
             let mut state = self.state.lock().await;
@@ -743,7 +862,7 @@ impl Room {
                     source_revision: String::new(),
                 }
             });
-        let sha = match (if let Some(proof) = acceptance_proof.as_ref() {
+        let sha = match if let Some(proof) = acceptance_proof.as_ref() {
             let authority = crate::storage::catalog::MutationAuthority {
                 account_id: &mutation_actor.account_id,
                 owner_key: &mutation_actor.owner_key,
@@ -759,7 +878,7 @@ impl Room {
                 .await
         } else {
             self.checkpoint_now("accept", by).await
-        }) {
+        } {
             Ok(Some(sha)) => sha,
             Ok(None) => {
                 if self.catalog.get().is_some() && !request_id.is_empty() {

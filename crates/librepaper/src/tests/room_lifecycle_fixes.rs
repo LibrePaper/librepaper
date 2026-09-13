@@ -1,5 +1,5 @@
 //! Room ownership and admission must remain safe between HTTP requests.
-use super::room::{fixture, HookStore};
+use super::room::{attach_fixture_journal, fixture, object_write_prefix, HookStore};
 use crate::config::Configuration;
 use crate::document::{session, store};
 use crate::room::{self, RoomSet};
@@ -181,64 +181,123 @@ fn process_local_edit_reservations_do_not_leak_across_restart() {
 }
 
 #[tokio::test]
-async fn fenced_publication_refunds_its_reserved_checkpoint() {
-    let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
-    let catalog = Arc::new(crate::storage::catalog::Catalog::open_in_memory().unwrap());
-    seed_account(&catalog);
-    catalog.create_document(&quota_document("one")).unwrap();
+async fn fenced_checkpoint_preserves_its_admission_budget() {
     let mut config = Configuration::default();
     config.session.checkpoint_owner_per_hour = 1;
     config.session.checkpoint_deployment_per_hour = 1;
-    let config = Arc::new(config);
-    let store = Arc::new(
-        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
-            .await
-            .unwrap(),
-    );
-    let rooms = RoomSet::new(blobs, config);
-    rooms.attach_store(store);
-    let room = rooms.get("one").await;
-    let mut token = room.reserve_publication_checkpoint().unwrap();
-    rooms.purge_with_identity("one", Some("one")).await;
-    assert!(room
-        .checkpoint_publication_now("cli", "alice", &mut token)
-        .await
-        .is_err());
-    drop(token);
-    let refunded = room
-        .reserve_publication_checkpoint()
-        .expect("a fenced attempt must refund its token");
-    drop(refunded);
-    assert!(room.reserve_publication_checkpoint().is_ok());
+    let (_dir, store, rooms) = fixture(config).await;
+    let room = rooms.get("probe").await;
+    room.set_source("changed", "markdown").await.unwrap();
+    let storage_id = store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .document("probe")
+        .unwrap()
+        .unwrap()
+        .storage_id;
+    rooms.purge_with_identity("probe", Some(&storage_id)).await;
+    assert!(matches!(
+        room.checkpoint_now("cli", "alice").await,
+        Err(room::WriteError::ReadOnly(_))
+    ));
+    let catalog = store.catalog.as_ref().unwrap();
+    for (key, category) in [
+        ("account:github:alice", "checkpoint_owner"),
+        ("deployment", "checkpoint_deployment"),
+    ] {
+        let token = catalog
+            .reserve_process_rate(key, category, 1)
+            .expect("a fenced checkpoint must leave its rate budget available");
+        assert!(catalog.reserve_process_rate(key, category, 1).is_err());
+        drop(token);
+        assert!(catalog.reserve_process_rate(key, category, 1).is_ok());
+    }
 }
 
 #[tokio::test]
 async fn recently_checkpointed_due_row_advances_the_automatic_clock() {
-    let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
-    let catalog = Arc::new(crate::storage::catalog::Catalog::open_in_memory().unwrap());
-    seed_account(&catalog);
-    catalog.create_document(&quota_document("one")).unwrap();
-    let config = Arc::new(Configuration::default());
-    let store = Arc::new(
-        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
-            .await
-            .unwrap(),
-    );
-    let rooms = RoomSet::new(blobs, config);
-    rooms.attach_store(store);
-    let room = rooms.get("one").await;
+    let (_dir, store, rooms) = fixture(Configuration::default()).await;
+    let catalog = store.catalog.as_ref().unwrap();
+    let room = rooms.get("probe").await;
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE documents SET last_checkpoint_at=0 WHERE slug='probe'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     room.state.lock().await.session.last_checkpoint_at = crate::util::now_unix();
     rooms.sweep().await;
     assert!(
         catalog
-            .document("one")
+            .document("probe")
             .unwrap()
             .unwrap()
             .last_auto_checkpoint_at
             > 0
     );
+}
+
+#[tokio::test]
+async fn automatic_scheduler_uses_milliseconds_and_monotonic_touches() {
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    let catalog = store.catalog.as_ref().unwrap();
+    let checkpoint_at = catalog
+        .document("probe")
+        .unwrap()
+        .unwrap()
+        .last_auto_checkpoint_at;
+    let now = crate::util::now_unix();
+    assert!(
+        checkpoint_at >= (now - 2) * 1_000,
+        "canonical checkpoint has a millisecond timestamp"
+    );
+    let interval = 60;
+    assert!(catalog
+        .documents_due_auto_checkpoint(now, interval, 64)
+        .unwrap()
+        .is_empty());
+    let due_seconds = checkpoint_at.div_euclid(1_000)
+        + interval
+        + i64::from(checkpoint_at.rem_euclid(1_000) != 0);
+    assert!(catalog
+        .documents_due_auto_checkpoint(due_seconds - 1, interval, 64)
+        .unwrap()
+        .is_empty());
+    let due = catalog
+        .documents_due_auto_checkpoint(due_seconds, interval, 64)
+        .unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].slug, "probe");
+
+    catalog.touch_auto_checkpoint("probe", due_seconds).unwrap();
+    assert_eq!(
+        catalog
+            .document("probe")
+            .unwrap()
+            .unwrap()
+            .last_auto_checkpoint_at,
+        due_seconds * 1_000
+    );
+    catalog
+        .touch_auto_checkpoint("probe", due_seconds - 1)
+        .unwrap();
+    assert_eq!(
+        catalog
+            .document("probe")
+            .unwrap()
+            .unwrap()
+            .last_auto_checkpoint_at,
+        due_seconds * 1_000,
+        "a delayed touch must not move the scheduler clock backwards"
+    );
+    assert!(catalog
+        .documents_due_auto_checkpoint(due_seconds, interval, 64)
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -374,8 +433,9 @@ async fn delete_fences_a_room_still_loading() {
         hooked.clone(),
         Arc::new(Configuration::default()),
     ));
-    rooms.attach_store(store);
-    *hooked.pause.lock().unwrap() = Some(("get_versioned".into(), blob::session_key("probe")));
+    rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
+    *hooked.pause.lock().unwrap() = Some(("get".into(), object_write_prefix(&store, "probe")));
     let load = tokio::spawn({
         let rooms = rooms.clone();
         async move { rooms.get("probe").await }
@@ -408,14 +468,19 @@ async fn session_read_failure_opens_read_only() {
         .await
         .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
-    *hooked.fail.lock().unwrap() = Some(blob::session_key("probe"));
-    let rooms = RoomSet::new(hooked, Arc::new(Configuration::default()));
-    rooms.attach_store(store);
+    *hooked.fail.lock().unwrap() = Some(
+        object_write_prefix(&store, "probe")
+            .trim_end_matches('*')
+            .into(),
+    );
+    let rooms = RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked);
     assert!(rooms.get("probe").await.read_only());
 }
 
 #[tokio::test]
-async fn accumulated_updates_are_refused_before_they_exhaust_storage() {
+async fn recovered_updates_are_refused_before_they_exhaust_storage() {
     accumulated_update_quota(false).await;
 }
 
@@ -440,7 +505,7 @@ async fn accumulated_update_quota(journaled: bool) {
     );
     let rooms = RoomSet::new(blobs.clone(), config.clone());
     rooms.attach_store(store.clone());
-    if journaled {
+    {
         rooms.attach_journal(Arc::new(
             crate::storage::journal::V2JournalRuntime::with_persistence(
                 Arc::new(
@@ -449,7 +514,7 @@ async fn accumulated_update_quota(journaled: bool) {
                         config.persistence(),
                     ),
                 ),
-                blobs,
+                blobs.clone(),
                 config.persistence(),
             )
             .unwrap(),
@@ -463,7 +528,6 @@ async fn accumulated_update_quota(journaled: bool) {
                 source_format: "markdown".into(),
                 owner: "alice".into(),
                 owner_id: "acct-1".into(),
-                peak_bytes: Some(8192),
                 ..Default::default()
             },
             store::MutationActor {
@@ -478,6 +542,16 @@ async fn accumulated_update_quota(journaled: bool) {
         )
         .await
         .unwrap();
+    // Exercise both a freshly published session and a reopened journal base.
+    let rooms = if journaled {
+        rooms
+    } else {
+        drop(rooms);
+        let reopened = RoomSet::new(blobs.clone(), config.clone());
+        reopened.attach_store(store.clone());
+        attach_fixture_journal(&reopened, &store, blobs);
+        reopened
+    };
     let room = rooms.get("quota-edit").await;
     room.set_main_file("A", "markdown", "main.md")
         .await

@@ -10,7 +10,9 @@ pub(super) const MAX_LABEL: usize = 120;
 
 fn is_checkpoint_id(value: &str) -> bool {
     crate::storage::catalog::CheckpointId::new(value).is_ok()
-        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 /// Content authorship is separate from the checkpoint event actor. Current

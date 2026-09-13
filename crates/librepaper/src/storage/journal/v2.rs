@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-use crate::storage::blob::{v2_object_key, write_v2_object_with_id, BlobError, BlobStore, ObjectId, WrittenObject};
+use crate::storage::blob::{
+    v2_object_key, write_v2_object_with_id, BlobError, BlobStore, ObjectId, WrittenObject,
+};
 
 use super::{JournalError, JournalRecord, JournalResult, Segment};
 
@@ -41,8 +43,19 @@ pub trait DocumentJournal: Send + Sync {
         let _ = dependencies;
         self.append(document_id, sequence, body).await
     }
-    async fn compaction_due(&self, document_id: &str, epoch: u64, sequence: u64) -> JournalResult<bool>;
-    async fn compact(&self, document_id: &str, epoch: u64, sequence: u64, body: Vec<u8>) -> JournalResult<()>;
+    async fn compaction_due(
+        &self,
+        document_id: &str,
+        epoch: u64,
+        sequence: u64,
+    ) -> JournalResult<bool>;
+    async fn compact(
+        &self,
+        document_id: &str,
+        epoch: u64,
+        sequence: u64,
+        body: Vec<u8>,
+    ) -> JournalResult<()>;
     async fn compact_with_dependencies(
         &self,
         document_id: &str,
@@ -177,8 +190,10 @@ pub trait V2JournalCatalog: Send + Sync {
         self as *const Self as *const () as usize
     }
     async fn journal_head(&self, document_id: &str) -> Result<JournalHead, String>;
-    async fn prepare_append(&self, request: JournalAppendRequest)
-        -> Result<JournalAppendAdmission, String>;
+    async fn prepare_append(
+        &self,
+        request: JournalAppendRequest,
+    ) -> Result<JournalAppendAdmission, String>;
     async fn commit_append(
         &self,
         admission: JournalAppendAdmission,
@@ -193,6 +208,8 @@ pub trait V2JournalCatalog: Send + Sync {
         after_object_id: &str,
         limit: usize,
     ) -> Result<Vec<JournalObjectRef>, String>;
+    // Admission must bind the expected cursor and every payload descriptor atomically.
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_compaction(
         &self,
         document_id: &str,
@@ -283,7 +300,9 @@ where
         last_sequence: u64,
     ) -> JournalResult<Vec<JournalRecord>> {
         if first_sequence == 0 || last_sequence < first_sequence {
-            return Err(JournalError::Invalid("invalid journal recovery range".into()));
+            return Err(JournalError::Invalid(
+                "invalid journal recovery range".into(),
+            ));
         }
         // Keep one aggregate permit for every compressed body and decoded
         // fragment retained by this recovery.  A per-object permit released
@@ -309,15 +328,21 @@ where
                 break;
             }
             if page.len() > 128 {
-                return Err(JournalError::Corrupt("journal descriptor page exceeded bound".into()));
+                return Err(JournalError::Corrupt(
+                    "journal descriptor page exceeded bound".into(),
+                ));
             }
             let previous_after = after.clone();
             for object in &page {
                 if object.epoch != epoch {
-                    return Err(JournalError::Corrupt("journal object epoch mismatch".into()));
+                    return Err(JournalError::Corrupt(
+                        "journal object epoch mismatch".into(),
+                    ));
                 }
                 if object.last_sequence < first_sequence || object.first_sequence > last_sequence {
-                    return Err(JournalError::Corrupt("journal object lies outside acknowledged range".into()));
+                    return Err(JournalError::Corrupt(
+                        "journal object lies outside acknowledged range".into(),
+                    ));
                 }
                 let bytes = self
                     .blobs
@@ -335,16 +360,28 @@ where
                 after = (object.last_sequence, object.object_id.clone());
             }
             if after <= previous_after {
-                return Err(JournalError::Corrupt("journal descriptor cursor did not advance".into()));
+                return Err(JournalError::Corrupt(
+                    "journal descriptor cursor did not advance".into(),
+                ));
             }
-            if page.last().is_some_and(|object| object.last_sequence > last_sequence)
+            if page
+                .last()
+                .is_some_and(|object| object.last_sequence > last_sequence)
                 || (page.len() < 128
-                    && page.last().is_some_and(|object| object.last_sequence == last_sequence))
+                    && page
+                        .last()
+                        .is_some_and(|object| object.last_sequence == last_sequence))
             {
                 break;
             }
         }
-        recover_records(bodies, document_id, epoch, Some(first_sequence), Some(last_sequence))
+        recover_records(
+            bodies,
+            document_id,
+            epoch,
+            Some(first_sequence),
+            Some(last_sequence),
+        )
     }
 
     pub async fn compact(
@@ -388,7 +425,15 @@ where
         let digest = hex::encode(Sha256::digest(&encoded_base));
         let admission = self
             .catalog
-            .prepare_compaction(document_id, expected_epoch, expected_sequence, payload_byte_length, encoded_base.len() as u64, digest, dependencies)
+            .prepare_compaction(
+                document_id,
+                expected_epoch,
+                expected_sequence,
+                payload_byte_length,
+                encoded_base.len() as u64,
+                digest,
+                dependencies,
+            )
             .await
             .map_err(JournalError::CatalogText)?;
         let written = match guarded_write_v2_object(
@@ -398,7 +443,9 @@ where
             admission.base_allocation.object_id.clone(),
             encoded_base,
             content_type,
-        ).await {
+        )
+        .await
+        {
             Ok(written) => written,
             Err(error) => {
                 let _ = self.catalog.abort_compaction(&admission.operation_id).await;
@@ -407,7 +454,12 @@ where
         };
         if let Err(error) = self
             .catalog
-            .commit_compaction(admission.clone(), written.clone(), expected_epoch.saturating_add(1), expected_sequence)
+            .commit_compaction(
+                admission.clone(),
+                written.clone(),
+                expected_epoch.saturating_add(1),
+                expected_sequence,
+            )
             .await
         {
             return Err(JournalError::CatalogText(error));
@@ -444,13 +496,18 @@ where
                 || reference.last_sequence != head.base_sequence
                 || reference.first_sequence != head.base_sequence
             {
-                return Err(JournalError::Corrupt("journal base does not match document head".into()));
+                return Err(JournalError::Corrupt(
+                    "journal base does not match document head".into(),
+                ));
             }
-            let expected_bytes = usize::try_from(reference.byte_length)
-                .map_err(|_| JournalError::Limit("journal base length exceeds memory accounting".into()))?;
+            let expected_bytes = usize::try_from(reference.byte_length).map_err(|_| {
+                JournalError::Limit("journal base length exceeds memory accounting".into())
+            })?;
             let permit = self
                 .memory
-                .acquire(crate::config::PersistenceLimits::staging_cost(expected_bytes))
+                .acquire(crate::config::PersistenceLimits::staging_cost(
+                    expected_bytes,
+                ))
                 .await?;
             let bytes = self
                 .blobs
@@ -463,10 +520,13 @@ where
                 || decoded.epoch != reference.epoch
                 || decoded.sequence != reference.last_sequence
             {
-                return Err(JournalError::Corrupt("journal base identity does not match catalog".into()));
+                return Err(JournalError::Corrupt(
+                    "journal base identity does not match catalog".into(),
+                ));
             }
-            crate::document::session::apply_update(&document, &decoded.payload)
-                .map_err(|error| JournalError::Corrupt(format!("journal base update is invalid: {error}")))?;
+            crate::document::session::apply_update(&document, &decoded.payload).map_err(
+                |error| JournalError::Corrupt(format!("journal base update is invalid: {error}")),
+            )?;
             drop(permit);
             has_state = true;
         }
@@ -474,18 +534,21 @@ where
             return if has_state {
                 Ok(Some(crate::document::session::encode_state(&document)))
             } else {
-                Err(JournalError::Corrupt("journal head range has no state".into()))
+                Err(JournalError::Corrupt(
+                    "journal head range has no state".into(),
+                ))
             };
         }
         let first = head.base_sequence.saturating_add(1).max(1);
         self.recover_into_document(document_id, head.epoch, first, head.sequence, &document)
             .await?;
         if !has_state && first > head.sequence {
-            return Err(JournalError::Corrupt("journal head range has no state".into()));
+            return Err(JournalError::Corrupt(
+                "journal head range has no state".into(),
+            ));
         }
         Ok(Some(crate::document::session::encode_state(&document)))
     }
-
 }
 
 impl<C> V2JournalRuntime<C>
@@ -532,7 +595,9 @@ where
                     || reference.first_sequence > last_sequence
                     || reference.last_sequence > last_sequence
                 {
-                    return Err(JournalError::Corrupt("journal object lies outside acknowledged range".into()));
+                    return Err(JournalError::Corrupt(
+                        "journal object lies outside acknowledged range".into(),
+                    ));
                 }
                 let bytes = self
                     .blobs
@@ -544,11 +609,15 @@ where
                 if decoded.first_sequence != reference.first_sequence
                     || decoded.last_sequence != reference.last_sequence
                 {
-                    return Err(JournalError::Corrupt("journal descriptor range does not match its object".into()));
+                    return Err(JournalError::Corrupt(
+                        "journal descriptor range does not match its object".into(),
+                    ));
                 }
                 for record in decoded.segment.records {
                     if record.sequence < first_sequence || record.sequence > last_sequence {
-                        return Err(JournalError::Corrupt("journal record lies outside acknowledged range".into()));
+                        return Err(JournalError::Corrupt(
+                            "journal record lies outside acknowledged range".into(),
+                        ));
                     }
                     pending_bytes = pending_bytes.saturating_add(record.payload.len());
                     pending.entry(record.sequence).or_default().push(record);
@@ -562,14 +631,21 @@ where
                     document,
                 )?);
                 if pending_bytes > self.max_encoded_snapshot_bytes {
-                    return Err(JournalError::Limit("journal fragment group exceeds the configured recovery ceiling".into()));
+                    return Err(JournalError::Limit(
+                        "journal fragment group exceeds the configured recovery ceiling".into(),
+                    ));
                 }
             }
-            let terminal = page.last().map(|reference| reference.last_sequence).unwrap_or(0);
+            let terminal = page
+                .last()
+                .map(|reference| reference.last_sequence)
+                .unwrap_or(0);
             let last = page.last().expect("nonempty page");
             let next_cursor = (last.last_sequence, last.object_id.clone());
             if next_cursor <= cursor {
-                return Err(JournalError::Corrupt("journal descriptor cursor did not advance".into()));
+                return Err(JournalError::Corrupt(
+                    "journal descriptor cursor did not advance".into(),
+                ));
             }
             cursor = next_cursor;
             if terminal >= last_sequence && page.len() < 128 {
@@ -585,7 +661,9 @@ where
             document,
         )?);
         if next_sequence != last_sequence.saturating_add(1) || !pending.is_empty() {
-            return Err(JournalError::Corrupt("acknowledged journal range is missing".into()));
+            return Err(JournalError::Corrupt(
+                "acknowledged journal range is missing".into(),
+            ));
         }
         let _ = pending_bytes;
         Ok(())
@@ -597,7 +675,6 @@ impl<C> DocumentJournal for V2JournalRuntime<C>
 where
     C: V2JournalCatalog + 'static,
 {
-
     async fn latest_sequence(&self, document_id: &str, epoch: u64) -> JournalResult<u64> {
         self.latest_sequence_v2(document_id, epoch).await
     }
@@ -607,7 +684,8 @@ where
     }
 
     async fn append(&self, document_id: &str, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
-        self.append_with_dependencies(document_id, sequence, body, Vec::new()).await
+        self.append_with_dependencies(document_id, sequence, body, Vec::new())
+            .await
     }
 
     async fn append_with_dependencies(
@@ -618,7 +696,9 @@ where
         dependencies: Vec<JournalDependencyHint>,
     ) -> JournalResult<()> {
         if body.len() > self.max_encoded_snapshot_bytes {
-            return Err(JournalError::Limit("journal snapshot exceeds the configured encoded ceiling".into()));
+            return Err(JournalError::Limit(
+                "journal snapshot exceeds the configured encoded ceiling".into(),
+            ));
         }
         let head = self
             .catalog
@@ -626,17 +706,23 @@ where
             .await
             .map_err(JournalError::CatalogText)?;
         if sequence != head.sequence.saturating_add(1) {
-            return Err(JournalError::Conflict("journal append is not the next sequence".into()));
+            return Err(JournalError::Conflict(
+                "journal append is not the next sequence".into(),
+            ));
         }
         let payload_bytes = body.len();
         let permit = self
             .memory
-            .acquire(crate::config::PersistenceLimits::staging_cost(payload_bytes))
+            .acquire(crate::config::PersistenceLimits::staging_cost(
+                payload_bytes,
+            ))
             .await?;
-        self.executing_bytes.fetch_add(payload_bytes, Ordering::Relaxed);
+        self.executing_bytes
+            .fetch_add(payload_bytes, Ordering::Relaxed);
         let result = async {
             let retry_id = format!("room-{document_id}-{sequence}");
-            let records = JournalRecord::chunked(document_id, sequence, &retry_id, head.epoch, body)?;
+            let records =
+                JournalRecord::chunked(document_id, sequence, &retry_id, head.epoch, body)?;
             let segment = Segment::new(records)?;
             let request = JournalAppendRequest {
                 document_id: document_id.to_owned(),
@@ -653,12 +739,18 @@ where
             self.append(request, &[segment]).await.map(|_| ())
         }
         .await;
-        self.executing_bytes.fetch_sub(payload_bytes, Ordering::Relaxed);
+        self.executing_bytes
+            .fetch_sub(payload_bytes, Ordering::Relaxed);
         drop(permit);
         result
     }
 
-    async fn compaction_due(&self, document_id: &str, _epoch: u64, sequence: u64) -> JournalResult<bool> {
+    async fn compaction_due(
+        &self,
+        document_id: &str,
+        _epoch: u64,
+        sequence: u64,
+    ) -> JournalResult<bool> {
         let head = self
             .catalog
             .journal_head(document_id)
@@ -670,8 +762,22 @@ where
             .map_err(JournalError::CatalogText)
     }
 
-    async fn compact(&self, document_id: &str, _epoch: u64, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
-        <Self as DocumentJournal>::compact_with_dependencies(self, document_id, _epoch, sequence, body, Vec::new()).await
+    async fn compact(
+        &self,
+        document_id: &str,
+        _epoch: u64,
+        sequence: u64,
+        body: Vec<u8>,
+    ) -> JournalResult<()> {
+        <Self as DocumentJournal>::compact_with_dependencies(
+            self,
+            document_id,
+            _epoch,
+            sequence,
+            body,
+            Vec::new(),
+        )
+        .await
     }
 
     async fn compact_with_dependencies(
@@ -683,14 +789,19 @@ where
         dependencies: Vec<JournalDependencyHint>,
     ) -> JournalResult<()> {
         if body.len() > self.max_encoded_snapshot_bytes {
-            return Err(JournalError::Limit("journal base exceeds the configured encoded ceiling".into()));
+            return Err(JournalError::Limit(
+                "journal base exceeds the configured encoded ceiling".into(),
+            ));
         }
         let payload_bytes = body.len();
         let permit = self
             .memory
-            .acquire(crate::config::PersistenceLimits::staging_cost(payload_bytes))
+            .acquire(crate::config::PersistenceLimits::staging_cost(
+                payload_bytes,
+            ))
             .await?;
-        self.executing_bytes.fetch_add(payload_bytes, Ordering::Relaxed);
+        self.executing_bytes
+            .fetch_add(payload_bytes, Ordering::Relaxed);
         let result = async {
             let head = self
                 .catalog
@@ -698,7 +809,9 @@ where
                 .await
                 .map_err(JournalError::CatalogText)?;
             if sequence != head.sequence {
-                return Err(JournalError::Conflict("journal compaction cursor changed".into()));
+                return Err(JournalError::Conflict(
+                    "journal compaction cursor changed".into(),
+                ));
             }
             self.compact_with_dependencies(
                 document_id,
@@ -712,7 +825,8 @@ where
             .map(|_| ())
         }
         .await;
-        self.executing_bytes.fetch_sub(payload_bytes, Ordering::Relaxed);
+        self.executing_bytes
+            .fetch_sub(payload_bytes, Ordering::Relaxed);
         drop(permit);
         result
     }
@@ -743,9 +857,8 @@ fn flush_recovered_records(
         let parts = pending
             .remove(&sequence)
             .ok_or_else(|| JournalError::Corrupt("journal fragment group disappeared".into()))?;
-        released_bytes = released_bytes.saturating_add(
-            parts.iter().map(|part| part.payload.len()).sum::<usize>(),
-        );
+        released_bytes = released_bytes
+            .saturating_add(parts.iter().map(|part| part.payload.len()).sum::<usize>());
         if sequence != *next_sequence {
             return Err(JournalError::Corrupt("journal sequence gap".into()));
         }
@@ -763,11 +876,17 @@ fn flush_recovered_records(
                     || part.epoch != epoch
             })
         {
-            return Err(JournalError::Corrupt("incomplete journal record fragments".into()));
+            return Err(JournalError::Corrupt(
+                "incomplete journal record fragments".into(),
+            ));
         }
         let mut parts = parts;
         parts.sort_by_key(|part| part.fragment_index);
-        if parts.iter().enumerate().any(|(index, part)| part.fragment_index as usize != index) {
+        if parts
+            .iter()
+            .enumerate()
+            .any(|(index, part)| part.fragment_index as usize != index)
+        {
             return Err(JournalError::Corrupt("journal fragment index gap".into()));
         }
         let payload = parts
@@ -775,31 +894,41 @@ fn flush_recovered_records(
             .flat_map(|part| part.payload.iter().copied())
             .collect::<Vec<_>>();
         if hex::encode(Sha256::digest(&payload)) != digest {
-            return Err(JournalError::Corrupt("complete journal record digest mismatch".into()));
+            return Err(JournalError::Corrupt(
+                "complete journal record digest mismatch".into(),
+            ));
         }
         let record = JournalRecord::new(document_id, sequence, retry_id, epoch, payload)?;
-        crate::document::session::apply_update(document, &record.payload)
-            .map_err(|error| JournalError::Corrupt(format!("journal update {sequence} is invalid: {error}")))?;
+        crate::document::session::apply_update(document, &record.payload).map_err(|error| {
+            JournalError::Corrupt(format!("journal update {sequence} is invalid: {error}"))
+        })?;
         *next_sequence = (*next_sequence).saturating_add(1);
     }
     Ok(released_bytes)
 }
 
+#[cfg(test)]
 fn replay_complete_state(
     base: Option<Vec<u8>>,
     records: Vec<JournalRecord>,
 ) -> JournalResult<Option<Vec<u8>>> {
     if base.is_none() && records.is_empty() {
-        return Err(JournalError::Corrupt("journal head range has no state".into()));
+        return Err(JournalError::Corrupt(
+            "journal head range has no state".into(),
+        ));
     }
     let document = crate::document::session::new_doc();
     if let Some(base) = base {
-        crate::document::session::apply_update(&document, &base)
-            .map_err(|error| JournalError::Corrupt(format!("journal base update is invalid: {error}")))?;
+        crate::document::session::apply_update(&document, &base).map_err(|error| {
+            JournalError::Corrupt(format!("journal base update is invalid: {error}"))
+        })?;
     }
     for record in records {
         crate::document::session::apply_update(&document, &record.payload).map_err(|error| {
-            JournalError::Corrupt(format!("journal update {} is invalid: {error}", record.sequence))
+            JournalError::Corrupt(format!(
+                "journal update {} is invalid: {error}",
+                record.sequence
+            ))
         })?;
     }
     Ok(Some(crate::document::session::encode_state(&document)))
@@ -809,7 +938,9 @@ fn verify_object_bytes(reference: &JournalObjectRef, bytes: &[u8]) -> JournalRes
     if bytes.len() as u64 != reference.byte_length
         || hex::encode(Sha256::digest(bytes)) != reference.digest
     {
-        return Err(JournalError::Corrupt("journal object digest or length mismatch".into()));
+        return Err(JournalError::Corrupt(
+            "journal object digest or length mismatch".into(),
+        ));
     }
     Ok(())
 }
@@ -823,7 +954,8 @@ pub async fn append_segments(
     let encoded = segments
         .iter()
         .map(|segment| {
-            let object = DocumentSegment::new(request.document_id.clone(), request.epoch, segment.clone())?;
+            let object =
+                DocumentSegment::new(request.document_id.clone(), request.epoch, segment.clone())?;
             let body = object.encode()?;
             let digest = hex::encode(Sha256::digest(&body));
             Ok((object, body, digest))
@@ -838,14 +970,26 @@ pub async fn append_segments(
             last_sequence: object.last_sequence,
             digest: digest.clone(),
             byte_length: body.len() as u64,
-            payload_byte_length: object.segment.records.iter().map(|record| record.payload.len() as u64).sum(),
+            payload_byte_length: object
+                .segment
+                .records
+                .iter()
+                .map(|record| record.payload.len() as u64)
+                .sum(),
         })
         .collect();
     let admission = catalog
         .prepare_append(request)
         .await
         .map_err(JournalError::CatalogText)?;
-    let written = match write_encoded_segments(blobs, catalog.physical_namespace(), &admission, encoded).await {
+    let written = match write_encoded_segments(
+        blobs,
+        catalog.physical_namespace(),
+        &admission,
+        encoded,
+    )
+    .await
+    {
         Ok(written) => written,
         Err(error) => {
             let _ = catalog.abort_append(&admission.operation_id).await;
@@ -853,16 +997,25 @@ pub async fn append_segments(
         }
     };
     let contiguous = !written.is_empty()
-        && written.first().is_some_and(|object| object.first_sequence == admission.first_sequence)
-        && written.last().is_some_and(|object| object.last_sequence == admission.expected_last_sequence)
-        && written.windows(2).all(|objects| {
-            objects[1].first_sequence <= objects[0].last_sequence.saturating_add(1)
-        });
+        && written
+            .first()
+            .is_some_and(|object| object.first_sequence == admission.first_sequence)
+        && written
+            .last()
+            .is_some_and(|object| object.last_sequence == admission.expected_last_sequence)
+        && written
+            .windows(2)
+            .all(|objects| objects[1].first_sequence <= objects[0].last_sequence.saturating_add(1));
     if !contiguous {
         let _ = catalog.abort_append(&admission.operation_id).await;
-        return Err(JournalError::Conflict("journal append range changed during staging".into()));
+        return Err(JournalError::Conflict(
+            "journal append range changed during staging".into(),
+        ));
     }
-    if let Err(error) = catalog.commit_append(admission.clone(), written.clone()).await {
+    if let Err(error) = catalog
+        .commit_append(admission.clone(), written.clone())
+        .await
+    {
         return Err(JournalError::CatalogText(error));
     }
     Ok(written)
@@ -878,12 +1031,20 @@ pub struct DocumentSegment {
 }
 
 impl DocumentSegment {
-    pub fn new(document_id: impl Into<String>, epoch: u64, segment: Segment) -> JournalResult<Self> {
+    pub fn new(
+        document_id: impl Into<String>,
+        epoch: u64,
+        segment: Segment,
+    ) -> JournalResult<Self> {
         let document_id = document_id.into();
         if document_id.is_empty() {
             return Err(JournalError::Invalid("journal document id is empty".into()));
         }
-        if segment.records.iter().any(|record| record.storage_id != document_id) {
+        if segment
+            .records
+            .iter()
+            .any(|record| record.storage_id != document_id)
+        {
             return Err(JournalError::Invalid(
                 "journal segment contains another document's record".into(),
             ));
@@ -891,7 +1052,11 @@ impl DocumentSegment {
         if segment.records.iter().any(|record| record.epoch != epoch) {
             return Err(JournalError::Invalid("journal segment mixes epochs".into()));
         }
-        let mut sequences = segment.records.iter().map(|record| record.sequence).collect::<Vec<_>>();
+        let mut sequences = segment
+            .records
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>();
         sequences.sort_unstable();
         sequences.dedup();
         let first_sequence = *sequences
@@ -901,7 +1066,13 @@ impl DocumentSegment {
             .last()
             .copied()
             .ok_or_else(|| JournalError::Invalid("empty journal segment".into()))?;
-        Ok(Self { document_id, epoch, first_sequence, last_sequence, segment })
+        Ok(Self {
+            document_id,
+            epoch,
+            first_sequence,
+            last_sequence,
+            segment,
+        })
     }
 
     pub fn encode(&self) -> JournalResult<Vec<u8>> {
@@ -931,7 +1102,9 @@ async fn write_encoded_segments(
     encoded: Vec<(DocumentSegment, Vec<u8>, String)>,
 ) -> JournalResult<Vec<WrittenJournalObject>> {
     if encoded.len() != admission.allocations.len() {
-        return Err(JournalError::Conflict("catalog returned the wrong journal allocation count".into()));
+        return Err(JournalError::Conflict(
+            "catalog returned the wrong journal allocation count".into(),
+        ));
     }
     let mut written = Vec::with_capacity(encoded.len());
     for ((object, body, digest), allocation) in encoded.into_iter().zip(&admission.allocations) {
@@ -942,7 +1115,9 @@ async fn write_encoded_segments(
             || allocation.last_sequence != object.last_sequence
             || allocation.storage_key != expected_key
         {
-            return Err(JournalError::Conflict("journal allocation does not match encoded segment".into()));
+            return Err(JournalError::Conflict(
+                "journal allocation does not match encoded segment".into(),
+            ));
         }
         guarded_write_v2_object(
             blobs.clone(),
@@ -952,7 +1127,7 @@ async fn write_encoded_segments(
             body.clone(),
             JOURNAL_OBJECT_CONTENT_TYPE,
         )
-            .await?;
+        .await?;
         written.push(WrittenJournalObject {
             object_id: allocation.object_id.clone(),
             storage_key: allocation.storage_key.clone(),
@@ -988,14 +1163,9 @@ async fn guarded_write_v2_object(
     let object_key_for_task = object_key.clone();
     let document_id_for_task = document_id.clone();
     tokio::spawn(async move {
-        let result = write_v2_object_with_id(
-            blobs.as_ref(),
-            &document_id,
-            object_id,
-            body,
-            &content_type,
-        )
-        .await;
+        let result =
+            write_v2_object_with_id(blobs.as_ref(), &document_id, object_id, body, &content_type)
+                .await;
         if let Ok(written) = &result {
             crate::storage::v2_catalog::complete_physical_guard(namespace, &document_id, written);
         } else {
@@ -1003,7 +1173,12 @@ async fn guarded_write_v2_object(
                 namespace,
                 &document_id,
                 &object_key,
-                result.as_ref().err().map(ToString::to_string).as_deref().unwrap_or("journal PUT failed"),
+                result
+                    .as_ref()
+                    .err()
+                    .map(ToString::to_string)
+                    .as_deref()
+                    .unwrap_or("journal PUT failed"),
             );
         }
         result
@@ -1054,7 +1229,9 @@ pub fn recover_records(
     }
     if fragments.is_empty() {
         if expected_first.is_some() || expected_last.is_some() {
-            return Err(JournalError::Corrupt("acknowledged journal range is missing".into()));
+            return Err(JournalError::Corrupt(
+                "acknowledged journal range is missing".into(),
+            ));
         }
         return Ok(Vec::new());
     }
@@ -1071,7 +1248,9 @@ pub fn recover_records(
     if expected_first.is_some_and(|value| value != first)
         || expected_last.is_some_and(|value| value != last)
     {
-        return Err(JournalError::Corrupt("journal object range does not match catalog".into()));
+        return Err(JournalError::Corrupt(
+            "journal object range does not match catalog".into(),
+        ));
     }
     let mut recovered = Vec::with_capacity(fragments.len());
     for sequence in first..=last {
@@ -1096,16 +1275,27 @@ pub fn recover_records(
                     || part.epoch != epoch
             })
         {
-            return Err(JournalError::Corrupt("incomplete journal record fragments".into()));
+            return Err(JournalError::Corrupt(
+                "incomplete journal record fragments".into(),
+            ));
         }
         let mut parts = parts;
         parts.sort_by_key(|part| part.fragment_index);
-        if parts.iter().enumerate().any(|(index, part)| part.fragment_index as usize != index) {
+        if parts
+            .iter()
+            .enumerate()
+            .any(|(index, part)| part.fragment_index as usize != index)
+        {
             return Err(JournalError::Corrupt("journal fragment index gap".into()));
         }
-        let payload = parts.iter().flat_map(|part| part.payload.iter().copied()).collect::<Vec<_>>();
+        let payload = parts
+            .iter()
+            .flat_map(|part| part.payload.iter().copied())
+            .collect::<Vec<_>>();
         if hex::encode(Sha256::digest(&payload)) != expected_digest {
-            return Err(JournalError::Corrupt("complete journal record digest mismatch".into()));
+            return Err(JournalError::Corrupt(
+                "complete journal record digest mismatch".into(),
+            ));
         }
         recovered.push(JournalRecord::new(
             document_id,
@@ -1123,8 +1313,14 @@ mod tests {
     use super::*;
 
     fn record(document_id: &str, sequence: u64, payload: &[u8]) -> JournalRecord {
-        JournalRecord::new(document_id, sequence, format!("retry-{sequence}"), 3, payload.to_vec())
-            .expect("test record is valid")
+        JournalRecord::new(
+            document_id,
+            sequence,
+            format!("retry-{sequence}"),
+            3,
+            payload.to_vec(),
+        )
+        .expect("test record is valid")
     }
 
     #[test]
@@ -1138,7 +1334,10 @@ mod tests {
     fn recovery_rejects_a_missing_sequence() {
         let one = Segment::new(vec![record("doc-a", 1, b"a")]).expect("segment framing is valid");
         let three = Segment::new(vec![record("doc-a", 3, b"c")]).expect("segment framing is valid");
-        let bytes = [one.encode().expect("encoding"), three.encode().expect("encoding")];
+        let bytes = [
+            one.encode().expect("encoding"),
+            three.encode().expect("encoding"),
+        ];
         assert!(recover_records(bytes, "doc-a", 3, Some(1), Some(3)).is_err());
     }
 
@@ -1171,16 +1370,14 @@ mod tests {
             text.insert(&mut transaction, 4, " + tail");
         }
         let update = crate::document::session::encode_diff(&document, &vector).expect("diff");
-        let records = vec![
+        let records = [
             JournalRecord::new("doc", 1, "retry-1", 0, base).expect("base record"),
             JournalRecord::new("doc", 2, "retry-2", 0, update).expect("tail record"),
         ];
-        let recovered = replay_complete_state(
-            Some(records[0].payload.clone()),
-            records[1..].to_vec(),
-        )
-        .expect("recovery")
-        .expect("state");
+        let recovered =
+            replay_complete_state(Some(records[0].payload.clone()), records[1..].to_vec())
+                .expect("recovery")
+                .expect("state");
         let restored = crate::document::session::new_doc();
         crate::document::session::apply_update(&restored, &recovered).expect("restored update");
         let restored_text = restored

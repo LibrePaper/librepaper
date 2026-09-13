@@ -147,15 +147,22 @@ impl SourceRecipeEnvelope {
         if self.version != SOURCE_ENVELOPE_VERSION
             || self.recipe.version != RECIPE_VERSION
             || self.chunk_locators.len() != self.recipe.chunks.len()
-            || self.chunk_locators.iter().any(|locator| locator.encoding_version == 0)
+            || self
+                .chunk_locators
+                .iter()
+                .any(|locator| locator.encoding_version == 0)
         {
-            return Err(EncodingError::InvalidRecipe("invalid source recipe envelope".into()));
+            return Err(EncodingError::InvalidRecipe(
+                "invalid source recipe envelope".into(),
+            ));
         }
         for (reference, locator) in self.recipe.chunks.iter().zip(&self.chunk_locators) {
             if locator.logical_digest != Some(reference.digest)
                 || reference.length as u64 != locator.logical_length
             {
-                return Err(EncodingError::Integrity("recipe locator does not match logical chunk".into()));
+                return Err(EncodingError::Integrity(
+                    "recipe locator does not match logical chunk".into(),
+                ));
             }
         }
         Ok(())
@@ -168,10 +175,13 @@ impl SourceRecipeEnvelope {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncodingError> {
         if bytes.len() > MAX_RECIPE_BYTES {
-            return Err(EncodingError::InvalidRecipe("source envelope is too large".into()));
+            return Err(EncodingError::InvalidRecipe(
+                "source envelope is too large".into(),
+            ));
         }
-        let envelope: Self = serde_json::from_slice(bytes)
-            .map_err(|error| EncodingError::InvalidRecipe(format!("invalid source envelope: {error}")))?;
+        let envelope: Self = serde_json::from_slice(bytes).map_err(|error| {
+            EncodingError::InvalidRecipe(format!("invalid source envelope: {error}"))
+        })?;
         envelope.validate()?;
         Ok(envelope)
     }
@@ -208,27 +218,44 @@ impl TreeEnvelope {
             || self.files.len() > MAX_TREE_FILES
             || !self.files.contains_key(&self.main_path)
         {
-            return Err(EncodingError::InvalidRecipe("invalid source tree envelope".into()));
+            return Err(EncodingError::InvalidRecipe(
+                "invalid source tree envelope".into(),
+            ));
         }
         if serde_json::from_str::<serde_json::Value>(&self.settings_json).is_err() {
-            return Err(EncodingError::InvalidRecipe("tree settings are not valid JSON".into()));
+            return Err(EncodingError::InvalidRecipe(
+                "tree settings are not valid JSON".into(),
+            ));
         }
         for path in self.files.keys() {
-            if path.starts_with('/') || path.contains('\0') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
-                return Err(EncodingError::InvalidRecipe("tree contains an invalid path".into()));
+            if path.starts_with('/')
+                || path.contains('\0')
+                || path
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+            {
+                return Err(EncodingError::InvalidRecipe(
+                    "tree contains an invalid path".into(),
+                ));
             }
         }
         for file in self.files.values() {
             if file.kind != "text" && file.kind != "asset" {
-                return Err(EncodingError::InvalidRecipe("tree file locator kind is incomplete".into()));
+                return Err(EncodingError::InvalidRecipe(
+                    "tree file locator kind is incomplete".into(),
+                ));
             }
             if file.logical_length > i64::MAX as u64 {
-                return Err(EncodingError::InvalidRecipe("tree logical length exceeds SQL range".into()));
+                return Err(EncodingError::InvalidRecipe(
+                    "tree logical length exceeds SQL range".into(),
+                ));
             }
             match file.kind.as_str() {
                 "text" => {
                     let recipe = file.recipe.as_ref().ok_or_else(|| {
-                        EncodingError::InvalidRecipe("text file has no source recipe locator".into())
+                        EncodingError::InvalidRecipe(
+                            "text file has no source recipe locator".into(),
+                        )
                     })?;
                     if file.asset.is_some()
                         || recipe.logical_digest != Some(file.logical_digest)
@@ -299,9 +326,14 @@ impl TreeEnvelope {
         }
         let settings = serde_json::from_str::<serde_json::Value>(&self.settings_json)
             .ok()
-            .and_then(|value| value.get("engine").and_then(serde_json::Value::as_str).map(|engine| LogicalSettings {
-                engine: engine.to_owned(),
-            }))
+            .and_then(|value| {
+                value
+                    .get("engine")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|engine| LogicalSettings {
+                        engine: engine.to_owned(),
+                    })
+            })
             .filter(|settings| !settings.engine.is_empty());
         serde_json::to_vec(&LogicalTree {
             main: &self.main_path,
@@ -318,10 +350,13 @@ impl TreeEnvelope {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncodingError> {
         if bytes.len() > MAX_RECIPE_BYTES {
-            return Err(EncodingError::InvalidRecipe("source tree envelope is too large".into()));
+            return Err(EncodingError::InvalidRecipe(
+                "source tree envelope is too large".into(),
+            ));
         }
-        let envelope: Self = serde_json::from_slice(bytes)
-            .map_err(|error| EncodingError::InvalidRecipe(format!("invalid source tree envelope: {error}")))?;
+        let envelope: Self = serde_json::from_slice(bytes).map_err(|error| {
+            EncodingError::InvalidRecipe(format!("invalid source tree envelope: {error}"))
+        })?;
         envelope.validate()?;
         Ok(envelope)
     }
@@ -452,126 +487,6 @@ pub struct EncodedSource {
     pub recipe: Recipe,
     pub recipe_bytes: Vec<u8>,
     pub objects: Vec<EncodedObject>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StagedSourceObjects {
-    pub recipe: SourceRecipeEnvelope,
-    pub recipe_object: crate::storage::blob::WrittenObject,
-    pub chunk_objects: Vec<crate::storage::blob::WrittenObject>,
-}
-
-/// Publish the immutable physical objects for an encoded source. The caller
-/// must have admitted matching `objects` reservations first and must settle
-/// the returned descriptors transactionally; this function never advances a
-/// document head or acknowledges a checkpoint.
-pub async fn write_encoded_source(
-    blobs: Arc<dyn crate::storage::blob::BlobStore>,
-    document_id: &str,
-    source: &EncodedSource,
-    allocations: &HashMap<[u8; 32], ObjectId>,
-    recipe_object_id: ObjectId,
-) -> Result<StagedSourceObjects, EncodingError> {
-    write_encoded_source_with_existing(
-        blobs,
-        document_id,
-        source,
-        &HashMap::new(),
-        allocations,
-        recipe_object_id,
-    )
-    .await
-}
-
-pub async fn write_encoded_source_with_existing(
-    blobs: Arc<dyn crate::storage::blob::BlobStore>,
-    document_id: &str,
-    source: &EncodedSource,
-    existing: &HashMap<[u8; 32], PhysicalLocator>,
-    allocations: &HashMap<[u8; 32], ObjectId>,
-    recipe_object_id: ObjectId,
-) -> Result<StagedSourceObjects, EncodingError> {
-    let mut chunk_objects = Vec::with_capacity(source.objects.len());
-    let mut by_digest = HashMap::<[u8; 32], PhysicalLocator>::new();
-    for object in &source.objects {
-        let object_id = allocations.get(&object.digest).ok_or_else(|| {
-            EncodingError::Integrity("missing admitted allocation for source chunk".into())
-        })?;
-        let allocated_object_id = object_id.clone();
-        let blobs_for_chunk = Arc::clone(&blobs);
-        let written = tokio::spawn({
-            let document_id = document_id.to_owned();
-            let content = object.encoded.clone();
-            async move {
-                crate::storage::blob::write_v2_object_with_id(
-                    blobs_for_chunk.as_ref(),
-                    &document_id,
-                    allocated_object_id,
-                    content,
-                    "application/vnd.librepaper.source-chunk",
-                )
-                .await
-            }
-        })
-        .await
-        .map_err(|error| EncodingError::Worker(format!("source chunk PUT task failed: {error}")))?
-        .map_err(|error| EncodingError::Worker(error.to_string()))?;
-        let object_digest = decode_digest(&written.digest)?;
-        by_digest.insert(
-            object.digest,
-            PhysicalLocator {
-                object_id: written.object_id.clone(),
-                object_digest,
-                logical_digest: Some(object.digest),
-                logical_length: object.uncompressed_len as u64,
-                byte_length: written.byte_length,
-                encoding_version: 1,
-            },
-        );
-        chunk_objects.push(written);
-    }
-    for (digest, locator) in existing {
-        if locator.logical_digest != Some(*digest) || locator.encoding_version == 0 {
-            return Err(EncodingError::Integrity("existing source locator does not match chunk".into()));
-        }
-        by_digest.entry(*digest).or_insert_with(|| locator.clone());
-    }
-    let mut chunk_locators = Vec::with_capacity(source.recipe.chunks.len());
-    for reference in &source.recipe.chunks {
-        let locator = by_digest.get(&reference.digest).ok_or_else(|| {
-            EncodingError::Integrity("encoded source omitted a required chunk".into())
-        })?;
-        chunk_locators.push(PhysicalLocator {
-            object_id: locator.object_id.clone(),
-            object_digest: locator.object_digest,
-            logical_digest: Some(reference.digest),
-            logical_length: locator.logical_length,
-            byte_length: locator.byte_length,
-            encoding_version: locator.encoding_version,
-        });
-    }
-    let recipe = SourceRecipeEnvelope {
-        version: SOURCE_ENVELOPE_VERSION,
-        recipe: source.recipe.clone(),
-        chunk_locators,
-    };
-    let recipe_bytes = recipe.to_bytes()?;
-    let document_for_recipe = document_id.to_owned();
-    let blobs_for_recipe = Arc::clone(&blobs);
-    let recipe_object = tokio::spawn(async move {
-        crate::storage::blob::write_v2_object_with_id(
-            blobs_for_recipe.as_ref(),
-            &document_for_recipe,
-            recipe_object_id,
-            recipe_bytes,
-            "application/vnd.librepaper.source-recipe",
-        )
-        .await
-    })
-    .await
-    .map_err(|error| EncodingError::Worker(format!("source recipe PUT task failed: {error}")))?
-    .map_err(|error| EncodingError::Worker(error.to_string()))?;
-    Ok(StagedSourceObjects { recipe, recipe_object, chunk_objects })
 }
 
 /// The digest/cut pass of encoding, separated from compression so a caller
@@ -855,6 +770,7 @@ where
 
 /// Read the recipe/chunk representation. Missing or corrupt recipes and chunks
 /// are errors and are never substituted with unrelated bytes.
+#[cfg(test)]
 pub async fn read_file(
     blobs: &dyn crate::storage::blob::BlobStore,
     storage_id: &str,
@@ -938,13 +854,20 @@ pub async fn read_file_v2(
         .map_err(|error| EncodingError::Integrity(error.to_string()))?;
     let recipe_descriptor = leased_objects
         .iter()
-        .find(|object| object.document_id.as_str() == document_id && object.id.as_str() == recipe_object_id.as_str())
-        .ok_or_else(|| EncodingError::Integrity("recipe object is outside the acquired read set".into()))?;
+        .find(|object| {
+            object.document_id.as_str() == document_id
+                && object.id.as_str() == recipe_object_id.as_str()
+        })
+        .ok_or_else(|| {
+            EncodingError::Integrity("recipe object is outside the acquired read set".into())
+        })?;
     if recipe_descriptor.state != "available"
         || recipe_descriptor.kind != "source_recipe"
         || recipe_descriptor.digest != hex::encode(expected_recipe_digest)
     {
-        return Err(EncodingError::Integrity("recipe descriptor does not match the requested object".into()));
+        return Err(EncodingError::Integrity(
+            "recipe descriptor does not match the requested object".into(),
+        ));
     }
     let recipe_bytes = blobs
         .get(&recipe_key)
@@ -952,10 +875,14 @@ pub async fn read_file_v2(
         .map_err(|error| EncodingError::Integrity(error.to_string()))?;
     let actual_recipe_digest: [u8; 32] = Sha256::digest(&recipe_bytes).into();
     if actual_recipe_digest != expected_recipe_digest {
-        return Err(EncodingError::Integrity("recipe object digest mismatch".into()));
+        return Err(EncodingError::Integrity(
+            "recipe object digest mismatch".into(),
+        ));
     }
     if recipe_descriptor.byte_length != Some(recipe_bytes.len() as i64) {
-        return Err(EncodingError::Integrity("recipe object length mismatch".into()));
+        return Err(EncodingError::Integrity(
+            "recipe object length mismatch".into(),
+        ));
     }
     let envelope = SourceRecipeEnvelope::from_bytes(&recipe_bytes)?;
     let mut objects = HashMap::<[u8; 32], Vec<u8>>::with_capacity(envelope.chunk_locators.len());
@@ -965,19 +892,26 @@ pub async fn read_file_v2(
         .uncompressed_len
         .saturating_add((envelope.chunk_locators.len() as u64).saturating_mul(256));
     for locator in &envelope.chunk_locators {
-        let logical_digest = locator
-            .logical_digest
-            .ok_or_else(|| EncodingError::Integrity("source locator has no logical digest".into()))?;
+        let logical_digest = locator.logical_digest.ok_or_else(|| {
+            EncodingError::Integrity("source locator has no logical digest".into())
+        })?;
         let descriptor = leased_objects
             .iter()
-            .find(|object| object.document_id.as_str() == document_id && object.id.as_str() == locator.object_id.as_str())
-            .ok_or_else(|| EncodingError::Integrity("source chunk is outside the acquired read set".into()))?;
+            .find(|object| {
+                object.document_id.as_str() == document_id
+                    && object.id.as_str() == locator.object_id.as_str()
+            })
+            .ok_or_else(|| {
+                EncodingError::Integrity("source chunk is outside the acquired read set".into())
+            })?;
         if descriptor.state != "available"
             || descriptor.kind != "source_chunk"
             || descriptor.digest != hex::encode(locator.object_digest)
             || descriptor.byte_length != Some(locator.byte_length as i64)
         {
-            return Err(EncodingError::Integrity("source chunk descriptor does not match locator".into()));
+            return Err(EncodingError::Integrity(
+                "source chunk descriptor does not match locator".into(),
+            ));
         }
         let key = crate::storage::blob::v2_object_key(document_id, &locator.object_id)
             .map_err(|error| EncodingError::Integrity(error.to_string()))?;
@@ -987,11 +921,15 @@ pub async fn read_file_v2(
             .map_err(|error| EncodingError::Integrity(error.to_string()))?;
         let actual: [u8; 32] = Sha256::digest(&bytes).into();
         if bytes.len() as u64 != locator.byte_length || actual != locator.object_digest {
-            return Err(EncodingError::Integrity("source chunk object digest mismatch".into()));
+            return Err(EncodingError::Integrity(
+                "source chunk object digest mismatch".into(),
+            ));
         }
         encoded_bytes = encoded_bytes.saturating_add(bytes.len() as u64);
         if bytes.len() as u64 > MAX_OBJECT_BYTES || encoded_bytes > encoded_limit {
-            return Err(EncodingError::Integrity("encoded source exceeds read budget".into()));
+            return Err(EncodingError::Integrity(
+                "encoded source exceeds read budget".into(),
+            ));
         }
         objects.insert(logical_digest, bytes);
     }
@@ -1008,6 +946,7 @@ pub async fn read_file_v2(
     .map_err(|error| EncodingError::Worker(error.to_string()))?
 }
 
+#[cfg(test)]
 fn decode_digest(value: &str) -> Result<[u8; 32], EncodingError> {
     let bytes = hex::decode(value)
         .map_err(|_| EncodingError::InvalidInput("source digest is not hexadecimal".into()))?;
@@ -1616,7 +1555,8 @@ mod tests {
                 logical_length: 9,
                 recipe: None,
                 asset: Some(PhysicalLocator {
-                    object_id: ObjectId::parse("fedcba9876543210fedcba9876543210").expect("object id"),
+                    object_id: ObjectId::parse("fedcba9876543210fedcba9876543210")
+                        .expect("object id"),
                     object_digest: [5; 32],
                     logical_digest: None,
                     logical_length: 9,

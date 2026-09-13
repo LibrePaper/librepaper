@@ -1,5 +1,20 @@
 //! Atomic admission for retained agent payloads.
 
+type PayloadReadRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    String,
+    String,
+    i64,
+);
+
+type StagedPayloadObjectRow = (String, String, String, Option<i64>, i64, Option<String>);
+
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -58,19 +73,25 @@ pub struct AgentPayloadRead {
 }
 
 fn checked_add(a: i64, b: i64, label: &str) -> CatalogResult<i64> {
-    a.checked_add(b).ok_or_else(|| CatalogError::Invalid(format!("{label} accounting overflow")))
+    a.checked_add(b)
+        .ok_or_else(|| CatalogError::Invalid(format!("{label} accounting overflow")))
 }
 
 fn digest(value: &str, label: &str) -> CatalogResult<()> {
     if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(CatalogError::Invalid(format!("{label} must be a SHA-256 digest")));
+        return Err(CatalogError::Invalid(format!(
+            "{label} must be a SHA-256 digest"
+        )));
     }
     Ok(())
 }
 
 fn natural_key(document_id: &str, actor_key: &str, agent_id: &str, kind: &str) -> String {
     let value = format!("{}\0{}\0{}\0{}", document_id, actor_key, agent_id, kind);
-    format!("agent-stage:{}", hex::encode(Sha256::digest(value.as_bytes())))
+    format!(
+        "agent-stage:{}",
+        hex::encode(Sha256::digest(value.as_bytes()))
+    )
 }
 
 fn live_authority(
@@ -79,10 +100,13 @@ fn live_authority(
     authority: &AgentPayloadAuthority,
     now: i64,
 ) -> CatalogResult<bool> {
-    let slug: String = tx.query_row(
-        "SELECT slug FROM documents WHERE id=?1 AND status='active'",
-        [document_id], |row| row.get(0),
-    ).map_err(CatalogError::from)?;
+    let slug: String = tx
+        .query_row(
+            "SELECT slug FROM documents WHERE id=?1 AND status='active'",
+            [document_id],
+            |row| row.get(0),
+        )
+        .map_err(CatalogError::from)?;
     let mutation = MutationAuthority {
         account_id: &authority.account_id,
         owner_key: "",
@@ -109,20 +133,29 @@ impl Catalog {
         limits: V2AdmissionLimits,
         now: UnixMillis,
     ) -> CatalogResult<AgentPayloadAdmission> {
-        if input.slug.is_empty() || input.slug.len() > 256
-            || input.actor_key.is_empty() || input.actor_key.len() > 256
-            || input.agent_id.is_empty() || input.agent_id.len() > 256
-            || input.agent_kind.is_empty() || input.agent_kind.len() > 128
-            || input.reserved_bytes < 0 || input.reserved_bytes > AGENT_PAYLOAD_MAX_BYTES
+        if input.slug.is_empty()
+            || input.slug.len() > 256
+            || input.actor_key.is_empty()
+            || input.actor_key.len() > 256
+            || input.agent_id.is_empty()
+            || input.agent_id.len() > 256
+            || input.agent_kind.is_empty()
+            || input.agent_kind.len() > 128
+            || input.reserved_bytes < 0
+            || input.reserved_bytes > AGENT_PAYLOAD_MAX_BYTES
             || input.expires_at.0 <= now.0
             || input.expires_at.0 > now.0.saturating_add(AGENT_PAYLOAD_MAX_DEADLINE_MS)
         {
-            return Err(CatalogError::Invalid("invalid agent payload admission".into()));
+            return Err(CatalogError::Invalid(
+                "invalid agent payload admission".into(),
+            ));
         }
         digest(&input.logical_digest, "logical digest")?;
         digest(&input.physical_digest, "physical digest")?;
         if input.plan_json.len() > 65_536 || input.request_digest.len() != 64 {
-            return Err(CatalogError::Invalid("invalid agent payload plan or request digest".into()));
+            return Err(CatalogError::Invalid(
+                "invalid agent payload plan or request digest".into(),
+            ));
         }
         let actor_key = input.actor_key.clone();
         let expected_actor_key = if !authority.account_id.is_empty() {
@@ -130,7 +163,9 @@ impl Catalog {
         } else if !authority.link_hash.is_empty() {
             format!("link:{}", authority.link_hash)
         } else {
-            return Err(CatalogError::Invalid("agent payload lacks canonical actor proof".into()));
+            return Err(CatalogError::Invalid(
+                "agent payload lacks canonical actor proof".into(),
+            ));
         };
         if actor_key != expected_actor_key {
             return Err(CatalogError::Refused(
@@ -140,7 +175,10 @@ impl Catalog {
         }
         let agent_id = input.agent_id.clone();
         let agent_kind = input.agent_kind.clone();
-        let _admission = self.room_reservations.lock().map_err(|_| CatalogError::Busy)?;
+        let _admission = self
+            .room_reservations
+            .lock()
+            .map_err(|_| CatalogError::Busy)?;
         self.immediate(|tx| {
             let document_id: String = tx.query_row(
                 "SELECT id FROM documents WHERE slug=?1 AND status='active'", [&input.slug],
@@ -180,7 +218,7 @@ impl Catalog {
                     }
                 };
                 let object_id = ObjectId::new(object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-                let object: Option<(String, String, String, Option<i64>, i64, Option<String>)> = tx.query_row(
+                let object: Option<StagedPayloadObjectRow> = tx.query_row(
                     "SELECT storage_key,state,digest,byte_length,reserved_bytes,allocation_operation_id FROM objects WHERE document_id=?1 AND id=?2 AND kind='agent_payload'",
                     params![document_id, object_id.as_str()],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
@@ -334,7 +372,7 @@ impl Catalog {
                 format!("link:{}", authority.link_hash)
             };
             let request_key = natural_key(&document_id, &actor_key, agent_id, agent_kind);
-            let row: Option<(String,String,String,String,String,i64,i64,String,String,i64)> = tx.query_row(
+            let row: Option<PayloadReadRow> = tx.query_row(
                 "SELECT op.id,o.id,o.storage_key,o.digest,COALESCE(o.logical_digest,''),o.byte_length,o.reserved_bytes,s.writer_generation,op.plan_json,CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER) FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state='prepared' AND op.writer_generation=s.writer_generation AND op.work_expires_at>?4 AND o.kind='agent_payload' AND o.state='available' AND o.byte_length IS NOT NULL AND o.byte_length=CAST(json_extract(op.plan_json,'$.reserved_bytes') AS INTEGER) AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?4 AND EXISTS (SELECT 1 FROM object_leases stage WHERE stage.document_id=op.document_id AND stage.object_id=o.id AND stage.operation_id=op.id AND stage.purpose='stage' AND stage.writer_generation=s.writer_generation AND stage.expires_at>?4)",
                 params![document_id, actor_key, request_key, now.0],
                 |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?)),
@@ -370,7 +408,9 @@ impl Catalog {
         now: UnixMillis,
     ) -> CatalogResult<()> {
         if result_json.len() > 65_536 {
-            return Err(CatalogError::Invalid("agent payload result is too large".into()));
+            return Err(CatalogError::Invalid(
+                "agent payload result is too large".into(),
+            ));
         }
         self.immediate(|tx| {
             let (document_id, state, generation, actor_key, work_expires_at, plan_json): (String,String,String,String,i64,String) = tx.query_row(
@@ -547,8 +587,14 @@ mod tests {
     #[test]
     fn agent_stage_key_is_stable_across_retries_and_scoped_by_document() {
         let first = natural_key("doc-a", "account:acct", "view-1", "view");
-        assert_eq!(first, natural_key("doc-a", "account:acct", "view-1", "view"));
-        assert_ne!(first, natural_key("doc-b", "account:acct", "view-1", "view"));
+        assert_eq!(
+            first,
+            natural_key("doc-a", "account:acct", "view-1", "view")
+        );
+        assert_ne!(
+            first,
+            natural_key("doc-b", "account:acct", "view-1", "view")
+        );
         assert_ne!(first, natural_key("doc-a", "link:token", "view-1", "view"));
         assert!(first.starts_with("agent-stage:"));
     }
@@ -565,24 +611,43 @@ mod tests {
     fn atomic_admission_replays_exact_identity_and_keeps_stage_lease() {
         let catalog = fixture();
         let request = input();
-        let first = catalog.admit_agent_payload(
-            &request, &authority(),
-            V2AdmissionLimits { owner_bytes: i64::MAX, deployment_bytes: i64::MAX, owner_documents: i64::MAX },
-            UnixMillis(1),
-        ).expect("first admission");
-        let replay = catalog.admit_agent_payload(
-            &request, &authority(),
-            V2AdmissionLimits { owner_bytes: i64::MAX, deployment_bytes: i64::MAX, owner_documents: i64::MAX },
-            UnixMillis(2),
-        ).expect("replay");
+        let first = catalog
+            .admit_agent_payload(
+                &request,
+                &authority(),
+                V2AdmissionLimits {
+                    owner_bytes: i64::MAX,
+                    deployment_bytes: i64::MAX,
+                    owner_documents: i64::MAX,
+                },
+                UnixMillis(1),
+            )
+            .expect("first admission");
+        let replay = catalog
+            .admit_agent_payload(
+                &request,
+                &authority(),
+                V2AdmissionLimits {
+                    owner_bytes: i64::MAX,
+                    deployment_bytes: i64::MAX,
+                    owner_documents: i64::MAX,
+                },
+                UnixMillis(2),
+            )
+            .expect("replay");
         assert!(!first.replay);
         assert!(replay.replay);
         assert_eq!(first.operation_id, replay.operation_id);
         assert_eq!(replay.state, "prepared");
-        let lease_count: i64 = catalog.with_connection(|db| db.query_row(
+        let lease_count: i64 =
+            catalog
+                .with_connection(|db| {
+                    db.query_row(
             "SELECT count(*) FROM object_leases WHERE operation_id=?1 AND purpose='stage'",
             params![first.operation_id.as_str()], |row| row.get(0),
-        ).map_err(CatalogError::from)) .expect("lease count");
+        ).map_err(CatalogError::from)
+                })
+                .expect("lease count");
         assert_eq!(lease_count, 1);
         catalog
             .settle_v2_object(&first.document_id, &first.object_id, 128, UnixMillis(3))
@@ -601,19 +666,37 @@ mod tests {
     fn final_payload_commit_rejects_revoked_authority() {
         let catalog = fixture();
         let request = input();
-        let admitted = catalog.admit_agent_payload(
-            &request, &authority(),
-            V2AdmissionLimits { owner_bytes: i64::MAX, deployment_bytes: i64::MAX, owner_documents: i64::MAX },
-            UnixMillis(1),
-        ).expect("admission");
-        catalog.with_connection(|db| {
-            db.execute("UPDATE accounts SET session_generation='revoked' WHERE id='payload-account'", [])?;
-            Ok(())
-        }).expect("revoke");
+        let admitted = catalog
+            .admit_agent_payload(
+                &request,
+                &authority(),
+                V2AdmissionLimits {
+                    owner_bytes: i64::MAX,
+                    deployment_bytes: i64::MAX,
+                    owner_documents: i64::MAX,
+                },
+                UnixMillis(1),
+            )
+            .expect("admission");
+        catalog
+            .with_connection(|db| {
+                db.execute(
+                    "UPDATE accounts SET session_generation='revoked' WHERE id='payload-account'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("revoke");
         let result = catalog.finish_agent_payload(
-            &admitted.operation_id, &authority(), r#"{"version":2}"#, UnixMillis(2),
+            &admitted.operation_id,
+            &authority(),
+            r#"{"version":2}"#,
+            UnixMillis(2),
         );
-        assert!(matches!(result, Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))));
+        assert!(matches!(
+            result,
+            Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))
+        ));
     }
 
     #[test]
@@ -621,12 +704,18 @@ mod tests {
         let catalog = fixture();
         let request = input();
         let authority = authority();
-        let admitted = catalog.admit_agent_payload(
-            &request,
-            &authority,
-            V2AdmissionLimits { owner_bytes: i64::MAX, deployment_bytes: i64::MAX, owner_documents: i64::MAX },
-            UnixMillis(1),
-        ).expect("admission");
+        let admitted = catalog
+            .admit_agent_payload(
+                &request,
+                &authority,
+                V2AdmissionLimits {
+                    owner_bytes: i64::MAX,
+                    deployment_bytes: i64::MAX,
+                    owner_documents: i64::MAX,
+                },
+                UnixMillis(1),
+            )
+            .expect("admission");
         // Exercise the same settlement path as the physical writer so the
         // object row and all owner/deployment counters agree at the replay
         // boundary.
@@ -638,12 +727,14 @@ mod tests {
                 UnixMillis(2),
             )
             .expect("settled physical object");
-        catalog.finish_agent_payload(
-            &admitted.operation_id,
-            &authority,
-            r#"{"version":2}"#,
-            UnixMillis(2),
-        ).expect("finish stage");
+        catalog
+            .finish_agent_payload(
+                &admitted.operation_id,
+                &authority,
+                r#"{"version":2}"#,
+                UnixMillis(2),
+            )
+            .expect("finish stage");
         let replay = catalog
             .admit_agent_payload(
                 &request,
@@ -668,27 +759,45 @@ mod tests {
         assert_eq!(state, "prepared");
         assert_eq!(live_root, 0);
         assert_eq!(leases, 1);
-        let read = catalog.acquire_agent_payload_read(
-            "payload-doc", &authority, "stable-id", "view", "holder", UnixMillis(3),
-        ).expect("stage read");
+        let read = catalog
+            .acquire_agent_payload_read(
+                "payload-doc",
+                &authority,
+                "stable-id",
+                "view",
+                "holder",
+                UnixMillis(3),
+            )
+            .expect("stage read");
         assert!(read.is_some());
-        catalog.with_connection(|db| {
-            db.execute(
+        catalog
+            .with_connection(|db| {
+                db.execute(
                 "UPDATE object_leases SET expires_at=2 WHERE operation_id=?1 AND purpose='stage'",
                 [admitted.operation_id.as_str()],
             )?;
-            Ok(())
-        }).expect("expire stage lease");
+                Ok(())
+            })
+            .expect("expire stage lease");
         let expired_finish = catalog.finish_agent_payload(
             &admitted.operation_id,
             &authority,
             r#"{"version":2}"#,
             UnixMillis(3),
         );
-        assert!(matches!(expired_finish, Err(CatalogError::Conflict(message)) if message.contains("stage lease")));
-        let expired_read = catalog.acquire_agent_payload_read(
-            "payload-doc", &authority, "stable-id", "view", "expired-holder", UnixMillis(3),
-        ).expect("expired stage read");
+        assert!(
+            matches!(expired_finish, Err(CatalogError::Conflict(message)) if message.contains("stage lease"))
+        );
+        let expired_read = catalog
+            .acquire_agent_payload_read(
+                "payload-doc",
+                &authority,
+                "stable-id",
+                "view",
+                "expired-holder",
+                UnixMillis(3),
+            )
+            .expect("expired stage read");
         assert!(expired_read.is_none());
     }
 
@@ -710,7 +819,12 @@ mod tests {
             )
             .expect("admission");
         catalog
-            .settle_v2_object(&admitted.document_id, &admitted.object_id, 128, UnixMillis(2))
+            .settle_v2_object(
+                &admitted.document_id,
+                &admitted.object_id,
+                128,
+                UnixMillis(2),
+            )
             .expect("settled physical object");
         catalog
             .with_connection(|db| {
@@ -747,6 +861,8 @@ mod tests {
             },
             UnixMillis(4),
         );
-        assert!(matches!(second, Err(CatalogError::Conflict(message)) if message.contains("terminal")));
+        assert!(
+            matches!(second, Err(CatalogError::Conflict(message)) if message.contains("terminal"))
+        );
     }
 }

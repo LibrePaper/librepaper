@@ -38,9 +38,10 @@ fn definitive_checkpoint_catalog_error(error: &crate::storage::catalog::CatalogE
             | crate::storage::catalog::CatalogError::Invalid(_)
             | crate::storage::catalog::CatalogError::Refused(_, _)
             | crate::storage::catalog::CatalogError::NotFound => true,
-            crate::storage::catalog::CatalogError::Sql(
-                rusqlite::Error::SqliteFailure(error, _),
-            ) => error.code == rusqlite::ErrorCode::ConstraintViolation,
+            crate::storage::catalog::CatalogError::Sql(rusqlite::Error::SqliteFailure(
+                error,
+                _,
+            )) => error.code == rusqlite::ErrorCode::ConstraintViolation,
             crate::storage::catalog::CatalogError::Sql(_) => false,
             crate::storage::catalog::CatalogError::Busy
             | crate::storage::catalog::CatalogError::Closed => false,
@@ -642,12 +643,6 @@ impl Room {
             return Ok(None);
         }
         let content_sha = tree.digest();
-        let catalog_duplicate = match (force_event, self.catalog.get()) {
-            (false, Some(catalog)) => {
-                read_checkpoint_by_content_sha(catalog, &self.slug, &content_sha).await?
-            }
-            _ => None,
-        };
         let duplicate = if force_event {
             false
         } else {
@@ -657,8 +652,17 @@ impl Room {
                     point.sha == content_sha
                         || (!point.tree_sha.is_empty() && point.tree_sha == content_sha)
                 });
+            // V2 identifies checkpoint events separately from their content.
+            // A return to historical content must publish a new event and head;
+            // only a tree unchanged since the current checkpoint is a no-op.
+            let duplicate = if self.catalog.get().is_some() {
+                !state.session.last_checkpoint.is_empty()
+                    && state.session.last_tree.as_ref() == Some(&tree)
+            } else {
+                resident_duplicate
+            };
             drop(state);
-            resident_duplicate || catalog_duplicate.is_some()
+            duplicate
         };
         // Catalogue-backed actor writes use the v2 physical graph.  Keep the
         // old path below only for isolated/legacy callers that have no
@@ -777,26 +781,29 @@ impl Room {
             let mut state = self.state.lock().await;
             state.session.asked = None;
             if !force_event {
-                let existing = state
-                    .manifest
-                    .checkpoints
-                    .iter()
-                    .rev()
-                    .find(|point| {
-                        point.sha == content_sha
-                            || (!point.tree_sha.is_empty() && point.tree_sha == content_sha)
-                    })
-                    .map(|point| point.sha.clone());
-                let existing = existing.or_else(|| {
-                    (state.session.last_tree.as_ref() == Some(&tree)
-                        && !state.session.last_checkpoint.is_empty())
-                        .then(|| state.session.last_checkpoint.clone())
-                }).or_else(|| {
-                    // In catalogue mode the room keeps only a bounded tail.
-                    // A revert to an older tree is still the same immutable
-                    // checkpoint, even when that row is no longer resident.
-                    catalog_duplicate.as_ref().map(|point| point.sha.clone())
-                });
+                // The cached manifest may lag a committed v2 event. Its older
+                // event with matching content must never replace the live head.
+                let existing = if self.catalog.get().is_some() {
+                    (!state.session.last_checkpoint.is_empty()
+                        && state.session.last_tree.as_ref() == Some(&tree))
+                    .then(|| state.session.last_checkpoint.clone())
+                } else {
+                    state
+                        .manifest
+                        .checkpoints
+                        .iter()
+                        .rev()
+                        .find(|point| {
+                            point.sha == content_sha
+                                || (!point.tree_sha.is_empty() && point.tree_sha == content_sha)
+                        })
+                        .map(|point| point.sha.clone())
+                        .or_else(|| {
+                            (state.session.last_tree.as_ref() == Some(&tree)
+                                && !state.session.last_checkpoint.is_empty())
+                            .then(|| state.session.last_checkpoint.clone())
+                        })
+                };
                 if let Some(existing) = existing {
                     // Reusing immutable content is not a new checkpoint -- the
                     // manifest's chronology and its bytes are left alone, since
@@ -1414,6 +1421,8 @@ impl Room {
     /// in one SQLite transaction.  This is deliberately kept separate from
     /// the old source-history writer until callers without a MutationAuthority
     /// have been removed; those callers cannot satisfy the final auth fence.
+    // Keep the explicit fields at this authenticated transaction boundary.
+    #[allow(clippy::too_many_arguments)]
     async fn checkpoint_v2_canonical(
         &self,
         catalog: &Arc<crate::storage::catalog::Catalog>,
@@ -1476,6 +1485,8 @@ impl Room {
                 self.config.session.checkpoint_deployment_per_hour.max(0) as usize,
             )
             .map_err(WriteError::from)?;
+        #[cfg(test)]
+        pause_after_checkpoint_admission(&self.slug).await;
         let generated_operation_id = OperationId::new(hex::encode(crate::auth::random_bytes(16)))
             .map_err(|error| WriteError::Storage(error.to_string()))?;
         let checkpoint_id =
@@ -2277,7 +2288,11 @@ impl Room {
             tree_object_id: tree_id,
             tree_digest: hex::encode(tree_envelope.logical_digest),
             parent_id: (!parent.is_empty()).then(|| parent.to_string()),
-            author_account_id: (!actor.account_id.is_empty()).then(|| actor.account_id.to_string()),
+            author_account_id: if actor.account_id.is_empty() {
+                by.account_id().map(str::to_owned)
+            } else {
+                Some(actor.account_id.to_owned())
+            },
             author_label: by.display().to_string(),
             reason: why.to_string(),
             source_format,
@@ -2364,7 +2379,9 @@ impl Room {
                     })
                     .await;
                 if let Err(abort_error) = abort_result {
-                    eprintln!("warning: could not close rejected checkpoint operation: {abort_error}");
+                    eprintln!(
+                        "warning: could not close rejected checkpoint operation: {abort_error}"
+                    );
                 }
             }
             return Err(WriteError::from(error));

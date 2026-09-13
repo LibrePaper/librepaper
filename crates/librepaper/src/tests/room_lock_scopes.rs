@@ -6,11 +6,10 @@
 //! the code these tests were written against, each of those callers blocked
 //! until the writer was released.
 
-use super::room::{fixture, HookStore};
+use super::room::fixture;
 use crate::config::Configuration;
 use crate::document::store;
 use crate::room::{self, Applied};
-use crate::storage::blob::{self, BlobStore};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,46 +35,68 @@ fn comment(body: &str, temp_id: &str) -> room::Command {
         proposed: None,
         revision: String::new(),
         temp_id: temp_id.into(),
-        request_id: String::new(),
+        request_id: crate::util::new_request_key(),
     }
 }
 
-/// A legacy room over a store whose comment blob writes can be paused and
-/// failed. `fixture` has no catalogue, so this is the whole-blob comment path.
-async fn legacy_room() -> (
-    tempfile::TempDir,
-    Arc<store::Store>,
-    Arc<HookStore>,
-    room::RoomSet,
-    Arc<room::Room>,
-) {
-    let (dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
-    let hooked = HookStore::new(store.blobs.clone());
-    let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
-    rooms.attach_store(store.clone());
-    let room = rooms.get("probe").await;
-    (dir, store, hooked, rooms, room)
+/// Park a v2 comment with room state released, just before the catalogue
+/// transaction. The guard also clears cancelled gates.
+struct CommentGate(Arc<room::ReservationGate>);
+impl CommentGate {
+    fn new() -> Self {
+        let gate = room::ReservationGate::new("probe");
+        *room::before_comment_persistence_gate().lock().unwrap() = Some(gate.clone());
+        Self(gate)
+    }
+    fn resume(&self) {
+        *room::before_comment_persistence_gate().lock().unwrap() = None;
+        self.0.resume.add_permits(1);
+    }
+}
+impl Drop for CommentGate {
+    fn drop(&mut self) {
+        self.resume();
+    }
 }
 
-/// The room's comment blob write no longer holds room state, so a person
+async fn apply(room: &room::Room, command: room::Command, ip: &str) -> (serde_json::Value, bool) {
+    room.apply_command(
+        command,
+        ip,
+        "alice",
+        "",
+        None,
+        true,
+        "github:alice",
+        "room-test-session",
+    )
+    .await
+}
+
+fn stored_bodies(store: &store::Store) -> Vec<String> {
+    store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .comments("probe", None, 100)
+        .unwrap()
+        .into_iter()
+        .map(|comment| comment.body)
+        .collect()
+}
+
+/// The room's catalogue comment write no longer holds room state, so a person
 /// typing and a socket attaching both get through while it is in storage.
 #[tokio::test]
 async fn paused_comment_persistence_lets_an_edit_and_a_socket_through() {
-    let (_dir, _store, hooked, _rooms, room) = legacy_room().await;
-    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::room_key("probe")));
+    let (_dir, _store, rooms) = fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
+    let gate = CommentGate::new();
     let writing = tokio::spawn({
         let room = room.clone();
-        async move {
-            room.apply_command(comment("first", ""), "1.1.1.1", "", "", None, true, "", "")
-                .await
-        }
+        async move { apply(&room, comment("first", ""), "1.1.1.1").await }
     });
-    tokio::time::timeout(PATIENCE, hooked.reached.notified())
+    tokio::time::timeout(PATIENCE, gate.0.reached.notified())
         .await
         .expect("the comment write reached storage");
 
@@ -96,39 +117,33 @@ async fn paused_comment_persistence_lets_an_edit_and_a_socket_through() {
         "the comment is not visible until it is durable"
     );
 
-    hooked.resume.notify_one();
+    gate.resume();
     let (event, ok) = writing.await.unwrap();
     assert!(ok, "the comment landed: {event}");
     assert_eq!(room.snapshot().await.len(), 1);
     assert_eq!(room.source().await, "EDITED WHILE SAVING");
-    println!("legacy comment write: source edit, socket attach and snapshot all proceed");
+    println!("catalogue comment write: source edit, socket attach and snapshot all proceed");
 }
 
-/// Two comment writers overlapping on the whole-blob path both land. The
-/// second prepares from the list the first installed rather than from the one
-/// it started with, so neither change is written away.
+/// Two catalogue comment writers overlapping in the persistence window both
+/// land, and the resident list agrees with the durable rows.
 #[tokio::test]
 async fn two_concurrent_comment_writers_both_land() {
-    let (_dir, store, hooked, _rooms, room) = legacy_room().await;
-    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::room_key("probe")));
+    let (_dir, store, rooms) = fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
+    let gate = CommentGate::new();
     let first = tokio::spawn({
         let room = room.clone();
-        async move {
-            room.apply_command(comment("first", ""), "1.1.1.1", "", "", None, true, "", "")
-                .await
-        }
+        async move { apply(&room, comment("first", ""), "1.1.1.1").await }
     });
-    tokio::time::timeout(PATIENCE, hooked.reached.notified())
+    tokio::time::timeout(PATIENCE, gate.0.reached.notified())
         .await
         .expect("the first comment write reached storage");
     let second = tokio::spawn({
         let room = room.clone();
-        async move {
-            room.apply_command(comment("second", ""), "1.1.1.2", "", "", None, true, "", "")
-                .await
-        }
+        async move { apply(&room, comment("second", ""), "1.1.1.2").await }
     });
-    hooked.resume.notify_one();
+    gate.resume();
     assert!(first.await.unwrap().1);
     assert!(
         tokio::time::timeout(PATIENCE, second)
@@ -145,11 +160,11 @@ async fn two_concurrent_comment_writers_both_land() {
         .map(|item| item.body)
         .collect();
     assert_eq!(bodies, vec!["first".to_string(), "second".to_string()]);
-    // And the durable object holds both, not just the last writer's copy.
-    let raw = store.blobs.get(&blob::room_key("probe")).await.unwrap();
-    let stored: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-    let saved = stored["comments"].as_array().unwrap();
-    assert_eq!(saved.len(), 2, "both comments are in the stored list");
+    assert_eq!(
+        stored_bodies(&store),
+        bodies,
+        "both comments are durable catalogue rows"
+    );
     println!("two overlapping comment writers: both changes survive");
 }
 
@@ -158,29 +173,37 @@ async fn two_concurrent_comment_writers_both_land() {
 /// old path put the pre-write snapshot back and would have dropped it.
 #[tokio::test]
 async fn a_failed_comment_write_preserves_later_state() {
-    let (_dir, store, hooked, _rooms, room) = legacy_room().await;
-    room.apply_command(comment("kept", ""), "1.1.1.1", "", "", None, true, "", "")
-        .await;
-    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::room_key("probe")));
+    let (_dir, store, rooms) = fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
+    apply(&room, comment("kept", ""), "1.1.1.1").await;
+    let gate = CommentGate::new();
     let writing = tokio::spawn({
         let room = room.clone();
-        async move {
-            room.apply_command(comment("doomed", ""), "1.1.1.2", "", "", None, true, "", "")
-                .await
-        }
+        async move { apply(&room, comment("doomed", ""), "1.1.1.2").await }
     });
-    tokio::time::timeout(PATIENCE, hooked.reached.notified())
+    tokio::time::timeout(PATIENCE, gate.0.reached.notified())
         .await
         .expect("the comment write reached storage");
     room.set_source("EDITED WHILE SAVING", "markdown")
         .await
         .unwrap();
-    *hooked.fail.lock().unwrap() = Some(blob::room_key("probe"));
-    hooked.resume.notify_one();
+    store.catalog.as_ref().unwrap().with_connection(|connection| {
+        connection.execute_batch("CREATE TEMP TRIGGER reject_test_comment BEFORE INSERT ON annotations WHEN NEW.body='doomed' BEGIN SELECT RAISE(ABORT, 'injected comment failure'); END")?;
+        Ok(())
+    }).unwrap();
+    gate.resume();
     let (event, ok) = writing.await.unwrap();
     assert!(!ok, "a failed write is refused: {event}");
 
-    *hooked.fail.lock().unwrap() = None;
+    store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .with_connection(|connection| {
+            connection.execute_batch("DROP TRIGGER reject_test_comment")?;
+            Ok(())
+        })
+        .unwrap();
     let kept: Vec<String> = room
         .snapshot()
         .await
@@ -191,60 +214,36 @@ async fn a_failed_comment_write_preserves_later_state() {
     assert_eq!(room.source().await, "EDITED WHILE SAVING");
     // The room is not fenced or wedged: the next comment lands, and every
     // reader converges on the same list.
-    assert!(
-        room.apply_command(comment("after", ""), "1.1.1.3", "", "", None, true, "", "")
-            .await
-            .1
+    assert!(apply(&room, comment("after", ""), "1.1.1.3").await.1);
+    assert_eq!(
+        stored_bodies(&store),
+        vec!["kept".to_string(), "after".to_string()]
     );
-    let raw = store.blobs.get(&blob::room_key("probe")).await.unwrap();
-    let stored: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-    let saved: Vec<String> = stored["comments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|item| item["body"].as_str().unwrap_or_default().to_string())
-        .collect();
-    assert_eq!(saved, vec!["kept".to_string(), "after".to_string()]);
     println!("failed comment write: nothing installed, later edits and peers intact");
 }
 
 /// Cancelling a comment write mid-storage leaves the room exactly as it was.
 #[tokio::test]
 async fn a_cancelled_comment_write_leaves_the_room_untouched() {
-    let (_dir, _store, hooked, _rooms, room) = legacy_room().await;
-    room.apply_command(comment("kept", ""), "1.1.1.1", "", "", None, true, "", "")
-        .await;
-    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::room_key("probe")));
+    let (_dir, _store, rooms) = fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
+    apply(&room, comment("kept", ""), "1.1.1.1").await;
+    let gate = CommentGate::new();
     let writing = tokio::spawn({
         let room = room.clone();
-        async move {
-            room.apply_command(
-                comment("abandoned", ""),
-                "1.1.1.2",
-                "",
-                "",
-                None,
-                true,
-                "",
-                "",
-            )
-            .await
-        }
+        async move { apply(&room, comment("abandoned", ""), "1.1.1.2").await }
     });
-    tokio::time::timeout(PATIENCE, hooked.reached.notified())
+    tokio::time::timeout(PATIENCE, gate.0.reached.notified())
         .await
         .expect("the comment write reached storage");
     writing.abort();
     let _ = writing.await;
-    hooked.resume.notify_one();
+    gate.resume();
 
     // The gate the cancelled writer held is released, so the next one runs.
-    let (_, ok) = tokio::time::timeout(
-        PATIENCE,
-        room.apply_command(comment("after", ""), "1.1.1.3", "", "", None, true, "", ""),
-    )
-    .await
-    .expect("the comment gate is not left held by a cancelled writer");
+    let (_, ok) = tokio::time::timeout(PATIENCE, apply(&room, comment("after", ""), "1.1.1.3"))
+        .await
+        .expect("the comment gate is not left held by a cancelled writer");
     assert!(ok);
     let bodies: Vec<String> = room
         .snapshot()
@@ -261,29 +260,8 @@ async fn a_cancelled_comment_write_leaves_the_room_untouched() {
 /// second look at the document.
 #[tokio::test]
 async fn the_edit_reservation_wait_does_not_hold_room_state() {
-    let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
-    let catalog =
-        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
-    let config = Arc::new(Configuration::default());
-    let store = Arc::new(
-        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
-            .await
-            .unwrap(),
-    );
-    let rooms = room::RoomSet::new(blobs, config);
-    rooms.attach_store(store.clone());
-    store
-        .put(store::Publication {
-            slug: "reserved".into(),
-            source: "A".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let room = rooms.get("reserved").await;
+    let (_dir, _store, rooms) = fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     room.attach(1, tx, true).await;
     let update = {
@@ -299,7 +277,7 @@ async fn the_edit_reservation_wait_does_not_hold_room_state() {
     })
     .unwrap();
 
-    let gate = room::ReservationGate::new("reserved");
+    let gate = room::ReservationGate::new("probe");
     *room::after_edit_reservation_gate().lock().unwrap() = Some(gate.clone());
     let editing = tokio::spawn({
         let room = room.clone();

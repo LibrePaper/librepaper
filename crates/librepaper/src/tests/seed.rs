@@ -6,6 +6,33 @@ use crate::room::Region;
 use crate::seed::examples::seed_documents;
 use crate::seed::{latex_prose, seed_into, visible_text, SeedAnnotation, SeedDocument};
 use crate::storage::blob::FsStore;
+use crate::storage::catalog::Catalog;
+
+fn seed_storage(dir: &std::path::Path) -> (Arc<FsStore>, Arc<Catalog>) {
+    (
+        Arc::new(FsStore::new(dir.join("objects"), true)),
+        Arc::new(Catalog::open(dir.join("catalog.sqlite")).unwrap()),
+    )
+}
+
+async fn seed_store(
+    blobs: Arc<FsStore>,
+    config: Arc<Configuration>,
+    catalog: Arc<Catalog>,
+) -> Arc<Store> {
+    Arc::new(
+        Store::open_with_catalog(blobs, config, catalog)
+            .await
+            .unwrap(),
+    )
+}
+
+fn seed_rooms(store: &Arc<Store>) -> crate::room::RoomSet {
+    let rooms = crate::room::RoomSet::new(store.blobs.clone(), store.config.clone());
+    rooms.attach_store(store.clone());
+    super::room::attach_fixture_journal(&rooms, store, store.blobs.clone());
+    rooms
+}
 
 /// The curated examples are build outputs, so a checkout that has not run
 /// `make examples` has nothing to check.
@@ -47,17 +74,17 @@ async fn seeding_locally_is_stable_across_runs() {
     let mut slugs = Vec::new();
     for _ in 0..2 {
         let dir = tempfile::tempdir().unwrap();
-        let blobs = Arc::new(FsStore::new(dir.path(), true));
+        let (blobs, catalog) = seed_storage(dir.path());
         seed_into(
             blobs.clone(),
             Arc::new(Configuration::default()),
             "",
             &documents,
+            catalog.clone(),
         )
         .await;
-        let entries = Store::open(blobs, Arc::new(Configuration::default()))
+        let entries = seed_store(blobs, Arc::new(Configuration::default()), catalog)
             .await
-            .unwrap()
             .list()
             .await;
         assert_eq!(entries.len(), 1);
@@ -103,19 +130,33 @@ async fn seeding_writes_annotations_with_their_state() {
     }];
 
     let dir = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsStore::new(dir.path(), true));
+    let (blobs, catalog) = seed_storage(dir.path());
     let config = Arc::new(Configuration::default());
-    seed_into(blobs.clone(), config.clone(), "", &documents).await;
-    seed_into(blobs.clone(), config.clone(), "", &documents).await;
+    seed_into(
+        blobs.clone(),
+        config.clone(),
+        "",
+        &documents,
+        catalog.clone(),
+    )
+    .await;
+    seed_into(
+        blobs.clone(),
+        config.clone(),
+        "",
+        &documents,
+        catalog.clone(),
+    )
+    .await;
 
-    let entries = Store::open(blobs.clone(), config.clone())
+    let entries = seed_store(blobs.clone(), config.clone(), catalog.clone())
         .await
-        .unwrap()
         .list()
         .await;
     assert_eq!(entries.len(), 1, "seed entries are {entries:?}");
     assert_eq!(entries[0].title, "Curated title");
-    let rooms = crate::room::RoomSet::new(blobs, config);
+    let store = seed_store(blobs, config, catalog).await;
+    let rooms = seed_rooms(&store);
     let comments = rooms.get(&entries[0].slug).await.snapshot().await;
     assert_eq!(comments.len(), 1, "seed comments are {comments:?}");
     assert_eq!(comments[0].body, "Curated comment");
@@ -124,11 +165,9 @@ async fn seeding_writes_annotations_with_their_state() {
     assert_eq!(comments[0].replies[0].body, "Curated reply");
 }
 
-// A local seed with `--owner` hands the examples to that account, keyed the
-// way `Server::owner` keys a signed-in caller: their handle, lowercased.
-// Nobody else -- a visitor with a cookie, or a signed-in stranger -- owns
-// them, which is what lets one laptop show the reader's and the commenter's
-// side of the app. Without an owner they stay everybody's, as before.
+// A named local seed gets a durable anonymous account. Display names retain
+// the supplied spelling, but only that account identity confers ownership;
+// a signed-in stranger cannot claim the examples by choosing the same handle.
 #[tokio::test]
 async fn seeding_with_an_owner_makes_the_examples_theirs() {
     let source = tempfile::tempdir().unwrap();
@@ -144,11 +183,17 @@ async fn seeding_with_an_owner_makes_the_examples_theirs() {
     let config = Arc::new(Configuration::default());
 
     let dir = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsStore::new(dir.path(), true));
-    seed_into(blobs.clone(), config.clone(), " Alice ", &documents).await;
-    let entries = Store::open(blobs, config.clone())
+    let (blobs, catalog) = seed_storage(dir.path());
+    seed_into(
+        blobs.clone(),
+        config.clone(),
+        " Alice ",
+        &documents,
+        catalog.clone(),
+    )
+    .await;
+    let entries = seed_store(blobs, config.clone(), catalog)
         .await
-        .unwrap()
         .list()
         .await;
     assert_eq!(entries.len(), 1);
@@ -159,8 +204,19 @@ async fn seeding_with_an_owner_makes_the_examples_theirs() {
     );
     assert_eq!(entry.owner_name(), "Alice", "the name is shown as written");
     assert!(
-        entry.owned_by("alice", "github:1"),
+        entry.owned_by("alice", &entry.publisher_id),
         "the account named does not own its examples"
+    );
+    assert_eq!(
+        entry.publisher_id,
+        format!(
+            "anonymous:{}",
+            crate::document::store::digest_of_bytes(b"alice")
+        )
+    );
+    assert!(
+        !entry.owned_by("alice", "github:1"),
+        "a matching display handle acquired a different account's examples"
     );
     assert!(
         !entry.owned_by("visitor:abc", ""),
@@ -172,10 +228,18 @@ async fn seeding_with_an_owner_makes_the_examples_theirs() {
     );
 
     let dir = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsStore::new(dir.path(), true));
-    seed_into(blobs.clone(), config.clone(), "", &documents).await;
-    let entries = Store::open(blobs, config).await.unwrap().list().await;
-    assert!(entries[0].publisher.is_empty());
+    let (blobs, catalog) = seed_storage(dir.path());
+    seed_into(
+        blobs.clone(),
+        config.clone(),
+        "",
+        &documents,
+        catalog.clone(),
+    )
+    .await;
+    let entries = seed_store(blobs, config, catalog).await.list().await;
+    assert_eq!(entries[0].publisher_id, "system:examples");
+    assert!(entries[0].example);
     assert!(
         !entries[0].owned_by("visitor:abc", ""),
         "an anonymous visitor acquired owner mutation rights"
@@ -292,9 +356,16 @@ async fn seeding_leaves_no_room_locks_behind() {
     }];
 
     let dir = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsStore::new(dir.path(), true));
+    let (blobs, catalog) = seed_storage(dir.path());
     let config = Arc::new(Configuration::default());
-    seed_into(blobs.clone(), config.clone(), "", &documents).await;
+    seed_into(
+        blobs.clone(),
+        config.clone(),
+        "",
+        &documents,
+        catalog.clone(),
+    )
+    .await;
 
     let left = crate::storage::blob::BlobStore::list(blobs.as_ref(), "rooms/")
         .await
@@ -305,12 +376,9 @@ async fn seeding_leaves_no_room_locks_behind() {
     assert_eq!(left, 0, "seeding left {left} room lock(s) behind");
 
     // And the server that starts next can write those rooms.
-    let rooms = crate::room::RoomSet::new(blobs.clone(), config);
-    let entries = Store::open(blobs, Arc::new(Configuration::default()))
-        .await
-        .unwrap()
-        .list()
-        .await;
+    let store = seed_store(blobs, config, catalog).await;
+    let rooms = seed_rooms(&store);
+    let entries = store.list().await;
     let room = rooms.get(&entries[0].slug).await;
     assert!(
         !room.read_only(),

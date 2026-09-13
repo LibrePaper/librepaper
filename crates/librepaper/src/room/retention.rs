@@ -109,8 +109,8 @@ impl Room {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::blob::{BlobInfo, BlobResult, FsStore};
     use crate::document::store::{MutationActor, Publication, Store};
+    use crate::storage::blob::{BlobInfo, BlobResult, FsStore};
     use crate::storage::catalog::Catalog;
     use std::sync::atomic::AtomicUsize;
 
@@ -119,6 +119,8 @@ mod tests {
         reads: AtomicUsize,
         active: AtomicUsize,
         peak: AtomicUsize,
+        synchronize_reads: std::sync::atomic::AtomicBool,
+        first_reads: tokio::sync::Barrier,
     }
 
     struct Reading<'a>(&'a AtomicUsize);
@@ -131,10 +133,15 @@ mod tests {
     #[async_trait::async_trait]
     impl BlobStore for CountedStore {
         async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
-            self.reads.fetch_add(1, Ordering::Relaxed);
+            let read = self.reads.fetch_add(1, Ordering::Relaxed);
             let active = self.active.fetch_add(1, Ordering::Relaxed) + 1;
             let _reading = Reading(&self.active);
             self.peak.fetch_max(active, Ordering::Relaxed);
+            if self.synchronize_reads.load(Ordering::Relaxed) && read < 4 {
+                tokio::time::timeout(std::time::Duration::from_secs(5), self.first_reads.wait())
+                    .await
+                    .expect("four independent tree reads must reach storage together");
+            }
             tokio::task::yield_now().await;
             self.inner.get(key).await
         }
@@ -172,6 +179,8 @@ mod tests {
             reads: AtomicUsize::new(0),
             active: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
+            synchronize_reads: std::sync::atomic::AtomicBool::new(false),
+            first_reads: tokio::sync::Barrier::new(4),
         });
         let catalog = Arc::new(Catalog::open_in_memory().unwrap());
         let config = Configuration {
@@ -179,15 +188,21 @@ mod tests {
             ..Default::default()
         };
         let config = Arc::new(config);
-        let store = Arc::new(Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone()).await.unwrap());
+        let store = Arc::new(
+            Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+                .await
+                .unwrap(),
+        );
         let rooms = RoomSet::new(blobs.clone(), config);
         rooms.attach_store(store.clone());
         rooms.attach_journal(Arc::new(
             crate::storage::journal::V2JournalRuntime::with_persistence(
-                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
-                    catalog.clone(),
-                    store.config.persistence(),
-                )),
+                Arc::new(
+                    crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                        catalog.clone(),
+                        store.config.persistence(),
+                    ),
+                ),
                 blobs.clone(),
                 store.config.persistence(),
             )
@@ -253,31 +268,31 @@ mod tests {
         let seed_points = catalog.checkpoints_tail("doc", 9).unwrap();
         assert_eq!(seed_points.len(), 9, "fixture must provide nine v2 trees");
         // 201 events cross the catalogue page and resident-tail boundaries;
-        // nine distinct immutable v2 trees exercise the four-read bound.
+        // nine distinct immutable v2 trees, plus the initial publication's
+        // source-only tree, exercise the four-read bound.
         for seq in 0..201 {
             let seed = &seed_points[seq % seed_points.len()];
-            let point = Checkpoint {
-                sha: format!("event-{seq}"),
-                tree_sha: seed.tree_sha.clone(),
-                tree: true,
-                at: format!("2026-01-01T00:00:{:02}.000Z", seq % 60),
-                by: "alice".into(),
-                by_account: Some("alice".into()),
-                why: "retention fixture".into(),
-                source_format: "markdown".into(),
-                size: seed.size,
-                ..Default::default()
-            };
-            catalog
-                .insert_checkpoints_atomic(&[Manifest::catalog_row("doc", &point, -1, 0).unwrap()])
-                .unwrap();
+            let event = format!("event-{seq}");
             catalog
                 .with_connection(|connection| {
+                    connection.execute(
+                        "INSERT INTO checkpoints
+                         (document_id,id,seq,tree_object_id,tree_digest,created_at,
+                          author_account_id,author_label,reason,source_format,logical_bytes,
+                          journal_epoch,journal_sequence)
+                         SELECT c.document_id,?1,d.next_checkpoint_seq,c.tree_object_id,c.tree_digest,
+                                c.created_at,c.author_account_id,c.author_label,'retention fixture',
+                                c.source_format,c.logical_bytes,c.journal_epoch,c.journal_sequence
+                           FROM checkpoints c JOIN documents d ON d.id=c.document_id
+                          WHERE d.slug='doc' AND c.id=?2",
+                        rusqlite::params![event, seed.sha],
+                    )?;
+                    connection.execute("UPDATE documents SET next_checkpoint_seq=next_checkpoint_seq+1 WHERE slug='doc'", [])?;
                     connection.execute(
                         "INSERT OR IGNORE INTO checkpoint_objects(document_id,checkpoint_id,object_id)
                          SELECT document_id,?1,object_id FROM checkpoint_objects
                          WHERE checkpoint_id=?2",
-                        rusqlite::params![point.sha, seed.sha],
+                        rusqlite::params![event, seed.sha],
                     )?;
                     Ok(())
                 })
@@ -324,7 +339,10 @@ mod tests {
             })
             .unwrap();
         assert!(
-            retained_keys.iter().any(|key| key.contains("v2/documents/doc")),
+            retained_keys.iter().all(|key| key.starts_with(&format!(
+                "v2/documents/{}/objects/",
+                catalog.document("doc").unwrap().unwrap().storage_id
+            ))),
             "the fixture must retain canonical v2 object keys"
         );
         let missing_tree_key: String = catalog
@@ -347,7 +365,9 @@ mod tests {
         let before = catalog.connection_operations.load(Ordering::Relaxed);
         blobs.reads.store(0, Ordering::Relaxed);
         blobs.peak.store(0, Ordering::Relaxed);
+        blobs.synchronize_reads.store(true, Ordering::Relaxed);
         room.prune_retained(&history::Tree::default()).await;
+        blobs.synchronize_reads.store(false, Ordering::Relaxed);
         assert_eq!(
             catalog.connection_operations.load(Ordering::Relaxed) - before,
             3,
@@ -355,7 +375,7 @@ mod tests {
         );
         assert_eq!(
             blobs.reads.load(Ordering::Relaxed),
-            9,
+            10,
             "one body per content identity"
         );
         assert_eq!(
@@ -364,7 +384,10 @@ mod tests {
             "bounded independent tree reads"
         );
         for key in &retained_keys {
-            assert!(blobs.exists(key).await.unwrap(), "retained object disappeared: {key}");
+            assert!(
+                blobs.exists(key).await.unwrap(),
+                "retained object disappeared: {key}"
+            );
         }
 
         // An available v2 asset with complete evidence and no checkpoint edge
@@ -388,7 +411,10 @@ mod tests {
                     .map_err(crate::storage::catalog::CatalogError::from)
             })
             .unwrap();
-        assert_eq!(blobs.get(&unused_key).await.unwrap().len(), unused_bytes as usize);
+        assert_eq!(
+            blobs.get(&unused_key).await.unwrap().len(),
+            unused_bytes as usize
+        );
         let gc = crate::storage::v2_catalog::V2GcCatalogAdapter::new(catalog.clone());
         let report = crate::storage::maintenance_v2::run_gc_pass(
             &gc,
@@ -397,7 +423,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(report.objects_deleted >= 1, "unreferenced v2 asset was not reclaimed");
+        assert!(
+            report.objects_deleted >= 1,
+            "unreferenced v2 asset was not reclaimed"
+        );
         assert!(!blobs.exists(&unused_key).await.unwrap());
         assert!(catalog
             .with_connection(|connection| {
@@ -412,7 +441,10 @@ mod tests {
 
         // The flattened catalog closure protects dependencies even when its
         // physical tree is unreadable. GC must still honor those references.
-        blobs.delete(&[missing_tree_key.clone()]).await.unwrap();
+        blobs
+            .delete(std::slice::from_ref(&missing_tree_key))
+            .await
+            .unwrap();
         room.prune_retained(&history::Tree::default()).await;
         let report = crate::storage::maintenance_v2::run_gc_pass(
             &gc,
@@ -421,9 +453,18 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(report.objects_deleted, 0, "retained closure dependencies must survive GC");
-        for key in retained_keys.iter().filter(|key| key.as_str() != missing_tree_key) {
-            assert!(blobs.exists(key).await.unwrap(), "dependent object was deleted: {key}");
+        assert_eq!(
+            report.objects_deleted, 0,
+            "retained closure dependencies must survive GC"
+        );
+        for key in retained_keys
+            .iter()
+            .filter(|key| key.as_str() != missing_tree_key)
+        {
+            assert!(
+                blobs.exists(key).await.unwrap(),
+                "dependent object was deleted: {key}"
+            );
         }
         assert_eq!(blobs.active.load(Ordering::Relaxed), 0);
     }

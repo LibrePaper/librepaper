@@ -209,7 +209,7 @@ fn is_false(value: &bool) -> bool {
 
 pub(super) fn valid_revision(value: &str) -> bool {
     value.is_empty()
-        || (value.len() == 64
+        || (matches!(value.len(), 32 | 64)
             && value
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
@@ -570,6 +570,7 @@ impl Room {
         revision: &str,
         items: &[BatchSuggestion],
         caller: BatchCaller<'_>,
+        actor: crate::document::store::MutationActor,
     ) -> Result<(String, Vec<Value>), BatchRefusal> {
         if items.is_empty() {
             return Err(BatchRefusal("a suggestion batch cannot be empty".into()));
@@ -713,7 +714,22 @@ impl Room {
             let mut stored_rows = Vec::new();
             for (slot, added) in prepared {
                 let persisted = match catalog_comment_row(&self.slug, &added) {
-                    Ok(row) => insert_comment_row(catalog, row).await,
+                    Ok(row) => {
+                        let key = crate::util::new_request_key();
+                        let digest = request_digest(&json!({"comment": added}));
+                        insert_comment_request(
+                            catalog,
+                            row,
+                            key,
+                            digest,
+                            now_unix(),
+                            actor.clone(),
+                            true,
+                        )
+                        .await
+                        .map(|(seq, _)| seq)
+                        .map_err(|error| error.to_string())
+                    }
                     Err(error) => Err(error),
                 };
                 match persisted {
@@ -900,6 +916,8 @@ impl Room {
         .await
     }
 
+    // Wire metadata and authority remain explicit at the command boundary.
+    #[allow(clippy::too_many_arguments)]
     pub async fn apply_command_with_actor(
         &self,
         command: Command,
@@ -1381,13 +1399,19 @@ impl Room {
                     .await
                     .map(|created| added.created = created)
                 } else {
-                    self.persist_comments(seq, prepared).await.map_err(WriteError::from)
+                    self.persist_comments(seq, prepared)
+                        .await
+                        .map_err(WriteError::from)
                 };
                 state = self.state.lock().await;
                 if let Err(error) = persisted {
                     let (mut response, _) = fail(&error.client_message());
                     response["status"] = json!(error.status());
-                    response["code"] = json!(if matches!(error, WriteError::RequestExpired) { "request_expired" } else { "annotation_refused" });
+                    response["code"] = json!(if matches!(error, WriteError::RequestExpired) {
+                        "request_expired"
+                    } else {
+                        "annotation_refused"
+                    });
                     response["retryable"] = json!(error.is_temporary());
                     return (response, false);
                 }
@@ -1635,6 +1659,8 @@ impl Room {
                     // Pushed into room state only once the receipt is durable,
                     // so a cancelled caller leaves neither an unbroadcast
                     // comment here nor a row nobody was told about.
+                    #[cfg(test)]
+                    ReservationGate::park(&BEFORE_COMMENT_PERSISTENCE, &self.slug).await;
                     match insert_comment_request(
                         catalog,
                         row,
@@ -1642,6 +1668,7 @@ impl Room {
                         digest,
                         now_unix(),
                         mutation_actor.clone(),
+                        false,
                     )
                     .await
                     {
@@ -1662,12 +1689,18 @@ impl Room {
                         }
                     }
                 } else {
-                    self.persist_comments(next_seq, prepared).await.map_err(WriteError::from)
+                    self.persist_comments(next_seq, prepared)
+                        .await
+                        .map_err(WriteError::from)
                 };
                 if let Err(error) = persisted {
                     let (mut response, _) = fail(&error.client_message());
                     response["status"] = json!(error.status());
-                    response["code"] = json!(if matches!(error, WriteError::RequestExpired) { "request_expired" } else { "annotation_refused" });
+                    response["code"] = json!(if matches!(error, WriteError::RequestExpired) {
+                        "request_expired"
+                    } else {
+                        "annotation_refused"
+                    });
                     response["retryable"] = json!(error.is_temporary());
                     return (response, false);
                 }

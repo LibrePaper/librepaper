@@ -6,20 +6,30 @@
 //! must therefore treat a failed commit as an unknown outcome and reconcile by
 //! operation id before retrying.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::{HashSet, VecDeque};
 use std::fmt;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+#[cfg(test)]
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex as AsyncMutex, Notify};
+#[cfg(test)]
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::Notify;
 
+use crate::storage::blob::BlobError;
+#[cfg(test)]
 use crate::storage::blob::{
-    journal_base_key, journal_manifest_key, journal_segment_key, BlobError, BlobStore,
+    journal_base_key, journal_manifest_key, journal_segment_key, BlobStore,
 };
-use crate::storage::catalog::{Catalog, CatalogError, CatalogResult};
+use crate::storage::catalog::CatalogError;
+#[cfg(test)]
+use crate::storage::catalog::{Catalog, CatalogResult};
 
 mod budget;
 mod codec;
@@ -38,8 +48,6 @@ pub use budget::*;
 pub use codec::*;
 #[cfg(test)]
 pub use coordinator::*;
-#[cfg(test)]
-pub use recovery::*;
 #[cfg(test)]
 pub use runtime::*;
 pub use segment::*;
@@ -68,7 +76,10 @@ pub enum JournalError {
 impl JournalError {
     /// Whether retrying the identical request is pointless.
     pub fn is_permanent(&self) -> bool {
-        matches!(self, Self::Limit(_) | Self::Invalid(_) | Self::Corrupt(_) | Self::Conflict(_))
+        matches!(
+            self,
+            Self::Limit(_) | Self::Invalid(_) | Self::Corrupt(_) | Self::Conflict(_)
+        )
     }
 
     /// Whether the same request may succeed once capacity frees up.

@@ -75,16 +75,18 @@ async fn engine_setting_changes_the_checkpoint_tree_and_its_sha() {
     let manifest = room.manifest().await;
     let latest = manifest.latest().expect("a checkpoint");
     assert_eq!(
-        latest.sha, engine_sha,
+        latest.tree_sha, engine_sha,
         "the checkpoint taken under the engine setting was named something else"
     );
+
+    let checkpoint_id = latest.sha.clone();
 
     // A historical HTML render must receive the captured compiler settings,
     // even after the live editor selects a different engine.
     set_latex_meta(&room, "lualatex", "").await;
     let response = client()
         .get(format!(
-            "{}/api/documents/{slug}/history/{engine_sha}",
+            "{}/api/documents/{slug}/history/{checkpoint_id}",
             server.url
         ))
         .header("cookie", session_as(TEST_PUBLISHER))

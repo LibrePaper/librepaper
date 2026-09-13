@@ -11,7 +11,7 @@ use crate::document::store;
 use crate::room::{Room, RoomAdmissionError, RoomSet};
 use crate::storage::blob::{self, BlobStore};
 use crate::storage::catalog::Catalog;
-use crate::storage::journal::{self, CoordinatorLimits};
+use crate::storage::journal;
 
 fn rss_bytes() -> Option<u64> {
     fs::read_to_string("/proc/self/status")
@@ -62,7 +62,9 @@ async fn persistence_default_limits_refuse_without_discarding_dirty_rooms() {
     let limits = config.persistence();
     let journal = Arc::new(
         journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog, limits)),
+            Arc::new(
+                crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog, limits),
+            ),
             objects,
             limits,
         )

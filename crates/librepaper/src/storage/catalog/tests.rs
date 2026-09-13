@@ -1,12 +1,11 @@
 use super::{
-    Account, AnnotationAuthority, Catalog, CatalogError, Checkpoint, Comment, JournalPreparation,
-    DocumentId, Link, MutationAuthority, NewDocument, ObjectId, OperationKind,
-    OperationRequest, OperationScope, Reply, SourceHistoryObject, SourceHistoryRecord,
-    UnixMillis, V2Operation, V2OperationInput,
+    Account, AnnotationAuthority, Catalog, CatalogError, Checkpoint, Comment, DocumentId,
+    JournalPreparation, Link, MutationAuthority, NewDocument, ObjectId, OperationKind,
+    OperationRequest, OperationScope, Reply, SourceHistoryObject, SourceHistoryRecord, UnixMillis,
+    V2Operation, V2OperationInput,
 };
 use sha2::Digest;
 use std::sync::Arc;
-use crate::storage::blob::BlobStore;
 
 pub(super) fn account() -> Account {
     Account {
@@ -214,17 +213,31 @@ fn annotation_writes_recheck_the_account_session_generation() {
         )
         .is_err());
 
-    // Authorization belongs to preparing and staging the operation. Once its
-    // document edit has landed, the service must be able to settle that
-    // durable receipt even if the initiating session has since been revoked.
-    let accepted = catalog
-        .finish_suggestion_accept(
+    // V2 settlement rechecks the actor. A fresh session for the same account
+    // can settle the durable receipt, but the revoked session cannot.
+    assert!(catalog
+        .finish_suggestion_accept_authorized(
             "doc",
             "suggestion-1",
             &accept_request,
             &accept_digest,
             "checkpoint-sha",
             "2026-01-01T00:00:03.000Z",
+            stale,
+        )
+        .is_err());
+    let accepted = catalog
+        .finish_suggestion_accept_authorized(
+            "doc",
+            "suggestion-1",
+            &accept_request,
+            &accept_digest,
+            "checkpoint-sha",
+            "2026-01-01T00:00:03.000Z",
+            AnnotationAuthority {
+                generation: "generation-2",
+                ..current
+            },
         )
         .unwrap();
     assert_eq!(accepted.outcome, "accepted");
@@ -255,7 +268,13 @@ fn reply_edit_and_delete_require_author_or_editor_and_keep_attribution() {
         ..Default::default()
     };
     let comment = catalog
-        .insert_comment_request_authorized(&annotation("reply-auth", "commenting"), "", "", crate::util::now_millis(), owner)
+        .insert_comment_request_authorized(
+            &annotation("reply-auth", "commenting"),
+            "",
+            "",
+            crate::util::now_millis(),
+            owner,
+        )
         .unwrap();
     let reply = Reply {
         slug: "doc".into(),
@@ -360,18 +379,17 @@ fn reopening_annotation_restores_protection_from_stored_source_revision() {
         .unwrap();
     let mut reopened = stored_comment;
     reopened.body = "reopened body".into();
-    catalog
-        .update_comment_authorized(&reopened, owner)
-        .unwrap();
+    catalog.update_comment_authorized(&reopened, owner).unwrap();
     let protected: Option<String> = catalog
         .with_connection(|connection| {
-            connection.query_row(
-                "SELECT protected_checkpoint_id FROM annotations
+            connection
+                .query_row(
+                    "SELECT protected_checkpoint_id FROM annotations
                  WHERE document_id='storage-1' AND id='protected'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(CatalogError::from)
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
         })
         .unwrap();
     assert_eq!(protected.as_deref(), Some("revision"));
@@ -393,7 +411,10 @@ fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
         .save_quota_preferences("acct-1", 0, r#"{"version":2,"retentionProfile":"default","retentionPolicyVersion":2,"displayTimezone":"UTC","warningThresholds":[75,90],"futureField":true}"#, 10)
         .unwrap();
     assert_eq!(first.revision, 1);
-    assert_eq!(first.payload, r#"{"version":2,"retentionProfile":"default","retentionPolicyVersion":2,"displayTimezone":"UTC","warningThresholds":[75,90],"futureField":true}"#);
+    assert_eq!(
+        first.payload,
+        r#"{"version":2,"retentionProfile":"default","retentionPolicyVersion":2,"displayTimezone":"UTC","warningThresholds":[75,90],"futureField":true}"#
+    );
     assert!(matches!(
         catalog.save_quota_preferences(
             "acct-1",
@@ -493,7 +514,7 @@ fn retention_wakes_time_only_age_policy_without_existing_candidates() {
         // the first allocated value cannot collide with the second row.
         point.seq = index + 1;
         point.tree_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
-        point.at = (now - (2 - index as i64) * 1_000).to_string();
+        point.at = (now - (2 - index) * 1_000).to_string();
         point.parent = if index == 0 {
             String::new()
         } else {
@@ -623,7 +644,9 @@ fn account_usage_charges_unique_physical_objects_and_not_tree_size() {
                  GROUP BY kind ORDER BY kind",
             )?;
             let rows = statement
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
@@ -1032,9 +1055,18 @@ async fn source_history_gc_pages_live_objects_before_reaching_orphans() {
                    FROM checkpoint_objects WHERE document_id='storage-1')",
                 [],
             )?;
-            db.execute("UPDATE documents SET stored_bytes=?1 WHERE id='storage-1'", [total_bytes])?;
-            db.execute("UPDATE accounts SET stored_bytes=?1 WHERE id='acct-1'", [total_bytes])?;
-            db.execute("UPDATE server_state SET stored_bytes=?1 WHERE id=1", [total_bytes])?;
+            db.execute(
+                "UPDATE documents SET stored_bytes=?1 WHERE id='storage-1'",
+                [total_bytes],
+            )?;
+            db.execute(
+                "UPDATE accounts SET stored_bytes=?1 WHERE id='acct-1'",
+                [total_bytes],
+            )?;
+            db.execute(
+                "UPDATE server_state SET stored_bytes=?1 WHERE id=1",
+                [total_bytes],
+            )?;
             Ok(())
         })
         .unwrap();
@@ -1044,7 +1076,10 @@ async fn source_history_gc_pages_live_objects_before_reaching_orphans() {
     let blobs: Arc<dyn crate::storage::blob::BlobStore> =
         Arc::new(crate::storage::blob::FsStore::new(dir.path(), true));
     for (_, key) in &objects {
-        blobs.put(key, vec![b'x'; 7], "application/octet-stream").await.unwrap();
+        blobs
+            .put(key, vec![b'x'; 7], "application/octet-stream")
+            .await
+            .unwrap();
     }
     let worker = crate::storage::maintenance::DeletionWorker::new(
         Arc::clone(&catalog),
@@ -1096,7 +1131,10 @@ fn source_history_gc_drains_a_large_orphan_encoding_across_pages() {
         .unwrap();
     catalog
         .with_connection(|db| {
-            db.execute("UPDATE documents SET stored_bytes=35 WHERE id='storage-1'", [])?;
+            db.execute(
+                "UPDATE documents SET stored_bytes=35 WHERE id='storage-1'",
+                [],
+            )?;
             db.execute("UPDATE accounts SET stored_bytes=35 WHERE id='acct-1'", [])?;
             db.execute("UPDATE server_state SET stored_bytes=35 WHERE id=1", [])?;
             Ok(())
@@ -1302,7 +1340,7 @@ fn system_seed_identity_cannot_forge_checkpoint_authority() {
 }
 
 #[test]
-fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
+fn execution_epoch_fences_retained_checkpoint_receipt_inside_sql_transaction() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
@@ -1347,11 +1385,14 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
         changed: None,
         by_account: Some("acct-1".into()),
     };
+    catalog
+        .insert_checkpoints_atomic(std::slice::from_ref(&point))
+        .unwrap();
     let commit = super::AgentCheckpointCommit {
         request_id: crate::util::new_request_key(),
         digest: "a".repeat(64),
         operation: serde_json::json!({"epoch":"epoch","id":"checkpoint"}),
-        source_revision: "tree".into(),
+        source_revision: point.tree_sha.clone(),
     };
     let actor = MutationAuthority {
         account_id: "acct-1",
@@ -1365,10 +1406,10 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
         agent_checkpoint: Some(&commit),
     };
     assert!(catalog
-        .insert_checkpoints_atomic_with_authority(std::slice::from_ref(&point), Some(actor))
+        .commit_retained_agent_checkpoint("doc", &point.sha, actor, &commit)
         .is_err());
     assert!(catalog
-        .checkpoint("doc", "fenced-checkpoint")
+        .operation("storage-1", &commit.request_id)
         .unwrap()
         .is_none());
 
@@ -1388,7 +1429,7 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
             &commit.request_id,
             &cancel_request,
             &"b".repeat(64),
-            "agent_checkpoint",
+            "operation",
             "checkpoint",
             None,
             "acct-1",
@@ -1398,10 +1439,10 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
         )
         .unwrap();
     assert!(catalog
-        .insert_checkpoints_atomic_with_authority(std::slice::from_ref(&point), Some(actor))
+        .commit_retained_agent_checkpoint("doc", &point.sha, actor, &commit)
         .is_err());
     assert!(catalog
-        .checkpoint("doc", "fenced-checkpoint")
+        .operation("storage-1", &commit.request_id)
         .unwrap()
         .is_none());
     catalog.with_connection(|db| {
@@ -1409,18 +1450,18 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
             "DELETE FROM operations WHERE kind='agent_cancel' AND target_request_key=?1",
             [&commit.request_id],
         )?;
-        db.execute_batch("CREATE TRIGGER fail_agent_receipt BEFORE INSERT ON operations WHEN NEW.kind='agent_checkpoint' BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END;")?;
+        db.execute_batch("CREATE TRIGGER fail_agent_receipt BEFORE INSERT ON operations WHEN NEW.kind='checkpoint' BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END;")?;
         Ok(())
     }).unwrap();
     assert!(catalog
-        .insert_checkpoints_atomic_with_authority(std::slice::from_ref(&point), Some(actor))
+        .commit_retained_agent_checkpoint("doc", &point.sha, actor, &commit)
         .is_err());
     assert!(
         catalog
-            .checkpoint("doc", "fenced-checkpoint")
+            .operation("storage-1", &commit.request_id)
             .unwrap()
             .is_none(),
-        "receipt failure must roll back checkpoint insertion"
+        "receipt failure must leave no committed operation"
     );
     catalog
         .with_connection(|db| {
@@ -1429,7 +1470,7 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
         })
         .unwrap();
     catalog
-        .insert_checkpoints_atomic_with_authority(std::slice::from_ref(&point), Some(actor))
+        .commit_retained_agent_checkpoint("doc", &point.sha, actor, &commit)
         .unwrap();
     let receipt = catalog
         .operation(&storage_id, &commit.request_id)
@@ -1441,7 +1482,7 @@ fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
         point.sha
     );
     catalog
-        .insert_checkpoints_atomic_with_authority(&[point], Some(actor))
+        .commit_retained_agent_checkpoint("doc", &point.sha, actor, &commit)
         .unwrap();
     assert!(catalog
         .checkpoint("doc", "fenced-checkpoint")
@@ -1673,8 +1714,8 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
                 published_at: format!("2026-01-01T00:{:02}:00Z", index % 60),
                 updated_at: format!("2026-01-01T00:{:02}:00Z", index % 60),
                 example: false,
-        // Account-owned v2 rows do not carry the legacy opaque owner key.
-        owner_key: String::new(),
+                // Account-owned v2 rows do not carry the legacy opaque owner key.
+                owner_key: String::new(),
                 owner_id: Some("acct-1".into()),
                 status: "active".into(),
                 size: 1,
@@ -1772,7 +1813,9 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
     // must use the covering document indexes and therefore cannot spill to a
     // temporary tree or scan the document table.
     assert!(
-        plans[0].iter().any(|detail| detail.contains("SEARCH g ") && detail.contains("account_id"))
+        plans[0]
+            .iter()
+            .any(|detail| detail.contains("SEARCH g ") && detail.contains("account_id"))
             && plans[0].iter().all(|detail| !detail.starts_with("SCAN d ")),
         "grant plan: {:?}",
         plans[0]
@@ -1812,18 +1855,16 @@ fn publication_receipts_are_atomic_and_idempotent() {
     let prepared = catalog.prepare_v2_operation(&input, now).unwrap();
     assert_eq!(prepared.state, "prepared");
     catalog
-        .finish_v2_operation(
-            &prepared.id,
-            r#"{"version":2,"head":2}"#,
-            true,
-            now,
-        )
+        .finish_v2_operation(&prepared.id, r#"{"version":2,"head":2}"#, true, now)
         .unwrap();
     let retry = catalog.prepare_v2_operation(&input, now).unwrap();
-    assert_eq!(retry, V2Operation {
-        state: "committed".into(),
-        ..prepared.clone()
-    });
+    assert_eq!(
+        retry,
+        V2Operation {
+            state: "committed".into(),
+            ..prepared.clone()
+        }
+    );
     let (state, result): (String, String) = catalog
         .with_connection(|connection| {
             connection
@@ -1837,7 +1878,12 @@ fn publication_receipts_are_atomic_and_idempotent() {
         .unwrap();
     assert_eq!(state, "committed");
     assert_eq!(result, r#"{"version":2,"head":2}"#);
-    assert!(catalog.document("doc").unwrap().unwrap().pending_publication.is_none());
+    assert!(catalog
+        .document("doc")
+        .unwrap()
+        .unwrap()
+        .pending_publication
+        .is_none());
 }
 #[test]
 fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
@@ -1877,11 +1923,7 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
     let before: i64 = catalog
         .with_connection(|connection| {
             connection
-                .query_row(
-                    "SELECT COUNT(*) FROM operations",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COUNT(*) FROM operations", [], |row| row.get(0))
                 .map_err(CatalogError::from)
         })
         .unwrap();
@@ -1909,11 +1951,7 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
     let after: i64 = catalog
         .with_connection(|connection| {
             connection
-                .query_row(
-                    "SELECT COUNT(*) FROM operations",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COUNT(*) FROM operations", [], |row| row.get(0))
                 .map_err(CatalogError::from)
         })
         .unwrap();
@@ -1984,12 +2022,7 @@ fn admission_and_reconciliation_keep_totals_exact() {
     assert_eq!(reserved.counted_size, 25);
     assert_eq!(reserved.maintenance_reserved, 25);
     catalog
-        .settle_v2_object(
-            &DocumentId::new("storage-1").unwrap(),
-            &object_id,
-            12,
-            now,
-        )
+        .settle_v2_object(&DocumentId::new("storage-1").unwrap(), &object_id, 12, now)
         .unwrap();
     let settled = catalog.document("doc").unwrap().unwrap();
     assert_eq!(settled.size, 12);
@@ -2079,7 +2112,7 @@ fn object_accounting_settles_repeated_v2_closures_without_counter_drift() {
         deployment_bytes: 16,
         owner_documents: 1,
     };
-    let mut allocate = |label: &str, reserved_bytes: i64, measured_bytes: i64| {
+    let allocate = |label: &str, reserved_bytes: i64, measured_bytes: i64| {
         let operation = catalog
             .prepare_v2_operation(
                 &V2OperationInput {
@@ -2376,50 +2409,106 @@ fn link_key_rotation_resumes_after_a_bounded_batch() {
             }).unwrap();
             let plaintext = format!("reader-key-{index}");
             let digest = hex::encode(sha2::Sha256::digest(plaintext.as_bytes()));
-            let sealed = catalog.seal_link_key(&storage_id,"reader",&digest,&plaintext).unwrap();
-            catalog.put_link(&Link { slug,role:"reader".into(),hash:digest,sealed,label:String::new(),budget:None,
-                since:"2026-01-01T00:00:00Z".into(),until:String::new() }).unwrap();
+            let sealed = catalog
+                .seal_link_key(&storage_id, "reader", &digest, &plaintext)
+                .unwrap();
+            catalog
+                .put_link(&Link {
+                    slug,
+                    role: "reader".into(),
+                    hash: digest,
+                    sealed,
+                    label: String::new(),
+                    budget: None,
+                    since: "2026-01-01T00:00:00Z".into(),
+                    until: String::new(),
+                })
+                .unwrap();
         }
         let first = catalog.rotate_link_sealing_key_batch(&new).unwrap();
-        assert_eq!(first.status,"running");
-        assert_eq!(first.processed,200);
-        assert_eq!(first.cursor_document_id.as_deref(),Some("storage-199"));
+        assert_eq!(first.status, "running");
+        assert_eq!(first.processed, 200);
+        assert_eq!(first.cursor_document_id.as_deref(), Some("storage-199"));
         operation_id = first.id;
-        let running: String = catalog.with_connection(|db| Ok(db.query_row("SELECT state FROM operations WHERE id=?1",[&operation_id],|row|row.get(0))?)).unwrap();
-        assert_eq!(running,"prepared");
+        let running: String = catalog
+            .with_connection(|db| {
+                Ok(db.query_row(
+                    "SELECT state FROM operations WHERE id=?1",
+                    [&operation_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(running, "prepared");
     }
     // SQL selects the new primary even while old envelopes remain. Restoring
     // all persisted secrets makes the durable cursor resumable before traffic.
     let reopened = Catalog::open(&path).unwrap();
-    assert_eq!(Catalog::persisted_primary_link_key_id(&path).unwrap(),link_key_id_for_test(&new));
+    assert_eq!(
+        Catalog::persisted_primary_link_key_id(&path).unwrap(),
+        link_key_id_for_test(&new)
+    );
     reopened.set_link_sealing_key(&new).unwrap();
-    assert!(reopened.resume_link_key_rotation().is_err(), "missing source secret must not silently finish a rotation");
+    assert!(
+        reopened.resume_link_key_rotation().is_err(),
+        "missing source secret must not silently finish a rotation"
+    );
     reopened.add_link_decryption_key(&old).unwrap();
-    assert_eq!(reopened.resume_link_key_rotation().unwrap(),Some(201));
-    reopened.with_connection(|db| {
-        let (state,completed,expiry):(String,i64,i64)=db.query_row("SELECT state,completed_at,receipt_expires_at FROM operations WHERE id=?1",[&operation_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
-        assert_eq!(state,"committed");
-        assert_eq!(expiry-completed,604800000);
-        assert_eq!(db.query_row("SELECT count(*) FROM links WHERE sealing_key_id<>?1",[link_key_id_for_test(&new)],|row|row.get::<_,i64>(0))?,0);
-        Ok(())
-    }).unwrap();
-    for index in [0,199,200,400] {
-        let link = reopened.links(&format!("doc-{index:03}")).unwrap().remove(0);
-        assert_eq!(reopened.open_link_key(&format!("storage-{index:03}"),"reader",&link.hash,&link.sealed).unwrap(),format!("reader-key-{index}"));
+    assert_eq!(reopened.resume_link_key_rotation().unwrap(), Some(201));
+    reopened
+        .with_connection(|db| {
+            let (state, completed, expiry): (String, i64, i64) = db.query_row(
+                "SELECT state,completed_at,receipt_expires_at FROM operations WHERE id=?1",
+                [&operation_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(state, "committed");
+            assert_eq!(expiry - completed, 604800000);
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM links WHERE sealing_key_id<>?1",
+                    [link_key_id_for_test(&new)],
+                    |row| row.get::<_, i64>(0)
+                )?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+    for index in [0, 199, 200, 400] {
+        let link = reopened
+            .links(&format!("doc-{index:03}"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            reopened
+                .open_link_key(
+                    &format!("storage-{index:03}"),
+                    "reader",
+                    &link.hash,
+                    &link.sealed
+                )
+                .unwrap(),
+            format!("reader-key-{index}")
+        );
     }
-    assert_eq!(reopened.rotate_link_sealing_key(&new).unwrap(),0);
+    assert_eq!(reopened.rotate_link_sealing_key(&new).unwrap(), 0);
 }
 
 #[test]
 fn link_key_rotation_without_links_persists_primary_and_receipt() {
-    let catalog=Catalog::open_in_memory().unwrap();
-    let old=[23_u8;32]; let new=[29_u8;32];
+    let catalog = Catalog::open_in_memory().unwrap();
+    let old = [23_u8; 32];
+    let new = [29_u8; 32];
     catalog.set_link_sealing_key(&old).unwrap();
-    let result=catalog.rotate_link_sealing_key_batch(&new).unwrap();
-    assert_eq!(result.status,"committed");
-    assert_eq!(result.processed,0);
-    assert_eq!(catalog.link_keyring_primary_id().unwrap(),Some(link_key_id_for_test(&new)));
-    assert_eq!(catalog.resume_link_key_rotation().unwrap(),None);
+    let result = catalog.rotate_link_sealing_key_batch(&new).unwrap();
+    assert_eq!(result.status, "committed");
+    assert_eq!(result.processed, 0);
+    assert_eq!(
+        catalog.link_keyring_primary_id().unwrap(),
+        Some(link_key_id_for_test(&new))
+    );
+    assert_eq!(catalog.resume_link_key_rotation().unwrap(), None);
 }
 
 fn link_key_id_for_test(key: &[u8; 32]) -> String {
@@ -2681,9 +2770,9 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
                              actor: &crate::document::store::MutationActor|
      -> Result<(), CatalogError> {
         let now = UnixMillis::now();
-        let operation_id = crate::storage::catalog::OperationId::new(
-            fixture_object_id(&format!("{label}-operation")),
-        )
+        let operation_id = crate::storage::catalog::OperationId::new(fixture_object_id(&format!(
+            "{label}-operation"
+        )))
         .map_err(|error| CatalogError::Invalid(error.to_string()))?;
         let document_id = DocumentId::new("storage-1").unwrap();
         let operation = V2OperationInput {
@@ -2699,8 +2788,16 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
             work_expires_at: Some(UnixMillis::new(now.0 + 120_000).unwrap()),
         };
         let allocations = [
-            ("manifest", crate::storage::catalog::ObjectKind::PublicationManifest, 32_i64),
-            ("html", crate::storage::catalog::ObjectKind::PublicationHtml, 16_i64),
+            (
+                "manifest",
+                crate::storage::catalog::ObjectKind::PublicationManifest,
+                32_i64,
+            ),
+            (
+                "html",
+                crate::storage::catalog::ObjectKind::PublicationHtml,
+                16_i64,
+            ),
         ]
         .into_iter()
         .map(|(kind_label, kind, bytes)| {
@@ -2750,7 +2847,7 @@ fn mutation_authority_rechecks_live_editor_links_and_automation_bounds() {
         .with_connection(|connection| {
             connection
                 .execute(
-                    "UPDATE links SET until='2020-01-01T00:00:00.000Z' WHERE hash=?1",
+                    "UPDATE links SET created_at=0,expires_at=1577836800000 WHERE token_hash=?1",
                     [&link_hash],
                 )
                 .map(|_| ())
@@ -2965,7 +3062,10 @@ fn v2_checkpoint_operation_receipt_is_bounded_and_terminal() {
                 .map_err(CatalogError::from)
         })
         .unwrap();
-    assert!(expires.is_some(), "prepared v2 work must have a bounded lease");
+    assert!(
+        expires.is_some(),
+        "prepared v2 work must have a bounded lease"
+    );
     catalog
         .finish_v2_operation(&prepared.id, r#"{"version":2}"#, true, now)
         .unwrap();
@@ -3534,12 +3634,12 @@ fn v2_erasure_reopens_with_revocation_and_250_row_cursor() {
         reopened.erasure_stage("acct-1").unwrap().as_deref(),
         Some("owned_documents")
     );
-    assert_eq!(
-        reopened
-            .erase_account_batch("acct-1", "owned_documents", None, 1, 1000)
-            .unwrap(),
-        250
-    );
+    // The global prepared-operation budget can bind before the 250-row
+    // batch limit. Commit that partial batch instead of rolling it all back.
+    let processed = reopened
+        .erase_account_batch("acct-1", "owned_documents", None, 1, 1000)
+        .unwrap();
+    assert!(processed > 0 && processed < 250);
     let deleting: i64 = reopened
         .with_connection(|connection| {
             connection
@@ -3551,7 +3651,51 @@ fn v2_erasure_reopens_with_revocation_and_250_row_cursor() {
                 .map_err(CatalogError::from)
         })
         .unwrap();
-    assert_eq!(deleting, 250);
+    assert_eq!(deleting, i64::from(processed));
+    let progress = reopened.erasure_progress("acct-1").unwrap().unwrap();
+    assert_eq!(progress.0, "owned_documents");
+    assert_eq!(
+        progress.1,
+        Some(serde_json::json!([format!("document-{:03}", processed - 1)]).to_string())
+    );
+    assert!(matches!(
+        reopened.erase_account_batch("acct-1", "owned_documents", progress.1.as_deref(), 2, 1000),
+        Err(CatalogError::Busy)
+    ));
+    assert_eq!(
+        reopened.erasure_progress("acct-1").unwrap().unwrap(),
+        progress
+    );
+    // Model the document worker settling those receipts to free capacity.
+    reopened
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE operations SET state='committed',completed_at=created_at,receipt_expires_at=created_at,result_json='{}'
+                 WHERE kind='erase_document' AND state='prepared'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    drop(reopened);
+    let reopened = Catalog::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .erase_account_batch("acct-1", "owned_documents", progress.1.as_deref(), 3, 1000)
+            .unwrap(),
+        251 - processed
+    );
+    let deleting: i64 =
+        reopened
+            .with_connection(|connection| {
+                connection.query_row(
+                "SELECT COUNT(*) FROM documents WHERE owner_id='acct-1' AND status='deleting'",
+                [],
+                |row| row.get(0),
+            ).map_err(CatalogError::from)
+            })
+            .unwrap();
+    assert_eq!(deleting, 251);
     assert_eq!(
         reopened
             .erase_account_batch("acct-1", "grants", None, 2, 1000)
@@ -3849,14 +3993,37 @@ fn annotation_receipt_rechecks_live_link_and_preserves_seven_day_window() {
         db.execute("UPDATE operations SET created_at=1,updated_at=1,completed_at=1,receipt_expires_at=2 WHERE request_key=?1",[&key])?;
         Ok(())
     }).unwrap();
-    assert_eq!(catalog.insert_comment_request_authorized(&comment, &key, &digest, now, authority).unwrap_err().refusal(), super::CatalogRefusal::RequestExpired);
+    assert_eq!(
+        catalog
+            .insert_comment_request_authorized(&comment, &key, &digest, now, authority)
+            .unwrap_err()
+            .refusal(),
+        super::CatalogRefusal::RequestExpired
+    );
     let forgotten_key = format!("v2.1.{}", "a".repeat(32));
-    assert_eq!(catalog.insert_comment_request_authorized(&annotation("never-inserted", "commenting"), &forgotten_key, &digest, now, authority).unwrap_err().refusal(), super::CatalogRefusal::RequestExpired);
-    assert!(matches!(catalog.comment("doc", "never-inserted"), Err(CatalogError::NotFound)));
-    catalog.with_connection(|db| {
-        db.execute("DELETE FROM links WHERE token_hash=?1",[&link])?;
-        Ok(())
-    }).unwrap();
+    assert_eq!(
+        catalog
+            .insert_comment_request_authorized(
+                &annotation("never-inserted", "commenting"),
+                &forgotten_key,
+                &digest,
+                now,
+                authority
+            )
+            .unwrap_err()
+            .refusal(),
+        super::CatalogRefusal::RequestExpired
+    );
+    assert!(matches!(
+        catalog.comment("doc", "never-inserted"),
+        Err(CatalogError::NotFound)
+    ));
+    catalog
+        .with_connection(|db| {
+            db.execute("DELETE FROM links WHERE token_hash=?1", [&link])?;
+            Ok(())
+        })
+        .unwrap();
     assert!(matches!(
         catalog.insert_comment_request_authorized(&comment, &key, &digest, now, authority),
         Err(CatalogError::Refused(super::CatalogRefusal::ActorRights, _))
@@ -4019,7 +4186,6 @@ fn v2_document_worker_bounds_checkpoint_edges_and_repeated_begin() {
         })
         .unwrap();
     assert_eq!(pinned_rows, (1, 1));
-
 }
 
 #[test]
@@ -4027,16 +4193,15 @@ fn obsolete_replacement_alias_is_not_a_display_publication() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
-    let operation = catalog
-        .prepare_operation(&OperationRequest {
-            storage_id: "storage-1",
-            request_id: &crate::util::new_request_key(),
-            kind: "replace",
-            request_digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            intent: "{}",
-            created_at: crate::util::now_millis(),
-            actor: None,
-        });
+    let operation = catalog.prepare_operation(&OperationRequest {
+        storage_id: "storage-1",
+        request_id: &crate::util::new_request_key(),
+        kind: "replace",
+        request_digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        intent: "{}",
+        created_at: crate::util::now_millis(),
+        actor: None,
+    });
     assert!(matches!(operation, Err(CatalogError::Invalid(_))));
 }
 
@@ -4077,7 +4242,10 @@ fn agent_operation_plan_is_versioned_without_persisting_bearer_credentials() {
         })
         .unwrap();
     let plan: serde_json::Value = serde_json::from_str(&operation.intent).unwrap();
-    assert_eq!(plan.get("version").and_then(serde_json::Value::as_i64), Some(2));
+    assert_eq!(
+        plan.get("version").and_then(serde_json::Value::as_i64),
+        Some(2)
+    );
     assert!(plan
         .get("actor")
         .and_then(|actor| actor.get("owner_key"))

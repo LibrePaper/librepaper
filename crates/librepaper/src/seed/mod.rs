@@ -241,7 +241,8 @@ fn reset_catalog(catalog: &crate::storage::catalog::Catalog) -> Result<(), Strin
                 .execute_batch(
                     "BEGIN IMMEDIATE;
                      UPDATE documents SET current_checkpoint_id=NULL,
-                         journal_base_object_id=NULL, publication_object_id=NULL,
+                         journal_base_object_id=NULL, journal_base_sequence=0,
+                         publication_object_id=NULL,
                          publication_id=NULL, published_at=NULL;
                      DELETE FROM object_leases;
                      DELETE FROM checkpoint_objects;
@@ -265,11 +266,9 @@ fn reset_catalog(catalog: &crate::storage::catalog::Catalog) -> Result<(), Strin
         .map_err(|err| format!("could not reset catalogue before seeding: {err}"))
 }
 
-/// Seeds a blob store directly, with no catalogue in front of it. Starts
-/// from nothing: seeding is for looking at the result, not for adding to
-/// whatever was there. Test-only, for cases that want the example documents
-/// without paying for a catalogue and a writer lock; `seed_with_backup` is
-/// what `librepaper admin seed` actually runs.
+/// Reset a test deployment's objects and catalogue, then seed through the
+/// same v2 writer used by `librepaper admin seed`. The caller owns the test
+/// deployment and keeps its catalogue outside the blob-store root.
 ///
 /// `owner` is the account handle or visitor key the examples belong to, or
 /// "" for nobody. Ownerless examples can be read and commented on, but nobody
@@ -281,6 +280,7 @@ pub async fn seed_into(
     config: Arc<Configuration>,
     owner: &str,
     documents: &[SeedDocument],
+    catalog: Arc<crate::storage::catalog::Catalog>,
 ) {
     clear_storage_checked(blobs.as_ref())
         .await
@@ -289,7 +289,8 @@ pub async fn seed_into(
                 "could not clear object storage before seeding: {err}"
             ))
         });
-    seed_with_store(blobs, config, owner, documents, None).await;
+    reset_catalog(&catalog).unwrap_or_else(|err| die(err));
+    seed_with_store(blobs, config, owner, documents, Some(catalog)).await;
 }
 
 async fn seed_into_catalog(
@@ -488,7 +489,6 @@ async fn seed_with_store(
                         .as_ref()
                         .map(|_| "Examples".to_string())
                         .unwrap_or_else(|| owner.trim().to_string()),
-                    ..Publication::default()
                 },
                 seed_actor.clone(),
             )
@@ -500,22 +500,29 @@ async fn seed_with_store(
         // account and its live generation before any catalog-backed asset or
         // checkpoint mutation. Carrying the original owner key as authority
         // would make those writes look like an unauthenticated caller.
-        let catalog_actor = if store.catalog.is_some() && seed_actor.account_id.is_empty() {
-            let catalog = store
-                .catalog
-                .as_ref()
-                .expect("catalog actor resolution requires a catalogue");
+        let catalog_actor = if let Some(catalog) = store
+            .catalog
+            .as_ref()
+            .filter(|_| seed_actor.account_id.is_empty())
+        {
             let owner_id = catalog
                 .document(&slug)
                 .unwrap_or_else(|error| die(format!("could not read seeded owner: {error}")))
                 .and_then(|document| document.owner_id)
                 .unwrap_or_else(|| die("seeded anonymous document has no owner account"));
-            let account = catalog
+            let mut account = catalog
                 .account(&owner_id)
                 .unwrap_or_else(|error| {
                     die(format!("could not read seeded owner account: {error}"))
                 })
                 .unwrap_or_else(|| die("seeded anonymous owner account disappeared"));
+            // Keep the requested display identity while retaining v2's
+            // durable anonymous account and its authorization generation.
+            account.handle = owner.trim().to_lowercase();
+            account.name = owner.trim().to_owned();
+            catalog
+                .upsert_account(&account)
+                .unwrap_or_else(|error| die(format!("could not name seeded owner: {error}")));
             crate::document::store::MutationActor {
                 account_id: account.id,
                 owner_key: String::new(),
@@ -554,7 +561,7 @@ async fn seed_with_store(
                 )
                 .await
                 .unwrap_or_else(|err| die(format!("could not store {path}: {err}")));
-            room.name_asset(&path, &sha)
+            room.name_asset(path, &sha)
                 .await
                 .unwrap_or_else(|err| die(format!("could not name {path}: {err}")));
         }
@@ -1125,6 +1132,44 @@ pub async fn seed_annotations(
     (placed, missed)
 }
 
+/// What the reader would anchor against: the document with its markup,
+/// scripts and styles removed. An approximation of what a browser shows,
+/// which is enough to locate a phrase and take its surroundings. All
+/// whitespace collapses, newlines included: a browser renders a line break
+/// inside a paragraph as a single space.
+pub fn visible_text(document: &str) -> String {
+    let script_or_style =
+        regex::Regex::new(r"(?is)<(script|style)\b[^>]*>.*?</(script|style)>").expect("pattern");
+    let tag = regex::Regex::new(r"(?s)<[^>]*>").expect("pattern");
+    let space = regex::Regex::new(r"\s+").expect("pattern");
+    let text = script_or_style.replace_all(document, " ");
+    let text = tag.replace_all(&text, "");
+    let text = html_escape::decode_html_entities(&text);
+    space.replace_all(&text, " ").to_string()
+}
+
+fn head(text: &str, n: usize) -> String {
+    if text.len() <= n {
+        return text.to_string();
+    }
+    let mut end = n;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+fn tail(text: &str, n: usize) -> String {
+    if text.len() <= n {
+        return text.to_string();
+    }
+    let mut start = text.len() - n;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text[start..].to_string()
+}
+
 #[cfg(test)]
 mod catalog_seed_tests {
     use super::*;
@@ -1267,42 +1312,4 @@ mod catalog_seed_tests {
         assert_eq!(kind, "anonymous");
         assert!(!row.example);
     }
-}
-
-/// What the reader would anchor against: the document with its markup,
-/// scripts and styles removed. An approximation of what a browser shows,
-/// which is enough to locate a phrase and take its surroundings. All
-/// whitespace collapses, newlines included: a browser renders a line break
-/// inside a paragraph as a single space.
-pub fn visible_text(document: &str) -> String {
-    let script_or_style =
-        regex::Regex::new(r"(?is)<(script|style)\b[^>]*>.*?</(script|style)>").expect("pattern");
-    let tag = regex::Regex::new(r"(?s)<[^>]*>").expect("pattern");
-    let space = regex::Regex::new(r"\s+").expect("pattern");
-    let text = script_or_style.replace_all(document, " ");
-    let text = tag.replace_all(&text, "");
-    let text = html_escape::decode_html_entities(&text);
-    space.replace_all(&text, " ").to_string()
-}
-
-fn head(text: &str, n: usize) -> String {
-    if text.len() <= n {
-        return text.to_string();
-    }
-    let mut end = n;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_string()
-}
-
-fn tail(text: &str, n: usize) -> String {
-    if text.len() <= n {
-        return text.to_string();
-    }
-    let mut start = text.len() - n;
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
-    text[start..].to_string()
 }

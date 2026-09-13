@@ -14,8 +14,8 @@ use crate::document::session;
 use crate::storage::blob::{BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion, FsStore};
 
 /// A store that can be told to fail every write under one key prefix. What
-/// `review_creation_saves_source_or_reports_failure` uses to put the
-/// `history/` write a checkpoint depends on out of reach, without touching
+/// `creation_saves_source_or_reports_failure` uses to put immutable
+/// checkpoint object writes out of reach, without touching
 /// the document index underneath it.
 struct HookStore {
     inner: std::sync::Arc<dyn BlobStore>,
@@ -80,6 +80,15 @@ async fn directory(
     slug: &str,
     extra: Vec<(&str, Vec<u8>)>,
 ) -> (u16, serde_json::Value) {
+    let response = directory_response(server, slug, extra).await;
+    (response.status().as_u16(), response.json().await.unwrap())
+}
+
+async fn directory_response(
+    server: &TestServer,
+    slug: &str,
+    extra: Vec<(&str, Vec<u8>)>,
+) -> reqwest::Response {
     let mut form = reqwest::multipart::Form::new()
         .text("title", "Directory")
         .text("main", "main.md")
@@ -94,29 +103,33 @@ async fn directory(
             reqwest::multipart::Part::bytes(bytes).file_name(path.to_string()),
         );
     }
-    let response = client()
+    client()
         .post(format!("{}/api/documents", server.url))
         .header("cookie", session_as(TEST_PUBLISHER))
         .header("x-librepaper-client", "1")
         .multipart(form)
         .send()
         .await
-        .unwrap();
-    (response.status().as_u16(), response.json().await.unwrap())
+        .unwrap()
 }
 
 /// R10: a creation whose checkpoint cannot land must not report success. The
-/// review's version of this probe published `ONLY IN RAM` while `history/`
-/// writes were refused and asserted the (buggy) 201; here a failed checkpoint
+/// probe publishes `ONLY IN RAM` while immutable object writes are refused;
+/// a failed checkpoint
 /// must fail the request and leave nothing behind for a restarted server to
 /// find.
 #[tokio::test]
 async fn creation_saves_source_or_reports_failure() {
     let dir = tempfile::tempdir().unwrap();
-    let inner: std::sync::Arc<dyn BlobStore> = std::sync::Arc::new(FsStore::new(dir.path(), true));
+    let inner: std::sync::Arc<dyn BlobStore> =
+        std::sync::Arc::new(FsStore::new(dir.path().join("objects"), true));
     let hooked = HookStore::new(inner.clone());
-    let (url, _server) = server_over_blobs_legacy(hooked.clone(), Configuration::default()).await;
-    *hooked.fail.lock().unwrap() = Some("history/".into());
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(dir.path().join("catalog.sqlite")).unwrap(),
+    );
+    let (url, server) =
+        server_over_blobs(hooked.clone(), Configuration::default(), catalog.clone()).await;
+    *hooked.fail.lock().unwrap() = Some("v2/documents/".into());
     let (status, _entry) = post(
         &url,
         "/api/documents",
@@ -128,7 +141,11 @@ async fn creation_saves_source_or_reports_failure() {
         "a creation whose checkpoint could not land must not report success, got {status}"
     );
     *hooked.fail.lock().unwrap() = None;
-    let (_url, restarted) = server_over_blobs_legacy(inner, Configuration::default()).await;
+    drop(server);
+    crate::storage::maintenance_v2::recover_v2_startup(catalog.as_ref(), inner.as_ref())
+        .await
+        .unwrap();
+    let (_url, restarted) = server_over_blobs(inner, Configuration::default(), catalog).await;
     assert!(
         restarted.store.list().await.is_empty(),
         "a failed creation must not leave a half-published document behind"
@@ -271,14 +288,17 @@ async fn directory_body_limit_honours_figure_allowance() {
 
     let config = Configuration::default();
     let ceiling = config.max_document + config.max_assets.max(0) as usize + (1 << 20);
-    let (status, _) = directory(
+    // An early rejection may close the stream while the oversized request
+    // is still being sent. This assertion needs the received status only.
+    let response = directory_response(
         &server,
         "",
         vec![("huge.png", vec![1; ceiling + (1 << 20)])],
     )
     .await;
     assert_eq!(
-        status, 413,
+        response.status().as_u16(),
+        413,
         "a body over the derived ceiling must be refused as too large"
     );
 }
@@ -340,9 +360,8 @@ async fn directory_replacement_does_not_count_deleted_siblings() {
     assert_eq!(status, 201, "a deleted sibling was counted: {replacement}");
 }
 
-/// The checkpoint budget is admitted after the publication receipt and peak
-/// reservation.  A refusal there must clear both, leaving the document ready
-/// for a later retry rather than a permanently pending operation.
+/// Checkpoint rate refusal must preserve the current head and accounting,
+/// leaving no prepared publication that prevents a later retry.
 #[tokio::test]
 async fn failed_replacement_checkpoint_admission_clears_receipt() {
     let mut config = Configuration::default();
@@ -356,6 +375,17 @@ async fn failed_replacement_checkpoint_admission_clears_receipt() {
     .await;
     let first = publish_test_document(&server.url).await;
     let slug = text(&first, "slug");
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let current = catalog.document(&slug).unwrap().unwrap();
+    let room = server.instance.rooms.get(&slug).await;
+    let before_source = room.source().await;
+    let rate = catalog
+        .reserve_process_rate(
+            &format!("account:{}", current.owner_id.as_deref().unwrap()),
+            "checkpoint_owner",
+            1,
+        )
+        .unwrap();
     let (status, body) = post(
         &server.url,
         "/api/documents",
@@ -363,17 +393,26 @@ async fn failed_replacement_checkpoint_admission_clears_receipt() {
     )
     .await;
     assert_eq!(status, 429, "{body}");
-    let pending = server
-        .instance
-        .store
-        .catalog
-        .as_ref()
-        .expect("catalogue")
-        .document(&slug)
-        .expect("document lookup")
-        .expect("document")
-        .pending_publication;
-    assert!(pending.is_none(), "failed admission stranded {pending:?}");
+    let pending: i64 = catalog.with_connection(|connection| {
+        connection.query_row("SELECT count(*) FROM operations WHERE document_id=?1 AND state='prepared' AND kind IN ('source_publish','checkpoint')", [&current.storage_id], |row| row.get(0)).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
+    assert_eq!(
+        pending, 0,
+        "failed admission stranded a prepared publication"
+    );
+    let after = catalog.document(&slug).unwrap().unwrap();
+    assert_eq!(after.sha, current.sha);
+    assert_eq!(after.maintenance_reserved, current.maintenance_reserved);
+    assert_eq!(room.source().await, before_source);
+    assert!(catalog.audit_v2_counters().unwrap());
+    drop(rate);
+    let (status, retry) = post(
+        &server.url,
+        "/api/documents",
+        json!({"slug": slug, "title": "Paper", "html": "<p>replacement</p>"}),
+    )
+    .await;
+    assert_eq!(status, 201, "released admission must allow retry: {retry}");
 }
 
 /// Chat channels are purged only after deletion admission succeeds.  A stale
@@ -419,9 +458,11 @@ impl BlobStore for PublicationGate {
         self.inner.get_versioned(key).await
     }
     async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
-        // Native source history publishes a recipe after its chunks; the
-        // legacy whole-file /blobs/ namespace is no longer written.
-        if key.contains("/recipes/") && self.armed.swap(false, Ordering::SeqCst) {
+        // Pause the first immutable checkpoint object write after admission.
+        if key.starts_with("v2/documents/")
+            && key.contains("/objects/")
+            && self.armed.swap(false, Ordering::SeqCst)
+        {
             self.started.notify_one();
             self.resume.notified().await;
             return Err(BlobError::Other("injected publication failure".into()));
@@ -449,12 +490,15 @@ impl BlobStore for PublicationGate {
 async fn failed_replacement_preserves_concurrent_editor_update() {
     let dir = tempfile::tempdir().expect("temporary store");
     let gate = Arc::new(PublicationGate {
-        inner: Arc::new(FsStore::new(dir.path(), true)),
+        inner: Arc::new(FsStore::new(dir.path().join("objects"), true)),
         armed: AtomicBool::new(false),
         started: tokio::sync::Notify::new(),
         resume: tokio::sync::Notify::new(),
     });
-    let (url, server) = server_over_blobs_legacy(gate.clone(), Configuration::default()).await;
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(dir.path().join("catalog.sqlite")).unwrap(),
+    );
+    let (url, server) = server_over_blobs(gate.clone(), Configuration::default(), catalog).await;
     let first = publish_test_document(&url).await;
     let slug = text(&first, "slug").to_string();
     let room = server.rooms.get(&slug).await;
@@ -498,7 +542,9 @@ async fn failed_replacement_preserves_concurrent_editor_update() {
     // is paused.  Let it finish and roll back before the queued editor edit
     // runs against the restored state.
     gate.resume.notify_one();
-    assert_eq!(request.await.expect("request task").0, 500);
+    let (status, failure) = request.await.expect("request task");
+    assert_eq!(status, 503, "{failure}");
+    assert_eq!(failure["retryable"], true);
     assert!(matches!(
         editor.await.expect("editor task"),
         crate::room::Applied::Relay

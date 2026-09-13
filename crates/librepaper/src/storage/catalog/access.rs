@@ -34,10 +34,9 @@ fn link_time(value: &str) -> CatalogResult<i64> {
             value
         });
     }
-    crate::util::parse_timestamp_millis(value)
-        .ok_or_else(|| {
-            CatalogError::Invalid("link time must be Unix milliseconds or RFC3339".into())
-        })
+    crate::util::parse_timestamp_millis(value).ok_or_else(|| {
+        CatalogError::Invalid("link time must be Unix milliseconds or RFC3339".into())
+    })
 }
 
 pub(super) fn open_link_envelope(
@@ -127,7 +126,7 @@ fn visibility_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
         created_at: crate::util::format_unix_millis(row.get(3)?),
         published_at: row
             .get::<_, Option<i64>>(4)?
-            .map_or_else(|| String::new(), crate::util::format_unix_millis),
+            .map_or_else(String::new, crate::util::format_unix_millis),
         updated_at: crate::util::format_unix_millis(row.get(5)?),
         example: row.get::<_, String>(6)? == "example",
         owner_key: String::new(),
@@ -700,8 +699,7 @@ impl Catalog {
                 tx.execute("DELETE FROM links WHERE document_id=?1", [&document_id])
                     .map_err(CatalogError::from)?;
             } else {
-                let placeholders = std::iter::repeat("?")
-                    .take(links.len())
+                let placeholders = std::iter::repeat_n("?", links.len())
                     .collect::<Vec<_>>()
                     .join(",");
                 let mut values: Vec<&dyn rusqlite::ToSql> = vec![&document_id];
@@ -1032,11 +1030,7 @@ impl Catalog {
     /// v2 catalogue deliberately has no reverse guest index: callers ask for
     /// their own bookmark payload and this bounded join supplies the role for
     /// that account's listing row without scanning other accounts.
-    pub fn bookmark_link(
-        &self,
-        slug: &str,
-        account_id: &str,
-    ) -> CatalogResult<Option<String>> {
+    pub fn bookmark_link(&self, slug: &str, account_id: &str) -> CatalogResult<Option<String>> {
         if slug.is_empty() || account_id.is_empty() {
             return Ok(None);
         }
@@ -1068,8 +1062,7 @@ impl Catalog {
                     "bookmarks_json has unsupported version".into(),
                 ));
             }
-            let Some(items) = bookmarks.get("items").and_then(serde_json::Value::as_array)
-            else {
+            let Some(items) = bookmarks.get("items").and_then(serde_json::Value::as_array) else {
                 return Err(CatalogError::Invalid(
                     "bookmarks_json has invalid shape".into(),
                 ));
@@ -1086,8 +1079,7 @@ impl Catalog {
                 {
                     continue;
                 }
-                let Some(link_id) = item.get("link_id").and_then(serde_json::Value::as_str)
-                else {
+                let Some(link_id) = item.get("link_id").and_then(serde_json::Value::as_str) else {
                     continue;
                 };
                 let Some(generation) = item
@@ -1283,7 +1275,6 @@ impl Catalog {
                     vec![&cursor_time, &cursor_slug, &page_limit],
                 )?;
             }
-            drop(page);
 
             let mut stale = Vec::new();
             if account_active {

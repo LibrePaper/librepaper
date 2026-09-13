@@ -408,15 +408,20 @@ pub async fn server_over(path: &std::path::Path, config: Configuration) -> (Stri
 
 /// The same, over whatever store is given -- a failing one, in the tests that
 /// inject storage failures.
-pub async fn server_over_blobs_legacy(
+pub async fn server_over_blobs(
     blobs: Arc<dyn crate::storage::blob::BlobStore>,
     config: Configuration,
+    catalog: Arc<crate::storage::catalog::Catalog>,
 ) -> (String, Arc<Server>) {
+    let persistence = config.persistence();
+    catalog
+        .set_link_sealing_key(TEST_KEY)
+        .expect("test link sealing");
     let config = Arc::new(config);
-    let store = Store::open(blobs.clone(), config.clone())
+    let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
         .await
         .expect("the store opens");
-    let rooms = RoomSet::new(blobs, config.clone());
+    let rooms = RoomSet::new(blobs.clone(), config.clone());
     let mut instance = Server::new(
         store,
         rooms,
@@ -432,6 +437,19 @@ pub async fn server_over_blobs_legacy(
         Policy::parse("anyone"),
     );
     instance.accounts = Arc::new(TestAccounts);
+    instance.rooms.attach_journal(Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            Arc::new(
+                crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                    catalog,
+                    persistence,
+                ),
+            ),
+            blobs,
+            persistence,
+        )
+        .expect("v2 journal runtime"),
+    ));
     let instance = Arc::new(instance);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

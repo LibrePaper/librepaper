@@ -15,34 +15,34 @@ use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, RwLock};
 
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use sha2::Digest;
 
 mod access;
 mod accounts;
 mod agent_annotations;
 mod agent_cancel;
-mod agent_payload;
 mod agent_lease;
-mod agent_objects;
+mod agent_payload;
 mod agent_source;
-mod asset_history;
 mod checkpoints;
 mod comments;
 mod documents;
 mod execution;
 mod journal;
 mod link_rotation;
-mod operations;
 mod operation_capacity;
+mod operations;
 mod pressure;
 mod publication;
 mod rate;
 mod read_objects;
 mod retention;
 mod room_edits;
-mod source_history;
 mod source_assets;
+mod source_history;
 mod v2;
 
 pub(crate) use v2::{V2CheckpointAdmissionInput, V2SourceAdmissionInput};
@@ -66,13 +66,12 @@ pub use read_objects::{
 pub use retention::RetentionPass;
 pub use room_edits::RoomEditReservation;
 pub use source_history::{SourceHistoryLease, SourceHistoryObject, SourceHistoryRecord};
-pub(crate) use source_assets::SourceAssetAdmission;
 pub use v2::{
     AccountKind, CheckpointCommit, CheckpointId, DocumentId, DocumentStatus, IdError, LeasePurpose,
     ObjectId, ObjectKind, ObjectState, OperationId, OperationKind, OperationScope, SourceFormat,
     UnixMillis, V2AccountInput, V2AdmissionLimits, V2DocumentInput, V2Object, V2ObjectAllocation,
-    V2Operation, V2OperationInput, VerifiedCheckpointClosure,
-    VerifiedPublicationBundle, MAX_CHECKPOINT_OBJECTS,
+    V2Operation, V2OperationInput, VerifiedCheckpointClosure, VerifiedPublicationBundle,
+    MAX_CHECKPOINT_OBJECTS,
 };
 
 /// One durable physical asset reference carried by a checkpoint.
@@ -586,6 +585,7 @@ pub struct Catalog {
     execution: execution::CatalogExecution,
     // One authority owns publication, recovery, and physical journal reclamation.
     // Every runtime/worker built from this catalogue shares the same gate.
+    #[cfg(test)]
     pub(crate) journal_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     // The first key writes new envelopes. Older keys are retained only long
     // enough to support an explicit, transactional reseal.
@@ -709,9 +709,11 @@ impl Catalog {
             return Ok(false);
         }
         connection
-            .query_row("SELECT EXISTS(SELECT 1 FROM documents LIMIT 1)", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM documents LIMIT 1)",
+                [],
+                |row| row.get(0),
+            )
             .map_err(CatalogError::from)
     }
 
@@ -851,6 +853,7 @@ impl Catalog {
         Ok(Self {
             connection: Mutex::new(Some(connection)),
             execution: execution::CatalogExecution::new(),
+            #[cfg(test)]
             journal_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             connection_operations: std::sync::atomic::AtomicUsize::new(0),
@@ -1037,7 +1040,9 @@ mod identity_tests {
         Catalog::open_with_identity(&path, false, &deployment_id, &key_id)
             .expect("matching reopen");
         assert!(Catalog::open_with_identity(&path, false, &"b".repeat(64), &key_id).is_err());
-        assert!(Catalog::open_with_identity(&path, false, &deployment_id, &"c".repeat(16)).is_err());
+        assert!(
+            Catalog::open_with_identity(&path, false, &deployment_id, &"c".repeat(16)).is_err()
+        );
     }
 
     #[test]

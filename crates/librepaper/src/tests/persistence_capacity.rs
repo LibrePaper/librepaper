@@ -16,7 +16,7 @@ use crate::document::store;
 use crate::room::RoomSet;
 use crate::storage::blob::{self, BlobStore};
 use crate::storage::catalog::Catalog;
-use crate::storage::journal::{self, CoordinatorLimits};
+use crate::storage::journal;
 
 #[derive(serde::Serialize)]
 struct Report {
@@ -132,7 +132,6 @@ fn peak_rss_bytes() -> Option<u64> {
 }
 
 struct Deployment {
-    objects: Arc<dyn BlobStore>,
     catalog: Arc<Catalog>,
     store: Arc<store::Store>,
     rooms: RoomSet,
@@ -159,7 +158,12 @@ async fn open_deployment(root: &Path, config: Arc<Configuration>) -> Deployment 
     let limits = config.persistence();
     let journal = Arc::new(
         journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), limits)),
+            Arc::new(
+                crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                    catalog.clone(),
+                    limits,
+                ),
+            ),
             objects.clone(),
             limits,
         )
@@ -167,7 +171,6 @@ async fn open_deployment(root: &Path, config: Arc<Configuration>) -> Deployment 
     );
     rooms.attach_journal(journal.clone());
     Deployment {
-        objects,
         catalog,
         store,
         rooms,
@@ -310,20 +313,40 @@ async fn persistence_capacity_workload() {
         .catalog
         .with_connection(|connection| {
             let segments: usize = connection
-                .query_row("SELECT COUNT(*) FROM objects WHERE kind='journal_segment'", [], |row| row.get::<_, i64>(0))
+                .query_row(
+                    "SELECT COUNT(*) FROM objects WHERE kind='journal_segment'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
                 .map_err(crate::storage::catalog::CatalogError::from)?
                 .try_into()
-                .map_err(|_| crate::storage::catalog::CatalogError::Invalid("segment count overflow".into()))?;
+                .map_err(|_| {
+                    crate::storage::catalog::CatalogError::Invalid("segment count overflow".into())
+                })?;
             let segment_bytes: u64 = connection
-                .query_row("SELECT COALESCE(SUM(byte_length),0) FROM objects WHERE kind='journal_segment'", [], |row| row.get::<_, i64>(0))
+                .query_row(
+                    "SELECT COALESCE(SUM(byte_length),0) FROM objects WHERE kind='journal_segment'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
                 .map_err(crate::storage::catalog::CatalogError::from)?
                 .try_into()
-                .map_err(|_| crate::storage::catalog::CatalogError::Invalid("segment bytes are negative".into()))?;
+                .map_err(|_| {
+                    crate::storage::catalog::CatalogError::Invalid(
+                        "segment bytes are negative".into(),
+                    )
+                })?;
             let bases: usize = connection
-                .query_row("SELECT COUNT(*) FROM objects WHERE kind='journal_base'", [], |row| row.get::<_, i64>(0))
+                .query_row(
+                    "SELECT COUNT(*) FROM objects WHERE kind='journal_base'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
                 .map_err(crate::storage::catalog::CatalogError::from)?
                 .try_into()
-                .map_err(|_| crate::storage::catalog::CatalogError::Invalid("base count overflow".into()))?;
+                .map_err(|_| {
+                    crate::storage::catalog::CatalogError::Invalid("base count overflow".into())
+                })?;
             Ok((segments, Some(segment_bytes), bases))
         })
         .expect("v2 journal inventory");
@@ -362,7 +385,9 @@ async fn persistence_capacity_workload() {
     );
     reopened.attach_store(store);
     let limits = config2.persistence();
-    let reopened_adapter = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), limits));
+    let reopened_adapter = Arc::new(
+        crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), limits),
+    );
     crate::storage::maintenance_v2::recover_v2_startup(catalog.as_ref(), objects.as_ref())
         .await
         .expect("v2 journal recovery");
@@ -621,15 +646,20 @@ async fn deletion_only_edit_recovers_with_unchanged_crdt_state_vector() {
     let directory = tempfile::tempdir().unwrap();
     let config = Arc::new(Configuration::default());
     let deployment = open_deployment(directory.path(), config.clone()).await;
+    super::room::fixture_account(&deployment.catalog);
     deployment
         .store
-        .put(store::Publication {
-            slug: "delete-only".into(),
-            source: "keep remove".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "delete-only".into(),
+                source: "keep remove".into(),
+                main: "main.md".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            super::room::fixture_actor(),
+        )
         .await
         .unwrap();
     let room = deployment.rooms.try_get("delete-only").await.unwrap();

@@ -4,6 +4,18 @@
 //! its flattened `checkpoint_objects` closure.  Physical allocation and
 //! settlement belong to the object operation APIs in `v2.rs`.
 
+type CheckpointReceiptRow = (String, String, String, Option<String>, Option<i64>);
+
+type CheckpointPreparationRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<i64>,
+);
+
 use super::*;
 
 fn checkpoint_time_ms(value: &str) -> CatalogResult<i64> {
@@ -147,15 +159,7 @@ impl Catalog {
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?;
-            let existing: Option<(
-                String,
-                String,
-                String,
-                String,
-                String,
-                Option<i64>,
-                Option<i64>,
-            )> = tx
+            let existing: Option<CheckpointPreparationRow> = tx
                 .query_row(
                     "SELECT id,kind,state,request_digest,writer_generation,
                             work_expires_at,receipt_expires_at
@@ -315,7 +319,7 @@ impl Catalog {
                 return Err(CatalogError::Conflict("checkpoint operation was cancelled".into()));
             }
             let now = super::unix_millis();
-            let existing: Option<(String, String, String, Option<String>, Option<i64>)> = tx.query_row(
+            let existing: Option<CheckpointReceiptRow> = tx.query_row(
                 "SELECT kind,state,request_digest,result_json,receipt_expires_at FROM operations
                  WHERE document_id=?1 AND actor_key=?2 AND request_key=?3",
                 params![document, actor_key, request.request_id],
@@ -377,8 +381,20 @@ impl Catalog {
         tx: &Transaction<'_>,
         checkpoint: &Checkpoint,
     ) -> CatalogResult<(String, Option<String>)> {
-        let Some(account) = checkpoint.by_account.as_deref().filter(|id| !id.is_empty()) else {
-            return Ok((checkpoint.by.clone(), None));
+        Self::checkpoint_attribution_for_insert(
+            tx,
+            &checkpoint.by,
+            checkpoint.by_account.as_deref(),
+        )
+    }
+
+    pub(super) fn checkpoint_attribution_for_insert(
+        tx: &Transaction<'_>,
+        label: &str,
+        account_id: Option<&str>,
+    ) -> CatalogResult<(String, Option<String>)> {
+        let Some(account) = account_id.filter(|id| !id.is_empty()) else {
+            return Ok((label.to_owned(), None));
         };
         let status: Option<String> = tx
             .query_row(
@@ -388,10 +404,10 @@ impl Catalog {
             )
             .optional()
             .map_err(CatalogError::from)?;
-        if status.as_deref() == Some("erasing") {
+        if status.as_deref() != Some("active") {
             return Ok((ERASED_ATTRIBUTION.to_string(), None));
         }
-        Ok((checkpoint.by.clone(), Some(account.to_owned())))
+        Ok((label.to_owned(), Some(account.to_owned())))
     }
 
     pub fn insert_checkpoints_atomic(&self, checkpoints: &[Checkpoint]) -> CatalogResult<()> {
@@ -641,11 +657,17 @@ impl Catalog {
                 "unsupported checkpoint source format".into(),
             ));
         }
+        let changed = checkpoint
+            .changed
+            .as_deref()
+            .map(serde_json::from_str::<Vec<String>>)
+            .transpose()
+            .map_err(|error| CatalogError::Invalid(format!("invalid changed paths: {error}")))?;
         let metadata = serde_json::json!({
             "version": 1,
             "gitCommit": checkpoint.git_commit,
             "dirty": checkpoint.dirty,
-            "changed": checkpoint.changed,
+            "changed": changed,
         })
         .to_string();
         tx.execute(
@@ -959,11 +981,12 @@ impl Catalog {
         interval: i64,
         limit: u32,
     ) -> CatalogResult<Vec<Document>> {
-        let cutoff = now.saturating_sub(interval.max(0));
+        // Room timers use seconds; catalogue clocks are Unix milliseconds.
+        let cutoff = now.saturating_sub(interval.max(0)).saturating_mul(1_000);
         let limit = i64::from(limit.clamp(1, 200));
         self.with_connection(|connection| {
             let mut statement = connection
-                .prepare(&format!("{} WHERE status='active' AND last_checkpoint_at<=?1 ORDER BY last_checkpoint_at,slug LIMIT ?2", Self::DOCUMENT_SELECT))
+                .prepare(&format!("{} WHERE d.status='active' AND d.last_checkpoint_at<=?1 ORDER BY d.last_checkpoint_at,d.slug LIMIT ?2", Self::DOCUMENT_SELECT))
                 .map_err(CatalogError::from)?;
             let mut rows = statement.query(params![cutoff, limit]).map_err(CatalogError::from)?;
             let mut output = Vec::new();
@@ -975,10 +998,11 @@ impl Catalog {
     }
 
     pub fn touch_auto_checkpoint(&self, slug: &str, at: i64) -> CatalogResult<()> {
+        let at = at.saturating_mul(1_000);
         self.immediate(|tx| {
             let changed = tx
                 .execute(
-                    "UPDATE documents SET last_checkpoint_at=?2 WHERE slug=?1 AND status='active'",
+                    "UPDATE documents SET last_checkpoint_at=MAX(last_checkpoint_at,?2) WHERE slug=?1 AND status='active'",
                     params![slug, at],
                 )
                 .map_err(CatalogError::from)?;

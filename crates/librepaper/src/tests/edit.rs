@@ -4,7 +4,6 @@ use sha2::Digest;
 use super::*;
 use crate::config::{Configuration, SessionLimit};
 use crate::document::render::render_markdown_document;
-use crate::storage::blob::BlobError;
 
 pub const TEST_MARKDOWN: &str = "# My Paper\n\nHello *world*.\n";
 
@@ -83,12 +82,10 @@ async fn publishing_html_drops_a_stale_source() {
     assert_eq!(status, 200, "{payload}");
     assert_eq!(text(&payload, "format"), "html");
     assert_eq!(text(&payload, "source"), page);
-    assert!(
-        matches!(
-            server.instance.store.read_source(&slug).await,
-            Err(BlobError::NotFound)
-        ),
-        "the stale markdown source is still stored"
+    assert_eq!(
+        server.instance.store.read_source(&slug).await.unwrap(),
+        page.as_bytes(),
+        "the canonical source must switch to the replacement HTML"
     );
 }
 

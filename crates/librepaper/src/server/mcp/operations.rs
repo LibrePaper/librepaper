@@ -383,14 +383,14 @@ impl Server {
         ));
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
         let receipt = self
-            .mcp_receipt(slug, actor, &who, &key, Some(&digest))
+            .mcp_receipt(slug, actor, who, &key, Some(&digest))
             .await?;
         if let Some(result) = receipt {
             return Ok(result);
         }
         // Cancellation of uncommitted work precedes fresh admission. A
         // retained terminal receipt above remains the authoritative outcome.
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, &key).await? {
+        if let Some(cancellation) = self.mcp_cancellation(slug, actor, who, &key).await? {
             return Ok(cancellation);
         }
         self.mcp_admit(slug, actor, who, &key, &digest).await?;
@@ -402,7 +402,7 @@ impl Server {
                         args["patches"].as_array().into_iter().flatten().enumerate()
                     {
                         if let Some(cancellation) =
-                            self.mcp_cancellation(slug, actor, &who, &key).await?
+                            self.mcp_cancellation(slug, actor, who, &key).await?
                         {
                             return Ok(cancellation);
                         }
@@ -470,7 +470,7 @@ impl Server {
                     )
                     .await?;
                 if let Some(cancellation) = self
-                    .mcp_cancellation(slug, actor, &who, &candidate.operation)
+                    .mcp_cancellation(slug, actor, who, &candidate.operation)
                     .await?
                 {
                     return Ok(cancellation);
@@ -710,7 +710,7 @@ impl Server {
                 "editor access is required to checkpoint",
             ));
         }
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, key).await? {
+        if let Some(cancellation) = self.mcp_cancellation(slug, actor, who, key).await? {
             return Ok(cancellation);
         }
         let view: View = self
@@ -932,7 +932,7 @@ impl Server {
         view: &View,
     ) -> Result<Value, Failure> {
         let key = &candidate.operation;
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, key).await? {
+        if let Some(cancellation) = self.mcp_cancellation(slug, actor, who, key).await? {
             return Ok(cancellation);
         }
         let digest = candidate.digest.clone();

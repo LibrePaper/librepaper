@@ -31,13 +31,23 @@ fn state(text: &str) -> Vec<u8> {
     session::encode_state(&doc)
 }
 
-fn fixture() -> (Arc<Catalog>, Arc<dyn BlobStore>, V2JournalRuntime<V2JournalCatalogAdapter>, tempfile::TempDir) {
+fn fixture() -> (
+    Arc<Catalog>,
+    Arc<dyn BlobStore>,
+    V2JournalRuntime<V2JournalCatalogAdapter>,
+    tempfile::TempDir,
+) {
     fixture_with_durability(false)
 }
 
 fn fixture_with_durability(
     durable: bool,
-) -> (Arc<Catalog>, Arc<dyn BlobStore>, V2JournalRuntime<V2JournalCatalogAdapter>, tempfile::TempDir) {
+) -> (
+    Arc<Catalog>,
+    Arc<dyn BlobStore>,
+    V2JournalRuntime<V2JournalCatalogAdapter>,
+    tempfile::TempDir,
+) {
     let catalog = Arc::new(Catalog::open_in_memory().expect("v2 catalog"));
     let document_id = "journal-test-document";
     let account_id = "journal-test-account";
@@ -79,14 +89,19 @@ fn segment_round_trip_and_digest_validation() {
     assert_eq!(Segment::decode(&encoded).expect("decode"), segment);
     let mut broken = encoded;
     *broken.last_mut().expect("payload") ^= 1;
-    assert!(matches!(Segment::decode(&broken), Err(JournalError::Corrupt(_))));
+    assert!(matches!(
+        Segment::decode(&broken),
+        Err(JournalError::Corrupt(_))
+    ));
 }
 
 #[test]
 fn coordinator_keeps_document_framing_limits() {
     let first = JournalRecord::new("doc", 1, "retry-1", 0, b"x".to_vec()).expect("record");
     let second = JournalRecord::new("doc", 2, "retry-2", 0, b"y".to_vec()).expect("record");
-    let limit = Segment::new(vec![first.clone()]).expect("segment").encoded_len();
+    let limit = Segment::new(vec![first.clone()])
+        .expect("segment")
+        .encoded_len();
     let mut coordinator = JournalCoordinator::new(CoordinatorLimits {
         max_queued_bytes: usize::MAX,
         max_queued_records: 4,
@@ -131,7 +146,10 @@ async fn v2_append_recover_compact_and_reopen() {
         .await
         .expect("recover")
         .expect("state");
-    assert_eq!(session::texts_of(&decode_state(&recovered)), session::texts_of(&decode_state(&third)));
+    assert_eq!(
+        session::texts_of(&decode_state(&recovered)),
+        session::texts_of(&decode_state(&third))
+    );
     DocumentJournal::compact(&runtime, "journal-test-document", 0, 3, third.clone())
         .await
         .expect("compact");
@@ -146,13 +164,19 @@ async fn v2_append_recover_compact_and_reopen() {
         .expect("retired segments");
     assert!(retired_segments > 0);
     for key in old_segment_keys {
-        assert!(blobs.exists(&key).await.expect("retired segment remains until GC"));
+        assert!(blobs
+            .exists(&key)
+            .await
+            .expect("retired segment remains until GC"));
     }
     let after = DocumentJournal::recover_latest(&runtime, "journal-test-document")
         .await
         .expect("recover compacted")
         .expect("compacted state");
-    assert_eq!(session::texts_of(&decode_state(&after)), session::texts_of(&decode_state(&third)));
+    assert_eq!(
+        session::texts_of(&decode_state(&after)),
+        session::texts_of(&decode_state(&third))
+    );
 }
 
 fn decode_state(bytes: &[u8]) -> yrs::Doc {
@@ -185,8 +209,18 @@ async fn v2_append_requires_the_next_sequence_and_keeps_documents_separate() {
     DocumentJournal::append(&runtime, other, 1, state("other"))
         .await
         .expect("second document append");
-    assert_eq!(DocumentJournal::latest_sequence(&runtime, "journal-test-document", 0).await.unwrap(), 1);
-    assert_eq!(DocumentJournal::latest_sequence(&runtime, other, 0).await.unwrap(), 1);
+    assert_eq!(
+        DocumentJournal::latest_sequence(&runtime, "journal-test-document", 0)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        DocumentJournal::latest_sequence(&runtime, other, 0)
+            .await
+            .unwrap(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -264,7 +298,10 @@ async fn v2_recovery_fails_closed_when_an_acknowledged_object_is_missing() {
             )?)
         })
         .expect("segment key");
-    blobs.delete(std::slice::from_ref(&key)).await.expect("remove segment");
+    blobs
+        .delete(std::slice::from_ref(&key))
+        .await
+        .expect("remove segment");
     assert!(matches!(
         DocumentJournal::recover_latest(&runtime, "journal-test-document").await,
         Err(JournalError::Storage(_))
@@ -287,7 +324,11 @@ async fn v2_recovery_fails_closed_when_an_acknowledged_object_is_corrupt() {
         })
         .expect("segment key");
     blobs
-        .put(&key, b"corrupt acknowledged bytes".to_vec(), "application/octet-stream")
+        .put(
+            &key,
+            b"corrupt acknowledged bytes".to_vec(),
+            "application/octet-stream",
+        )
         .await
         .expect("overwrite test object");
     assert!(matches!(
@@ -302,10 +343,17 @@ async fn v2_replay_with_same_sequence_rejects_conflicting_payload() {
     DocumentJournal::append(&runtime, "journal-test-document", 1, state("first"))
         .await
         .expect("first append");
-    assert!(DocumentJournal::append(&runtime, "journal-test-document", 1, state("different"))
-        .await
-        .is_err());
-    assert_eq!(DocumentJournal::latest_sequence(&runtime, "journal-test-document", 0).await.unwrap(), 1);
+    assert!(
+        DocumentJournal::append(&runtime, "journal-test-document", 1, state("different"))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        DocumentJournal::latest_sequence(&runtime, "journal-test-document", 0)
+            .await
+            .unwrap(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -325,7 +373,10 @@ async fn v2_fragmented_snapshot_recovers_at_record_boundary() {
         .await
         .expect("large recovery")
         .expect("large state");
-    assert_eq!(session::texts_of(&decode_state(&recovered))["index.md"].len(), MAX_RECORD_CHUNK_BYTES * 2 + 17);
+    assert_eq!(
+        session::texts_of(&decode_state(&recovered))["index.md"].len(),
+        MAX_RECORD_CHUNK_BYTES * 2 + 17
+    );
 }
 
 #[tokio::test]
@@ -362,7 +413,10 @@ async fn v2_compacted_binary_base_survives_runtime_reopen() {
         .await
         .expect("recover after reopen")
         .expect("compacted state");
-    assert_eq!(session::texts_of(&decode_state(&recovered))["index.md"], "after compact");
+    assert_eq!(
+        session::texts_of(&decode_state(&recovered))["index.md"],
+        "after compact"
+    );
 }
 
 #[tokio::test]
@@ -392,7 +446,10 @@ async fn v2_large_compacted_base_survives_runtime_reopen() {
         .await
         .expect("recover large base")
         .expect("large compacted state");
-    assert_eq!(session::texts_of(&decode_state(&recovered))["index.md"], text);
+    assert_eq!(
+        session::texts_of(&decode_state(&recovered))["index.md"],
+        text
+    );
 }
 
 /// Release-only comparison trace for spec section 24. It performs real v2
@@ -437,8 +494,16 @@ async fn spec24_per_document_journal_comparison_trace() {
     for sequence in 1..=UPDATES_PER_DOCUMENT {
         for document_id in &document_ids {
             let document = documents.get_mut(document_id).expect("trace document");
-            session::put_text(document, "index.md", &format!("edit-{document_id}-{sequence}"));
-            trace.push((document_id.clone(), sequence as u64, session::encode_state(document)));
+            session::put_text(
+                document,
+                "index.md",
+                &format!("edit-{document_id}-{sequence}"),
+            );
+            trace.push((
+                document_id.clone(),
+                sequence as u64,
+                session::encode_state(document),
+            ));
         }
     }
     let started = Instant::now();
@@ -461,13 +526,16 @@ async fn spec24_per_document_journal_comparison_trace() {
     for batch in trace.chunks(128) {
         for (document_id, sequence, body) in batch {
             coordinator
-                .enqueue(JournalRecord::new(
-                    document_id.clone(),
-                    *sequence,
-                    format!("benchmark-{document_id}-{sequence}"),
-                    0,
-                    body.clone(),
-                ).expect("mixed trace record"))
+                .enqueue(
+                    JournalRecord::new(
+                        document_id.clone(),
+                        *sequence,
+                        format!("benchmark-{document_id}-{sequence}"),
+                        0,
+                        body.clone(),
+                    )
+                    .expect("mixed trace record"),
+                )
                 .expect("mixed trace enqueue");
         }
         mixed_segments.extend(coordinator.seal(true).expect("mixed trace seal"));
@@ -495,7 +563,10 @@ async fn spec24_per_document_journal_comparison_trace() {
             .get(&format!("journal/benchmark/segments/{index:08}"))
             .await
             .expect("mixed segment read");
-        for record in Segment::decode(&body).expect("mixed segment recovery").records {
+        for record in Segment::decode(&body)
+            .expect("mixed segment recovery")
+            .records
+        {
             let replace = mixed_last
                 .get(&record.storage_id)
                 .is_none_or(|(_, sequence)| *sequence < record.sequence);

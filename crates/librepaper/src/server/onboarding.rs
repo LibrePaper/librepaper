@@ -92,8 +92,7 @@ impl Server {
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "account disappeared during onboarding".to_string())?;
-        if who.session_generation.is_empty()
-            || who.session_generation != account.session_generation
+        if who.session_generation.is_empty() || who.session_generation != account.session_generation
         {
             return Err("account session changed during onboarding".into());
         }
@@ -143,7 +142,6 @@ impl Server {
                             owner: who.handle.clone(),
                             owner_id: who.id.clone(),
                             owner_name: who.name.clone(),
-                            ..Publication::default()
                         },
                         actor.clone(),
                     )
@@ -202,8 +200,8 @@ impl Server {
                     agent_checkpoint: None,
                 },
             )
-                .await
-                .map_err(|e| e.to_string())?;
+            .await
+            .map_err(|e| e.to_string())?;
             // The starter document and its checkpoint are durable before this
             // runs. Rendering is an on-demand browser/companion concern and
             // creates no deployment artifact during provisioning.

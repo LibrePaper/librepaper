@@ -19,16 +19,6 @@ pub(super) struct Upload {
     pub(super) files: Vec<(String, Vec<u8>)>,
 }
 
-pub(super) fn upload_digest(upload: &Upload) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(upload.source.as_bytes());
-    for (path, body) in &upload.files {
-        hasher.update(path.as_bytes());
-        hasher.update(body);
-    }
-    hex::encode(hasher.finalize())
-}
-
 impl Server {
     pub async fn delete_document(&self, slug: &str) -> Result<usize, String> {
         let storage_id = self.store.begin_delete(slug).await?;
@@ -375,7 +365,6 @@ impl Server {
                     owner: who.key.clone(),
                     owner_id: who.id.clone(),
                     owner_name: who.name.clone(),
-                    peak_bytes: Some(self.exact_publication_peak(&parsed, &main)),
                 },
                 parsed.files.clone(),
                 actor,
@@ -600,9 +589,11 @@ impl Server {
                         "source_upload",
                         self.config.storage.uploads_per_hour,
                     )
-                    .map_err(crate::storage::catalog::CatalogError::from)
                     .map_err(|_| {
-                        write_json(429, &json!({"error": "too many uploads this hour; try later"}))
+                        write_json(
+                            429,
+                            &json!({"error": "too many uploads this hour; try later"}),
+                        )
                     })?,
             )
         } else {
@@ -635,9 +626,13 @@ impl Server {
                         raw.clone(),
                         (self.config.max_asset, self.config.max_assets),
                         &crate::document::store::MutationActor {
-                            account_id: who.id.clone(), owner_key: who.key.clone(),
-                            session_generation: who.session_generation.clone(), link_hash: String::new(),
-                            policy_editor: true, automation: false, unowned_publisher: false,
+                            account_id: who.id.clone(),
+                            owner_key: who.key.clone(),
+                            session_generation: who.session_generation.clone(),
+                            link_hash: String::new(),
+                            policy_editor: true,
+                            automation: false,
+                            unowned_publisher: false,
                         },
                     )
                     .await
@@ -786,7 +781,7 @@ impl Server {
             // Deferred: the text is in the session and durable at the next
             // write, and the checkpoint follows when the window passes.
             Ok(None) => existing.sha.clone(),
-            Err(_) => {
+            Err(error) => {
                 if let Err(error) = room
                     .rollback_publication_inner(&current, &rollback_bodies, &rollback_format)
                     .await
@@ -794,8 +789,8 @@ impl Server {
                     eprintln!("warning: could not roll back {}: {error}", existing.slug);
                 }
                 return Err(write_json(
-                    500,
-                    &json!({"error": "could not store the document"}),
+                    error.status(),
+                    &json!({"error": error.client_message()}),
                 ));
             }
         };
@@ -1236,120 +1231,6 @@ impl Server {
             return Err(write_json(413, &json!({"error": "document too large"})));
         }
         Ok(())
-    }
-
-    /// Calculate the initial object peak before admission.  The room's first
-    /// checkpoint materializes one object for each unique text body, each
-    /// unique asset, its canonical tree, and its encoded fresh CRDT session.
-    /// Build that same shape in memory so quota admission is exact rather than
-    /// relying on an arbitrary safety cushion.
-    pub(super) fn exact_publication_peak(&self, parsed: &Upload, main_path: &str) -> i64 {
-        let mut tree = Tree {
-            main: main_path.to_string(),
-            ..Tree::default()
-        };
-        let mut bodies = HashMap::new();
-        let main_sha = crate::document::store::digest_of(&parsed.source);
-        bodies.insert(main_sha.clone(), parsed.source.clone());
-        tree.files.insert(
-            main_path.to_string(),
-            TreeEntry {
-                kind: "text".to_string(),
-                id: "000000000000".to_string(),
-                sha: main_sha,
-                size: parsed.source.len() as i64,
-            },
-        );
-        for (path, raw) in &parsed.files {
-            match crate::document::paths::check(&self.config.paths(), path) {
-                Ok(crate::document::paths::Kind::Text) => {
-                    if let Ok(body) = std::str::from_utf8(raw) {
-                        let sha = crate::document::store::digest_of(body);
-                        bodies
-                            .entry(sha.clone())
-                            .or_insert_with(|| body.to_string());
-                        tree.files.insert(
-                            path.clone(),
-                            TreeEntry {
-                                kind: "text".to_string(),
-                                id: "000000000000".to_string(),
-                                sha,
-                                size: raw.len() as i64,
-                            },
-                        );
-                    }
-                }
-                Ok(crate::document::paths::Kind::Asset) => {
-                    let sha = crate::document::store::digest_of_bytes(raw);
-                    tree.files.insert(
-                        path.clone(),
-                        TreeEntry {
-                            kind: "asset".to_string(),
-                            id: String::new(),
-                            sha,
-                            size: raw.len() as i64,
-                        },
-                    );
-                }
-                Err(_) => {}
-            }
-        }
-        let doc = crate::document::session::new_doc();
-        crate::document::session::replace_text(&doc, &parsed.source, main_path);
-        for (path, raw) in &parsed.files {
-            match crate::document::paths::check(&self.config.paths(), path) {
-                Ok(crate::document::paths::Kind::Text) => {
-                    if let Ok(body) = std::str::from_utf8(raw) {
-                        crate::document::session::put_text(&doc, path, body);
-                    }
-                }
-                Ok(crate::document::paths::Kind::Asset) => {
-                    crate::document::session::put_asset(
-                        &doc,
-                        path,
-                        &crate::document::store::digest_of_bytes(raw),
-                    );
-                }
-                Err(_) => {}
-            }
-        }
-        let text_bytes: i64 = bodies.values().map(|body| body.len() as i64).sum();
-        let mut assets = HashMap::new();
-        for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
-            assets.entry(entry.sha.clone()).or_insert(entry.size);
-        }
-        let asset_bytes: i64 = assets.values().sum();
-        let session_bytes = crate::document::session::encode_state(&doc);
-        // Production local catalogues attach the journal.  Its first segment
-        // identity has a fixed 32-hex storage id; the actual id has the same
-        // length, so this is exact before Store::put allocates it.
-        let journal_attached = self.rooms.journal_attached();
-        let journal_bytes = if journal_attached {
-            crate::storage::journal::initial_segment_bytes(&"0".repeat(32), &session_bytes)
-                .unwrap_or(0) as i64
-        } else {
-            0
-        };
-        let session_object_bytes = if journal_attached {
-            0
-        } else {
-            session_bytes.len() as i64
-        };
-        // The room can advance its journal cursor while admission is being
-        // completed (and the framing retry identity includes that cursor).
-        // Keep a small fixed framing allowance so the preflight reservation
-        // remains conservative at the exact quota boundary.
-        // Checkpoint accounting stores the logical tree payload size (which
-        // includes asset entries), while the live object inventory charges
-        // the asset blobs as well.  Mirror that two-sided accounting here so
-        // admission cannot under-reserve a directory containing figures.
-        text_bytes
-            .saturating_add(asset_bytes)
-            .saturating_add(asset_bytes)
-            .saturating_add(tree.to_bytes().len() as i64)
-            .saturating_add(session_object_bytes)
-            .saturating_add(journal_bytes)
-            .saturating_add(1024)
     }
 
     /// Puts the rest of a published directory where it belongs: every text

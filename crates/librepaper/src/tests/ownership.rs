@@ -7,7 +7,7 @@ use serde_json::json;
 use super::*;
 use crate::auth::Policy;
 use crate::config::Configuration;
-use crate::document::store::{self, MutationActor, Publication};
+use crate::document::store::{MutationActor, Publication};
 
 /// The sandbox shape: any signed-in GitHub account may publish, so several
 /// publishers share one deployment.
@@ -83,24 +83,12 @@ async fn listing_shows_only_your_own_uploads() {
                 title: "Example".into(),
                 source: "<p>e</p>".into(),
                 source_format: "html".into(),
-                peak_bytes: Some(1 << 20),
                 ..Default::default()
             },
             alice_actor.clone(),
         )
         .await
         .unwrap();
-    let example_room = server.instance.rooms.get("example-doc").await;
-    let mut publication_token = example_room.reserve_publication_checkpoint().unwrap();
-    example_room
-        .set_main_file("<p>e</p>", "html", "main.html")
-        .await
-        .unwrap();
-    example_room
-        .checkpoint_publication_now("cli", "alice", &mut publication_token)
-        .await
-        .unwrap();
-    publication_token.commit();
     let catalog = store.catalog.as_ref().unwrap();
     let mut example = catalog.document("example-doc").unwrap().unwrap();
     example.example = true;
@@ -112,24 +100,12 @@ async fn listing_shows_only_your_own_uploads() {
                 title: "Legacy".into(),
                 source: "<p>l</p>".into(),
                 source_format: "html".into(),
-                peak_bytes: Some(1 << 20),
                 ..Default::default()
             },
             alice_actor,
         )
         .await
         .unwrap();
-    let legacy_room = server.instance.rooms.get("legacy-doc").await;
-    let mut publication_token = legacy_room.reserve_publication_checkpoint().unwrap();
-    legacy_room
-        .set_main_file("<p>l</p>", "html", "main.html")
-        .await
-        .unwrap();
-    legacy_room
-        .checkpoint_publication_now("cli", "alice", &mut publication_token)
-        .await
-        .unwrap();
-    publication_token.commit();
 
     let visible = slugs_visible_with(&server.url, &session_as("alice")).await;
     assert!(

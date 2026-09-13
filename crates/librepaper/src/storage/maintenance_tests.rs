@@ -12,7 +12,6 @@
 //! catalog/Room suites because their roots are catalog rows rather than a
 //! deletion queue.
 
-use super::*;
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::catalog::Catalog;
 use crate::storage::maintenance_v2::{run_gc_pass, GcReport};
@@ -40,10 +39,15 @@ impl BlobStore for RefusingDeleteStore {
     }
 
     async fn delete(&self, _keys: &[String]) -> crate::storage::blob::BlobResult<()> {
-        Err(crate::storage::blob::BlobError::Other("test delete refusal".into()))
+        Err(crate::storage::blob::BlobError::Other(
+            "test delete refusal".into(),
+        ))
     }
 
-    async fn list(&self, prefix: &str) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+    async fn list(
+        &self,
+        prefix: &str,
+    ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
         self.inner.list(prefix).await
     }
 
@@ -56,7 +60,10 @@ impl BlobStore for RefusingDeleteStore {
         self.inner.swap(key, body, expect).await
     }
 
-    async fn get_versioned(&self, key: &str) -> crate::storage::blob::BlobResult<(Vec<u8>, crate::storage::blob::BlobVersion)> {
+    async fn get_versioned(
+        &self,
+        key: &str,
+    ) -> crate::storage::blob::BlobResult<(Vec<u8>, crate::storage::blob::BlobVersion)> {
         self.inner.get_versioned(key).await
     }
 
@@ -89,7 +96,10 @@ impl BlobStore for RecordingDeleteStore {
         self.inner.delete(keys).await
     }
 
-    async fn delete_each(&self, keys: &[String]) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::DeleteOutcome>> {
+    async fn delete_each(
+        &self,
+        keys: &[String],
+    ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::DeleteOutcome>> {
         self.batch_sizes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -97,7 +107,10 @@ impl BlobStore for RecordingDeleteStore {
         self.inner.delete_each(keys).await
     }
 
-    async fn list(&self, prefix: &str) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+    async fn list(
+        &self,
+        prefix: &str,
+    ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
         self.inner.list(prefix).await
     }
 
@@ -110,7 +123,10 @@ impl BlobStore for RecordingDeleteStore {
         self.inner.swap(key, body, expect).await
     }
 
-    async fn get_versioned(&self, key: &str) -> crate::storage::blob::BlobResult<(Vec<u8>, crate::storage::blob::BlobVersion)> {
+    async fn get_versioned(
+        &self,
+        key: &str,
+    ) -> crate::storage::blob::BlobResult<(Vec<u8>, crate::storage::blob::BlobVersion)> {
         self.inner.get_versioned(key).await
     }
 
@@ -119,7 +135,15 @@ impl BlobStore for RecordingDeleteStore {
     }
 }
 
-fn object_fixture(now: i64) -> (Arc<Catalog>, Arc<dyn BlobStore>, tempfile::TempDir, String, String) {
+fn object_fixture(
+    now: i64,
+) -> (
+    Arc<Catalog>,
+    Arc<dyn BlobStore>,
+    tempfile::TempDir,
+    String,
+    String,
+) {
     let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
     let document_id = "maintenance-document".to_owned();
     let account_id = "maintenance-account".to_owned();
@@ -202,7 +226,10 @@ async fn v2_gc_confirms_physical_delete_before_releasing_charge() {
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
         .expect("settled object state");
-    assert!(state.is_none(), "confirmed deletion releases the object row");
+    assert!(
+        state.is_none(),
+        "confirmed deletion releases the object row"
+    );
     let counters: (i64, i64) = catalog
         .with_connection(|connection| {
             Ok(connection.query_row(
@@ -220,7 +247,10 @@ async fn v2_gc_does_not_claim_a_leased_object() {
     let now = 30_000;
     let (catalog, blobs, _directory, document_id, object_id) = object_fixture(now);
     let key = format!("v2/documents/{document_id}/objects/{object_id}");
-    blobs.put(&key, b"payload".to_vec(), "application/octet-stream").await.expect("object");
+    blobs
+        .put(&key, b"payload".to_vec(), "application/octet-stream")
+        .await
+        .expect("object");
     catalog
         .with_connection(|connection| {
             connection.execute(
@@ -231,7 +261,9 @@ async fn v2_gc_does_not_claim_a_leased_object() {
         })
         .expect("read lease");
     let adapter = V2GcCatalogAdapter::new(Arc::clone(&catalog));
-    let report: GcReport = run_gc_pass(&adapter, blobs.as_ref(), now).await.expect("gc pass");
+    let report: GcReport = run_gc_pass(&adapter, blobs.as_ref(), now)
+        .await
+        .expect("gc pass");
     assert_eq!(report.candidates_claimed, 0);
     assert!(blobs.exists(&key).await.expect("leased object"));
 }
@@ -277,13 +309,24 @@ async fn v2_gc_keeps_a_second_owner_independent_when_its_object_is_leased() {
         })
         .expect("independent owner fixture");
     let first_key = format!("v2/documents/{document_id}/objects/{object_id}");
-    blobs.put(&first_key, b"first".to_vec(), "application/octet-stream").await.expect("first object");
-    blobs.put(&other_key, b"other".to_vec(), "application/octet-stream").await.expect("other object");
+    blobs
+        .put(&first_key, b"first".to_vec(), "application/octet-stream")
+        .await
+        .expect("first object");
+    blobs
+        .put(&other_key, b"other".to_vec(), "application/octet-stream")
+        .await
+        .expect("other object");
     let adapter = V2GcCatalogAdapter::new(Arc::clone(&catalog));
-    let report = run_gc_pass(&adapter, blobs.as_ref(), now).await.expect("unleased owner cleanup");
+    let report = run_gc_pass(&adapter, blobs.as_ref(), now)
+        .await
+        .expect("unleased owner cleanup");
     assert_eq!(report.objects_deleted, 1);
     assert!(!blobs.exists(&first_key).await.expect("first absence"));
-    assert!(blobs.exists(&other_key).await.expect("leased owner retained"));
+    assert!(blobs
+        .exists(&other_key)
+        .await
+        .expect("leased owner retained"));
 }
 
 #[tokio::test]
@@ -313,10 +356,16 @@ async fn v2_gc_malformed_retirement_does_not_block_valid_candidates() {
         })
         .expect("malformed candidate");
     let valid_key = format!("v2/documents/{document_id}/objects/{object_id}");
-    blobs.put(&valid_key, b"valid".to_vec(), "application/octet-stream").await.expect("valid object");
+    blobs
+        .put(&valid_key, b"valid".to_vec(), "application/octet-stream")
+        .await
+        .expect("valid object");
     let adapter = V2GcCatalogAdapter::new(Arc::clone(&catalog));
     assert!(run_gc_pass(&adapter, blobs.as_ref(), now).await.is_err());
-    assert!(!blobs.exists(&valid_key).await.expect("valid candidate deleted"));
+    assert!(!blobs
+        .exists(&valid_key)
+        .await
+        .expect("valid candidate deleted"));
     let malformed_state: (String, i64) = catalog
         .with_connection(|connection| {
             Ok(connection.query_row(
@@ -334,7 +383,10 @@ async fn v2_gc_delete_failure_keeps_charge_for_a_later_retry() {
     let now = 34_000;
     let (catalog, blobs, directory, document_id, object_id) = object_fixture(now);
     let key = format!("v2/documents/{document_id}/objects/{object_id}");
-    blobs.put(&key, b"payload".to_vec(), "application/octet-stream").await.expect("physical object");
+    blobs
+        .put(&key, b"payload".to_vec(), "application/octet-stream")
+        .await
+        .expect("physical object");
     let refusing = RefusingDeleteStore {
         inner: FsStore::new(directory.path(), false),
     };
@@ -357,12 +409,18 @@ async fn v2_gc_delete_failure_keeps_charge_for_a_later_retry() {
     assert_eq!(state.0, "deleting");
     assert_eq!(state.1, 7);
     assert_eq!(state.2, 7);
-    assert!(blobs.exists(&key).await.expect("failed deletion retains bytes"));
+    assert!(blobs
+        .exists(&key)
+        .await
+        .expect("failed deletion retains bytes"));
     let retry = run_gc_pass(&adapter, blobs.as_ref(), now + 15 * 60 * 1000 + 1)
         .await
         .expect("later retry uses the normal store");
     assert_eq!(retry.objects_deleted, 1);
-    assert!(!blobs.exists(&key).await.expect("retry removes physical object"));
+    assert!(!blobs
+        .exists(&key)
+        .await
+        .expect("retry removes physical object"));
 }
 
 #[tokio::test]
@@ -432,13 +490,13 @@ async fn v2_gc_page_is_bounded_and_resumable() {
     };
     let adapter = V2GcCatalogAdapter::new(Arc::clone(&catalog));
     let mut total_deleted = 0;
-    let mut pass_now = now;
-    for _ in 0..4 {
-        let report = run_gc_pass(&adapter, &recording, pass_now).await.expect("bounded page");
+    for pass_now in (now..).take(4) {
+        let report = run_gc_pass(&adapter, &recording, pass_now)
+            .await
+            .expect("bounded page");
         assert!(report.candidates_claimed <= 256);
         assert!(report.objects_deleted <= 256);
         total_deleted += report.objects_deleted;
-        pass_now += 1;
         let remaining: i64 = catalog
             .with_connection(|connection| {
                 Ok(connection.query_row(

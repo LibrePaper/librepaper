@@ -30,7 +30,6 @@ use crate::auth::{
     PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
 use crate::config::Configuration;
-use crate::document::history::{Tree, TreeEntry};
 use crate::document::render::{title_from_html, title_from_markdown};
 use crate::document::store::{
     random_suffix, slugify, Ceiling, Guest, IndexEntry, LinkGrant, ModifyError, Publication,

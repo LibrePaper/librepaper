@@ -83,8 +83,10 @@ CREATE TABLE documents (
     FOREIGN KEY (id, publication_object_id) REFERENCES objects(document_id, id) ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
 CREATE UNIQUE INDEX documents_title ON documents(owner_id, title_key) WHERE status <> 'deleting';
-CREATE INDEX documents_owner_list ON documents(owner_id, status, updated_at DESC, id DESC);
-CREATE INDEX documents_examples ON documents(updated_at DESC, id DESC)
+CREATE INDEX documents_owner_list ON documents(owner_id, status, updated_at DESC, slug DESC);
+CREATE INDEX documents_open ON documents(updated_at DESC, slug DESC)
+    WHERE status = 'active' AND ownership_mode = 'open';
+CREATE INDEX documents_examples ON documents(updated_at DESC, slug DESC)
     WHERE status = 'active' AND ownership_mode = 'example';
 CREATE INDEX documents_checkpoint_due ON documents(last_checkpoint_at, id) WHERE status = 'active';
 CREATE INDEX documents_retention_due ON documents(retention_due_at, id) WHERE status = 'active';

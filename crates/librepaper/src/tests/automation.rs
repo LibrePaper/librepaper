@@ -175,20 +175,32 @@ async fn automation_source_access_is_editor_scoped_and_consistent() {
     )
     .await;
     assert_eq!(status, 404);
+    // Backdate both timestamps together: normal link updates preserve the
+    // original creation time, and expiry must never precede creation.
+    let expired_at = crate::util::now_millis() - 1_000;
     server
         .instance
         .store
-        .modify(&slug, |entry| {
-            if let Some(link) = entry.links.iter_mut().find(|link| link.key == key) {
-                link.until = crate::util::format_unix(crate::util::now_unix() - 1);
-            }
+        .catalog
+        .as_ref()
+        .expect("catalog")
+        .with_connection(|connection| {
+            let changed = connection.execute(
+                "UPDATE links SET created_at=?1,expires_at=?2
+                 WHERE document_id=(SELECT id FROM documents WHERE slug=?3)
+                   AND role='editor'",
+                rusqlite::params![expired_at - 60_000, expired_at, slug],
+            )?;
+            assert_eq!(
+                changed, 1,
+                "expire the editor link that previously read source"
+            );
             Ok(())
         })
-        .await
         .expect("expire the test link");
     let (status, _) = automation_get(
         &session_as(TEST_PUBLISHER),
-        &key,
+        &editor,
         &server.url,
         &format!("/api/documents/{slug}/snapshot"),
     )
@@ -254,8 +266,10 @@ async fn automation_annotation_is_attributed_to_the_link_and_deduplicated() {
     )
     .await;
     assert_eq!(status, 200, "{retry}");
-    assert_eq!(retry["noop"], true);
-    assert_eq!(retry["comment"]["id"], first["comment"]["id"]);
+    assert_eq!(
+        retry["comment"], first["comment"],
+        "retry replays the original durable annotation"
+    );
 
     let mut socket = dial_websocket_keyed(&server.url, &slug, &key).await;
     assert_eq!(socket.read().await["type"], "hello");

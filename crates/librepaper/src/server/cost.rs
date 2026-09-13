@@ -1102,17 +1102,29 @@ pub(super) async fn leased_blob_response(
     let mut heartbeat = Some(SourceAssetHeartbeat::start(lease));
     let heartbeat_ref = heartbeat.as_ref().expect("source asset heartbeat exists");
     if heartbeat_ref.recheck().await.is_err() {
-        let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
+        let _ = heartbeat
+            .take()
+            .expect("source asset heartbeat exists")
+            .finish()
+            .await;
         return plain(404, "not found");
     }
     let length = match blobs.length(&key).await {
         Ok(length) => length,
         Err(crate::storage::blob::BlobError::NotFound) => {
-            let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
+            let _ = heartbeat
+                .take()
+                .expect("source asset heartbeat exists")
+                .finish()
+                .await;
             return plain(404, "not found");
         }
         Err(_) => {
-            let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
+            let _ = heartbeat
+                .take()
+                .expect("source asset heartbeat exists")
+                .finish()
+                .await;
             return plain(503, "storage temporarily unavailable");
         }
     };
@@ -1124,7 +1136,11 @@ pub(super) async fn leased_blob_response(
             .await
             .is_err()
     {
-        let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
+        let _ = heartbeat
+            .take()
+            .expect("source asset heartbeat exists")
+            .finish()
+            .await;
         return plain(503, "storage temporarily unavailable");
     }
     let etag = format!("\"{digest}\"");
@@ -1137,7 +1153,11 @@ pub(super) async fn leased_blob_response(
                 .any(|tag| tag.trim() == etag || tag.trim() == "*")
         })
     {
-        let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
+        let _ = heartbeat
+            .take()
+            .expect("source asset heartbeat exists")
+            .finish()
+            .await;
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::NOT_MODIFIED;
         set(&mut response, "etag", &etag);
@@ -1158,7 +1178,11 @@ pub(super) async fn leased_blob_response(
         Some(range) => match byte_range(range, length) {
             Some((start, end)) => (start, end, true),
             None => {
-                let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
+                let _ = heartbeat
+                    .take()
+                    .expect("source asset heartbeat exists")
+                    .finish()
+                    .await;
                 let mut response = plain(416, "range not satisfiable");
                 set(&mut response, "content-range", &format!("bytes */{length}"));
                 return response;
@@ -1166,13 +1190,21 @@ pub(super) async fn leased_blob_response(
         },
     };
     let reservation = if head {
-        let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
+        let _ = heartbeat
+            .take()
+            .expect("source asset heartbeat exists")
+            .finish()
+            .await;
         None
     } else {
         match meter.reserve(end - start, false) {
             Some(reservation) => Some(reservation),
             None => {
-                let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
+                let _ = heartbeat
+                    .take()
+                    .expect("source asset heartbeat exists")
+                    .finish()
+                    .await;
                 return refusal("transfer_budget", "deployment");
             }
         }
@@ -1184,9 +1216,7 @@ pub(super) async fn leased_blob_response(
         let stream = futures_util::stream::unfold(
             (Some(heartbeat), blobs, key, start),
             move |(heartbeat, blobs, key, offset)| async move {
-                let Some(heartbeat) = heartbeat else {
-                    return None;
-                };
+                let heartbeat = heartbeat?;
                 if offset >= end {
                     return match heartbeat.finish().await {
                         Ok(()) => None,
@@ -1458,9 +1488,7 @@ mod tests {
         }
     }
 
-    async fn asset_lease(
-        fixture: &AssetFixture,
-    ) -> crate::storage::catalog::SourceAssetReadLease {
+    async fn asset_lease(fixture: &AssetFixture) -> crate::storage::catalog::SourceAssetReadLease {
         let slug = "asset-doc".to_owned();
         let digest = fixture.digest.clone();
         let actor = fixture.actor.clone();
@@ -1557,10 +1585,8 @@ mod tests {
         async fn get_versioned(
             &self,
             _key: &str,
-        ) -> crate::storage::blob::BlobResult<(
-            Vec<u8>,
-            crate::storage::blob::BlobVersion,
-        )> {
+        ) -> crate::storage::blob::BlobResult<(Vec<u8>, crate::storage::blob::BlobVersion)>
+        {
             Err(crate::storage::blob::BlobError::Other(
                 "unused by asset read test".into(),
             ))
@@ -1607,7 +1633,10 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
-        assert!(to_bytes(response.into_body(), 1024).await.unwrap().is_empty());
+        assert!(to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -1656,9 +1685,7 @@ mod tests {
         );
         let before = asset_lease_expiry(&fixture);
         let blob_len = blob.body.len() as u64;
-        let get = tokio::spawn(async move {
-            blob.get_range("asset", 0..blob_len).await
-        });
+        let get = tokio::spawn(async move { blob.get_range("asset", 0..blob_len).await });
         started.notified().await;
         let mut after = before;
         for _ in 0..100 {

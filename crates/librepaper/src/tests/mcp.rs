@@ -6,7 +6,10 @@ fn operation_key(label: &str) -> String {
     use sha2::{Digest, Sha256};
     static ISSUED: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
     let issued = ISSUED.get_or_init(crate::util::now_millis);
-    format!("v2.{issued}.{}", &hex::encode(Sha256::digest(label.as_bytes()))[..32])
+    format!(
+        "v2.{issued}.{}",
+        &hex::encode(Sha256::digest(label.as_bytes()))[..32]
+    )
 }
 
 fn request(method: &str, params: Value) -> Value {
@@ -27,8 +30,17 @@ async fn call(base: &str, slug: &str, key: &str, input: &Value) -> (u16, Value) 
     if let Some(name) = input["params"]["name"].as_str() {
         req = req.header("mcp-name", name);
     }
-    let response = req.timeout(std::time::Duration::from_secs(10)).json(input).send().await
-        .unwrap_or_else(|error| panic!("MCP transport failed for method={} tool={} action={}: {error}", input["method"], input["params"]["name"], input["params"]["arguments"]["action"]));
+    let response = req
+        .timeout(std::time::Duration::from_secs(10))
+        .json(input)
+        .send()
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "MCP transport failed for method={} tool={} action={}: {error}",
+                input["method"], input["params"]["name"], input["params"]["arguments"]["action"]
+            )
+        });
     let status = response.status().as_u16();
     let body = response.bytes().await.expect("body");
     (
@@ -64,8 +76,20 @@ async fn mcp_propose_apply_and_retry_have_one_effect_and_bound_authority() {
     let slug = text(&doc, "slug");
     let edit = editor_key(&server.url, &slug).await;
     assert!(!edit.is_empty());
-    let entry = server.instance.store.get_result(&slug).await.unwrap().unwrap();
-    assert_eq!(entry.link_role(&crate::server::hash_link_key(&edit), crate::util::now_unix()), Some(crate::document::store::Role::Editor));
+    let entry = server
+        .instance
+        .store
+        .get_result(&slug)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        entry.link_role(
+            &crate::server::hash_link_key(&edit),
+            crate::util::now_unix()
+        ),
+        Some(crate::document::store::Role::Editor)
+    );
     let read = tool(
         &server.url,
         &slug,
@@ -432,7 +456,7 @@ async fn mcp_accept_and_checkpoint_replay_retained_effects() {
     .await;
     assert_eq!(first["status"], "committed", "{first}");
     let mut changed = checkpoint.clone();
-    changed["why"] = json!("different request digest");
+    changed["body"] = json!("different request digest");
     let (_, reused) = call(
         &server.url,
         &slug,
@@ -443,15 +467,16 @@ async fn mcp_accept_and_checkpoint_replay_retained_effects() {
         ),
     )
     .await;
-    assert_eq!(reused["error"]["code"], "operation_key_reused", "{reused}");
+    assert_eq!(
+        reused["result"]["structuredContent"]["error"]["code"], "operation_key_reused",
+        "{reused}"
+    );
     let second = tool(&server.url, &slug, &key, "document_comment", checkpoint).await;
     assert_eq!(first["checkpoint_id"], second["checkpoint_id"], "{second}");
     let directory = server.stop().await;
-    let blobs: std::sync::Arc<dyn crate::storage::blob::BlobStore> =
-        std::sync::Arc::new(crate::storage::blob::FsStore::new(
-            directory.path().join("objects"),
-            true,
-        ));
+    let blobs: std::sync::Arc<dyn crate::storage::blob::BlobStore> = std::sync::Arc::new(
+        crate::storage::blob::FsStore::new(directory.path().join("objects"), true),
+    );
     let catalog = std::sync::Arc::new(
         crate::storage::catalog::Catalog::open(directory.path().join("catalog.sqlite"))
             .expect("reopen checkpoint catalog"),
@@ -473,10 +498,7 @@ async fn mcp_accept_and_checkpoint_replay_retained_effects() {
     crate::storage::maintenance_v2::recover_v2_startup(catalog.as_ref(), blobs.as_ref())
         .await
         .expect("recover v2 checkpoint state");
-    let rooms = crate::room::RoomSet::new(
-        blobs,
-        config,
-    );
+    let rooms = crate::room::RoomSet::new(blobs, config);
     rooms.attach_store(store);
     rooms.attach_journal(std::sync::Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
@@ -792,7 +814,8 @@ async fn mcp_cancel_pending_render_is_replayable_and_preserves_committed_outcome
         .as_array()
         .unwrap()
         .is_empty());
-    let committed_key = json!({"epoch":read["operation_epoch"],"id":operation_key("committed-private")});
+    let committed_key =
+        json!({"epoch":read["operation_epoch"],"id":operation_key("committed-private")});
     let committed = tool(&server.url, &slug, &key, "document_propose", json!({"view_id":read["view_id"],"operation":committed_key,"patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"new text"}],"publish":"private"})).await;
     assert_eq!(committed["status"], "committed");
     let late = tool(&server.url, &slug, &key, "document_result", json!({"action":"cancel","kind":"operation","target_operation":committed_key,"operation":{"epoch":read["operation_epoch"],"id":operation_key("cancel-committed")}})).await;
@@ -852,9 +875,15 @@ async fn mcp_retention_expires_terminal_receipts_but_preserves_unresolved_eviden
         Ok(())
     }).unwrap();
     catalog.expire_prepared_operations(now, 256).await.unwrap();
-    let remains: i64 = catalog.with_connection(|db| {
-        Ok(db.query_row("SELECT count(*) FROM operations WHERE id IN ('old-cancel','old-pending')", [], |row| row.get(0))?)
-    }).unwrap();
+    let remains: i64 = catalog
+        .with_connection(|db| {
+            Ok(db.query_row(
+                "SELECT count(*) FROM operations WHERE id IN ('old-cancel','old-pending')",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
     assert_eq!(remains, 0);
 }
 

@@ -37,7 +37,7 @@ async fn catalog_room(
     room::RoomSet,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let inner: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
+    let inner: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), false));
     let blobs = HookStore::new(inner);
     let catalog = Arc::new(Catalog::open(dir.path().join("catalog.db")).unwrap());
     let config = Arc::new(Configuration::default());
@@ -46,9 +46,12 @@ async fn catalog_room(
             .await
             .unwrap(),
     );
-    catalog.upsert_account(&contributor("acct-1", "owner")).unwrap();
+    catalog
+        .upsert_account(&contributor("acct-owner", "owner"))
+        .unwrap();
     let rooms = room::RoomSet::new(blobs.clone(), config);
     rooms.attach_store(store.clone());
+    super::room::attach_fixture_journal(&rooms, &store, blobs.clone());
     store
         .put_as_actor(
             store::Publication {
@@ -56,12 +59,11 @@ async fn catalog_room(
                 source: "start".into(),
                 source_format: "markdown".into(),
                 owner: "owner".into(),
-                owner_id: "acct-1".into(),
-                peak_bytes: Some(1 << 20),
+                owner_id: "acct-owner".into(),
                 ..Default::default()
             },
             store::MutationActor {
-                account_id: "acct-1".into(),
+                account_id: "acct-owner".into(),
                 owner_key: "owner".into(),
                 session_generation: "generation-1".into(),
                 link_hash: String::new(),
@@ -72,17 +74,6 @@ async fn catalog_room(
         )
         .await
         .unwrap();
-    let room = rooms.get(slug).await;
-    let mut token = room.reserve_publication_checkpoint().unwrap();
-    room.set_main_file("start", "markdown", "main.md")
-        .await
-        .unwrap();
-    let sha = room
-        .checkpoint_publication_now("cli", Attribution::system(), &mut token)
-        .await
-        .unwrap()
-        .unwrap();
-    token.commit();
     (dir, catalog, blobs, rooms)
 }
 
@@ -182,10 +173,8 @@ async fn an_erasure_during_the_object_writes_wins_at_the_durable_boundary() {
     room.set_source("first revision", "markdown").await.unwrap();
     let tree = room.tree().await;
     let storage_id = catalog.document("interleaved").unwrap().unwrap().storage_id;
-    *blobs.pause.lock().unwrap() = Some((
-        "put".into(),
-        blob::checkpoint_key(&storage_id, &tree.digest()),
-    ));
+    *blobs.pause.lock().unwrap() =
+        Some(("put".into(), format!("v2/documents/{storage_id}/objects/*")));
     let writing = tokio::spawn({
         let room = room.clone();
         async move {

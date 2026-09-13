@@ -505,6 +505,7 @@ impl Server {
         who: &Viewer,
         candidate_id: &str,
     ) -> Result<RenderReceipt, Failure> {
-        self.mcp_load(slug, actor, who, candidate_id, "render").await
+        self.mcp_load(slug, actor, who, candidate_id, "render")
+            .await
     }
 }

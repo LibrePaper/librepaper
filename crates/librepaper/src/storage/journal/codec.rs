@@ -1,8 +1,8 @@
 //! Retained journal codecs used by v2 recovery and legacy conversion.
 
-
 use super::*;
 
+#[cfg(test)]
 pub(super) fn assemble_fragments(fragments: &[JournalRecord]) -> JournalResult<Vec<u8>> {
     let Some(first) = fragments.first() else {
         return Err(JournalError::Corrupt("empty record fragment set".into()));
@@ -116,7 +116,8 @@ pub(crate) fn encode_recovery_base(body: &RecoveryBaseBody) -> JournalResult<Vec
     put_bytes_u16(&mut encoded, body.digest.as_bytes())?;
     encoded.extend_from_slice(&body.payload);
     if encoded.len()
-        > MAX_RECOVERY_BASE_PAYLOAD_BYTES.saturating_add(recovery_base_framing_bytes(body.storage_id.len()))
+        > MAX_RECOVERY_BASE_PAYLOAD_BYTES
+            .saturating_add(recovery_base_framing_bytes(body.storage_id.len()))
     {
         return Err(JournalError::Limit("recovery base is too large".into()));
     }
@@ -157,7 +158,8 @@ pub(crate) fn decode_recovery_base(bytes: &[u8]) -> JournalResult<RecoveryBaseBo
         digest,
     };
     if bytes.len()
-        > MAX_RECOVERY_BASE_PAYLOAD_BYTES.saturating_add(recovery_base_framing_bytes(body.storage_id.len()))
+        > MAX_RECOVERY_BASE_PAYLOAD_BYTES
+            .saturating_add(recovery_base_framing_bytes(body.storage_id.len()))
     {
         return Err(JournalError::Limit("recovery base is too large".into()));
     }
@@ -188,6 +190,7 @@ fn validate_recovery_base(body: &RecoveryBaseBody) -> JournalResult<()> {
 /// Manifest digests cover the canonical descriptor with its digest field
 /// blanked. This avoids a self-referential hash while retaining an
 /// independently verifiable catalogue pointer.
+#[cfg(test)]
 pub(crate) fn finalize_manifest_shard(
     mut shard: ManifestShard,
 ) -> JournalResult<(ManifestShard, Vec<u8>)> {
@@ -210,6 +213,7 @@ pub(crate) fn finalize_manifest_shard(
     Ok((shard, encoded))
 }
 
+#[cfg(test)]
 pub(super) fn build_manifest_shards(
     deployment_id: &str,
     root_seq: u64,
@@ -301,6 +305,7 @@ pub struct CoveredRange {
     pub last_sequence: u64,
 }
 
+#[cfg(test)]
 impl JournalPlan {
     pub(super) fn encoded(&self) -> JournalResult<String> {
         let encoded = serde_json::to_string(self)

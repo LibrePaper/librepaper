@@ -269,5 +269,8 @@ async fn a_second_open_does_not_duplicate_the_guest() {
         .iter()
         .filter(|item| item["document_id"].as_str() == Some(document_id.as_str()))
         .count();
-    assert_eq!(count, 1, "opening twice duplicated the v2 bookmark: {bookmarks}");
+    assert_eq!(
+        count, 1,
+        "opening twice duplicated the v2 bookmark: {bookmarks}"
+    );
 }

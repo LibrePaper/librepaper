@@ -546,6 +546,23 @@ pub(crate) fn after_checkpoint_admission_gate() -> &'static TestGate {
     &checkpoint::AFTER_CHECKPOINT_ADMISSION
 }
 
+#[cfg(test)]
+static BEFORE_COMMENT_PERSISTENCE: TestGate = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn before_comment_persistence_gate() -> &'static TestGate {
+    &BEFORE_COMMENT_PERSISTENCE
+}
+
+#[cfg(test)]
+pub(crate) use catalog::AcceptanceReceiptGate;
+
+#[cfg(test)]
+pub(crate) fn before_acceptance_receipt_gate(
+) -> &'static std::sync::Mutex<Option<Arc<AcceptanceReceiptGate>>> {
+    &catalog::BEFORE_ACCEPTANCE_RECEIPT
+}
+
 pub struct RoomSet {
     /// Who this server is, in the lock objects it takes. A name rather than a
     /// pid, because a pid means nothing to whoever reads the refusal.
@@ -723,10 +740,6 @@ impl RoomSet {
     /// once-lock keeps this setup race-free without changing RoomSet's API.
     pub fn attach_journal(&self, journal: Arc<dyn crate::storage::journal::DocumentJournal>) {
         let _ = self.journal.set(journal);
-    }
-
-    pub fn journal_attached(&self) -> bool {
-        self.journal.get().is_some()
     }
 
     /// Explicit production admission. Unlike the compatibility `get` helper,
@@ -1914,10 +1927,8 @@ impl Room {
             // watermark. Set the quiet comparison after asset sizes are
             // rehydrated; a newer journal must still checkpoint.
             let mut state = self.state.lock().await;
-            state.session.last_tree = Some(tree_of(
-                &state.session.doc,
-                &state.session.asset_sizes,
-            ).0);
+            state.session.last_tree =
+                Some(tree_of(&state.session.doc, &state.session.asset_sizes).0);
         }
     }
 
@@ -2318,11 +2329,7 @@ impl Room {
         self.persist_comments_inner(seq, comments, false).await
     }
 
-    async fn persist_seed_comments(
-        &self,
-        seq: i64,
-        comments: Vec<Comment>,
-    ) -> Result<(), String> {
+    async fn persist_seed_comments(&self, seq: i64, comments: Vec<Comment>) -> Result<(), String> {
         self.persist_comments_inner(seq, comments, true).await
     }
 
@@ -3049,7 +3056,13 @@ impl Room {
                     })?,
                 });
             }
-            (body, generation, durable, state.session_version.clone(), dependencies)
+            (
+                body,
+                generation,
+                durable,
+                state.session_version.clone(),
+                dependencies,
+            )
         };
         // The reservation comes back as a guard rather than as a bare
         // success, so the window between this transaction committing and

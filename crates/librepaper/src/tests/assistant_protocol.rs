@@ -185,6 +185,7 @@ async fn assistant_batch_item_cap_and_stale_accept_preserve_source() {
     .await;
     assert_eq!(status, 200, "{result}");
     let id = text(&result["results"][0], "id");
+    assert!(!id.is_empty(), "{result}");
     let room = server.instance.rooms.get(&slug).await;
     room.set_source("# Paper\n\ncompletely different\n", "markdown")
         .await

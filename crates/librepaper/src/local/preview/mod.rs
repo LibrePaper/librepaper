@@ -413,8 +413,10 @@ impl Previews {
         tokio::time::sleep(Duration::from_millis(250)).await;
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             crate::local::quarto::terminate_process_group(&mut child).await;
+            let output = log.lock().await.clone();
             return Err(format!(
-                "preview process exited during startup ({status}); check the project locally"
+                "preview process exited during startup ({status}): {}",
+                output.trim()
             ));
         }
         let id = crate::util::new_id();

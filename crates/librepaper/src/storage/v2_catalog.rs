@@ -7,33 +7,55 @@
 //! state.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 
-use crate::storage::blob::{write_v2_object_with_id, BlobStore, ObjectId, WrittenObject};
 use crate::config::PersistenceLimits;
+use crate::storage::blob::{write_v2_object_with_id, BlobStore, ObjectId, WrittenObject};
+use crate::storage::catalog::Catalog;
+#[cfg(test)]
+use crate::storage::journal::JournalPartAdmission;
 use crate::storage::journal::{
     JournalAppendAdmission, JournalAppendRequest, JournalCompactionAdmission, JournalDependency,
-    JournalDependencyHint, JournalHead,
-    JournalObjectAllocation, JournalObjectRef, JournalPartAdmission, V2JournalCatalog,
-    WrittenJournalObject,
+    JournalDependencyHint, JournalHead, JournalObjectAllocation, JournalObjectRef,
+    V2JournalCatalog, WrittenJournalObject,
 };
 use crate::storage::maintenance_v2::{
     GcCandidate, PreparedAllocation, PreparedKind, PreparedOperation, V2GcCatalog,
-    V2RecoveryCatalog, READ_LEASE_MS, STAGE_HEARTBEAT_DUE_MS,
-    STAGE_HEARTBEAT_MAX_PAGES_PER_PASS, STAGE_HEARTBEAT_PAGE_SIZE,
+    V2RecoveryCatalog, READ_LEASE_MS, STAGE_HEARTBEAT_DUE_MS, STAGE_HEARTBEAT_MAX_PAGES_PER_PASS,
+    STAGE_HEARTBEAT_PAGE_SIZE,
 };
-use crate::storage::catalog::Catalog;
 
 const GC_RETRY_MS: i64 = 15 * 60 * 1000;
 const RECEIPT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const JOURNAL_RECEIPT_RETENTION_MS: i64 = 60 * 1000;
 const AGENT_RECEIPT_RETENTION_MS: i64 = 60 * 60 * 1000;
+
+type AllocationSettlementRow = (
+    String,
+    String,
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<i64>,
+);
+type FailedAllocationRow = (
+    String,
+    i64,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 fn receipt_retention_ms(kind: &str) -> i64 {
     match kind {
@@ -75,6 +97,8 @@ fn inflight_registry() -> &'static Mutex<InflightRegistry> {
     INFLIGHT_REGISTRY.get_or_init(|| Mutex::new(InflightRegistry::default()))
 }
 
+// Registry adapters mirror the complete allocation identity and fencing metadata.
+#[allow(clippy::too_many_arguments)]
 fn register_inflight(
     namespace: usize,
     document_id: &str,
@@ -109,15 +133,23 @@ fn register_inflight(
     }
     let sequence = record.sequence;
     registry.records.insert(key, record);
-    registry.ordered
-        .insert((namespace, sequence), (document_id.to_owned(), object_id.to_owned()));
+    registry.ordered.insert(
+        (namespace, sequence),
+        (document_id.to_owned(), object_id.to_owned()),
+    );
     true
 }
 
-pub(crate) fn register_physical_guard(namespace: usize, document_id: &str, object_id: &str) -> bool {
+pub(crate) fn register_physical_guard(
+    namespace: usize,
+    document_id: &str,
+    object_id: &str,
+) -> bool {
     register_inflight(namespace, document_id, object_id, 0, "", "", "", "", false)
 }
 
+// Registry adapters mirror the complete allocation identity and fencing metadata.
+#[allow(clippy::too_many_arguments)]
 fn attach_inflight(
     namespace: usize,
     document_id: &str,
@@ -131,7 +163,11 @@ fn attach_inflight(
     let mut registry = inflight_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(record) = registry.records.get_mut(&(namespace, document_id.to_owned(), object_id.to_owned())) else {
+    let Some(record) =
+        registry
+            .records
+            .get_mut(&(namespace, document_id.to_owned(), object_id.to_owned()))
+    else {
         return false;
     };
     if record.managed || record.written.is_some() || record.failure.is_some() {
@@ -146,8 +182,16 @@ fn attach_inflight(
     true
 }
 
-pub(crate) fn complete_physical_guard(namespace: usize, document_id: &str, written: &WrittenObject) {
-    let key = (namespace, document_id.to_owned(), written.object_id.as_str().to_owned());
+pub(crate) fn complete_physical_guard(
+    namespace: usize,
+    document_id: &str,
+    written: &WrittenObject,
+) {
+    let key = (
+        namespace,
+        document_id.to_owned(),
+        written.object_id.as_str().to_owned(),
+    );
     let mut registry = inflight_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -158,7 +202,9 @@ pub(crate) fn complete_physical_guard(namespace: usize, document_id: &str, writt
         None
     };
     if let Some(sequence) = sequence {
-        registry.completed.insert((namespace, sequence), (key.1, key.2));
+        registry
+            .completed
+            .insert((namespace, sequence), (key.1, key.2));
     }
 }
 
@@ -197,11 +243,11 @@ fn complete_inflight(namespace: usize, written: WrittenObject, document_id: &str
 pub(crate) fn remove_physical_guard(namespace: usize, document_id: &str, object_id: &str) {
     let mut registry = inflight_registry()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        ;
-    let removed = registry
-        .records
-        .remove(&(namespace, document_id.to_owned(), object_id.to_owned()));
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let removed =
+        registry
+            .records
+            .remove(&(namespace, document_id.to_owned(), object_id.to_owned()));
     if let Some(record) = removed {
         registry.ordered.remove(&(namespace, record.sequence));
         registry.failed.remove(&(namespace, record.sequence));
@@ -270,7 +316,11 @@ fn failed_inflight(namespace: usize, limit: usize) -> (Vec<InflightPut>, Option<
     let mut registry = inflight_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let cursor = registry.failed_cursors.get(&namespace).copied().unwrap_or(0);
+    let cursor = registry
+        .failed_cursors
+        .get(&namespace)
+        .copied()
+        .unwrap_or(0);
     // The ordered index bounds both the registry work and the number of
     // records cloned for one maintenance pass.  The old implementation
     // scanned every namespace entry and then retained the smallest page,
@@ -289,7 +339,11 @@ fn set_failed_record_written(record: &InflightPut, written: WrittenObject) {
     let mut registry = inflight_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let key = (record.namespace, record.document_id.clone(), record.object_id.clone());
+    let key = (
+        record.namespace,
+        record.document_id.clone(),
+        record.object_id.clone(),
+    );
     let sequence = if let Some(current) = registry.records.get_mut(&key) {
         current.written = Some(written);
         Some(current.sequence)
@@ -297,7 +351,9 @@ fn set_failed_record_written(record: &InflightPut, written: WrittenObject) {
         None
     };
     if let Some(sequence) = sequence {
-        registry.completed.insert((record.namespace, sequence), (key.1, key.2));
+        registry
+            .completed
+            .insert((record.namespace, sequence), (key.1, key.2));
     }
     registry.failed.remove(&(record.namespace, record.sequence));
 }
@@ -311,7 +367,7 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let (state, digest, catalog_reserved, catalog_kind, allocation_operation, operation_state, operation_generation, writer_generation, catalog_length): (String, String, i64, String, Option<String>, Option<String>, Option<String>, String, Option<i64>) = transaction
+            let (state, digest, catalog_reserved, catalog_kind, allocation_operation, operation_state, operation_generation, writer_generation, catalog_length): AllocationSettlementRow = transaction
                 .query_row(
                     "SELECT o.state,o.digest,o.reserved_bytes,o.kind,o.allocation_operation_id,op.state,op.writer_generation,s.writer_generation,o.byte_length FROM objects o LEFT JOIN operations op ON op.id=o.allocation_operation_id AND op.document_id=o.document_id CROSS JOIN server_state s WHERE o.document_id=?1 AND o.id=?2",
                     params![record.document_id, written.object_id.as_str()],
@@ -436,10 +492,12 @@ pub struct V2JournalCatalogAdapter {
 }
 
 impl V2JournalCatalogAdapter {
+    #[cfg(test)]
     pub fn new(catalog: Arc<Catalog>) -> Self {
         Self::with_limits(catalog, PersistenceLimits::default())
     }
 
+    #[cfg(test)]
     pub fn with_limits(catalog: Arc<Catalog>, limits: PersistenceLimits) -> Self {
         Self::with_limits_and_quota(catalog, limits, i64::MAX, i64::MAX)
     }
@@ -450,15 +508,12 @@ impl V2JournalCatalogAdapter {
         owner_limit: i64,
         deployment_limit: i64,
     ) -> Self {
-        Self { catalog, limits, owner_limit, deployment_limit }
-    }
-
-    pub fn catalog(&self) -> &Arc<Catalog> {
-        &self.catalog
-    }
-
-    pub fn limits(&self) -> PersistenceLimits {
-        self.limits
+        Self {
+            catalog,
+            limits,
+            owner_limit,
+            deployment_limit,
+        }
     }
 }
 
@@ -501,7 +556,7 @@ fn journal_ref(row: &rusqlite::Row<'_>) -> rusqlite::Result<JournalObjectRef> {
         last_sequence: row.get::<_, i64>(4)? as u64,
         digest: row.get(5)?,
         byte_length: row.get::<_, i64>(6)? as u64,
-        })
+    })
 }
 
 /// Resolve logical snapshot references while the journal operation is being
@@ -525,14 +580,19 @@ fn resolve_journal_dependencies(
             || hint.byte_length > 64 * 1024 * 1024
             || hint.kind != "asset"
             || hint.digest.len() != 64
-            || !hint.digest.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || !hint
+                .digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         {
             return Err(crate::storage::catalog::CatalogError::Invalid(
                 "invalid journal snapshot dependency hint".into(),
             ));
         }
         let bytes = i64::try_from(hint.byte_length).map_err(|_| {
-            crate::storage::catalog::CatalogError::Invalid("dependency length exceeds SQL range".into())
+            crate::storage::catalog::CatalogError::Invalid(
+                "dependency length exceeds SQL range".into(),
+            )
         })?;
         let row: (String, String, String, i64) = tx
             .query_row(
@@ -570,7 +630,7 @@ fn abort_failed_allocation(catalog: &Catalog, record: &InflightPut) -> Result<()
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let row: Option<(String, i64, String, String, Option<String>, Option<String>, Option<String>, Option<String>)> = transaction
+            let row: Option<FailedAllocationRow> = transaction
                 .query_row(
                     "SELECT o.state,o.reserved_bytes,o.kind,o.digest,o.allocation_operation_id,op.state,op.writer_generation,op.kind
                        FROM objects o
@@ -692,7 +752,10 @@ fn abort_failed_allocation(catalog: &Catalog, record: &InflightPut) -> Result<()
         .map_err(|error| error.to_string())
 }
 
-fn journal_tx<T>(catalog: &Catalog, operation: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::storage::catalog::CatalogResult<T>) -> crate::storage::catalog::CatalogResult<T> {
+fn journal_tx<T>(
+    catalog: &Catalog,
+    operation: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::storage::catalog::CatalogResult<T>,
+) -> crate::storage::catalog::CatalogResult<T> {
     catalog.with_connection(|connection| {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -961,7 +1024,7 @@ where
     let handle = tokio::runtime::Handle::current();
     let operation_catalog = Arc::clone(&catalog);
     catalog
-        .execute_catalog(input_bytes, move |catalog| {
+        .execute_catalog(input_bytes, move |_catalog| {
             handle
                 .block_on(operation(operation_catalog))
                 .map_err(crate::storage::catalog::CatalogError::Conflict)
@@ -1006,9 +1069,7 @@ fn journal_request_admission_bytes(request: &JournalAppendRequest) -> usize {
         .saturating_add(request.actor_key.len())
         .saturating_add(request.request_key.len())
         .saturating_add(request.parts.iter().fold(0usize, |total, part| {
-            total
-                .saturating_add(part.digest.len())
-                .saturating_add(64)
+            total.saturating_add(part.digest.len()).saturating_add(64)
         }))
         .saturating_add(request.dependency_hints.iter().fold(0usize, |total, hint| {
             total
@@ -1024,12 +1085,17 @@ fn journal_admission_bytes(admission: &JournalAppendAdmission) -> usize {
         .len()
         .saturating_add(admission.document_id.len())
         .saturating_add(admission.writer_generation.len())
-        .saturating_add(admission.allocations.iter().fold(0usize, |total, allocation| {
-            total
-                .saturating_add(allocation.object_id.as_str().len())
-                .saturating_add(allocation.storage_key.len())
-                .saturating_add(32)
-        }))
+        .saturating_add(
+            admission
+                .allocations
+                .iter()
+                .fold(0usize, |total, allocation| {
+                    total
+                        .saturating_add(allocation.object_id.as_str().len())
+                        .saturating_add(allocation.storage_key.len())
+                        .saturating_add(32)
+                }),
+        )
 }
 
 fn written_journal_objects_bytes(objects: &[WrittenJournalObject]) -> usize {
@@ -1050,13 +1116,18 @@ fn journal_compaction_admission_bytes(admission: &JournalCompactionAdmission) ->
         .saturating_add(admission.writer_generation.len())
         .saturating_add(admission.base_allocation.object_id.as_str().len())
         .saturating_add(admission.base_allocation.storage_key.len())
-        .saturating_add(admission.dependencies.iter().fold(0usize, |total, dependency| {
-            total
-                .saturating_add(dependency.object_id.as_str().len())
-                .saturating_add(dependency.kind.len())
-                .saturating_add(dependency.digest.len())
-                .saturating_add(16)
-        }))
+        .saturating_add(
+            admission
+                .dependencies
+                .iter()
+                .fold(0usize, |total, dependency| {
+                    total
+                        .saturating_add(dependency.object_id.as_str().len())
+                        .saturating_add(dependency.kind.len())
+                        .saturating_add(dependency.digest.len())
+                        .saturating_add(16)
+                }),
+        )
         .saturating_add(32)
 }
 
@@ -1068,7 +1139,8 @@ impl V2GcCatalog for V2GcCatalogAdapter {
             .lock()
             .map_err(|_| "stage-lease heartbeat cursor is poisoned".to_owned())?
             .clone();
-        let (renewed, next) = heartbeat_stage_leases_pages(&self.catalog, now, limit, cursor).await?;
+        let (renewed, next) =
+            heartbeat_stage_leases_pages(&self.catalog, now, limit, cursor).await?;
         *self
             .heartbeat_cursor
             .lock()
@@ -1078,17 +1150,20 @@ impl V2GcCatalog for V2GcCatalogAdapter {
     async fn expire_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
         bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
             <Catalog as V2GcCatalog>::expire_leases(catalog.as_ref(), now, limit).await
-        }).await
+        })
+        .await
     }
     async fn expire_prepared_operations(&self, now: i64, limit: usize) -> Result<usize, String> {
         bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
             <Catalog as V2GcCatalog>::expire_prepared_operations(catalog.as_ref(), now, limit).await
-        }).await
+        })
+        .await
     }
     async fn settle_completed_inflight(&self, limit: usize) -> Result<usize, String> {
         bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
             <Catalog as V2GcCatalog>::settle_completed_inflight(catalog.as_ref(), limit).await
-        }).await
+        })
+        .await
     }
     async fn reconcile_failed_inflight(
         &self,
@@ -1103,13 +1178,11 @@ impl V2GcCatalog for V2GcCatalogAdapter {
                 Ok(object_id) => object_id,
                 Err(_) => continue,
             };
-            let storage_key = match crate::storage::blob::v2_object_key(
-                &record.document_id,
-                &object_id,
-            ) {
-                Ok(storage_key) => storage_key,
-                Err(_) => continue,
-            };
+            let storage_key =
+                match crate::storage::blob::v2_object_key(&record.document_id, &object_id) {
+                    Ok(storage_key) => storage_key,
+                    Err(_) => continue,
+                };
             match blobs.get(&storage_key).await {
                 Ok(body) => {
                     let digest = hex::encode(Sha256::digest(&body));
@@ -1176,15 +1249,37 @@ impl V2GcCatalog for V2GcCatalogAdapter {
     async fn claim_gc(&self, now: i64, limit: usize) -> Result<Vec<GcCandidate>, String> {
         bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
             <Catalog as V2GcCatalog>::claim_gc(catalog.as_ref(), now, limit).await
-        }).await
+        })
+        .await
     }
-    async fn settle_gc(&self, document_id: &str, object_id: &str, confirmed: bool, retry_at: i64) -> Result<i64, String> {
+    async fn settle_gc(
+        &self,
+        document_id: &str,
+        object_id: &str,
+        confirmed: bool,
+        retry_at: i64,
+    ) -> Result<i64, String> {
         let document_id = document_id.to_owned();
         let object_id = object_id.to_owned();
-        let input_bytes = document_id.len().saturating_add(object_id.len()).saturating_add(32);
-        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
-            <Catalog as V2GcCatalog>::settle_gc(catalog.as_ref(), &document_id, &object_id, confirmed, retry_at).await
-        }).await
+        let input_bytes = document_id
+            .len()
+            .saturating_add(object_id.len())
+            .saturating_add(32);
+        bounded_catalog_call(
+            self.catalog.clone(),
+            input_bytes,
+            move |catalog| async move {
+                <Catalog as V2GcCatalog>::settle_gc(
+                    catalog.as_ref(),
+                    &document_id,
+                    &object_id,
+                    confirmed,
+                    retry_at,
+                )
+                .await
+            },
+        )
+        .await
     }
 }
 
@@ -1193,57 +1288,138 @@ impl V2RecoveryCatalog for V2GcCatalogAdapter {
     async fn establish_writer_generation(&self) -> Result<String, String> {
         bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::establish_writer_generation(catalog.as_ref()).await
-        }).await
+        })
+        .await
     }
-    async fn prepared_allocations_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<PreparedAllocation>, String> {
+    async fn prepared_allocations_page(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PreparedAllocation>, String> {
         let after = after.map(str::to_owned);
         let input_bytes = after.as_deref().map_or(64, str::len).saturating_add(64);
-        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
-            <Catalog as V2RecoveryCatalog>::prepared_allocations_page(catalog.as_ref(), after.as_deref(), limit).await
-        }).await
+        bounded_catalog_call(
+            self.catalog.clone(),
+            input_bytes,
+            move |catalog| async move {
+                <Catalog as V2RecoveryCatalog>::prepared_allocations_page(
+                    catalog.as_ref(),
+                    after.as_deref(),
+                    limit,
+                )
+                .await
+            },
+        )
+        .await
     }
-    async fn settle_allocation(&self, allocation: &PreparedAllocation, byte_length: u64, digest: &str) -> Result<(), String> {
+    async fn settle_allocation(
+        &self,
+        allocation: &PreparedAllocation,
+        byte_length: u64,
+        digest: &str,
+    ) -> Result<(), String> {
         let input_bytes = allocation_admission_bytes(allocation).saturating_add(digest.len());
         let allocation = allocation.clone();
         let digest = digest.to_owned();
-        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
-            <Catalog as V2RecoveryCatalog>::settle_allocation(catalog.as_ref(), &allocation, byte_length, &digest).await
-        }).await
+        bounded_catalog_call(
+            self.catalog.clone(),
+            input_bytes,
+            move |catalog| async move {
+                <Catalog as V2RecoveryCatalog>::settle_allocation(
+                    catalog.as_ref(),
+                    &allocation,
+                    byte_length,
+                    &digest,
+                )
+                .await
+            },
+        )
+        .await
     }
     async fn abort_absent_allocation(&self, allocation: &PreparedAllocation) -> Result<(), String> {
         let input_bytes = allocation_admission_bytes(allocation);
         let allocation = allocation.clone();
-        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
-            <Catalog as V2RecoveryCatalog>::abort_absent_allocation(catalog.as_ref(), &allocation).await
-        }).await
+        bounded_catalog_call(
+            self.catalog.clone(),
+            input_bytes,
+            move |catalog| async move {
+                <Catalog as V2RecoveryCatalog>::abort_absent_allocation(
+                    catalog.as_ref(),
+                    &allocation,
+                )
+                .await
+            },
+        )
+        .await
     }
-    async fn prepared_operations_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<PreparedOperation>, String> {
+    async fn prepared_operations_page(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PreparedOperation>, String> {
         let after = after.map(str::to_owned);
         let input_bytes = after.as_deref().map_or(64, str::len).saturating_add(64);
-        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
-            <Catalog as V2RecoveryCatalog>::prepared_operations_page(catalog.as_ref(), after.as_deref(), limit).await
-        }).await
+        bounded_catalog_call(
+            self.catalog.clone(),
+            input_bytes,
+            move |catalog| async move {
+                <Catalog as V2RecoveryCatalog>::prepared_operations_page(
+                    catalog.as_ref(),
+                    after.as_deref(),
+                    limit,
+                )
+                .await
+            },
+        )
+        .await
     }
     async fn abort_unacknowledged_operation(&self, operation_id: &str) -> Result<(), String> {
         let operation_id = operation_id.to_owned();
         let input_bytes = operation_id.len();
-        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
-            <Catalog as V2RecoveryCatalog>::abort_unacknowledged_operation(catalog.as_ref(), &operation_id).await
-        }).await
+        bounded_catalog_call(
+            self.catalog.clone(),
+            input_bytes,
+            move |catalog| async move {
+                <Catalog as V2RecoveryCatalog>::abort_unacknowledged_operation(
+                    catalog.as_ref(),
+                    &operation_id,
+                )
+                .await
+            },
+        )
+        .await
     }
     async fn adopt_internal_operation(&self, operation: &PreparedOperation) -> Result<(), String> {
         let input_bytes = operation_admission_bytes(operation);
         let operation = operation.clone();
-        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
-            <Catalog as V2RecoveryCatalog>::adopt_internal_operation(catalog.as_ref(), &operation).await
-        }).await
+        bounded_catalog_call(
+            self.catalog.clone(),
+            input_bytes,
+            move |catalog| async move {
+                <Catalog as V2RecoveryCatalog>::adopt_internal_operation(
+                    catalog.as_ref(),
+                    &operation,
+                )
+                .await
+            },
+        )
+        .await
     }
     async fn defer_uncertain_operation(&self, operation_id: &str) -> Result<(), String> {
         let operation_id = operation_id.to_owned();
         let input_bytes = operation_id.len();
-        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
-            <Catalog as V2RecoveryCatalog>::defer_uncertain_operation(catalog.as_ref(), &operation_id).await
-        }).await
+        bounded_catalog_call(
+            self.catalog.clone(),
+            input_bytes,
+            move |catalog| async move {
+                <Catalog as V2RecoveryCatalog>::defer_uncertain_operation(
+                    catalog.as_ref(),
+                    &operation_id,
+                )
+                .await
+            },
+        )
+        .await
     }
 }
 
@@ -1315,9 +1491,11 @@ impl V2GcCatalog for Catalog {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let deployment_id: String = transaction
-                .query_row("SELECT deployment_id FROM server_state WHERE id=1", [], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT deployment_id FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let expirable = {
                 let mut statement = transaction
@@ -1350,10 +1528,7 @@ impl V2GcCatalog for Catalog {
                 // physical I/O has completed.  Once the process restarts the
                 // registry is empty and normal expiry/recovery may resume.
                 if kind == "backup"
-                    && crate::storage::backup_v2::backup_copy_active(
-                        &deployment_id,
-                        &operation_id,
-                    )
+                    && crate::storage::backup_v2::backup_copy_active(&deployment_id, &operation_id)
                 {
                     continue;
                 }
@@ -1437,7 +1612,11 @@ impl V2GcCatalog for Catalog {
             let mut expired_receipts = 0usize;
             for (operation_id, document_id, kind, object_id) in expired_candidates {
                 if kind == "agent_stage" {
-                    let document_id = document_id.as_deref().ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("agent stage receipt has no document scope".into()))?;
+                    let document_id = document_id.as_deref().ok_or_else(|| {
+                        crate::storage::catalog::CatalogError::Invalid(
+                            "agent stage receipt has no document scope".into(),
+                        )
+                    })?;
                     if let Some(object_id) = object_id {
                         unrooted += transaction
                             .execute(
@@ -1477,10 +1656,7 @@ impl V2GcCatalog for Catalog {
         for record in records {
             let key_document = record.document_id.clone();
             let key_object = record.object_id.clone();
-            if settle_completed_record(self, record)
-                .await
-                .is_ok()
-            {
+            if settle_completed_record(self, record).await.is_ok() {
                 remove_inflight(self as *const Catalog as usize, &key_document, &key_object);
                 settled = settled.saturating_add(1);
             }
@@ -1683,14 +1859,22 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             .map_err(|error| error.to_string())
     }
 
-    async fn journal_objects(&self, document_id: &str, epoch: u64, after_sequence: u64, after_object_id: &str, limit: usize) -> Result<Vec<JournalObjectRef>, String> {
+    async fn journal_objects(
+        &self,
+        document_id: &str,
+        epoch: u64,
+        after_sequence: u64,
+        after_object_id: &str,
+        limit: usize,
+    ) -> Result<Vec<JournalObjectRef>, String> {
         if limit == 0 || limit > 128 {
             return Err("journal page exceeds bound".into());
         }
         let catalog = Arc::clone(&self.catalog);
         let document_id = document_id.to_owned();
         let epoch = i64::try_from(epoch).map_err(|_| "journal epoch exceeds SQL range")?;
-        let after_sequence = i64::try_from(after_sequence).map_err(|_| "journal cursor exceeds SQL range")?;
+        let after_sequence =
+            i64::try_from(after_sequence).map_err(|_| "journal cursor exceeds SQL range")?;
         let after_object_id = after_object_id.to_owned();
         let input_bytes = document_id
             .len()
@@ -1710,8 +1894,15 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         }).await.map_err(|error| error.to_string())
     }
 
-    async fn prepare_append(&self, request: JournalAppendRequest) -> Result<JournalAppendAdmission, String> {
-        if request.parts.is_empty() || request.parts.len() > 128 || request.first_sequence == 0 || request.last_sequence < request.first_sequence {
+    async fn prepare_append(
+        &self,
+        request: JournalAppendRequest,
+    ) -> Result<JournalAppendAdmission, String> {
+        if request.parts.is_empty()
+            || request.parts.len() > 128
+            || request.first_sequence == 0
+            || request.last_sequence < request.first_sequence
+        {
             return Err("invalid journal append request".into());
         }
         if request.dependencies.len() > 4_096 {
@@ -1721,7 +1912,8 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             return Err("journal dependency hints exceed the bounded limit".into());
         }
         {
-            let mut dependency_ids = std::collections::HashSet::with_capacity(request.dependencies.len());
+            let mut dependency_ids =
+                std::collections::HashSet::with_capacity(request.dependencies.len());
             for dependency in &request.dependencies {
                 if !dependency_ids.insert(dependency.object_id.as_str()) {
                     return Err("journal dependency closure contains a duplicate object".into());
@@ -1732,28 +1924,38 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             return Err("negative storage quota is invalid".into());
         }
         let mut expected_sequence = request.first_sequence;
-        let (total_bytes, total_payload_bytes) = request.parts.iter().try_fold((0usize, 0usize), |(total, payload), part| {
-            if part.epoch != request.epoch
-                || part.first_sequence != expected_sequence
-                || part.last_sequence < part.first_sequence
-                || part.last_sequence > request.last_sequence
-            {
-                return Err("journal parts are not a contiguous admitted range");
-            }
-            expected_sequence = part.last_sequence.saturating_add(1);
-            let bytes = usize::try_from(part.byte_length).map_err(|_| "journal object is too large")?;
-            let payload_bytes = usize::try_from(part.payload_byte_length).map_err(|_| "journal payload is too large")?;
-            if payload_bytes > bytes {
-                return Err("journal payload exceeds its framed segment length");
-            }
-            if bytes > crate::storage::journal::MAX_SEGMENT_BYTES {
-                return Err("journal segment exceeds the physical object limit");
-            }
-            Ok((
-                total.checked_add(bytes).ok_or("journal physical size overflow")?,
-                payload.checked_add(payload_bytes).ok_or("journal payload size overflow")?,
-            ))
-        })?;
+        let (total_bytes, total_payload_bytes) =
+            request
+                .parts
+                .iter()
+                .try_fold((0usize, 0usize), |(total, payload), part| {
+                    if part.epoch != request.epoch
+                        || part.first_sequence != expected_sequence
+                        || part.last_sequence < part.first_sequence
+                        || part.last_sequence > request.last_sequence
+                    {
+                        return Err("journal parts are not a contiguous admitted range");
+                    }
+                    expected_sequence = part.last_sequence.saturating_add(1);
+                    let bytes = usize::try_from(part.byte_length)
+                        .map_err(|_| "journal object is too large")?;
+                    let payload_bytes = usize::try_from(part.payload_byte_length)
+                        .map_err(|_| "journal payload is too large")?;
+                    if payload_bytes > bytes {
+                        return Err("journal payload exceeds its framed segment length");
+                    }
+                    if bytes > crate::storage::journal::MAX_SEGMENT_BYTES {
+                        return Err("journal segment exceeds the physical object limit");
+                    }
+                    Ok((
+                        total
+                            .checked_add(bytes)
+                            .ok_or("journal physical size overflow")?,
+                        payload
+                            .checked_add(payload_bytes)
+                            .ok_or("journal payload size overflow")?,
+                    ))
+                })?;
         if expected_sequence != request.last_sequence.saturating_add(1) {
             return Err("journal parts do not cover the admitted range".into());
         }
@@ -1883,7 +2085,11 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         }).await.map_err(|error| error.to_string())
     }
 
-    async fn commit_append(&self, admission: JournalAppendAdmission, objects: Vec<WrittenJournalObject>) -> Result<(), String> {
+    async fn commit_append(
+        &self,
+        admission: JournalAppendAdmission,
+        objects: Vec<WrittenJournalObject>,
+    ) -> Result<(), String> {
         if objects.len() != admission.allocations.len() {
             return Err("journal completion object count does not match admission".into());
         }
@@ -2040,13 +2246,26 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         })).await.map_err(|error| error.to_string())
     }
 
-    async fn prepare_compaction(&self, document_id: &str, expected_epoch: u64, expected_sequence: u64, payload_byte_length: u64, byte_length: u64, digest: String, dependencies: Vec<JournalDependencyHint>) -> Result<JournalCompactionAdmission, String> {
-        if byte_length == 0 || !is_sha256(&digest) { return Err("invalid journal base descriptor".into()); }
+    async fn prepare_compaction(
+        &self,
+        document_id: &str,
+        expected_epoch: u64,
+        expected_sequence: u64,
+        payload_byte_length: u64,
+        byte_length: u64,
+        digest: String,
+        dependencies: Vec<JournalDependencyHint>,
+    ) -> Result<JournalCompactionAdmission, String> {
+        if byte_length == 0 || !is_sha256(&digest) {
+            return Err("invalid journal base descriptor".into());
+        }
         if self.owner_limit < 0 || self.deployment_limit < 0 {
             return Err("negative storage quota is invalid".into());
         }
         if payload_byte_length as usize > self.limits.max_encoded_snapshot_bytes {
-            return Err("journal base payload exceeds the configured encoded snapshot limit".into());
+            return Err(
+                "journal base payload exceeds the configured encoded snapshot limit".into(),
+            );
         }
         let max_physical_length = payload_byte_length.saturating_add(
             crate::storage::journal::recovery_base_framing_bytes(document_id.len()) as u64,
@@ -2065,8 +2284,22 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             request_digest_bytes.extend_from_slice(&dependency.byte_length.to_le_bytes());
         }
         let request_digest = hex::encode(Sha256::digest(request_digest_bytes));
-        let input_bytes = document_id.len().saturating_add(digest.len()).saturating_add(112)
-            .saturating_add(dependencies.iter().map(|dependency| dependency.kind.len().saturating_add(dependency.digest.len()).saturating_add(16)).sum::<usize>());
+        let input_bytes = document_id
+            .len()
+            .saturating_add(digest.len())
+            .saturating_add(112)
+            .saturating_add(
+                dependencies
+                    .iter()
+                    .map(|dependency| {
+                        dependency
+                            .kind
+                            .len()
+                            .saturating_add(dependency.digest.len())
+                            .saturating_add(16)
+                    })
+                    .sum::<usize>(),
+            );
         catalog.execute_catalog(input_bytes, move |catalog| {
             let mut reservations = catalog
                 .room_reservations
@@ -2122,7 +2355,13 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         }).await.map_err(|error| error.to_string())
     }
 
-    async fn commit_compaction(&self, admission: JournalCompactionAdmission, base: WrittenObject, new_epoch: u64, new_sequence: u64) -> Result<(), String> {
+    async fn commit_compaction(
+        &self,
+        admission: JournalCompactionAdmission,
+        base: WrittenObject,
+        new_epoch: u64,
+        new_sequence: u64,
+    ) -> Result<(), String> {
         let input_bytes = journal_compaction_admission_bytes(&admission)
             .saturating_add(base.object_id.as_str().len())
             .saturating_add(base.storage_key.len())
@@ -2248,7 +2487,12 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         })).await.map_err(|error| error.to_string())
     }
 
-    async fn journal_compaction_due(&self, document_id: &str, epoch: u64, sequence: u64) -> Result<bool, String> {
+    async fn journal_compaction_due(
+        &self,
+        document_id: &str,
+        epoch: u64,
+        sequence: u64,
+    ) -> Result<bool, String> {
         let catalog = Arc::clone(&self.catalog);
         let document_id = document_id.to_owned();
         let epoch = i64::try_from(epoch).map_err(|_| "journal epoch exceeds SQL range")?;
@@ -2259,7 +2503,10 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
 }
 
 fn is_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn journal_plan_contains_object(
@@ -2273,16 +2520,21 @@ fn journal_plan_contains_object(
 ) -> bool {
     serde_json::from_str::<serde_json::Value>(plan_json)
         .ok()
-        .and_then(|plan| plan.get("objects").and_then(serde_json::Value::as_array).cloned())
+        .and_then(|plan| {
+            plan.get("objects")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
         .is_some_and(|objects| {
             objects.iter().any(|object| {
-                    object.get("id").and_then(serde_json::Value::as_str) == Some(object_id)
-                        && object.get("digest").and_then(serde_json::Value::as_str) == Some(digest)
-                        && object.get("bytes").and_then(serde_json::Value::as_u64) == Some(byte_length)
-                        && object.get("epoch").and_then(serde_json::Value::as_u64) == Some(epoch)
-                        && object.get("first").and_then(serde_json::Value::as_u64) == Some(first_sequence)
-                        && object.get("last").and_then(serde_json::Value::as_u64) == Some(last_sequence)
-                })
+                object.get("id").and_then(serde_json::Value::as_str) == Some(object_id)
+                    && object.get("digest").and_then(serde_json::Value::as_str) == Some(digest)
+                    && object.get("bytes").and_then(serde_json::Value::as_u64) == Some(byte_length)
+                    && object.get("epoch").and_then(serde_json::Value::as_u64) == Some(epoch)
+                    && object.get("first").and_then(serde_json::Value::as_u64)
+                        == Some(first_sequence)
+                    && object.get("last").and_then(serde_json::Value::as_u64) == Some(last_sequence)
+            })
         })
 }
 
@@ -2290,7 +2542,9 @@ fn journal_plan_contains_object(
 /// in a prepared journal operation.  The physical rows and leases remain the
 /// source of descriptors; the operation stores only this count and digest so
 /// large source closures cannot overflow the bounded plan column.
-fn journal_dependency_digest(dependencies: &[crate::storage::journal::JournalDependency]) -> String {
+fn journal_dependency_digest(
+    dependencies: &[crate::storage::journal::JournalDependency],
+) -> String {
     let mut entries = dependencies
         .iter()
         .map(|dependency| {
@@ -2408,7 +2662,8 @@ impl V2RecoveryCatalog for Catalog {
         byte_length: u64,
         digest: &str,
     ) -> Result<(), String> {
-        let measured = i64::try_from(byte_length).map_err(|_| "allocation length overflows SQL integer".to_string())?;
+        let measured = i64::try_from(byte_length)
+            .map_err(|_| "allocation length overflows SQL integer".to_string())?;
         sql(self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -2439,6 +2694,14 @@ impl V2RecoveryCatalog for Catalog {
             let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(crate::storage::catalog::CatalogError::from)?;
             let row: Option<(i64,String)> = transaction.query_row("SELECT reserved_bytes,kind FROM objects WHERE document_id=?1 AND id=?2 AND allocation_operation_id=?3 AND state='allocated'", params![allocation.document_id,allocation.object_id,allocation.operation_id], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(crate::storage::catalog::CatalogError::from)?;
             let Some((reserved,kind)) = row else { transaction.commit().map_err(crate::storage::catalog::CatalogError::from)?; return Ok(()); };
+            // Startup owns the deployment writer lock and has confirmed
+            // physical absence. Drop this allocation's write/stage leases
+            // before removing their referenced object row and refunding it.
+            transaction.execute(
+                "DELETE FROM object_leases WHERE document_id=?1 AND object_id=?2
+                 AND operation_id=?3 AND purpose IN ('write','stage')",
+                params![allocation.document_id, allocation.object_id, allocation.operation_id],
+            ).map_err(crate::storage::catalog::CatalogError::from)?;
             transaction.execute("DELETE FROM objects WHERE document_id=?1 AND id=?2 AND allocation_operation_id=?3 AND state='allocated'", params![allocation.document_id,allocation.object_id,allocation.operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             transaction.execute("UPDATE documents SET reserved_bytes=reserved_bytes-?1,agent_payload_bytes=CASE WHEN ?2='agent_payload' THEN agent_payload_bytes-?1 ELSE agent_payload_bytes END,agent_payload_count=CASE WHEN ?2='agent_payload' THEN agent_payload_count-1 ELSE agent_payload_count END WHERE id=?3", params![reserved,kind,allocation.document_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             let owner: String = transaction.query_row("SELECT owner_id FROM documents WHERE id=?1", [allocation.document_id.as_str()], |row| row.get(0)).map_err(crate::storage::catalog::CatalogError::from)?;
@@ -2449,8 +2712,14 @@ impl V2RecoveryCatalog for Catalog {
         }))
     }
 
-    async fn prepared_operations_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<PreparedOperation>, String> {
-        if limit == 0 || limit > 128 { return Err("invalid operation recovery page size".into()); }
+    async fn prepared_operations_page(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PreparedOperation>, String> {
+        if limit == 0 || limit > 128 {
+            return Err("invalid operation recovery page size".into());
+        }
         sql(self.with_connection(|connection| {
             let mut statement = connection.prepare("SELECT id,kind,document_id,writer_generation FROM operations WHERE state='prepared' AND (?1 IS NULL OR id>?1) ORDER BY id LIMIT ?2").map_err(crate::storage::catalog::CatalogError::from)?;
             let rows = statement.query_map(params![after,limit as i64], |row| { let kind:String=row.get(1)?; Ok((row.get::<_,String>(0)?,kind,row.get::<_,Option<String>>(2)?,row.get::<_,String>(3)?)) }).map_err(crate::storage::catalog::CatalogError::from)?;
@@ -2751,7 +3020,7 @@ impl V2ObjectWriter {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let (state, digest, catalog_reserved, catalog_kind, allocation_operation, operation_state, operation_generation, writer_generation, catalog_length): (String, String, i64, String, Option<String>, Option<String>, Option<String>, String, Option<i64>) = transaction
+            let (state, digest, catalog_reserved, catalog_kind, allocation_operation, operation_state, operation_generation, writer_generation, catalog_length): AllocationSettlementRow = transaction
                 .query_row(
                     "SELECT o.state,o.digest,o.reserved_bytes,o.kind,o.allocation_operation_id,op.state,op.writer_generation,s.writer_generation,o.byte_length FROM objects o LEFT JOIN operations op ON op.id=o.allocation_operation_id AND op.document_id=o.document_id CROSS JOIN server_state s WHERE o.document_id=?1 AND o.id=?2",
                     params![document_for_settle, written_for_settle.object_id.as_str()],
@@ -2817,8 +3086,8 @@ mod aborted_inflight_tests {
     use super::*;
     use crate::storage::blob::{BlobInfo, BlobVersion, FsStore};
     use crate::storage::maintenance_v2::run_gc_pass;
-    use std::time::Duration;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
     use tokio::sync::{Notify, Semaphore};
 
     #[derive(Clone, Copy)]
@@ -2843,11 +3112,11 @@ mod aborted_inflight_tests {
         async fn get(&self, key: &str) -> crate::storage::blob::BlobResult<Vec<u8>> {
             if self.put_entered.load(Ordering::Acquire)
                 && self
-                .probe_failures
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                    count.checked_sub(1)
-                })
-                .is_ok()
+                    .probe_failures
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        count.checked_sub(1)
+                    })
+                    .is_ok()
             {
                 return Err(crate::storage::blob::BlobError::Other(
                     "simulated uncertain probe".into(),
@@ -2856,7 +3125,12 @@ mod aborted_inflight_tests {
             self.inner.get(key).await
         }
 
-        async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> crate::storage::blob::BlobResult<()> {
+        async fn put(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> crate::storage::blob::BlobResult<()> {
             self.put_entered.store(true, Ordering::Release);
             self.started.notify_one();
             self.release.notified().await;
@@ -2884,11 +3158,19 @@ mod aborted_inflight_tests {
             self.inner.list(prefix).await
         }
 
-        async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> crate::storage::blob::BlobResult<BlobVersion> {
+        async fn swap(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            expect: &str,
+        ) -> crate::storage::blob::BlobResult<BlobVersion> {
             self.inner.swap(key, body, expect).await
         }
 
-        async fn get_versioned(&self, key: &str) -> crate::storage::blob::BlobResult<(Vec<u8>, BlobVersion)> {
+        async fn get_versioned(
+            &self,
+            key: &str,
+        ) -> crate::storage::blob::BlobResult<(Vec<u8>, BlobVersion)> {
             self.inner.get_versioned(key).await
         }
 
@@ -3020,12 +3302,18 @@ mod aborted_inflight_tests {
             .expect("failed PUT did not finish");
 
         let adapter = V2GcCatalogAdapter::new(Arc::clone(&catalog));
-        let report = run_gc_pass(&adapter, blobs.as_ref(), now_millis())
+        // Observe settlement before deletion: aborted writes become eligible
+        // at their settlement timestamp, which may share this millisecond.
+        let settlement_pass_now = now_millis().saturating_sub(60_000);
+        let report = run_gc_pass(&adapter, blobs.as_ref(), settlement_pass_now)
             .await
             .expect("online failed PUT recovery");
         if expect_available {
-            assert_eq!(report.inflight_settled, 0, "ambiguous probe remains charged");
-            let retry_report = run_gc_pass(&adapter, blobs.as_ref(), now_millis())
+            assert_eq!(
+                report.inflight_settled, 0,
+                "ambiguous probe remains charged"
+            );
+            let retry_report = run_gc_pass(&adapter, blobs.as_ref(), settlement_pass_now)
                 .await
                 .expect("online failed PUT retry");
             assert_eq!(retry_report.inflight_settled, 1);
@@ -3046,11 +3334,32 @@ mod aborted_inflight_tests {
             })
             .expect("failed PUT state");
         if expect_available {
-            assert_eq!(state, Some(("available".into(), body.len() as i64, body.len() as i64, 0)));
+            assert_eq!(
+                state,
+                Some(("available".into(), body.len() as i64, body.len() as i64, 0))
+            );
             let key = crate::storage::blob::v2_object_key(document_id, &object_id).expect("key");
             assert_eq!(blobs.get(&key).await.expect("uncertain PUT body"), body);
+            let gc_after: i64 = catalog
+                .with_connection(|connection| {
+                    connection
+                        .query_row(
+                            "SELECT gc_after FROM objects WHERE document_id=?1 AND id=?2",
+                            params![document_id, object_id.as_str()],
+                            |row| row.get(0),
+                        )
+                        .map_err(crate::storage::catalog::CatalogError::from)
+                })
+                .expect("settled body deletion deadline");
+            let deletion_report = run_gc_pass(&adapter, blobs.as_ref(), gc_after.saturating_add(1))
+                .await
+                .expect("collect settled uncertain PUT");
+            assert_eq!(deletion_report.objects_deleted, 1);
         } else {
-            assert!(state.is_none(), "confirmed absent PUT must release allocation");
+            assert!(
+                state.is_none(),
+                "confirmed absent PUT must release allocation"
+            );
         }
     }
 
@@ -3135,7 +3444,7 @@ mod aborted_inflight_tests {
         let writer = V2ObjectWriter::new(Arc::clone(&catalog), Arc::clone(&blobs));
         let writer_task = tokio::spawn(async move {
             writer
-                .write_allocated(&document_id, object_id, body, "application/octet-stream")
+                .write_allocated(document_id, object_id, body, "application/octet-stream")
                 .await
         });
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -3270,12 +3579,11 @@ mod aborted_inflight_tests {
         let document_id = "aborted-document";
         let account_id = "aborted-account";
         let operation_id = "aborted-operation";
-        let object_id = ObjectId::parse("0123456789abcdef0123456789abcdef")
-            .expect("object id");
+        let object_id = ObjectId::parse("0123456789abcdef0123456789abcdef").expect("object id");
         let body = b"cancelled physical payload".to_vec();
         let digest = hex::encode(Sha256::digest(&body));
-        let storage_key = crate::storage::blob::v2_object_key(document_id, &object_id)
-            .expect("object key");
+        let storage_key =
+            crate::storage::blob::v2_object_key(document_id, &object_id).expect("object key");
         catalog
             .with_connection(|connection| {
                 connection.execute(
@@ -3326,13 +3634,14 @@ mod aborted_inflight_tests {
         let delayed_object = object_id.clone();
         let delayed_document = document_id.to_owned();
         let mut put_task = tokio::spawn(async move {
-            writer.write_allocated(
-                &delayed_document,
-                delayed_object,
-                delayed_body,
-                "application/octet-stream",
-            )
-            .await
+            writer
+                .write_allocated(
+                    &delayed_document,
+                    delayed_object,
+                    delayed_body,
+                    "application/octet-stream",
+                )
+                .await
         });
         tokio::time::timeout(Duration::from_secs(5), async {
             tokio::select! {
@@ -3374,7 +3683,10 @@ mod aborted_inflight_tests {
             .await
             .expect("aborted write is reclaimed");
         assert!(report.inflight_settled <= 1);
-        assert_eq!(report.objects_deleted, 0, "newly settled aborted bytes observe their grace period");
+        assert_eq!(
+            report.objects_deleted, 0,
+            "newly settled aborted bytes observe their grace period"
+        );
         assert!(!inflight_active(namespace, document_id, object_id.as_str()));
         let (state, gc_after): (String, Option<i64>) = catalog
             .with_connection(|connection| {
@@ -3389,13 +3701,9 @@ mod aborted_inflight_tests {
             .expect("settled aborted object");
         assert_eq!(state, "available");
         let gc_after = gc_after.expect("settled aborted object has a grace deadline");
-        let deletion_report = run_gc_pass(
-            &adapter,
-            blobs.as_ref(),
-            gc_after.saturating_add(1),
-        )
-        .await
-        .expect("settled aborted write is eventually deleted");
+        let deletion_report = run_gc_pass(&adapter, blobs.as_ref(), gc_after.saturating_add(1))
+            .await
+            .expect("settled aborted write is eventually deleted");
         assert_eq!(deletion_report.objects_deleted, 1);
         assert!(!inflight_active(namespace, document_id, object_id.as_str()));
         let counters: (i64, i64, i64) = catalog
@@ -3424,7 +3732,11 @@ mod stage_heartbeat_tests {
         let current_generation: String = catalog
             .with_connection(|connection| {
                 connection
-                    .query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0))
+                    .query_row(
+                        "SELECT writer_generation FROM server_state WHERE id=1",
+                        [],
+                        |row| row.get(0),
+                    )
                     .map_err(crate::storage::catalog::CatalogError::from)
             })
             .expect("writer generation");
@@ -3472,7 +3784,6 @@ mod stage_heartbeat_tests {
                 }
 
                 let document_id = "heartbeat-document-0";
-                let account_id = "heartbeat-account-0";
                 let object_id = format!("{:032x}", 90_000_u32);
                 let operation_id = format!("{:032x}", 100_000_u32);
                 connection.execute(
@@ -3503,11 +3814,10 @@ mod stage_heartbeat_tests {
                     params![document_id, object_id, operation_id, operation_id, now - 100_000, now + 70_000],
                 )?;
 
-                // Several maximum-size publication bundles exceed one
-                // bounded heartbeat pass. The adapter must retain its
-                // keyset cursor so the next scheduler tick continues here
-                // rather than restarting at the first lease.
-                let many = STAGE_HEARTBEAT_PAGE_SIZE * 65 + 1;
+                // Together with the 600 rows above, this exceeds the
+                // 512-row pass used below. Keep the fixture within the
+                // per-document prepared-operation limit.
+                let many = 100;
                 let account_id = "heartbeat-account-many";
                 let document_id = "heartbeat-document-many";
                 connection.execute(
@@ -3539,16 +3849,13 @@ mod stage_heartbeat_tests {
             .expect("heartbeat fixture");
 
         let adapter = V2GcCatalogAdapter::new(Arc::clone(&catalog));
-        let renewed_first = V2GcCatalog::heartbeat_stage_leases(&adapter, now, STAGE_HEARTBEAT_PAGE_SIZE)
+        let renewed_first = V2GcCatalog::heartbeat_stage_leases(&adapter, now, 8)
             .await
             .expect("first bounded heartbeat pass renews");
-        let renewed_second = V2GcCatalog::heartbeat_stage_leases(&adapter, now, STAGE_HEARTBEAT_PAGE_SIZE)
+        let renewed_second = V2GcCatalog::heartbeat_stage_leases(&adapter, now, 8)
             .await
             .expect("second bounded heartbeat pass continues cursor");
-        assert_eq!(
-            renewed_first + renewed_second,
-            600 + STAGE_HEARTBEAT_PAGE_SIZE * 65 + 1
-        );
+        assert_eq!(renewed_first + renewed_second, 700);
 
         let values: (i64, i64, i64) = catalog
             .with_connection(|connection| {
@@ -3572,7 +3879,11 @@ mod stage_heartbeat_tests {
             .expect("heartbeat results");
         assert_eq!(values.0, now + 100_000, "work deadline clamps the renewal");
         assert_eq!(values.1, now - 1, "expired leases are never revived");
-        assert_eq!(values.2, now + 70_000, "old writer generations are never revived");
+        assert_eq!(
+            values.2,
+            now + 70_000,
+            "old writer generations are never revived"
+        );
     }
 }
 
@@ -3580,7 +3891,10 @@ mod stage_heartbeat_tests {
 mod journal_commit_race_tests {
     use super::*;
     use crate::storage::blob::{write_v2_object_with_id, FsStore};
-    use crate::storage::journal::{append_segments, DocumentJournal, DocumentSegment, JournalAppendRequest, JournalDependency, JournalDependencyHint, JournalRecord, Segment, V2JournalRuntime};
+    use crate::storage::journal::{
+        append_segments, DocumentJournal, DocumentSegment, JournalAppendRequest, JournalDependency,
+        JournalDependencyHint, JournalRecord, Segment, V2JournalRuntime,
+    };
 
     #[tokio::test]
     async fn journal_commit_accepts_verified_pre_settlement_and_cas_roots() {
@@ -3634,12 +3948,19 @@ mod journal_commit_race_tests {
             dependencies: Vec::new(),
             dependency_hints: Vec::new(),
         };
-        let admission = journal.prepare_append(request).await.expect("append admission");
+        let admission = journal
+            .prepare_append(request)
+            .await
+            .expect("append admission");
         let allocation = admission.allocations[0].clone();
         let root = tempfile::tempdir().expect("object root");
         let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(root.path(), false));
         let namespace = journal.physical_namespace();
-        assert!(register_physical_guard(namespace, document_id, allocation.object_id.as_str()));
+        assert!(register_physical_guard(
+            namespace,
+            document_id,
+            allocation.object_id.as_str()
+        ));
         let written = write_v2_object_with_id(
             blobs.as_ref(),
             document_id,
@@ -3652,7 +3973,12 @@ mod journal_commit_race_tests {
         complete_physical_guard(namespace, document_id, &written);
 
         let gc = V2GcCatalogAdapter::new(Arc::clone(&catalog));
-        assert_eq!(gc.settle_completed_inflight(1).await.expect("pre-settlement"), 1);
+        assert_eq!(
+            gc.settle_completed_inflight(1)
+                .await
+                .expect("pre-settlement"),
+            1
+        );
         journal
             .commit_append(
                 admission,
@@ -3852,12 +4178,19 @@ mod journal_commit_race_tests {
                        (SELECT count(*) FROM operations WHERE kind='agent_stage'),
                        (SELECT live_root FROM objects WHERE document_id=?1 AND id=?2),
                        (SELECT count(*) FROM operations WHERE id=?3)",
-                    params![document_id, format!("{:032x}", 257_u32), format!("{:032x}", 256_u32)],
+                    params![
+                        document_id,
+                        format!("{:032x}", 257_u32),
+                        format!("{:032x}", 256_u32)
+                    ],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )?)
             })
             .expect("expiry result");
-        assert_eq!(rows.0, 1, "the blocked first receipt remains for a later pass");
+        assert_eq!(
+            rows.0, 1,
+            "the blocked first receipt remains for a later pass"
+        );
         assert_eq!(rows.1, 0, "the last selected receipt is unrooted");
         assert_eq!(rows.2, 0, "the last selected receipt is the one deleted");
     }
@@ -3940,9 +4273,14 @@ mod journal_commit_race_tests {
             dependencies: assets.clone(),
             dependency_hints: Vec::new(),
         };
-        append_segments(journal.as_ref(), Arc::clone(&blobs), first_request, &[first])
-            .await
-            .expect("512 asset dependencies acknowledged");
+        append_segments(
+            journal.as_ref(),
+            Arc::clone(&blobs),
+            first_request,
+            &[first],
+        )
+        .await
+        .expect("512 asset dependencies acknowledged");
 
         let second = Segment::new(vec![JournalRecord::new(
             document_id,
@@ -3965,9 +4303,14 @@ mod journal_commit_race_tests {
             dependencies: sources,
             dependency_hints: Vec::new(),
         };
-        append_segments(journal.as_ref(), Arc::clone(&blobs), second_request, &[second])
-            .await
-            .expect("4096 source dependencies acknowledged");
+        append_segments(
+            journal.as_ref(),
+            Arc::clone(&blobs),
+            second_request,
+            &[second],
+        )
+        .await
+        .expect("4096 source dependencies acknowledged");
         let source_roots_before_compaction: i64 = catalog
             .with_connection(|connection| {
                 connection

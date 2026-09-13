@@ -810,6 +810,7 @@ impl PublicationStore {
     /// Retire markers are catalogue-accounted maintenance metadata. Their
     /// number is bounded by immutable objects, and `-1` bypasses admission
     /// only so a full user quota cannot prevent the GC that will release it.
+    #[cfg(test)]
     async fn accounted_maintenance_put(
         &self,
         storage_id: &str,
@@ -1013,6 +1014,7 @@ impl PublicationStore {
     fn staging_manifest_key(storage_id: &str, request_id: &str) -> String {
         format!("publications/{storage_id}/staging/{request_id}/.manifest")
     }
+    #[cfg(test)]
     fn retire_key(storage_id: &str, sha256: &str) -> String {
         format!("publications/{storage_id}/retire/{sha256}")
     }
@@ -1021,6 +1023,7 @@ impl PublicationStore {
     /// the current manifest or an unexpired prepared request. The marker is
     /// durable, so a crash between object deletion and catalogue cleanup is
     /// harmless and retries are idempotent.
+    #[cfg(test)]
     pub async fn garbage_collect(
         &self,
         storage_id: &str,
@@ -1298,44 +1301,6 @@ impl PublicationStore {
         })
     }
 
-    /// Return the durable descriptor for a request so retries preserve the
-    /// server-assigned publication timestamp and attribution.
-    pub async fn prepared(
-        &self,
-        storage_id: &str,
-        request_id: &str,
-    ) -> Result<Option<PublicationManifest>, PublicationError> {
-        validate_request_id(request_id)?;
-        match self
-            .blobs
-            .get(&Self::staging_manifest_key(storage_id, request_id))
-            .await
-        {
-            Ok(bytes) => {
-                let created = self
-                    .blobs
-                    .get(&Self::staging_meta_key(storage_id, request_id))
-                    .await
-                    .ok()
-                    .and_then(|b| parse_staging_meta(&b).map(|meta| meta.created_at))
-                    .unwrap_or(0);
-                if created == 0
-                    || crate::util::now_unix().saturating_sub(created) >= STAGING_TTL_SECS
-                {
-                    return Ok(None);
-                }
-                serde_json::from_slice(&bytes)
-                    .map(Some)
-                    .map_err(|e| PublicationError::Storage(e.to_string()))
-            }
-            Err(BlobError::NotFound) => match self.current(storage_id).await? {
-                Some(current) if current.publication_id == request_id => Ok(Some(current)),
-                _ => Ok(None),
-            },
-            Err(e) => Err(e.into()),
-        }
-    }
-
     /// Return objects absent from this document's authorized namespace.  The
     /// namespace is part of the key so this cannot become a cross-project hash
     /// existence oracle.
@@ -1501,6 +1466,7 @@ impl PublicationStore {
     /// Remove request scoped staging trees older than the bounded lifetime.
     /// This is safe to call periodically and after startup; an active request
     /// refreshes its marker whenever it uploads an object.
+    #[cfg(test)]
     pub async fn cleanup_staging(
         &self,
         storage_id: &str,
@@ -1545,45 +1511,6 @@ impl PublicationStore {
                     removed += 1;
                 }
             }
-        }
-        Ok(removed)
-    }
-
-    pub async fn cleanup_all_staging(&self, now: i64) -> Result<usize, PublicationError> {
-        if let Some(store) = &self.store {
-            let catalog = store
-                .catalog
-                .as_ref()
-                .ok_or_else(|| PublicationError::Storage("durable catalog required".into()))?
-                .clone();
-            let worker = crate::storage::maintenance::DeletionWorker::new(
-                catalog,
-                store.blobs.clone(),
-                crate::storage::maintenance::DeletionLimits::default(),
-            )
-            .map_err(|error| PublicationError::Storage(error.to_string()))?;
-            let report = worker
-                .run_v2_once(now.saturating_mul(1_000))
-                .await
-                .map_err(|error| PublicationError::Storage(error.to_string()))?;
-            return Ok(report.objects_deleted);
-        }
-        let entries = self.blobs.list("publications/").await?;
-        let mut storage_ids = std::collections::BTreeSet::new();
-        for entry in entries {
-            let Some(rest) = entry.key.strip_prefix("publications/") else {
-                continue;
-            };
-            if let Some(storage_id) = rest.split('/').next() {
-                if !storage_id.is_empty() {
-                    storage_ids.insert(storage_id.to_string());
-                }
-            }
-        }
-        let mut removed = 0;
-        for storage_id in storage_ids {
-            removed += self.cleanup_staging(&storage_id, now).await?;
-            removed += self.garbage_collect(&storage_id, now).await?;
         }
         Ok(removed)
     }

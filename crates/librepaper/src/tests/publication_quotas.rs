@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::config::{Configuration, StorageLimit};
-use crate::server::publication::{PublicationStore, STAGING_TTL_SECS};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -218,6 +217,8 @@ async fn publication_staging_and_promoted_objects_are_charged_to_catalogue_quota
         html,
         &[("assets/owner", "application/octet-stream", &over_owner)],
     );
+    let owner_catalog = owner_server.instance.store.catalog.as_ref().unwrap();
+    let before_owner = owner_catalog.totals().unwrap().0;
     assert_eq!(
         prepare(
             &owner_server.url,
@@ -226,27 +227,14 @@ async fn publication_staging_and_promoted_objects_are_charged_to_catalogue_quota
             &owner_slug,
             "owner-quota",
             &owner_bundle,
-            None
-        )
-        .await
-        .0,
-        200
-    );
-    assert_eq!(
-        stage(
-            &owner_server.url,
-            &owner,
             None,
-            &owner_slug,
-            "owner-quota",
-            &over_owner,
-            "application/octet-stream"
         )
         .await
         .0,
         507,
-        "owner quota accepted an over-limit staging object"
+        "owner quota accepted an over-limit publication reservation"
     );
+    assert_eq!(owner_catalog.totals().unwrap().0, before_owner);
 
     let server = new_test_server_config(limits(10 << 20, 10 << 20)).await;
     let owner = session_as(TEST_PUBLISHER);
@@ -329,6 +317,7 @@ async fn publication_staging_and_promoted_objects_are_charged_to_catalogue_quota
         html,
         &[("assets/other", "application/octet-stream", &other_asset)],
     );
+    let before_refusal = catalogue.totals().unwrap().0;
     assert_eq!(
         prepare(
             &server.url,
@@ -341,37 +330,10 @@ async fn publication_staging_and_promoted_objects_are_charged_to_catalogue_quota
         )
         .await
         .0,
-        200
-    );
-    assert_eq!(
-        stage(
-            &server.url,
-            &other,
-            None,
-            &other_slug,
-            "quota-second",
-            html,
-            "text/html"
-        )
-        .await
-        .0,
-        201
-    );
-    assert_eq!(
-        stage(
-            &server.url,
-            &other,
-            None,
-            &other_slug,
-            "quota-second",
-            &other_asset,
-            "application/octet-stream"
-        )
-        .await
-        .0,
         507,
-        "deployment quota accepted an over-limit staging object"
+        "deployment quota accepted an over-limit publication reservation"
     );
+    assert_eq!(catalogue.totals().unwrap().0, before_refusal);
 }
 
 #[tokio::test]
@@ -402,6 +364,22 @@ async fn repeated_publication_key_does_not_double_charge_and_cleanup_releases_st
             "same-key",
             &asset,
             "application/octet-stream"
+        )
+        .await
+        .0,
+        201
+    );
+    // Prepare reserves the whole bundle in v2. Materialize both allocations
+    // so ordinary GC can reclaim the staged bytes after their leases expire.
+    assert_eq!(
+        stage(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "same-key",
+            html,
+            "text/html"
         )
         .await
         .0,
@@ -595,12 +573,24 @@ async fn editor_link_revocation_refuses_stage_and_activation() {
         .0,
         403 | 404
     ));
-    let publication_id: Option<String> = server.instance.store.catalog.as_ref().unwrap()
+    let publication_id: Option<String> = server
+        .instance
+        .store
+        .catalog
+        .as_ref()
+        .unwrap()
         .with_connection(|connection| {
-            Ok(connection.query_row("SELECT publication_id FROM documents WHERE slug=?1", [&slug], |row| row.get(0))?)
-        }).unwrap();
-    assert!(publication_id.is_none(), "revoked editor activation changed the live publication head");
-
+            Ok(connection.query_row(
+                "SELECT publication_id FROM documents WHERE slug=?1",
+                [&slug],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert!(
+        publication_id.is_none(),
+        "revoked editor activation changed the live publication head"
+    );
 }
 
 #[tokio::test]
@@ -661,7 +651,11 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
     let owner = session_as(TEST_PUBLISHER);
     let slug = source_document(&server.url, &owner, "accounting recovery").await;
     let original_catalog = server.instance.store.catalog.as_ref().unwrap().clone();
-    let storage_id = original_catalog.document(&slug).unwrap().unwrap().storage_id;
+    let storage_id = original_catalog
+        .document(&slug)
+        .unwrap()
+        .unwrap()
+        .storage_id;
     let manifest = bundle(b"recovered object", &[]);
     assert_eq!(
         prepare(
@@ -680,14 +674,15 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
     let request_id = publication_request_key("interrupted-put");
     let (key, object_id): (String, String) = original_catalog
         .with_connection(|connection| {
-            connection.query_row(
-                "SELECT o.storage_key,o.id FROM objects o
+            connection
+                .query_row(
+                    "SELECT o.storage_key,o.id FROM objects o
                  JOIN operations p ON p.id=o.allocation_operation_id
                  WHERE o.document_id=?1 AND p.request_key=?2 AND o.kind='publication_html'",
-                (&storage_id, &request_id),
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(crate::storage::catalog::CatalogError::from)
+                    (&storage_id, &request_id),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
     server
@@ -718,15 +713,14 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
     // writer lock and request task active while recovery mutates the same
     // catalogue.
     let server_dir = server.stop().await;
-    let _writer_lock = crate::server::serve::acquire_writer_lock(
-        &server_dir.path().join("state/writer.lock"),
-    )
-    .expect("recovery owns the deployment writer lock");
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
-        Arc::new(crate::storage::blob::FsStore::new(server_dir.path().join("objects"), true));
+    let _writer_lock =
+        crate::server::serve::acquire_writer_lock(&server_dir.path().join("state/writer.lock"))
+            .expect("recovery owns the deployment writer lock");
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
+        crate::storage::blob::FsStore::new(server_dir.path().join("objects"), true),
+    );
     let catalog = Arc::new(
-        crate::storage::catalog::Catalog::open(server_dir.path().join("catalog.sqlite"))
-            .unwrap(),
+        crate::storage::catalog::Catalog::open(server_dir.path().join("catalog.sqlite")).unwrap(),
     );
     catalog.set_link_sealing_key(TEST_KEY).unwrap();
     let worker = crate::storage::maintenance::DeletionWorker::new(
@@ -757,7 +751,10 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
                     "SELECT COUNT(*) FROM objects o
                      JOIN operations p ON p.id=o.allocation_operation_id
                      WHERE o.document_id=?1 AND p.request_key=?2 AND o.state='allocated'",
-                    (&storage_id, publication_request_key("interrupted-before-put")),
+                    (
+                        &storage_id,
+                        publication_request_key("interrupted-before-put"),
+                    ),
                     |row| row.get(0),
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)
@@ -766,10 +763,7 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
     assert_eq!(remaining, 0);
 
     // Physical absence is confirmed before releasing the settled object row.
-    blobs
-        .delete(std::slice::from_ref(&key))
-        .await
-        .unwrap();
+    blobs.delete(std::slice::from_ref(&key)).await.unwrap();
     let document_id = crate::storage::catalog::DocumentId::new(storage_id).unwrap();
     let object_id = crate::storage::catalog::ObjectId::new(object_id).unwrap();
     let now = crate::storage::catalog::UnixMillis::now();
@@ -783,6 +777,16 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
                 .map(|_| ())
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
+        .unwrap();
+    assert!(
+        !catalog
+            .claim_v2_object_for_deletion(&document_id, &object_id, now, now)
+            .unwrap(),
+        "the recovered object's stage lease must still fence deletion"
+    );
+    let now = crate::storage::catalog::UnixMillis::new(now.0 + 900_001).unwrap();
+    crate::storage::maintenance_v2::V2GcCatalog::expire_leases(catalog.as_ref(), now.0, 256)
+        .await
         .unwrap();
     assert!(catalog
         .claim_v2_object_for_deletion(&document_id, &object_id, now, now)
@@ -799,29 +803,64 @@ async fn gc_retirement_marker_remains_catalogue_accounted_under_quota_pressure()
     let slug = source_document(&server.url, &owner, "retirement accounting").await;
     let catalog = server.instance.store.catalog.as_ref().unwrap().clone();
     let storage_id = catalog.document(&slug).unwrap().unwrap().storage_id;
-    let first = bundle(b"<p>first</p>", &[("old.bin", "application/octet-stream", b"obsolete")]);
+    let first = bundle(
+        b"<p>first</p>",
+        &[("old.bin", "application/octet-stream", b"obsolete")],
+    );
     assert_eq!(
-        prepare(&server.url, &owner, None, &slug, "retirement-first", &first, None)
-            .await
-            .0,
+        prepare(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "retirement-first",
+            &first,
+            None
+        )
+        .await
+        .0,
         200
     );
     assert_eq!(
-        stage(&server.url, &owner, None, &slug, "retirement-first", b"<p>first</p>", "text/html")
-            .await
-            .0,
+        stage(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "retirement-first",
+            b"<p>first</p>",
+            "text/html"
+        )
+        .await
+        .0,
         201
     );
     assert_eq!(
-        stage(&server.url, &owner, None, &slug, "retirement-first", b"obsolete", "application/octet-stream")
-            .await
-            .0,
+        stage(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "retirement-first",
+            b"obsolete",
+            "application/octet-stream"
+        )
+        .await
+        .0,
         201
     );
     assert_eq!(
-        activate(&server.url, &owner, None, &slug, "retirement-first", &first, None)
-            .await
-            .0,
+        activate(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "retirement-first",
+            &first,
+            None
+        )
+        .await
+        .0,
         200
     );
     let current: Value = client()
@@ -838,7 +877,10 @@ async fn gc_retirement_marker_remains_catalogue_accounted_under_quota_pressure()
         .as_str()
         .expect("first publication identity")
         .to_owned();
-    let second = bundle(b"<p>second</p>", &[("new.bin", "application/octet-stream", b"current")]);
+    let second = bundle(
+        b"<p>second</p>",
+        &[("new.bin", "application/octet-stream", b"current")],
+    );
     assert_eq!(
         prepare(
             &server.url,
@@ -854,15 +896,31 @@ async fn gc_retirement_marker_remains_catalogue_accounted_under_quota_pressure()
         200
     );
     assert_eq!(
-        stage(&server.url, &owner, None, &slug, "retirement-second", b"<p>second</p>", "text/html")
-            .await
-            .0,
+        stage(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "retirement-second",
+            b"<p>second</p>",
+            "text/html"
+        )
+        .await
+        .0,
         201
     );
     assert_eq!(
-        stage(&server.url, &owner, None, &slug, "retirement-second", b"current", "application/octet-stream")
-            .await
-            .0,
+        stage(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "retirement-second",
+            b"current",
+            "application/octet-stream"
+        )
+        .await
+        .0,
         201
     );
     assert_eq!(
@@ -900,12 +958,15 @@ async fn gc_retirement_marker_remains_catalogue_accounted_under_quota_pressure()
     )
     .unwrap();
     let now = crate::util::now_millis();
-    assert_eq!(
-        worker.run_v2_once(now).await.unwrap().objects_deleted,
-        0
+    assert_eq!(worker.run_v2_once(now).await.unwrap().objects_deleted, 0);
+    let report = worker
+        .run_v2_once(now.saturating_add(900_001))
+        .await
+        .unwrap();
+    assert!(
+        report.objects_deleted >= 1,
+        "retired object was not physically collected"
     );
-    let report = worker.run_v2_once(now.saturating_add(900_001)).await.unwrap();
-    assert!(report.objects_deleted >= 1, "retired object was not physically collected");
     let remaining: i64 = catalog
         .with_connection(|connection| {
             connection
@@ -917,7 +978,10 @@ async fn gc_retirement_marker_remains_catalogue_accounted_under_quota_pressure()
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
-    assert_eq!(remaining, 0, "retired publication object remained accounted");
+    assert_eq!(
+        remaining, 0,
+        "retired publication object remained accounted"
+    );
 }
 
 #[tokio::test]
@@ -999,14 +1063,7 @@ async fn recovery_aborts_a_current_swap_that_never_reached_blob_cas() {
     let server = new_test_server().await;
     let owner = session_as(TEST_PUBLISHER);
     let slug = source_document(&server.url, &owner, "current swap recovery").await;
-    let first = publish_display(
-        &server.url,
-        &owner,
-        &slug,
-        b"<p>current</p>",
-        &[],
-    )
-    .await;
+    let first = publish_display(&server.url, &owner, &slug, b"<p>current</p>", &[]).await;
     let current_id = first["publication"]["id"]
         .as_str()
         .expect("current publication identity")
@@ -1027,15 +1084,14 @@ async fn recovery_aborts_a_current_swap_that_never_reached_blob_cas() {
         200
     );
     let server_dir = server.stop().await;
-    let _writer_lock = crate::server::serve::acquire_writer_lock(
-        &server_dir.path().join("state/writer.lock"),
-    )
-    .expect("recovery owns the deployment writer lock");
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
-        Arc::new(crate::storage::blob::FsStore::new(server_dir.path().join("objects"), true));
+    let _writer_lock =
+        crate::server::serve::acquire_writer_lock(&server_dir.path().join("state/writer.lock"))
+            .expect("recovery owns the deployment writer lock");
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
+        crate::storage::blob::FsStore::new(server_dir.path().join("objects"), true),
+    );
     let catalog = Arc::new(
-        crate::storage::catalog::Catalog::open(server_dir.path().join("catalog.sqlite"))
-            .unwrap(),
+        crate::storage::catalog::Catalog::open(server_dir.path().join("catalog.sqlite")).unwrap(),
     );
     catalog.set_link_sealing_key(TEST_KEY).unwrap();
     let worker = crate::storage::maintenance::DeletionWorker::new(
@@ -1065,7 +1121,8 @@ async fn recovery_aborts_a_current_swap_that_never_reached_blob_cas() {
     // starting the replacement HTTP process, which must acquire that same
     // lock for serving mutations.
     drop(_writer_lock);
-    let (restarted_url, _restarted) = server_over(server_dir.path(), Configuration::default()).await;
+    let (restarted_url, _restarted) =
+        server_over(server_dir.path(), Configuration::default()).await;
     let current: Value = client()
         .get(format!("{restarted_url}/api/documents/{slug}/publication"))
         .header("cookie", &owner)
@@ -1109,15 +1166,14 @@ async fn recovery_sweeps_publication_allocations_after_the_first_page() {
         200
     );
     let server_dir = server.stop().await;
-    let _writer_lock = crate::server::serve::acquire_writer_lock(
-        &server_dir.path().join("state/writer.lock"),
-    )
-    .expect("recovery owns the deployment writer lock");
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
-        Arc::new(crate::storage::blob::FsStore::new(server_dir.path().join("objects"), true));
+    let _writer_lock =
+        crate::server::serve::acquire_writer_lock(&server_dir.path().join("state/writer.lock"))
+            .expect("recovery owns the deployment writer lock");
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
+        crate::storage::blob::FsStore::new(server_dir.path().join("objects"), true),
+    );
     let catalog = Arc::new(
-        crate::storage::catalog::Catalog::open(server_dir.path().join("catalog.sqlite"))
-            .unwrap(),
+        crate::storage::catalog::Catalog::open(server_dir.path().join("catalog.sqlite")).unwrap(),
     );
     catalog.set_link_sealing_key(TEST_KEY).unwrap();
     let worker = crate::storage::maintenance::DeletionWorker::new(
@@ -1142,5 +1198,8 @@ async fn recovery_sweeps_publication_allocations_after_the_first_page() {
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
-    assert_eq!(remaining, 0, "allocation recovery stopped at its first page");
+    assert_eq!(
+        remaining, 0,
+        "allocation recovery stopped at its first page"
+    );
 }

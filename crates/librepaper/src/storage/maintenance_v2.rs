@@ -15,7 +15,6 @@ pub const GC_PAGE_SIZE: usize = 256;
 pub const GC_DELETE_BATCH: usize = 64;
 pub const OBJECT_SUPERSESSION_GRACE_MS: i64 = 15 * 60 * 1000;
 pub const READ_LEASE_MS: i64 = 120 * 1000;
-pub const READ_LEASE_HEARTBEAT_MS: i64 = 30 * 1000;
 /// A stage lease is renewed during the final 90 seconds of its 120 second
 /// lease.  The strict lower bound in the catalogue query prevents a worker
 /// from touching already expired leases.
@@ -102,9 +101,15 @@ pub enum GcError {
 impl std::fmt::Display for GcError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid(message) => write!(formatter, "invalid garbage-collection request: {message}"),
-            Self::Catalog(message) => write!(formatter, "garbage-collection catalog error: {message}"),
-            Self::Storage(message) => write!(formatter, "garbage-collection storage error: {message}"),
+            Self::Invalid(message) => {
+                write!(formatter, "invalid garbage-collection request: {message}")
+            }
+            Self::Catalog(message) => {
+                write!(formatter, "garbage-collection catalog error: {message}")
+            }
+            Self::Storage(message) => {
+                write!(formatter, "garbage-collection storage error: {message}")
+            }
         }
     }
 }
@@ -205,7 +210,9 @@ pub async fn recover_v2_startup(
             break;
         }
         if page.len() > 256 {
-            return Err(GcError::Invalid("allocation recovery page exceeded bound".into()));
+            return Err(GcError::Invalid(
+                "allocation recovery page exceeded bound".into(),
+            ));
         }
         let previous = after.clone();
         for allocation in &page {
@@ -238,7 +245,9 @@ pub async fn recover_v2_startup(
             after = Some(allocation.storage_key.clone());
         }
         if after == previous {
-            return Err(GcError::Invalid("allocation recovery cursor did not advance".into()));
+            return Err(GcError::Invalid(
+                "allocation recovery cursor did not advance".into(),
+            ));
         }
     }
     let mut operation_after = None;
@@ -251,7 +260,9 @@ pub async fn recover_v2_startup(
             break;
         }
         if page.len() > 128 {
-            return Err(GcError::Invalid("operation recovery page exceeded bound".into()));
+            return Err(GcError::Invalid(
+                "operation recovery page exceeded bound".into(),
+            ));
         }
         let previous = operation_after.clone();
         for operation in &page {
@@ -275,7 +286,10 @@ pub async fn recover_v2_startup(
                     .await
                     .map_err(GcError::Catalog)?;
                 report.operations_resumed += 1;
-            } else if matches!(operation.kind, PreparedKind::DisplayPublish | PreparedKind::AgentStage) {
+            } else if matches!(
+                operation.kind,
+                PreparedKind::DisplayPublish | PreparedKind::AgentStage
+            ) {
                 catalog
                     .defer_uncertain_operation(&operation.operation_id)
                     .await
@@ -291,7 +305,9 @@ pub async fn recover_v2_startup(
             operation_after = Some(operation.operation_id.clone());
         }
         if operation_after == previous {
-            return Err(GcError::Invalid("operation recovery cursor did not advance".into()));
+            return Err(GcError::Invalid(
+                "operation recovery cursor did not advance".into(),
+            ));
         }
     }
     Ok(report)
@@ -364,16 +380,22 @@ pub async fn run_gc_pass(
         if valid.is_empty() {
             continue;
         }
-        let keys = valid.iter().map(|candidate| candidate.storage_key.clone()).collect::<Vec<_>>();
+        let keys = valid
+            .iter()
+            .map(|candidate| candidate.storage_key.clone())
+            .collect::<Vec<_>>();
         let outcomes = match blobs.delete_each(&keys).await {
             Ok(outcomes) if outcomes.len() == valid.len() => outcomes,
             Ok(_) | Err(_) => {
                 // The provider did not give per-key evidence. Keep every
                 // claimed row charged and retry it later; one bad batch must
                 // not strand the remaining candidates in deleting state.
-                vec![crate::storage::blob::DeleteOutcome::Uncertain(
-                    "delete batch did not settle".into(),
-                ); valid.len()]
+                vec![
+                    crate::storage::blob::DeleteOutcome::Uncertain(
+                        "delete batch did not settle".into(),
+                    );
+                    valid.len()
+                ]
             }
         };
         for (candidate, outcome) in valid.into_iter().zip(outcomes) {

@@ -178,7 +178,10 @@ impl Catalog {
                         "suggestion version or outcome changed".into(),
                     ));
                 }
-                tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=?1", [storage_id])?;
+                tx.execute(
+                    "UPDATE documents SET retention_due_at=0 WHERE id=?1",
+                    [storage_id],
+                )?;
             }
             let completed = unix_millis();
             let result_json = if result.is_empty() {

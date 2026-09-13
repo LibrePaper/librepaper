@@ -152,17 +152,6 @@ impl Catalog {
         })
     }
 
-    pub(super) fn admit_upload_in_tx(
-        _tx: &Transaction<'_>,
-        _owner_id: Option<&str>,
-        _owner_key: &str,
-        _uploads_limit: usize,
-    ) -> CatalogResult<()> {
-        Err(CatalogError::Invalid(
-            "upload admission is part of the v2 operation transaction".into(),
-        ))
-    }
-
     pub fn admit_document_upload(&self, _slug: &str, _uploads_limit: usize) -> CatalogResult<()> {
         Err(CatalogError::Invalid(
             "upload admission is part of the v2 operation transaction".into(),
@@ -589,10 +578,13 @@ impl Catalog {
         limit: u32,
     ) -> CatalogResult<Vec<Document>> {
         let limit = i64::from(limit.clamp(1, 200));
-        let cursor_at = cursor.map(|(value, _)| {
-            crate::util::parse_timestamp_millis(value)
-                .ok_or_else(|| CatalogError::Invalid("invalid document cursor timestamp".into()))
-        }).transpose()?;
+        let cursor_at = cursor
+            .map(|(value, _)| {
+                crate::util::parse_timestamp_millis(value).ok_or_else(|| {
+                    CatalogError::Invalid("invalid document cursor timestamp".into())
+                })
+            })
+            .transpose()?;
         let cursor_slug = cursor.map(|(_, slug)| slug);
         self.with_connection(|connection| {
             let mut statement = connection
@@ -695,7 +687,10 @@ impl Catalog {
             title: row.get(2)?,
             sha: row.get(3)?,
             created_at: crate::util::format_unix_millis(row.get(4)?),
-            published_at: row.get::<_, Option<i64>>(5)?.map(crate::util::format_unix_millis).unwrap_or_default(),
+            published_at: row
+                .get::<_, Option<i64>>(5)?
+                .map(crate::util::format_unix_millis)
+                .unwrap_or_default(),
             updated_at: crate::util::format_unix_millis(row.get(6)?),
             example: row.get::<_, i64>(7)? != 0,
             owner_key: row.get(8)?,

@@ -18,7 +18,6 @@ use super::{unix_millis, Catalog, CatalogError, CatalogRefusal, CatalogResult, M
 
 pub const MAX_CHECKPOINT_OBJECTS: usize = 16_384;
 pub const MAX_DOCUMENT_CHECKPOINT_REFS: i64 = 1_048_576;
-pub const MAX_DEPLOYMENT_CHECKPOINT_REFS: i64 = 8_388_608;
 pub const MAX_AGENT_PAYLOAD_BYTES: i64 = 33_554_432;
 pub const MAX_AGENT_PAYLOAD_OBJECT_BYTES: i64 = 16_777_216;
 pub const MAX_AGENT_PAYLOAD_COUNT: i64 = 512;
@@ -723,13 +722,19 @@ impl Catalog {
         })
     }
 
-    pub(crate) fn v2_document_source_generation(&self, document_id: &DocumentId) -> CatalogResult<i64> {
+    pub(crate) fn v2_document_source_generation(
+        &self,
+        document_id: &DocumentId,
+    ) -> CatalogResult<i64> {
         self.with_connection(|db| {
             db.query_row(
                 "SELECT d.source_generation FROM documents d JOIN accounts a ON a.id=d.owner_id
                  WHERE d.id=?1 AND d.status IN ('creating','active') AND a.status='active'",
-                [document_id.as_str()], |row| row.get(0),
-            ).optional()?.ok_or(CatalogError::NotFound)
+                [document_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(CatalogError::NotFound)
         })
     }
     /// Internal scheduler/importer fence used for an idempotent no-op
@@ -873,8 +878,7 @@ impl Catalog {
                 .ok_or_else(|| {
                     CatalogError::Invalid("publication asset digest is missing".into())
                 })?;
-            if bytes < 0
-                || bytes > 64 * 1024 * 1024
+            if !(0..=64 * 1024 * 1024).contains(&bytes)
                 || digest.len() != 64
                 || !digest
                     .bytes()
@@ -1135,54 +1139,6 @@ impl Catalog {
         })
     }
 
-    /// Bind the complete immutable publication bundle to a prepared display
-    /// operation. Activation accepts only this proof, so an acknowledged
-    /// manifest cannot strand its HTML or asset siblings as unrooted bytes.
-    pub(crate) fn bind_v2_publication_bundle(
-        &self,
-        proof: &VerifiedPublicationBundle,
-        now: UnixMillis,
-    ) -> CatalogResult<()> {
-        if proof.object_ids.len() < 2 {
-            return Err(CatalogError::Invalid(
-                "publication bundle requires a verified manifest and HTML object".into(),
-            ));
-        }
-        self.immediate(|tx| {
-            let (state, kind, plan): (String, String, String) = tx
-                .query_row(
-                    "SELECT state,kind,plan_json FROM operations WHERE id=?1 AND document_id=?2",
-                    params![proof.operation_id.as_str(), proof.document_id.as_str()],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .map_err(CatalogError::from)?;
-            if state != "prepared" || kind != OperationKind::DisplayPublish.as_str() {
-                return Err(CatalogError::Conflict(
-                    "publication operation is not prepared".into(),
-                ));
-            }
-            let mut value: serde_json::Value = serde_json::from_str(&plan)
-                .map_err(|e| CatalogError::Invalid(format!("publication plan: {e}")))?;
-            value["bundle_object_ids"] = serde_json::Value::Array(
-                proof
-                    .object_ids
-                    .iter()
-                    .map(|id| serde_json::Value::String(id.to_string()))
-                    .collect(),
-            );
-            let encoded = serde_json::to_string(&value)
-                .map_err(|e| CatalogError::Invalid(format!("publication plan: {e}")))?;
-            validate_json(&encoded, "publication plan", 65_536)?;
-            tx.execute(
-                "UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2)
-                 WHERE id=?3 AND state='prepared'",
-                params![encoded, now.0, proof.operation_id.as_str()],
-            )
-            .map_err(CatalogError::from)?;
-            Ok(())
-        })
-    }
-
     pub fn object_by_id(
         &self,
         document_id: &DocumentId,
@@ -1243,8 +1199,7 @@ impl Catalog {
             // Keep the IN list below SQLite's variable limit even if a
             // malformed document names more than the normal asset bound.
             for chunk in digests.chunks(256) {
-                let placeholders = std::iter::repeat("?")
-                    .take(chunk.len())
+                let placeholders = std::iter::repeat_n("?", chunk.len())
                     .collect::<Vec<_>>()
                     .join(",");
                 let sql = format!(
@@ -1575,6 +1530,7 @@ impl Catalog {
         ))
     }
 
+    #[cfg(test)]
     pub(crate) fn allocate_v2_object_with_limits(
         &self,
         allocation: &V2ObjectAllocation,
@@ -1616,11 +1572,10 @@ impl Catalog {
             {
                 return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "object allocation exceeds configured byte limit"));
             }
-            if allocation.kind == ObjectKind::AgentPayload {
-                if allocation.reserved_bytes > MAX_AGENT_PAYLOAD_OBJECT_BYTES
-                    || checked_add(agent_bytes, allocation.reserved_bytes, "agent payload")? > MAX_AGENT_PAYLOAD_BYTES || checked_add(agent_count, 1, "agent payload count")? > MAX_AGENT_PAYLOAD_COUNT || checked_add(server_agent_bytes, allocation.reserved_bytes, "deployment agent payload")? > 134_217_728 || checked_add(server_agent_count, 1, "deployment agent count")? > 16_384 {
-                    return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "agent staging capacity exceeded"));
-                }
+            if allocation.kind == ObjectKind::AgentPayload
+                && (allocation.reserved_bytes > MAX_AGENT_PAYLOAD_OBJECT_BYTES
+                    || checked_add(agent_bytes, allocation.reserved_bytes, "agent payload")? > MAX_AGENT_PAYLOAD_BYTES || checked_add(agent_count, 1, "agent payload count")? > MAX_AGENT_PAYLOAD_COUNT || checked_add(server_agent_bytes, allocation.reserved_bytes, "deployment agent payload")? > 134_217_728 || checked_add(server_agent_count, 1, "deployment agent count")? > 16_384) {
+                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "agent staging capacity exceeded"));
             }
             tx.execute("INSERT INTO objects (document_id,id,storage_key,kind,state,digest,logical_digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at) VALUES (?1,?2,?3,?4,'allocated',?5,?6,?7,NULL,?8,?9,?10)", params![allocation.document_id.as_str(),allocation.id.as_str(),allocation.storage_key,allocation.kind.as_str(),allocation.digest,allocation.logical_digest,allocation.encoding_version,allocation.reserved_bytes,allocation.operation_id.as_str(),allocation.now.0]).map_err(CatalogError::from)?;
             tx.execute("UPDATE documents SET reserved_bytes=?1, agent_payload_bytes=?2, agent_payload_count=?3, updated_at=max(updated_at,?4) WHERE id=?5", params![new_doc_reserved, if allocation.kind == ObjectKind::AgentPayload { checked_add(agent_bytes, allocation.reserved_bytes,"agent")? } else {agent_bytes}, if allocation.kind == ObjectKind::AgentPayload { checked_add(agent_count,1,"agent count")? } else {agent_count}, allocation.now.0, allocation.document_id.as_str()]).map_err(CatalogError::from)?;
@@ -2098,12 +2053,11 @@ impl Catalog {
             .map_err(|_| CatalogError::Busy)?;
         self.immediate(|tx| {
             let owner_id: String;
-            let source_generation: i64;
             let mut operation_plan = serde_json::from_str::<serde_json::Value>(
                 &operation_input.plan_json,
             )
             .map_err(|error| CatalogError::Invalid(format!("source operation plan: {error}")))?;
-            if input.create_document {
+            let source_generation: i64 = if input.create_document {
                 let created_at = super::documents::document_time_ms(&document.created_at)?;
                 if !matches!(document.status.as_str(), "creating" | "active")
                     || !matches!(document.source_format.as_str(), "markdown" | "html" | "typst" | "latex" | "quarto")
@@ -2268,7 +2222,7 @@ impl Catalog {
                     [created_at],
                 )
                 .map_err(CatalogError::from)?;
-                source_generation = 0;
+                0
             } else {
                 let current = Catalog::document_in_tx(tx, &document.slug)?;
                 owner_id = current
@@ -2286,14 +2240,14 @@ impl Catalog {
                     Some(&owner_id),
                     "",
                 )?;
-                source_generation = tx
+                tx
                     .query_row(
                         "SELECT source_generation FROM documents WHERE id=?1 AND status<>'deleting'",
                         [document.storage_id.as_str()],
                         |row| row.get(0),
                     )
-                    .map_err(CatalogError::from)?;
-            }
+                    .map_err(CatalogError::from)?
+            };
             if let Some(authority) = operation_plan
                 .get_mut("authority")
                 .and_then(serde_json::Value::as_object_mut)
@@ -2600,6 +2554,8 @@ impl Catalog {
         })
     }
 
+    // Keep the typed lease identity and SQL fencing fields explicit at this boundary.
+    #[allow(clippy::too_many_arguments)]
     pub fn acquire_v2_lease(
         &self,
         document_id: &DocumentId,
@@ -2679,157 +2635,12 @@ impl Catalog {
         })
     }
 
-    pub(crate) fn acquire_v2_leases(
-        &self,
-        document_id: &DocumentId,
-        object_ids: &[ObjectId],
-        holder_id: &str,
-        purpose: LeasePurpose,
-        operation_id: &OperationId,
-        writer_generation: &str,
-        expires_at: UnixMillis,
-        now: UnixMillis,
-    ) -> CatalogResult<()> {
-        if object_ids.is_empty() || holder_id.is_empty() || expires_at <= now {
-            return Err(CatalogError::Invalid("invalid lease set".into()));
-        }
-        if purpose == LeasePurpose::Read {
-            return Err(CatalogError::Invalid(
-                "read leases cannot be operation-owned".into(),
-            ));
-        }
-        let distinct: HashSet<&ObjectId> = object_ids.iter().collect();
-        if distinct.len() != object_ids.len() {
-            return Err(CatalogError::Invalid("duplicate lease object".into()));
-        }
-        self.immediate(|tx| {
-            let prepared: i64 = tx
-                .query_row(
-                    "SELECT count(*) FROM operations
-                     WHERE id=?1 AND document_id=?2 AND state='prepared'
-                       AND writer_generation=?3
-                       AND (work_expires_at IS NULL OR work_expires_at>?4)",
-                    params![
-                        operation_id.as_str(),
-                        document_id.as_str(),
-                        writer_generation,
-                        now.0
-                    ],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if prepared != 1 {
-                return Err(CatalogError::Conflict(
-                    "lease operation is not prepared or is fenced".into(),
-                ));
-            }
-            for object_id in object_ids {
-                let available: i64 = tx
-                    .query_row(
-                        "SELECT count(*) FROM objects
-                         WHERE document_id=?1 AND id=?2 AND state='allocated'
-                           AND allocation_operation_id=?3",
-                        params![
-                            document_id.as_str(),
-                            object_id.as_str(),
-                            operation_id.as_str()
-                        ],
-                        |row| row.get(0),
-                    )
-                    .map_err(CatalogError::from)?;
-                if available != 1 {
-                    return Err(CatalogError::Conflict(
-                        "lease object is not an allocated object".into(),
-                    ));
-                }
-                tx.execute(
-                    "INSERT INTO object_leases
-                     (document_id,object_id,holder_id,purpose,operation_id,writer_generation,
-                      created_at,expires_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
-                     ON CONFLICT(document_id,object_id,holder_id)
-                     DO UPDATE SET purpose=excluded.purpose,operation_id=excluded.operation_id,
-                       writer_generation=excluded.writer_generation,created_at=excluded.created_at,
-                       expires_at=excluded.expires_at",
-                    params![
-                        document_id.as_str(),
-                        object_id.as_str(),
-                        holder_id,
-                        purpose.as_str(),
-                        operation_id.as_str(),
-                        writer_generation,
-                        now.0,
-                        expires_at.0
-                    ],
-                )
-                .map_err(CatalogError::from)?;
-            }
-            Ok(())
-        })
-    }
-
-    pub(crate) fn renew_v2_lease(
-        &self,
-        document_id: &DocumentId,
-        object_id: &ObjectId,
-        holder_id: &str,
-        operation_id: &OperationId,
-        writer_generation: &str,
-        expires_at: UnixMillis,
-        now: UnixMillis,
-    ) -> CatalogResult<()> {
-        if holder_id.is_empty() || expires_at <= now {
-            return Err(CatalogError::Invalid("invalid lease renewal".into()));
-        }
-        self.immediate(|tx| {
-            let changed = tx
-                .execute(
-                    "UPDATE object_leases SET expires_at=MIN(?1,?7+120000,
-                         COALESCE((SELECT work_expires_at FROM operations
-                           WHERE id=?5 AND document_id=?2),?1))
-                     WHERE document_id=?2 AND object_id=?3 AND holder_id=?4
-                       AND purpose='stage' AND operation_id=?5
-                       AND writer_generation=?6 AND expires_at>?7
-                       AND MIN(?1,?7+120000,
-                         COALESCE((SELECT work_expires_at FROM operations
-                           WHERE id=?5 AND document_id=?2),?1))>?7
-                       AND EXISTS(SELECT 1 FROM objects o JOIN documents d
-                           ON d.id=o.document_id JOIN accounts a ON a.id=d.owner_id
-                           JOIN server_state s ON s.id=1
-                           WHERE o.document_id=?2 AND o.id=?3
-                             AND (o.state='available' OR
-                                  (o.state='allocated' AND o.allocation_operation_id=?5))
-                             AND d.status<>'deleting' AND a.status='active'
-                             AND s.writer_generation=?6)
-                       AND EXISTS(SELECT 1 FROM operations
-                           WHERE id=?5 AND document_id=?2 AND state='prepared'
-                             AND writer_generation=?6
-                             AND writer_generation=(SELECT writer_generation FROM server_state WHERE id=1)
-                             AND (work_expires_at IS NULL OR work_expires_at>?7))",
-                    params![
-                        expires_at.0,
-                        document_id.as_str(),
-                        object_id.as_str(),
-                        holder_id,
-                        operation_id.as_str(),
-                        writer_generation,
-                        now.0
-                    ],
-                )
-                .map_err(CatalogError::from)?;
-            if changed != 1 {
-                return Err(CatalogError::Conflict(
-                    "stage lease is expired or fenced".into(),
-                ));
-            }
-            Ok(())
-        })
-    }
-
     /// Heartbeat a bounded closure under one SQLite transaction. A source
     /// write may settle earlier objects while later ones are still being
     /// written, so available objects remain valid members of this operation's
     /// lease set.
+    // Keep the typed lease identity and SQL fencing fields explicit at this boundary.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn renew_v2_lease_set(
         &self,
         document_id: &DocumentId,
@@ -3020,50 +2831,6 @@ impl Catalog {
         })
     }
 
-    pub(crate) fn commit_v2_checkpoint(&self, checkpoint: &CheckpointCommit) -> CatalogResult<i64> {
-        validate_digest(&checkpoint.tree_digest, "tree digest")?;
-        validate_json(&checkpoint.metadata_json, "checkpoint metadata", 65_536)?;
-        if checkpoint.logical_bytes < 0
-            || checkpoint.journal_epoch < 0
-            || checkpoint.journal_sequence < 0
-            || checkpoint.object_ids.is_empty()
-            || checkpoint.object_ids.len() > MAX_CHECKPOINT_OBJECTS
-        {
-            return Err(CatalogError::Invalid("invalid checkpoint closure".into()));
-        }
-        let distinct: HashSet<&ObjectId> = checkpoint.object_ids.iter().collect();
-        if distinct.len() != checkpoint.object_ids.len()
-            || !checkpoint
-                .object_ids
-                .iter()
-                .any(|id| id == &checkpoint.tree_object_id)
-        {
-            return Err(CatalogError::Invalid(
-                "checkpoint closure must be distinct and include its tree".into(),
-            ));
-        }
-        self.immediate(|tx| {
-            let next: i64 = tx.query_row("SELECT next_checkpoint_seq FROM documents WHERE id=?1 AND status <> 'deleting'", [checkpoint.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
-            let (doc_refs,): (i64,) = tx.query_row("SELECT checkpoint_ref_count FROM documents WHERE id=?1", [checkpoint.document_id.as_str()], |row| Ok((row.get(0)?,))).map_err(CatalogError::from)?;
-            let deployment_refs: i64 = tx.query_row("SELECT checkpoint_ref_count FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)?;
-            let count = i64::try_from(checkpoint.object_ids.len()).map_err(|_| CatalogError::Invalid("checkpoint closure too large".into()))?;
-            if checked_add(doc_refs,count,"document checkpoint references")? > MAX_DOCUMENT_CHECKPOINT_REFS || checked_add(deployment_refs,count,"deployment checkpoint references")? > MAX_DEPLOYMENT_CHECKPOINT_REFS {
-                return Err(CatalogError::refused(super::CatalogRefusal::Other, "checkpoint_reference_limit"));
-            }
-            let tree_kind: String = tx.query_row("SELECT kind FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![checkpoint.document_id.as_str(),checkpoint.tree_object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
-            if tree_kind != ObjectKind::SourceTree.as_str() { return Err(CatalogError::Invalid("checkpoint tree must be a source_tree object".into())); }
-            for object_id in &checkpoint.object_ids {
-                let available: i64 = tx.query_row("SELECT count(*) FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![checkpoint.document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
-                if available != 1 { return Err(CatalogError::Conflict("checkpoint closure contains an unavailable object".into())); }
-            }
-            tx.execute("INSERT INTO checkpoints (document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,checkpoint.author_account_id,checkpoint.author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,checkpoint.journal_epoch,checkpoint.journal_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|v| v.0)]).map_err(CatalogError::from)?;
-            for object_id in &checkpoint.object_ids { tx.execute("INSERT INTO checkpoint_objects (document_id,checkpoint_id,object_id) VALUES (?1,?2,?3)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?; }
-            tx.execute("UPDATE documents SET next_checkpoint_seq=next_checkpoint_seq+1,checkpoint_ref_count=checkpoint_ref_count+?1,last_checkpoint_at=?2,retention_due_at=0,current_checkpoint_id=CASE WHEN ?3 THEN ?4 ELSE current_checkpoint_id END,updated_at=max(updated_at,?2) WHERE id=?5", params![count,checkpoint.now.0,checkpoint.make_current,checkpoint.id.as_str(),checkpoint.document_id.as_str()]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count+?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1", params![count,checkpoint.now.0]).map_err(CatalogError::from)?;
-            Ok(next)
-        })
-    }
-
     /// Verify a decoded source tree closure without persisting the unbounded
     /// object list in operation JSON. The operation plan carries only the
     /// bounded SHA-256 closure digest; checkpoint_objects receives the full
@@ -3140,35 +2907,6 @@ impl Catalog {
                 writer_generation: current_generation, source_generation,
             })
         })
-    }
-
-    /// Decode and verify the canonical source envelopes before the normal
-    /// operation/generation/lease fence. The checkpoint closure is derived
-    /// from the tree's recipe locators and cannot omit a physical child.
-    pub(crate) fn verify_v2_source_closure_bytes(
-        &self,
-        operation_id: &OperationId,
-        checkpoint: &CheckpointCommit,
-        tree_bytes: &[u8],
-        recipe_bytes: &[u8],
-    ) -> CatalogResult<VerifiedCheckpointClosure> {
-        let tree = crate::storage::encoding::TreeEnvelope::from_bytes(tree_bytes)
-            .map_err(|error| CatalogError::Invalid(error.to_string()))?;
-        let recipe_id = tree
-            .files
-            .values()
-            .find_map(|file| {
-                file.recipe
-                    .as_ref()
-                    .map(|recipe| recipe.object_id.as_str().to_owned())
-            })
-            .ok_or_else(|| CatalogError::Invalid("source tree has no recipe object".into()))?;
-        self.verify_v2_source_closure_bundle(
-            operation_id,
-            checkpoint,
-            tree_bytes,
-            &[(recipe_id, recipe_bytes.to_vec())],
-        )
     }
 
     /// Verify every physical recipe and asset named by a canonical tree. The
@@ -3889,7 +3627,10 @@ impl Catalog {
             let (committed_epoch, committed_sequence) = journal_base.as_ref()
                 .map(|(_, _, epoch, sequence)| (*epoch, *sequence))
                 .unwrap_or((checkpoint.journal_epoch, checkpoint.journal_sequence));
-            tx.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,checkpoint.author_account_id,checkpoint.author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,committed_epoch,committed_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|value|value.0)]).map_err(CatalogError::from)?;
+            let (author_label, author_account_id) = Self::checkpoint_attribution_for_insert(
+                tx, &checkpoint.author_label, checkpoint.author_account_id.as_deref(),
+            )?;
+            tx.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,author_account_id,author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,committed_epoch,committed_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|value|value.0)]).map_err(CatalogError::from)?;
             for object_id in &checkpoint.object_ids { tx.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?; }
             if let Some((comment_id, payload_id)) = annotation_acceptance {
                 let changed = tx

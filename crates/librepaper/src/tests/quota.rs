@@ -150,10 +150,7 @@ async fn global_total_quota_is_refused() {
     )
     .await;
     assert_eq!(status, 507, "got {status} {payload}");
-    assert_eq!(
-        text(&payload, "error"),
-        "this deployment has no room left"
-    );
+    assert_eq!(text(&payload, "error"), "this deployment has no room left");
 }
 
 // Replacing a document is not a new document, and its old bytes are not still
@@ -294,12 +291,14 @@ async fn large_publication_is_refused_before_object_materialization() {
     .await;
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut random = 0x123456789abcdef0_u64;
-    let source: String = (0..ceiling as usize * 2).map(|_| {
-        random ^= random << 13;
-        random ^= random >> 7;
-        random ^= random << 17;
-        alphabet[(random >> 32) as usize & 63] as char
-    }).collect();
+    let source: String = (0..ceiling as usize * 2)
+        .map(|_| {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            alphabet[(random >> 32) as usize & 63] as char
+        })
+        .collect();
     let (status, payload) = post(
         &server.url,
         "/api/documents",
@@ -308,10 +307,14 @@ async fn large_publication_is_refused_before_object_materialization() {
     .await;
     assert_eq!(status, 507, "got {status} {payload}");
     let catalog = server.instance.store.catalog.as_ref().unwrap();
-    let (documents, objects): (i64, i64) = catalog.with_connection(|connection| {
-        Ok((connection.query_row("SELECT count(*) FROM documents", [], |row| row.get(0))?,
-            connection.query_row("SELECT count(*) FROM objects", [], |row| row.get(0))?))
-    }).unwrap();
+    let (documents, objects): (i64, i64) = catalog
+        .with_connection(|connection| {
+            Ok((
+                connection.query_row("SELECT count(*) FROM documents", [], |row| row.get(0))?,
+                connection.query_row("SELECT count(*) FROM objects", [], |row| row.get(0))?,
+            ))
+        })
+        .unwrap();
     assert_eq!((documents, objects), (0, 0));
     assert!(catalog.audit_v2_counters().unwrap());
     assert!(server

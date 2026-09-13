@@ -230,6 +230,7 @@ impl WriteError {
     /// Whether the write was refused before anything durable was touched.
     /// Publication and rendering callers stop at the first of these rather
     /// than registering work that never landed.
+    #[cfg(test)]
     pub fn refused(&self) -> bool {
         !matches!(self, Self::Storage(_))
     }
@@ -239,7 +240,9 @@ impl WriteError {
         match self {
             Self::ReadOnly(reason) if reason.temporary() => Retry::Later,
             Self::ReadOnly(_) => Retry::No,
-            Self::PermissionDenied | Self::NotFound | Self::Invalid(_) | Self::RequestExpired => Retry::No,
+            Self::PermissionDenied | Self::NotFound | Self::Invalid(_) | Self::RequestExpired => {
+                Retry::No
+            }
             Self::Quota(QuotaKind::UploadRate) => Retry::Later,
             Self::Quota(_) => Retry::No,
             Self::Size(_) | Self::Figure(_) | Self::Document(_) => Retry::No,

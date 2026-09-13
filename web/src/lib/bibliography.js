@@ -217,7 +217,7 @@ export function planZoteroImport({ source, mainPath, texts, item }) {
   const key = zoteroCitationKey(previous, item.zotero_item, item.citation_key);
   const already = new RegExp(`x-librepaper-zotero-item\\s*=\\s*[{"]${String(item.zotero_item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[}"]`, "i").test(previous);
   const addition = already ? "" : (previous.trim() ? "\n" : "") + replaceBibtexKey(item.bibtex, key);
-  const bibtex = previous.replace(/\s*$/, "") + addition;
+  const bibtex = already ? previous : previous.replace(/\s*$/, "") + addition;
   let registration = null;
   if (!configured.length) {
     const depth = String(mainPath || "").split("/").slice(0, -1).length;

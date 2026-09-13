@@ -57,10 +57,12 @@ fn v2_document_lookup_selects_requested_slug_and_hides_erased_owner() {
     document(&catalog, "second", "Second");
     assert_eq!(catalog.document("second").unwrap().unwrap().title, "Second");
     assert!(catalog.document("absent").unwrap().is_none());
-    catalog.with_connection(|db| {
-        db.execute("UPDATE accounts SET status='erasing' WHERE id='owner'", [])?;
-        Ok(())
-    }).unwrap();
+    catalog
+        .with_connection(|db| {
+            db.execute("UPDATE accounts SET status='erasing' WHERE id='owner'", [])?;
+            Ok(())
+        })
+        .unwrap();
     assert!(catalog.document("first").unwrap().is_none());
 }
 
@@ -76,27 +78,52 @@ fn v2_link_rotation_invalidates_bookmarks_without_changing_link_identity() {
     }).unwrap();
     catalog.set_link_sealing_key(&[42; 32]).unwrap();
     let mut link = Link {
-        slug: "links".into(), role: "reader".into(),
+        slug: "links".into(),
+        role: "reader".into(),
         hash: crate::server::hash_link_key("first secret"),
-        sealed: Vec::new(), label: "Read".into(), budget: None,
-        since: crate::util::timestamp(), until: String::new(),
+        sealed: Vec::new(),
+        label: "Read".into(),
+        budget: None,
+        since: crate::util::timestamp(),
+        until: String::new(),
     };
-    link.sealed = catalog.seal_link_key("links", &link.role, &link.hash, "first secret").unwrap();
+    link.sealed = catalog
+        .seal_link_key("links", &link.role, &link.hash, "first secret")
+        .unwrap();
     catalog.put_link(&link).unwrap();
-    let identity = || catalog.with_connection(|db| {
-        db.query_row("SELECT id,credential_generation FROM links WHERE document_id='links'", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))).map_err(CatalogError::from)
-    }).unwrap();
+    let identity = || {
+        catalog
+            .with_connection(|db| {
+                db.query_row(
+                    "SELECT id,credential_generation FROM links WHERE document_id='links'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(CatalogError::from)
+            })
+            .unwrap()
+    };
     let first = identity();
-    let mut guest = Guest { slug: "links".into(), account_id: "owner".into(), since: crate::util::timestamp(), link_hash: link.hash.clone() };
+    let mut guest = Guest {
+        slug: "links".into(),
+        account_id: "owner".into(),
+        since: crate::util::timestamp(),
+        link_hash: link.hash.clone(),
+    };
     catalog.pin_guest(&guest).unwrap();
     link.label = "Renamed".into();
     catalog.put_link(&link).unwrap();
     assert_eq!(identity(), first);
     link.hash = crate::server::hash_link_key("replacement secret");
-    link.sealed = catalog.seal_link_key("links", &link.role, &link.hash, "replacement secret").unwrap();
+    link.sealed = catalog
+        .seal_link_key("links", &link.role, &link.hash, "replacement secret")
+        .unwrap();
     catalog.put_link(&link).unwrap();
     assert_eq!(identity(), (first.0, first.1 + 1));
-    assert!(catalog.pin_guest(&guest).is_err(), "old credential cannot repin");
+    assert!(
+        catalog.pin_guest(&guest).is_err(),
+        "old credential cannot repin"
+    );
     guest.link_hash = link.hash.clone();
     catalog.pin_guest(&guest).unwrap();
     catalog.with_connection(|db| {
@@ -105,7 +132,10 @@ fn v2_link_rotation_invalidates_bookmarks_without_changing_link_identity() {
         db.execute("UPDATE links SET created_at=0,expires_at=1 WHERE document_id='links'", [])?;
         Ok(())
     }).unwrap();
-    assert!(catalog.pin_guest(&guest).is_err(), "expired credential cannot pin");
+    assert!(
+        catalog.pin_guest(&guest).is_err(),
+        "expired credential cannot pin"
+    );
 }
 
 #[test]
@@ -122,10 +152,22 @@ fn v2_document_cursors_preserve_subsecond_order() {
     let mut cursor: Option<(String, String)> = None;
     let mut ids = Vec::new();
     loop {
-        let page = catalog.documents_page(cursor.as_ref().map(|(time,id)| (time.as_str(),id.as_str())), 1).unwrap();
-        let Some(row) = page.first() else { break; };
+        let page = catalog
+            .documents_page(
+                cursor
+                    .as_ref()
+                    .map(|(time, id)| (time.as_str(), id.as_str())),
+                1,
+            )
+            .unwrap();
+        let Some(row) = page.first() else {
+            break;
+        };
         assert!(crate::util::parse_timestamp_millis(&row.created_at).is_some());
-        assert_eq!(crate::util::parse_timestamp_millis(&row.updated_at), Some(1800000000003 - ids.len() as i64));
+        assert_eq!(
+            crate::util::parse_timestamp_millis(&row.updated_at),
+            Some(1800000000003 - ids.len() as i64)
+        );
         ids.push(row.slug.clone());
         cursor = Some((row.updated_at.clone(), row.slug.clone()));
     }
@@ -138,19 +180,53 @@ fn quota_policy_write_rechecks_session_before_changing_retention() {
     let catalog = Catalog::open_in_memory().unwrap();
     account(&catalog);
     document(&catalog, "quota", "Quota");
-    let payload = serde_json::to_string(&crate::document::quota::QuotaPreferences::default()).unwrap();
-    catalog.with_connection(|db| {
-        db.execute("UPDATE accounts SET session_generation='rotated' WHERE id='owner'", [])?;
-        db.execute("UPDATE documents SET status='active',retention_due_at=999 WHERE id='quota'", [])?;
-        Ok(())
-    }).unwrap();
-    assert!(matches!(catalog.save_quota_preferences_authorized("owner", "session", 0, &payload, 1), Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))));
-    catalog.with_connection(|db| {
-        assert_eq!(db.query_row("SELECT preferences_revision FROM accounts WHERE id='owner'", [], |row| row.get::<_, i64>(0))?, 0);
-        assert_eq!(db.query_row("SELECT retention_due_at FROM documents WHERE id='quota'", [], |row| row.get::<_, i64>(0))?, 999);
-        Ok(())
-    }).unwrap();
-    assert_eq!(catalog.save_quota_preferences_authorized("owner", "rotated", 0, &payload, 1).unwrap().revision, 1);
+    let payload =
+        serde_json::to_string(&crate::document::quota::QuotaPreferences::default()).unwrap();
+    catalog
+        .with_connection(|db| {
+            db.execute(
+                "UPDATE accounts SET session_generation='rotated' WHERE id='owner'",
+                [],
+            )?;
+            db.execute(
+                "UPDATE documents SET status='active',retention_due_at=999 WHERE id='quota'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(
+        catalog.save_quota_preferences_authorized("owner", "session", 0, &payload, 1),
+        Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))
+    ));
+    catalog
+        .with_connection(|db| {
+            assert_eq!(
+                db.query_row(
+                    "SELECT preferences_revision FROM accounts WHERE id='owner'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )?,
+                0
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT retention_due_at FROM documents WHERE id='quota'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )?,
+                999
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        catalog
+            .save_quota_preferences_authorized("owner", "rotated", 0, &payload, 1)
+            .unwrap()
+            .revision,
+        1
+    );
 }
 
 #[test]
@@ -269,7 +345,6 @@ async fn store_source_write_roundtrips_through_v2_tree_decoder() {
                 owner: "ignored-wire-owner".into(),
                 owner_id: "ignored-wire-account".into(),
                 owner_name: "ignored".into(),
-                peak_bytes: None,
             },
             MutationActor {
                 account_id: "owner".into(),
@@ -324,7 +399,6 @@ async fn store_source_write_rejects_stale_authenticated_actor() {
                 owner: String::new(),
                 owner_id: String::new(),
                 owner_name: String::new(),
-                peak_bytes: None,
             },
             MutationActor {
                 account_id: "owner".into(),
@@ -731,24 +805,63 @@ fn retention_releases_only_the_deleted_closure_and_preserves_shared_objects() {
         Ok(())
     }).unwrap();
     let doc = DocumentId::new("retention").unwrap();
-    assert!(!catalog.delete_v2_checkpoint(&doc,&CheckpointId::new("current").unwrap(),UnixMillis::new(100).unwrap()).unwrap());
-    catalog.with_connection(|db| {
-        db.execute("UPDATE documents SET retention_due_at=0 WHERE id='retention'", [])?;
-        Ok(())
-    }).unwrap();
-    assert!(!catalog.delete_v2_checkpoint(&doc,&CheckpointId::new("old").unwrap(),UnixMillis::new(100).unwrap()).unwrap(), "invalidated evaluation must not authorize deletion");
-    catalog.with_connection(|db| {
-        db.execute("UPDATE documents SET retention_due_at=1 WHERE id='retention'", [])?;
-        Ok(())
-    }).unwrap();
-    assert!(catalog.delete_v2_checkpoint(&doc,&CheckpointId::new("old").unwrap(),UnixMillis::new(100).unwrap()).unwrap());
-    catalog.with_connection(|db| {
-        let grace = |id: &str| db.query_row("SELECT gc_after FROM objects WHERE document_id='retention' AND id=?1",[id],|row|row.get::<_,Option<i64>>(0));
-        assert_eq!(grace("old-tree")?,Some(900_100));
-        assert_eq!(grace("shared")?,None);
-        assert_eq!(grace("unrelated-orphan")?,Some(7));
-        Ok(())
-    }).unwrap();
+    assert!(!catalog
+        .delete_v2_checkpoint(
+            &doc,
+            &CheckpointId::new("current").unwrap(),
+            UnixMillis::new(100).unwrap()
+        )
+        .unwrap());
+    catalog
+        .with_connection(|db| {
+            db.execute(
+                "UPDATE documents SET retention_due_at=0 WHERE id='retention'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        !catalog
+            .delete_v2_checkpoint(
+                &doc,
+                &CheckpointId::new("old").unwrap(),
+                UnixMillis::new(100).unwrap()
+            )
+            .unwrap(),
+        "invalidated evaluation must not authorize deletion"
+    );
+    catalog
+        .with_connection(|db| {
+            db.execute(
+                "UPDATE documents SET retention_due_at=1 WHERE id='retention'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(catalog
+        .delete_v2_checkpoint(
+            &doc,
+            &CheckpointId::new("old").unwrap(),
+            UnixMillis::new(100).unwrap()
+        )
+        .unwrap());
+    catalog
+        .with_connection(|db| {
+            let grace = |id: &str| {
+                db.query_row(
+                    "SELECT gc_after FROM objects WHERE document_id='retention' AND id=?1",
+                    [id],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+            };
+            assert_eq!(grace("old-tree")?, Some(900_100));
+            assert_eq!(grace("shared")?, None);
+            assert_eq!(grace("unrelated-orphan")?, Some(7));
+            Ok(())
+        })
+        .unwrap();
     assert!(catalog.audit_v2_counters().unwrap());
 }
 
@@ -766,23 +879,42 @@ fn source_history_renewal_is_finite_and_cannot_revive_partially_expired_closures
         }
         Ok(())
     }).unwrap();
-    let objects: Vec<SourceHistoryObject> = ["one","two"].iter().map(|id|SourceHistoryObject {
-        object_key:format!("v2/documents/lease/objects/{id}"),kind:"source_tree".into(),bytes:1,
-    }).collect();
-    catalog.begin_source_history_lease("lease","eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",&objects,1000,121000).unwrap();
-    catalog.renew_source_history_lease("lease","eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",60000,180000).unwrap();
+    let objects: Vec<SourceHistoryObject> = ["one", "two"]
+        .iter()
+        .map(|id| SourceHistoryObject {
+            object_key: format!("v2/documents/lease/objects/{id}"),
+            kind: "source_tree".into(),
+            bytes: 1,
+        })
+        .collect();
+    catalog
+        .begin_source_history_lease(
+            "lease",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            &objects,
+            1000,
+            121000,
+        )
+        .unwrap();
+    catalog
+        .renew_source_history_lease("lease", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", 60000, 180000)
+        .unwrap();
     catalog.with_connection(|db| {
         let expiry: i64 = db.query_row("SELECT min(expires_at) FROM object_leases WHERE document_id='lease'",[],|row|row.get(0))?;
         assert_eq!(expiry,150000);
         db.execute("UPDATE object_leases SET expires_at=60000 WHERE document_id='lease' AND object_id='one'",[])?;
         Ok(())
     }).unwrap();
-    assert!(catalog.renew_source_history_lease("lease","eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",60000,180000).is_err());
+    assert!(catalog
+        .renew_source_history_lease("lease", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", 60000, 180000)
+        .is_err());
     catalog.with_connection(|db| {
         assert_eq!(db.query_row("SELECT expires_at FROM object_leases WHERE document_id='lease' AND object_id='one'",[],|row|row.get::<_,i64>(0))?,60000);
         db.execute("UPDATE object_leases SET expires_at=150000 WHERE document_id='lease'",[])?;
         db.execute("UPDATE server_state SET writer_generation='new-writer' WHERE id=1",[])?;
         Ok(())
     }).unwrap();
-    assert!(catalog.renew_source_history_lease("lease","eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",61000,181000).is_err());
+    assert!(catalog
+        .renew_source_history_lease("lease", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", 61000, 181000)
+        .is_err());
 }

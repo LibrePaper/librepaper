@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-use sha2::Digest;
 use serde_json::{json, Value};
+use sha2::Digest;
 
 use super::*;
 use crate::document::quota::QuotaPreferences;
@@ -113,9 +113,9 @@ fn add_checkpoint(
             source_format: "html".into(),
             size: 1,
             label: String::new(),
-        git_commit: String::new(),
-        dirty: false,
-        changed: Some("[]".into()),
+            git_commit: String::new(),
+            dirty: false,
+            changed: Some("[]".into()),
         })
         .expect("insert checkpoint fixture");
 }
@@ -297,10 +297,7 @@ async fn storage_status_exposes_v2_default_retention_without_changing_hard_quota
         payload["constraints"]["hardQuotaBytes"],
         server.instance.store.config.storage.per_owner
     );
-    assert_eq!(
-        payload["effective"]["retention"]["maxRoutineCount"],
-        50
-    );
+    assert_eq!(payload["effective"]["retention"]["maxRoutineCount"], 50);
     assert_eq!(
         payload["effective"]["retention"]["maxAgeMs"],
         crate::document::quota::DEFAULT_MAX_AGE_MS
@@ -314,17 +311,21 @@ async fn preview_timezone_is_presentation_only_and_apply_is_advisory() {
     let (old, _, _) = seed_old_bucket(&server, &slug);
     let cookie = session_as(TEST_PUBLISHER);
 
-    let utc = QuotaPreferences::default();
+    let utc = QuotaPreferences {
+        retention_profile: "custom".into(),
+        custom_retention: Some(crate::document::quota::CustomRetention {
+            max_routine_count: Some(1),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
     let mut toronto = utc.clone();
     toronto.display_timezone = "America/Toronto".into();
     let utc_preview = preview(&server, &cookie, 0, &utc).await;
     let local_preview = preview(&server, &cookie, 0, &toronto).await;
     assert_eq!(utc_preview.0, 200, "UTC preview: {}", utc_preview.1);
     assert_eq!(local_preview.0, 200, "local preview: {}", local_preview.1);
-    assert_eq!(
-        utc_preview.1["effective"],
-        local_preview.1["effective"]
-    );
+    assert_eq!(utc_preview.1["effective"], local_preview.1["effective"]);
     assert_eq!(
         utc_preview.1["affectedCount"],
         local_preview.1["affectedCount"]
@@ -360,12 +361,17 @@ async fn advisory_apply_rejects_stale_revision_without_durable_job() {
     assert_eq!(stale.0, 409, "stale apply: {}", stale.1);
 
     let catalog = server.instance.store.catalog.as_ref().unwrap();
-    let due: i64 = catalog.with_connection(|connection| {
-        connection.query_row(
-            "SELECT retention_due_at FROM documents WHERE slug=?1 AND status='active'",
-            [&slug], |row| row.get(0),
-        ).map_err(crate::storage::catalog::CatalogError::from)
-    }).unwrap();
+    let due: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT retention_due_at FROM documents WHERE slug=?1 AND status='active'",
+                    [&slug],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
     assert_eq!(
         due, 0,
         "policy apply did not enqueue document recalculation"

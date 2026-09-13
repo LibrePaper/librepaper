@@ -932,19 +932,18 @@ impl Catalog {
                 } else {
                     supplied_account
                 };
-                if account_id.starts_with("anonymous:") {
-                    if owner_key.is_empty()
+                if account_id.starts_with("anonymous:")
+                    && (owner_key.is_empty()
                         || account_id
                             != format!(
                                 "anonymous:{}",
                                 hex::encode(sha2::Sha256::digest(owner_key.as_bytes()))
-                            )
-                    {
-                        return Err(CatalogError::refused(
-                            CatalogRefusal::ActorRights,
-                            "anonymous actor credential does not match its account",
-                        ));
-                    }
+                            ))
+                {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::ActorRights,
+                        "anonymous actor credential does not match its account",
+                    ));
                 }
                 let stored_generation: String = self
                     .with_connection(|connection| {

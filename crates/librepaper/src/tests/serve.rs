@@ -261,8 +261,10 @@ async fn comments_broadcast_to_every_reader() {
     .expect("owner socket");
     assert_eq!(moderator.read().await["type"], "hello");
     moderator
-        .write(json!({"type": "resolve", "comment_id": identifier, "resolved": true,
-            "request_id":crate::util::new_request_key()}))
+        .write(
+            json!({"type": "resolve", "comment_id": identifier, "resolved": true,
+            "request_id":crate::util::new_request_key()}),
+        )
         .await;
     let event = watcher.read().await;
     assert_eq!(event["type"], "resolve");
@@ -342,17 +344,12 @@ async fn listing_and_delete() {
 }
 
 #[tokio::test]
-async fn legacy_listing_pages_without_repeating_documents() {
-    let dir = tempfile::tempdir().unwrap();
-    let (url, instance) = server_over_blobs_legacy(
-        std::sync::Arc::new(crate::storage::blob::FsStore::new(dir.path(), true)),
-        Configuration::default(),
-    )
-    .await;
-    assert!(instance.store.catalog.is_none());
+async fn listing_pages_without_repeating_documents() {
+    let server = new_test_server().await;
+    let url = &server.url;
     for title in ["First", "Second", "Third"] {
         let (status, _) = post(
-            &url,
+            url,
             "/api/documents",
             json!({"title":title,"html":"<p>page</p>"}),
         )
@@ -362,7 +359,7 @@ async fn legacy_listing_pages_without_repeating_documents() {
     let mut path = "/api/list?limit=2".to_string();
     let mut seen = std::collections::HashSet::new();
     for expected in [2, 1] {
-        let (status, page) = post(&url, &path, json!({})).await;
+        let (status, page) = post(url, &path, json!({})).await;
         assert_eq!(status, 200);
         let documents = page["documents"].as_array().unwrap();
         assert_eq!(documents.len(), expected);
@@ -727,8 +724,16 @@ async fn browser_submission_retries_are_idempotent_and_author_scoped() {
     let slug = text(&published, "slug");
     let publication_id = rendered_publication_id(&server.url, &slug).await;
     let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
-    let alice = format!("{}={}", crate::auth::VISITOR_COOKIE, crate::auth::sign_visitor(TEST_KEY, "alice"));
-    let bob = format!("{}={}", crate::auth::VISITOR_COOKIE, crate::auth::sign_visitor(TEST_KEY, "bob"));
+    let alice = format!(
+        "{}={}",
+        crate::auth::VISITOR_COOKIE,
+        crate::auth::sign_visitor(TEST_KEY, "alice")
+    );
+    let bob = format!(
+        "{}={}",
+        crate::auth::VISITOR_COOKIE,
+        crate::auth::sign_visitor(TEST_KEY, "bob")
+    );
     let endpoint = format!("/api/documents/{slug}/comments");
     let room = server.instance.rooms.get(&slug).await;
     let request = json!({"type":"comment", "exact":"hello", "body":"A comment whose acknowledgment was lost",
@@ -741,9 +746,22 @@ async fn browser_submission_retries_are_idempotent_and_author_scoped() {
     assert_eq!(first["comment"], again["comment"]);
     assert_eq!(room.counts().await.0, 1);
     let (status, response) = post_keyed(&bob, &key, &server.url, &endpoint, request.clone()).await;
-    assert_eq!(status, 409, "another visitor cannot take over the submission: {response}");
-    let (status, response) = post_keyed(&session_as(TEST_PUBLISHER), &key, &server.url, &endpoint, request.clone()).await;
-    assert_eq!(status, 409, "even the owner cannot take over the submission: {response}");
+    assert_eq!(
+        status, 409,
+        "another visitor cannot take over the submission: {response}"
+    );
+    let (status, response) = post_keyed(
+        &session_as(TEST_PUBLISHER),
+        &key,
+        &server.url,
+        &endpoint,
+        request.clone(),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "even the owner cannot take over the submission: {response}"
+    );
     let reply = json!({"type":"reply", "comment_id":request["temp_id"], "body":"A reply",
         "temp_id":crate::util::new_id(), "request_id":crate::util::new_request_key()});
     let (status, first) = post_keyed(&alice, &key, &server.url, &endpoint, reply.clone()).await;

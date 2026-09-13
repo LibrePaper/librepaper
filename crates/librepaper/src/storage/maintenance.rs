@@ -7,7 +7,11 @@
 
 use std::sync::Arc;
 
-use rusqlite::{params, OptionalExtension};
+#[cfg(test)]
+use rusqlite::params;
+#[cfg(test)]
+use rusqlite::OptionalExtension;
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 
 use crate::storage::blob::{
@@ -361,6 +365,7 @@ pub async fn enqueue_deletions_async(
         .map_err(MaintenanceError::from)
 }
 
+#[cfg(test)]
 fn validate_deletion_job(
     slug: &str,
     bytes: i64,
@@ -373,6 +378,7 @@ fn validate_deletion_job(
     Ok(())
 }
 
+#[cfg(test)]
 fn enqueue_deletions_sql(
     connection: &mut rusqlite::Connection,
     slug: &str,
@@ -413,7 +419,9 @@ fn enqueue_deletions_sql(
 pub struct DeletionWorker {
     catalog: Arc<Catalog>,
     blobs: Arc<dyn BlobStore>,
+    #[cfg(test)]
     limits: DeletionLimits,
+    #[cfg(test)]
     journal_gate: Arc<tokio::sync::Mutex<()>>,
     v2_catalog: crate::storage::v2_catalog::V2GcCatalogAdapter,
 }
@@ -428,10 +436,12 @@ impl DeletionWorker {
             return Err(MaintenanceError::Invalid("invalid deletion limits".into()));
         }
         Ok(Self {
+            #[cfg(test)]
             journal_gate: catalog.journal_gate.clone(),
             v2_catalog: crate::storage::v2_catalog::V2GcCatalogAdapter::new(catalog.clone()),
             catalog,
             blobs,
+            #[cfg(test)]
             limits,
         })
     }
@@ -467,12 +477,9 @@ impl DeletionWorker {
             })
             .await
             .map_err(|error| crate::storage::maintenance_v2::GcError::Catalog(error.to_string()))?;
-        let report = crate::storage::maintenance_v2::run_gc_pass(
-            &self.v2_catalog,
-            self.blobs.as_ref(),
-            now,
-        )
-        .await?;
+        let report =
+            crate::storage::maintenance_v2::run_gc_pass(&self.v2_catalog, self.blobs.as_ref(), now)
+                .await?;
         let finish_catalog = Arc::clone(&self.catalog);
         finish_catalog
             .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
@@ -496,16 +503,16 @@ impl DeletionWorker {
     /// has acquired the deployment writer lock and before serving traffic.
     pub async fn recover_v2_startup(
         &self,
-    ) -> Result<crate::storage::maintenance_v2::RecoveryReport, crate::storage::maintenance_v2::GcError> {
+    ) -> Result<
+        crate::storage::maintenance_v2::RecoveryReport,
+        crate::storage::maintenance_v2::GcError,
+    > {
         let adapter = crate::storage::v2_catalog::V2GcCatalogAdapter::new(self.catalog.clone());
 
-        crate::storage::maintenance_v2::recover_v2_startup(
-            &adapter,
-            self.blobs.as_ref(),
-        )
-        .await
+        crate::storage::maintenance_v2::recover_v2_startup(&adapter, self.blobs.as_ref()).await
     }
 
+    #[cfg(test)]
     async fn due(&self, now: i64) -> MaintenanceResult<Vec<PendingDeletion>> {
         let max_jobs = self.limits.max_jobs;
         self.catalog

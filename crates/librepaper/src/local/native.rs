@@ -316,14 +316,6 @@ impl Ctx<'_> {
         for (key, value) in env {
             command.env(key, value);
         }
-        command.stdin(std::process::Stdio::null());
-        command.stdout(std::process::Stdio::null());
-        command.stderr(std::process::Stdio::null());
-        #[cfg(unix)]
-        {
-            command.process_group(0);
-        }
-
         let confinement = confine::detect();
         if confinement.available {
             let plan = Plan {
@@ -346,6 +338,13 @@ impl Ctx<'_> {
             }
         }
 
+        // Confinement reconstructs Command; restore the descriptors and group
+        // on the actual process we spawn, including for cancellation.
+        command.stdin(std::process::Stdio::null());
+        command.stdout(std::process::Stdio::null());
+        command.stderr(std::process::Stdio::null());
+        #[cfg(unix)]
+        command.process_group(0);
         run_confined(command, self.cancel, self.deadline).await
     }
 }
@@ -829,7 +828,14 @@ impl Ctx<'_> {
 
         self.send_progress(&self.base_status("biber", 1));
         let bcf_name = format!("{stem}.bcf");
-        let args = ["--output-format=bbl", bcf_name.as_str()];
+        let out = self.workspace.out();
+        let output_directory = out.to_string_lossy();
+        let args = [
+            "--output-format=bbl",
+            "--output-directory",
+            output_directory.as_ref(),
+            bcf_name.as_str(),
+        ];
         let env = self.base_env(&project);
         let outcome = self.spawn(&biber, &args, &project, &env).await;
 
@@ -838,13 +844,13 @@ impl Ctx<'_> {
             RunOutcome::TimedOut => self.terminal("", "failed", Some("timeout"), "", false, 1),
             RunOutcome::SpawnFailed(message) => failed(self.request, &self.job_id, &message),
             RunOutcome::Exited(code) => {
-                let blg = read_to_string_lossy(&project.join(format!("{stem}.blg")));
+                let blg = read_to_string_lossy(&out.join(format!("{stem}.blg")));
                 let incompatible = blg_is_incompatible(&blg);
-                let ok = code == 0 && project.join(format!("{stem}.bbl")).is_file();
+                let ok = code == 0 && out.join(format!("{stem}.bbl")).is_file();
                 let status_word = if ok { "done" } else { "failed" };
                 let mut outcome = self.terminal("", status_word, None, &blg, incompatible, 1);
                 outcome.status.exit = code;
-                if let Some((entry, bytes)) = file_entry(&project.join(format!("{stem}.bbl"))) {
+                if let Some((entry, bytes)) = file_entry(&out.join(format!("{stem}.bbl"))) {
                     outcome.status.outputs.insert("bbl".to_string(), entry);
                     outcome.files.insert("bbl".to_string(), bytes);
                 }

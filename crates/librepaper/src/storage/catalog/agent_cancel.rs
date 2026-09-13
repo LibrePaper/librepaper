@@ -1,6 +1,16 @@
 //! Durable cancellation receipts for v2 agent operations.
 use super::*;
 
+type CancellationReceiptRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<i64>,
+);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentCancellation {
     pub target_request_id: String,
@@ -86,7 +96,7 @@ impl Catalog {
         let actor = actor_key(account_id, link_hash);
         self.immediate(|tx| {
             let document_id = authorize_cancellation(tx, slug, account_id, generation, link_hash)?;
-            let existing: Option<(String, String, String, String, Option<String>, String, Option<i64>)> = tx.query_row(
+            let existing: Option<CancellationReceiptRow> = tx.query_row(
                 "SELECT id,state,request_digest,result_json,target_request_key,plan_json,receipt_expires_at
                  FROM operations WHERE document_id=?1 AND account_id IS NULL AND actor_key=?2 AND request_key=?3 AND kind='agent_cancel'",
                 params![document_id, actor, cancel_request_id],

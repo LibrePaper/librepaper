@@ -4,8 +4,8 @@ use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tokio::net::TcpListener;
 use sha2::{Digest, Sha256};
+use tokio::net::TcpListener;
 
 use crate::auth::{link_sealing_keyring_file, session_key_file, GithubApp, GoogleApp, Policy};
 use crate::config::Configuration;
@@ -263,8 +263,10 @@ pub async fn serve(options: ServeOptions) {
     } else {
         key_id(&link_sealing_keys[0])
     };
-    let primary_key = link_sealing_keys.iter().find(|key|key_id(key)==active_link_key_id)
-        .unwrap_or_else(||die("durable primary link key is missing from deployment secrets"));
+    let primary_key = link_sealing_keys
+        .iter()
+        .find(|key| key_id(key) == active_link_key_id)
+        .unwrap_or_else(|| die("durable primary link key is missing from deployment secrets"));
     let catalog = Arc::new(
         crate::storage::catalog::Catalog::open_with_identity(
             catalog_path,
@@ -272,7 +274,7 @@ pub async fn serve(options: ServeOptions) {
             &deployment_id,
             &active_link_key_id,
         )
-            .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
+        .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
     );
     crate::config::DeploymentPaths::protect_file(catalog_path).unwrap_or_else(|err| die(err));
     let key = session_key_file(&secrets.join("session.key"), catalog_nonempty)
@@ -280,12 +282,16 @@ pub async fn serve(options: ServeOptions) {
     catalog
         .set_link_sealing_key(primary_key)
         .unwrap_or_else(|err| die(format!("could not configure link sealing: {err}")));
-    for old in link_sealing_keys.iter().filter(|key| key_id(key)!=active_link_key_id) {
+    for old in link_sealing_keys
+        .iter()
+        .filter(|key| key_id(key) != active_link_key_id)
+    {
         catalog
             .add_link_decryption_key(old)
             .unwrap_or_else(|err| die(format!("could not configure old link key: {err}")));
     }
-    catalog.resume_link_key_rotation()
+    catalog
+        .resume_link_key_rotation()
         .unwrap_or_else(|error| die(format!("could not resume link-key rotation: {error}")));
     let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
         .await

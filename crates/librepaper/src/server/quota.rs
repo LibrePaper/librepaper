@@ -40,7 +40,11 @@ fn usage_json(usage: &AccountStorageUsage) -> Value {
 }
 impl Server {
     #[allow(clippy::result_large_err)] // Route errors are ready-to-return HTTP responses.
-    async fn quota_account(&self, headers: &HeaderMap, arrival: &Arrival) -> Result<(String, String), Reply> {
+    async fn quota_account(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+    ) -> Result<(String, String), Reply> {
         if Self::is_automation(headers) {
             return Err(write_json(
                 403,

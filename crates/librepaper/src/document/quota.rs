@@ -9,23 +9,13 @@ pub const RETENTION_POLICY_VERSION: u32 = 2;
 pub const DEFAULT_WARNING_THRESHOLDS: &[u8] = &[75, 90];
 pub const DEFAULT_MAX_AGE_MS: i64 = 30 * 86_400_000;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomRetention {
     pub max_routine_count: Option<u32>,
     pub max_age_ms: Option<i64>,
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
-}
-
-impl Default for CustomRetention {
-    fn default() -> Self {
-        Self {
-            max_routine_count: None,
-            max_age_ms: None,
-            extra: std::collections::BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

@@ -87,10 +87,6 @@ pub struct RetentionPass {
     pub blocked: usize,
 }
 
-fn retention_time(value: &str) -> i64 {
-    value.parse().unwrap_or(0)
-}
-
 impl Catalog {
     pub fn schedule_document_balanced(
         &self,

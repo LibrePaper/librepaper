@@ -55,8 +55,7 @@ fn catalog_fixture_actor() -> store::MutationActor {
 fn incompressible_source(bytes: usize) -> String {
     let mut state = 0x9e37_79b9_u64;
     let mut source = String::with_capacity(bytes);
-    const ALPHABET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     for _ in 0..bytes {
         state ^= state << 7;
         state ^= state >> 9;
@@ -305,7 +304,6 @@ async fn catalog_source_receipt_retries_after_reopen() {
                 slug: "receipt".into(),
                 source: "source".into(),
                 owner: "alice".into(),
-                peak_bytes: Some(1 << 20),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -314,17 +312,33 @@ async fn catalog_source_receipt_retries_after_reopen() {
         .unwrap();
     assert!(store.get("receipt").await.is_some());
     let storage_id = entry.storage_id.clone();
-    let (operation_id, actor_key, request_key, request_digest, result_json, operation_count):
-        (String, String, String, String, String, i64) = catalog
+    let (operation_id, actor_key, request_key, request_digest, result_json, operation_count): (
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+    ) = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            connection
+                .query_row(
                     "SELECT id,actor_key,request_key,request_digest,result_json,
                             (SELECT count(*) FROM operations)
                      FROM operations
                      WHERE document_id=?1 AND kind='source_publish'
                      ORDER BY created_at DESC,id DESC LIMIT 1",
                     [&storage_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
@@ -332,9 +346,8 @@ async fn catalog_source_receipt_retries_after_reopen() {
     drop(store);
     drop(catalog);
 
-    let reopened_catalog = Arc::new(
-        crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap(),
-    );
+    let reopened_catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let reopened = store::Store::open_with_catalog(blobs, config, reopened_catalog.clone())
         .await
         .unwrap();
@@ -421,7 +434,6 @@ async fn catalog_reopen_keeps_native_source_checkpoint_when_chunk_missing() {
                 slug: "native-missing".into(),
                 source: "native source history\n".repeat(4096),
                 owner: "alice".into(),
-                peak_bytes: Some(1 << 20),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -446,9 +458,8 @@ async fn catalog_reopen_keeps_native_source_checkpoint_when_chunk_missing() {
     drop(store);
     drop(catalog);
 
-    let reopened_catalog = Arc::new(
-        crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap(),
-    );
+    let reopened_catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     let reopened = store::Store::open_with_catalog(blobs, config, reopened_catalog.clone())
         .await
         .unwrap();
@@ -522,24 +533,16 @@ async fn catalog_source_replacement_commits_a_new_head() {
 async fn catalog_source_write_failure_keeps_previous_head_visible() {
     let dir = tempfile::tempdir().unwrap();
     let config = Arc::new(Configuration::default());
-    let raw: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(
-        dir.path().join("objects"),
-        true,
-    ));
+    let raw: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
     let hooked = super::room::HookStore::new(raw);
-    let catalog = Arc::new(
-        crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap(),
-    );
+    let catalog =
+        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
     catalog
         .upsert_account(&catalog_fixture_account("github:alice", "alice"))
         .unwrap();
-    let store = store::Store::open_with_catalog(
-        hooked.clone(),
-        config,
-        catalog.clone(),
-    )
-    .await
-    .unwrap();
+    let store = store::Store::open_with_catalog(hooked.clone(), config, catalog.clone())
+        .await
+        .unwrap();
     let old = store
         .put_as_actor(
             store::Publication {
@@ -553,10 +556,7 @@ async fn catalog_source_write_failure_keeps_previous_head_visible() {
         .await
         .unwrap();
     let document = catalog.document("faulted-replacement").unwrap().unwrap();
-    *hooked.fail.lock().unwrap() = Some(format!(
-        "v2/documents/{}/objects/",
-        document.storage_id
-    ));
+    *hooked.fail.lock().unwrap() = Some(format!("v2/documents/{}/objects/", document.storage_id));
 
     let failed = store
         .put_as_actor(
@@ -587,12 +587,16 @@ async fn catalog_source_write_failure_keeps_previous_head_visible() {
 async fn catalog_concurrent_admission_is_atomic() {
     let dir = tempfile::tempdir().unwrap();
     let mut limits = Configuration::default();
-    // Each source is deliberately just over half the deployment ceiling.
-    // The physical v2 closure (tree plus source chunks) therefore admits one
-    // concurrent request and rejects the other, without relying on legacy
-    // source-byte accounting.
-    limits.storage.total = 4 << 20;
-    limits.storage.per_owner = 4 << 20;
+    // Each encoded source exceeds half the physical ceiling, so even after
+    // the first reservation settles the other request still cannot fit.
+    limits.storage.total = 3 << 20;
+    limits.storage.per_owner = 3 << 20;
+    let source = incompressible_source(2_200_000);
+    let physical = crate::storage::encoding::encode_source(source.as_bytes())
+        .unwrap()
+        .encoded_bytes();
+    assert!(physical > limits.storage.total as usize / 2);
+    assert!(physical < limits.storage.total as usize);
     let config = Arc::new(limits);
     let (blobs, catalog) = local_catalog_store(&dir);
     let first_catalog =
@@ -611,7 +615,7 @@ async fn catalog_concurrent_admission_is_atomic() {
         store::Publication {
             slug: "left".into(),
             title: "left".into(),
-            source: incompressible_source(2_200_000),
+            source: source.clone(),
             owner: "alice".into(),
             ..Default::default()
         },
@@ -621,18 +625,27 @@ async fn catalog_concurrent_admission_is_atomic() {
         store::Publication {
             slug: "right".into(),
             title: "right".into(),
-            source: incompressible_source(2_200_000),
+            source,
             owner: "alice".into(),
             ..Default::default()
         },
         catalog_fixture_actor(),
     );
     let (left, right) = tokio::join!(left, right);
-    assert_eq!(left.is_ok(), right.is_err());
+    assert_eq!(
+        left.is_ok(),
+        right.is_err(),
+        "left={left:?}; right={right:?}"
+    );
     assert!(
         matches!(right, Err(crate::document::store::PutError::Quota { .. }))
             || matches!(left, Err(crate::document::store::PutError::Quota { .. }))
     );
+    let catalog = first.catalog.as_ref().unwrap();
+    assert!(catalog.audit_v2_counters().unwrap());
+    let (stored, count) = catalog.totals().unwrap();
+    assert_eq!(count, 1);
+    assert!(stored <= config.storage.total);
 }
 
 #[tokio::test]
@@ -671,8 +684,8 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
             },
             catalog_fixture_actor(),
         )
-    .await
-    .unwrap();
+        .await
+        .unwrap();
     let settled = catalog.document("replace").unwrap().unwrap();
     let checkpoint = catalog
         .checkpoint("replace", &settled.sha)
@@ -903,7 +916,7 @@ async fn a_sealed_link_is_opened_outside_the_connection_closure() {
     // The listing path asks for the same rows without decrypting them; it
     // must still answer, and answer with no secret in it.
     let listed = store
-        .visible_page_with_options(None, Some("alice"), None, 20, true)
+        .visible_page_with_options(Some("github:alice"), Some("alice"), None, 20, true)
         .await
         .unwrap();
     let listed = listed.iter().find(|e| e.slug == "linked").unwrap();
