@@ -42,10 +42,6 @@ async fn server_with_provider_status(status: u16) -> (TestServer, tokio::task::J
             .expect("catalogue"),
     );
     catalog.set_link_sealing_key(TEST_KEY).expect("link key");
-    let journal_store = crate::storage::journal::JournalStore::new(catalog.clone());
-    journal_store
-        .initialize_local("test-deployment")
-        .expect("journal");
     let store = crate::document::store::Store::open_with_catalog(
         blobs.clone(),
         config.clone(),
@@ -54,13 +50,14 @@ async fn server_with_provider_status(status: u16) -> (TestServer, tokio::task::J
     .await
     .expect("store");
     let rooms = crate::room::RoomSet::new(blobs.clone(), config.clone());
-    let journal = crate::storage::journal::JournalRuntime::new(
-        catalog,
-        blobs,
-        "test-deployment",
-        crate::storage::journal::CoordinatorLimits::default(),
-    )
-    .expect("journal runtime");
+    let journal = Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog)),
+            blobs,
+            config.persistence(),
+        )
+        .expect("v2 journal runtime"),
+    );
     let instance = crate::server::Server::new(
         store,
         rooms,

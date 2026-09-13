@@ -163,6 +163,7 @@ pub struct V2JournalRuntime<C> {
     catalog: Arc<C>,
     blobs: Arc<dyn BlobStore>,
     memory: Arc<crate::storage::journal::MemoryBudget>,
+    max_encoded_snapshot_bytes: usize,
     executing_bytes: AtomicUsize,
 }
 
@@ -171,7 +172,8 @@ where
     C: V2JournalCatalog + 'static,
 {
     pub fn new(catalog: std::sync::Arc<C>, blobs: std::sync::Arc<dyn BlobStore>) -> Self {
-        Self::with_memory(catalog, blobs, document_journal_memory())
+        Self::with_persistence(catalog, blobs, crate::config::PersistenceLimits::default())
+            .expect("default persistence limits are valid")
     }
 
     pub fn with_memory(
@@ -179,7 +181,28 @@ where
         blobs: Arc<dyn BlobStore>,
         memory: Arc<crate::storage::journal::MemoryBudget>,
     ) -> Self {
-        Self { catalog, blobs, memory, executing_bytes: AtomicUsize::new(0) }
+        Self {
+            catalog,
+            blobs,
+            max_encoded_snapshot_bytes: memory.capacity(),
+            memory,
+            executing_bytes: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn with_persistence(
+        catalog: Arc<C>,
+        blobs: Arc<dyn BlobStore>,
+        persistence: crate::config::PersistenceLimits,
+    ) -> JournalResult<Self> {
+        persistence.validate().map_err(JournalError::Invalid)?;
+        Ok(Self {
+            catalog,
+            blobs,
+            max_encoded_snapshot_bytes: persistence.max_encoded_snapshot_bytes,
+            memory: crate::storage::journal::MemoryBudget::new(persistence.max_staging_bytes),
+            executing_bytes: AtomicUsize::new(0),
+        })
     }
 
     pub async fn append(
@@ -251,17 +274,26 @@ where
         base: Vec<u8>,
         content_type: &str,
     ) -> JournalResult<WrittenObject> {
-        let digest = hex::encode(Sha256::digest(&base));
+        let base_body = crate::storage::journal::RecoveryBaseBody {
+            format_version: super::SEGMENT_FORMAT,
+            storage_id: document_id.to_owned(),
+            epoch: expected_epoch,
+            sequence: expected_sequence,
+            digest: hex::encode(Sha256::digest(&base)),
+            payload: base,
+        };
+        let encoded_base = crate::storage::journal::encode_recovery_base(&base_body)?;
+        let digest = hex::encode(Sha256::digest(&encoded_base));
         let admission = self
             .catalog
-            .prepare_compaction(document_id, expected_epoch, expected_sequence, base.len() as u64, digest)
+            .prepare_compaction(document_id, expected_epoch, expected_sequence, encoded_base.len() as u64, digest)
             .await
             .map_err(JournalError::CatalogText)?;
         let written = match write_v2_object_with_id(
             self.blobs.as_ref(),
             document_id,
             admission.base_allocation.object_id.clone(),
-            base,
+            encoded_base,
             content_type,
         ).await {
             Ok(written) => written,
@@ -317,24 +349,29 @@ where
                 .await
                 .map_err(|error| JournalError::Storage(error.to_string()))?;
             verify_object_bytes(reference, &bytes)?;
-            base = Some(bytes);
+            let decoded = crate::storage::journal::decode_recovery_base(&bytes)?;
+            if decoded.storage_id != document_id
+                || decoded.epoch != reference.epoch
+                || decoded.sequence != reference.last_sequence
+            {
+                return Err(JournalError::Corrupt("journal base identity does not match catalog".into()));
+            }
+            base = Some(decoded.payload);
         }
         if head.sequence == head.base_sequence {
-            return base
-                .ok_or_else(|| JournalError::Corrupt("journal head has no acknowledged base".into()))
-                .map(Some);
+            return replay_complete_state(base, Vec::new());
         }
         let first = head.base_sequence.saturating_add(1).max(1);
         let records = self
             .recover(document_id, head.epoch, first, head.sequence)
             .await?;
-        let last = records
-            .last()
-            .ok_or_else(|| JournalError::Corrupt("journal head range has no records".into()))?;
-        Ok(Some(last.payload.clone()))
+        replay_complete_state(base, records)
     }
 
     async fn append(&self, document_id: &str, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
+        if body.len() > self.max_encoded_snapshot_bytes {
+            return Err(JournalError::Limit("journal snapshot exceeds the configured encoded ceiling".into()));
+        }
         let head = self
             .catalog
             .journal_head(document_id)
@@ -343,8 +380,12 @@ where
         if sequence != head.sequence.saturating_add(1) {
             return Err(JournalError::Conflict("journal append is not the next sequence".into()));
         }
-        let permit = self.memory.acquire(body.len()).await?;
-        self.executing_bytes.fetch_add(body.len(), Ordering::Relaxed);
+        let payload_bytes = body.len();
+        let permit = self
+            .memory
+            .acquire(crate::config::PersistenceLimits::staging_cost(payload_bytes))
+            .await?;
+        self.executing_bytes.fetch_add(payload_bytes, Ordering::Relaxed);
         let result = async {
             let retry_id = format!("room-{document_id}-{sequence}");
             let records = JournalRecord::chunked(document_id, sequence, &retry_id, head.epoch, body)?;
@@ -362,7 +403,7 @@ where
             self.append(request, &[segment]).await.map(|_| ())
         }
         .await;
-        self.executing_bytes.fetch_sub(permit.bytes(), Ordering::Relaxed);
+        self.executing_bytes.fetch_sub(payload_bytes, Ordering::Relaxed);
         drop(permit);
         result
     }
@@ -380,8 +421,15 @@ where
     }
 
     async fn compact(&self, document_id: &str, _epoch: u64, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
-        let permit = self.memory.acquire(body.len()).await?;
-        self.executing_bytes.fetch_add(body.len(), Ordering::Relaxed);
+        if body.len() > self.max_encoded_snapshot_bytes {
+            return Err(JournalError::Limit("journal base exceeds the configured encoded ceiling".into()));
+        }
+        let payload_bytes = body.len();
+        let permit = self
+            .memory
+            .acquire(crate::config::PersistenceLimits::staging_cost(payload_bytes))
+            .await?;
+        self.executing_bytes.fetch_add(payload_bytes, Ordering::Relaxed);
         let result = async {
             let head = self
                 .catalog
@@ -402,7 +450,7 @@ where
             .map(|_| ())
         }
         .await;
-        self.executing_bytes.fetch_sub(permit.bytes(), Ordering::Relaxed);
+        self.executing_bytes.fetch_sub(payload_bytes, Ordering::Relaxed);
         drop(permit);
         result
     }
@@ -414,6 +462,26 @@ where
     fn memory(&self) -> Arc<crate::storage::journal::MemoryBudget> {
         Arc::clone(&self.memory)
     }
+}
+
+fn replay_complete_state(
+    base: Option<Vec<u8>>,
+    records: Vec<JournalRecord>,
+) -> JournalResult<Option<Vec<u8>>> {
+    if base.is_none() && records.is_empty() {
+        return Err(JournalError::Corrupt("journal head range has no state".into()));
+    }
+    let document = crate::document::session::new_doc();
+    if let Some(base) = base {
+        crate::document::session::apply_update(&document, &base)
+            .map_err(|error| JournalError::Corrupt(format!("journal base update is invalid: {error}")))?;
+    }
+    for record in records {
+        crate::document::session::apply_update(&document, &record.payload).map_err(|error| {
+            JournalError::Corrupt(format!("journal update {} is invalid: {error}", record.sequence))
+        })?;
+    }
+    Ok(Some(crate::document::session::encode_state(&document)))
 }
 
 fn verify_object_bytes(reference: &JournalObjectRef, bytes: &[u8]) -> JournalResult<()> {
@@ -697,5 +765,40 @@ mod tests {
         assert!(crate::storage::blob::validate_v2_object_key(&key).is_ok());
         assert!(crate::storage::blob::parse_v2_object_key(&key).is_ok());
         assert!(crate::storage::blob::validate_v2_object_key(&format!("{key}/extra")).is_err());
+    }
+
+    #[test]
+    fn recovery_composes_base_and_every_committed_update() {
+        use yrs::{Text, Transact};
+
+        let document = crate::document::session::new_doc();
+        let text = document.get_or_insert_text("body");
+        {
+            let mut transaction = document.transact_mut();
+            text.insert(&mut transaction, 0, "base");
+        }
+        let base = crate::document::session::encode_state(&document);
+        let vector = crate::document::session::encode_vector(&document);
+        {
+            let mut transaction = document.transact_mut();
+            text.insert(&mut transaction, 4, " + tail");
+        }
+        let update = crate::document::session::encode_diff(&document, &vector).expect("diff");
+        let records = vec![
+            JournalRecord::new("doc", 1, "retry-1", 0, base).expect("base record"),
+            JournalRecord::new("doc", 2, "retry-2", 0, update).expect("tail record"),
+        ];
+        let recovered = replay_complete_state(
+            Some(records[0].payload.clone()),
+            records[1..].to_vec(),
+        )
+        .expect("recovery")
+        .expect("state");
+        let restored = crate::document::session::new_doc();
+        crate::document::session::apply_update(&restored, &recovered).expect("restored update");
+        let restored_text = restored
+            .get_or_insert_text("body")
+            .get_string(&restored.transact());
+        assert_eq!(restored_text, "base + tail");
     }
 }

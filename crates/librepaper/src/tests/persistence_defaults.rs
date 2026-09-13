@@ -59,20 +59,15 @@ async fn persistence_default_limits_refuse_without_discarding_dirty_rooms() {
             .expect("exclusive deployment lock"),
     );
     rooms.attach_store(store.clone());
-    journal::JournalStore::new(catalog.clone())
-        .initialize_local("defaults-stress")
-        .expect("journal initializes");
     let limits = config.persistence();
-    let journal = journal::JournalRuntime::new_with_policy(
-        catalog,
-        objects,
-        "defaults-stress",
-        CoordinatorLimits::from_persistence(&limits),
-        limits,
-        -1,
-        -1,
-    )
-    .expect("journal runtime opens");
+    let journal = Arc::new(
+        journal::V2JournalRuntime::with_persistence(
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog)),
+            objects,
+            limits,
+        )
+        .expect("v2 journal runtime opens"),
+    );
     rooms.attach_journal(journal);
 
     let source_bytes = config.max_document.saturating_sub(32);

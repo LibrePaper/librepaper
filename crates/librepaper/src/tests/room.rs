@@ -969,17 +969,14 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
         })
         .await
         .unwrap();
-    let deployment_id = "review-deployment";
-    crate::storage::journal::JournalStore::new(catalog.clone())
-        .initialize_local(deployment_id)
-        .unwrap();
-    let runtime = crate::storage::journal::JournalRuntime::new(
-        catalog.clone(),
-        blobs.clone(),
-        deployment_id,
-        crate::storage::journal::CoordinatorLimits::default(),
-    )
-    .unwrap();
+    let runtime = Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone())),
+            blobs.clone(),
+            config.persistence(),
+        )
+        .unwrap(),
+    );
     let rooms = room::RoomSet::new(blobs.clone(), config.clone());
     rooms.attach_store(store.clone());
     rooms.attach_journal(runtime);
@@ -1009,13 +1006,14 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
         .delete(&[blob::room_lock_key("journal-room")])
         .await
         .unwrap();
-    let recovered_runtime = crate::storage::journal::JournalRuntime::new(
-        catalog.clone(),
-        blobs.clone(),
-        deployment_id,
-        crate::storage::journal::CoordinatorLimits::default(),
-    )
-    .unwrap();
+    let recovered_runtime = Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone())),
+            blobs.clone(),
+            config.persistence(),
+        )
+        .unwrap(),
+    );
     let recovered_rooms = room::RoomSet::new(blobs, config);
     recovered_rooms.attach_store(store);
     recovered_rooms.attach_journal(recovered_runtime);
@@ -1734,16 +1732,14 @@ async fn journal_scheduled_saves_obey_floor_and_dirty_deadline() {
         })
         .await
         .unwrap();
-    crate::storage::journal::JournalStore::new(catalog.clone())
-        .initialize_local("flush-test")
-        .unwrap();
-    let journal = crate::storage::journal::JournalRuntime::new(
-        catalog,
-        blobs.clone(),
-        "flush-test",
-        crate::storage::journal::CoordinatorLimits::default(),
-    )
-    .unwrap();
+    let journal = Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog)),
+            blobs.clone(),
+            config.persistence(),
+        )
+        .unwrap(),
+    );
     let rooms = room::RoomSet::new(blobs, config);
     rooms.attach_store(store);
     rooms.attach_journal(journal);

@@ -136,7 +136,7 @@ struct Deployment {
     catalog: Arc<Catalog>,
     store: Arc<store::Store>,
     rooms: RoomSet,
-    journal: Arc<journal::JournalRuntime>,
+    journal: Arc<dyn journal::DocumentJournal>,
     config: Arc<Configuration>,
 }
 
@@ -156,20 +156,15 @@ async fn open_deployment(root: &Path, config: Arc<Configuration>) -> Deployment 
             .expect("exclusive deployment lock"),
     );
     rooms.attach_store(store.clone());
-    journal::JournalStore::new(catalog.clone())
-        .initialize_local("capacity-benchmark")
-        .expect("journal initializes");
     let limits = config.persistence();
-    let journal = journal::JournalRuntime::new_with_policy(
-        catalog.clone(),
-        objects.clone(),
-        "capacity-benchmark",
-        CoordinatorLimits::from_persistence(&limits),
-        limits,
-        -1,
-        -1,
-    )
-    .expect("journal runtime opens");
+    let journal = Arc::new(
+        journal::V2JournalRuntime::with_persistence(
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone())),
+            objects.clone(),
+            limits,
+        )
+        .expect("v2 journal runtime opens"),
+    );
     rooms.attach_journal(journal.clone());
     Deployment {
         objects,
@@ -311,26 +306,28 @@ async fn persistence_capacity_workload() {
         "all documents remain resident"
     );
     let (after, deployment_files) = bytes_under(&root);
-    let journal_store = journal::JournalStore::new(deployment.catalog.clone());
-    let segments = journal_store
-        .committed_segments_async()
-        .await
-        .expect("segments");
-    let bases = journal_store.recovery_bases().await.expect("bases");
+    let (segments, segment_bytes, bases): (usize, Option<u64>, usize) = deployment
+        .catalog
+        .with_connection(|connection| {
+            let segments: usize = connection
+                .query_row("SELECT COUNT(*) FROM objects WHERE kind='journal_segment'", [], |row| row.get::<_, i64>(0))
+                .map_err(crate::storage::catalog::CatalogError::from)?
+                .try_into()
+                .map_err(|_| crate::storage::catalog::CatalogError::Invalid("segment count overflow".into()))?;
+            let segment_bytes: u64 = connection
+                .query_row("SELECT COALESCE(SUM(byte_length),0) FROM objects WHERE kind='journal_segment'", [], |row| row.get::<_, i64>(0))
+                .map_err(crate::storage::catalog::CatalogError::from)?
+                .try_into()
+                .map_err(|_| crate::storage::catalog::CatalogError::Invalid("segment bytes are negative".into()))?;
+            let bases: usize = connection
+                .query_row("SELECT COUNT(*) FROM objects WHERE kind='journal_base'", [], |row| row.get::<_, i64>(0))
+                .map_err(crate::storage::catalog::CatalogError::from)?
+                .try_into()
+                .map_err(|_| crate::storage::catalog::CatalogError::Invalid("base count overflow".into()))?;
+            Ok((segments, Some(segment_bytes), bases))
+        })
+        .expect("v2 journal inventory");
     let peak_staging_bytes = deployment.journal.memory().peak_bytes();
-    let segment_keys: std::collections::HashSet<_> =
-        segments.iter().map(|(key, _)| key.as_str()).collect();
-    let segment_bytes = Some(
-        deployment
-            .objects
-            .list("journal/capacity-benchmark/")
-            .await
-            .expect("journal inventory")
-            .iter()
-            .filter(|item| segment_keys.contains(item.key.as_str()))
-            .map(|item| u64::try_from(item.size).expect("nonnegative object size"))
-            .sum(),
-    );
     let (queued, executing) = deployment.journal.payload_bytes_in_flight().await;
     assert_eq!((queued, executing), (0, 0), "all saves settled");
     assert_eq!(deployment.journal.memory().held_bytes(), 0);
@@ -347,7 +344,6 @@ async fn persistence_capacity_workload() {
     // Reopen every durable layer from its files, as a process restart does.
     let config2 = deployment.config.clone();
     let dir_path = root.clone();
-    drop(journal_store);
     drop(receivers);
     drop(deployment);
     let reopen_start = Instant::now();
@@ -366,24 +362,14 @@ async fn persistence_capacity_workload() {
     );
     reopened.attach_store(store);
     let limits = config2.persistence();
-    let reopened_journal = journal::JournalRuntime::new_with_policy(
-        catalog.clone(),
-        objects.clone(),
-        "capacity-benchmark",
-        CoordinatorLimits::from_persistence(&limits),
-        limits,
-        -1,
-        -1,
-    )
-    .expect("journal runtime reopens");
-    journal::JournalStore::new(catalog.clone())
-        .reconcile_pending(objects.as_ref())
+    let reopened_adapter = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone()));
+    crate::storage::maintenance_v2::recover_v2_startup(reopened_adapter.as_ref(), objects.as_ref())
         .await
-        .expect("reconcile restart");
-    reopened_journal
-        .reconcile_object_reservations()
-        .await
-        .expect("reconcile accounting");
+        .expect("v2 journal recovery");
+    let reopened_journal = Arc::new(
+        journal::V2JournalRuntime::with_persistence(reopened_adapter, objects.clone(), limits)
+            .expect("v2 journal runtime reopens"),
+    );
     reopened.attach_journal(reopened_journal);
     let mut verified = 0;
     for (slug, source) in &expected {
@@ -452,9 +438,9 @@ async fn persistence_capacity_workload() {
             deployment_files_after: deployment_files,
         },
         journal: JournalCounters {
-            segments: segments.len(),
+            segments,
             segment_bytes,
-            bases: bases.len(),
+            bases,
             queued_bytes: Some(queued),
             peak_staging_bytes,
         },

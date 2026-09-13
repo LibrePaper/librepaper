@@ -336,23 +336,17 @@ async fn accumulated_update_quota(journaled: bool) {
             .await
             .unwrap(),
     );
-    let rooms = RoomSet::new(blobs.clone(), config);
+    let rooms = RoomSet::new(blobs.clone(), config.clone());
     rooms.attach_store(store.clone());
     if journaled {
-        crate::storage::journal::JournalStore::new(catalog.clone())
-            .initialize_local("quota-test")
-            .unwrap();
-        rooms.attach_journal(
-            crate::storage::journal::JournalRuntime::new_with_limits(
-                catalog.clone(),
+        rooms.attach_journal(Arc::new(
+            crate::storage::journal::V2JournalRuntime::with_persistence(
+                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone())),
                 blobs,
-                "quota-test",
-                crate::storage::journal::CoordinatorLimits::default(),
-                100_000,
-                1_000_000,
+                config.persistence(),
             )
             .unwrap(),
-        );
+        ));
     }
     store
         .put(store::Publication {

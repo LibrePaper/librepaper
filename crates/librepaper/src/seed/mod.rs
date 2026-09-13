@@ -27,7 +27,6 @@ use crate::http::{detail_of, get_json, post_directory, post_json, text};
 use crate::room::{Comment, Message, Region, Reply, Room, RoomSet, SourceAnchor};
 use crate::storage::backup::verify_local_backup;
 use crate::storage::blob::{clear_storage_checked, release_room_locks};
-use crate::storage::journal::JournalStore;
 use crate::storage::{open_storage, StorageOptions};
 use crate::util::timestamp;
 use crate::util::{die, new_id};
@@ -214,9 +213,6 @@ pub async fn seed_with_backup(
     reset_catalog(&catalog).unwrap_or_else(|err| die(err));
     update_seed_marker(&marker, "catalog-reset")
         .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
-    JournalStore::new(catalog.clone())
-        .initialize_local(&deployment_id)
-        .unwrap_or_else(|err| die(format!("could not initialize local journal: {err}")));
     seed_into_catalog(blobs, config, owner, documents, catalog, &marker).await;
     update_seed_marker(&marker, "seeded")
         .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
@@ -357,23 +353,16 @@ async fn seed_with_store(
     let rooms = RoomSet::new(blobs.clone(), config.clone());
     rooms.attach_store(store.clone());
     if let Some(catalog) = &store.catalog {
-        let deployment_id = catalog
-            .journal_state()
-            .unwrap_or_else(|err| die(format!("could not read local journal state: {err}")))
-            .deployment_id;
-        if !deployment_id.is_empty() {
-            let journal = crate::storage::journal::JournalRuntime::new_with_policy(
-                catalog.clone(),
+        let journal_catalog = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone()));
+        let journal = Arc::new(
+            crate::storage::journal::V2JournalRuntime::with_persistence(
+                journal_catalog,
                 blobs.clone(),
-                deployment_id,
-                crate::storage::journal::CoordinatorLimits::from_persistence(&config.persistence()),
                 config.persistence(),
-                config.storage.per_owner,
-                config.storage.total,
             )
-            .unwrap_or_else(|err| die(format!("could not initialize local journal: {err}")));
-            rooms.attach_journal(journal);
-        }
+            .unwrap_or_else(|err| die(format!("could not initialize v2 journal: {err}"))),
+        );
+        rooms.attach_journal(journal);
     }
     let mut seeded = Vec::new();
 

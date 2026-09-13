@@ -135,7 +135,7 @@ mod room_fixture {
 
     pub struct Fixture {
         pub rooms: RoomSet,
-        pub journal: Arc<journal::JournalRuntime>,
+        pub journal: Arc<dyn journal::DocumentJournal>,
         pub store: Arc<store::Store>,
         pub catalog: Arc<crate::storage::catalog::Catalog>,
         pub blobs: Arc<dyn BlobStore>,
@@ -161,19 +161,14 @@ mod room_fixture {
         );
         let rooms = RoomSet::new(blobs.clone(), config.clone());
         rooms.attach_store(store.clone());
-        journal::JournalStore::new(catalog.clone())
-            .initialize_local("size-test")
-            .expect("the journal initializes");
-        let runtime = journal::JournalRuntime::new_with_policy(
-            catalog.clone(),
-            blobs.clone(),
-            "size-test",
-            journal::CoordinatorLimits::from_persistence(&persistence),
-            persistence,
-            -1,
-            -1,
-        )
-        .expect("the journal runtime opens");
+        let runtime = Arc::new(
+            journal::V2JournalRuntime::with_persistence(
+                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog.clone())),
+                blobs.clone(),
+                persistence,
+            )
+            .expect("the v2 journal runtime opens"),
+        );
         rooms.attach_journal(runtime.clone());
         Fixture {
             rooms,
@@ -189,16 +184,14 @@ mod room_fixture {
     /// A second process over the same storage: what a restart is.
     pub async fn reopen(fixture: &Fixture) -> RoomSet {
         let persistence = fixture.config.persistence();
-        let runtime = journal::JournalRuntime::new_with_policy(
-            fixture.catalog.clone(),
-            fixture.blobs.clone(),
-            "size-test",
-            journal::CoordinatorLimits::from_persistence(&persistence),
-            persistence,
-            -1,
-            -1,
-        )
-        .expect("the journal runtime reopens");
+        let runtime = Arc::new(
+            journal::V2JournalRuntime::with_persistence(
+                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(fixture.catalog.clone())),
+                fixture.blobs.clone(),
+                persistence,
+            )
+            .expect("the v2 journal runtime reopens"),
+        );
         let rooms = RoomSet::new(fixture.blobs.clone(), fixture.config.clone());
         rooms.attach_store(fixture.store.clone());
         rooms.attach_journal(runtime);

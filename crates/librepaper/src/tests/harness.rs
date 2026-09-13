@@ -240,10 +240,6 @@ async fn build_test_server(
     catalog
         .set_link_sealing_key(TEST_KEY)
         .expect("test link sealing is configured");
-    let journal_store = crate::storage::journal::JournalStore::new(catalog.clone());
-    journal_store
-        .initialize_local("test-deployment")
-        .expect("the test journal initializes");
     let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
         .await
         .expect("an empty store opens");
@@ -269,16 +265,14 @@ async fn build_test_server(
     );
     server.accounts = Arc::new(TestAccounts);
     server.listing = listing;
-    let journal = crate::storage::journal::JournalRuntime::new_with_policy(
-        catalog,
-        blobs,
-        "test-deployment",
-        crate::storage::journal::CoordinatorLimits::from_persistence(&persistence),
-        persistence,
-        -1,
-        -1,
-    )
-    .expect("the test journal runtime opens");
+    let journal = Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog)),
+            blobs,
+            persistence,
+        )
+        .expect("the v2 test journal runtime opens"),
+    );
     server.rooms.attach_journal(journal);
     TestServerParts {
         instance: server,
@@ -323,9 +317,6 @@ pub async fn server_over(path: &std::path::Path, config: Configuration) -> (Stri
     catalog
         .set_link_sealing_key(TEST_KEY)
         .expect("test link sealing is configured");
-    crate::storage::journal::JournalStore::new(catalog.clone())
-        .initialize_local("test-deployment")
-        .expect("the journal reopens");
     let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
         .await
         .expect("the store reopens");
@@ -353,18 +344,14 @@ pub async fn server_over(path: &std::path::Path, config: Configuration) -> (Stri
         Policy::parse("anyone"),
     );
     instance.accounts = Arc::new(TestAccounts);
-    instance.rooms.attach_journal(
-        crate::storage::journal::JournalRuntime::new_with_policy(
-            catalog,
+    instance.rooms.attach_journal(Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::new(catalog)),
             blobs,
-            "test-deployment",
-            crate::storage::journal::CoordinatorLimits::from_persistence(&persistence),
             persistence,
-            -1,
-            -1,
         )
-        .expect("journal runtime"),
-    );
+        .expect("v2 journal runtime"),
+    ));
     let instance = Arc::new(instance);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

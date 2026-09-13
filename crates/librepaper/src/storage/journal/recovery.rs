@@ -75,13 +75,13 @@ pub struct ManifestShard {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct RecoveryBaseBody {
-    pub(super) format_version: u16,
-    pub(super) storage_id: String,
-    pub(super) epoch: u64,
-    pub(super) sequence: u64,
-    pub(super) payload: Vec<u8>,
-    pub(super) digest: String,
+pub(crate) struct RecoveryBaseBody {
+    pub(crate) format_version: u16,
+    pub(crate) storage_id: String,
+    pub(crate) epoch: u64,
+    pub(crate) sequence: u64,
+    pub(crate) payload: Vec<u8>,
+    pub(crate) digest: String,
 }
 
 const RECOVERY_BASE_MAGIC: &[u8; 4] = b"KJBS";
@@ -91,7 +91,7 @@ const RECOVERY_BASE_CODEC_VERSION: u16 = 1;
 pub const MAX_RECOVERY_BASE_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Encode recovery bases as bounded binary objects.
-pub(super) fn encode_recovery_base(body: &RecoveryBaseBody) -> JournalResult<Vec<u8>> {
+pub(crate) fn encode_recovery_base(body: &RecoveryBaseBody) -> JournalResult<Vec<u8>> {
     validate_recovery_base(body)?;
     let mut encoded = Vec::with_capacity(64 + body.storage_id.len() + body.payload.len());
     encoded.extend_from_slice(RECOVERY_BASE_MAGIC);
@@ -113,7 +113,7 @@ pub(super) fn encode_recovery_base(body: &RecoveryBaseBody) -> JournalResult<Vec
     Ok(encoded)
 }
 
-pub(super) fn decode_recovery_base(bytes: &[u8]) -> JournalResult<RecoveryBaseBody> {
+pub(crate) fn decode_recovery_base(bytes: &[u8]) -> JournalResult<RecoveryBaseBody> {
     let mut cursor = Cursor::new(bytes);
     if cursor.take(4)? != RECOVERY_BASE_MAGIC {
         return Err(JournalError::Corrupt("bad recovery base magic".into()));
