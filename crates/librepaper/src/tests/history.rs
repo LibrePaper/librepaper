@@ -412,7 +412,7 @@ async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
     let catalog = store.catalog.as_ref().unwrap();
     let before = catalog.checkpoints("probe", None, 100).unwrap();
     room.set_source("edited", "markdown").await.unwrap();
-    *hooked.fail.lock().unwrap() = Some(super::room::object_write_prefix(&store, "probe"));
+    *hooked.fail.lock().unwrap() = Some(super::room::object_write_prefix(&store, "probe").trim_end_matches('*').to_owned());
     assert!(room.persist().await.is_err());
     assert_eq!(room.source().await, "edited");
     assert_eq!(catalog.checkpoints("probe", None, 100).unwrap(), before);
@@ -1224,7 +1224,7 @@ async fn a_former_writer_generation_cannot_publish_after_being_fenced() {
     let before = super::room::recovered_session(&store, "probe").await;
     let vector = crate::document::session::encode_vector(&before);
     room.set_source("stale writer", "markdown").await.unwrap();
-    *hooked.pause.lock().unwrap() = Some(("put".into(), format!("{}*", super::room::object_write_prefix(&store, "probe"))));
+    *hooked.pause.lock().unwrap() = Some(("put".into(), super::room::object_write_prefix(&store, "probe")));
     let writer = room.clone();
     let pending = tokio::spawn(async move { writer.persist().await });
     tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified()).await.unwrap();

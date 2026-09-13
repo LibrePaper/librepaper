@@ -1744,8 +1744,7 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
     assert!(plan.iter().all(|detail| !detail.contains("SCAN documents")));
     assert!(plan.iter().all(|detail| !detail.contains("TEMP B-TREE")));
 
-    // The other authorization sources must keep the same bounded, ordered
-    // shape.  These plans are deliberately checked separately: combining
+    // Check each authorization source separately: combining
     // grants/guests/examples with OR or EXISTS makes SQLite sort or scan the
     // whole document table before it can honor LIMIT.
     let plans = catalog
@@ -1767,12 +1766,14 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
                 .collect::<Vec<_>>())
         })
         .unwrap();
-    // Grant visibility starts from the account-scoped grant index and may
-    // sort only that bounded candidate page.  Open and example visibility
+    // Grant visibility starts from the account-scoped grant index and sorts
+    // that account's matching grants before applying LIMIT. The input to the
+    // sort can exceed the returned page size. Open and example visibility
     // must use the covering document indexes and therefore cannot spill to a
     // temporary tree or scan the document table.
     assert!(
-        plans[0].iter().all(|detail| !detail.contains("SCAN documents")),
+        plans[0].iter().any(|detail| detail.contains("SEARCH g ") && detail.contains("account_id"))
+            && plans[0].iter().all(|detail| !detail.starts_with("SCAN d ")),
         "grant plan: {:?}",
         plans[0]
     );

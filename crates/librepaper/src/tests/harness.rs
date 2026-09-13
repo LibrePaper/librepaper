@@ -645,11 +645,7 @@ pub async fn publish_display(
         .unwrap(),
     );
     let id = crate::util::new_request_key();
-    let publication_id = hex::encode(crate::auth::random_bytes(16));
     let manifest = json!({
-        "publication_id": publication_id,
-        "published_at": "2026-01-01T00:00:00Z",
-        "publisher": "test-publisher",
         "bundle_sha256": bundle_sha,
         "source_sha256": "a".repeat(64),
         "render_config_sha256": "b".repeat(64),

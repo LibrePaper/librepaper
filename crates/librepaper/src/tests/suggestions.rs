@@ -124,7 +124,7 @@ async fn a_reader_link_cannot_accept() {
         &key,
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 403, "{payload}");
@@ -154,7 +154,7 @@ async fn accept_by_a_commenter_is_refused() {
         &key,
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 400, "{payload}");
@@ -195,7 +195,7 @@ async fn accept_applies_broadcasts_checkpoints_and_marks_the_comment() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 200, "{payload}");
@@ -274,7 +274,7 @@ async fn accept_after_the_passage_moved_still_applies() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 200, "{payload}");
@@ -315,7 +315,7 @@ async fn accept_after_the_passage_changed_refuses_with_stale() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 400, "{payload}");
@@ -360,7 +360,7 @@ async fn accept_with_a_concurrent_unrelated_edit_merges() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 200, "{payload}");
@@ -387,7 +387,7 @@ async fn accept_refuses_a_suggestion_with_no_source_anchor() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 400, "{payload}");
@@ -413,7 +413,7 @@ async fn accept_refuses_a_non_suggestion() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 400, "{payload}");
@@ -425,6 +425,7 @@ async fn accept_refuses_a_non_suggestion() {
 
 #[tokio::test]
 async fn retrying_an_accept_with_the_same_request_id_is_a_noop() {
+    let request_key = crate::util::new_request_key();
     let server = new_test_server().await;
     let source = "# Paper\n\nThe quick brown fox jumps.\n";
     let document = publish_markdown(&server.url, source).await;
@@ -445,7 +446,7 @@ async fn retrying_an_accept_with_the_same_request_id_is_a_noop() {
     let (status, first) = post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "same"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": request_key}),
     )
     .await;
     assert_eq!(status, 200, "{first}");
@@ -457,7 +458,7 @@ async fn retrying_an_accept_with_the_same_request_id_is_a_noop() {
     let (status, second) = post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "same"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": request_key}),
     )
     .await;
     assert_eq!(status, 200, "{second}");
@@ -475,7 +476,7 @@ async fn retrying_an_accept_with_the_same_request_id_is_a_noop() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "different"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 400, "{payload}");
@@ -505,7 +506,7 @@ async fn reject_resolves_without_touching_the_document() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "reject", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "reject", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 200, "{payload}");
@@ -546,14 +547,14 @@ async fn an_accepted_suggestion_cannot_be_rejected() {
     post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
 
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "reject", "comment_id": comment_id, "request_id": "r2"}),
+        json!({"type": "reject", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 400, "{payload}");
@@ -630,7 +631,7 @@ async fn reopening_an_accepted_suggestion_by_resolve_is_refused() {
     post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
 
@@ -667,7 +668,7 @@ async fn a_rejected_suggestion_may_still_be_accepted() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "reject", "comment_id": comment_id, "request_id": "r1"}),
+        json!({"type": "reject", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 200, "{payload}");
@@ -675,7 +676,7 @@ async fn a_rejected_suggestion_may_still_be_accepted() {
     let (status, payload) = post(
         &server.url,
         &path,
-        json!({"type": "accept", "comment_id": comment_id, "request_id": "r2"}),
+        json!({"type": "accept", "comment_id": comment_id, "request_id": crate::util::new_request_key()}),
     )
     .await;
     assert_eq!(status, 200, "reversing a rejection was refused: {payload}");
