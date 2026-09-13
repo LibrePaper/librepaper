@@ -120,6 +120,9 @@ pub struct JournalCompactionAdmission {
 /// this trait carries descriptors only, never unbounded object lists.
 #[async_trait::async_trait]
 pub trait V2JournalCatalog: Send + Sync {
+    fn physical_namespace(&self) -> usize {
+        self as *const Self as *const () as usize
+    }
     async fn journal_head(&self, document_id: &str) -> Result<JournalHead, String>;
     async fn prepare_append(&self, request: JournalAppendRequest)
         -> Result<JournalAppendAdmission, String>;
@@ -294,8 +297,9 @@ where
             .prepare_compaction(document_id, expected_epoch, expected_sequence, encoded_base.len() as u64, digest)
             .await
             .map_err(JournalError::CatalogText)?;
-        let written = match write_v2_object_with_id(
-            self.blobs.as_ref(),
+        let written = match guarded_write_v2_object(
+            self.blobs.clone(),
+            self.catalog.physical_namespace(),
             document_id,
             admission.base_allocation.object_id.clone(),
             encoded_base,
@@ -720,7 +724,7 @@ pub async fn append_segments(
         .prepare_append(request)
         .await
         .map_err(JournalError::CatalogText)?;
-    let written = match write_encoded_segments(blobs, &admission, encoded).await {
+    let written = match write_encoded_segments(blobs, catalog.physical_namespace(), &admission, encoded).await {
         Ok(written) => written,
         Err(error) => {
             let _ = catalog.abort_append(&admission.operation_id).await;
@@ -800,7 +804,8 @@ pub struct WrittenJournalObject {
 }
 
 async fn write_encoded_segments(
-    blobs: &dyn BlobStore,
+    blobs: Arc<dyn BlobStore>,
+    namespace: usize,
     admission: &JournalAppendAdmission,
     encoded: Vec<(DocumentSegment, Vec<u8>, String)>,
 ) -> JournalResult<Vec<WrittenJournalObject>> {
@@ -818,8 +823,14 @@ async fn write_encoded_segments(
         {
             return Err(JournalError::Conflict("journal allocation does not match encoded segment".into()));
         }
-        blobs
-            .put_new(&allocation.storage_key, body.clone(), JOURNAL_OBJECT_CONTENT_TYPE)
+        guarded_write_v2_object(
+            blobs.clone(),
+            namespace,
+            &admission.document_id,
+            allocation.object_id.clone(),
+            body.clone(),
+            JOURNAL_OBJECT_CONTENT_TYPE,
+        )
             .await
             .map_err(|error| match error {
                 BlobError::Conflict => JournalError::Conflict("journal allocation id reused".into()),
@@ -836,6 +847,50 @@ async fn write_encoded_segments(
         });
     }
     Ok(written)
+}
+
+/// A detached PUT cannot be cancelled with the room request that initiated
+/// it. If the caller disappears after admission, startup recovery can still
+/// observe and settle the immutable object by digest.
+async fn guarded_write_v2_object(
+    blobs: Arc<dyn BlobStore>,
+    namespace: usize,
+    document_id: &str,
+    object_id: ObjectId,
+    body: Vec<u8>,
+    content_type: &str,
+) -> JournalResult<WrittenObject> {
+    let document_id = document_id.to_owned();
+    let content_type = content_type.to_owned();
+    let object_key = object_id.as_str().to_owned();
+    if !crate::storage::v2_catalog::register_physical_guard(namespace, &document_id, &object_key) {
+        return Err(JournalError::Conflict(
+            "journal allocation already has a physical write in flight".into(),
+        ));
+    }
+    tokio::spawn(async move {
+        let result = write_v2_object_with_id(
+            blobs.as_ref(),
+            &document_id,
+            object_id,
+            body,
+            &content_type,
+        )
+        .await;
+        if let Ok(written) = &result {
+            crate::storage::v2_catalog::complete_physical_guard(namespace, &document_id, written);
+            crate::storage::v2_catalog::remove_physical_guard(namespace, &document_id, &object_key);
+        } else {
+            crate::storage::v2_catalog::remove_physical_guard(namespace, &document_id, &object_key);
+        }
+        result
+    })
+    .await
+    .map_err(|error| JournalError::Storage(format!("guarded journal PUT task failed: {error}")))?
+    .map_err(|error| match error {
+        BlobError::Conflict => JournalError::Conflict("journal allocation id reused".into()),
+        other => JournalError::Storage(other.to_string()),
+    })
 }
 
 /// Decode and validate all record fragments in one object. A segment may have

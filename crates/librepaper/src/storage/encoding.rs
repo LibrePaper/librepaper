@@ -466,7 +466,7 @@ pub struct StagedSourceObjects {
 /// the returned descriptors transactionally; this function never advances a
 /// document head or acknowledges a checkpoint.
 pub async fn write_encoded_source(
-    blobs: &dyn crate::storage::blob::BlobStore,
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
     document_id: &str,
     source: &EncodedSource,
     allocations: &HashMap<[u8; 32], ObjectId>,
@@ -484,7 +484,7 @@ pub async fn write_encoded_source(
 }
 
 pub async fn write_encoded_source_with_existing(
-    blobs: &dyn crate::storage::blob::BlobStore,
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
     document_id: &str,
     source: &EncodedSource,
     existing: &HashMap<[u8; 32], PhysicalLocator>,
@@ -497,14 +497,23 @@ pub async fn write_encoded_source_with_existing(
         let object_id = allocations.get(&object.digest).ok_or_else(|| {
             EncodingError::Integrity("missing admitted allocation for source chunk".into())
         })?;
-        let written = crate::storage::blob::write_v2_object_with_id(
-            blobs,
-            document_id,
-            object_id.clone(),
-            object.encoded.clone(),
-            "application/vnd.librepaper.source-chunk",
-        )
+        let allocated_object_id = object_id.clone();
+        let written = tokio::spawn({
+            let document_id = document_id.to_owned();
+            let content = object.encoded.clone();
+            async move {
+                crate::storage::blob::write_v2_object_with_id(
+                    blobs.as_ref(),
+                    &document_id,
+                    allocated_object_id,
+                    content,
+                    "application/vnd.librepaper.source-chunk",
+                )
+                .await
+            }
+        })
         .await
+        .map_err(|error| EncodingError::Worker(format!("source chunk PUT task failed: {error}")))?
         .map_err(|error| EncodingError::Worker(error.to_string()))?;
         let object_digest = decode_digest(&written.digest)?;
         by_digest.insert(
@@ -546,14 +555,19 @@ pub async fn write_encoded_source_with_existing(
         chunk_locators,
     };
     let recipe_bytes = recipe.to_bytes()?;
-    let recipe_object = crate::storage::blob::write_v2_object_with_id(
-        blobs,
-        document_id,
-        recipe_object_id,
-        recipe_bytes,
-        "application/vnd.librepaper.source-recipe",
-    )
+    let document_for_recipe = document_id.to_owned();
+    let recipe_object = tokio::spawn(async move {
+        crate::storage::blob::write_v2_object_with_id(
+            blobs.as_ref(),
+            &document_for_recipe,
+            recipe_object_id,
+            recipe_bytes,
+            "application/vnd.librepaper.source-recipe",
+        )
+        .await
+    })
     .await
+    .map_err(|error| EncodingError::Worker(format!("source recipe PUT task failed: {error}")))?
     .map_err(|error| EncodingError::Worker(error.to_string()))?;
     Ok(StagedSourceObjects { recipe, recipe_object, chunk_objects })
 }

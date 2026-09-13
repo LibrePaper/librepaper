@@ -40,13 +40,14 @@ struct InflightPut {
     written: Option<WrittenObject>,
 }
 
-static INFLIGHT_PUTS: OnceLock<Mutex<HashMap<(String, String), InflightPut>>> = OnceLock::new();
+static INFLIGHT_PUTS: OnceLock<Mutex<HashMap<(usize, String, String), InflightPut>>> = OnceLock::new();
 
-fn inflight_puts() -> &'static Mutex<HashMap<(String, String), InflightPut>> {
+fn inflight_puts() -> &'static Mutex<HashMap<(usize, String, String), InflightPut>> {
     INFLIGHT_PUTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn register_inflight(
+    namespace: usize,
     document_id: &str,
     object_id: &str,
     reserved: i64,
@@ -54,7 +55,7 @@ fn register_inflight(
     operation_id: &str,
     writer_generation: &str,
     expected_digest: &str,
-) {
+) -> bool {
     let record = InflightPut {
         document_id: document_id.to_owned(),
         object_id: object_id.to_owned(),
@@ -65,14 +66,23 @@ fn register_inflight(
         expected_digest: expected_digest.to_owned(),
         written: None,
     };
-    inflight_puts()
+    let mut guards = inflight_puts()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert((document_id.to_owned(), object_id.to_owned()), record);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key = (namespace, document_id.to_owned(), object_id.to_owned());
+    if guards.contains_key(&key) {
+        return false;
+    }
+    guards.insert(key, record);
+    true
 }
 
-fn complete_inflight(written: WrittenObject, document_id: &str) {
-    let key = (document_id.to_owned(), written.object_id.as_str().to_owned());
+pub(crate) fn register_physical_guard(namespace: usize, document_id: &str, object_id: &str) -> bool {
+    register_inflight(namespace, document_id, object_id, 0, "", "", "", "")
+}
+
+pub(crate) fn complete_physical_guard(namespace: usize, document_id: &str, written: &WrittenObject) {
+    let key = (namespace, document_id.to_owned(), written.object_id.as_str().to_owned());
     if let Some(record) = inflight_puts()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -82,18 +92,26 @@ fn complete_inflight(written: WrittenObject, document_id: &str) {
     }
 }
 
-fn remove_inflight(document_id: &str, object_id: &str) {
-    inflight_puts()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&(document_id.to_owned(), object_id.to_owned()));
+fn complete_inflight(namespace: usize, written: WrittenObject, document_id: &str) {
+    complete_physical_guard(namespace, document_id, &written);
 }
 
-fn inflight_active(document_id: &str, object_id: &str) -> bool {
+pub(crate) fn remove_physical_guard(namespace: usize, document_id: &str, object_id: &str) {
     inflight_puts()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .contains_key(&(document_id.to_owned(), object_id.to_owned()))
+        .remove(&(namespace, document_id.to_owned(), object_id.to_owned()));
+}
+
+fn remove_inflight(namespace: usize, document_id: &str, object_id: &str) {
+    remove_physical_guard(namespace, document_id, object_id);
+}
+
+fn inflight_active(namespace: usize, document_id: &str, object_id: &str) -> bool {
+    inflight_puts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(&(namespace, document_id.to_owned(), object_id.to_owned()))
 }
 
 fn completed_inflight(limit: usize) -> Vec<InflightPut> {
@@ -112,17 +130,27 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
         return Ok(());
     };
     catalog
-        .execute(1024, move |connection| {
+        .with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let (state, digest, catalog_reserved, catalog_kind, allocation_operation, operation_state, operation_generation, writer_generation): (String, String, i64, String, Option<String>, Option<String>, Option<String>, String) = transaction
+            let (state, digest, catalog_reserved, catalog_kind, allocation_operation, operation_state, operation_generation, writer_generation, catalog_length): (String, String, i64, String, Option<String>, Option<String>, Option<String>, String, Option<i64>) = transaction
                 .query_row(
-                    "SELECT o.state,o.digest,o.reserved_bytes,o.kind,o.allocation_operation_id,op.state,op.writer_generation,s.writer_generation FROM objects o LEFT JOIN operations op ON op.id=o.allocation_operation_id AND op.document_id=o.document_id CROSS JOIN server_state s WHERE o.document_id=?1 AND o.id=?2",
+                    "SELECT o.state,o.digest,o.reserved_bytes,o.kind,o.allocation_operation_id,op.state,op.writer_generation,s.writer_generation,o.byte_length FROM objects o LEFT JOIN operations op ON op.id=o.allocation_operation_id AND op.document_id=o.document_id CROSS JOIN server_state s WHERE o.document_id=?1 AND o.id=?2",
                     params![record.document_id, written.object_id.as_str()],
                     |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
+            if state == "available"
+                && digest == record.expected_digest
+                && catalog_reserved == 0
+                && catalog_length == i64::try_from(written.byte_length).ok()
+            {
+                transaction
+                    .commit()
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                return Ok(());
+            }
             if state != "allocated"
                 || digest != record.expected_digest
                 || written.byte_length > catalog_reserved as u64
@@ -179,7 +207,6 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             Ok(())
         })
-        .await
         .map_err(|error| error.to_string())
 }
 
@@ -331,7 +358,7 @@ impl V2GcCatalog for Catalog {
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let expired_receipts = transaction
                 .execute(
-                    "DELETE FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id) AND id IN (SELECT id FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 ORDER BY receipt_expires_at,id LIMIT ?2)",
+                    "DELETE FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM objects o JOIN object_leases l ON l.document_id=o.document_id AND l.object_id=o.id WHERE o.allocation_operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM objects o JOIN checkpoint_objects c ON c.document_id=o.document_id AND c.object_id=o.id WHERE o.allocation_operation_id=operations.id) AND id IN (SELECT id FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 ORDER BY receipt_expires_at,id LIMIT ?2)",
                     params![now, i64::try_from(limit).unwrap_or(i64::MAX)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
@@ -352,7 +379,7 @@ impl V2GcCatalog for Catalog {
                 .await
                 .is_ok()
             {
-                remove_inflight(&key_document, &key_object);
+                remove_inflight(self as *const Catalog as usize, &key_document, &key_object);
                 settled = settled.saturating_add(1);
             }
         }
@@ -373,7 +400,7 @@ impl V2GcCatalog for Catalog {
             // period before selecting them; otherwise they are immortal.
             transaction
                 .execute(
-                    "UPDATE objects SET gc_after=?1 WHERE state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NULL AND id IN (SELECT id FROM objects WHERE state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NULL ORDER BY created_at,document_id,id LIMIT ?2)",
+                    "UPDATE objects SET gc_after=?1 WHERE state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NULL AND (document_id,id) IN (SELECT document_id,id FROM objects WHERE state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NULL ORDER BY created_at,document_id,id LIMIT ?2)",
                     params![now.saturating_add(GC_RETRY_MS), page_limit],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
@@ -407,7 +434,7 @@ impl V2GcCatalog for Catalog {
             let retry_at = now.saturating_add(GC_RETRY_MS);
             let mut claimed = Vec::with_capacity(rows.len());
             for (document_id, object_id, storage_key, gc_after, state) in rows {
-                if inflight_active(&document_id, &object_id) {
+                if inflight_active(self as *const Catalog as usize, &document_id, &object_id) {
                     continue;
                 }
                 let backup_frozen: i64 = transaction
@@ -519,6 +546,10 @@ impl V2GcCatalog for Catalog {
 
 #[async_trait]
 impl V2JournalCatalog for V2JournalCatalogAdapter {
+    fn physical_namespace(&self) -> usize {
+        Arc::as_ptr(&self.catalog) as usize
+    }
+
     async fn journal_head(&self, document_id: &str) -> Result<JournalHead, String> {
         let catalog = Arc::clone(&self.catalog);
         let document_id = document_id.to_owned();
@@ -1096,7 +1127,9 @@ impl V2ObjectWriter {
         let blobs = Arc::clone(&self.blobs);
         let document_for_write = document_id.to_owned();
         let content_type_for_write = content_type.to_owned();
-        register_inflight(
+        let namespace = Arc::as_ptr(&self.catalog) as usize;
+        if !register_inflight(
+            namespace,
             document_id,
             object_id.as_str(),
             reserved,
@@ -1104,7 +1137,9 @@ impl V2ObjectWriter {
             &admitted_operation,
             &admitted_generation,
             &expected_digest,
-        );
+        ) {
+            return Err("physical object write is already in flight for this allocation".into());
+        }
         let guarded_document = document_id.to_owned();
         let guarded_object = object_id.as_str().to_owned();
         let physical_result = tokio::spawn(async move {
@@ -1117,17 +1152,19 @@ impl V2ObjectWriter {
             )
             .await;
             if let Ok(written) = &result {
-                complete_inflight(written.clone(), &guarded_document);
+                complete_inflight(namespace, written.clone(), &guarded_document);
+            } else {
+                remove_physical_guard(namespace, &guarded_document, &guarded_object);
             }
             result
         })
         .await
         .map_err(|error| {
-            remove_inflight(document_id, &guarded_object);
+            remove_inflight(namespace, document_id, &guarded_object);
             format!("physical object task failed: {error}")
         })?
         .map_err(|error| {
-            remove_inflight(document_id, &guarded_object);
+            remove_inflight(namespace, document_id, &guarded_object);
             error.to_string()
         });
         let written = match physical_result {
@@ -1190,7 +1227,7 @@ impl V2ObjectWriter {
         })
         .await
         .map_err(|error| error.to_string())?;
-        remove_inflight(document_id, written.object_id.as_str());
+        remove_inflight(namespace, document_id, written.object_id.as_str());
         Ok(written)
     }
 }

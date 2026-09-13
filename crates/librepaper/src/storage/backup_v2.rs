@@ -897,8 +897,8 @@ impl V2RestoreCatalog for LocalV2RestoreCatalog {
 
     async fn abort_restored_backup(&self, operation_id: &str) -> Result<(), String> {
         let operation_id = operation_id.to_owned();
-        let catalog = Catalog::open_with(&self.paths.catalog, true)
-            .map_err(|error| error.to_string())?;
+        let catalog = Arc::new(Catalog::open_with(&self.paths.catalog, true)
+            .map_err(|error| error.to_string())?);
         catalog
             .execute_catalog(512, move |catalog| {
                 catalog.with_connection(|connection| {
@@ -1202,6 +1202,70 @@ mod tests {
         ) -> crate::storage::blob::BlobResult<()> {
             self.0.lock().unwrap().insert(key.to_owned(), body);
             Ok(())
+        }
+
+        async fn put_new(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> crate::storage::blob::BlobResult<()> {
+            if self.exists(key).await? {
+                return Err(crate::storage::blob::BlobError::Conflict);
+            }
+            self.put(key, body, content_type).await
+        }
+
+        async fn delete(&self, keys: &[String]) -> crate::storage::blob::BlobResult<()> {
+            let mut objects = self.0.lock().unwrap();
+            for key in keys {
+                objects.remove(key);
+            }
+            Ok(())
+        }
+
+        async fn list(&self, prefix: &str) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| key.starts_with(prefix))
+                .map(|(key, body)| crate::storage::blob::BlobInfo {
+                    key: key.clone(),
+                    size: body.len() as i64,
+                    version: crate::storage::blob::version_of(body),
+                })
+                .collect())
+        }
+
+        async fn swap(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            expect: &str,
+        ) -> crate::storage::blob::BlobResult<crate::storage::blob::BlobVersion> {
+            let mut objects = self.0.lock().unwrap();
+            let actual = objects
+                .get(key)
+                .map(|value| crate::storage::blob::version_of(value))
+                .unwrap_or_default();
+            if actual != expect {
+                return Err(crate::storage::blob::BlobError::Conflict);
+            }
+            let version = crate::storage::blob::version_of(&body);
+            objects.insert(key.to_owned(), body);
+            Ok(version)
+        }
+
+        async fn get_versioned(&self, key: &str) -> crate::storage::blob::BlobResult<(Vec<u8>, crate::storage::blob::BlobVersion)> {
+            let body = self.get(key).await?;
+            let version = crate::storage::blob::version_of(&body);
+            Ok((body, version))
+        }
+
+        fn describe(&self) -> String {
+            "memory-test-store".into()
         }
     }
 
