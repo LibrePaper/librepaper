@@ -326,6 +326,13 @@ pub(super) fn insert_comment_tx(
     annotation_session_active(tx, authority)?;
     let doc = document_id(tx, &comment.slug)?;
     annotation_account_authorized(tx, &doc, authority)?;
+    let occupied: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM annotations WHERE document_id=?1 AND id=?2)",
+        params![doc, comment.id], |row| row.get(0),
+    )?;
+    if occupied {
+        return Err(CatalogError::Conflict("annotation submission id is already in use".into()));
+    }
     let count: i64 = tx
         .query_row(
             "SELECT count(*) FROM annotations WHERE document_id=?1",
@@ -1167,6 +1174,13 @@ impl Catalog {
         annotation_session_active(tx, authority)?;
         let doc = document_id(tx, &reply.slug)?;
         annotation_account_authorized(tx, &doc, authority)?;
+        let occupied: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM replies WHERE document_id=?1 AND annotation_id=?2 AND id=?3)",
+            params![doc, reply.comment_id, reply.id], |row| row.get(0),
+        )?;
+        if occupied {
+            return Err(CatalogError::Conflict("reply submission id is already in use".into()));
+        }
         let exists: i64 = tx
             .query_row(
                 "SELECT count(*) FROM annotations WHERE document_id=?1 AND id=?2",

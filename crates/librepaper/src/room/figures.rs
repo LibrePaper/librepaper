@@ -326,6 +326,17 @@ impl Room {
     /// A figure's bytes, for whoever may read the document.
     #[cfg(test)]
     pub async fn read_asset(&self, sha: &str) -> Option<Vec<u8>> {
+        if let Some(catalog) = self.catalog.get() {
+            let storage_key: Option<String> = catalog.with_connection(|connection| {
+                use rusqlite::OptionalExtension;
+                Ok(connection.query_row(
+                    "SELECT storage_key FROM objects WHERE document_id=?1 AND kind='asset'
+                     AND state='available' AND encoding_version=1 AND digest=?2 ORDER BY id LIMIT 1",
+                    rusqlite::params![self.storage_id, sha], |row| row.get(0),
+                ).optional()?)
+            }).ok()?;
+            return self.blobs.get(&storage_key?).await.ok();
+        }
         self.blobs
             .get(&crate::storage::blob::asset_key(&self.storage_id, sha))
             .await

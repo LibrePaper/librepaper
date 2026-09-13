@@ -250,8 +250,19 @@ async fn comments_broadcast_to_every_reader() {
     assert_eq!(comments.len(), 1);
     let identifier = text(&comments[0], "id");
 
-    author
-        .write(json!({"type": "resolve", "comment_id": identifier, "resolved": true}))
+    // An anonymous connection without a visitor cookie cannot prove it owns
+    // the annotation. Resolve as the document owner through a separate socket.
+    let mut moderator = dial_websocket_with(
+        &server.url,
+        &slug,
+        &format!("cookie: {}\r\n", session_as(TEST_PUBLISHER)),
+    )
+    .await
+    .expect("owner socket");
+    assert_eq!(moderator.read().await["type"], "hello");
+    moderator
+        .write(json!({"type": "resolve", "comment_id": identifier, "resolved": true,
+            "request_id":crate::util::new_request_key()}))
         .await;
     let event = watcher.read().await;
     assert_eq!(event["type"], "resolve");

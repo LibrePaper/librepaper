@@ -3068,7 +3068,7 @@ impl Catalog {
                         })?;
                     if recipe.recipe.file_digest != file.logical_digest
                         || recipe.recipe.uncompressed_len != file.logical_length
-                        || locator.object_digest != Sha256::digest(bytes).into()
+                        || locator.object_digest != <[u8; 32]>::from(Sha256::digest(bytes))
                         || locator.byte_length != bytes.len() as u64
                     {
                         return Err(CatalogError::Conflict(
