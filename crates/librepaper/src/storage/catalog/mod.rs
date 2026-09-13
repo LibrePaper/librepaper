@@ -33,6 +33,7 @@ mod execution;
 mod journal;
 mod link_rotation;
 mod operations;
+mod operation_capacity;
 mod pressure;
 mod publication;
 mod read_objects;
