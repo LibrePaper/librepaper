@@ -305,10 +305,6 @@ pub async fn serve(options: ServeOptions) {
         publishers.clone(),
         commenters.clone(),
     );
-    crate::server::publication::PublicationStore::for_store(instance.store.clone())
-        .reconcile_accounting()
-        .await
-        .unwrap_or_else(|err| die(format!("publication accounting recovery failed: {err}")));
     if let Some(catalog) = instance.store.catalog.clone() {
         let journal_catalog = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits_and_quota(catalog, config.persistence(), config.storage.per_owner, config.storage.total));
         let journal = Arc::new(
@@ -422,26 +418,6 @@ pub async fn serve(options: ServeOptions) {
             }
         });
     }
-
-    // Reclaim abandoned rendered-publication uploads even when the document
-    // is never opened again. The staging marker is durable, so this remains
-    // correct across restarts.
-    let publication_janitor = instance.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            if let Err(error) = crate::server::publication::PublicationStore::for_store(
-                publication_janitor.store.clone(),
-            )
-            .cleanup_all_staging(crate::util::now_unix())
-            .await
-            {
-                eprintln!("warning: publication staging cleanup failed: {error}");
-            }
-        }
-    });
 
     // The sweeper. A document nobody has open is still written out and still
     // gets its checkpoints: that is the whole difference between a session the

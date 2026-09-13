@@ -879,7 +879,6 @@ async fn guarded_write_v2_object(
         .await;
         if let Ok(written) = &result {
             crate::storage::v2_catalog::complete_physical_guard(namespace, &document_id, written);
-            crate::storage::v2_catalog::remove_physical_guard(namespace, &document_id, &object_key);
         } else {
             crate::storage::v2_catalog::remove_physical_guard(namespace, &document_id, &object_key);
         }

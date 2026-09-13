@@ -498,12 +498,13 @@ pub async fn write_encoded_source_with_existing(
             EncodingError::Integrity("missing admitted allocation for source chunk".into())
         })?;
         let allocated_object_id = object_id.clone();
+        let blobs_for_chunk = Arc::clone(&blobs);
         let written = tokio::spawn({
             let document_id = document_id.to_owned();
             let content = object.encoded.clone();
             async move {
                 crate::storage::blob::write_v2_object_with_id(
-                    blobs.as_ref(),
+                    blobs_for_chunk.as_ref(),
                     &document_id,
                     allocated_object_id,
                     content,
@@ -556,9 +557,10 @@ pub async fn write_encoded_source_with_existing(
     };
     let recipe_bytes = recipe.to_bytes()?;
     let document_for_recipe = document_id.to_owned();
+    let blobs_for_recipe = Arc::clone(&blobs);
     let recipe_object = tokio::spawn(async move {
         crate::storage::blob::write_v2_object_with_id(
-            blobs.as_ref(),
+            blobs_for_recipe.as_ref(),
             &document_for_recipe,
             recipe_object_id,
             recipe_bytes,
