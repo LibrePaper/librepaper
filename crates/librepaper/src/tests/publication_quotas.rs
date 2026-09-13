@@ -23,13 +23,7 @@ fn publication_request_key(label: &str) -> String {
     let keys = KEYS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     let mut keys = keys.lock().expect("publication test request keys");
     keys.entry(label.to_owned())
-        .or_insert_with(|| {
-            format!(
-                "v2.{}.{}",
-                crate::util::now_millis().saturating_sub(1_000),
-                digest(label.as_bytes())
-            )
-        })
+        .or_insert_with(crate::util::new_request_key)
         .clone()
 }
 
@@ -667,22 +661,25 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
     let server = new_test_server().await;
     let owner = session_as(TEST_PUBLISHER);
     let slug = source_document(&server.url, &owner, "accounting recovery").await;
-    let catalog = server.instance.store.catalog.as_ref().unwrap().clone();
-    let storage_id = catalog.document(&slug).unwrap().unwrap().storage_id;
+    let original_catalog = server.instance.store.catalog.as_ref().unwrap().clone();
+    let storage_id = original_catalog.document(&slug).unwrap().unwrap().storage_id;
     let manifest = bundle(b"recovered object", &[]);
-    let (status, _) = prepare(
-        &server.url,
-        &owner,
-        None,
-        &slug,
-        "interrupted-put",
-        &manifest,
-        None,
-    )
-    .await;
-    assert_eq!(status, 200);
+    assert_eq!(
+        prepare(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "interrupted-put",
+            &manifest,
+            None,
+        )
+        .await
+        .0,
+        200
+    );
     let request_id = publication_request_key("interrupted-put");
-    let (key, object_id): (String, String) = catalog
+    let (key, object_id): (String, String) = original_catalog
         .with_connection(|connection| {
             connection.query_row(
                 "SELECT o.storage_key,o.id FROM objects o
@@ -694,25 +691,43 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
             .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
-    // This models a crash after blob I/O but before the typed settlement.
     server
         .instance
         .store
         .blobs
-        .put(
-            &key,
-            b"recovered object".to_vec(),
-            "text/html",
-        )
+        .put(&key, b"recovered object".to_vec(), "text/html")
         .await
         .unwrap();
+    let missing_manifest = bundle(b"missing object", &[]);
+    assert_eq!(
+        prepare(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "interrupted-before-put",
+            &missing_manifest,
+            None,
+        )
+        .await
+        .0,
+        200
+    );
+
+    // Reopen the catalog before invoking startup recovery. This models the
+    // deployment writer boundary and prevents a live request path from
+    // racing allocation settlement.
+    let (_restarted_url, restarted) = server_over(server.dir.path(), Configuration::default()).await;
+    let catalog = restarted.store.catalog.as_ref().unwrap().clone();
     let worker = crate::storage::maintenance::DeletionWorker::new(
         catalog.clone(),
-        server.instance.store.blobs.clone(),
+        restarted.store.blobs.clone(),
         crate::storage::maintenance::DeletionLimits::default(),
     )
     .unwrap();
-    worker.recover_v2_startup().await.unwrap();
+    let report = worker.recover_v2_startup().await.unwrap();
+    assert!(report.allocations_settled >= 1);
+    assert!(report.allocations_aborted >= 1);
     let (state, reserved, bytes): (String, i64, i64) = catalog
         .with_connection(|connection| {
             connection
@@ -725,17 +740,29 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
         })
         .unwrap();
     assert_eq!((state, reserved, bytes), ("available".into(), 0, 16));
+    let remaining: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM objects o
+                     JOIN operations p ON p.id=o.allocation_operation_id
+                     WHERE o.document_id=?1 AND p.request_key=?2 AND o.state='allocated'",
+                    (&storage_id, publication_request_key("interrupted-before-put")),
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0);
 
-    // The physical deletion worker settles the catalogue only after the
-    // object store confirms absence. Keep that two-step invariant explicit.
-    server
-        .instance
+    // Physical absence is confirmed before releasing the settled object row.
+    restarted
         .store
         .blobs
         .delete(std::slice::from_ref(&key))
         .await
         .unwrap();
-    let document_id = crate::storage::catalog::DocumentId::new(storage_id.clone()).unwrap();
+    let document_id = crate::storage::catalog::DocumentId::new(storage_id).unwrap();
     let object_id = crate::storage::catalog::ObjectId::new(object_id).unwrap();
     let now = crate::storage::catalog::UnixMillis::now();
     catalog
@@ -751,40 +778,10 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
         .unwrap();
     assert!(catalog
         .claim_v2_object_for_deletion(&document_id, &object_id, now, now)
-        .unwrap();
+        .unwrap());
     assert!(catalog
         .confirm_v2_object_deleted(&document_id, &object_id)
         .unwrap());
-
-    // A typed allocation whose object never became durable is safely
-    // refunded by the same bounded recovery pass.
-    let missing_manifest = bundle(b"missing object", &[]);
-    let (status, _) = prepare(
-        &server.url,
-        &owner,
-        None,
-        &slug,
-        "interrupted-before-put",
-        &missing_manifest,
-        None,
-    )
-    .await;
-    assert_eq!(status, 200);
-    worker.recover_v2_startup().await.unwrap();
-    let remaining: i64 = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM objects o
-                     JOIN operations p ON p.id=o.allocation_operation_id
-                     WHERE o.document_id=?1 AND p.request_key=?2 AND o.state='allocated'",
-                    (&storage_id, publication_request_key("interrupted-before-put")),
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .unwrap();
-    assert_eq!(remaining, 0);
 }
 
 #[tokio::test]
@@ -1021,10 +1018,11 @@ async fn recovery_aborts_a_current_swap_that_never_reached_blob_cas() {
         .0,
         200
     );
-    let catalog = server.instance.store.catalog.as_ref().unwrap().clone();
+    let (restarted_url, restarted) = server_over(server.dir.path(), Configuration::default()).await;
+    let catalog = restarted.store.catalog.as_ref().unwrap().clone();
     let worker = crate::storage::maintenance::DeletionWorker::new(
         catalog.clone(),
-        server.instance.store.blobs.clone(),
+        restarted.store.blobs.clone(),
         crate::storage::maintenance::DeletionLimits::default(),
     )
     .unwrap();
@@ -1046,7 +1044,7 @@ async fn recovery_aborts_a_current_swap_that_never_reached_blob_cas() {
         .unwrap();
     assert_eq!(remaining, 0, "missing publication bytes stayed allocated");
     let current: Value = client()
-        .get(format!("{}/api/documents/{slug}/publication", server.url))
+        .get(format!("{restarted_url}/api/documents/{slug}/publication"))
         .header("cookie", &owner)
         .header("x-librepaper-client", "1")
         .send()
@@ -1087,10 +1085,11 @@ async fn recovery_sweeps_publication_allocations_after_the_first_page() {
         .0,
         200
     );
-    let catalog = server.instance.store.catalog.as_ref().unwrap().clone();
+    let (_restarted_url, restarted) = server_over(server.dir.path(), Configuration::default()).await;
+    let catalog = restarted.store.catalog.as_ref().unwrap().clone();
     let worker = crate::storage::maintenance::DeletionWorker::new(
         catalog.clone(),
-        server.instance.store.blobs.clone(),
+        restarted.store.blobs.clone(),
         crate::storage::maintenance::DeletionLimits::default(),
     )
     .unwrap();

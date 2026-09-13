@@ -58,7 +58,11 @@ async fn restricted_links_cannot_reconstruct_the_source_project() {
     // Directory upload already rejects source maps. An editable source
     // session can still contain one, so exercise that stronger boundary.
     let room = server.instance.rooms.get(&slug).await;
-    room.add_text("main.js.map", map_secret).await.unwrap();
+    let (map_sha, _) = room
+        .put_asset(map_secret.as_bytes().to_vec(), (8 << 20, 32 << 20))
+        .await
+        .unwrap();
+    room.name_asset("main.js.map", &map_sha).await.unwrap();
     room.persist().await.unwrap();
     let public_image = b"PUBLIC-DISPLAY-IMAGE";
     let published = publish_display(

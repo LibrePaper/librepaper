@@ -1028,11 +1028,25 @@ impl PublicationStore {
     ) -> Result<usize, PublicationError> {
         let lock = publication_lock(storage_id);
         let _guard = lock.lock().await;
-        // v2 object rows are reclaimed by DeletionWorker's global GC pass;
-        // this slug-scoped legacy sweep must not claim rows for another
-        // document.
-        if self.store.is_some() {
-            return Ok(0);
+        // v2 object rows are reclaimed by the bounded global worker. The
+        // legacy slug-scoped sweep must not claim rows for another document.
+        if let Some(store) = &self.store {
+            let catalog = store
+                .catalog
+                .as_ref()
+                .ok_or_else(|| PublicationError::Storage("durable catalog required".into()))?
+                .clone();
+            let worker = crate::storage::maintenance::DeletionWorker::new(
+                catalog,
+                store.blobs.clone(),
+                crate::storage::maintenance::DeletionLimits::default(),
+            )
+            .map_err(|error| PublicationError::Storage(error.to_string()))?;
+            let report = worker
+                .run_v2_once(now.saturating_mul(1_000))
+                .await
+                .map_err(|error| PublicationError::Storage(error.to_string()))?;
+            return Ok(report.objects_deleted);
         }
         let mut live = std::collections::HashSet::new();
         if let Some(manifest) = self.current(storage_id).await? {
@@ -1536,6 +1550,24 @@ impl PublicationStore {
     }
 
     pub async fn cleanup_all_staging(&self, now: i64) -> Result<usize, PublicationError> {
+        if let Some(store) = &self.store {
+            let catalog = store
+                .catalog
+                .as_ref()
+                .ok_or_else(|| PublicationError::Storage("durable catalog required".into()))?
+                .clone();
+            let worker = crate::storage::maintenance::DeletionWorker::new(
+                catalog,
+                store.blobs.clone(),
+                crate::storage::maintenance::DeletionLimits::default(),
+            )
+            .map_err(|error| PublicationError::Storage(error.to_string()))?;
+            let report = worker
+                .run_v2_once(now.saturating_mul(1_000))
+                .await
+                .map_err(|error| PublicationError::Storage(error.to_string()))?;
+            return Ok(report.objects_deleted);
+        }
         let entries = self.blobs.list("publications/").await?;
         let mut storage_ids = std::collections::BTreeSet::new();
         for entry in entries {
