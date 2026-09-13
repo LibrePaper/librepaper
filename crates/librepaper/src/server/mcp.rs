@@ -53,6 +53,9 @@ impl Default for Capacity {
         }
     }
 
+}
+
+impl Capacity {
     pub(super) fn with_payload_memory(bytes: usize) -> Self {
         Self {
             payload_memory: std::sync::Arc::new(tokio::sync::Semaphore::new(bytes)),
@@ -589,7 +592,7 @@ impl Server {
         let logical_digest = read.logical_digest;
         let decoded = tokio::task::spawn_blocking(move || {
             let _memory_permit = memory_permit;
-            let mut decoder = flate2::read::ZlibDecoder::new(raw.as_slice()).take(MAX_PAYLOAD_BYTES + 1);
+            let mut decoder = flate2::read::ZlibDecoder::new(raw.as_slice()).take((MAX_PAYLOAD_BYTES + 1) as u64);
             let mut decoded = Vec::new();
             decoder.read_to_end(&mut decoded)
                 .map_err(|e| Failure::new("internal", e.to_string()))?;
