@@ -152,6 +152,7 @@ fn erasure_pass_sql(
             "operations",
             "grants",
             "bookmarks",
+            "annotation_replies",
             "annotations",
             "replies",
             "checkpoints",
@@ -167,7 +168,15 @@ fn erasure_pass_sql(
         let mut cursor = known_stage.and(stored_cursor);
         loop {
             let removed =
-                catalog.erase_account_batch(&id, stages[index], cursor.as_deref(), now, rows)?;
+                match catalog.erase_account_batch(&id, stages[index], cursor.as_deref(), now, rows)
+                {
+                    Ok(removed) => removed,
+                    // A pinned terminal receipt is a durable retry condition. It
+                    // must yield this account without advancing its cursor or
+                    // starving unrelated accounts in the same pass.
+                    Err(CatalogError::Conflict(_)) => break,
+                    Err(error) => return Err(error),
+                };
             if removed != 0 {
                 break;
             }

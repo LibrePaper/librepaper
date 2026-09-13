@@ -2610,3 +2610,75 @@ fn v2_erasure_finalization_removes_account_operation_after_fk_cleanup() {
         .unwrap();
     assert_eq!(operations, 0);
 }
+
+#[test]
+fn v2_erasure_drains_annotation_children_within_250_row_budget() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog
+        .begin_erasure("acct-1", "generation-erasing")
+        .unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO documents
+                 (id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,
+                  source_format,main_path)
+                 VALUES('doc-annotations','annotations','acct-1','owned','Annotations',
+                        'annotations','active',0,0,'markdown','README.md')",
+                [],
+            )?;
+            connection.execute(
+                r#"INSERT INTO annotations
+                 (document_id,id,seq,kind,body,author_account_id,author_key,author_label,
+                  via,created_at,updated_at,selector_json,context_json)
+                 VALUES('doc-annotations','annotation-1',1,'comment','body','acct-1',
+                        'account:acct-1','Account','web',0,0,'{}','{"version":1}')"#,
+                [],
+            )?;
+            for index in 0..251 {
+                connection.execute(
+                    "INSERT INTO replies
+                     (document_id,annotation_id,id,body,author_account_id,author_key,
+                      author_label,created_at,updated_at)
+                     VALUES('doc-annotations','annotation-1',?1,'reply',NULL,'account:other',
+                            'Other',?2,?2)",
+                    rusqlite::params![format!("reply-{index:03}"), index as i64],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(
+        catalog
+            .erase_account_batch("acct-1", "annotation_replies", None, 1, 1000)
+            .unwrap(),
+        250
+    );
+    let remaining: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM replies
+                     WHERE document_id='doc-annotations' AND annotation_id='annotation-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(remaining, 1);
+    assert_eq!(
+        catalog
+            .erase_account_batch("acct-1", "annotation_replies", None, 2, 1000)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        catalog
+            .erase_account_batch("acct-1", "annotations", None, 3, 1000)
+            .unwrap(),
+        1
+    );
+}

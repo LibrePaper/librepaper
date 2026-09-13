@@ -18,6 +18,7 @@ fn update_erasure_progress(
             | "operations"
             | "grants"
             | "bookmarks"
+            | "annotation_replies"
             | "annotations"
             | "replies"
             | "checkpoints"
@@ -717,13 +718,20 @@ impl Catalog {
                         .map_err(|_| CatalogError::Invalid("invalid erasure cursor".into()))
                 })
                 .transpose()?;
+            // The return value is the number of physical catalogue rows
+            // changed in this transaction.  It is deliberately separate
+            // from cursor progress: a batch may inspect a pinned/terminal
+            // operation or an already-withdrawn document without changing a
+            // row, while callers still need an exact <=250 work budget.
             let n_and_cursor = match stage {
                 "owned_documents" => {
                     let after_document = cursor_parts
                         .as_ref()
                         .map(|parts| {
                             if parts.len() != 1 {
-                                return Err(CatalogError::Invalid("invalid owned-document cursor".into()));
+                                return Err(CatalogError::Invalid(
+                                    "invalid owned-document cursor".into(),
+                                ));
                             }
                             Ok(parts[0].as_str())
                         })
@@ -741,18 +749,71 @@ impl Catalog {
                         )?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     let last = rows.last().cloned();
-                    let has_rows = last.is_some();
+                    let mut changed = 0u32;
                     for document_id in rows.drain(..) {
-                        tx.execute(
+                        let updated = tx.execute(
                             "UPDATE documents SET status='deleting', publication_id=NULL,
                              publication_object_id=NULL, published_at=NULL
                              WHERE id=?1 AND owner_id=?2 AND status IN ('active','creating')",
                             params![document_id, id],
                         )?;
+                        changed = changed.saturating_add(updated as u32);
+                        if updated == 0 {
+                            continue;
+                        }
+                        // The v2 deletion worker settles this durable
+                        // erase_document receipt after object/journal
+                        // reclamation. Keep it distinct from ordinary
+                        // account-owned operations so the account stage
+                        // cannot abort the physical teardown request.
+                        let existing: Option<String> = tx
+                            .query_row(
+                                "SELECT id FROM operations
+                                 WHERE document_id=?1 AND kind='erase_document'
+                                 ORDER BY state='prepared' DESC, id LIMIT 1",
+                                [&document_id],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(CatalogError::from)?;
+                        if existing.is_none() {
+                            let digest = Sha256::digest(document_id.as_bytes());
+                            let digest_hex = hex::encode(digest);
+                            let request_key = format!("erase-document:{}", &digest_hex[..32]);
+                            let operation_id = hex::encode(crate::auth::random_bytes(16));
+                            let writer_generation: String = tx.query_row(
+                                "SELECT writer_generation FROM server_state WHERE id=1",
+                                [],
+                                |row| row.get(0),
+                            )?;
+                            let now = super::unix_millis();
+                            let plan = serde_json::json!({
+                                "version": 1,
+                                "reason": "account_erasure",
+                                "document_id": document_id,
+                            })
+                            .to_string();
+                            tx.execute(
+                                "INSERT INTO operations
+                                 (id,document_id,actor_key,request_key,kind,request_digest,
+                                  state,writer_generation,plan_json,created_at,updated_at)
+                                 VALUES(?1,?2,'system:erasure',?3,'erase_document',?4,
+                                        'prepared',?5,?6,?7,?7)",
+                                params![
+                                    operation_id,
+                                    document_id,
+                                    request_key,
+                                    digest_hex,
+                                    writer_generation,
+                                    plan,
+                                    now
+                                ],
+                            )?;
+                        }
                     }
                     (
                         last.map(|document_id| serde_json::json!([document_id]).to_string()),
-                        has_rows,
+                        changed,
                     )
                 }
                 "grants" => {
@@ -781,36 +842,109 @@ impl Catalog {
                         )
                         .map_err(CatalogError::from)?
                         .query_map(
-                            params![id, after_document, after_account, i64::from(limit.min(MAX_ERASURE_BATCH))],
+                            params![
+                                id,
+                                after_document,
+                                after_account,
+                                i64::from(limit.min(MAX_ERASURE_BATCH))
+                            ],
                             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                         )
                         .map_err(CatalogError::from)?
                         .collect::<rusqlite::Result<Vec<_>>>()
                         .map_err(CatalogError::from)?;
                     let last = rows.last().cloned();
-                    let has_rows = last.is_some();
+                    let mut changed = 0u32;
                     for (document_id, account_id) in rows.drain(..) {
-                        tx.execute(
-                            "DELETE
+                        changed = changed.saturating_add(
+                            tx.execute(
+                                "DELETE
                     FROM grants
                     WHERE document_id=?1
                     AND account_id=?2",
-                            params![document_id, account_id],
-                        )
-                        .map_err(CatalogError::from)?;
+                                params![document_id, account_id],
+                            )
+                            .map_err(CatalogError::from)? as u32,
+                        );
                     }
                     (
-                        last.map(|(document_id, account_id)| serde_json::json!([document_id, account_id]).to_string()),
-                        has_rows,
+                        last.map(|(document_id, account_id)| {
+                            serde_json::json!([document_id, account_id]).to_string()
+                        }),
+                        changed,
                     )
                 }
-                "bookmarks" => (None, false),
+                "bookmarks" => (None, 0),
+                "annotation_replies" => {
+                    let (after_document, after_annotation, after_id) = cursor_parts
+                        .as_ref()
+                        .map(|parts| {
+                            if parts.len() != 3 {
+                                return Err(CatalogError::Invalid(
+                                    "invalid annotation-replies cursor".into(),
+                                ));
+                            }
+                            Ok((parts[0].as_str(), parts[1].as_str(), parts[2].as_str()))
+                        })
+                        .transpose()?
+                        .unwrap_or(("", "", ""));
+                    // Parent annotation deletion is a cascading operation in
+                    // v2. Drain every child reply first, by the same stable
+                    // primary-key cursor, so one erasure transaction never
+                    // removes more than its 250-row budget.
+                    let mut rows = tx
+                        .prepare(
+                            "SELECT r.document_id, r.annotation_id, r.id
+                             FROM replies r
+                             JOIN annotations a
+                               ON a.document_id=r.document_id AND a.id=r.annotation_id
+                             WHERE a.author_account_id=?1
+                               AND (r.document_id>?2
+                                OR (r.document_id=?2 AND r.annotation_id>?3)
+                                OR (r.document_id=?2 AND r.annotation_id=?3 AND r.id>?4))
+                             ORDER BY r.document_id, r.annotation_id, r.id LIMIT ?5",
+                        )?
+                        .query_map(
+                            params![
+                                id,
+                                after_document,
+                                after_annotation,
+                                after_id,
+                                i64::from(limit.min(MAX_ERASURE_BATCH))
+                            ],
+                            |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, String>(2)?,
+                                ))
+                            },
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    let last = rows.last().cloned();
+                    let mut changed = 0u32;
+                    for (document_id, annotation_id, reply_id) in rows.drain(..) {
+                        changed = changed.saturating_add(tx.execute(
+                            "DELETE FROM replies
+                                 WHERE document_id=?1 AND annotation_id=?2 AND id=?3",
+                            params![document_id, annotation_id, reply_id],
+                        )? as u32);
+                    }
+                    (
+                        last.map(|(document, annotation, reply)| {
+                            serde_json::json!([document, annotation, reply]).to_string()
+                        }),
+                        changed,
+                    )
+                }
                 "annotations" => {
                     let (after_document, after_id) = cursor_parts
                         .as_ref()
                         .map(|parts| {
                             if parts.len() != 2 {
-                                return Err(CatalogError::Invalid("invalid annotations cursor".into()));
+                                return Err(CatalogError::Invalid(
+                                    "invalid annotations cursor".into(),
+                                ));
                             }
                             Ok((parts[0].as_str(), parts[1].as_str()))
                         })
@@ -827,33 +961,45 @@ impl Catalog {
                     OR (document_id=?2
                     AND id>?3))
 
+                    AND NOT EXISTS (SELECT 1 FROM replies r
+                                    WHERE r.document_id=annotations.document_id
+                                      AND r.annotation_id=annotations.id)
+
                     ORDER BY document_id, id LIMIT ?4",
                         )
                         .map_err(CatalogError::from)?
-                        .query_map(params![id, after_document, after_id, i64::from(limit.min(MAX_ERASURE_BATCH))], |row| {
-                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                        })
+                        .query_map(
+                            params![
+                                id,
+                                after_document,
+                                after_id,
+                                i64::from(limit.min(MAX_ERASURE_BATCH))
+                            ],
+                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                        )
                         .map_err(CatalogError::from)?
                         .collect::<rusqlite::Result<Vec<_>>>()
                         .map_err(CatalogError::from)?;
                     let last = rows.last().cloned();
-                    let has_rows = last.is_some();
+                    let mut changed = 0u32;
                     for (document_id, annotation_id) in rows.drain(..) {
-                        tx.execute(
-                            "DELETE
+                        changed = changed.saturating_add(
+                            tx.execute(
+                                "DELETE
                     FROM annotations
                     WHERE document_id=?1
                     AND id=?2
                     AND author_account_id=?3",
-                            params![document_id, annotation_id, id],
-                        )
-                        .map_err(CatalogError::from)?;
+                                params![document_id, annotation_id, id],
+                            )
+                            .map_err(CatalogError::from)? as u32,
+                        );
                     }
                     (
                         last.map(|(document_id, annotation_id)| {
                             serde_json::json!([document_id, annotation_id]).to_string()
                         }),
-                        has_rows,
+                        changed,
                     )
                 }
                 "replies" => {
@@ -886,7 +1032,13 @@ impl Catalog {
                         )
                         .map_err(CatalogError::from)?
                         .query_map(
-                            params![id, after_document, after_annotation, after_id, i64::from(limit.min(MAX_ERASURE_BATCH))],
+                            params![
+                                id,
+                                after_document,
+                                after_annotation,
+                                after_id,
+                                i64::from(limit.min(MAX_ERASURE_BATCH))
+                            ],
                             |row| {
                                 Ok((
                                     row.get::<_, String>(0)?,
@@ -899,25 +1051,27 @@ impl Catalog {
                         .collect::<rusqlite::Result<Vec<_>>>()
                         .map_err(CatalogError::from)?;
                     let last = rows.last().cloned();
-                    let has_rows = last.is_some();
+                    let mut changed = 0u32;
                     for (document_id, annotation_id, reply_id) in rows.drain(..) {
-                        tx.execute(
-                            "DELETE
+                        changed = changed.saturating_add(
+                            tx.execute(
+                                "DELETE
                     FROM replies
 
                     WHERE document_id=?1
                     AND annotation_id=?2
                     AND id=?3
                     AND author_account_id=?4",
-                            params![document_id, annotation_id, reply_id, id],
-                        )
-                        .map_err(CatalogError::from)?;
+                                params![document_id, annotation_id, reply_id, id],
+                            )
+                            .map_err(CatalogError::from)? as u32,
+                        );
                     }
                     (
                         last.map(|(document, annotation, reply)| {
                             serde_json::json!([document, annotation, reply]).to_string()
                         }),
-                        has_rows,
+                        changed,
                     )
                 }
                 "checkpoints" => {
@@ -925,7 +1079,9 @@ impl Catalog {
                         .as_ref()
                         .map(|parts| {
                             if parts.len() != 2 {
-                                return Err(CatalogError::Invalid("invalid checkpoints cursor".into()));
+                                return Err(CatalogError::Invalid(
+                                    "invalid checkpoints cursor".into(),
+                                ));
                             }
                             Ok((parts[0].as_str(), parts[1].as_str()))
                         })
@@ -946,29 +1102,38 @@ impl Catalog {
                         )
                         .map_err(CatalogError::from)?
                         .query_map(
-                            params![id, after_document, after_checkpoint, i64::from(limit.min(MAX_ERASURE_BATCH))],
+                            params![
+                                id,
+                                after_document,
+                                after_checkpoint,
+                                i64::from(limit.min(MAX_ERASURE_BATCH))
+                            ],
                             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                         )
                         .map_err(CatalogError::from)?
                         .collect::<rusqlite::Result<Vec<_>>>()
                         .map_err(CatalogError::from)?;
                     let last = rows.last().cloned();
-                    let has_rows = last.is_some();
+                    let mut changed = 0u32;
                     for (document_id, checkpoint_id) in rows.drain(..) {
-                        tx.execute(
-                            "UPDATE checkpoints
+                        changed = changed.saturating_add(
+                            tx.execute(
+                                "UPDATE checkpoints
                     SET author_label=?4, author_account_id=NULL
 
                     WHERE document_id=?1
                     AND id=?2
                     AND author_account_id=?3",
-                            params![document_id, checkpoint_id, id, ERASED_ATTRIBUTION],
-                        )
-                        .map_err(CatalogError::from)?;
+                                params![document_id, checkpoint_id, id, ERASED_ATTRIBUTION],
+                            )
+                            .map_err(CatalogError::from)? as u32,
+                        );
                     }
                     (
-                        last.map(|(document_id, checkpoint_id)| serde_json::json!([document_id, checkpoint_id]).to_string()),
-                        has_rows,
+                        last.map(|(document_id, checkpoint_id)| {
+                            serde_json::json!([document_id, checkpoint_id]).to_string()
+                        }),
+                        changed,
                     )
                 }
                 "operations" => {
@@ -976,68 +1141,103 @@ impl Catalog {
                         .as_ref()
                         .map(|parts| {
                             if parts.len() != 1 {
-                                return Err(CatalogError::Invalid("invalid operations cursor".into()));
+                                return Err(CatalogError::Invalid(
+                                    "invalid operations cursor".into(),
+                                ));
                             }
                             Ok(parts[0].as_str())
                         })
                         .transpose()?
                         .unwrap_or("");
+                    // Keep the three owner scopes separately indexable. A
+                    // broad OR/EXISTS predicate scans unrelated operations
+                    // and makes one account erasure an unbounded read.
                     let mut rows = tx
                         .prepare(
-                            "SELECT o.id, o.state FROM operations o
-                             WHERE o.kind <> 'erase_account'
-                               AND (o.account_id=?1 OR o.actor_key=?1 OR o.actor_key=('account:' || ?1) OR EXISTS
-                                   (SELECT 1 FROM documents d WHERE d.id=o.document_id AND d.owner_id=?1))
-                               AND o.id>?2
-                             ORDER BY o.id LIMIT ?3",
+                            "SELECT id, state, kind FROM (
+                               SELECT o.id, o.state, o.kind
+                               FROM operations o
+                               WHERE o.account_id=?1 AND o.id>?2
+                               UNION
+                               SELECT o.id, o.state, o.kind
+                               FROM operations o
+                               WHERE o.actor_key IN (?1, 'account:' || ?1) AND o.id>?2
+                               UNION
+                               SELECT o.id, o.state, o.kind
+                               FROM documents d
+                               JOIN operations o ON o.document_id=d.id
+                               WHERE d.owner_id=?1 AND o.id>?2
+                             )
+                             WHERE kind NOT IN ('erase_account','erase_document')
+                             ORDER BY id LIMIT ?3",
                         )?
                         .query_map(
                             params![id, after_id, i64::from(limit.min(MAX_ERASURE_BATCH))],
-                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                            |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, String>(2)?,
+                                ))
+                            },
                         )?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
-                    let last = rows.last().cloned();
-                    let has_rows = last.is_some();
                     let mut progress = None;
-                    for (operation_id, state) in rows.drain(..) {
+                    let mut changed = 0u32;
+                    let mut next_cursor = cursor.map(str::to_owned);
+                    for (operation_id, state, _kind) in rows.drain(..) {
                         if state == "prepared" {
                             let now = super::unix_millis();
                             let receipt = now.saturating_add(7 * 24 * 60 * 60 * 1000);
-                            tx.execute(
+                            changed = changed.saturating_add(tx.execute(
                                 "UPDATE operations SET state='aborted', result_json=?2,
-                                 completed_at=?3, receipt_expires_at=max(COALESCE(receipt_expires_at,0),?4),
-                                 updated_at=max(updated_at,?3)
-                                 WHERE id=?1 AND state='prepared' AND kind <> 'erase_account'",
-                                params![operation_id, r#"{"version":1,"reason":"account_erasure"}"#, now, receipt],
-                            )?;
-                            progress = Some(operation_id);
-                            continue;
+                                     completed_at=?3,
+                                     receipt_expires_at=max(COALESCE(receipt_expires_at,0),?4),
+                                     updated_at=max(updated_at,?3)
+                                     WHERE id=?1 AND state='prepared'",
+                                params![
+                                    operation_id,
+                                    r#"{"version":1,"reason":"account_erasure"}"#,
+                                    now,
+                                    receipt
+                                ],
+                            )? as u32);
+                            // Keep the cursor before an aborted row. The
+                            // next pass removes this terminal receipt, so a
+                            // prepared operation cannot be skipped forever.
+                            break;
                         }
                         let pinned: i64 = tx.query_row(
                             "SELECT
                                (SELECT COUNT(*) FROM objects WHERE allocation_operation_id=?1) +
                                (SELECT COUNT(*) FROM object_leases WHERE operation_id=?1)",
-                            [&operation_id], |row| row.get(0))?;
+                            [&operation_id],
+                            |row| row.get(0),
+                        )?;
                         if pinned != 0 {
-                            return Err(CatalogError::Conflict(
-                                "account erasure operation is still physically pinned".into(),
-                            ));
+                            if changed == 0 {
+                                return Err(CatalogError::Conflict(
+                                    "account erasure operation is still physically pinned".into(),
+                                ));
+                            }
+                            // Commit earlier rows and retry the pinned row
+                            // from the same cursor on the next pass.
+                            break;
                         }
-                        tx.execute(
+                        changed = changed.saturating_add(tx.execute(
                             "DELETE FROM operations WHERE id=?1 AND state <> 'prepared'",
                             [&operation_id],
-                        )?;
+                        )? as u32);
                         progress = Some(operation_id);
                     }
-                    let progressed = progress.is_some();
-                    (
-                        progress.map(|operation_id| serde_json::json!([operation_id]).to_string()),
-                        progressed && has_rows,
-                    )
+                    if let Some(operation_id) = progress {
+                        next_cursor = Some(serde_json::json!([operation_id]).to_string());
+                    }
+                    (next_cursor, changed)
                 }
                 _ => return Err(CatalogError::Invalid("unknown erasure stage".into())),
             };
-            let n = u32::from(n_and_cursor.1);
+            let n = n_and_cursor.1;
             let next_cursor = n_and_cursor.0;
             update_erasure_progress(&tx, id, stage, next_cursor.as_deref(), updated_at)?;
             Ok(n)
@@ -1086,7 +1286,11 @@ impl Catalog {
                        (SELECT COUNT(*) FROM annotations WHERE author_account_id=?1) +
                        (SELECT COUNT(*) FROM replies WHERE author_account_id=?1) +
                        (SELECT COUNT(*) FROM checkpoints WHERE author_account_id=?1) +
-                       (SELECT COUNT(*) FROM operations WHERE account_id=?1 AND state='prepared' AND kind <> 'erase_account')",
+                       (SELECT COUNT(*) FROM operations
+                        WHERE account_id=?1 AND kind <> 'erase_account') +
+                       (SELECT COUNT(*) FROM operations
+                        WHERE actor_key IN (?1, 'account:' || ?1)
+                          AND kind <> 'erase_account')",
                     [id],
                     |row| row.get(0),
                 )
@@ -1106,9 +1310,14 @@ impl Catalog {
                  WHERE id=?1 AND account_id=?4 AND kind='erase_account' AND state='prepared'",
                 params![operation_id, r#"{"version":1,"status":"erased"}"#, now, id],
             )?;
+            // The account row owns this receipt through its foreign key. It
+            // must be removed explicitly before deleting the account. All
+            // other account/actor receipts were required to be drained by
+            // the bounded operations stage above; do not hide leftovers with
+            // an unbounded final DELETE.
             tx.execute(
-                "DELETE FROM operations WHERE account_id=?1 AND state <> 'prepared'",
-                [id],
+                "DELETE FROM operations WHERE id=?1 AND state='committed'",
+                [&operation_id],
             )?;
             tx.execute(
                 "DELETE
