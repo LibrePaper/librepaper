@@ -998,15 +998,36 @@ impl Store {
                 let recipe = file.recipe.as_ref().ok_or_else(|| {
                     BlobError::Other("current source main file has no recipe".into())
                 })?;
-                let bytes = crate::storage::encoding::read_file_v2(
-                    self.blobs.as_ref(),
-                    lease.set.document_id.as_str(),
-                    &recipe.object_id,
-                    recipe.object_digest,
-                    &lease.set.objects,
-                )
-                .await
-                .map_err(|error| BlobError::Other(error.to_string()))?;
+                let document_id = lease.set.document_id.to_string();
+                let recipe_id = recipe.object_id.clone();
+                let recipe_digest = recipe.object_digest;
+                let read_set = lease.set.clone();
+                let blobs = self.blobs.clone();
+                let read = async move {
+                    crate::storage::encoding::read_file_v2(
+                        blobs.as_ref(),
+                        &document_id,
+                        &recipe_id,
+                        recipe_digest,
+                        &read_set.objects,
+                    )
+                    .await
+                    .map_err(|error| BlobError::Other(error.to_string()))
+                };
+                tokio::pin!(read);
+                let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+                heartbeat.tick().await;
+                let bytes = loop {
+                    tokio::select! {
+                        result = &mut read => break result?,
+                        _ = heartbeat.tick() => {
+                            lease = lease
+                                .renew_owned(crate::util::now_millis())
+                                .await
+                                .map_err(|error| BlobError::Other(error.to_string()))?;
+                        }
+                    }
+                };
                 if bytes.len() as u64 != file.logical_length
                     || Sha256::digest(&bytes).as_slice() != file.logical_digest
                 {

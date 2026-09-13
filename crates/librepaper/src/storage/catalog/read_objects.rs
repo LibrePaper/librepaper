@@ -8,7 +8,7 @@ use std::sync::Arc;
 const LEASE_MS: i64 = 120_000;
 const MAX_CLOSURE: usize = 16_384;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CheckpointReadSet {
     pub document_id: DocumentId,
     pub checkpoint_id: String,
