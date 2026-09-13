@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
@@ -47,27 +48,20 @@ struct InflightPut {
     failure: Option<String>,
 }
 
-static INFLIGHT_PUTS: OnceLock<Mutex<HashMap<(usize, String, String), InflightPut>>> = OnceLock::new();
-static INFLIGHT_ORDER: OnceLock<Mutex<BTreeMap<(usize, u64), (String, String)>>> = OnceLock::new();
-static FAILED_INFLIGHT_ORDER: OnceLock<Mutex<BTreeMap<(usize, u64), (String, String)>>> =
-    OnceLock::new();
 static INFLIGHT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-static FAILED_INFLIGHT_CURSORS: OnceLock<Mutex<HashMap<usize, u64>>> = OnceLock::new();
+static INFLIGHT_REGISTRY: OnceLock<Mutex<InflightRegistry>> = OnceLock::new();
 
-fn inflight_puts() -> &'static Mutex<HashMap<(usize, String, String), InflightPut>> {
-    INFLIGHT_PUTS.get_or_init(|| Mutex::new(HashMap::new()))
+#[derive(Default)]
+struct InflightRegistry {
+    records: HashMap<(usize, String, String), InflightPut>,
+    ordered: BTreeMap<(usize, u64), (String, String)>,
+    failed: BTreeMap<(usize, u64), (String, String)>,
+    completed: BTreeMap<(usize, u64), (String, String)>,
+    failed_cursors: HashMap<usize, u64>,
 }
 
-fn inflight_order() -> &'static Mutex<BTreeMap<(usize, u64), (String, String)>> {
-    INFLIGHT_ORDER.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-fn failed_inflight_order() -> &'static Mutex<BTreeMap<(usize, u64), (String, String)>> {
-    FAILED_INFLIGHT_ORDER.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-fn failed_inflight_cursors() -> &'static Mutex<HashMap<usize, u64>> {
-    FAILED_INFLIGHT_CURSORS.get_or_init(|| Mutex::new(HashMap::new()))
+fn inflight_registry() -> &'static Mutex<InflightRegistry> {
+    INFLIGHT_REGISTRY.get_or_init(|| Mutex::new(InflightRegistry::default()))
 }
 
 fn register_inflight(
@@ -95,19 +89,16 @@ fn register_inflight(
         written: None,
         failure: None,
     };
-    let mut guards = inflight_puts()
+    let mut registry = inflight_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let key = (namespace, document_id.to_owned(), object_id.to_owned());
-    if guards.contains_key(&key) {
+    if registry.records.contains_key(&key) {
         return false;
     }
     let sequence = record.sequence;
-    guards.insert(key, record);
-    drop(guards);
-    inflight_order()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    registry.records.insert(key, record);
+    registry.ordered
         .insert((namespace, sequence), (document_id.to_owned(), object_id.to_owned()));
     true
 }
@@ -126,10 +117,10 @@ fn attach_inflight(
     writer_generation: &str,
     expected_digest: &str,
 ) -> bool {
-    let mut guards = inflight_puts()
+    let mut registry = inflight_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(record) = guards.get_mut(&(namespace, document_id.to_owned(), object_id.to_owned())) else {
+    let Some(record) = registry.records.get_mut(&(namespace, document_id.to_owned(), object_id.to_owned())) else {
         return false;
     };
     if record.managed || record.written.is_some() || record.failure.is_some() {
@@ -146,31 +137,36 @@ fn attach_inflight(
 
 pub(crate) fn complete_physical_guard(namespace: usize, document_id: &str, written: &WrittenObject) {
     let key = (namespace, document_id.to_owned(), written.object_id.as_str().to_owned());
-    if let Some(record) = inflight_puts()
+    let mut registry = inflight_registry()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get_mut(&key)
-    {
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let sequence = if let Some(record) = registry.records.get_mut(&key) {
         record.written = Some(written.clone());
+        Some(record.sequence)
+    } else {
+        None
+    };
+    if let Some(sequence) = sequence {
+        registry.completed.insert((namespace, sequence), (key.1, key.2));
     }
 }
 
 fn fail_inflight(namespace: usize, document_id: &str, object_id: &str, error: String) {
-    let sequence = if let Some(record) = inflight_puts()
+    let mut registry = inflight_registry()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get_mut(&(namespace, document_id.to_owned(), object_id.to_owned()))
-    {
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key = (namespace, document_id.to_owned(), object_id.to_owned());
+    let sequence = if let Some(record) = registry.records.get_mut(&key) {
         record.failure = Some(error);
         Some(record.sequence)
     } else {
         None
     };
     if let Some(sequence) = sequence {
-        failed_inflight_order()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert((namespace, sequence), (document_id.to_owned(), object_id.to_owned()));
+        registry.failed.insert(
+            (namespace, sequence),
+            (document_id.to_owned(), object_id.to_owned()),
+        );
     }
 }
 
@@ -188,19 +184,17 @@ fn complete_inflight(namespace: usize, written: WrittenObject, document_id: &str
 }
 
 pub(crate) fn remove_physical_guard(namespace: usize, document_id: &str, object_id: &str) {
-    let removed = inflight_puts()
+    let mut registry = inflight_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+        ;
+    let removed = registry
+        .records
         .remove(&(namespace, document_id.to_owned(), object_id.to_owned()));
     if let Some(record) = removed {
-        inflight_order()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&(namespace, record.sequence));
-        failed_inflight_order()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&(namespace, record.sequence));
+        registry.ordered.remove(&(namespace, record.sequence));
+        registry.failed.remove(&(namespace, record.sequence));
+        registry.completed.remove(&(namespace, record.sequence));
     }
 }
 
@@ -209,20 +203,28 @@ fn remove_inflight(namespace: usize, document_id: &str, object_id: &str) {
 }
 
 fn inflight_active(namespace: usize, document_id: &str, object_id: &str) -> bool {
-    inflight_puts()
+    inflight_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .records
         .contains_key(&(namespace, document_id.to_owned(), object_id.to_owned()))
 }
 
 fn completed_inflight(namespace: usize, limit: usize) -> Vec<InflightPut> {
-    inflight_puts()
+    let registry = inflight_registry()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .values()
-        .filter(|record| record.namespace == namespace && record.written.is_some())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry
+        .completed
+        .range((namespace, 0)..=(namespace, u64::MAX))
         .take(limit)
-        .cloned()
+        .filter_map(|((_, sequence), (document_id, object_id))| {
+            registry
+                .records
+                .get(&(namespace, document_id.clone(), object_id.clone()))
+                .filter(|record| record.sequence == *sequence && record.written.is_some())
+                .cloned()
+        })
         .collect()
 }
 
@@ -230,30 +232,25 @@ fn failed_inflight(namespace: usize, limit: usize) -> (Vec<InflightPut>, Option<
     if limit == 0 {
         return (Vec::new(), None);
     }
-    let mut cursors = failed_inflight_cursors()
+    let mut registry = inflight_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let cursor = cursors.get(&namespace).copied().unwrap_or(0);
-    let select = |after: u64| {
+    let cursor = registry.failed_cursors.get(&namespace).copied().unwrap_or(0);
+    let select = |after: u64| -> Vec<InflightPut> {
         // The ordered index bounds both the registry work and the number of
         // records cloned for one maintenance pass.  The old implementation
         // scanned every namespace entry and then retained the smallest page,
         // which made a large failed-write registry an unbounded GC operation.
-        let keys: Vec<(u64, String, String)> = failed_inflight_order()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        let keys: Vec<(u64, String, String)> = registry.failed
             .range((namespace, after.saturating_add(1))..=(namespace, u64::MAX))
             .take(limit)
             .map(|((_, sequence), (document_id, object_id))| {
                 (*sequence, document_id.clone(), object_id.clone())
             })
             .collect();
-        let guards = inflight_puts()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         keys.into_iter()
             .filter_map(|(sequence, document_id, object_id)| {
-                guards
+                registry.records
                     .get(&(namespace, document_id, object_id))
                     .filter(|record| {
                         record.sequence == sequence
@@ -266,7 +263,7 @@ fn failed_inflight(namespace: usize, limit: usize) -> (Vec<InflightPut>, Option<
     };
     let mut page: Vec<InflightPut> = select(cursor);
     if page.is_empty() && cursor != 0 {
-        cursors.insert(namespace, 0);
+        registry.failed_cursors.insert(namespace, 0);
         page = select(0);
     }
     let last = page.last().map(|record| record.sequence);
@@ -274,17 +271,20 @@ fn failed_inflight(namespace: usize, limit: usize) -> (Vec<InflightPut>, Option<
 }
 
 fn set_failed_record_written(record: &InflightPut, written: WrittenObject) {
-    if let Some(current) = inflight_puts()
+    let mut registry = inflight_registry()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get_mut(&(record.namespace, record.document_id.clone(), record.object_id.clone()))
-    {
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key = (record.namespace, record.document_id.clone(), record.object_id.clone());
+    let sequence = if let Some(current) = registry.records.get_mut(&key) {
         current.written = Some(written);
+        Some(current.sequence)
+    } else {
+        None
+    };
+    if let Some(sequence) = sequence {
+        registry.completed.insert((record.namespace, sequence), (key.1, key.2));
     }
-    failed_inflight_order()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&(record.namespace, record.sequence));
+    registry.failed.remove(&(record.namespace, record.sequence));
 }
 
 async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Result<(), String> {
@@ -959,9 +959,10 @@ impl V2GcCatalog for V2GcCatalogAdapter {
             }
         }
         if let Some(sequence) = last_sequence {
-            failed_inflight_cursors()
+            inflight_registry()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .failed_cursors
                 .insert(namespace, sequence);
         }
         Ok(settled)
@@ -2151,7 +2152,7 @@ mod aborted_inflight_tests {
                 && self
                 .probe_failures
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                    (count > 0).then_some(count - 1)
+                    count.checked_sub(1)
                 })
                 .is_ok()
             {
@@ -2747,7 +2748,7 @@ mod stage_heartbeat_tests {
 mod journal_commit_race_tests {
     use super::*;
     use crate::storage::blob::{write_v2_object_with_id, FsStore};
-    use crate::storage::journal::{DocumentSegment, JournalRecord, Segment};
+    use crate::storage::journal::{DocumentJournal, DocumentSegment, JournalRecord, Segment, V2JournalRuntime};
 
     #[tokio::test]
     async fn journal_commit_accepts_verified_pre_settlement_and_cas_roots() {
@@ -2844,5 +2845,105 @@ mod journal_commit_race_tests {
             })
             .expect("committed journal state");
         assert_eq!(state, ("available".into(), 1, 1, encoded.len() as i64, 0));
+    }
+
+    #[tokio::test]
+    async fn journal_runtime_multiappend_compact_and_reopen_recovers_v2_base() {
+        let catalog_root = tempfile::tempdir().expect("catalog root");
+        let catalog_path = catalog_root.path().join("catalog.sqlite");
+        let catalog = Arc::new(Catalog::open(&catalog_path).expect("v2 catalog"));
+        let document_id = "journal-reopen-document";
+        let account_id = "journal-reopen-account";
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at) VALUES(?1,'registered','journal-reopen',?1,'journal-reopen','Journal Reopen','journal-reopen@example.test','active','session','test',1,1)",
+                    [account_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,'journal-reopen',?2,'owned','Journal Reopen','journal-reopen','active',1,1,'markdown','index.md')",
+                    params![document_id, account_id],
+                )?;
+                Ok(())
+            })
+            .expect("journal document");
+        let object_root = tempfile::tempdir().expect("object root");
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+        let state = crate::document::session::encode_state(&crate::document::session::new_doc());
+        {
+            let adapter = Arc::new(V2JournalCatalogAdapter::with_limits_and_quota(
+                Arc::clone(&catalog),
+                PersistenceLimits::default(),
+                i64::MAX,
+                i64::MAX,
+            ));
+            let runtime = V2JournalRuntime::with_persistence(
+                adapter,
+                Arc::clone(&blobs),
+                PersistenceLimits::default(),
+            )
+            .expect("journal runtime");
+            for sequence in 1..=3 {
+                DocumentJournal::append(&runtime, document_id, sequence, state.clone())
+                    .await
+                    .expect("journal append");
+            }
+            let before = DocumentJournal::recover_latest(&runtime, document_id)
+                .await
+                .expect("pre-compaction recovery")
+                .expect("journal state");
+            crate::document::session::apply_update(&crate::document::session::new_doc(), &before)
+                .expect("pre-compaction state is valid");
+            runtime
+                .compact(
+                    document_id,
+                    0,
+                    3,
+                    state.clone(),
+                    "application/vnd.librepaper.journal-base",
+                )
+                .await
+                .expect("journal compaction");
+        }
+        drop(catalog);
+        let reopened = Arc::new(Catalog::open(&catalog_path).expect("reopen v2 catalog"));
+        let adapter = Arc::new(V2JournalCatalogAdapter::with_limits_and_quota(
+            Arc::clone(&reopened),
+            PersistenceLimits::default(),
+            i64::MAX,
+            i64::MAX,
+        ));
+        let runtime = V2JournalRuntime::with_persistence(
+            adapter,
+            Arc::clone(&blobs),
+            PersistenceLimits::default(),
+        )
+        .expect("reopened journal runtime");
+        let recovered = DocumentJournal::recover_latest(&runtime, document_id)
+            .await
+            .expect("post-reopen recovery")
+            .expect("reopened journal state");
+        crate::document::session::apply_update(&crate::document::session::new_doc(), &recovered)
+            .expect("reopened state is valid");
+        let head: (i64, i64, i64) = reopened
+            .with_connection(|connection| {
+                connection.query_row(
+                    "SELECT journal_epoch,journal_sequence,journal_base_sequence FROM documents WHERE id=?1",
+                    [document_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+            })
+            .expect("reopened journal head");
+        assert_eq!(head, (1, 3, 3));
+        let retired_segments: i64 = reopened
+            .with_connection(|connection| {
+                connection.query_row(
+                    "SELECT count(*) FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available' AND live_root=0",
+                    [document_id],
+                    |row| row.get(0),
+                )
+            })
+            .expect("retired journal segments");
+        assert_eq!(retired_segments, 3);
     }
 }
