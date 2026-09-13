@@ -152,6 +152,21 @@ mod room_fixture {
             crate::storage::catalog::Catalog::open(dir.path().join("catalog.db"))
                 .expect("the catalogue opens"),
         );
+        catalog
+            .upsert_account(&crate::storage::catalog::Account {
+                id: "github:alice".into(),
+                provider: "github".into(),
+                handle: "alice".into(),
+                name: "Alice".into(),
+                email: "alice@example.test".into(),
+                first_seen: "2026-01-01T00:00:00.000Z".into(),
+                last_seen: "2026-01-01T00:00:00.000Z".into(),
+                plan: "free".into(),
+                status: "active".into(),
+                session_generation: "size-limit-session".into(),
+                erasure_cursor: None,
+            })
+            .expect("the authenticated owner exists");
         let persistence = config.persistence();
         let config = Arc::new(config);
         let store = Arc::new(
@@ -163,7 +178,12 @@ mod room_fixture {
         rooms.attach_store(store.clone());
         let runtime = Arc::new(
             journal::V2JournalRuntime::with_persistence(
-                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog.clone(), persistence)),
+                Arc::new(
+                    crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                        catalog.clone(),
+                        persistence,
+                    ),
+                ),
                 blobs.clone(),
                 persistence,
             )
@@ -184,16 +204,34 @@ mod room_fixture {
     /// A second process over the same storage: what a restart is.
     pub async fn reopen(fixture: &Fixture) -> RoomSet {
         let persistence = fixture.config.persistence();
+        let catalog = Arc::new(
+            crate::storage::catalog::Catalog::open(fixture.dir.path().join("catalog.db"))
+                .expect("a new catalog connection opens"),
+        );
+        let store = Arc::new(
+            store::Store::open_with_catalog(
+                fixture.blobs.clone(),
+                fixture.config.clone(),
+                catalog.clone(),
+            )
+            .await
+            .expect("the store reloads SQL state"),
+        );
         let runtime = Arc::new(
             journal::V2JournalRuntime::with_persistence(
-                Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(fixture.catalog.clone(), persistence)),
+                Arc::new(
+                    crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                        catalog,
+                        persistence,
+                    ),
+                ),
                 fixture.blobs.clone(),
                 persistence,
             )
             .expect("the v2 journal runtime reopens"),
         );
         let rooms = RoomSet::new(fixture.blobs.clone(), fixture.config.clone());
-        rooms.attach_store(fixture.store.clone());
+        rooms.attach_store(store);
         rooms.attach_journal(runtime);
         rooms
     }
@@ -201,36 +239,57 @@ mod room_fixture {
     pub async fn publish(fixture: &Fixture, slug: &str, source: &str) -> Arc<crate::room::Room> {
         fixture
             .store
-            .put(store::Publication {
-                slug: slug.into(),
-                source: source.into(),
-                source_format: "markdown".into(),
-                owner: "alice".into(),
-                peak_bytes: Some(8 * 1024 * 1024),
-                ..Default::default()
-            })
+            .put_as_actor(
+                store::Publication {
+                    slug: slug.into(),
+                    title: slug.into(),
+                    main: "main.md".into(),
+                    source: source.into(),
+                    source_format: "markdown".into(),
+                    owner: "alice".into(),
+                    peak_bytes: Some(8 * 1024 * 1024),
+                    ..Default::default()
+                },
+                store::MutationActor {
+                    account_id: "github:alice".into(),
+                    owner_key: "alice".into(),
+                    session_generation: "size-limit-session".into(),
+                    link_hash: String::new(),
+                    policy_editor: true,
+                    automation: false,
+                    unowned_publisher: false,
+                },
+            )
             .await
             .expect("the document is published");
-        fixture
-            .store
-            .prepare_publication(slug, &store::digest_of(source), "publish", None)
-            .await
-            .expect("the publication is prepared");
         let room = fixture.rooms.get(slug).await;
-        room.set_main_file(source, "markdown", "main.md")
-            .await
-            .unwrap();
-        let sha = room
-            .checkpoint_now("cli", "alice")
-            .await
-            .expect("the first checkpoint is taken")
-            .expect("a checkpoint sha");
-        fixture
-            .store
-            .commit_publication(slug, &sha)
-            .await
-            .expect("the publication commits");
+        assert_eq!(room.source().await, source, "the committed source loads");
         room
+    }
+
+    pub fn journal_document(fixture: &Fixture, id: &str) {
+        fixture
+            .catalog
+            .create_document(&crate::storage::catalog::NewDocument {
+                slug: id.into(),
+                storage_id: id.into(),
+                title: id.into(),
+                sha: String::new(),
+                created_at: "2026-01-01T00:00:00.000Z".into(),
+                published_at: "2026-01-01T00:00:00.000Z".into(),
+                updated_at: "2026-01-01T00:00:00.000Z".into(),
+                example: false,
+                owner_key: String::new(),
+                owner_id: Some("github:alice".into()),
+                status: "active".into(),
+                size: 0,
+                counted_size: 0,
+                maintenance_reserved: 0,
+                last_auto_checkpoint_at: 0,
+                source_format: "markdown".into(),
+                main: "main.md".into(),
+            })
+            .expect("the journal document exists");
     }
 }
 
@@ -536,6 +595,8 @@ async fn concurrent_rooms_stay_inside_the_memory_budget() {
     config.persistence.max_staging_bytes = PersistenceLimits::staging_cost(64 * 1024);
     let fixture = room_fixture::open(config).await;
     let budget = fixture.journal.memory();
+    room_fixture::journal_document(&fixture, "doc-a");
+    room_fixture::journal_document(&fixture, "doc-b");
     let payload = vec![9u8; 60 * 1024];
     let (first, second) = tokio::join!(
         fixture.journal.append("doc-a", 1, payload.clone()),
@@ -657,6 +718,7 @@ async fn a_refused_save_leaks_no_queue_or_memory_reservation() {
     };
     config.persistence.max_encoded_snapshot_bytes = 64 * 1024;
     let fixture = room_fixture::open(config).await;
+    room_fixture::journal_document(&fixture, "doc-1");
     let refused = fixture
         .journal
         .append("doc-1", 1, vec![3u8; 64 * 1024 + 1])
@@ -808,11 +870,24 @@ async fn asset_name_encoded_size_refusal_leaves_the_room_saveable() {
     let room = room_fixture::publish(&fixture, "asset-name-limit", "start\n").await;
     let mut refused = false;
     for n in 0..20 {
-        let before = room.open_state(None).await.0;
-        match room
-            .name_asset(&format!("figure-{n}.png"), &format!("{n:064x}"))
+        let (digest, _) = room
+            .put_asset_authorized(
+                vec![n as u8],
+                (1024, 4096),
+                &crate::document::store::MutationActor {
+                    account_id: "github:alice".into(),
+                    owner_key: "alice".into(),
+                    session_generation: "size-limit-session".into(),
+                    link_hash: String::new(),
+                    policy_editor: true,
+                    automation: false,
+                    unowned_publisher: false,
+                },
+            )
             .await
-        {
+            .expect("the asset is durably staged before naming");
+        let before = room.open_state(None).await.0;
+        match room.name_asset(&format!("figure-{n}.png"), &digest).await {
             Ok(()) => {}
             Err(error) => {
                 assert!(
