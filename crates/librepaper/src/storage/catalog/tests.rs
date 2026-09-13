@@ -5,6 +5,8 @@ use super::{
     UnixMillis, V2OperationInput,
 };
 use sha2::Digest;
+use std::sync::Arc;
+use crate::storage::blob::BlobStore;
 
 pub(super) fn account() -> Account {
     Account {
@@ -606,6 +608,7 @@ fn account_usage_charges_unique_physical_objects_and_not_tree_size() {
     let point = attributed("checkpoint-a", "Alice", Some("acct-1"));
     insert_fixture_checkpoint(&catalog, &point);
 
+    assert!(catalog.audit_v2_counters().unwrap());
     let usage = catalog.account_storage_usage("acct-1").unwrap();
     assert!(usage.physical_accounting);
     assert_eq!(usage.charged_bytes, 34);
@@ -634,6 +637,7 @@ fn account_usage_charges_unique_physical_objects_and_not_tree_size() {
             ("source_tree".into(), 3),
         ]
     );
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
 #[test]
@@ -944,18 +948,29 @@ fn source_history_gc_on_a_fresh_catalog_with_no_objects_is_scoped_and_idempotent
     assert!(catalog.due_deletes(now, 32).unwrap().is_empty());
 }
 
-#[test]
-fn source_history_gc_pages_live_objects_before_reaching_orphans() {
-    let catalog = Catalog::open_in_memory().unwrap();
+#[tokio::test]
+async fn source_history_gc_pages_live_objects_before_reaching_orphans() {
+    let catalog = Arc::new(Catalog::open_in_memory().unwrap());
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
-    let mut object_ids = Vec::new();
+    let mut objects = Vec::new();
     catalog
         .with_connection(|db| {
-            for index in 0..8 {
-                let id = fixture_object_id(&format!("source-page-{index}"));
+            for index in 1..=300 {
+                let id = format!("{index:032x}");
                 let key = format!("v2/documents/storage-1/objects/{id}");
-                object_ids.push(id.clone());
+                objects.push((id.clone(), key.clone()));
+                db.execute(
+                    "INSERT INTO objects
+                     (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                     VALUES('storage-1',?1,?2,'source_chunk','available',?3,7,0,0)",
+                    rusqlite::params![id, key, "e".repeat(64)],
+                )?;
+            }
+            for index in 0..5 {
+                let id = format!("f{index:031x}");
+                let key = format!("v2/documents/storage-1/objects/{id}");
+                objects.push((id.clone(), key.clone()));
                 db.execute(
                     "INSERT INTO objects
                      (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
@@ -969,81 +984,78 @@ fn source_history_gc_pages_live_objects_before_reaching_orphans() {
     let checkpoint = attributed("source-page-checkpoint", "Alice", Some("acct-1"));
     insert_fixture_checkpoint(&catalog, &checkpoint);
     let now = crate::util::now_millis();
-    let document_id = DocumentId::new("storage-1").unwrap();
-    let live_ids = &object_ids[..5];
+    let live_ids = objects[300..]
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
     catalog
         .with_connection(|db| {
-            for id in live_ids {
+            for id in &live_ids {
                 db.execute(
                     "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id)
                      VALUES('storage-1','source-page-checkpoint',?1)",
                     [id],
                 )?;
             }
-            Ok(())
-        })
-        .unwrap();
-    for id in live_ids {
-        let key = format!("v2/documents/storage-1/objects/{id}");
-        assert!(matches!(
-            catalog.queue_delete(&super::PendingDelete {
-                slug: "doc".into(),
-                object_key: key,
-                bytes: 7,
-                queued_at: now,
-                delete_after: now,
-            }),
-            Err(CatalogError::Conflict(_))
-        ));
-    }
-    let mut claimed = Vec::new();
-    for id in &object_ids[5..7] {
-        let object_id = ObjectId::new(id.clone()).unwrap();
-        catalog
-            .with_connection(|db| {
-                db.execute(
-                    "UPDATE objects SET gc_after=0 WHERE document_id='storage-1' AND id=?1",
-                    [id],
-                )?;
-                Ok(())
-            })
-            .unwrap();
-        assert!(catalog
-            .claim_v2_object_for_deletion(
-                &document_id,
-                &object_id,
-                UnixMillis::new(now).unwrap(),
-                UnixMillis::new(now).unwrap(),
-            )
-            .unwrap());
-        claimed.push(object_id);
-    }
-    assert_eq!(catalog.due_deletes(now, 2).unwrap().len(), 2);
-    for object_id in claimed {
-        assert!(catalog
-            .confirm_v2_object_deleted(&document_id, &object_id)
-            .unwrap());
-    }
-    let last_id = object_ids[7].clone();
-    catalog
-        .with_connection(|db| {
             db.execute(
-                "UPDATE objects SET gc_after=0 WHERE document_id='storage-1' AND id=?1",
-                [&last_id],
+                "UPDATE documents SET checkpoint_ref_count=checkpoint_ref_count+5
+                 WHERE id='storage-1'",
+                [],
+            )?;
+            db.execute(
+                "UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count+5
+                 WHERE id=1",
+                [],
             )?;
             Ok(())
         })
         .unwrap();
-    let last = ObjectId::new(last_id).unwrap();
-    assert!(catalog
-        .claim_v2_object_for_deletion(
-            &document_id,
-            &last,
-            UnixMillis::new(now).unwrap(),
-            UnixMillis::new(now).unwrap(),
-        )
-        .unwrap());
-    assert_eq!(catalog.due_deletes(now, 2).unwrap().len(), 1);
+    let total_bytes = 305_i64 * 7;
+    catalog
+        .with_connection(|db| {
+            db.execute(
+                "UPDATE objects SET gc_after=0
+                 WHERE document_id='storage-1' AND id NOT IN (SELECT object_id
+                   FROM checkpoint_objects WHERE document_id='storage-1')",
+                [],
+            )?;
+            db.execute("UPDATE documents SET stored_bytes=?1 WHERE id='storage-1'", [total_bytes])?;
+            db.execute("UPDATE accounts SET stored_bytes=?1 WHERE id='acct-1'", [total_bytes])?;
+            db.execute("UPDATE server_state SET stored_bytes=?1 WHERE id=1", [total_bytes])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(catalog.audit_v2_counters().unwrap());
+
+    let dir = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+        Arc::new(crate::storage::blob::FsStore::new(dir.path(), true));
+    for (_, key) in &objects {
+        blobs.put(key, vec![b'x'; 7], "application/octet-stream").await.unwrap();
+    }
+    let worker = crate::storage::maintenance::DeletionWorker::new(
+        Arc::clone(&catalog),
+        blobs,
+        crate::storage::maintenance::DeletionLimits::default(),
+    )
+    .unwrap();
+    let first = worker.run_v2_once(now).await.unwrap();
+    assert_eq!(first.candidates_claimed, 256);
+    assert_eq!(first.objects_deleted, 256);
+    let second = worker.run_v2_once(now).await.unwrap();
+    assert_eq!(second.objects_deleted, 44);
+    assert!(catalog.audit_v2_counters().unwrap());
+    let remaining: i64 = catalog
+        .with_connection(|db| {
+            db.query_row(
+                "SELECT COUNT(*) FROM objects WHERE document_id='storage-1' AND kind='source_chunk'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(remaining, 5);
 }
 
 #[test]
