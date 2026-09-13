@@ -2538,69 +2538,66 @@ impl Store {
             );
             keys.sort_by(|left, right| left.0.cmp(&right.0));
             keys.dedup_by(|left, right| left.0 == right.0);
-            // Queue every known object before deleting any of them.  A crash
-            // after this point leaves the document deleting and the durable
-            // queue is sufficient for the next maintenance pass to resume.
-            {
-                let queued: Vec<(String, i64)> = keys.clone();
-                let slug = slug.to_string();
-                catalog
-                    .execute_catalog(
-                        STORE_JOB_BYTES
-                            + queued.iter().map(|(key, _)| key.len() + 16).sum::<usize>(),
-                        move |catalog| {
-                            for (key, bytes) in &queued {
-                                catalog.queue_delete(&crate::storage::catalog::PendingDelete {
-                                    slug: slug.clone(),
-                                    object_key: key.clone(),
-                                    bytes: *bytes,
-                                    queued_at: now_unix(),
-                                    delete_after: now_unix(),
-                                })?;
-                            }
-                            Ok(())
-                        },
-                    )
-                    .await
-                    .map_err(|err| err.to_string())?;
-            }
+            // These are compatibility sidecars, outside the canonical v2
+            // object graph. Their names come only from exact document-owned
+            // prefixes and fixed keys, so they can be removed directly after
+            // the document has entered the deleting state. Canonical v2
+            // objects are deliberately absent from this list and are handled
+            // by the object-row collector below.
             let mut removed = 0;
             for (key, _) in &keys {
-                self.blobs
-                    .delete(std::slice::from_ref(key))
+                let outcome = self
+                    .blobs
+                    .delete_each(std::slice::from_ref(key))
                     .await
-                    .map_err(|err| format!("could not reclaim document objects: {err}"))?;
-                let (slug, key) = (slug.to_string(), key.clone());
-                catalog
-                    .execute_catalog(STORE_JOB_BYTES + key.len(), move |catalog| {
-                        catalog.complete_delete_object(&slug, &key)
-                    })
-                    .await
-                    .map_err(|err| err.to_string())?;
-                removed += 1;
+                    .map_err(|err| format!("could not reclaim document sidecars: {err}"))?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "storage returned no sidecar deletion result".to_string())?;
+                if outcome.confirmed() {
+                    removed += 1;
+                } else {
+                    return Err(format!(
+                        "could not confirm document sidecar deletion: {}",
+                        outcome.why()
+                    ));
+                }
             }
-            crate::storage::journal::JournalStore::new(catalog.clone())
-                .retire_storage_async(document.storage_id.clone(), now_unix())
-                .await
-                .map_err(|err| format!("could not retire journal objects: {err}"))?;
-            let retirement_worker = crate::storage::maintenance::JournalRetirementWorker::new(
+            // Canonical v2 journal bases and segments are catalogue objects.
+            // They are rooted by the document row until begin_delete clears
+            // those roots, then the bounded v2 collector verifies and removes
+            // each physical object before settling its charge. The old
+            // deployment-wide journal manifest retirement path must never be
+            // invoked for a v2 document.
+            let gc_worker = crate::storage::maintenance::DeletionWorker::new(
                 catalog.clone(),
                 self.blobs.clone(),
-                1_000,
+                crate::storage::maintenance::DeletionLimits::default(),
             )
-            .map_err(|err| err.to_string())?;
-            retirement_worker
-                .run_once(now_unix())
-                .await
                 .map_err(|err| err.to_string())?;
+            gc_worker
+                .run_v2_once(crate::util::now_millis())
+                .await
+                .map_err(|err| format!("could not run v2 document cleanup: {err}"))?;
             {
                 let slug = slug.to_string();
-                catalog
+                match catalog
                     .execute_catalog(STORE_JOB_BYTES + slug.len(), move |catalog| {
                         catalog.finish_delete(&slug)
                     })
                     .await
-                    .map_err(|err| err.to_string())?;
+                {
+                    Ok(()) => {}
+                    Err(crate::storage::catalog::CatalogExecError::Catalog(
+                        crate::storage::catalog::CatalogError::Conflict(_),
+                    )) => {
+                        // The v2 grace period or another prepared/leased row
+                        // can legitimately keep the document deleting. The
+                        // durable lifecycle and next maintenance pass will
+                        // finish it after physical confirmation.
+                    }
+                    Err(err) => return Err(err.to_string()),
+                }
             }
             self.state.lock().await.entries.remove(slug);
             return Ok(removed);

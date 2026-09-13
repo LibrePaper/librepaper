@@ -670,8 +670,16 @@ async fn heartbeat_stage_leases_page(
     let cursor_document = cursor.as_ref().map(|value| value.document_id.clone());
     let cursor_object = cursor.as_ref().map(|value| value.object_id.clone());
     let cursor_holder = cursor.as_ref().map(|value| value.holder_id.clone());
+    // The execution boundary charges the owned values captured by the job.
+    // A cursor is normally small, but its document/object/holder components
+    // are caller-controlled strings and must be included in the admission
+    // estimate rather than hidden behind the historical 1024-byte default.
+    let input_bytes = 64usize
+        .saturating_add(cursor_document.as_deref().map_or(0, str::len))
+        .saturating_add(cursor_object.as_deref().map_or(0, str::len))
+        .saturating_add(cursor_holder.as_deref().map_or(0, str::len));
     catalog
-        .execute_catalog(1024, move |catalog| {
+        .execute_catalog(input_bytes, move |catalog| {
             catalog.with_connection(|connection| {
                 let transaction = connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -857,7 +865,11 @@ async fn heartbeat_stage_leases_pages(
     Err("stage-lease heartbeat capacity exceeded during bounded maintenance pass".into())
 }
 
-async fn bounded_catalog_call<T, F, Fut>(catalog: Arc<Catalog>, operation: F) -> Result<T, String>
+async fn bounded_catalog_call<T, F, Fut>(
+    catalog: Arc<Catalog>,
+    input_bytes: usize,
+    operation: F,
+) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce(Arc<Catalog>) -> Fut + Send + 'static,
@@ -866,7 +878,7 @@ where
     let handle = tokio::runtime::Handle::current();
     let operation_catalog = Arc::clone(&catalog);
     catalog
-        .execute_catalog(1024, move |catalog| {
+        .execute_catalog(input_bytes, move |catalog| {
             handle
                 .block_on(operation(operation_catalog))
                 .map_err(crate::storage::catalog::CatalogError::Conflict)
@@ -875,23 +887,100 @@ where
         .map_err(|error| error.to_string())
 }
 
+fn allocation_admission_bytes(allocation: &PreparedAllocation) -> usize {
+    allocation
+        .operation_id
+        .len()
+        .saturating_add(allocation.document_id.len())
+        .saturating_add(allocation.object_id.len())
+        .saturating_add(allocation.storage_key.len())
+        .saturating_add(allocation.expected_digest.len())
+}
+
+fn operation_admission_bytes(operation: &PreparedOperation) -> usize {
+    operation
+        .operation_id
+        .len()
+        .saturating_add(operation.document_id.as_deref().map_or(0, str::len))
+        .saturating_add(operation.writer_generation.len())
+}
+
+fn inflight_admission_bytes(record: &InflightPut) -> usize {
+    record
+        .document_id
+        .len()
+        .saturating_add(record.object_id.len())
+        .saturating_add(record.kind.len())
+        .saturating_add(record.operation_id.len())
+        .saturating_add(record.writer_generation.len())
+        .saturating_add(record.expected_digest.len())
+}
+
+fn journal_request_admission_bytes(request: &JournalAppendRequest) -> usize {
+    request
+        .document_id
+        .len()
+        .saturating_add(request.actor_key.len())
+        .saturating_add(request.request_key.len())
+        .saturating_add(request.parts.iter().fold(0usize, |total, part| {
+            total
+                .saturating_add(part.digest.len())
+                .saturating_add(48)
+        }))
+}
+
+fn journal_admission_bytes(admission: &JournalAppendAdmission) -> usize {
+    admission
+        .operation_id
+        .len()
+        .saturating_add(admission.document_id.len())
+        .saturating_add(admission.writer_generation.len())
+        .saturating_add(admission.allocations.iter().fold(0usize, |total, allocation| {
+            total
+                .saturating_add(allocation.object_id.as_str().len())
+                .saturating_add(allocation.storage_key.len())
+                .saturating_add(32)
+        }))
+}
+
+fn written_journal_objects_bytes(objects: &[WrittenJournalObject]) -> usize {
+    objects.iter().fold(0usize, |total, object| {
+        total
+            .saturating_add(object.object_id.as_str().len())
+            .saturating_add(object.storage_key.len())
+            .saturating_add(object.digest.len())
+            .saturating_add(32)
+    })
+}
+
+fn journal_compaction_admission_bytes(admission: &JournalCompactionAdmission) -> usize {
+    admission
+        .operation_id
+        .len()
+        .saturating_add(admission.document_id.len())
+        .saturating_add(admission.writer_generation.len())
+        .saturating_add(admission.base_allocation.object_id.as_str().len())
+        .saturating_add(admission.base_allocation.storage_key.len())
+        .saturating_add(32)
+}
+
 #[async_trait]
 impl V2GcCatalog for V2GcCatalogAdapter {
     async fn heartbeat_stage_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
         heartbeat_stage_leases_pages(&self.catalog, now, limit).await
     }
     async fn expire_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
             <Catalog as V2GcCatalog>::expire_leases(catalog.as_ref(), now, limit).await
         }).await
     }
     async fn expire_prepared_operations(&self, now: i64, limit: usize) -> Result<usize, String> {
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
             <Catalog as V2GcCatalog>::expire_prepared_operations(catalog.as_ref(), now, limit).await
         }).await
     }
     async fn settle_completed_inflight(&self, limit: usize) -> Result<usize, String> {
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
             <Catalog as V2GcCatalog>::settle_completed_inflight(catalog.as_ref(), limit).await
         }).await
     }
@@ -936,8 +1025,9 @@ impl V2GcCatalog for V2GcCatalogAdapter {
                     set_failed_record_written(&record, written.clone());
                     let mut settle_record = record.clone();
                     settle_record.written = Some(written);
+                    let input_bytes = inflight_admission_bytes(&settle_record);
                     let catalog = Arc::clone(&self.catalog);
-                    if bounded_catalog_call(catalog, move |catalog| async move {
+                    if bounded_catalog_call(catalog, input_bytes, move |catalog| async move {
                         settle_completed_record(catalog.as_ref(), settle_record).await
                     })
                     .await
@@ -949,8 +1039,9 @@ impl V2GcCatalog for V2GcCatalogAdapter {
                 }
                 Err(crate::storage::blob::BlobError::NotFound) => {
                     let cleanup_record = record.clone();
+                    let input_bytes = inflight_admission_bytes(&cleanup_record);
                     let catalog = Arc::clone(&self.catalog);
-                    if bounded_catalog_call(catalog, move |catalog| async move {
+                    if bounded_catalog_call(catalog, input_bytes, move |catalog| async move {
                         abort_failed_allocation(catalog.as_ref(), &cleanup_record)
                     })
                     .await
@@ -977,14 +1068,15 @@ impl V2GcCatalog for V2GcCatalogAdapter {
         Ok(settled)
     }
     async fn claim_gc(&self, now: i64, limit: usize) -> Result<Vec<GcCandidate>, String> {
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
             <Catalog as V2GcCatalog>::claim_gc(catalog.as_ref(), now, limit).await
         }).await
     }
     async fn settle_gc(&self, document_id: &str, object_id: &str, confirmed: bool, retry_at: i64) -> Result<i64, String> {
         let document_id = document_id.to_owned();
         let object_id = object_id.to_owned();
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        let input_bytes = document_id.len().saturating_add(object_id.len()).saturating_add(32);
+        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
             <Catalog as V2GcCatalog>::settle_gc(catalog.as_ref(), &document_id, &object_id, confirmed, retry_at).await
         }).await
     }
@@ -993,50 +1085,57 @@ impl V2GcCatalog for V2GcCatalogAdapter {
 #[async_trait]
 impl V2RecoveryCatalog for V2GcCatalogAdapter {
     async fn establish_writer_generation(&self) -> Result<String, String> {
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::establish_writer_generation(catalog.as_ref()).await
         }).await
     }
     async fn prepared_allocations_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<PreparedAllocation>, String> {
         let after = after.map(str::to_owned);
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        let input_bytes = after.as_deref().map_or(64, str::len).saturating_add(64);
+        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::prepared_allocations_page(catalog.as_ref(), after.as_deref(), limit).await
         }).await
     }
     async fn settle_allocation(&self, allocation: &PreparedAllocation, byte_length: u64, digest: &str) -> Result<(), String> {
+        let input_bytes = allocation_admission_bytes(allocation).saturating_add(digest.len());
         let allocation = allocation.clone();
         let digest = digest.to_owned();
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::settle_allocation(catalog.as_ref(), &allocation, byte_length, &digest).await
         }).await
     }
     async fn abort_absent_allocation(&self, allocation: &PreparedAllocation) -> Result<(), String> {
+        let input_bytes = allocation_admission_bytes(allocation);
         let allocation = allocation.clone();
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::abort_absent_allocation(catalog.as_ref(), &allocation).await
         }).await
     }
     async fn prepared_operations_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<PreparedOperation>, String> {
         let after = after.map(str::to_owned);
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        let input_bytes = after.as_deref().map_or(64, str::len).saturating_add(64);
+        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::prepared_operations_page(catalog.as_ref(), after.as_deref(), limit).await
         }).await
     }
     async fn abort_unacknowledged_operation(&self, operation_id: &str) -> Result<(), String> {
         let operation_id = operation_id.to_owned();
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        let input_bytes = operation_id.len();
+        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::abort_unacknowledged_operation(catalog.as_ref(), &operation_id).await
         }).await
     }
     async fn adopt_internal_operation(&self, operation: &PreparedOperation) -> Result<(), String> {
+        let input_bytes = operation_admission_bytes(operation);
         let operation = operation.clone();
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::adopt_internal_operation(catalog.as_ref(), &operation).await
         }).await
     }
     async fn defer_uncertain_operation(&self, operation_id: &str) -> Result<(), String> {
         let operation_id = operation_id.to_owned();
-        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
+        let input_bytes = operation_id.len();
+        bounded_catalog_call(self.catalog.clone(), input_bytes, move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::defer_uncertain_operation(catalog.as_ref(), &operation_id).await
         }).await
     }
@@ -1312,8 +1411,9 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
     async fn journal_head(&self, document_id: &str) -> Result<JournalHead, String> {
         let catalog = Arc::clone(&self.catalog);
         let document_id = document_id.to_owned();
+        let input_bytes = document_id.len().saturating_add(64);
         catalog
-            .execute_catalog(256, move |catalog| {
+            .execute_catalog(input_bytes, move |catalog| {
                 catalog.with_connection(|connection| {
                     let row = connection.query_row(
                         "SELECT journal_epoch,journal_sequence,source_generation,journal_base_sequence,journal_base_object_id FROM documents WHERE id=?1 AND status<>'deleting'",
@@ -1348,7 +1448,11 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         let epoch = i64::try_from(epoch).map_err(|_| "journal epoch exceeds SQL range")?;
         let after_sequence = i64::try_from(after_sequence).map_err(|_| "journal cursor exceeds SQL range")?;
         let after_object_id = after_object_id.to_owned();
-        catalog.execute_catalog(256, move |catalog| {
+        let input_bytes = document_id
+            .len()
+            .saturating_add(after_object_id.len())
+            .saturating_add(64);
+        catalog.execute_catalog(input_bytes, move |catalog| {
             catalog.with_connection(|connection| {
                 let mut statement = connection.prepare(
                     "SELECT id,storage_key,journal_epoch,first_sequence,last_sequence,digest,byte_length FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available' AND journal_epoch=?2 AND (last_sequence>?3 OR (last_sequence=?3 AND id>?4)) ORDER BY last_sequence,id LIMIT ?5",
@@ -1394,10 +1498,11 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         if total_bytes > self.limits.max_queued_payload_bytes {
             return Err("journal append exceeds the configured queue limit".into());
         }
+        let input_bytes = journal_request_admission_bytes(&request);
         let owner_limit = self.owner_limit;
         let deployment_limit = self.deployment_limit;
         let catalog = Arc::clone(&self.catalog);
-        catalog.execute_catalog(256, move |catalog| {
+        catalog.execute_catalog(input_bytes, move |catalog| {
             let mut reservations = catalog
                 .room_reservations
                 .lock()
@@ -1475,8 +1580,10 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         if objects.len() != admission.allocations.len() {
             return Err("journal completion object count does not match admission".into());
         }
+        let input_bytes = journal_admission_bytes(&admission)
+            .saturating_add(written_journal_objects_bytes(&objects));
         let catalog = Arc::clone(&self.catalog);
-        catalog.execute_catalog(256, move |catalog| {
+        catalog.execute_catalog(input_bytes, move |catalog| {
             let mut reservations = catalog
                 .room_reservations
                 .lock()
@@ -1548,7 +1655,8 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
     async fn abort_append(&self, operation_id: &str) -> Result<(), String> {
         let catalog = Arc::clone(&self.catalog);
         let operation_id = operation_id.to_owned();
-        catalog.execute_catalog(128, move |catalog| journal_tx(catalog, |tx| {
+        let input_bytes = operation_id.len().saturating_add(32);
+        catalog.execute_catalog(input_bytes, move |catalog| journal_tx(catalog, |tx| {
             let now = now_millis();
             tx.execute("UPDATE operations SET plan_json=json_set(plan_json,'$.abort_requested',1),work_expires_at=MAX(COALESCE(work_expires_at,0),?1),updated_at=?1 WHERE id=?2 AND state='prepared'", params![now.saturating_add(GC_RETRY_MS),operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             Ok(())
@@ -1567,7 +1675,8 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         let deployment_limit = self.deployment_limit;
         let catalog = Arc::clone(&self.catalog);
         let document_id = document_id.to_owned();
-        catalog.execute_catalog(256, move |catalog| {
+        let input_bytes = document_id.len().saturating_add(digest.len()).saturating_add(96);
+        catalog.execute_catalog(input_bytes, move |catalog| {
             let mut reservations = catalog
                 .room_reservations
                 .lock()
@@ -1611,8 +1720,13 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
     }
 
     async fn commit_compaction(&self, admission: JournalCompactionAdmission, base: WrittenObject, new_epoch: u64, new_sequence: u64) -> Result<(), String> {
+        let input_bytes = journal_compaction_admission_bytes(&admission)
+            .saturating_add(base.object_id.as_str().len())
+            .saturating_add(base.storage_key.len())
+            .saturating_add(base.digest.len())
+            .saturating_add(32);
         let catalog = Arc::clone(&self.catalog);
-        catalog.execute_catalog(256, move |catalog| {
+        catalog.execute_catalog(input_bytes, move |catalog| {
             let mut reservations = catalog
                 .room_reservations
                 .lock()
@@ -1660,7 +1774,8 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
     async fn abort_compaction(&self, operation_id: &str) -> Result<(), String> {
         let catalog = Arc::clone(&self.catalog);
         let operation_id = operation_id.to_owned();
-        catalog.execute_catalog(128, move |catalog| journal_tx(catalog, |tx| {
+        let input_bytes = operation_id.len().saturating_add(32);
+        catalog.execute_catalog(input_bytes, move |catalog| journal_tx(catalog, |tx| {
             let now = now_millis();
             tx.execute("UPDATE operations SET plan_json=json_set(plan_json,'$.abort_requested',1),work_expires_at=MAX(COALESCE(work_expires_at,0),?1),updated_at=?1 WHERE id=?2 AND state='prepared'", params![now.saturating_add(GC_RETRY_MS),operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             Ok(())
@@ -1672,7 +1787,8 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         let document_id = document_id.to_owned();
         let epoch = i64::try_from(epoch).map_err(|_| "journal epoch exceeds SQL range")?;
         let sequence = i64::try_from(sequence).map_err(|_| "journal sequence exceeds SQL range")?;
-        catalog.execute_catalog(256, move |catalog| catalog.with_connection(|connection| connection.query_row("SELECT COALESCE(SUM(byte_length),0) >= 8*1024*1024 OR COUNT(*) >= 32 FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available' AND journal_epoch=?2 AND last_sequence<=?3", params![document_id,epoch,sequence], |row| row.get::<_, i64>(0).map(|value| value != 0)).map_err(crate::storage::catalog::CatalogError::from))).await.map_err(|error| error.to_string())
+        let input_bytes = document_id.len().saturating_add(64);
+        catalog.execute_catalog(input_bytes, move |catalog| catalog.with_connection(|connection| connection.query_row("SELECT COALESCE(SUM(byte_length),0) >= 8*1024*1024 OR COUNT(*) >= 32 FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available' AND journal_epoch=?2 AND last_sequence<=?3", params![document_id,epoch,sequence], |row| row.get::<_, i64>(0).map(|value| value != 0)).map_err(crate::storage::catalog::CatalogError::from))).await.map_err(|error| error.to_string())
     }
 }
 

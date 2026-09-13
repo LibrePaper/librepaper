@@ -1365,6 +1365,7 @@ pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
     for prefix in [
         "content/",
         "journal/",
+        "v2/",
         "rooms/",
         "sessions/",
         "history/",
@@ -1375,10 +1376,27 @@ pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
         let found = blobs.list(prefix).await?;
         let keys: Vec<String> = found.into_iter().map(|object| object.key).collect();
         if !keys.is_empty() {
-            blobs.delete(&keys).await?;
+            let outcomes = blobs.delete_each(&keys).await?;
+            if let Some(failed) = outcomes.iter().find(|outcome| !outcome.confirmed()) {
+                return Err(BlobError::Other(format!(
+                    "seed reset could not confirm removal under {prefix}: {}",
+                    failed.why()
+                )));
+            }
+            if !blobs.list(prefix).await?.is_empty() {
+                return Err(BlobError::Other(format!(
+                    "seed reset found objects remaining under {prefix}"
+                )));
+            }
         }
     }
-    blobs.delete(&[INDEX_KEY.to_string()]).await
+    let outcome = blobs.delete_each(&[INDEX_KEY.to_string()]).await?;
+    if outcome.iter().any(|item| !item.confirmed()) {
+        return Err(BlobError::Other(
+            "seed reset could not confirm removal of the legacy index".into(),
+        ));
+    }
+    Ok(())
 }
 
 /* ----------------------------------------------------------- room locks */

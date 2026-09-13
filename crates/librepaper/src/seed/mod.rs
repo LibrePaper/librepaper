@@ -181,10 +181,17 @@ pub async fn seed_with_backup(
                     .map_err(crate::storage::catalog::CatalogError::from)
             })
             .unwrap_or_else(|err| die(format!("could not read catalogue schema: {err}")));
-        let current_revision = catalog
-            .journal_state()
-            .unwrap_or_else(|err| die(format!("could not read journal state: {err}")))
-            .revision;
+        let current_revision: i64 = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT catalog_revision FROM server_state WHERE id=1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .unwrap_or_else(|err| die(format!("could not read catalogue revision: {err}")));
         if manifest.schema_version != current_schema || manifest.head_revision != current_revision {
             die("seed backup is not an exact verified point for this deployment");
         }
@@ -210,9 +217,6 @@ pub async fn seed_with_backup(
     });
     write_seed_marker(&marker, &marker_body)
         .unwrap_or_else(|err| die(format!("could not write seed reset marker: {err}")));
-    reset_catalog(&catalog).unwrap_or_else(|err| die(err));
-    update_seed_marker(&marker, "catalog-reset")
-        .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
     seed_into_catalog(blobs, config, owner, documents, catalog, &marker).await;
     update_seed_marker(&marker, "seeded")
         .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
@@ -228,32 +232,24 @@ fn reset_catalog(catalog: &crate::storage::catalog::Catalog) -> Result<(), Strin
             connection
                 .execute_batch(
                     "BEGIN IMMEDIATE;
-                     DELETE FROM pending_deletes;
-                     DELETE FROM deletion_discovery;
-                     DELETE FROM journal_retirements;
-                     DELETE FROM journal_segment_coverage;
-                     DELETE FROM journal_bases;
-                     DELETE FROM journal_manifest_shards;
-                     DELETE FROM journal_segments;
-                     DELETE FROM journal_preparations;
-                     UPDATE journal_state SET deployment_id='', writer_generation='',
-                         revision=0, last_operation_id='', next_segment_seq=0,
-                         manifest_key='', manifest_digest='', manifest_length=0,
-                         tail_after=0 WHERE id=1;
-                     DELETE FROM catalog_operations;
-                     DELETE FROM checkpoint_budgets;
-                     DELETE FROM maintenance_jobs;
-                     DELETE FROM account_activity;
-                     DELETE FROM erasure_batches;
-                     DELETE FROM replies;
-                     DELETE FROM comments;
+                     UPDATE documents SET current_checkpoint_id=NULL,
+                         journal_base_object_id=NULL, publication_object_id=NULL,
+                         publication_id=NULL, published_at=NULL;
+                     DELETE FROM object_leases;
+                     DELETE FROM checkpoint_objects;
                      DELETE FROM checkpoints;
-                     DELETE FROM guests;
+                     DELETE FROM replies;
                      DELETE FROM grants;
                      DELETE FROM links;
+                     DELETE FROM annotations;
+                     DELETE FROM objects;
+                     DELETE FROM operations;
                      DELETE FROM documents;
                      DELETE FROM accounts;
-                     UPDATE totals SET bytes = 0, documents = 0 WHERE id = 1;
+                     UPDATE server_state SET catalog_revision=0,
+                         stored_bytes=0, reserved_bytes=0, document_count=0,
+                         agent_payload_bytes=0, agent_payload_count=0,
+                         checkpoint_ref_count=0, updated_at=0 WHERE id=1;
                      COMMIT;",
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)
@@ -306,6 +302,13 @@ async fn seed_into_catalog(
             ))
         });
     update_seed_marker(marker, "objects-cleared")
+        .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
+    // Physical cleanup is the first half of the destructive reset. Only
+    // after every object has a confirmed absent outcome do we remove its
+    // catalogue row and release its counters. This covers allocated PUTs as
+    // well as acknowledged objects.
+    reset_catalog(&catalog).unwrap_or_else(|err| die(err));
+    update_seed_marker(marker, "catalog-reset")
         .unwrap_or_else(|err| die(format!("could not update seed reset marker: {err}")));
     seed_with_store(blobs, config, owner, documents, Some(catalog)).await;
 }
