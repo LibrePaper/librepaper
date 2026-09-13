@@ -596,6 +596,142 @@ fn operation_authorized_in_tx(
 }
 
 impl Catalog {
+    /// Verify the bytes decoded by the publication worker and derive the
+    /// complete immutable object closure from those bytes. Manifest callers
+    /// cannot omit an HTML or asset object while supplying an unrelated list:
+    /// every `object_id`, digest, and byte length in the manifest is checked
+    /// against the settled v2 object rows before the normal generation and
+    /// lease fence runs.
+    pub(crate) fn verify_v2_publication_bundle_bytes(
+        &self,
+        document_id: &DocumentId,
+        operation_id: &OperationId,
+        manifest_object_id: &ObjectId,
+        manifest_bytes: &[u8],
+        now: UnixMillis,
+    ) -> CatalogResult<VerifiedPublicationBundle> {
+        if manifest_bytes.is_empty() || manifest_bytes.len() > 256 * 1024 {
+            return Err(CatalogError::Invalid(
+                "publication manifest is too large".into(),
+            ));
+        }
+        let value: serde_json::Value = serde_json::from_slice(manifest_bytes).map_err(|error| {
+            CatalogError::Invalid(format!("invalid publication manifest: {error}"))
+        })?;
+        let html = value.get("html").ok_or_else(|| {
+            CatalogError::Invalid("publication manifest has no html object".into())
+        })?;
+        let html_id = html
+            .get("object_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CatalogError::Invalid("publication html object id is missing".into()))?;
+        let html_digest = html
+            .get("sha256")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CatalogError::Invalid("publication html digest is missing".into()))?;
+        let html_bytes = html
+            .get("bytes")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| CatalogError::Invalid("publication html length is missing".into()))?;
+        let mut object_ids = vec![
+            manifest_object_id.clone(),
+            ObjectId::new(html_id.to_owned()).map_err(|e| CatalogError::Invalid(e.to_string()))?,
+        ];
+        let assets = value
+            .get("assets")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                CatalogError::Invalid("publication manifest assets are missing".into())
+            })?;
+        if assets.len() > MAX_PUBLICATION_ASSETS {
+            return Err(CatalogError::Invalid(
+                "publication asset count exceeds 512".into(),
+            ));
+        }
+        for asset in assets {
+            let object = asset.get("object").unwrap_or(asset);
+            let id = object
+                .get("object_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    CatalogError::Invalid("publication asset object id is missing".into())
+                })?;
+            object_ids.push(
+                ObjectId::new(id.to_owned()).map_err(|e| CatalogError::Invalid(e.to_string()))?,
+            );
+        }
+        let distinct: HashSet<&ObjectId> = object_ids.iter().collect();
+        if distinct.len() != object_ids.len() {
+            return Err(CatalogError::Invalid(
+                "publication manifest repeats an object".into(),
+            ));
+        }
+        self.with_connection(|connection| {
+            let (kind, digest, byte_length): (String, String, Option<i64>) = connection
+                .query_row(
+                    "SELECT kind,digest,byte_length FROM objects WHERE document_id=?1 AND id=?2 AND state='available'",
+                    params![document_id.as_str(), manifest_object_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(CatalogError::from)?;
+            if kind != ObjectKind::PublicationManifest.as_str()
+                || digest != hex::encode(sha2::Sha256::digest(manifest_bytes))
+                || byte_length != Some(manifest_bytes.len() as i64)
+            {
+                return Err(CatalogError::Conflict("publication manifest bytes do not match the settled object".into()));
+            }
+            let html_id = object_ids.get(1).ok_or(CatalogError::NotFound)?;
+            let (kind, digest, bytes): (String, String, Option<i64>) = connection
+                .query_row(
+                    "SELECT kind,digest,byte_length FROM objects WHERE document_id=?1 AND id=?2 AND state='available'",
+                    params![document_id.as_str(), html_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(CatalogError::from)?;
+            if kind != ObjectKind::PublicationHtml.as_str() || digest != html_digest || bytes != Some(html_bytes) {
+                return Err(CatalogError::Conflict("publication html descriptor does not match the settled object".into()));
+            }
+            for (index, asset) in assets.iter().enumerate() {
+                let object = asset.get("object").unwrap_or(asset);
+                let digest = object
+                    .get("sha256")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| CatalogError::Invalid("publication asset digest is missing".into()))?;
+                let bytes = object
+                    .get("bytes")
+                    .and_then(serde_json::Value::as_i64)
+                    .ok_or_else(|| CatalogError::Invalid("publication asset length is missing".into()))?;
+                let object_id = object_ids.get(index + 2).ok_or(CatalogError::NotFound)?;
+                let (kind, actual_digest, actual_bytes): (String, String, Option<i64>) = connection
+                    .query_row(
+                        "SELECT kind,digest,byte_length FROM objects WHERE document_id=?1 AND id=?2 AND state='available'",
+                        params![document_id.as_str(), object_id.as_str()],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(CatalogError::from)?;
+                if kind != ObjectKind::PublicationAsset.as_str()
+                    || actual_digest != digest
+                    || actual_bytes != Some(bytes)
+                {
+                    return Err(CatalogError::Conflict("publication asset descriptor does not match the settled object".into()));
+                }
+            }
+            Ok(())
+        })?;
+        // The byte verifier has derived the complete closure. The regular
+        // verifier then applies the operation generation, source CAS, kinds,
+        // and operation-owned stage lease checks in one transaction.
+        let manifest_digest = hex::encode(sha2::Sha256::digest(manifest_bytes));
+        self.verify_v2_publication_bundle(
+            document_id,
+            operation_id,
+            &object_ids,
+            manifest_object_id,
+            &manifest_digest,
+            now,
+        )
+    }
+
     /// Verify the immutable publication closure after the object worker has
     /// decoded the manifest.  The catalogue rechecks the operation fence,
     /// object kinds, availability, and operation-owned stage leases in one
