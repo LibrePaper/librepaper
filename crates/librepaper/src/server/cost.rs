@@ -1003,13 +1003,28 @@ struct SourceAssetHeartbeat {
 
 impl SourceAssetHeartbeat {
     fn start(lease: crate::storage::catalog::SourceAssetReadLease) -> Self {
+        Self::start_with_interval(lease, std::time::Duration::from_secs(30))
+    }
+
+    #[cfg(test)]
+    fn start_for_test(
+        lease: crate::storage::catalog::SourceAssetReadLease,
+        interval: std::time::Duration,
+    ) -> Self {
+        Self::start_with_interval(lease, interval)
+    }
+
+    fn start_with_interval(
+        lease: crate::storage::catalog::SourceAssetReadLease,
+        interval: std::time::Duration,
+    ) -> Self {
         let lease = Arc::new(tokio::sync::Mutex::new(lease));
         let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let task_lease = lease.clone();
         let task_lost = lost.clone();
         let task = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                tokio::time::sleep(interval).await;
                 let mut lease = task_lease.lock().await;
                 if lease
                     .renew(crate::storage::catalog::unix_millis())
@@ -1346,6 +1361,7 @@ fn wrap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::blob::BlobStore;
     use serde_json::json;
     use sha2::Digest;
 
@@ -1455,6 +1471,19 @@ mod tests {
                 )
             })
             .await
+            .unwrap()
+    }
+
+    fn asset_lease_expiry(fixture: &AssetFixture) -> i64 {
+        fixture
+            .catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT max(expires_at) FROM object_leases", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
             .unwrap()
     }
 
@@ -1602,6 +1631,49 @@ mod tests {
             .unwrap();
         release.notify_one();
         assert!(body.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn slow_asset_get_keeps_lease_heartbeat_alive() {
+        let fixture = asset_fixture();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let blob = Arc::new(AssetBlob {
+            body: fixture.body.clone(),
+            started: started.clone(),
+            release: release.clone(),
+            block_ranges: true,
+        });
+        let heartbeat = SourceAssetHeartbeat::start_for_test(
+            asset_lease(&fixture).await,
+            std::time::Duration::from_millis(1),
+        );
+        let before = asset_lease_expiry(&fixture);
+        let blob_len = blob.body.len() as u64;
+        let get = tokio::spawn(async move {
+            blob.get_range("asset", 0..blob_len).await
+        });
+        started.notified().await;
+        tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+        let after = asset_lease_expiry(&fixture);
+        assert!(after >= before);
+        release.notify_one();
+        assert!(get.await.unwrap().is_ok());
+        heartbeat.finish().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropping_asset_heartbeat_stops_renewals() {
+        let fixture = asset_fixture();
+        let heartbeat = SourceAssetHeartbeat::start_for_test(
+            asset_lease(&fixture).await,
+            std::time::Duration::from_millis(1),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(6)).await;
+        drop(heartbeat);
+        let stopped = asset_lease_expiry(&fixture);
+        tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+        assert_eq!(asset_lease_expiry(&fixture), stopped);
     }
 
     #[tokio::test]
