@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
@@ -41,7 +41,7 @@ impl std::error::Error for IdError {}
 
 macro_rules! id_type {
     ($name:ident, $exact_hex:expr) => {
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
         #[serde(transparent)]
         pub struct $name(String);
 
@@ -66,6 +66,14 @@ macro_rules! id_type {
 
         impl AsRef<str> for $name {
             fn as_ref(&self) -> &str { self.as_str() }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where D: serde::Deserializer<'de> {
+                let value = String::deserialize(deserializer)?;
+                Self::new(value).map_err(serde::de::Error::custom)
+            }
         }
     };
 }
@@ -420,14 +428,8 @@ impl Catalog {
     }
 
     pub fn allocate_v2_object(&self, allocation: &V2ObjectAllocation) -> CatalogResult<V2Object> {
-        self.allocate_v2_object_with_limits(
-            allocation,
-            V2AdmissionLimits {
-                owner_bytes: i64::MAX,
-                deployment_bytes: i64::MAX,
-                owner_documents: i64::MAX,
-            },
-        )
+        let _ = allocation;
+        Err(CatalogError::Invalid("object allocation requires configured admission limits".into()))
     }
 
     pub fn allocate_v2_object_with_limits(&self, allocation: &V2ObjectAllocation, limits: V2AdmissionLimits) -> CatalogResult<V2Object> {
@@ -448,7 +450,7 @@ impl Catalog {
             let owner_id: String = tx.query_row("SELECT owner_id FROM documents WHERE id=?1 AND status <> 'deleting'", [allocation.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             let prepared: i64 = tx.query_row("SELECT count(*) FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared'", params![allocation.operation_id.as_str(), allocation.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if prepared != 1 { return Err(CatalogError::Conflict("allocation requires a prepared document operation".into())); }
-            let (doc_stored, doc_reserved, agent_bytes, agent_count): (i64,i64,i64,i64) = tx.query_row("SELECT stored_bytes,reserved_bytes,agent_payload_bytes,agent_payload_count FROM documents WHERE id=?1", [allocation.document_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(CatalogError::from)?;
+            let (_doc_stored, doc_reserved, agent_bytes, agent_count): (i64,i64,i64,i64) = tx.query_row("SELECT stored_bytes,reserved_bytes,agent_payload_bytes,agent_payload_count FROM documents WHERE id=?1", [allocation.document_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(CatalogError::from)?;
             let (owner_stored, owner_reserved): (i64,i64) = tx.query_row("SELECT stored_bytes,reserved_bytes FROM accounts WHERE id=?1", [&owner_id], |row| Ok((row.get(0)?,row.get(1)?))).map_err(CatalogError::from)?;
             let (server_stored, server_reserved, server_agent_bytes, server_agent_count): (i64,i64,i64,i64) = tx.query_row("SELECT stored_bytes,reserved_bytes,agent_payload_bytes,agent_payload_count FROM server_state WHERE id=1", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(CatalogError::from)?;
             let new_doc_reserved = checked_add(doc_reserved, allocation.reserved_bytes, "document reserved")?;
@@ -481,6 +483,9 @@ impl Catalog {
             if state == "available" { let existing: i64 = tx.query_row("SELECT byte_length FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?; if existing != measured_bytes { return Err(CatalogError::Conflict("object was already settled at a different length".into())); } return Ok(()); }
             if state != "allocated" || operation.is_none() { return Err(CatalogError::Conflict("object is not an unsettled allocation".into())); }
             let owner: String = tx.query_row("SELECT owner_id FROM documents WHERE id=?1", [document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            if measured_bytes > old_reserved {
+                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "measured object exceeds admitted allocation; enlarge reservation before writing"));
+            }
             let delta = measured_bytes.checked_sub(old_reserved).ok_or_else(|| CatalogError::Invalid("settlement would underflow reservation".into()))?;
             tx.execute("UPDATE objects SET state='available',byte_length=?1,reserved_bytes=0,allocation_operation_id=NULL WHERE document_id=?2 AND id=?3 AND state='allocated'", params![measured_bytes,document_id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?;
             tx.execute("UPDATE documents SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,updated_at=max(updated_at,?3), agent_payload_bytes=CASE WHEN ?4='agent_payload' THEN agent_payload_bytes+?5 ELSE agent_payload_bytes END WHERE id=?6", params![measured_bytes,old_reserved,now.0,kind,delta,document_id.as_str()]).map_err(CatalogError::from)?;
@@ -494,14 +499,14 @@ impl Catalog {
     }
 
     pub fn acquire_v2_lease(&self, document_id: &DocumentId, object_id: &ObjectId, holder_id: &str, purpose: LeasePurpose, operation_id: Option<&OperationId>, writer_generation: &str, expires_at: UnixMillis, now: UnixMillis) -> CatalogResult<()> {
-        if holder_id.is_empty() || expires_at < now { return Err(CatalogError::Invalid("invalid lease holder or expiry".into())); }
+        if holder_id.is_empty() || expires_at <= now { return Err(CatalogError::Invalid("invalid lease holder or expiry".into())); }
         if purpose != LeasePurpose::Read && operation_id.is_none() { return Err(CatalogError::Invalid("write/stage leases require an operation".into())); }
         self.immediate(|tx| {
             let state: String = tx.query_row("SELECT state FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if state == "deleting" { return Err(CatalogError::Conflict("deleting object cannot acquire a lease".into())); }
             if purpose == LeasePurpose::Read && state != "available" { return Err(CatalogError::Conflict("read lease requires an available object".into())); }
             if let Some(operation_id) = operation_id {
-                let valid: i64 = tx.query_row("SELECT count(*) FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared'", params![operation_id.as_str(),document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+                let valid: i64 = tx.query_row("SELECT count(*) FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared' AND writer_generation=?3 AND (work_expires_at IS NULL OR work_expires_at>?4)", params![operation_id.as_str(),document_id.as_str(),writer_generation,now.0], |row| row.get(0)).map_err(CatalogError::from)?;
                 if valid != 1 { return Err(CatalogError::Conflict("lease operation is not prepared for this document".into())); }
             }
             tx.execute("INSERT INTO object_leases (document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)", params![document_id.as_str(),object_id.as_str(),holder_id,purpose.as_str(),operation_id.map(OperationId::as_str),writer_generation,now.0,expires_at.0]).map_err(CatalogError::from)?;
@@ -515,8 +520,11 @@ impl Catalog {
 
     pub fn claim_v2_object_for_deletion(&self, document_id: &DocumentId, object_id: &ObjectId, now: UnixMillis, retry_at: UnixMillis) -> CatalogResult<bool> {
         self.immediate(|tx| {
-            let state: Option<String> = tx.query_row("SELECT state FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).optional().map_err(CatalogError::from)?;
+            let (state, gc_after): (Option<String>, Option<i64>) = tx.query_row("SELECT state,gc_after FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(CatalogError::from)?.unwrap_or((None,None));
             if state.as_deref() != Some("available") { return Ok(false); }
+            if gc_after.is_none() || gc_after > Some(now.0) { return Ok(false); }
+            let backup_frozen: i64 = tx.query_row("SELECT count(*) FROM operations WHERE kind='backup' AND document_id IS NULL AND account_id IS NULL AND state='prepared'", [], |row| row.get(0)).map_err(CatalogError::from)?;
+            if backup_frozen != 0 { return Ok(false); }
             let blockers: i64 = tx.query_row("SELECT (EXISTS(SELECT 1 FROM checkpoint_objects WHERE document_id=?1 AND object_id=?2) OR EXISTS(SELECT 1 FROM object_leases WHERE document_id=?1 AND object_id=?2) OR EXISTS(SELECT 1 FROM documents WHERE id=?1 AND (journal_base_object_id=?2 OR publication_object_id=?2)))", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if blockers != 0 { return Ok(false); }
             let changed = tx.execute("UPDATE objects SET state='deleting',retry_at=?1 WHERE document_id=?2 AND id=?3 AND state='available' AND live_root=0 AND publication_root=0", params![retry_at.0,document_id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?;
@@ -531,7 +539,6 @@ impl Catalog {
             let row: Option<(String,i64,Option<i64>,String)> = tx.query_row("SELECT state,reserved_bytes,byte_length,kind FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(CatalogError::from)?;
             let Some((state,reserved,bytes,kind)) = row else { return Ok(false); };
             if state != "deleting" { return Err(CatalogError::Conflict("only deleting objects can be confirmed removed".into())); }
-            let charge = bytes.unwrap_or(reserved);
             let owner: String = tx.query_row("SELECT owner_id FROM documents WHERE id=?1", [document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             tx.execute("DELETE FROM objects WHERE document_id=?1 AND id=?2 AND state='deleting'", params![document_id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?;
             tx.execute("UPDATE documents SET stored_bytes=stored_bytes-CASE WHEN ?1 IS NULL THEN 0 ELSE ?1 END,reserved_bytes=reserved_bytes-CASE WHEN ?1 IS NULL THEN ?2 ELSE 0 END,agent_payload_bytes=CASE WHEN ?3='agent_payload' THEN agent_payload_bytes-CASE WHEN ?1 IS NULL THEN 0 ELSE ?1 END-CASE WHEN ?1 IS NULL THEN ?2 ELSE 0 END ELSE agent_payload_bytes END,agent_payload_count=CASE WHEN ?3='agent_payload' THEN agent_payload_count-1 ELSE agent_payload_count END WHERE id=?4", params![bytes,reserved,kind,document_id.as_str()]).map_err(CatalogError::from)?;
@@ -655,10 +662,18 @@ impl Catalog {
     pub fn finish_v2_operation(&self, operation_id: &OperationId, result_json: &str, committed: bool, now: UnixMillis) -> CatalogResult<()> {
         validate_json(result_json, "operation result", 65_536)?;
         self.immediate(|tx| {
-            let state: String = tx.query_row("SELECT state FROM operations WHERE id=?1", [operation_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            let (state, kind, operation_generation): (String,String,String) = tx.query_row("SELECT state,kind,writer_generation FROM operations WHERE id=?1", [operation_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(CatalogError::from)?;
             if state != "prepared" { return Err(CatalogError::Conflict("operation is already terminal".into())); }
+            let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)?;
+            if operation_generation != current_generation { return Err(CatalogError::Conflict("operation belongs to an obsolete writer generation".into())); }
             let final_state = if committed { "committed" } else { "aborted" };
-            tx.execute("UPDATE operations SET state=?1,result_json=?2,completed_at=?3,receipt_expires_at=?3,updated_at=max(updated_at,?3) WHERE id=?4 AND state='prepared'", params![final_state,result_json,now.0,operation_id.as_str()]).map_err(CatalogError::from)?;
+            let retention = match kind.as_str() {
+                "journal_append" | "journal_compact" => 60_000,
+                "agent_stage" | "agent_execution" => 3_600_000,
+                _ => 7 * 24 * 60 * 60 * 1_000,
+            };
+            let receipt_expires = now.0.checked_add(retention).ok_or_else(|| CatalogError::Invalid("operation receipt expiry overflow".into()))?;
+            tx.execute("UPDATE operations SET state=?1,result_json=?2,completed_at=?3,receipt_expires_at=?4,updated_at=max(updated_at,?3) WHERE id=?5 AND state='prepared'", params![final_state,result_json,now.0,receipt_expires,operation_id.as_str()]).map_err(CatalogError::from)?;
             Ok(())
         })
     }

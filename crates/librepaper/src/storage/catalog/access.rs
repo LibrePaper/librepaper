@@ -255,7 +255,8 @@ impl Catalog {
         }
         keys.push((key_id.clone(), key));
         self.with_connection(|connection| {
-            connection.execute("INSERT INTO link_keyring(key_id,status,created_at) VALUES(?1,'primary',unixepoch()) ON CONFLICT(key_id) DO UPDATE SET status='primary'",[key_id]).map_err(CatalogError::from)?;
+            let keyring = serde_json::json!({"version":1,"keys":[{"id":key_id,"created_at":super::unix_millis()}]});
+            connection.execute("UPDATE server_state SET active_link_key_id=?1,keyring_json=?2,updated_at=max(updated_at,?3) WHERE id=1",params![key_id,serde_json::to_string(&keyring).map_err(|e| CatalogError::Invalid(e.to_string()))?,super::unix_millis()]).map_err(CatalogError::from)?;
             Ok(())
         })?;
         Ok(())
@@ -282,16 +283,7 @@ impl Catalog {
     /// on-disk keyring: a destination may have been written to the ring just
     /// before the SQLite rotation row was created.
     pub fn link_keyring_primary_id(&self) -> CatalogResult<Option<String>> {
-        self.with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT key_id FROM link_keyring WHERE status='primary' ORDER BY created_at DESC, key_id DESC LIMIT 1",
-                    [],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(CatalogError::from)
-        })
+        self.with_connection(|connection| connection.query_row("SELECT active_link_key_id FROM server_state WHERE id=1", [], |row| row.get(0)).optional().map_err(CatalogError::from))
     }
 
     pub fn seal_link_key(
@@ -883,6 +875,7 @@ impl Catalog {
             return Err(CatalogError::Invalid("invalid grant".into()));
         }
         self.immediate(|tx| {
+            let document_id: String = tx.query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| row.get(0)).map_err(CatalogError::from)?;
             let active: Option<String> = tx
                 .query_row(
                     "SELECT status FROM accounts WHERE id=?1",
@@ -897,15 +890,15 @@ impl Catalog {
             let already: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM grants
-                     WHERE slug=?1 AND account_id=?2)",
-                    params![slug, account_id],
+                     WHERE document_id=?1 AND account_id=?2)",
+                    params![document_id, account_id],
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?;
             if !already {
                 let documents: i64 = tx
                     .query_row(
-                        "SELECT COUNT(DISTINCT slug) FROM grants WHERE account_id=?1",
+                        "SELECT COUNT(DISTINCT document_id) FROM grants WHERE account_id=?1",
                         [account_id],
                         |row| row.get(0),
                     )
@@ -917,9 +910,9 @@ impl Catalog {
                 }
             }
             tx.execute(
-                "INSERT INTO grants(slug,role,account_id,since) VALUES(?1,?2,?3,?4)
-                        ON CONFLICT(slug,role,account_id) DO UPDATE SET since=excluded.since",
-                params![slug, role, account_id, since],
+                "INSERT INTO grants(document_id,role,account_id,created_at) VALUES(?1,?2,?3,?4)
+                        ON CONFLICT(document_id,account_id) DO UPDATE SET role=excluded.role,created_at=excluded.created_at",
+                params![document_id, role, account_id, since.parse::<i64>().unwrap_or_else(|_| super::unix_millis())],
             )
             .map_err(CatalogError::from)?;
             Ok(Grant {
@@ -933,10 +926,11 @@ impl Catalog {
 
     pub fn revoke_grant(&self, slug: &str, role: &str, account_id: &str) -> CatalogResult<bool> {
         self.immediate(|tx| {
+            let document_id: String = tx.query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| row.get(0)).map_err(CatalogError::from)?;
             let n = tx
                 .execute(
-                    "DELETE FROM grants WHERE slug=?1 AND role=?2 AND account_id=?3",
-                    params![slug, role, account_id],
+                    "DELETE FROM grants WHERE document_id=?1 AND role=?2 AND account_id=?3",
+                    params![document_id, role, account_id],
                 )
                 .map_err(CatalogError::from)?;
             Ok(n == 1)
@@ -953,8 +947,8 @@ impl Catalog {
         self.with_connection(|c| {
             let mut s = c
                 .prepare(
-                    "SELECT slug,role,account_id,since FROM grants
-                WHERE slug=?1 AND (?2 IS NULL OR role>?2 OR (role=?2 AND account_id>?3))
+                    "SELECT d.slug,g.role,g.account_id,CAST(g.created_at AS TEXT) FROM grants g JOIN documents d ON d.id=g.document_id
+                WHERE d.slug=?1 AND (?2 IS NULL OR g.role>?2 OR (g.role=?2 AND g.account_id>?3))
                 ORDER BY role,account_id LIMIT ?4",
                 )
                 .map_err(CatalogError::from)?;
@@ -996,22 +990,23 @@ impl Catalog {
             let valid_expiry: i64 = tx.query_row("SELECT (?1='' OR julianday(?1) IS NOT NULL)", [&link.until], |r| r.get(0)).map_err(CatalogError::from)?;
             if valid_expiry == 0 { return Err(CatalogError::Invalid("invalid link expiry".into())); }
             let key_id = envelope_key_id(&link.sealed);
-            tx.execute("INSERT INTO links(slug,role,hash,sealed,key_id,label,budget,since,until)
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
-                ON CONFLICT(slug,role) DO UPDATE SET hash=excluded.hash,sealed=excluded.sealed,
-                label=excluded.label,budget=excluded.budget,since=excluded.since,until=excluded.until,key_id=excluded.key_id",
-                params![link.slug,link.role,link.hash,link.sealed,key_id,link.label,link.budget,link.since,link.until]).map_err(CatalogError::from)?;
-            tx.execute("DELETE FROM guests WHERE slug=?1 AND link_hash<>?2", params![link.slug, link.hash]).map_err(CatalogError::from)?;
+            let document_id: String = tx.query_row("SELECT id FROM documents WHERE slug=?1", [&link.slug], |row| row.get(0)).map_err(CatalogError::from)?;
+            tx.execute("INSERT INTO links(document_id,id,role,token_hash,sealed_token,sealing_key_id,label,budget,created_at,expires_at)
+                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                ON CONFLICT(document_id,role) DO UPDATE SET token_hash=excluded.token_hash,sealed_token=excluded.sealed_token,
+                label=excluded.label,budget=excluded.budget,expires_at=excluded.expires_at,sealing_key_id=excluded.sealing_key_id",
+                params![document_id, format!("{}-{}", link.role, hex::encode(crate::auth::random_bytes(8))), link.role, link.hash, link.sealed, key_id, link.label, link.budget, link.since.parse::<i64>().unwrap_or_else(|_| super::unix_millis()), if link.until.is_empty() {None::<i64>} else {Some(link.until.parse::<i64>().unwrap_or(0))}]).map_err(CatalogError::from)?;
             Ok(link.clone())
         })
     }
 
     pub fn drop_link(&self, slug: &str, role: &str) -> CatalogResult<bool> {
         self.immediate(|tx| {
+            let document_id: String = tx.query_row("SELECT id FROM documents WHERE slug=?1", [slug], |row| row.get(0)).map_err(CatalogError::from)?;
             let n = tx
                 .execute(
-                    "DELETE FROM links WHERE slug=?1 AND role=?2",
-                    params![slug, role],
+                    "DELETE FROM links WHERE document_id=?1 AND role=?2",
+                    params![document_id, role],
                 )
                 .map_err(CatalogError::from)?;
             Ok(n == 1)
@@ -1020,7 +1015,7 @@ impl Catalog {
 
     pub fn links(&self, slug: &str) -> CatalogResult<Vec<Link>> {
         self.with_connection(|c| {
-            let mut s = c.prepare("SELECT slug,role,hash,sealed,label,budget,since,until FROM links WHERE slug=?1 ORDER BY role").map_err(CatalogError::from)?;
+            let mut s = c.prepare("SELECT d.slug,l.role,l.token_hash,l.sealed_token,l.label,l.budget,CAST(l.created_at AS TEXT),COALESCE(CAST(l.expires_at AS TEXT),'') FROM links l JOIN documents d ON d.id=l.document_id WHERE d.slug=?1 ORDER BY l.role").map_err(CatalogError::from)?;
             let mut rows = s.query([slug]).map_err(CatalogError::from)?;
             let mut out = Vec::new();
             while let Some(r) = rows.next().map_err(CatalogError::from)? {
@@ -1039,24 +1034,23 @@ impl Catalog {
         self.immediate(|tx| {
             let status: Option<String> = tx.query_row("SELECT status FROM accounts WHERE id=?1", [&guest.account_id], |r| r.get(0)).optional().map_err(CatalogError::from)?;
             if status.as_deref() != Some("active") { return Err(CatalogError::Conflict("guest account is not active".into())); }
-            let live: i64 = tx.query_row("SELECT COUNT(*) FROM documents d JOIN links l ON l.slug=d.slug
-                WHERE d.slug=?1 AND d.status='active' AND l.hash=?2 AND
-                (l.until='' OR (julianday(l.until) IS NOT NULL AND julianday(l.until)>julianday('now')))", params![guest.slug,guest.link_hash], |r| r.get(0)).map_err(CatalogError::from)?;
-            if live != 1 { return Err(CatalogError::NotFound); }
-            tx.execute("INSERT OR IGNORE INTO guests(slug,account_id,since,link_hash) VALUES(?1,?2,?3,?4)", params![guest.slug,guest.account_id,guest.since,guest.link_hash]).map_err(CatalogError::from)?;
+            let (document_id,link_id,generation): (String,String,i64) = tx.query_row("SELECT d.id,l.id,l.credential_generation FROM documents d JOIN links l ON l.document_id=d.id WHERE d.slug=?1 AND d.status='active' AND l.token_hash=?2", params![guest.slug,guest.link_hash], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
+            let payload: String = tx.query_row("SELECT bookmarks_json FROM accounts WHERE id=?1", [&guest.account_id], |r| r.get(0)).map_err(CatalogError::from)?;
+            let mut json: serde_json::Value = serde_json::from_str(&payload).map_err(|e| CatalogError::Invalid(format!("invalid bookmarks: {e}")))?;
+            let items = json.get_mut("items").and_then(serde_json::Value::as_array_mut).ok_or_else(|| CatalogError::Invalid("bookmarks_json has invalid shape".into()))?;
+            items.retain(|item| item.get("document_id").and_then(serde_json::Value::as_str) != Some(document_id.as_str()));
+            if items.len() >= 1_000 { return Err(CatalogError::refused(CatalogRefusal::Other,"bookmark limit exceeded")); }
+            items.push(serde_json::json!({"document_id":document_id,"link_id":link_id,"credential_generation":generation,"pinned_at":guest.since}));
+            tx.execute("UPDATE accounts SET bookmarks_json=?1 WHERE id=?2", params![serde_json::to_string(&json).map_err(|e| CatalogError::Invalid(e.to_string()))?,guest.account_id]).map_err(CatalogError::from)?;
             Ok(guest.clone())
         })
     }
 
     pub fn guests(&self, slug: &str, limit: u32) -> CatalogResult<Vec<Guest>> {
-        let limit = i64::from(limit.clamp(1, 200));
-        self.with_connection(|c| {
-            let mut s = c.prepare("SELECT slug,account_id,since,link_hash FROM guests WHERE slug=?1 ORDER BY account_id,link_hash LIMIT ?2").map_err(CatalogError::from)?;
-            let mut rows = s.query(params![slug,limit]).map_err(CatalogError::from)?;
-            let mut out = Vec::new();
-            while let Some(r) = rows.next().map_err(CatalogError::from)? { out.push(Guest {slug:r.get(0).map_err(CatalogError::from)?,account_id:r.get(1).map_err(CatalogError::from)?,since:r.get(2).map_err(CatalogError::from)?,link_hash:r.get(3).map_err(CatalogError::from)?}); }
-            Ok(out)
-        })
+        let _ = (slug, limit);
+        // v2 bookmarks belong to each account and are never an access index;
+        // there is intentionally no durable guest table to enumerate.
+        Ok(Vec::new())
     }
 
     pub fn unpin_guest(
@@ -1066,13 +1060,17 @@ impl Catalog {
         link_hash: &str,
     ) -> CatalogResult<bool> {
         self.immediate(|tx| {
-            Ok(tx
-                .execute(
-                    "DELETE FROM guests WHERE slug=?1 AND account_id=?2 AND link_hash=?3",
-                    params![slug, account_id, link_hash],
-                )
-                .map_err(CatalogError::from)?
-                == 1)
+            let document_id: Option<String> = tx.query_row("SELECT id FROM documents WHERE slug=?1", [slug], |r| r.get(0)).optional().map_err(CatalogError::from)?;
+            let Some(document_id) = document_id else { return Ok(false); };
+            let payload: String = tx.query_row("SELECT bookmarks_json FROM accounts WHERE id=?1", [account_id], |r| r.get(0)).map_err(CatalogError::from)?;
+            let mut json: serde_json::Value = serde_json::from_str(&payload).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            let items = json.get_mut("items").and_then(serde_json::Value::as_array_mut).ok_or_else(|| CatalogError::Invalid("bookmarks_json has invalid shape".into()))?;
+            let before = items.len();
+            let link_id: Option<String> = tx.query_row("SELECT id FROM links WHERE document_id=?1 AND token_hash=?2", params![document_id,link_hash], |r| r.get(0)).optional().map_err(CatalogError::from)?;
+            items.retain(|item| item.get("link_id").and_then(serde_json::Value::as_str) != link_id.as_deref());
+            if items.len() == before { return Ok(false); }
+            tx.execute("UPDATE accounts SET bookmarks_json=?1 WHERE id=?2", params![serde_json::to_string(&json).map_err(|e| CatalogError::Invalid(e.to_string()))?,account_id]).map_err(CatalogError::from)?;
+            Ok(true)
         })
     }
 

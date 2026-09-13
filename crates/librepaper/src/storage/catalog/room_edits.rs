@@ -1,155 +1,70 @@
-//! Quota held for live edits before they become journal/session objects.
+//! Process-local quota reservations for unacknowledged room edits.
+//!
+//! These reservations intentionally have no durable SQL representation. The
+//! catalog's mutex is the same serialization boundary used by durable object
+//! admission; a restart drops them before any acknowledged state is served.
+
 use super::*;
 
-/// What a successful pending-snapshot reservation gives its caller: what the
-/// reservation replaced, and the identity of the reservation it wrote.
-///
-/// The generation exists for cancellation. A caller that goes away between
-/// this transaction committing and the room taking ownership of the edit
-/// leaves a reservation nothing will ever settle, and the cleanup that
-/// releases it runs later, by which time another edit or a session write may
-/// have reserved for the same room. Restoring `previous_bytes`
-/// unconditionally would then discard that newer reservation, so every write
-/// to a row advances its generation and cleanup names the generation it is
-/// entitled to undo.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RoomEditReservation {
-    /// The pending bytes this reservation replaced, which is what a rollback
-    /// restores.
-    pub previous_bytes: i64,
-    /// The row generation this reservation wrote.
-    pub generation: i64,
-}
+pub struct RoomEditReservation { pub previous_bytes: i64, pub generation: i64 }
 
 impl Catalog {
-    /// Reserve a complete pending snapshot. Existing pending bytes are
-    /// replaced, while an older snapshot being written retains its own share.
-    pub fn reserve_room_edit(
-        &self,
-        slug: &str,
-        bytes: i64,
-        owner_limit: i64,
-        total_limit: i64,
-    ) -> CatalogResult<RoomEditReservation> {
+    pub fn reserve_room_edit(&self, slug: &str, bytes: i64, owner_limit: i64, total_limit: i64) -> CatalogResult<RoomEditReservation> {
         self.room_snapshot_reservation(slug, bytes, owner_limit, total_limit, false)
     }
 
-    /// Undo a pending reservation whose caller never took ownership of it,
-    /// and only while the row still holds the generation that reservation
-    /// wrote. A `false` result means something newer owns the row and the
-    /// stale reservation has already been replaced by it; that is a settled
-    /// outcome, not a failure.
-    pub fn restore_room_edit(
-        &self,
-        slug: &str,
-        reservation: RoomEditReservation,
-    ) -> CatalogResult<bool> {
-        self.immediate(|tx| {
-            let storage_id: String = tx.query_row(
-                "SELECT storage_id FROM documents WHERE slug=?1 AND status IN ('active','creating')",
-                [slug],
-                |row| row.get(0),
-            )?;
-            let changed = tx.execute(
-                "UPDATE room_edit_reservations SET pending_bytes=?2, generation=generation+1
-                 WHERE storage_id=?1 AND generation=?3",
-                params![storage_id, reservation.previous_bytes, reservation.generation],
-            )?;
-            if changed == 0 {
-                return Ok(false);
-            }
-            tx.execute(
-                "DELETE FROM room_edit_reservations
-                 WHERE storage_id=?1 AND pending_bytes=0 AND writing_bytes=0",
-                [&storage_id],
-            )?;
-            Ok(true)
-        })
+    pub fn restore_room_edit(&self, slug: &str, reservation: RoomEditReservation) -> CatalogResult<bool> {
+        let mut reservations = self.room_reservations.lock().map_err(|_| CatalogError::Busy)?;
+        let document_id: String = self.with_connection(|connection| connection.query_row("SELECT id FROM documents WHERE slug=?1 AND status IN ('active','creating')", [slug], |row| row.get(0)).map_err(CatalogError::from))?;
+        let Some((pending,writing,generation)) = reservations.get_mut(&document_id) else { return Ok(false); };
+        if *generation != reservation.generation { return Ok(false); }
+        *pending = reservation.previous_bytes.max(0);
+        *generation = generation.saturating_add(1);
+        if *pending == 0 && *writing == 0 { reservations.remove(&document_id); }
+        Ok(true)
     }
 
-    /// Move the pending snapshot into the single session writer's reservation.
-    pub fn begin_room_write(
-        &self,
-        slug: &str,
-        bytes: i64,
-        owner_limit: i64,
-        total_limit: i64,
-    ) -> CatalogResult<()> {
-        self.room_snapshot_reservation(slug, bytes, owner_limit, total_limit, true)
-            .map(|_| ())
+    pub fn begin_room_write(&self, slug: &str, bytes: i64, owner_limit: i64, total_limit: i64) -> CatalogResult<()> {
+        self.room_snapshot_reservation(slug, bytes, owner_limit, total_limit, true).map(|_| ())
     }
 
-    fn room_snapshot_reservation(
-        &self,
-        slug: &str,
-        bytes: i64,
-        owner_limit: i64,
-        total_limit: i64,
-        writing: bool,
-    ) -> CatalogResult<RoomEditReservation> {
-        if bytes < 0 {
-            return Err(CatalogError::Invalid("negative room reservation".into()));
-        }
-        self.immediate(|tx| {
-            let (storage_id, owner_id, owner_key, publication): (String, Option<String>, String, Option<String>) = tx.query_row(
-                "SELECT storage_id,owner_id,owner_key,pending_publication FROM documents WHERE slug=?1 AND status IN ('active','creating')",
-                [slug], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )?;
-            let bytes = if publication.is_some() { 0 } else { bytes };
-            let (old, old_writing, old_generation): (i64, i64, i64) = tx.query_row("SELECT pending_bytes,writing_bytes,generation FROM room_edit_reservations WHERE storage_id=?1", [&storage_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?.unwrap_or((0,0,0));
-            // The caller holds the session writer gate. A leftover writing
-            // reservation can only belong to a failed/canceled predecessor.
-            let replaced = old.saturating_add(if writing { old_writing } else { 0 });
-            let (physical_owner, owner_known) =
-                Self::owner_admission_bytes_on(tx, owner_id.as_deref(), &owner_key)?;
-            let (physical_total, total_known) = Self::deployment_admission_bytes_on(tx)?;
-            let (owner_bytes, total) = if owner_known && total_known {
-                // The current room's reservation is already included in the
-                // physical evaluator. Replace it atomically instead of
-                // charging the pending snapshot twice.
-                (
-                    physical_owner.saturating_sub(replaced),
-                    physical_total.saturating_sub(replaced),
-                )
-            } else {
-                // Legacy/unmeasured rows keep the established admission
-                // ledger as the conservative authority.
-                let owner_bytes: i64 = if let Some(owner) = owner_id.as_deref() {
-                    tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1", [owner], |row| row.get(0))?
-                } else {
-                    tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id IS NULL AND owner_key=?1", [&owner_key], |row| row.get(0))?
-                };
-                let total: i64 = tx.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents", [], |row| row.get(0))?;
-                (owner_bytes.saturating_sub(replaced), total.saturating_sub(replaced))
-            };
-            if owner_limit >= 0 && owner_bytes.saturating_add(bytes) > owner_limit {
-                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "owner byte quota exceeded"));
+    fn room_snapshot_reservation(&self, slug: &str, bytes: i64, owner_limit: i64, total_limit: i64, writing: bool) -> CatalogResult<RoomEditReservation> {
+        if bytes < 0 { return Err(CatalogError::Invalid("negative room reservation".into())); }
+        let mut reservations = self.room_reservations.lock().map_err(|_| CatalogError::Busy)?;
+        self.with_connection(|connection| {
+            let (document_id, owner_id, durable_owner, durable_total): (String,String,i64,i64) = connection.query_row(
+                "SELECT d.id,d.owner_id,a.stored_bytes+a.reserved_bytes,s.stored_bytes+s.reserved_bytes
+                 FROM documents d JOIN accounts a ON a.id=d.owner_id CROSS JOIN server_state s
+                 WHERE d.slug=?1 AND d.status IN ('active','creating') AND s.id=1",
+                [slug], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+            ).map_err(CatalogError::from)?;
+            let (old_pending,old_writing,old_generation) = reservations.get(&document_id).copied().unwrap_or((0,0,0));
+            let replaced = old_pending.saturating_add(old_writing);
+            let mut process_owner = 0i64;
+            let mut process_total = 0i64;
+            for (other_id,(pending,writing_bytes,_)) in reservations.iter() {
+                let other_owner: String = connection.query_row("SELECT owner_id FROM documents WHERE id=?1", [other_id], |row| row.get(0)).map_err(CatalogError::from)?;
+                let charge = pending.saturating_add(*writing_bytes);
+                process_total = process_total.saturating_add(charge);
+                if other_owner == owner_id { process_owner = process_owner.saturating_add(charge); }
             }
-            if total_limit >= 0 && total.saturating_add(bytes) > total_limit {
-                return Err(CatalogError::refused(super::CatalogRefusal::DeploymentBytes, "deployment byte quota exceeded"));
-            }
+            process_owner = process_owner.saturating_sub(replaced);
+            process_total = process_total.saturating_sub(replaced);
+            if owner_limit >= 0 && durable_owner.saturating_add(process_owner).saturating_add(bytes) > owner_limit { return Err(CatalogError::refused(CatalogRefusal::OwnerBytes,"owner byte quota exceeded")); }
+            if total_limit >= 0 && durable_total.saturating_add(process_total).saturating_add(bytes) > total_limit { return Err(CatalogError::refused(CatalogRefusal::DeploymentBytes,"deployment byte quota exceeded")); }
             let generation = old_generation.saturating_add(1);
-            if writing {
-                tx.execute("INSERT INTO room_edit_reservations(storage_id, pending_bytes, writing_bytes, generation) VALUES(?1,0,?2,?3) ON CONFLICT(storage_id) DO UPDATE SET pending_bytes=0,writing_bytes=?2,generation=?3", params![storage_id,bytes,generation])?;
-            } else {
-                tx.execute("INSERT INTO room_edit_reservations(storage_id, pending_bytes, generation) VALUES(?1,?2,?3) ON CONFLICT(storage_id) DO UPDATE SET pending_bytes=?2,generation=?3", params![storage_id,bytes,generation])?;
-            }
-            Ok(RoomEditReservation {
-                previous_bytes: old,
-                generation,
-            })
+            if writing { reservations.insert(document_id, (0,bytes,generation)); } else { reservations.insert(document_id, (bytes,old_writing,generation)); }
+            Ok(RoomEditReservation { previous_bytes: old_pending, generation })
         })
     }
 
-    /// A failed write restores the pending reservation; a successful one has
-    /// transferred its cost into ordinary durable object accounting.
     pub fn finish_room_write(&self, storage_id: &str, success: bool) -> CatalogResult<()> {
-        self.immediate(|tx| {
-            // The generation advances here too: settling a write is another
-            // owner of the row, and a stale rollback must not undo it.
-            tx.execute("UPDATE room_edit_reservations SET pending_bytes=CASE WHEN ?2 THEN pending_bytes ELSE MAX(pending_bytes,writing_bytes) END,writing_bytes=0,generation=generation+1 WHERE storage_id=?1", params![storage_id,success])?;
-            tx.execute("DELETE FROM room_edit_reservations WHERE storage_id=?1 AND pending_bytes=0 AND writing_bytes=0", [storage_id])?;
-            Ok(())
-        })
+        let mut reservations = self.room_reservations.lock().map_err(|_| CatalogError::Busy)?;
+        let Some((pending,writing,generation)) = reservations.get_mut(storage_id) else { return Ok(()); };
+        if success { *writing = 0; } else { *pending = (*pending).max(*writing); *writing = 0; }
+        *generation = generation.saturating_add(1);
+        if *pending == 0 && *writing == 0 { reservations.remove(storage_id); }
+        Ok(())
     }
 }

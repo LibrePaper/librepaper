@@ -60,18 +60,15 @@ impl Catalog {
         self.with_connection(|connection| {
             let (engine, draft): (String, String) = connection
                 .query_row(
-                    "SELECT execution_engine, draft_format
-                     FROM document_results_metadata WHERE slug = ?1",
+                    "SELECT source_format, source_format FROM documents WHERE slug = ?1",
                     [slug],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
                 .map_err(CatalogError::from)?
                 .ok_or(CatalogError::NotFound)?;
-            let execution_engine =
-                crate::results::ExecutionEngine::parse(&engine).map_err(CatalogError::Invalid)?;
-            let draft_format =
-                crate::results::DraftFormat::parse(&draft).map_err(CatalogError::Invalid)?;
+            let execution_engine = crate::results::ExecutionEngine::parse(&engine).map_err(CatalogError::Invalid)?;
+            let draft_format = crate::results::DraftFormat::parse(&draft).map_err(CatalogError::Invalid)?;
             Ok(crate::results::DocumentMetadata {
                 execution_engine,
                 draft_format,
@@ -157,6 +154,18 @@ impl Catalog {
 
     pub fn create_document(&self, document: &NewDocument) -> CatalogResult<Document> {
         self.validate_document_input(document)?;
+        let owner_id = document.owner_id.as_deref().ok_or_else(|| CatalogError::Invalid("v2 documents require an owner account".into()))?;
+        let created_at = document.created_at.parse::<i64>().unwrap_or_else(|_| super::unix_millis());
+        let status = match document.status.as_str() { "creating" => "creating", "active" => "active", "deleting" => "deleting", _ => return Err(CatalogError::Invalid("invalid document status".into())) };
+        let source_format = document.source_format.as_str();
+        if !matches!(source_format, "markdown"|"html"|"typst"|"latex"|"quarto") { return Err(CatalogError::Invalid("invalid source format".into())); }
+        return self.immediate(|tx| {
+            let title_key = unicode_normalization::UnicodeNormalization::nfc(document.title.trim()).collect::<String>().to_lowercase();
+            tx.execute("INSERT INTO documents (id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,?9,?10)", params![document.storage_id,document.slug,owner_id,if document.example {"example"} else {"owned"},document.title,title_key,status,created_at,source_format,document.main]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET document_count=document_count+1 WHERE id=?1", [owner_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET document_count=document_count+1,catalog_revision=catalog_revision+1,updated_at=max(updated_at,?1) WHERE id=1", [created_at]).map_err(CatalogError::from)?;
+            tx.query_row("SELECT slug,id,title,'',CAST(created_at AS TEXT),COALESCE(CAST(published_at AS TEXT),''),CAST(updated_at AS TEXT),ownership_mode='example','',owner_id,status,stored_bytes,stored_bytes+reserved_bytes,reserved_bytes,next_annotation_seq,last_checkpoint_at,NULL,COALESCE(publication_id,''),source_format,main_path FROM documents WHERE slug=?1", [&document.slug], Self::read_document).map_err(CatalogError::from)
+        });
         self.immediate(|tx| {
             Self::unique_project_title_in_tx(
                 tx,
@@ -739,11 +748,9 @@ impl Catalog {
         self.with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT slug, storage_id, title, sha, created_at, published_at,
-                            updated_at, example, owner_key, owner_id, status, size,
-                            counted_size, maintenance_reserved, comment_seq,
-                            last_auto_checkpoint_at, pending_publication,
-                            last_publication_id, source_format, main
+                    "SELECT slug,id,title,'',CAST(created_at AS TEXT),COALESCE(CAST(published_at AS TEXT),''),CAST(updated_at AS TEXT),
+                            ownership_mode='example','',owner_id,status,stored_bytes,stored_bytes+reserved_bytes,
+                            reserved_bytes,next_annotation_seq,last_checkpoint_at,NULL,COALESCE(publication_id,''),source_format,main_path
                      FROM documents WHERE slug = ?1",
                     [slug],
                     Self::read_document,
@@ -763,7 +770,7 @@ impl Catalog {
         self.with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT slug FROM documents WHERE storage_id = ?1",
+                    "SELECT slug FROM documents WHERE id = ?1",
                     [storage_id],
                     |row| row.get(0),
                 )
@@ -784,11 +791,9 @@ impl Catalog {
         self.with_connection(|connection| {
             let mut statement = connection
                 .prepare(
-                    "SELECT slug, storage_id, title, sha, created_at, published_at,
-                            updated_at, example, owner_key, owner_id, status, size,
-                            counted_size, maintenance_reserved, comment_seq,
-                            last_auto_checkpoint_at, pending_publication,
-                            last_publication_id, source_format, main
+                    "SELECT slug,id,title,'',CAST(created_at AS TEXT),COALESCE(CAST(published_at AS TEXT),''),CAST(updated_at AS TEXT),
+                            ownership_mode='example','',owner_id,status,stored_bytes,stored_bytes+reserved_bytes,
+                            reserved_bytes,next_annotation_seq,last_checkpoint_at,NULL,COALESCE(publication_id,''),source_format,main_path
                      FROM documents
                      WHERE status = 'active' AND pending_publication IS NULL AND
                            (?1 IS NULL OR updated_at < ?1 OR
@@ -974,7 +979,7 @@ impl Catalog {
         self.with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT bytes, documents FROM totals WHERE id = 1",
+                    "SELECT stored_bytes+reserved_bytes, document_count FROM server_state WHERE id = 1",
                     [],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
@@ -984,11 +989,9 @@ impl Catalog {
 
     pub(super) fn document_in_tx(tx: &Transaction<'_>, slug: &str) -> CatalogResult<Document> {
         tx.query_row(
-            "SELECT slug, storage_id, title, sha, created_at, published_at,
-                    updated_at, example, owner_key, owner_id, status, size,
-                    counted_size, maintenance_reserved, comment_seq,
-                    last_auto_checkpoint_at, pending_publication,
-                    last_publication_id, source_format, main
+            "SELECT slug,id,title,'',CAST(created_at AS TEXT),COALESCE(CAST(published_at AS TEXT),''),CAST(updated_at AS TEXT),
+                    ownership_mode='example','',owner_id,status,stored_bytes,stored_bytes+reserved_bytes,
+                    reserved_bytes,next_annotation_seq,last_checkpoint_at,NULL,COALESCE(publication_id,''),source_format,main_path
              FROM documents WHERE slug = ?1",
             [slug],
             Self::read_document,

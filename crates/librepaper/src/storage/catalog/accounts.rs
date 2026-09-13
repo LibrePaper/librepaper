@@ -81,7 +81,20 @@ impl Catalog {
     /// tree size and is not evidence of either an encoded object or a
     /// reclaimable allocation.
     pub fn account_storage_usage(&self, account_id: &str) -> CatalogResult<AccountStorageUsage> {
-        self.with_connection(|connection| Self::account_storage_usage_on(connection, account_id))
+        self.with_connection(|connection| {
+            let usage: Option<AccountStorageUsage> = connection.query_row(
+                "SELECT stored_bytes+reserved_bytes,stored_bytes,0,0,0,document_count,
+                        (SELECT count(*) FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.owner_id=?1)
+                 FROM accounts WHERE id=?1",
+                [account_id],
+                |row| Ok(AccountStorageUsage {
+                    charged_bytes: row.get(0)?, live_bytes: row.get(1)?, history_bytes: 0,
+                    asset_bytes: 0, publication_bytes: 0, metadata_bytes: 0,
+                    document_count: row.get(5)?, checkpoint_count: row.get(6)?, physical_accounting: true,
+                }),
+            ).optional().map_err(CatalogError::from)?;
+            usage.ok_or(CatalogError::NotFound)
+        })
     }
 
     /// Connection-scoped form used by admission transactions.  Keeping the
@@ -420,6 +433,11 @@ impl Catalog {
         owner_id: Option<&str>,
         owner_key: &str,
     ) -> CatalogResult<(i64, bool)> {
+        let owner_id_value = owner_id.as_deref().ok_or_else(|| CatalogError::Invalid("v2 documents always have an owner account".into()))?;
+        let bytes: i64 = connection.query_row("SELECT stored_bytes+reserved_bytes FROM accounts WHERE id=?1", [owner_id_value], |row| row.get(0)).map_err(CatalogError::from)?;
+        let _ = owner_key;
+        return Ok((bytes, true));
+        #[allow(unreachable_code)]
         let Some(owner_id) = owner_id else {
             let bytes = connection
                 .query_row(
@@ -521,6 +539,9 @@ impl Catalog {
     pub(super) fn deployment_admission_bytes_on(
         connection: &Connection,
     ) -> CatalogResult<(i64, bool)> {
+        let bytes: i64 = connection.query_row("SELECT stored_bytes+reserved_bytes FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)?;
+        return Ok((bytes, true));
+        #[allow(unreachable_code)]
         // Account-owned rows are grouped by durable owner id.  The owner key
         // is a legacy/display identity and can differ between that owner's
         // documents; grouping by both would charge the same account twice.
@@ -1118,15 +1139,15 @@ impl Catalog {
         self.with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT account_id, revision, payload, policy_generation, updated_at
-                     FROM account_quota_preferences WHERE account_id=?1",
+                    "SELECT id, preferences_revision, preferences_json, created_at, last_seen_at
+                     FROM accounts WHERE id=?1",
                     [account_id],
                     |row| {
                         Ok(QuotaPreferencesRecord {
                             account_id: row.get(0)?,
                             revision: row.get(1)?,
                             payload: row.get(2)?,
-                            policy_generation: row.get(3)?,
+                            policy_generation: String::new(),
                             updated_at: row.get(4)?,
                         })
                     },
@@ -1156,7 +1177,7 @@ impl Catalog {
         self.immediate(|tx| {
             let current: Option<i64> = tx
                 .query_row(
-                    "SELECT revision FROM account_quota_preferences WHERE account_id=?1",
+                    "SELECT preferences_revision FROM accounts WHERE id=?1",
                     [account_id],
                     |row| row.get(0),
                 )
@@ -1183,12 +1204,9 @@ impl Catalog {
                 return Err(CatalogError::NotFound);
             }
             tx.execute(
-                "INSERT INTO account_quota_preferences(account_id,revision,payload,policy_generation,updated_at)
-                 VALUES(?1,?2,?3,?4,?5)
-                 ON CONFLICT(account_id) DO UPDATE SET revision=excluded.revision,
-                   payload=excluded.payload, policy_generation=excluded.policy_generation,
-                   updated_at=excluded.updated_at",
-                params![account_id, revision, payload, policy_generation, updated_at],
+                "UPDATE accounts SET preferences_revision=?2, preferences_json=?3,
+                    last_seen_at=max(last_seen_at,?4) WHERE id=?1",
+                params![account_id, revision, payload, updated_at],
             )
             .map_err(CatalogError::from)?;
             Ok(QuotaPreferencesRecord {
@@ -1224,10 +1242,8 @@ impl Catalog {
                     )));
                 }
                 tx.execute(
-                    "UPDATE accounts SET provider = ?2, handle = ?3, name = ?4,
-                     email = ?5, last_seen = CASE
-                       WHEN substr(last_seen, 1, 10) < substr(?6, 1, 10) THEN ?6
-                       ELSE last_seen END
+                    "UPDATE accounts SET provider = ?2, provider_subject = ?2, handle = ?3,
+                     display_name = ?4, email = ?5, last_seen_at = max(last_seen_at,?6)
                      WHERE id = ?1",
                     params![
                         profile.id,
@@ -1235,7 +1251,7 @@ impl Catalog {
                         profile.handle,
                         profile.name,
                         profile.email,
-                        profile.last_seen
+                        super::unix_millis()
                     ],
                 )
                 .map_err(CatalogError::from)?;
@@ -1243,33 +1259,21 @@ impl Catalog {
             }
             tx.execute(
                 "INSERT INTO accounts
-                 (id, provider, handle, name, email, first_seen, last_seen, plan,
-                  status, session_generation, erasure_cursor)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9, NULL)",
+                 (id, kind, provider, provider_subject, handle, display_name, email, plan,
+                  status, session_generation, created_at, last_seen_at)
+                 VALUES (?1, 'registered', ?2, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?8)",
                 params![
                     profile.id,
                     profile.provider,
                     profile.handle,
                     profile.name,
                     profile.email,
-                    profile.first_seen,
-                    profile.last_seen,
                     profile.plan,
-                    profile.session_generation
+                    profile.session_generation,
+                    super::unix_millis()
                 ],
             )
             .map_err(CatalogError::from)?;
-            for position in 0..crate::seed::ACCOUNT_EXAMPLE_COUNT {
-                tx.execute(
-                    "INSERT INTO account_examples (account_id, position, slug) VALUES (?1, ?2, ?3)",
-                    params![
-                        profile.id,
-                        position,
-                        format!("starter-{}", crate::util::new_id())
-                    ],
-                )
-                .map_err(CatalogError::from)?;
-            }
             self.account_in_tx(tx, &profile.id, None)
         })
     }
@@ -1308,8 +1312,8 @@ impl Catalog {
         _existing_generation: Option<String>,
     ) -> CatalogResult<Account> {
         tx.query_row(
-            "SELECT id, provider, handle, name, email, first_seen, last_seen, plan,
-                    status, session_generation, erasure_cursor
+            "SELECT id, COALESCE(provider,''), handle, display_name, COALESCE(email,''),
+                    created_at, last_seen_at, plan, status, session_generation, NULL
              FROM accounts WHERE id = ?1",
             [id],
             Self::read_account,
@@ -1323,8 +1327,8 @@ impl Catalog {
     ) -> rusqlite::Result<Option<Account>> {
         connection
             .query_row(
-                "SELECT id, provider, handle, name, email, first_seen, last_seen, plan,
-                        status, session_generation, erasure_cursor
+                "SELECT id, COALESCE(provider,''), handle, display_name, COALESCE(email,''),
+                        created_at, last_seen_at, plan, status, session_generation, NULL
                  FROM accounts WHERE id = ?1",
                 [id],
                 Self::read_account,
@@ -1339,8 +1343,8 @@ impl Catalog {
             handle: row.get(2)?,
             name: row.get(3)?,
             email: row.get(4)?,
-            first_seen: row.get(5)?,
-            last_seen: row.get(6)?,
+            first_seen: row.get::<_, i64>(5)?.to_string(),
+            last_seen: row.get::<_, i64>(6)?.to_string(),
             plan: row.get(7)?,
             status: row.get(8)?,
             session_generation: row.get(9)?,
@@ -1393,19 +1397,18 @@ impl Catalog {
             // not listed; leaving it behind would let a restart resurrect
             // content for an account that has already been erased.
             tx.execute(
-                "UPDATE documents SET status='deleting', pending_publication=NULL
+                "UPDATE documents SET status='deleting', publication_id=NULL,
+                 publication_object_id=NULL, published_at=NULL
                  WHERE owner_id=?1 AND status IN ('active','creating')",
                 [id],
             )
             .map_err(CatalogError::from)?;
             tx.execute(
-                "UPDATE catalog_operations SET status='aborted',
-                 result='account erasure withdrew the publication'
-                 WHERE status='prepared' AND storage_id IN
-                   (SELECT storage_id FROM documents WHERE owner_id=?1 AND status='deleting')",
-                [id],
-            )
-            .map_err(CatalogError::from)?;
+                "UPDATE operations SET state='aborted', result_json='{"version":1,"reason":"account_erasure"}', completed_at=?2, receipt_expires_at=?2, updated_at=max(updated_at,?2)
+                 WHERE state='prepared' AND document_id IN
+                   (SELECT id FROM documents WHERE owner_id=?1 AND status='deleting')",
+                params![id, super::unix_millis()],
+            ).map_err(CatalogError::from)?;
             Ok(())
         })
     }
