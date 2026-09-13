@@ -822,7 +822,7 @@ impl Catalog {
     /// object kinds, availability, and operation-owned stage leases in one
     /// transaction.  A manifest-only or source-tree closure can therefore
     /// never become an activation proof.
-    pub(crate) fn verify_v2_publication_bundle(
+    fn verify_v2_publication_bundle(
         &self,
         document_id: &DocumentId,
         operation_id: &OperationId,
@@ -968,74 +968,45 @@ impl Catalog {
     /// manifest cannot strand its HTML or asset siblings as unrooted bytes.
     pub(crate) fn bind_v2_publication_bundle(
         &self,
-        document_id: &DocumentId,
-        operation_id: &OperationId,
-        object_ids: &[ObjectId],
+        proof: &VerifiedPublicationBundle,
         now: UnixMillis,
     ) -> CatalogResult<()> {
-        if object_ids.len() < 2 {
+        if proof.object_ids.len() < 2 {
             return Err(CatalogError::Invalid(
                 "publication bundle requires a verified manifest and HTML object".into(),
             ));
         }
-        let manifest_object_id = self
-            .with_connection(|connection| {
-                for object_id in object_ids {
-                    let is_manifest: bool = connection
-                        .query_row(
-                            "SELECT kind='publication_manifest' FROM objects
-                     WHERE document_id=?1 AND id=?2 AND state='available'",
-                            params![document_id.as_str(), object_id.as_str()],
-                            |row| row.get(0),
-                        )
-                        .optional()
-                        .map_err(CatalogError::from)?
-                        .unwrap_or(false);
-                    if is_manifest {
-                        return Ok(Some(object_id.to_string()));
-                    }
-                }
-                Ok(None)
-            })?
-            .ok_or_else(|| {
-                CatalogError::Invalid("publication bundle has no manifest object".into())
-            })?;
-        let manifest_object_id =
-            ObjectId::new(manifest_object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-        let manifest_digest = self.with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT digest FROM objects WHERE document_id=?1 AND id=?2",
-                    params![document_id.as_str(), manifest_object_id.as_str()],
-                    |row| row.get::<_, String>(0),
-                )
-                .map_err(CatalogError::from)
-        })?;
-        let proof = self.verify_v2_publication_bundle(
-            document_id,
-            operation_id,
-            object_ids,
-            &manifest_object_id,
-            &manifest_digest,
-            now,
-        )?;
         self.immediate(|tx| {
-            let (state, kind, plan): (String, String, String) = tx.query_row(
-                "SELECT state,kind,plan_json FROM operations WHERE id=?1 AND document_id=?2",
-                params![operation_id.as_str(), document_id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ).map_err(CatalogError::from)?;
+            let (state, kind, plan): (String, String, String) = tx
+                .query_row(
+                    "SELECT state,kind,plan_json FROM operations WHERE id=?1 AND document_id=?2",
+                    params![proof.operation_id.as_str(), proof.document_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(CatalogError::from)?;
             if state != "prepared" || kind != OperationKind::DisplayPublish.as_str() {
-                return Err(CatalogError::Conflict("publication operation is not prepared".into()));
+                return Err(CatalogError::Conflict(
+                    "publication operation is not prepared".into(),
+                ));
             }
             let mut value: serde_json::Value = serde_json::from_str(&plan)
                 .map_err(|e| CatalogError::Invalid(format!("publication plan: {e}")))?;
             value["bundle_object_ids"] = serde_json::Value::Array(
-                proof.object_ids.iter().map(|id| serde_json::Value::String(id.to_string())).collect(),
+                proof
+                    .object_ids
+                    .iter()
+                    .map(|id| serde_json::Value::String(id.to_string()))
+                    .collect(),
             );
-            let encoded = serde_json::to_string(&value).map_err(|e| CatalogError::Invalid(format!("publication plan: {e}")))?;
+            let encoded = serde_json::to_string(&value)
+                .map_err(|e| CatalogError::Invalid(format!("publication plan: {e}")))?;
             validate_json(&encoded, "publication plan", 65_536)?;
-            tx.execute("UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2) WHERE id=?3 AND state='prepared'", params![encoded, now.0, operation_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute(
+                "UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2)
+                 WHERE id=?3 AND state='prepared'",
+                params![encoded, now.0, proof.operation_id.as_str()],
+            )
+            .map_err(CatalogError::from)?;
             Ok(())
         })
     }
@@ -1820,59 +1791,6 @@ impl Catalog {
             ).map_err(CatalogError::from)?;
             Ok(())
         })
-    }
-
-    /// Compatibility entry point for callers that still hold the operation
-    /// handle. It can only discover a proof from a previously bound plan;
-    /// arbitrary IDs are rejected by the verifier's kind and lease checks.
-    pub fn activate_v2_publication(
-        &self,
-        document_id: &DocumentId,
-        operation_id: &OperationId,
-        expected_publication_id: Option<&str>,
-        publication_id: &str,
-        manifest_object_id: &ObjectId,
-        now: UnixMillis,
-        result_json: &str,
-    ) -> CatalogResult<()> {
-        let bundle: Vec<ObjectId> = self.with_connection(|connection| {
-            let plan: String = connection.query_row(
-                "SELECT plan_json FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared'",
-                params![operation_id.as_str(), document_id.as_str()], |r| r.get(0),
-            ).map_err(CatalogError::from)?;
-            let values = serde_json::from_str::<serde_json::Value>(&plan).ok()
-                .and_then(|value| value.get("bundle_object_ids").cloned())
-                .and_then(|value| value.as_array().cloned())
-                .ok_or_else(|| CatalogError::Invalid("publication operation has no verified bundle".into()))?;
-            values.iter().map(|value| value.as_str()
-                .ok_or_else(|| CatalogError::Invalid("publication bundle id is not text".into()))
-                .and_then(|id| ObjectId::new(id.to_owned()).map_err(|e| CatalogError::Invalid(e.to_string()))))
-                .collect()
-        })?;
-        let digest = self.with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT digest FROM objects WHERE document_id=?1 AND id=?2",
-                    params![document_id.as_str(), manifest_object_id.as_str()],
-                    |r| r.get::<_, String>(0),
-                )
-                .map_err(CatalogError::from)
-        })?;
-        let proof = self.verify_v2_publication_bundle(
-            document_id,
-            operation_id,
-            &bundle,
-            manifest_object_id,
-            &digest,
-            now,
-        )?;
-        self.activate_v2_publication_verified(
-            &proof,
-            expected_publication_id,
-            publication_id,
-            now,
-            result_json,
-        )
     }
 
     /// Recompute cache values for audit tooling.  This is intentionally an
