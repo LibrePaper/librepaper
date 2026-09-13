@@ -3891,7 +3891,7 @@ fn import_annotations(
         let proposed_text = if kind == "suggestion" { proposed } else { None };
         let source_revision = (!revision.is_empty()).then_some(revision.clone());
         let resolution_revision =
-            (resolved != 0 && !resolved_in.is_empty()).then_some(resolved_in.clone());
+            ((resolved != 0 || accepted) && !resolved_in.is_empty()).then_some(resolved_in.clone());
         tx.execute("INSERT OR IGNORE INTO annotations(document_id,id,seq,kind,body,author_account_id,author_key,author_label,via,created_at,updated_at,publication_id,source_revision,selector_json,context_json,protected_checkpoint_id,proposed_text,suggestion_state,acceptance_operation_id,resolution_revision,resolved_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",params![doc_id,id,seq.max(1),kind,body,author_id,author,creator,via,created_ms,updated,if publication_id.is_empty(){None::<String>}else{Some(publication_id)},source_revision,selector_json,context,protection,proposed_text,if state.is_empty(){None::<String>}else{Some(state)},if acceptance.is_empty(){None::<String>}else{Some(acceptance)},resolution_revision,effective_resolved])?;
         progress.entry(doc_id.clone()).or_default().annotations += 1;
     }
