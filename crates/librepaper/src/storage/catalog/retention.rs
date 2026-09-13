@@ -134,14 +134,20 @@ impl Catalog {
                     }
                 })
             };
-            let document_payload: DocumentRetentionPayload = serde_json::from_str(&retention_json)
-                .unwrap_or_default();
+            let parsed_document_payload: Result<DocumentRetentionPayload, _> = serde_json::from_str(&retention_json);
+            let document_payload_valid = parsed_document_payload.as_ref()
+                .is_ok_and(|payload| payload.version.unwrap_or(0) == 1);
+            let document_payload = parsed_document_payload.unwrap_or_default();
             let document_override = document_payload.profile.is_some()
                 || document_payload.max_routine_count.is_some()
                 || document_payload.max_age_ms.is_some();
             let effective = crate::document::quota::effective_retention(&account_preferences, &bounds);
             let (profile, max_routine_count, max_age_ms, safe_mode) = if mode == "manual" {
                 ("manual".to_string(), None, None, false)
+            } else if !document_payload_valid {
+                // Unknown or malformed document policy payloads fail closed;
+                // a decoder fallback must never authorize destructive work.
+                ("invalid".to_string(), None, None, true)
             } else if document_override {
                 let profile = document_payload.profile.clone().unwrap_or_else(|| "custom".into());
                 let valid = matches!(profile.as_str(), "default" | "manual" | "custom")
@@ -245,7 +251,7 @@ impl Catalog {
 
     pub fn retention_metadata_range(&self, slug: &str, first: i64, last: i64) -> CatalogResult<HashMap<String,(String,bool)>> {
         self.with_connection(|connection| {
-            let mut statement = connection.prepare("SELECT id,COALESCE(parent_id,''),0 FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.slug=?1 AND c.seq>=?2 AND c.seq<=?3") .map_err(CatalogError::from)?;
+            let mut statement = connection.prepare("SELECT c.id,COALESCE(c.parent_id,''),0 FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.slug=?1 AND c.seq>=?2 AND c.seq<=?3") .map_err(CatalogError::from)?;
             let rows = statement.query_map(params![slug,first,last], |row| Ok((row.get(0)?,(row.get(1)?,row.get::<_,i64>(2)? != 0)))).map_err(CatalogError::from)?;
             rows.collect::<Result<HashMap<_,_>,_>>().map_err(CatalogError::from)
         })
@@ -291,6 +297,10 @@ impl Catalog {
         let mut edges = 0i64;
         for (document_id,checkpoint_id,slug,count) in candidates {
             if edges.checked_add(count).ok_or_else(|| CatalogError::Invalid("retention edge counter overflow".into()))? > 32_768 { break; }
+            // Re-evaluate the live account/document policy before each
+            // deletion. A preference update can invalidate a due row between
+            // candidate discovery and this transaction.
+            let _ = self.schedule_document_balanced(&slug, now, crate::document::quota::RetentionBounds::default())?;
             let doc = DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
             let checkpoint = CheckpointId::new(checkpoint_id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
             if self.delete_v2_checkpoint(&doc,&checkpoint,UnixMillis::new(now)?)? { edges += count; removed.push((slug,checkpoint.to_string())); } else { blocked += 1; }

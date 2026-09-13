@@ -631,14 +631,41 @@ impl Catalog {
     /// ineligible; byte counters are decremented by the exact edge count.
     pub fn delete_v2_checkpoint(&self, document_id: &DocumentId, checkpoint_id: &CheckpointId, now: UnixMillis) -> CatalogResult<bool> {
         self.immediate(|tx| {
+            let backup_frozen: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM operations WHERE kind='backup' AND state='prepared')",
+                [],
+                |row| row.get(0),
+            ).map_err(CatalogError::from)?;
+            if backup_frozen { return Ok(false); }
             let current: Option<String> = tx.query_row("SELECT current_checkpoint_id FROM documents WHERE id=?1 AND status <> 'deleting'", [document_id.as_str()], |row| row.get(0)).optional().map_err(CatalogError::from)?;
             if current.as_deref() == Some(checkpoint_id.as_str()) { return Ok(false); }
-            let protected: i64 = tx.query_row("SELECT count(*) FROM annotations WHERE document_id=?1 AND protected_checkpoint_id=?2 OR (document_id=?1 AND protected_checkpoint_id IS NOT NULL AND protected_checkpoint_id=?2)", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            let due: Option<i64> = tx.query_row(
+                "SELECT eligible_after FROM checkpoints WHERE document_id=?1 AND id=?2",
+                params![document_id.as_str(), checkpoint_id.as_str()],
+                |row| row.get(0),
+            ).optional().map_err(CatalogError::from)?;
+            if due.is_none_or(|deadline| deadline > now.0) { return Ok(false); }
+            let (retention_json, account_revision, document_revision): (String, i64, i64) = tx.query_row(
+                "SELECT d.retention_json,a.preferences_revision,d.retention_revision
+                 FROM documents d JOIN accounts a ON a.id=d.owner_id WHERE d.id=?1",
+                [document_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).map_err(CatalogError::from)?;
+            let evaluated = serde_json::from_str::<serde_json::Value>(&retention_json)
+                .ok()
+                .and_then(|value| value.get("evaluation").cloned());
+            if evaluated.as_ref().and_then(|value| value.get("accountRevision")).and_then(|value| value.as_i64()) != Some(account_revision)
+                || evaluated.as_ref().and_then(|value| value.get("documentRevision")).and_then(|value| value.as_i64()) != Some(document_revision)
+            {
+                return Ok(false);
+            }
+            let protected: i64 = tx.query_row("SELECT count(*) FROM annotations WHERE document_id=?1 AND protected_checkpoint_id=?2 AND resolved_at IS NULL", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if protected != 0 { return Ok(false); }
             let labeled: i64 = tx.query_row("SELECT count(*) FROM checkpoints WHERE document_id=?1 AND id=?2 AND label IS NOT NULL", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if labeled != 0 { return Ok(false); }
             let edges: i64 = tx.query_row("SELECT count(*) FROM checkpoint_objects WHERE document_id=?1 AND checkpoint_id=?2", params![document_id.as_str(),checkpoint_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             if edges == 0 { return Ok(false); }
+            if edges > 32_768 { return Err(CatalogError::Conflict("checkpoint_delete_batch_limit: closure exceeds 32768 edges".into())); }
             tx.execute("DELETE FROM checkpoints WHERE document_id=?1 AND id=?2", params![document_id.as_str(),checkpoint_id.as_str()]).map_err(CatalogError::from)?;
             tx.execute("UPDATE documents SET checkpoint_ref_count=checkpoint_ref_count-?1,updated_at=max(updated_at,?2) WHERE id=?3", params![edges,now.0,document_id.as_str()]).map_err(CatalogError::from)?;
             tx.execute("UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count-?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1", params![edges,now.0]).map_err(CatalogError::from)?;
@@ -666,7 +693,9 @@ impl Catalog {
             if let Some(old) = old_object { tx.execute("UPDATE objects SET publication_root=0,gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END WHERE document_id=?2 AND id=?3", params![now.0.saturating_add(900_000),document_id.as_str(),old]).map_err(CatalogError::from)?; }
             tx.execute("UPDATE objects SET publication_root=1,gc_after=NULL WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),manifest_object_id.as_str()]).map_err(CatalogError::from)?;
             tx.execute("UPDATE documents SET publication_id=?1,publication_object_id=?2,published_at=?3,updated_at=max(updated_at,?3) WHERE id=?4", params![publication_id,manifest_object_id.as_str(),now.0,document_id.as_str()]).map_err(CatalogError::from)?;
-            tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?2,updated_at=max(updated_at,?2) WHERE id=?3 AND state='prepared'", params![result_json,now.0,operation_id.as_str()]).map_err(CatalogError::from)?;
+            let receipt_expires = now.0.checked_add(7 * 24 * 60 * 60 * 1_000)
+                .ok_or_else(|| CatalogError::Invalid("publication receipt expiry overflow".into()))?;
+            tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=max(updated_at,?2) WHERE id=?4 AND state='prepared'", params![result_json,now.0,receipt_expires,operation_id.as_str()]).map_err(CatalogError::from)?;
             Ok(())
         })
     }
@@ -740,6 +769,14 @@ impl Catalog {
             if let Some((id,kind,state,digest,generation,actor,key)) = existing {
                 if kind != input.kind.as_str() || digest != input.request_digest { return Err(CatalogError::Conflict("idempotency key was reused with a different operation".into())); }
                 return Ok(V2Operation { id: OperationId::new(id).map_err(|e| CatalogError::Invalid(e.to_string()))?, scope: input.scope.clone(), actor_key: actor, request_key: key, kind, state, request_digest: digest, writer_generation: generation });
+            }
+            let issued = crate::util::request_key_timestamp(&input.request_key)
+                .ok_or_else(|| CatalogError::Invalid("request key must be v2.<issued-seconds>.<nonce32>".into()))?;
+            let now_seconds = now.0 / 1_000;
+            if issued > now_seconds.saturating_add(60)
+                || now_seconds.saturating_sub(issued) > 15 * 60
+            {
+                return Err(CatalogError::Invalid("request key is outside the admission freshness window".into()));
             }
             let operation_id = hex::encode(crate::auth::random_bytes(16));
             let writer_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)?;
