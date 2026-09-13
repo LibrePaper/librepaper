@@ -494,6 +494,7 @@ impl Room {
             tree_generation,
             snapshot_state,
             snapshot_permit,
+            captured_socket_sequences,
         ) = {
             let mut state = self.state.lock().await;
             // A deliberate write inside the defer window is not refused; it
@@ -514,6 +515,7 @@ impl Room {
                     0,
                     None,
                     None,
+                    Vec::new(),
                 )
             } else {
                 let (tree, bodies) = tree_of(&state.session.doc, &state.session.asset_sizes);
@@ -533,17 +535,16 @@ impl Room {
                     state.session.format.clone()
                 };
                 let snapshot_estimate = if needs_recovery_snapshot {
-                    state.session.encoded_bound.unwrap_or(
-                        tree.files.values().try_fold(0usize, |total, file| {
+                    state
+                        .session
+                        .encoded_bound
+                        .unwrap_or(tree.files.values().try_fold(0usize, |total, file| {
                             total
                                 .checked_add(usize::try_from(file.size.max(0)).map_err(|_| {
                                     WriteError::Storage("snapshot size overflow".into())
                                 })?)
-                                .ok_or_else(|| {
-                                    WriteError::Storage("snapshot size overflow".into())
-                                })
-                        })?,
-                    )
+                                .ok_or_else(|| WriteError::Storage("snapshot size overflow".into()))
+                        })?)
                 } else {
                     0
                 };
@@ -564,6 +565,21 @@ impl Room {
                 };
                 let snapshot =
                     needs_recovery_snapshot.then(|| session::encode_state(&state.session.doc));
+                if let Some(snapshot) = snapshot.as_ref() {
+                    let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+                    if snapshot.len() > ceiling {
+                        return Err(WriteError::Size(crate::config::SizeRefusal::Encoded {
+                            bytes: snapshot.len(),
+                            ceiling,
+                        }));
+                    }
+                }
+                let captured_socket_sequences = state
+                    .sockets
+                    .iter()
+                    .filter(|(_, peer)| peer.may_edit)
+                    .map(|(id, peer)| (*id, peer.sent))
+                    .collect::<Vec<_>>();
                 (
                     tree,
                     bodies,
@@ -576,6 +592,7 @@ impl Room {
                     state.session.generation,
                     snapshot,
                     snapshot_permit,
+                    captured_socket_sequences,
                 )
             }
         };
@@ -621,6 +638,7 @@ impl Room {
                         actor.agent_checkpoint,
                         snapshot_state.as_deref().unwrap_or_default(),
                         snapshot_permit,
+                        &captured_socket_sequences,
                     )
                     .await;
             }
@@ -670,6 +688,7 @@ impl Room {
                         None,
                         snapshot_state.as_deref().unwrap_or_default(),
                         snapshot_permit,
+                        &captured_socket_sequences,
                     )
                     .await;
             }
@@ -1362,6 +1381,7 @@ impl Room {
         agent_checkpoint: Option<&crate::storage::catalog::AgentCheckpointCommit>,
         snapshot_state: &[u8],
         snapshot_permit: Option<crate::storage::journal::MemoryPermit>,
+        captured_socket_sequences: &[(u64, i64)],
     ) -> Result<Option<String>, WriteError> {
         use crate::storage::blob::ObjectId as BlobObjectId;
         use crate::storage::catalog::{
@@ -1420,6 +1440,13 @@ impl Room {
             "quarto" => SourceFormat::Quarto,
             _ => return Err(WriteError::Storage("invalid source format".into())),
         };
+        let snapshot_ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+        if snapshot_state.len() > snapshot_ceiling {
+            return Err(WriteError::Size(crate::config::SizeRefusal::Encoded {
+                bytes: snapshot_state.len(),
+                ceiling: snapshot_ceiling,
+            }));
+        }
         let estimated_logical_bytes = tree.files.values().try_fold(0usize, |total, file| {
             let bytes = usize::try_from(file.size.max(0))
                 .map_err(|_| WriteError::Storage("checkpoint size exceeds memory bounds".into()))?;
@@ -2263,12 +2290,18 @@ impl Room {
             })
             .await
             .map_err(WriteError::from)?;
+        // The catalogue transaction is the durable boundary.  Commit the
+        // process-local rate reservations before any best-effort cache reload;
+        // a post-commit read failure must not refund a write that already
+        // consumed its owner and deployment slots.
+        owner_rate.commit();
+        deployment_rate.commit();
         // The v2 catalogue is authoritative, but the resident manifest is
         // still the merge-base index used by restore while this room remains
         // open.  Add the committed event immediately; otherwise
         // `last_checkpoint` names a valid SQL row that the in-memory manifest
         // treats as shed and restore refuses its base.
-        let committed_point = catalog
+        let committed_point = match catalog
             .execute_catalog(checkpoint.id.as_str().len() + self.slug.len() + 256, {
                 let slug = self.slug.clone();
                 let checkpoint_id = checkpoint.id.as_str().to_owned();
@@ -2287,9 +2320,16 @@ impl Room {
                 }
             })
             .await
-            .map_err(WriteError::from)?;
-        owner_rate.commit();
-        deployment_rate.commit();
+        {
+            Ok(point) => point,
+            Err(error) => {
+                eprintln!(
+                    "warning: committed checkpoint {} could not refresh the room manifest: {error}",
+                    checkpoint.id
+                );
+                None
+            }
+        };
         // Keep the lease heartbeat alive through closure verification and the
         // atomic head/receipt commit. Only after that transaction succeeds is
         // it safe to stop renewing the stage leases.
@@ -2335,6 +2375,22 @@ impl Room {
         state.session.checkpoint_generation = tree_generation;
         if state.session.generation == tree_generation {
             state.session.pending_checkpoint_since = 0;
+        }
+        // A checkpoint may overlap a newer edit. Acknowledge only the socket
+        // high-water marks captured with this snapshot; later updates remain
+        // pending for the next durable checkpoint.
+        for (id, seq) in captured_socket_sequences {
+            let Some(peer) = state.sockets.get_mut(id) else {
+                continue;
+            };
+            if *seq <= peer.acked {
+                continue;
+            }
+            peer.acked = *seq;
+            let payload = serde_json::json!({"type": "y-ack", "seq": seq}).to_string();
+            if peer.tx.try_send_durable(Outgoing::Text(payload)).is_err() {
+                state.sockets.remove(id);
+            }
         }
         drop(state);
         Ok(Some(checkpoint.id.as_str().to_string()))
