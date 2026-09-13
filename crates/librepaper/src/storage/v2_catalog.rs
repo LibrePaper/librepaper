@@ -20,6 +20,7 @@ use crate::storage::maintenance_v2::{
 use crate::storage::catalog::Catalog;
 
 const GC_RETRY_MS: i64 = 15 * 60 * 1000;
+const RECEIPT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
@@ -79,7 +80,7 @@ impl V2GcCatalog for Catalog {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let mut statement = transaction
-                .prepare("SELECT document_id,id,storage_key,gc_after FROM objects WHERE state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NOT NULL AND gc_after<=?1 ORDER BY gc_after,document_id,id LIMIT ?2")
+                .prepare("SELECT document_id,id,storage_key,COALESCE(gc_after,retry_at),state FROM objects WHERE ((state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NOT NULL AND gc_after<=?1) OR (state='deleting' AND retry_at IS NOT NULL AND retry_at<=?1)) ORDER BY COALESCE(gc_after,retry_at),document_id,id LIMIT ?2")
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let rows = statement
                 .query_map(params![now, i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
@@ -88,6 +89,7 @@ impl V2GcCatalog for Catalog {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
                     ))
                 })
                 .map_err(crate::storage::catalog::CatalogError::from)?
@@ -96,7 +98,7 @@ impl V2GcCatalog for Catalog {
             drop(statement);
             let retry_at = now.saturating_add(GC_RETRY_MS);
             let mut claimed = Vec::with_capacity(rows.len());
-            for (document_id, object_id, storage_key, gc_after) in rows {
+            for (document_id, object_id, storage_key, gc_after, state) in rows {
                 let backup_frozen: i64 = transaction
                     .query_row(
                         "SELECT count(*) FROM operations WHERE kind='backup' AND document_id IS NULL AND account_id IS NULL AND state='prepared'",
@@ -105,6 +107,18 @@ impl V2GcCatalog for Catalog {
                     )
                     .map_err(crate::storage::catalog::CatalogError::from)?;
                 if backup_frozen != 0 {
+                    continue;
+                }
+                if state == "deleting" {
+                    let changed = transaction
+                        .execute(
+                            "UPDATE objects SET retry_at=?1 WHERE document_id=?2 AND id=?3 AND state='deleting' AND retry_at<=?4",
+                            params![retry_at, document_id, object_id, now],
+                        )
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                    if changed == 1 {
+                        claimed.push(GcCandidate { document_id, object_id, storage_key, gc_after });
+                    }
                     continue;
                 }
                 let blocked: i64 = transaction
@@ -283,7 +297,7 @@ impl V2RecoveryCatalog for Catalog {
             transaction
                 .execute("UPDATE objects SET state='available',byte_length=?1,reserved_bytes=0,allocation_operation_id=NULL WHERE document_id=?2 AND id=?3 AND state='allocated'", params![measured, allocation.document_id, allocation.object_id])
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let delta = reserved - measured;
+            let delta = measured - reserved;
             transaction
                 .execute("UPDATE documents SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,agent_payload_bytes=CASE WHEN ?3='agent_payload' THEN agent_payload_bytes+?4 ELSE agent_payload_bytes END WHERE id=?5", params![measured,reserved,kind,delta,allocation.document_id])
                 .map_err(crate::storage::catalog::CatalogError::from)?;
@@ -315,14 +329,25 @@ impl V2RecoveryCatalog for Catalog {
         sql(self.with_connection(|connection| {
             let mut statement = connection.prepare("SELECT id,kind,document_id,writer_generation FROM operations WHERE state='prepared' AND (?1 IS NULL OR id>?1) ORDER BY id LIMIT ?2").map_err(crate::storage::catalog::CatalogError::from)?;
             let rows = statement.query_map(params![after,limit as i64], |row| { let kind:String=row.get(1)?; Ok((row.get::<_,String>(0)?,kind,row.get::<_,Option<String>>(2)?,row.get::<_,String>(3)?)) }).map_err(crate::storage::catalog::CatalogError::from)?;
-            rows.map(|row| { let (operation_id,kind,document_id,writer_generation)=row.map_err(crate::storage::catalog::CatalogError::from)?; Ok(PreparedOperation { operation_id, kind: prepared_kind(&kind).map_err(crate::storage::catalog::CatalogError::Invalid)?, document_id, writer_generation }) }).collect::<Result<Vec<_>,_>>().map_err(crate::storage::catalog::CatalogError::from)
+            let mut result: Vec<PreparedOperation> = Vec::new();
+            for row in rows {
+                let (operation_id, kind, document_id, writer_generation) = row.map_err(crate::storage::catalog::CatalogError::from)?;
+                result.push(PreparedOperation {
+                    operation_id,
+                    kind: prepared_kind(&kind).map_err(crate::storage::catalog::CatalogError::Invalid)?,
+                    document_id,
+                    writer_generation,
+                });
+            }
+            Ok(result)
         }))
     }
 
     async fn abort_unacknowledged_operation(&self, operation_id: &str) -> Result<(), String> {
         sql(self.with_connection(|connection| {
             let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(crate::storage::catalog::CatalogError::from)?;
-            transaction.execute(r#"UPDATE operations SET state='aborted',result_json='{"version":1,"recovered":true}',completed_at=?1,receipt_expires_at=?1,updated_at=max(updated_at,?1) WHERE id=?2 AND state='prepared'"#, params![now_millis(),operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
+            let completed_at = now_millis();
+            transaction.execute(r#"UPDATE operations SET state='aborted',result_json='{"version":1,"recovered":true}',completed_at=?1,receipt_expires_at=?2,updated_at=max(updated_at,?1) WHERE id=?3 AND state='prepared'"#, params![completed_at, completed_at.saturating_add(RECEIPT_RETENTION_MS), operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             transaction.commit().map_err(crate::storage::catalog::CatalogError::from)?; Ok(())
         }))
     }
@@ -392,6 +417,34 @@ impl V2ObjectWriter {
         content_type: &str,
     ) -> Result<WrittenObject, String> {
         let expected_digest = hex::encode(Sha256::digest(&body));
+        let document_key = document_id.to_owned();
+        let object_key = object_id.as_str().to_owned();
+        let expected_digest_for_admission = expected_digest.clone();
+        let body_length = body.len() as u64;
+        let (reserved, kind) = self
+            .catalog
+            .clone()
+            .execute(1024, move |connection| {
+                let (state, digest, reserved, kind, allocation_operation, operation_state, operation_generation, writer_generation): (String, String, i64, String, Option<String>, String, String, String) = connection
+                    .query_row(
+                        "SELECT o.state,o.digest,o.reserved_bytes,o.kind,o.allocation_operation_id,op.state,op.writer_generation,s.writer_generation FROM objects o LEFT JOIN operations op ON op.id=o.allocation_operation_id AND op.document_id=o.document_id CROSS JOIN server_state s WHERE o.document_id=?1 AND o.id=?2",
+                        params![document_key, object_key],
+                        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                if state != "allocated"
+                    || digest != expected_digest_for_admission
+                    || allocation_operation.is_none()
+                    || operation_state != "prepared"
+                    || operation_generation != writer_generation
+                    || body_length > reserved as u64
+                {
+                    return Err(crate::storage::catalog::CatalogError::Conflict("physical object does not match its admitted allocation fence".into()));
+                }
+                Ok((reserved, kind))
+            })
+            .await
+            .map_err(|error| error.to_string())?;
         let written = write_v2_object_with_id(
             self.blobs.as_ref(),
             document_id,
@@ -401,31 +454,36 @@ impl V2ObjectWriter {
         )
         .await
         .map_err(|error| error.to_string())?;
-        sql(self.catalog.with_connection(|connection| {
+        let written_for_settle = written.clone();
+        let document_for_settle = document_id.to_owned();
+        let expected_digest_for_settle = expected_digest.clone();
+        self.catalog
+            .clone()
+            .execute(1024, move |connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let (state, digest, reserved, kind): (String, String, i64, String) = transaction
+            let (state, digest, catalog_reserved, catalog_kind): (String, String, i64, String) = transaction
                 .query_row(
                     "SELECT state,digest,reserved_bytes,kind FROM objects WHERE document_id=?1 AND id=?2",
-                    params![document_id, written.object_id.as_str()],
+                    params![document_for_settle, written_for_settle.object_id.as_str()],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            if state != "allocated" || digest != expected_digest || written.byte_length > reserved as u64 {
+            if state != "allocated" || digest != expected_digest_for_settle || written_for_settle.byte_length > catalog_reserved as u64 || catalog_reserved != reserved || catalog_kind != kind {
                 return Err(crate::storage::catalog::CatalogError::Conflict("physical object does not match its admitted allocation".into()));
             }
-            let measured = i64::try_from(written.byte_length)
+            let measured = i64::try_from(written_for_settle.byte_length)
                 .map_err(|_| crate::storage::catalog::CatalogError::Invalid("object length overflows SQL integer".into()))?;
             transaction
-                .execute("UPDATE objects SET state='available',byte_length=?1,reserved_bytes=0,allocation_operation_id=NULL WHERE document_id=?2 AND id=?3 AND state='allocated'", params![measured, document_id, written.object_id.as_str()])
+                .execute("UPDATE objects SET state='available',byte_length=?1,reserved_bytes=0,allocation_operation_id=NULL WHERE document_id=?2 AND id=?3 AND state='allocated'", params![measured, document_for_settle, written_for_settle.object_id.as_str()])
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let delta = reserved.saturating_sub(measured);
+            let delta = measured - reserved;
             transaction
-                .execute("UPDATE documents SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,agent_payload_bytes=CASE WHEN ?3='agent_payload' THEN agent_payload_bytes+?4 ELSE agent_payload_bytes END WHERE id=?5", params![measured, reserved, kind, delta, document_id])
+                .execute("UPDATE documents SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,agent_payload_bytes=CASE WHEN ?3='agent_payload' THEN agent_payload_bytes+?4 ELSE agent_payload_bytes END WHERE id=?5", params![measured, reserved, kind, delta, document_for_settle])
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let owner: String = transaction
-                .query_row("SELECT owner_id FROM documents WHERE id=?1", [document_id], |row| row.get(0))
+                .query_row("SELECT owner_id FROM documents WHERE id=?1", [document_for_settle.as_str()], |row| row.get(0))
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             transaction
                 .execute("UPDATE accounts SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2 WHERE id=?3", params![measured, reserved, owner])
@@ -437,7 +495,9 @@ impl V2ObjectWriter {
                 .commit()
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             Ok(())
-        }))?;
+        })
+        .await
+        .map_err(|error| error.to_string())?;
         Ok(written)
     }
 }
