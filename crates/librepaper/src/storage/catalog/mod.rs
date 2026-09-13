@@ -36,6 +36,7 @@ mod pressure;
 mod retention;
 mod room_edits;
 mod source_history;
+mod v2;
 
 pub use agent_annotations::AgentAnnotationAuthority;
 pub use execution::{
@@ -47,6 +48,12 @@ pub use pressure::HardPressurePlan;
 pub use retention::{RetentionJob, RetentionPass};
 pub use room_edits::RoomEditReservation;
 pub use source_history::{SourceHistoryLease, SourceHistoryObject, SourceHistoryRecord};
+pub use v2::{
+    AccountKind, CheckpointCommit, CheckpointId, DocumentId, DocumentStatus, IdError,
+    LeasePurpose, ObjectId, ObjectKind, ObjectState, OperationId, OperationKind,
+    OperationScope, SourceFormat, UnixMillis, V2AccountInput, V2DocumentInput,
+    V2AdmissionLimits, V2Object, V2ObjectAllocation, V2Operation, V2OperationInput,
+};
 
 /// One durable physical asset reference carried by a checkpoint.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -55,11 +62,13 @@ pub struct CheckpointAssetRef {
     pub bytes: i64,
 }
 
-const LATEST_SCHEMA: i64 = MIGRATIONS[MIGRATIONS.len() - 1].0;
+const LATEST_SCHEMA: i64 = 2;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
 const MIGRATIONS: &[(i64, &str)] = &[
-    // Version 1 is the first-release baseline. Append post-release migrations.
-    (1, include_str!("../../../migrations/0001_catalog.sql")),
+    // Catalog v2 is intentionally a fresh-root schema. There is no in-place
+    // migration from the released v1 catalogue; the offline converter owns
+    // that boundary.
+    (2, include_str!("../../../migrations/0002_catalog.sql")),
 ];
 
 /// What `by` reads as once an account's identifying attribution has been
@@ -151,6 +160,19 @@ impl From<rusqlite::Error> for CatalogError {
 }
 
 pub type CatalogResult<T> = Result<T, CatalogError>;
+
+/// Return the wall-clock value persisted in v2 SQL time columns.
+///
+/// SQLite stores catalogue times as non-negative Unix milliseconds.  The
+/// conversion is centralized here so row writers cannot accidentally mix
+/// RFC3339 strings, seconds, and milliseconds.
+pub(crate) fn unix_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CatalogSnapshot {
@@ -587,6 +609,16 @@ impl Catalog {
                 "catalogue schema {version} is newer than this binary (latest {LATEST_SCHEMA})"
             )));
         }
+        if version == 1 {
+            return Err(CatalogError::Invalid(format!(
+                "catalogue schema {version} is not a fresh v2 root; use the offline converter"
+            )));
+        }
+        if version != 0 && version != LATEST_SCHEMA {
+            return Err(CatalogError::Invalid(format!(
+                "catalogue schema {version} is unsupported by this binary"
+            )));
+        }
         for &(migration_version, sql) in MIGRATIONS {
             if migration_version <= version {
                 continue;
@@ -595,30 +627,40 @@ impl Catalog {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(CatalogError::from)?;
             tx.execute_batch(sql).map_err(CatalogError::from)?;
+            let deployment_id = hex::encode(crate::auth::random_bytes(16));
+            let writer_generation = hex::encode(crate::auth::random_bytes(16));
+            let now = unix_millis();
+            tx.execute(
+                "INSERT INTO server_state
+                    (id, deployment_id, writer_generation, active_link_key_id,
+                     keyring_json, cost_json, updated_at)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    deployment_id,
+                    writer_generation,
+                    "initial",
+                    r#"{"version":1,"keys":[]}"#,
+                    r#"{"version":2,"state":null}"#,
+                    now,
+                ],
+            )
+            .map_err(CatalogError::from)?;
             tx.execute_batch(&format!("PRAGMA user_version = {migration_version}"))
                 .map_err(CatalogError::from)?;
             tx.commit().map_err(CatalogError::from)?;
         }
-        // Unacknowledged edits live only in this writer process. Their quota
-        // reservations share the catalogue connection/transaction lock, but
-        // must vanish on restart along with the corresponding RAM state.
-        connection
-            .execute_batch(
-                "CREATE TEMP TABLE room_edit_reservations (
-                storage_id TEXT PRIMARY KEY,
-                pending_bytes INTEGER NOT NULL DEFAULT 0,
-                writing_bytes INTEGER NOT NULL DEFAULT 0,
-                -- Advanced by every write to the row, so cleanup for a
-                -- cancelled edit can prove it is undoing its own
-                -- reservation and not a newer one.
-                generation INTEGER NOT NULL DEFAULT 0
-             );
-             CREATE TEMP VIEW admission_documents AS
-             SELECT d.*, d.counted_size - d.maintenance_reserved
-                    + COALESCE(e.pending_bytes, 0) + COALESCE(e.writing_bytes, 0) AS admission_bytes
-             FROM main.documents d LEFT JOIN room_edit_reservations e USING(storage_id);",
-            )
-            .map_err(CatalogError::from)?;
+        // A v2 root must contain the singleton; never silently turn a
+        // partially initialized file into a different deployment.
+        if version == LATEST_SCHEMA {
+            let singleton: i64 = connection
+                .query_row("SELECT count(*) FROM server_state WHERE id=1", [], |row| row.get(0))
+                .map_err(CatalogError::from)?;
+            if singleton != 1 {
+                return Err(CatalogError::Invalid(
+                    "v2 catalogue is missing its server_state singleton".into(),
+                ));
+            }
+        }
         Ok(Self {
             connection: Mutex::new(Some(connection)),
             execution: execution::CatalogExecution::new(),
@@ -652,7 +694,7 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             let head_revision = connection
                 .query_row(
-                    "SELECT revision FROM journal_state WHERE id = 1",
+                    "SELECT catalog_revision FROM server_state WHERE id = 1",
                     [],
                     |row| row.get(0),
                 )

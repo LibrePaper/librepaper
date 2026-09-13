@@ -1,0 +1,665 @@
+//! Typed mutation boundary for the v2 catalogue.
+//!
+//! The older catalogue modules are kept as source-level adapters while the
+//! application is moved to v2.  New storage writers use the methods in this
+//! module: all cross-row checks, counter updates, and lifecycle changes happen
+//! in one immediate SQLite transaction.  Filesystem I/O is deliberately not
+//! performed here.
+
+use std::collections::HashSet;
+use std::fmt;
+
+use rusqlite::{params, OptionalExtension, Transaction};
+use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
+
+use super::{unix_millis, Catalog, CatalogError, CatalogResult};
+
+pub const MAX_CHECKPOINT_OBJECTS: usize = 16_384;
+pub const MAX_DOCUMENT_CHECKPOINT_REFS: i64 = 1_048_576;
+pub const MAX_DEPLOYMENT_CHECKPOINT_REFS: i64 = 8_388_608;
+pub const MAX_AGENT_PAYLOAD_BYTES: i64 = 33_554_432;
+pub const MAX_AGENT_PAYLOAD_COUNT: i64 = 512;
+
+#[derive(Clone, Copy, Debug)]
+pub struct V2AdmissionLimits {
+    pub owner_bytes: i64,
+    pub deployment_bytes: i64,
+    pub owner_documents: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdError(pub String);
+
+impl fmt::Display for IdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for IdError {}
+
+macro_rules! id_type {
+    ($name:ident, $exact_hex:expr) => {
+        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        impl $name {
+            pub fn new(value: impl Into<String>) -> Result<Self, IdError> {
+                let value = value.into();
+                if value.is_empty() || value.len() > 128 {
+                    return Err(IdError(format!("{} must contain 1..=128 characters", stringify!($name))));
+                }
+                if $exact_hex && (value.len() != 32 || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())) {
+                    return Err(IdError(format!("{} must be 32 lowercase hexadecimal characters", stringify!($name))));
+                }
+                Ok(Self(value))
+            }
+
+            pub fn as_str(&self) -> &str { &self.0 }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str { self.as_str() }
+        }
+    };
+}
+
+id_type!(DocumentId, false);
+id_type!(ObjectId, true);
+id_type!(OperationId, true);
+id_type!(CheckpointId, false);
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct UnixMillis(pub i64);
+
+impl UnixMillis {
+    pub fn now() -> Self { Self(unix_millis()) }
+
+    pub fn new(value: i64) -> CatalogResult<Self> {
+        if value < 0 {
+            return Err(CatalogError::Invalid("Unix milliseconds cannot be negative".into()));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl From<UnixMillis> for i64 {
+    fn from(value: UnixMillis) -> Self { value.0 }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccountKind { Registered, Anonymous, System }
+
+impl AccountKind {
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Registered => "registered", Self::Anonymous => "anonymous", Self::System => "system" }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DocumentStatus { Creating, Active, Deleting }
+
+impl DocumentStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Creating => "creating", Self::Active => "active", Self::Deleting => "deleting" }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceFormat { Markdown, Html, Typst, Latex, Quarto }
+
+impl SourceFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Markdown => "markdown", Self::Html => "html", Self::Typst => "typst", Self::Latex => "latex", Self::Quarto => "quarto" }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectKind {
+    SourceChunk, SourceRecipe, SourceTree, Asset, PublicationManifest,
+    PublicationHtml, PublicationAsset, JournalSegment, JournalBase, AgentPayload,
+}
+
+impl ObjectKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceChunk => "source_chunk", Self::SourceRecipe => "source_recipe",
+            Self::SourceTree => "source_tree", Self::Asset => "asset",
+            Self::PublicationManifest => "publication_manifest", Self::PublicationHtml => "publication_html",
+            Self::PublicationAsset => "publication_asset", Self::JournalSegment => "journal_segment",
+            Self::JournalBase => "journal_base", Self::AgentPayload => "agent_payload",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectState { Allocated, Available, Deleting }
+
+impl ObjectState {
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Allocated => "allocated", Self::Available => "available", Self::Deleting => "deleting" }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeasePurpose { Read, Write, Stage }
+
+impl LeasePurpose {
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Read => "read", Self::Write => "write", Self::Stage => "stage" }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationKind {
+    SourcePublish, DisplayPublish, Checkpoint, CheckpointDelete, JournalAppend,
+    JournalCompact, AgentApply, AgentAnnotations, AgentCancel, AgentExecution,
+    AgentStage, EraseAccount, EraseDocument, RotateLinks, Backup,
+}
+
+impl OperationKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SourcePublish => "source_publish", Self::DisplayPublish => "display_publish",
+            Self::Checkpoint => "checkpoint", Self::CheckpointDelete => "checkpoint_delete",
+            Self::JournalAppend => "journal_append", Self::JournalCompact => "journal_compact",
+            Self::AgentApply => "agent_apply", Self::AgentAnnotations => "agent_annotations",
+            Self::AgentCancel => "agent_cancel", Self::AgentExecution => "agent_execution",
+            Self::AgentStage => "agent_stage", Self::EraseAccount => "erase_account",
+            Self::EraseDocument => "erase_document", Self::RotateLinks => "rotate_links",
+            Self::Backup => "backup",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct V2AccountInput {
+    pub id: String,
+    pub kind: AccountKind,
+    pub provider: Option<String>,
+    pub provider_subject: Option<String>,
+    pub handle: String,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub plan: String,
+    pub session_generation: String,
+    pub preferences_json: String,
+    pub bookmarks_json: String,
+    pub onboarding_json: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct V2DocumentInput {
+    pub id: DocumentId,
+    pub slug: String,
+    pub owner_id: String,
+    pub ownership_mode: String,
+    pub title: String,
+    pub source_format: SourceFormat,
+    pub main_path: String,
+    pub settings_json: String,
+    pub retention_mode: String,
+    pub retention_json: String,
+    pub status: DocumentStatus,
+}
+
+#[derive(Clone, Debug)]
+pub struct V2ObjectAllocation {
+    pub document_id: DocumentId,
+    pub id: ObjectId,
+    pub storage_key: String,
+    pub kind: ObjectKind,
+    pub digest: String,
+    pub logical_digest: Option<String>,
+    pub encoding_version: i64,
+    pub reserved_bytes: i64,
+    pub operation_id: OperationId,
+    pub now: UnixMillis,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct V2Object {
+    pub document_id: DocumentId,
+    pub id: ObjectId,
+    pub storage_key: String,
+    pub kind: String,
+    pub state: String,
+    pub digest: String,
+    pub byte_length: Option<i64>,
+    pub reserved_bytes: i64,
+    pub allocation_operation_id: Option<OperationId>,
+}
+
+#[derive(Clone, Debug)]
+pub struct V2OperationInput {
+    pub scope: OperationScope,
+    pub actor_key: String,
+    pub request_key: String,
+    pub kind: OperationKind,
+    pub request_digest: String,
+    pub plan_json: String,
+    pub expected_document_generation: Option<i64>,
+    pub conversation_id: Option<String>,
+    pub execution_epoch: Option<String>,
+    pub work_expires_at: Option<UnixMillis>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OperationScope { Document(DocumentId), Account(String), Server }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct V2Operation {
+    pub id: OperationId,
+    pub scope: OperationScope,
+    pub actor_key: String,
+    pub request_key: String,
+    pub kind: String,
+    pub state: String,
+    pub request_digest: String,
+    pub writer_generation: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CheckpointCommit {
+    pub document_id: DocumentId,
+    pub id: CheckpointId,
+    pub tree_object_id: ObjectId,
+    pub tree_digest: String,
+    pub parent_id: Option<String>,
+    pub author_account_id: Option<String>,
+    pub author_label: String,
+    pub reason: String,
+    pub source_format: SourceFormat,
+    pub logical_bytes: i64,
+    pub label: Option<String>,
+    pub journal_epoch: i64,
+    pub journal_sequence: i64,
+    pub metadata_json: String,
+    pub eligible_after: Option<UnixMillis>,
+    pub object_ids: Vec<ObjectId>,
+    pub make_current: bool,
+    pub now: UnixMillis,
+}
+
+fn validate_digest(value: &str, label: &str) -> CatalogResult<()> {
+    if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err(CatalogError::Invalid(format!("{label} must be lowercase SHA-256 hex")));
+    }
+    Ok(())
+}
+
+fn validate_json(value: &str, label: &str, max_bytes: usize) -> CatalogResult<()> {
+    if value.len() > max_bytes {
+        return Err(CatalogError::Invalid(format!("{label} exceeds {max_bytes} bytes")));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(value)
+        .map_err(|error| CatalogError::Invalid(format!("{label} is not valid JSON: {error}")))?;
+    if parsed.get("version").and_then(serde_json::Value::as_i64).is_none() {
+        return Err(CatalogError::Invalid(format!("{label} must contain an integer version")));
+    }
+    if !parsed.is_object() {
+        return Err(CatalogError::Invalid(format!("{label} must be a JSON object")));
+    }
+    Ok(())
+}
+
+fn title_key(title: &str) -> String {
+    title.nfc().collect::<String>().trim().to_lowercase()
+}
+
+fn validate_main_path(path: &str) -> CatalogResult<()> {
+    if path.is_empty() || path.starts_with('/') || path.contains('\0') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+        return Err(CatalogError::Invalid("main_path must be a normalized relative path".into()));
+    }
+    Ok(())
+}
+
+fn checked_add(a: i64, b: i64, label: &str) -> CatalogResult<i64> {
+    a.checked_add(b).ok_or_else(|| CatalogError::Invalid(format!("{label} counter overflow")))
+}
+
+impl Catalog {
+    pub fn cost_state_json(&self) -> CatalogResult<String> {
+        self.with_connection(|connection| {
+            connection.query_row("SELECT cost_json FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)
+        })
+    }
+
+    pub fn save_cost_state_json(&self, value: &str) -> CatalogResult<()> {
+        validate_json(value, "cost_json", 262_144)?;
+        self.immediate(|tx| {
+            let now = unix_millis();
+            tx.execute("UPDATE server_state SET cost_json=?1,updated_at=max(updated_at,?2),catalog_revision=catalog_revision+1 WHERE id=1", params![value, now]).map_err(CatalogError::from)?;
+            Ok(())
+        })
+    }
+
+    pub fn catalog_allocated_bytes(&self) -> CatalogResult<i64> {
+        self.with_connection(|connection| {
+            let page_count: i64 = connection.query_row("PRAGMA page_count", [], |row| row.get(0)).map_err(CatalogError::from)?;
+            let page_size: i64 = connection.query_row("PRAGMA page_size", [], |row| row.get(0)).map_err(CatalogError::from)?;
+            page_count.checked_mul(page_size).ok_or_else(|| CatalogError::Invalid("catalogue size overflow".into()))
+        })
+    }
+
+    /// Return the v2 singleton, rejecting a partially initialized root.
+    pub fn v2_server_state(&self) -> CatalogResult<(String, String, i64)> {
+        self.with_connection(|connection| {
+            connection.query_row(
+                "SELECT deployment_id, writer_generation, catalog_revision FROM server_state WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).map_err(CatalogError::from)
+        })
+    }
+
+    pub fn create_v2_account(&self, input: &V2AccountInput, now: UnixMillis) -> CatalogResult<()> {
+        if input.id.is_empty() || input.id.len() > 128 || input.handle.is_empty() || input.plan.is_empty() {
+            return Err(CatalogError::Invalid("account identity and plan are required".into()));
+        }
+        validate_json(&input.preferences_json, "preferences_json", 65_536)?;
+        validate_json(&input.bookmarks_json, "bookmarks_json", 262_144)?;
+        validate_json(&input.onboarding_json, "onboarding_json", 16_384)?;
+        if input.kind == AccountKind::Registered && (input.provider.is_none() || input.provider_subject.is_none()) {
+            return Err(CatalogError::Invalid("registered accounts require provider identity".into()));
+        }
+        if input.kind != AccountKind::Registered && (input.provider.is_some() || input.provider_subject.is_some()) {
+            return Err(CatalogError::Invalid("anonymous/system accounts cannot have provider identity".into()));
+        }
+        self.immediate(|tx| {
+            tx.execute(
+                "INSERT INTO accounts
+                 (id,kind,provider,provider_subject,handle,display_name,email,status,
+                  session_generation,plan,created_at,last_seen_at,preferences_json,
+                  bookmarks_json,onboarding_json)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'active',?8,?9,?10,?10,?11,?12,?13)",
+                params![input.id, input.kind.as_str(), input.provider, input.provider_subject,
+                    input.handle, input.display_name, input.email, input.session_generation,
+                    input.plan, now.0, input.preferences_json, input.bookmarks_json, input.onboarding_json],
+            ).map_err(CatalogError::from)?;
+            Ok(())
+        })
+    }
+
+    pub fn create_v2_document(&self, input: &V2DocumentInput, now: UnixMillis) -> CatalogResult<()> {
+        if input.slug.is_empty() || input.slug.len() > 256 || input.title.len() > 4096 {
+            return Err(CatalogError::Invalid("document slug/title exceeds v2 limits".into()));
+        }
+        if !matches!(input.ownership_mode.as_str(), "owned" | "open" | "example") {
+            return Err(CatalogError::Invalid("invalid document ownership mode".into()));
+        }
+        if !matches!(input.retention_mode.as_str(), "balanced" | "manual") {
+            return Err(CatalogError::Invalid("invalid retention mode".into()));
+        }
+        validate_main_path(&input.main_path)?;
+        validate_json(&input.settings_json, "settings_json", 65_536)?;
+        validate_json(&input.retention_json, "retention_json", 16_384)?;
+        self.immediate(|tx| {
+            tx.execute(
+                "INSERT INTO documents
+                 (id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,
+                  source_format,main_path,settings_json,retention_mode,retention_json)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,?9,?10,?11,?12,?13)",
+                params![input.id.as_str(), input.slug, input.owner_id, input.ownership_mode,
+                    input.title, title_key(&input.title), input.status.as_str(), now.0,
+                    input.source_format.as_str(), input.main_path, input.settings_json,
+                    input.retention_mode, input.retention_json],
+            ).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET document_count=document_count+1 WHERE id=?1", [&input.owner_id])
+                .map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET document_count=document_count+1, catalog_revision=catalog_revision+1, updated_at=?1 WHERE id=1", [now.0])
+                .map_err(CatalogError::from)?;
+            Ok(())
+        })
+    }
+
+    pub fn allocate_v2_object(&self, allocation: &V2ObjectAllocation) -> CatalogResult<V2Object> {
+        self.allocate_v2_object_with_limits(
+            allocation,
+            V2AdmissionLimits {
+                owner_bytes: i64::MAX,
+                deployment_bytes: i64::MAX,
+                owner_documents: i64::MAX,
+            },
+        )
+    }
+
+    pub fn allocate_v2_object_with_limits(&self, allocation: &V2ObjectAllocation, limits: V2AdmissionLimits) -> CatalogResult<V2Object> {
+        validate_digest(&allocation.digest, "object digest")?;
+        if let Some(digest) = allocation.logical_digest.as_deref() { validate_digest(digest, "logical digest")?; }
+        let expected_storage_key = format!(
+            "v2/documents/{}/objects/{}",
+            allocation.document_id,
+            allocation.id
+        );
+        if allocation.reserved_bytes < 0
+            || allocation.encoding_version < 1
+            || allocation.storage_key != expected_storage_key
+        {
+            return Err(CatalogError::Invalid("invalid object allocation".into()));
+        }
+        self.immediate(|tx| {
+            let owner_id: String = tx.query_row("SELECT owner_id FROM documents WHERE id=?1 AND status <> 'deleting'", [allocation.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            let prepared: i64 = tx.query_row("SELECT count(*) FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared'", params![allocation.operation_id.as_str(), allocation.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            if prepared != 1 { return Err(CatalogError::Conflict("allocation requires a prepared document operation".into())); }
+            let (doc_stored, doc_reserved, agent_bytes, agent_count): (i64,i64,i64,i64) = tx.query_row("SELECT stored_bytes,reserved_bytes,agent_payload_bytes,agent_payload_count FROM documents WHERE id=?1", [allocation.document_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(CatalogError::from)?;
+            let (owner_stored, owner_reserved): (i64,i64) = tx.query_row("SELECT stored_bytes,reserved_bytes FROM accounts WHERE id=?1", [&owner_id], |row| Ok((row.get(0)?,row.get(1)?))).map_err(CatalogError::from)?;
+            let (server_stored, server_reserved, server_agent_bytes, server_agent_count): (i64,i64,i64,i64) = tx.query_row("SELECT stored_bytes,reserved_bytes,agent_payload_bytes,agent_payload_count FROM server_state WHERE id=1", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(CatalogError::from)?;
+            let new_doc_reserved = checked_add(doc_reserved, allocation.reserved_bytes, "document reserved")?;
+            let new_owner_reserved = checked_add(owner_reserved, allocation.reserved_bytes, "owner reserved")?;
+            let new_server_reserved = checked_add(server_reserved, allocation.reserved_bytes, "deployment reserved")?;
+            if limits.owner_bytes < 0 || limits.deployment_bytes < 0
+                || new_owner_reserved.checked_add(owner_stored).ok_or_else(|| CatalogError::Invalid("owner accounting overflow".into()))? > limits.owner_bytes
+                || new_server_reserved.checked_add(server_stored).ok_or_else(|| CatalogError::Invalid("deployment accounting overflow".into()))? > limits.deployment_bytes
+            {
+                return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "object allocation exceeds configured byte limit"));
+            }
+            if allocation.kind == ObjectKind::AgentPayload {
+                if checked_add(agent_bytes, allocation.reserved_bytes, "agent payload")? > MAX_AGENT_PAYLOAD_BYTES || checked_add(agent_count, 1, "agent payload count")? > MAX_AGENT_PAYLOAD_COUNT || checked_add(server_agent_bytes, allocation.reserved_bytes, "deployment agent payload")? > 134_217_728 || checked_add(server_agent_count, 1, "deployment agent count")? > 16_384 {
+                    return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "agent staging capacity exceeded"));
+                }
+            }
+            tx.execute("INSERT INTO objects (document_id,id,storage_key,kind,state,digest,logical_digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at) VALUES (?1,?2,?3,?4,'allocated',?5,?6,?7,NULL,?8,?9,?10)", params![allocation.document_id.as_str(),allocation.id.as_str(),allocation.storage_key,allocation.kind.as_str(),allocation.digest,allocation.logical_digest,allocation.encoding_version,allocation.reserved_bytes,allocation.operation_id.as_str(),allocation.now.0]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE documents SET reserved_bytes=?1, agent_payload_bytes=?2, agent_payload_count=?3, updated_at=max(updated_at,?4) WHERE id=?5", params![new_doc_reserved, if allocation.kind == ObjectKind::AgentPayload { checked_add(agent_bytes, allocation.reserved_bytes,"agent")? } else {agent_bytes}, if allocation.kind == ObjectKind::AgentPayload { checked_add(agent_count,1,"agent count")? } else {agent_count}, allocation.now.0, allocation.document_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET reserved_bytes=?1 WHERE id=?2", params![new_owner_reserved,owner_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET reserved_bytes=?1, agent_payload_bytes=?2, agent_payload_count=?3, catalog_revision=catalog_revision+1, updated_at=?4 WHERE id=1", params![new_server_reserved, if allocation.kind == ObjectKind::AgentPayload { checked_add(server_agent_bytes, allocation.reserved_bytes,"server agent")? } else {server_agent_bytes}, if allocation.kind == ObjectKind::AgentPayload { checked_add(server_agent_count,1,"server agent count")? } else {server_agent_count}, allocation.now.0]).map_err(CatalogError::from)?;
+            Ok(V2Object { document_id: allocation.document_id.clone(), id: allocation.id.clone(), storage_key: allocation.storage_key.clone(), kind: allocation.kind.as_str().into(), state: ObjectState::Allocated.as_str().into(), digest: allocation.digest.clone(), byte_length: None, reserved_bytes: allocation.reserved_bytes, allocation_operation_id: Some(allocation.operation_id.clone()) })
+        })
+    }
+
+    /// Settle a local PUT after its guarded filesystem task has completed.
+    pub fn settle_v2_object(&self, document_id: &DocumentId, object_id: &ObjectId, measured_bytes: i64, now: UnixMillis) -> CatalogResult<()> {
+        if measured_bytes < 0 { return Err(CatalogError::Invalid("measured object length cannot be negative".into())); }
+        self.immediate(|tx| {
+            let (state, old_reserved, kind, operation): (String,i64,String,Option<String>) = tx.query_row("SELECT state,reserved_bytes,kind,allocation_operation_id FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(CatalogError::from)?;
+            if state == "available" { let existing: i64 = tx.query_row("SELECT byte_length FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?; if existing != measured_bytes { return Err(CatalogError::Conflict("object was already settled at a different length".into())); } return Ok(()); }
+            if state != "allocated" || operation.is_none() { return Err(CatalogError::Conflict("object is not an unsettled allocation".into())); }
+            let owner: String = tx.query_row("SELECT owner_id FROM documents WHERE id=?1", [document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            let delta = measured_bytes.checked_sub(old_reserved).ok_or_else(|| CatalogError::Invalid("settlement would underflow reservation".into()))?;
+            tx.execute("UPDATE objects SET state='available',byte_length=?1,reserved_bytes=0,allocation_operation_id=NULL WHERE document_id=?2 AND id=?3 AND state='allocated'", params![measured_bytes,document_id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE documents SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,updated_at=max(updated_at,?3), agent_payload_bytes=CASE WHEN ?4='agent_payload' THEN agent_payload_bytes+?5 ELSE agent_payload_bytes END WHERE id=?6", params![measured_bytes,old_reserved,now.0,kind,delta,document_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2 WHERE id=?3", params![measured_bytes,old_reserved,owner]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,catalog_revision=catalog_revision+1,updated_at=?3,agent_payload_bytes=CASE WHEN ?4='agent_payload' THEN agent_payload_bytes+?5 ELSE agent_payload_bytes END WHERE id=1", params![measured_bytes,old_reserved,now.0,kind,delta]).map_err(CatalogError::from)?;
+            // `delta` is intentionally evaluated above even though the
+            // counters swap the reservation and measured charge separately.
+            let _ = delta;
+            Ok(())
+        })
+    }
+
+    pub fn acquire_v2_lease(&self, document_id: &DocumentId, object_id: &ObjectId, holder_id: &str, purpose: LeasePurpose, operation_id: Option<&OperationId>, writer_generation: &str, expires_at: UnixMillis, now: UnixMillis) -> CatalogResult<()> {
+        if holder_id.is_empty() || expires_at < now { return Err(CatalogError::Invalid("invalid lease holder or expiry".into())); }
+        if purpose != LeasePurpose::Read && operation_id.is_none() { return Err(CatalogError::Invalid("write/stage leases require an operation".into())); }
+        self.immediate(|tx| {
+            let state: String = tx.query_row("SELECT state FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            if state == "deleting" { return Err(CatalogError::Conflict("deleting object cannot acquire a lease".into())); }
+            if purpose == LeasePurpose::Read && state != "available" { return Err(CatalogError::Conflict("read lease requires an available object".into())); }
+            if let Some(operation_id) = operation_id {
+                let valid: i64 = tx.query_row("SELECT count(*) FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared'", params![operation_id.as_str(),document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+                if valid != 1 { return Err(CatalogError::Conflict("lease operation is not prepared for this document".into())); }
+            }
+            tx.execute("INSERT INTO object_leases (document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)", params![document_id.as_str(),object_id.as_str(),holder_id,purpose.as_str(),operation_id.map(OperationId::as_str),writer_generation,now.0,expires_at.0]).map_err(CatalogError::from)?;
+            Ok(())
+        })
+    }
+
+    pub fn release_v2_lease(&self, document_id: &DocumentId, object_id: &ObjectId, holder_id: &str) -> CatalogResult<bool> {
+        self.immediate(|tx| tx.execute("DELETE FROM object_leases WHERE document_id=?1 AND object_id=?2 AND holder_id=?3", params![document_id.as_str(),object_id.as_str(),holder_id]).map(|count| count != 0).map_err(CatalogError::from))
+    }
+
+    pub fn claim_v2_object_for_deletion(&self, document_id: &DocumentId, object_id: &ObjectId, now: UnixMillis, retry_at: UnixMillis) -> CatalogResult<bool> {
+        self.immediate(|tx| {
+            let state: Option<String> = tx.query_row("SELECT state FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).optional().map_err(CatalogError::from)?;
+            if state.as_deref() != Some("available") { return Ok(false); }
+            let blockers: i64 = tx.query_row("SELECT (EXISTS(SELECT 1 FROM checkpoint_objects WHERE document_id=?1 AND object_id=?2) OR EXISTS(SELECT 1 FROM object_leases WHERE document_id=?1 AND object_id=?2) OR EXISTS(SELECT 1 FROM documents WHERE id=?1 AND (journal_base_object_id=?2 OR publication_object_id=?2)))", params![document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            if blockers != 0 { return Ok(false); }
+            let changed = tx.execute("UPDATE objects SET state='deleting',retry_at=?1 WHERE document_id=?2 AND id=?3 AND state='available' AND live_root=0 AND publication_root=0", params![retry_at.0,document_id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?;
+            let _ = now;
+            Ok(changed == 1)
+        })
+    }
+
+    /// Remove a row only after the physical store reports Deleted/Absent.
+    pub fn confirm_v2_object_deleted(&self, document_id: &DocumentId, object_id: &ObjectId) -> CatalogResult<bool> {
+        self.immediate(|tx| {
+            let row: Option<(String,i64,Option<i64>,String)> = tx.query_row("SELECT state,reserved_bytes,byte_length,kind FROM objects WHERE document_id=?1 AND id=?2", params![document_id.as_str(),object_id.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(CatalogError::from)?;
+            let Some((state,reserved,bytes,kind)) = row else { return Ok(false); };
+            if state != "deleting" { return Err(CatalogError::Conflict("only deleting objects can be confirmed removed".into())); }
+            let charge = bytes.unwrap_or(reserved);
+            let owner: String = tx.query_row("SELECT owner_id FROM documents WHERE id=?1", [document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            tx.execute("DELETE FROM objects WHERE document_id=?1 AND id=?2 AND state='deleting'", params![document_id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE documents SET stored_bytes=stored_bytes-CASE WHEN ?1 IS NULL THEN 0 ELSE ?1 END,reserved_bytes=reserved_bytes-CASE WHEN ?1 IS NULL THEN ?2 ELSE 0 END,agent_payload_bytes=CASE WHEN ?3='agent_payload' THEN agent_payload_bytes-CASE WHEN ?1 IS NULL THEN 0 ELSE ?1 END-CASE WHEN ?1 IS NULL THEN ?2 ELSE 0 END ELSE agent_payload_bytes END,agent_payload_count=CASE WHEN ?3='agent_payload' THEN agent_payload_count-1 ELSE agent_payload_count END WHERE id=?4", params![bytes,reserved,kind,document_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET stored_bytes=stored_bytes-CASE WHEN ?1 IS NULL THEN 0 ELSE ?1 END,reserved_bytes=reserved_bytes-CASE WHEN ?1 IS NULL THEN ?2 ELSE 0 END WHERE id=?3", params![bytes,reserved,owner]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET stored_bytes=stored_bytes-CASE WHEN ?1 IS NULL THEN 0 ELSE ?1 END,reserved_bytes=reserved_bytes-CASE WHEN ?1 IS NULL THEN ?2 ELSE 0 END,agent_payload_bytes=CASE WHEN ?3='agent_payload' THEN agent_payload_bytes-CASE WHEN ?1 IS NULL THEN 0 ELSE ?1 END-CASE WHEN ?1 IS NULL THEN ?2 ELSE 0 END ELSE agent_payload_bytes END,agent_payload_count=CASE WHEN ?3='agent_payload' THEN agent_payload_count-1 ELSE agent_payload_count END WHERE id=1", params![bytes,reserved,kind]).map_err(CatalogError::from)?;
+            Ok(true)
+        })
+    }
+
+    pub fn commit_v2_checkpoint(&self, checkpoint: &CheckpointCommit) -> CatalogResult<i64> {
+        validate_digest(&checkpoint.tree_digest, "tree digest")?;
+        validate_json(&checkpoint.metadata_json, "checkpoint metadata", 65_536)?;
+        if checkpoint.logical_bytes < 0 || checkpoint.journal_epoch < 0 || checkpoint.journal_sequence < 0 || checkpoint.object_ids.is_empty() || checkpoint.object_ids.len() > MAX_CHECKPOINT_OBJECTS {
+            return Err(CatalogError::Invalid("invalid checkpoint closure".into()));
+        }
+        let distinct: HashSet<&ObjectId> = checkpoint.object_ids.iter().collect();
+        if distinct.len() != checkpoint.object_ids.len()
+            || !checkpoint.object_ids.iter().any(|id| id == &checkpoint.tree_object_id)
+        {
+            return Err(CatalogError::Invalid("checkpoint closure must be distinct and include its tree".into()));
+        }
+        self.immediate(|tx| {
+            let next: i64 = tx.query_row("SELECT next_checkpoint_seq FROM documents WHERE id=?1 AND status <> 'deleting'", [checkpoint.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            let (doc_refs,): (i64,) = tx.query_row("SELECT checkpoint_ref_count FROM documents WHERE id=?1", [checkpoint.document_id.as_str()], |row| Ok((row.get(0)?,))).map_err(CatalogError::from)?;
+            let deployment_refs: i64 = tx.query_row("SELECT checkpoint_ref_count FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)?;
+            let count = i64::try_from(checkpoint.object_ids.len()).map_err(|_| CatalogError::Invalid("checkpoint closure too large".into()))?;
+            if checked_add(doc_refs,count,"document checkpoint references")? > MAX_DOCUMENT_CHECKPOINT_REFS || checked_add(deployment_refs,count,"deployment checkpoint references")? > MAX_DEPLOYMENT_CHECKPOINT_REFS {
+                return Err(CatalogError::refused(super::CatalogRefusal::Other, "checkpoint_reference_limit"));
+            }
+            let tree_kind: String = tx.query_row("SELECT kind FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![checkpoint.document_id.as_str(),checkpoint.tree_object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            if tree_kind != ObjectKind::SourceTree.as_str() { return Err(CatalogError::Invalid("checkpoint tree must be a source_tree object".into())); }
+            for object_id in &checkpoint.object_ids {
+                let available: i64 = tx.query_row("SELECT count(*) FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![checkpoint.document_id.as_str(),object_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+                if available != 1 { return Err(CatalogError::Conflict("checkpoint closure contains an unavailable object".into())); }
+            }
+            tx.execute("INSERT INTO checkpoints (document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,checkpoint.author_account_id,checkpoint.author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,checkpoint.journal_epoch,checkpoint.journal_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|v| v.0)]).map_err(CatalogError::from)?;
+            for object_id in &checkpoint.object_ids { tx.execute("INSERT INTO checkpoint_objects (document_id,checkpoint_id,object_id) VALUES (?1,?2,?3)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?; }
+            tx.execute("UPDATE documents SET next_checkpoint_seq=next_checkpoint_seq+1,checkpoint_ref_count=checkpoint_ref_count+?1,last_checkpoint_at=?2,current_checkpoint_id=CASE WHEN ?3 THEN ?4 ELSE current_checkpoint_id END,updated_at=max(updated_at,?2) WHERE id=?5", params![count,checkpoint.now.0,checkpoint.make_current,checkpoint.id.as_str(),checkpoint.document_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count+?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1", params![count,checkpoint.now.0]).map_err(CatalogError::from)?;
+            Ok(next)
+        })
+    }
+
+    /// Recompute cache values for audit tooling.  This is intentionally an
+    /// explicit verifier and is never called by ordinary admission.
+    pub fn audit_v2_counters(&self) -> CatalogResult<bool> {
+        self.with_connection(|connection| {
+            let document_ok: bool = connection.query_row(
+                "SELECT NOT EXISTS(
+                    SELECT 1 FROM documents d
+                    LEFT JOIN (
+                        SELECT document_id,
+                               COALESCE(SUM(CASE WHEN byte_length IS NULL THEN 0 ELSE byte_length END),0) stored,
+                               COALESCE(SUM(reserved_bytes),0) reserved,
+                               COALESCE(SUM(CASE WHEN kind='agent_payload' THEN COALESCE(byte_length,0)+reserved_bytes ELSE 0 END),0) agent_bytes,
+                               COALESCE(SUM(CASE WHEN kind='agent_payload' THEN 1 ELSE 0 END),0) agent_count
+                        FROM objects GROUP BY document_id
+                    ) o ON o.document_id=d.id
+                    LEFT JOIN (SELECT document_id, count(*) refs FROM checkpoint_objects GROUP BY document_id) r ON r.document_id=d.id
+                    WHERE d.stored_bytes<>COALESCE(o.stored,0) OR d.reserved_bytes<>COALESCE(o.reserved,0)
+                       OR d.agent_payload_bytes<>COALESCE(o.agent_bytes,0) OR d.agent_payload_count<>COALESCE(o.agent_count,0)
+                       OR d.checkpoint_ref_count<>COALESCE(r.refs,0)
+                )",
+                [],
+                |row| row.get(0),
+            ).map_err(CatalogError::from)?;
+            let account_ok: bool = connection.query_row(
+                "SELECT NOT EXISTS(
+                    SELECT 1 FROM accounts a
+                    LEFT JOIN (SELECT owner_id,COALESCE(SUM(stored_bytes),0) stored,COALESCE(SUM(reserved_bytes),0) reserved,count(*) docs FROM documents GROUP BY owner_id) d ON d.owner_id=a.id
+                    WHERE a.stored_bytes<>COALESCE(d.stored,0) OR a.reserved_bytes<>COALESCE(d.reserved,0) OR a.document_count<>COALESCE(d.docs,0)
+                )",
+                [],
+                |row| row.get(0),
+            ).map_err(CatalogError::from)?;
+            let global_ok: bool = connection.query_row(
+                "SELECT s.stored_bytes=COALESCE((SELECT SUM(stored_bytes) FROM documents),0)
+                    AND s.reserved_bytes=COALESCE((SELECT SUM(reserved_bytes) FROM documents),0)
+                    AND s.document_count=(SELECT count(*) FROM documents)
+                    AND s.agent_payload_bytes=COALESCE((SELECT SUM(agent_payload_bytes) FROM documents),0)
+                    AND s.agent_payload_count=COALESCE((SELECT SUM(agent_payload_count) FROM documents),0)
+                    AND s.checkpoint_ref_count=(SELECT count(*) FROM checkpoint_objects)
+                 FROM server_state s WHERE s.id=1",
+                [],
+                |row| row.get(0),
+            ).map_err(CatalogError::from)?;
+            Ok(document_ok && account_ok && global_ok)
+        })
+    }
+}
+
+impl OperationScope {
+    fn sql_values(&self) -> (Option<&str>, Option<&str>) {
+        match self { Self::Document(id) => (Some(id.as_str()),None), Self::Account(id) => (None,Some(id.as_str())), Self::Server => (None,None) }
+    }
+}
+
+impl Catalog {
+    pub fn prepare_v2_operation(&self, input: &V2OperationInput, now: UnixMillis) -> CatalogResult<V2Operation> {
+        if input.actor_key.is_empty() || input.request_key.is_empty() || input.request_key.len() > 128 { return Err(CatalogError::Invalid("operation actor/request key is invalid".into())); }
+        validate_digest(&input.request_digest, "request digest")?;
+        validate_json(&input.plan_json, "operation plan", 65_536)?;
+        let (document_id, account_id) = input.scope.sql_values();
+        self.immediate(|tx| {
+            let existing: Option<(String,String,String,String,String,String,String)> = match (&input.scope, document_id, account_id) {
+                (OperationScope::Document(_),Some(document_id),_) => tx.query_row("SELECT id,kind,state,request_digest,writer_generation,actor_key,request_key FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3", params![document_id,input.actor_key,input.request_key], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(CatalogError::from)?,
+                (OperationScope::Account(_),_,Some(account_id)) => tx.query_row("SELECT id,kind,state,request_digest,writer_generation,actor_key,request_key FROM operations WHERE account_id=?1 AND actor_key=?2 AND request_key=?3", params![account_id,input.actor_key,input.request_key], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(CatalogError::from)?,
+                _ => tx.query_row("SELECT id,kind,state,request_digest,writer_generation,actor_key,request_key FROM operations WHERE document_id IS NULL AND account_id IS NULL AND actor_key=?1 AND request_key=?2", params![input.actor_key,input.request_key], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(CatalogError::from)?,
+            };
+            if let Some((id,kind,state,digest,generation,actor,key)) = existing {
+                if kind != input.kind.as_str() || digest != input.request_digest { return Err(CatalogError::Conflict("idempotency key was reused with a different operation".into())); }
+                return Ok(V2Operation { id: OperationId::new(id).map_err(|e| CatalogError::Invalid(e.to_string()))?, scope: input.scope.clone(), actor_key: actor, request_key: key, kind, state, request_digest: digest, writer_generation: generation });
+            }
+            let operation_id = hex::encode(crate::auth::random_bytes(16));
+            let writer_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)?;
+            tx.execute("INSERT INTO operations (id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,target_operation_id,target_request_key,conversation_id,execution_epoch,plan_json,created_at,updated_at,work_expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'prepared',?8,?9,NULL,NULL,?10,?11,?12,?13,?13,?14)", params![operation_id,document_id,account_id,input.actor_key,input.request_key,input.kind.as_str(),input.request_digest,writer_generation,input.expected_document_generation,input.conversation_id,input.execution_epoch,input.plan_json,now.0,input.work_expires_at.map(|v| v.0)]).map_err(CatalogError::from)?;
+            Ok(V2Operation { id: OperationId::new(operation_id).map_err(|e| CatalogError::Invalid(e.to_string()))?, scope: input.scope.clone(), actor_key: input.actor_key.clone(), request_key: input.request_key.clone(), kind: input.kind.as_str().into(), state: "prepared".into(), request_digest: input.request_digest.clone(), writer_generation })
+        })
+    }
+
+    pub fn finish_v2_operation(&self, operation_id: &OperationId, result_json: &str, committed: bool, now: UnixMillis) -> CatalogResult<()> {
+        validate_json(result_json, "operation result", 65_536)?;
+        self.immediate(|tx| {
+            let state: String = tx.query_row("SELECT state FROM operations WHERE id=?1", [operation_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
+            if state != "prepared" { return Err(CatalogError::Conflict("operation is already terminal".into())); }
+            let final_state = if committed { "committed" } else { "aborted" };
+            tx.execute("UPDATE operations SET state=?1,result_json=?2,completed_at=?3,receipt_expires_at=?3,updated_at=max(updated_at,?3) WHERE id=?4 AND state='prepared'", params![final_state,result_json,now.0,operation_id.as_str()]).map_err(CatalogError::from)?;
+            Ok(())
+        })
+    }
+}
