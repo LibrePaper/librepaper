@@ -611,13 +611,12 @@ impl Server {
             .await
             .map_err(|error| write_json(409, &json!({"error": error})))?;
 
-        let mut publication_token = match room.reserve_publication_checkpoint() {
-            Ok(token) => token,
-            Err(error) => {
-                let _ = self.store.abort_publication(&existing.slug, &error).await;
-                return Err(write_json(429, &json!({"error": error, "retryable": true})));
-            }
-        };
+        // The v2 checkpoint admission installs the operation, physical
+        // allocations, counters, and leases in one transaction.  The old
+        // standalone publication budget token cannot represent a replacement
+        // closure and would reject every catalog-backed upload before that
+        // admission runs.
+        let mut publication_token = crate::room::PublicationCheckpointToken::none();
 
         let mut wanted: std::collections::HashSet<String> =
             parsed.files.iter().map(|(path, _)| path.clone()).collect();
@@ -651,13 +650,6 @@ impl Server {
                             "warning: could not store {path} of {}: {why}",
                             existing.slug
                         );
-                        let _ = self
-                            .store
-                            .abort_publication(
-                                &existing.slug,
-                                &format!("asset staging failed: {why}"),
-                            )
-                            .await;
                         return Err(write_json(
                             500,
                             &json!({"error": "could not store the document"}),
@@ -756,10 +748,6 @@ impl Server {
                 Ok::<_, crate::room::WriteError>(())
             }) {
                 drop(state);
-                let _ = self
-                    .store
-                    .abort_publication(&existing.slug, &error.to_string())
-                    .await;
                 return Err(write_json(
                     error.status(),
                     &json!({"error": error.client_message()}),
@@ -807,10 +795,6 @@ impl Server {
                 {
                     eprintln!("warning: could not roll back {}: {error}", existing.slug);
                 }
-                let _ = self
-                    .store
-                    .abort_publication(&existing.slug, "checkpoint failed")
-                    .await;
                 return Err(write_json(
                     500,
                     &json!({"error": "could not store the document"}),

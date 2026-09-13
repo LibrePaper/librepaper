@@ -146,7 +146,7 @@ pub struct PublicationCheckpointToken {
 }
 
 impl PublicationCheckpointToken {
-    fn none() -> Self {
+    pub(crate) fn none() -> Self {
         let slot = ReservationSlot::default();
         slot.keep();
         Self {

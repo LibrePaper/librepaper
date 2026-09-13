@@ -3026,14 +3026,14 @@ impl Room {
         } else {
             None
         };
-        let mut durable_sequence = catalog_journal_head
-            .map(|(_, sequence)| {
-                u64::try_from(sequence)
-                    .map(|sequence| sequence.saturating_add(1))
-                    .map_err(|_| WriteError::Storage("negative catalog journal sequence".into()))
-            })
-            .transpose()?
-            .unwrap_or_else(|| generation.saturating_add(1));
+        let mut durable_sequence = if let Some((_, sequence)) = catalog_journal_head {
+            u64::try_from(sequence)
+                .map_err(|_| WriteError::Storage("catalog journal sequence is negative".into()))?
+                .checked_add(1)
+                .ok_or_else(|| WriteError::Storage("catalog journal sequence overflow".into()))?
+        } else {
+            generation.saturating_add(1)
+        };
         if let Some(journal) = self.journal.get() {
             if catalog_journal_head.is_none() {
                 let latest = journal
