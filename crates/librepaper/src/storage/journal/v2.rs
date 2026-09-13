@@ -977,12 +977,16 @@ pub fn recover_records(
         let parts = fragments
             .remove(&sequence)
             .ok_or_else(|| JournalError::Corrupt("journal sequence gap".into()))?;
-        let first_part = parts
-            .first()
-            .ok_or_else(|| JournalError::Corrupt("empty journal fragment group".into()))?;
-        let count = first_part.fragment_count;
-        let expected_retry_id = first_part.retry_id.clone();
-        let expected_digest = first_part.digest.clone();
+        let (count, expected_retry_id, expected_digest) = {
+            let first_part = parts
+                .first()
+                .ok_or_else(|| JournalError::Corrupt("empty journal fragment group".into()))?;
+            (
+                first_part.fragment_count,
+                first_part.retry_id.clone(),
+                first_part.digest.clone(),
+            )
+        };
         if parts.len() != count as usize
             || parts.iter().any(|part| {
                 part.fragment_count != count
