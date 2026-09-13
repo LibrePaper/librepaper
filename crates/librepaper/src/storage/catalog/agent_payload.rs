@@ -333,7 +333,48 @@ impl Catalog {
 
 #[cfg(test)]
 mod tests {
-    use super::natural_key;
+    use super::*;
+    use rusqlite::params;
+
+    fn fixture() -> Catalog {
+        let catalog = Catalog::open_in_memory().expect("catalog");
+        catalog.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at) VALUES('payload-account','registered','test','payload-account','payload','Payload','payload@example.test','active','session-1','test',1,1)",
+                [],
+            )?;
+            connection.execute(
+                "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES('payload-document','payload-doc','payload-account','owned','Payload','payload','active',1,1,'markdown','index.md')",
+                [],
+            )?;
+            Ok(())
+        }).expect("fixture");
+        catalog
+    }
+
+    fn input() -> AgentPayloadInput {
+        AgentPayloadInput {
+            slug: "payload-doc".into(),
+            actor_key: "account:payload-account".into(),
+            agent_id: "stable-id".into(),
+            agent_kind: "view".into(),
+            logical_digest: "a".repeat(64),
+            physical_digest: "b".repeat(64),
+            reserved_bytes: 128,
+            plan_json: r#"{"version":2}"#.into(),
+            request_digest: "c".repeat(64),
+            expires_at: UnixMillis(3_600_001),
+        }
+    }
+
+    fn authority() -> AgentPayloadAuthority {
+        AgentPayloadAuthority {
+            account_id: "payload-account".into(),
+            generation: "session-1".into(),
+            link_hash: String::new(),
+            automation: false,
+        }
+    }
 
     #[test]
     fn agent_stage_key_is_stable_across_retries_and_scoped_by_document() {
@@ -350,5 +391,48 @@ mod tests {
             natural_key("doc", "account:a", "ab", "c"),
             natural_key("doc", "account:a", "a", "bc"),
         );
+    }
+
+    #[test]
+    fn atomic_admission_replays_exact_identity_and_keeps_stage_lease() {
+        let catalog = fixture();
+        let request = input();
+        let first = catalog.admit_agent_payload(
+            &request, &authority(),
+            V2AdmissionLimits { owner_bytes: i64::MAX, deployment_bytes: i64::MAX, owner_documents: i64::MAX },
+            UnixMillis(1),
+        ).expect("first admission");
+        let replay = catalog.admit_agent_payload(
+            &request, &authority(),
+            V2AdmissionLimits { owner_bytes: i64::MAX, deployment_bytes: i64::MAX, owner_documents: i64::MAX },
+            UnixMillis(2),
+        ).expect("replay");
+        assert!(!first.replay);
+        assert!(replay.replay);
+        assert_eq!(first.operation_id, replay.operation_id);
+        let lease_count: i64 = catalog.with_connection(|db| db.query_row(
+            "SELECT count(*) FROM object_leases WHERE operation_id=?1 AND purpose='stage'",
+            params![first.operation_id.as_str()], |row| row.get(0),
+        )) .expect("lease count");
+        assert_eq!(lease_count, 1);
+    }
+
+    #[test]
+    fn final_payload_commit_rejects_revoked_authority() {
+        let catalog = fixture();
+        let request = input();
+        let admitted = catalog.admit_agent_payload(
+            &request, &authority(),
+            V2AdmissionLimits { owner_bytes: i64::MAX, deployment_bytes: i64::MAX, owner_documents: i64::MAX },
+            UnixMillis(1),
+        ).expect("admission");
+        catalog.with_connection(|db| {
+            db.execute("UPDATE accounts SET session_generation='revoked' WHERE id='payload-account'", [])?;
+            Ok(())
+        }).expect("revoke");
+        let result = catalog.finish_agent_payload(
+            &admitted.operation_id, &authority(), r#"{"version":2}"#, UnixMillis(2),
+        );
+        assert!(matches!(result, Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))));
     }
 }
