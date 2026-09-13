@@ -404,7 +404,7 @@ impl Server {
         let physical_digest = hex::encode(Sha256::digest(&bytes));
         let existing = catalog
             .execute_catalog(
-                actor.len().saturating_add(id.len()).saturating_add(kind.len()).saturating_add(document_id.as_str().len()).saturating_add(128),
+                actor.len().saturating_add(id.len()).saturating_add(kind.len()).saturating_add(document_id.as_str().len()).saturating_add(160),
                 {
                     let actor = actor.to_owned();
                     let id = id.to_owned();
@@ -414,8 +414,8 @@ impl Server {
                         catalog.with_connection(|connection| {
                             connection
                                 .query_row(
-                                    "SELECT op.state,json_extract(op.plan_json,'$.physical_digest') FROM operations op WHERE op.document_id=?1 AND op.kind='agent_stage' AND op.state IN ('prepared','committed') AND json_extract(op.plan_json,'$.actor')=?2 AND json_extract(op.plan_json,'$.agent_id')=?3 AND json_extract(op.plan_json,'$.agent_kind')=?4 ORDER BY op.completed_at DESC,op.id DESC LIMIT 1",
-                                    rusqlite::params![document_id, actor, id, kind],
+                                    "SELECT op.state,json_extract(op.plan_json,'$.physical_digest') FROM operations op WHERE op.document_id=?1 AND op.kind='agent_stage' AND op.state IN ('prepared','committed') AND json_extract(op.plan_json,'$.actor')=?2 AND json_extract(op.plan_json,'$.agent_id')=?3 AND json_extract(op.plan_json,'$.agent_kind')=?4 AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?5 ORDER BY op.completed_at DESC,op.id DESC LIMIT 1",
+                                    rusqlite::params![document_id, actor, id, kind, now],
                                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                                 )
                                 .optional()
