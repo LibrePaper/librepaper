@@ -35,7 +35,14 @@ impl Catalog {
                 params![document.as_str(), actor_key, request_key],
                 |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)),
             ).optional()?;
-            let Some((id,state,request_digest,plan,result,generation,deadline)) = row else { return Ok(None); };
+            let Some((id,state,request_digest,plan,result,generation,deadline)) = row else {
+                let conflicting: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3)",
+                    params![document.as_str(),actor_key,request_key], |row| row.get(0),
+                )?;
+                if conflicting { return Err(CatalogError::Conflict("retry key belongs to another operation kind".into())); }
+                return Ok(None);
+            };
             let slug: String = tx.query_row(
                 "SELECT d.slug FROM documents d JOIN accounts a ON a.id=d.owner_id
                   WHERE d.id=?1 AND d.status='active' AND a.status='active'",
@@ -128,6 +135,26 @@ impl Catalog {
         actor: &crate::document::store::MutationActor,
         limits: V2AdmissionLimits,
     ) -> CatalogResult<()> {
+        self.reserve_publication_bundle_inner(allocations, actor, limits, None)
+    }
+
+    pub(crate) fn prepare_publication_bundle(
+        &self,
+        operation: &V2OperationInput,
+        allocations: &[V2ObjectAllocation],
+        actor: &crate::document::store::MutationActor,
+        limits: V2AdmissionLimits,
+    ) -> CatalogResult<()> {
+        self.reserve_publication_bundle_inner(allocations, actor, limits, Some(operation))
+    }
+
+    fn reserve_publication_bundle_inner(
+        &self,
+        allocations: &[V2ObjectAllocation],
+        actor: &crate::document::store::MutationActor,
+        limits: V2AdmissionLimits,
+        prepare: Option<&V2OperationInput>,
+    ) -> CatalogResult<()> {
         if !(2..=514).contains(&allocations.len()) {
             return Err(CatalogError::Invalid(
                 "invalid publication bundle size".into(),
@@ -218,6 +245,48 @@ impl Catalog {
                 "SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0),
             )?;
             let actor_key = publication_actor_key(actor)?;
+            if let Some(input) = prepare {
+                if input.scope != OperationScope::Document(first.document_id.clone())
+                    || input.kind != OperationKind::DisplayPublish || input.actor_key != actor_key
+                    || input.expected_document_generation != Some(source_generation)
+                    || input.request_digest.len() != 64
+                    || !input.request_digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    || input.plan_json.len() > 65_536
+                {
+                    return Err(CatalogError::Invalid("invalid publication operation admission".into()));
+                }
+                let issued = crate::util::request_key_timestamp(&input.request_key)
+                    .ok_or_else(|| CatalogError::Invalid("invalid publication request key".into()))?;
+                if issued > first.now.0.saturating_add(60_000)
+                    || first.now.0.saturating_sub(issued) > 900_000
+                {
+                    return Err(CatalogError::Invalid("publication request key is outside its admission window".into()));
+                }
+                let deadline = input.work_expires_at.map(|value| value.0)
+                    .filter(|value| *value > first.now.0 && *value <= first.now.0.saturating_add(900_000))
+                    .ok_or_else(|| CatalogError::Invalid("invalid publication work deadline".into()))?;
+                let plan: serde_json::Value = serde_json::from_str(&input.plan_json)
+                    .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+                if plan.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+                    return Err(CatalogError::Invalid("unsupported publication plan version".into()));
+                }
+                let expected = plan.get("expected_publication_id").and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| CatalogError::Invalid("publication plan lacks its pointer fence".into()))?;
+                let current: Option<String> = tx.query_row(
+                    "SELECT publication_id FROM documents WHERE id=?1", [first.document_id.as_str()], |row| row.get(0),
+                )?;
+                if current.as_deref().unwrap_or("") != expected {
+                    return Err(CatalogError::Conflict("publication head changed".into()));
+                }
+                tx.execute(
+                    "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,
+                        state,writer_generation,expected_document_generation,plan_json,
+                        created_at,updated_at,work_expires_at)
+                     VALUES(?1,?2,?3,?4,'display_publish',?5,'prepared',?6,?7,?8,?9,?9,?10)",
+                    params![first.operation_id.as_str(),first.document_id.as_str(),actor_key,input.request_key,
+                        input.request_digest,generation,source_generation,input.plan_json,first.now.0,deadline],
+                )?;
+            }
             let (operation_generation, expected_generation, deadline, plan): (String, Option<i64>, i64, String) = tx.query_row(
                 "SELECT writer_generation,expected_document_generation,work_expires_at,plan_json
                    FROM operations WHERE id=?1 AND document_id=?2
@@ -471,17 +540,76 @@ mod tests {
     #[test]
     fn publication_retry_renews_live_protection_but_cannot_revive_expired_leases() {
         let (catalog, actor, allocations) = fixture();
-        catalog.reserve_publication_bundle(&allocations, &actor, limits(100)).unwrap();
+        catalog
+            .reserve_publication_bundle(&allocations, &actor, limits(100))
+            .unwrap();
         let key = format!("v2.1.{}", "a".repeat(32));
         let document = &allocations[0].document_id;
-        let work = catalog.publication_work(document, &key, &actor, UnixMillis(2)).unwrap().unwrap();
+        let work = catalog
+            .publication_work(document, &key, &actor, UnixMillis(2))
+            .unwrap()
+            .unwrap();
         assert_eq!(work.objects.len(), 2);
         assert_eq!(work.lease_expires_at, 120_002);
-        assert!(catalog.publication_work(document, &key, &actor, UnixMillis(120_003)).is_err());
-        catalog.with_connection(|db| {
-            assert_eq!(db.query_row("SELECT max(expires_at) FROM object_leases", [], |row| row.get::<_,i64>(0))?, 120_002);
-            Ok(())
-        }).unwrap();
+        assert!(catalog
+            .publication_work(document, &key, &actor, UnixMillis(120_003))
+            .is_err());
+        catalog
+            .with_connection(|db| {
+                assert_eq!(
+                    db.query_row("SELECT max(expires_at) FROM object_leases", [], |row| row
+                        .get::<_, i64>(
+                        0
+                    ))?,
+                    120_002
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert!(catalog.audit_v2_counters().unwrap());
+    }
+
+    #[test]
+    fn refused_bundle_does_not_leave_a_prepared_operation() {
+        let (catalog, actor, allocations) = fixture();
+        catalog
+            .with_connection(|db| {
+                db.execute("DELETE FROM operations", [])?;
+                Ok(())
+            })
+            .unwrap();
+        let input = V2OperationInput {
+            scope: OperationScope::Document(allocations[0].document_id.clone()),
+            actor_key: publication_actor_key(&actor).unwrap(),
+            request_key: format!("v2.1.{}", "a".repeat(32)),
+            kind: OperationKind::DisplayPublish,
+            request_digest: "a".repeat(64),
+            plan_json: r#"{"version":1,"expected_publication_id":""}"#.into(),
+            expected_document_generation: Some(0),
+            conversation_id: None,
+            execution_epoch: None,
+            work_expires_at: Some(UnixMillis(900_001)),
+        };
+        assert!(catalog
+            .prepare_publication_bundle(&input, &allocations, &actor, limits(19))
+            .is_err());
+        catalog
+            .with_connection(|db| {
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM operations", [], |r| r
+                        .get::<_, i64>(0))?,
+                    0
+                );
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM objects", [], |r| r.get::<_, i64>(0))?,
+                    0
+                );
+                Ok(())
+            })
+            .unwrap();
+        catalog
+            .prepare_publication_bundle(&input, &allocations, &actor, limits(20))
+            .unwrap();
         assert!(catalog.audit_v2_counters().unwrap());
     }
 }

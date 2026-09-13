@@ -164,12 +164,18 @@ impl Server {
             Err(_) => return plain(400, "invalid publication request"),
         };
         let expected = input.expected_publication_id.as_deref().unwrap_or("");
-        let prepared = match store.prepared(&entry.storage_id, &request_id).await {
+        let prepared = match store
+            .prepared_identity(&entry.storage_id, &request_id)
+            .await
+        {
             Ok(prepared) => prepared,
             Err(error) => return publication_error(error),
         };
         let manifest = PublicationManifest {
-            publication_id: request_id.clone(),
+            publication_id: prepared
+                .as_ref()
+                .map(|identity| identity.publication_id.clone())
+                .unwrap_or_else(|| hex::encode(crate::auth::random_bytes(16))),
             bundle_sha256: input.manifest.bundle_sha256,
             previous_publication_id: expected.to_string(),
             source_sha256: input.manifest.source_sha256,

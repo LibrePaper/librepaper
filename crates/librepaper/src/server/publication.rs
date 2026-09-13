@@ -75,6 +75,13 @@ pub struct PublicationManifest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct PublicationIdentity {
+    pub publication_id: String,
+    pub published_at: String,
+    pub publisher: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct StagingMeta {
     created_at: i64,
     expected_publication_id: String,
@@ -95,7 +102,11 @@ fn encode_publication_bundle(
 ) -> Result<EncodedPublicationBundle, PublicationError> {
     use crate::storage::catalog::{ObjectId, ObjectKind, V2ObjectAllocation};
     validate_manifest(manifest)?;
-    let mut envelope = serde_json::to_value(manifest)
+    let mut manifest = manifest.clone();
+    manifest
+        .assets
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    let mut envelope = serde_json::to_value(&manifest)
         .map_err(|error| PublicationError::Storage(error.to_string()))?;
     envelope["version"] = json!(1);
     let mut allocations = Vec::new();
@@ -170,6 +181,75 @@ fn encode_publication_bundle(
     })
 }
 
+fn publication_request_digest(
+    expected: &str,
+    manifest: &PublicationManifest,
+) -> Result<String, PublicationError> {
+    let mut assets = manifest.assets.clone();
+    assets.sort_by(|left, right| left.path.cmp(&right.path));
+    let request = json!({"version":1,"kind":"display_publish","expected_publication_id":expected,
+        "bundle_sha256":manifest.bundle_sha256,"source_sha256":manifest.source_sha256,
+        "render_config_sha256":manifest.render_config_sha256,"html":manifest.html,"assets":assets});
+    let body = serde_json::to_vec(&request)
+        .map_err(|error| PublicationError::Storage(error.to_string()))?;
+    Ok(hex::encode(Sha256::digest(body)))
+}
+
+fn encode_existing_publication_bundle(
+    manifest: &PublicationManifest,
+    objects: &[crate::storage::catalog::V2Object],
+) -> Result<Vec<u8>, PublicationError> {
+    let mut manifest = manifest.clone();
+    manifest
+        .assets
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    let mut envelope = serde_json::to_value(&manifest)
+        .map_err(|error| PublicationError::Storage(error.to_string()))?;
+    envelope["version"] = json!(1);
+    let mut used = std::collections::HashSet::new();
+    for (metadata, index) in std::iter::once((&manifest.html, None)).chain(
+        manifest
+            .assets
+            .iter()
+            .enumerate()
+            .map(|(index, asset)| (&asset.object, Some(index))),
+    ) {
+        let kind = if index.is_some() {
+            "publication_asset"
+        } else {
+            "publication_html"
+        };
+        let object = objects
+            .iter()
+            .find(|object| {
+                object.kind == kind
+                    && object.digest == metadata.sha256
+                    && object.byte_length.unwrap_or(object.reserved_bytes) == metadata.bytes as i64
+            })
+            .ok_or(PublicationError::Conflict)?;
+        used.insert(object.id.as_str());
+        match index {
+            Some(index) => envelope["assets"][index]["object_id"] = json!(object.id.as_str()),
+            None => envelope["html"]["object_id"] = json!(object.id.as_str()),
+        }
+    }
+    let descriptor = objects
+        .iter()
+        .find(|object| object.kind == "publication_manifest")
+        .ok_or(PublicationError::Conflict)?;
+    used.insert(descriptor.id.as_str());
+    let body = serde_json::to_vec(&envelope)
+        .map_err(|error| PublicationError::Storage(error.to_string()))?;
+    if used.len() != objects.len()
+        || body.len() > MAX_MANIFEST_BYTES
+        || descriptor.byte_length.unwrap_or(descriptor.reserved_bytes) != body.len() as i64
+        || descriptor.digest != hex::encode(Sha256::digest(&body))
+    {
+        return Err(PublicationError::Conflict);
+    }
+    Ok(body)
+}
+
 fn parse_staging_meta(bytes: &[u8]) -> Option<StagingMeta> {
     serde_json::from_slice(bytes).ok()
 }
@@ -185,6 +265,7 @@ pub enum PublicationError {
     Missing,
     Conflict,
     TooLarge,
+    Expired,
     Quota,
     Denied,
     Storage(String),
@@ -197,6 +278,7 @@ impl std::fmt::Display for PublicationError {
             Self::Missing => write!(f, "publication object is missing"),
             Self::Conflict => write!(f, "publication changed; retry with the current version"),
             Self::TooLarge => write!(f, "publication exceeds its size limit"),
+            Self::Expired => write!(f, "publication retry key expired; start a new request"),
             Self::Quota => write!(f, "publication storage quota is used up"),
             Self::Denied => write!(f, "publication access changed"),
             Self::Storage(message) => write!(f, "{message}"),
@@ -222,6 +304,398 @@ pub struct PublicationStore {
 }
 
 impl PublicationStore {
+    async fn prepare_immutable(
+        &self,
+        storage_id: &str,
+        request_id: &str,
+        expected_publication_id: &str,
+        manifest: &PublicationManifest,
+        max_total: usize,
+    ) -> Result<MissingObjects, PublicationError> {
+        use crate::storage::catalog::{
+            DocumentId, OperationId, OperationKind, OperationScope, UnixMillis, V2AdmissionLimits,
+            V2OperationInput,
+        };
+        validate_manifest(manifest)?;
+        let total = manifest
+            .assets
+            .iter()
+            .try_fold(manifest.html.bytes, |sum, asset| {
+                sum.checked_add(asset.object.bytes)
+            })
+            .ok_or(PublicationError::TooLarge)?;
+        if total > max_total.min(MAX_STAGED_BYTES) {
+            return Err(PublicationError::TooLarge);
+        }
+        let request_digest = publication_request_digest(expected_publication_id, manifest)?;
+        let store = self.store.as_ref().ok_or_else(|| {
+            PublicationError::Storage("durable publication store required".into())
+        })?;
+        let catalog = store
+            .catalog
+            .as_ref()
+            .ok_or_else(|| PublicationError::Storage("durable catalog required".into()))?;
+        let actor = self.actor.clone().ok_or(PublicationError::Denied)?;
+        let document_id =
+            DocumentId::new(storage_id).map_err(|e| PublicationError::Invalid(e.to_string()))?;
+        let work = self.immutable_work(storage_id, request_id).await?;
+        let (manifest_bytes, manifest_object) = if let Some(work) = work {
+            if work.request_digest != request_digest {
+                return Err(PublicationError::Conflict);
+            }
+            if work.state == "committed" {
+                return Ok(MissingObjects { hashes: Vec::new() });
+            }
+            if work.state != "prepared" {
+                return Err(PublicationError::Conflict);
+            }
+            let encoded = encode_existing_publication_bundle(manifest, &work.objects)?;
+            let object = work
+                .objects
+                .iter()
+                .find(|object| object.kind == "publication_manifest")
+                .ok_or_else(|| {
+                    PublicationError::Storage("prepared manifest allocation is missing".into())
+                })?;
+            (
+                encoded,
+                if object.state == "allocated" {
+                    Some(object.id.clone())
+                } else {
+                    None
+                },
+            )
+        } else {
+            let operation_id = OperationId::new(hex::encode(crate::auth::random_bytes(16)))
+                .map_err(|error| PublicationError::Storage(error.to_string()))?;
+            let now = UnixMillis::now();
+            let bundle = encode_publication_bundle(&document_id, &operation_id, manifest, now)?;
+            let object = bundle
+                .allocations
+                .iter()
+                .find(|object| {
+                    object.kind == crate::storage::catalog::ObjectKind::PublicationManifest
+                })
+                .ok_or_else(|| {
+                    PublicationError::Storage("encoded manifest allocation is missing".into())
+                })?
+                .id
+                .clone();
+            let lookup = document_id.clone();
+            let generation = catalog.execute_catalog(128, move |catalog| {
+                catalog.with_connection(|db| db.query_row(
+                    "SELECT source_generation FROM documents WHERE id=?1 AND status='active'",
+                    [lookup.as_str()], |row| row.get::<_,i64>(0)).map_err(crate::storage::catalog::CatalogError::from))
+            }).await.map_err(|error| catalog_publication_error(error.into()))?;
+            let identity = PublicationIdentity {
+                publication_id: manifest.publication_id.clone(),
+                published_at: manifest.published_at.clone(),
+                publisher: manifest.publisher.clone(),
+            };
+            let input = V2OperationInput {
+                scope:OperationScope::Document(document_id.clone()),
+                actor_key:crate::storage::catalog::publication_actor_key(&actor).map_err(catalog_publication_error)?,
+                request_key:request_id.to_owned(),kind:OperationKind::DisplayPublish,request_digest,
+                plan_json:json!({"version":1,"identity":identity,"expected_publication_id":expected_publication_id}).to_string(),
+                expected_document_generation:Some(generation),conversation_id:None,execution_epoch:None,
+                work_expires_at:Some(UnixMillis(now.0.checked_add(900_000).ok_or(PublicationError::TooLarge)?)),
+            };
+            let limits = V2AdmissionLimits {
+                owner_bytes: store.config.storage.per_owner,
+                deployment_bytes: store.config.storage.total,
+                owner_documents: 0,
+            };
+            let allocations = bundle.allocations;
+            catalog
+                .execute_catalog(allocations.len().saturating_mul(512), move |catalog| {
+                    catalog.prepare_publication_bundle(&input, &allocations, &actor, limits)
+                })
+                .await
+                .map_err(|error| catalog_publication_error(error.into()))?;
+            (bundle.manifest, Some(object))
+        };
+        if let Some(object) = manifest_object {
+            let writer = crate::storage::v2_catalog::V2ObjectWriter::new(
+                catalog.clone(),
+                self.blobs.clone(),
+            );
+            let object = crate::storage::blob::ObjectId::parse(object.as_str().to_owned())
+                .map_err(|error| PublicationError::Storage(error.to_string()))?;
+            writer
+                .write_allocated(storage_id, object, manifest_bytes, "application/json")
+                .await
+                .map_err(PublicationError::Storage)?;
+        }
+        let work = self
+            .immutable_work(storage_id, request_id)
+            .await?
+            .ok_or(PublicationError::Missing)?;
+        let hashes = work
+            .objects
+            .iter()
+            .filter(|object| object.kind != "publication_manifest" && object.state != "available")
+            .map(|object| object.digest.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(MissingObjects { hashes })
+    }
+
+    async fn prepared_manifest_bytes(
+        &self,
+        work: &crate::storage::catalog::PublicationWork,
+    ) -> Result<Vec<u8>, PublicationError> {
+        let object = work
+            .objects
+            .iter()
+            .find(|object| object.kind == "publication_manifest")
+            .ok_or(PublicationError::Missing)?;
+        if object.state != "available"
+            || work.lease_expires_at <= crate::storage::catalog::UnixMillis::now().0
+        {
+            return Err(PublicationError::Conflict);
+        }
+        let body = self.blobs.get(&object.storage_key).await?;
+        if body.len() > MAX_MANIFEST_BYTES
+            || object.byte_length != Some(body.len() as i64)
+            || object.digest != hex::encode(Sha256::digest(&body))
+        {
+            return Err(PublicationError::Storage(
+                "prepared manifest integrity check failed".into(),
+            ));
+        }
+        let envelope: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|error| PublicationError::Storage(error.to_string()))?;
+        if envelope.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+            return Err(PublicationError::Storage(
+                "unsupported publication manifest version".into(),
+            ));
+        }
+        let manifest: PublicationManifest = serde_json::from_value(envelope)
+            .map_err(|error| PublicationError::Storage(error.to_string()))?;
+        validate_manifest(&manifest)?;
+        Ok(body)
+    }
+
+    async fn stage_immutable(
+        &self,
+        storage_id: &str,
+        request_id: &str,
+        digest: &str,
+        compressed: bool,
+        payload: &[u8],
+        mime: &str,
+    ) -> Result<PublicationObject, PublicationError> {
+        validate_hash(digest)?;
+        let work = self
+            .immutable_work(storage_id, request_id)
+            .await?
+            .ok_or(PublicationError::Missing)?;
+        if work.state != "prepared" {
+            return Err(PublicationError::Conflict);
+        }
+        let bytes = self.prepared_manifest_bytes(&work).await?;
+        let manifest: PublicationManifest = serde_json::from_slice(&bytes)
+            .map_err(|error| PublicationError::Storage(error.to_string()))?;
+        let metadata = std::iter::once(&manifest.html)
+            .chain(manifest.assets.iter().map(|asset| &asset.object))
+            .find(|object| object.sha256 == digest && object.mime == mime)
+            .cloned()
+            .ok_or_else(|| {
+                PublicationError::Invalid("object is not in prepared manifest".into())
+            })?;
+        let body = decode_bounded(payload, compressed, metadata.bytes)?;
+        if body.len() != metadata.bytes || hex::encode(Sha256::digest(&body)) != digest {
+            return Err(PublicationError::Invalid(
+                "publication object digest or length differs".into(),
+            ));
+        }
+        let catalog = self
+            .store
+            .as_ref()
+            .and_then(|store| store.catalog.as_ref())
+            .ok_or_else(|| PublicationError::Storage("durable catalog required".into()))?;
+        let writer =
+            crate::storage::v2_catalog::V2ObjectWriter::new(catalog.clone(), self.blobs.clone());
+        for object in work
+            .objects
+            .iter()
+            .filter(|object| object.kind != "publication_manifest" && object.digest == digest)
+        {
+            if object.state == "available" {
+                continue;
+            }
+            if object.state != "allocated" || object.reserved_bytes != body.len() as i64 {
+                return Err(PublicationError::Conflict);
+            }
+            let id = crate::storage::blob::ObjectId::parse(object.id.as_str().to_owned())
+                .map_err(|error| PublicationError::Storage(error.to_string()))?;
+            writer
+                .write_allocated(storage_id, id, body.clone(), mime)
+                .await
+                .map_err(PublicationError::Storage)?;
+        }
+        Ok(metadata)
+    }
+
+    async fn activate_immutable(
+        &self,
+        storage_id: &str,
+        request_id: &str,
+        expected: &str,
+        manifest: &PublicationManifest,
+    ) -> Result<(), PublicationError> {
+        validate_manifest(manifest)?;
+        let mut work = self
+            .immutable_work(storage_id, request_id)
+            .await?
+            .ok_or(PublicationError::Missing)?;
+        if work.request_digest != publication_request_digest(expected, manifest)? {
+            return Err(PublicationError::Conflict);
+        }
+        if work.state == "committed" {
+            return Ok(());
+        }
+        if work.state != "prepared" {
+            return Err(PublicationError::Conflict);
+        }
+        let bytes = self.prepared_manifest_bytes(&work).await?;
+        if encode_existing_publication_bundle(manifest, &work.objects)? != bytes {
+            return Err(PublicationError::Conflict);
+        }
+        for object in &work.objects {
+            if object.state != "available" {
+                return Err(PublicationError::Missing);
+            }
+            let body = self.blobs.get(&object.storage_key).await?;
+            if object.byte_length != Some(body.len() as i64)
+                || object.digest != hex::encode(Sha256::digest(&body))
+            {
+                return Err(PublicationError::Storage(
+                    "publication object integrity check failed".into(),
+                ));
+            }
+            // Renew between bounded reads; final SQL checks the surviving leases again.
+            self.immutable_work(storage_id, request_id)
+                .await?
+                .ok_or(PublicationError::Missing)?;
+        }
+        work = self
+            .immutable_work(storage_id, request_id)
+            .await?
+            .ok_or(PublicationError::Missing)?;
+        let descriptor = work
+            .objects
+            .iter()
+            .find(|object| object.kind == "publication_manifest")
+            .ok_or(PublicationError::Missing)?
+            .id
+            .clone();
+        let catalog = self
+            .store
+            .as_ref()
+            .and_then(|store| store.catalog.as_ref())
+            .ok_or_else(|| PublicationError::Storage("durable catalog required".into()))?;
+        let document = crate::storage::catalog::DocumentId::new(storage_id)
+            .map_err(|error| PublicationError::Invalid(error.to_string()))?;
+        let expected = if expected.is_empty() {
+            None
+        } else {
+            Some(expected.to_owned())
+        };
+        let publication_id = manifest.publication_id.clone();
+        let result = json!({"version":1,"publication_id":manifest.publication_id,
+            "source_sha256":manifest.source_sha256,"bundle_sha256":manifest.bundle_sha256})
+        .to_string();
+        catalog
+            .execute_catalog(bytes.len(), move |catalog| {
+                let now = crate::storage::catalog::UnixMillis::now();
+                let proof = catalog.verify_v2_publication_bundle_bytes(
+                    &document,
+                    &work.operation_id,
+                    &descriptor,
+                    &bytes,
+                    now,
+                )?;
+                catalog.activate_v2_publication_verified(
+                    &proof,
+                    expected.as_deref(),
+                    &publication_id,
+                    now,
+                    &result,
+                )
+            })
+            .await
+            .map_err(|error| catalog_publication_error(error.into()))
+    }
+
+    async fn immutable_work(
+        &self,
+        storage_id: &str,
+        request_id: &str,
+    ) -> Result<Option<crate::storage::catalog::PublicationWork>, PublicationError> {
+        if crate::util::request_key_timestamp(request_id).is_none() {
+            return Err(PublicationError::Invalid(
+                "publication request key must use the v2 format".into(),
+            ));
+        }
+        let store = self.store.as_ref().ok_or_else(|| {
+            PublicationError::Storage("durable publication store required".into())
+        })?;
+        let catalog = store
+            .catalog
+            .as_ref()
+            .ok_or_else(|| PublicationError::Storage("durable catalog required".into()))?;
+        let actor = self.actor.clone().ok_or(PublicationError::Denied)?;
+        let document = crate::storage::catalog::DocumentId::new(storage_id)
+            .map_err(|error| PublicationError::Invalid(error.to_string()))?;
+        let request = request_id.to_owned();
+        let work = catalog
+            .execute_catalog(4096, move |catalog| {
+                catalog.publication_work(
+                    &document,
+                    &request,
+                    &actor,
+                    crate::storage::catalog::UnixMillis::now(),
+                )
+            })
+            .await
+            .map_err(|error| catalog_publication_error(error.into()))?;
+        if work.is_none() {
+            let issued = crate::util::request_key_timestamp(request_id)
+                .ok_or_else(|| PublicationError::Invalid("invalid retry key".into()))?;
+            let now = crate::storage::catalog::UnixMillis::now().0;
+            if issued < now.saturating_sub(900_000) {
+                return Err(PublicationError::Expired);
+            }
+            if issued > now.saturating_add(60_000) {
+                return Err(PublicationError::Invalid(
+                    "retry key is too far in the future".into(),
+                ));
+            }
+        }
+        Ok(work)
+    }
+
+    /// Stable server attribution is separate from both the retry key and the
+    /// physical manifest. It remains replayable after superseded bytes expire.
+    pub(super) async fn prepared_identity(
+        &self,
+        storage_id: &str,
+        request_id: &str,
+    ) -> Result<Option<PublicationIdentity>, PublicationError> {
+        let Some(work) = self.immutable_work(storage_id, request_id).await? else {
+            return Ok(None);
+        };
+        let identity =
+            work.plan.get("identity").cloned().ok_or_else(|| {
+                PublicationError::Storage("publication identity is missing".into())
+            })?;
+        serde_json::from_value(identity)
+            .map(Some)
+            .map_err(|error| PublicationError::Storage(error.to_string()))
+    }
+
     #[cfg(test)]
     pub fn new(blobs: Arc<dyn BlobStore>) -> Self {
         Self {
@@ -813,6 +1287,17 @@ impl PublicationStore {
     ) -> Result<MissingObjects, PublicationError> {
         let lock = publication_lock(storage_id);
         let _guard = lock.lock().await;
+        if self.store.is_some() {
+            return self
+                .prepare_immutable(
+                    storage_id,
+                    request_id,
+                    expected_publication_id,
+                    manifest,
+                    max_total,
+                )
+                .await;
+        }
         validate_request_id(request_id)?;
         validate_manifest(manifest)?;
         if manifest.publication_id != request_id {
@@ -1030,6 +1515,18 @@ impl PublicationStore {
     ) -> Result<PublicationObject, PublicationError> {
         let lock = publication_lock(storage_id);
         let _guard = lock.lock().await;
+        if self.store.is_some() {
+            return self
+                .stage_immutable(
+                    storage_id,
+                    request_id,
+                    expected_sha256,
+                    compressed,
+                    payload,
+                    mime,
+                )
+                .await;
+        }
         validate_hash(expected_sha256)?;
         validate_request_id(request_id)?;
         let is_html = mime == "text/html";
@@ -1231,6 +1728,11 @@ impl PublicationStore {
     ) -> Result<(), PublicationError> {
         let lock = publication_lock(storage_id);
         let _guard = lock.lock().await;
+        if self.store.is_some() {
+            return self
+                .activate_immutable(storage_id, request_id, expected_publication_id, manifest)
+                .await;
+        }
         validate_manifest(manifest)?;
         validate_request_id(request_id)?;
         if manifest.publication_id != request_id {
@@ -1532,6 +2034,7 @@ pub(super) fn publication_error(error: PublicationError) -> Reply {
         PublicationError::Missing => 404,
         PublicationError::Conflict => 409,
         PublicationError::TooLarge => 413,
+        PublicationError::Expired => 410,
         PublicationError::Quota => 507,
         PublicationError::Denied => 403,
         PublicationError::Invalid(_) => 400,
@@ -1552,7 +2055,14 @@ fn catalog_publication_error(error: crate::storage::catalog::CatalogError) -> Pu
     match error.refusal() {
         CatalogRefusal::OwnerBytes | CatalogRefusal::DeploymentBytes => PublicationError::Quota,
         CatalogRefusal::ActorRights => PublicationError::Denied,
-        _ => PublicationError::Storage(error.to_string()),
+        _ => match error {
+            crate::storage::catalog::CatalogError::Invalid(message) => {
+                PublicationError::Invalid(message)
+            }
+            crate::storage::catalog::CatalogError::Conflict(_) => PublicationError::Conflict,
+            crate::storage::catalog::CatalogError::NotFound => PublicationError::Missing,
+            other => PublicationError::Storage(other.to_string()),
+        },
     }
 }
 
@@ -1777,6 +2287,90 @@ mod tests {
             Arc::new(crate::storage::blob::FsStore::new(directory.path(), false));
         let store = PublicationStore::new(blobs.clone());
         (directory, blobs, store)
+    }
+
+    #[tokio::test]
+    async fn immutable_publication_upload_activate_replay_and_revoke() {
+        use crate::storage::catalog::Catalog;
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = Arc::new(Catalog::open_in_memory().unwrap());
+        catalog.with_connection(|db| {
+            db.execute_batch("INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,status,session_generation,plan,created_at,last_seen_at)
+                VALUES('owner','registered','github','1','owner','Owner','active','session','default',0,0);
+                INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path)
+                VALUES('doc','doc','owner','owned','Title','title','active',0,0,'markdown','main.md');
+                UPDATE accounts SET document_count=1 WHERE id='owner';
+                UPDATE server_state SET document_count=1 WHERE id=1;")?;
+            Ok(())
+        }).unwrap();
+        let blobs: Arc<dyn BlobStore> =
+            Arc::new(crate::storage::blob::FsStore::new(directory.path(), false));
+        let document_store = Arc::new(
+            crate::document::store::Store::open_with_catalog(
+                blobs.clone(),
+                Arc::new(crate::config::Configuration::default()),
+                catalog.clone(),
+            )
+            .await
+            .unwrap(),
+        );
+        let store = PublicationStore::for_store(document_store).with_actor(
+            crate::document::store::MutationActor {
+                account_id: "owner".into(),
+                owner_key: String::new(),
+                session_generation: "session".into(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        );
+        let key = crate::util::new_request_key();
+        let html = b"<h1>Durable publication</h1>";
+        let manifest = test_manifest(&hex::encode(crate::auth::random_bytes(16)), html);
+        assert_eq!(
+            store
+                .prepare("doc", &key, "", &manifest, MAX_STAGED_BYTES)
+                .await
+                .unwrap()
+                .hashes,
+            vec![manifest.html.sha256.clone()]
+        );
+        assert!(matches!(
+            store.activate("doc", &key, "", &manifest).await,
+            Err(PublicationError::Missing)
+        ));
+        store
+            .stage_object("doc", &key, &manifest.html.sha256, false, html, "text/html")
+            .await
+            .unwrap();
+        store.activate("doc", &key, "", &manifest).await.unwrap();
+        assert_eq!(
+            store.current("doc").await.unwrap().unwrap().publication_id,
+            manifest.publication_id
+        );
+        store.activate("doc", &key, "", &manifest).await.unwrap();
+        assert!(store
+            .prepare("doc", &key, "", &manifest, MAX_STAGED_BYTES)
+            .await
+            .unwrap()
+            .hashes
+            .is_empty());
+        assert!(catalog.audit_v2_counters().unwrap());
+        assert!(blobs.list("publications/").await.unwrap().is_empty());
+        catalog
+            .with_connection(|db| {
+                db.execute(
+                    "UPDATE accounts SET session_generation='revoked' WHERE id='owner'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            store.activate("doc", &key, "", &manifest).await,
+            Err(PublicationError::Denied)
+        );
     }
 
     #[test]
