@@ -285,52 +285,10 @@ fn local_catalog_store(
     (blobs, catalog)
 }
 
-/// Stage a publication exactly as the production room does: durable text/tree
-/// objects and the checkpoint descriptor are written before the caller commits
-/// the catalogue receipt.
-async fn stage_room_publication(
-    store: Arc<store::Store>,
-    blobs: Arc<dyn BlobStore>,
-    config: Arc<Configuration>,
-    slug: &str,
-    source: &str,
-) -> String {
-    let rooms = crate::room::RoomSet::new(blobs, config);
-    // This helper creates a fresh RoomSet for each publication phase.  Model
-    // the local production process boundary with the deployment lock, so the
-    // first phase does not leave a legacy per-room lease that makes the next
-    // phase look like a competing writer.  The lock is held only for this
-    // phase and is released when the helper's RoomSet is dropped.
-    let objects = std::path::PathBuf::from(rooms.blobs.describe());
-    if objects.file_name().is_some_and(|name| name == "objects") {
-        if let Some(root) = objects.parent() {
-            let lock = crate::server::serve::acquire_writer_lock(&root.join("state/writer.lock"))
-                .expect("local publication phase owns the deployment writer lock");
-            rooms.attach_deployment_lock(lock);
-        }
-    }
-    rooms.attach_store(store);
-    let room = rooms.get(slug).await;
-    let mut publication_token = room.reserve_publication_checkpoint().unwrap();
-    room.set_main_file(source, "markdown", "main.md")
-        .await
-        .unwrap();
-    let sha = room
-        .checkpoint_publication_now("cli", "alice", &mut publication_token)
-        .await
-        .unwrap()
-        .unwrap();
-    // This helper models the checkpoint staging boundary only; callers test
-    // receipt recovery separately, so keep the admitted token charged.
-    publication_token.commit();
-    sha
-}
-
-/// Production publication receipts hide an admitted row until its staged
-/// checkpoint is committed, and a retry after reopening reuses the same
-/// durable request rather than creating a second publication.
+/// A catalogue-backed source write uses one typed source operation.  Its
+/// terminal receipt and checkpoint remain readable after reopening the store.
 #[tokio::test]
-async fn catalog_publication_receipt_retries_and_commits_after_reopen() {
+async fn catalog_source_receipt_retries_after_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let config = Arc::new(Configuration::default());
     let (blobs, catalog) = local_catalog_store(&dir);
@@ -352,68 +310,109 @@ async fn catalog_publication_receipt_retries_and_commits_after_reopen() {
         )
         .await
         .unwrap();
-    let digest = "a".repeat(64);
-    let request_id = store
-        .prepare_publication("receipt", &digest, "source_publish", None)
-        .await
+    assert!(store.get("receipt").await.is_some());
+    let storage_id = entry.storage_id.clone();
+    let (operation_id, actor_key, request_key, request_digest, result_json, operation_count):
+        (String, String, String, String, String, i64) = catalog
+        .with_connection(|connection| {
+            connection.query_row(
+                    "SELECT id,actor_key,request_key,request_digest,result_json,
+                            (SELECT count(*) FROM operations)
+                     FROM operations
+                     WHERE document_id=?1 AND kind='source_publish'
+                     ORDER BY created_at DESC,id DESC LIMIT 1",
+                    [&storage_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
         .unwrap();
-    assert!(store.get("receipt").await.is_none());
-    assert!(store.pending_publication("receipt").await.is_some());
-    let staged_sha = stage_room_publication(
-        store.clone(),
-        blobs.clone(),
-        config.clone(),
-        "receipt",
-        "source",
-    )
-    .await;
-    assert_eq!(staged_sha.len(), 64);
     drop(store);
     drop(catalog);
 
-    let reopened_catalog =
-        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
-    let reopened = Arc::new(
-        store::Store::open_with_catalog(blobs, config, reopened_catalog.clone())
-            .await
-            .unwrap(),
+    let reopened_catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap(),
     );
-    // Startup resumes the exact staged receipt; a repeated commit is an
-    // idempotent no-op after that durable transition.
-    reopened
-        .commit_publication("receipt", &staged_sha)
+    let reopened = store::Store::open_with_catalog(blobs, config, reopened_catalog.clone())
         .await
         .unwrap();
-    assert!(reopened.get("receipt").await.is_some());
-    let document = reopened_catalog.document("receipt").unwrap().unwrap();
-    assert_eq!(document.status, "active");
-    assert!(document.pending_publication.is_none());
-    let operation = reopened_catalog
-        .operation(&entry.storage_id, &request_id)
-        .unwrap()
+
+    // Re-submit the exact request after reopening.  The terminal receipt is
+    // the idempotency result; no fresh request or operation may be created.
+    let retry = reopened_catalog
+        .prepare_v2_operation(
+            &crate::storage::catalog::V2OperationInput {
+                scope: crate::storage::catalog::OperationScope::Document(
+                    crate::storage::catalog::DocumentId::new(storage_id.clone()).unwrap(),
+                ),
+                actor_key,
+                request_key,
+                kind: crate::storage::catalog::OperationKind::SourcePublish,
+                request_digest,
+                plan_json: r#"{"version":2,"effect":"source_publish"}"#.into(),
+                expected_document_generation: None,
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: None,
+            },
+            crate::storage::catalog::UnixMillis::now(),
+        )
         .unwrap();
-    assert_eq!(operation.status, "committed");
+    assert_eq!(retry.id.as_str(), operation_id);
+    assert_eq!(retry.state, "committed");
+    let (replayed_result, replayed_count): (String, i64) = reopened_catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT result_json,(SELECT count(*) FROM operations)
+                     FROM operations WHERE id=?1",
+                    [&operation_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(replayed_result, result_json);
+    assert_eq!(replayed_count, operation_count);
+    let reopened_entry = reopened.get("receipt").await.unwrap();
+    assert_eq!(reopened_entry.sha, entry.sha);
+    let (kind, state): (String, String) = reopened_catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT kind,state FROM operations
+                     WHERE document_id=?1 ORDER BY created_at DESC,id DESC LIMIT 1",
+                    [&storage_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(kind, "source_publish");
+    assert_eq!(state, "committed");
+    assert!(reopened_catalog
+        .document("receipt")
+        .unwrap()
+        .unwrap()
+        .pending_publication
+        .is_none());
 }
 
-/// A native source receipt is not safe to roll forward when one of its
-/// encoded chunks disappeared. Startup must leave the receipt pending so a
-/// later repair/retry can decide its fate; it must never fall back to a
-/// legacy whole-file object with the same digest.
+/// Removing one physical source chunk must never make startup invent a
+/// legacy whole-file object or silently replace the durable checkpoint.
 #[tokio::test]
-async fn catalog_reopen_keeps_native_publication_pending_when_chunk_missing() {
+async fn catalog_reopen_keeps_native_source_checkpoint_when_chunk_missing() {
     let dir = tempfile::tempdir().unwrap();
     let config = Arc::new(Configuration::default());
     let (blobs, catalog) = local_catalog_store(&dir);
-    let store = Arc::new(
-        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
-            .await
-            .unwrap(),
-    );
+    let store = store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+        .await
+        .unwrap();
     store
         .put_as_actor(
             store::Publication {
                 slug: "native-missing".into(),
-                source: "initial".into(),
+                source: "native source history\n".repeat(4096),
                 owner: "alice".into(),
                 peak_bytes: Some(1 << 20),
                 ..Default::default()
@@ -422,26 +421,7 @@ async fn catalog_reopen_keeps_native_publication_pending_when_chunk_missing() {
         )
         .await
         .unwrap();
-    store
-        .prepare_publication("native-missing", &"a".repeat(64), "source_publish", None)
-        .await
-        .unwrap();
-    let source = "native source history\n".repeat(4096);
-    let staged_sha = stage_room_publication(
-        store.clone(),
-        blobs.clone(),
-        config.clone(),
-        "native-missing",
-        &source,
-    )
-    .await;
     let document = catalog.document("native-missing").unwrap().unwrap();
-    let request_id = document.pending_publication.unwrap();
-    let operation = catalog
-        .operation(&document.storage_id, &request_id)
-        .unwrap()
-        .unwrap();
-    let _ = operation;
     let missing_chunk: String = catalog
         .with_connection(|connection| {
             connection
@@ -459,85 +439,139 @@ async fn catalog_reopen_keeps_native_publication_pending_when_chunk_missing() {
     drop(store);
     drop(catalog);
 
-    let reopened_catalog =
-        Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let reopened_catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap(),
+    );
     let reopened = store::Store::open_with_catalog(blobs, config, reopened_catalog.clone())
         .await
         .unwrap();
-    assert!(reopened
-        .pending_publication("native-missing")
-        .await
-        .is_some());
-    assert!(reopened_catalog
-        .checkpoint("native-missing", &staged_sha)
+    assert!(reopened.get("native-missing").await.is_some());
+    assert!(reopened.read_source("native-missing").await.is_err());
+    let reopened_document = reopened_catalog
+        .document("native-missing")
         .unwrap()
-        .is_none());
+        .unwrap();
+    assert_eq!(reopened_document.sha, document.sha);
+    assert!(reopened_document.pending_publication.is_none());
 }
 
-/// Replacement publication uses the same pending slot, so the previous head
-/// remains the only visible value until the new checkpoint commits.
+/// A second typed source operation replaces the current source checkpoint
+/// only after its complete closure has settled.
 #[tokio::test]
-async fn catalog_replacement_receipt_hides_old_head_until_commit() {
+async fn catalog_source_replacement_commits_a_new_head() {
     let dir = tempfile::tempdir().unwrap();
     let config = Arc::new(Configuration::default());
     let (blobs, catalog) = local_catalog_store(&dir);
-    let store = Arc::new(
-        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
-            .await
-            .unwrap(),
-    );
-    let entry = store
+    let store = store::Store::open_with_catalog(blobs, config, catalog.clone())
+        .await
+        .unwrap();
+    let old = store
         .put_as_actor(
             store::Publication {
                 slug: "replace-receipt".into(),
                 source: "old".into(),
                 owner: "alice".into(),
-                peak_bytes: Some(1 << 20),
                 ..Default::default()
             },
             catalog_fixture_actor(),
         )
         .await
         .unwrap();
-    store
-        .prepare_publication("replace-receipt", &store::digest_of("old"), "source_publish", None)
+    let new = store
+        .put_as_actor(
+            store::Publication {
+                slug: "replace-receipt".into(),
+                source: "new".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
-    let old_head = stage_room_publication(
-        store.clone(),
-        blobs.clone(),
-        config.clone(),
-        "replace-receipt",
-        "old",
+    assert_ne!(old.sha, new.sha);
+    assert_eq!(store.get("replace-receipt").await.unwrap().sha, new.sha);
+    let document = catalog.document("replace-receipt").unwrap().unwrap();
+    assert_eq!(document.sha, new.sha);
+    let source_operations: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT count(*) FROM operations
+                     WHERE document_id=?1 AND kind='source_publish' AND state='committed'",
+                    [&document.storage_id],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(source_operations, 2);
+}
+
+/// A failed v2 object write must leave the prior source head readable.  This
+/// exercises the physical writer failure boundary rather than the removed
+/// legacy publication staging API.
+#[tokio::test]
+async fn catalog_source_write_failure_keeps_previous_head_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Arc::new(Configuration::default());
+    let raw: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(
+        dir.path().join("objects"),
+        true,
+    ));
+    let hooked = super::room::HookStore::new(raw);
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap(),
+    );
+    catalog
+        .upsert_account(&catalog_fixture_account("github:alice", "alice"))
+        .unwrap();
+    let store = store::Store::open_with_catalog(
+        hooked.clone(),
+        config,
+        catalog.clone(),
     )
-    .await;
-    store
-        .commit_publication("replace-receipt", &old_head)
+    .await
+    .unwrap();
+    let old = store
+        .put_as_actor(
+            store::Publication {
+                slug: "faulted-replacement".into(),
+                source: "previous source".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
-    assert!(store.get("replace-receipt").await.is_some());
-    let request_id = store
-        .prepare_publication("replace-receipt", &"b".repeat(64), "source_publish", None)
-        .await
-        .unwrap();
-    store
-        .reserve_publication_peak("replace-receipt", 2 << 20)
-        .await
-        .unwrap();
-    assert!(store.get("replace-receipt").await.is_none());
-    let new_head =
-        stage_room_publication(store.clone(), blobs, config, "replace-receipt", "new").await;
-    store
-        .commit_publication("replace-receipt", &new_head)
-        .await
-        .unwrap();
-    let visible = store.get("replace-receipt").await.unwrap();
-    assert_eq!(visible.sha, new_head);
-    let operation = catalog
-        .operation(&entry.storage_id, &request_id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(operation.result, new_head);
+    let document = catalog.document("faulted-replacement").unwrap().unwrap();
+    *hooked.fail.lock().unwrap() = Some(format!(
+        "v2/documents/{}/objects/",
+        document.storage_id
+    ));
+
+    let failed = store
+        .put_as_actor(
+            store::Publication {
+                slug: "faulted-replacement".into(),
+                source: "replacement source".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
+        .await;
+    assert!(failed.is_err());
+    assert_eq!(store.get("faulted-replacement").await.unwrap().sha, old.sha);
+    assert_eq!(
+        catalog
+            .document("faulted-replacement")
+            .unwrap()
+            .unwrap()
+            .sha,
+        old.sha
+    );
 }
 
 /// SQLite admission is the authority even when two Store instances race on
@@ -594,8 +628,6 @@ async fn catalog_concurrent_admission_is_atomic() {
     );
 }
 
-/// Replacement admission charges the conservative high-water reservation and
-/// leaves the old row untouched when the larger replacement is refused.
 #[tokio::test]
 async fn catalog_replacement_preserves_accounting_on_quota_failure() {
     let dir = tempfile::tempdir().unwrap();
