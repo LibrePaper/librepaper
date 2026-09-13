@@ -964,7 +964,7 @@ fn fresh_schema_enables_foreign_keys_and_creates_all_tables() {
             Ok(rows.map(Result::unwrap).collect::<Vec<_>>())
         })
         .unwrap();
-    let expected = [
+    let mut expected = [
         "accounts",
         "documents",
         "grants",
@@ -978,6 +978,7 @@ fn fresh_schema_enables_foreign_keys_and_creates_all_tables() {
         "operations",
         "server_state",
     ];
+    expected.sort_unstable();
     let actual = tables
         .iter()
         .map(|(name, _)| name.as_str())
