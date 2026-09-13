@@ -137,18 +137,8 @@ impl Server {
         if !who.at_least(Role::Editor) {
             return write_json(403, &json!({"error": "edit access changed"}));
         }
-        let size = body.len() as i64;
-        // The owner's quota and the deployment's, which a figure counts
-        // against exactly as a text does. `room_for` is what this document may
-        // occupy in all; what it already occupies is its entry's size.
-        if let Some(room) = self.store.room_for(slug).await {
-            if entry.size + size > room {
-                return write_json(
-                    507,
-                    &json!({"error": "your storage quota is used up; delete a document first"}),
-                );
-            }
-        }
+        // Atomic object admission accounts for physical bytes and recognizes
+        // deduplicated uploads even when the owner's quota is full.
         let room = match self.rooms.try_get(slug).await {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),

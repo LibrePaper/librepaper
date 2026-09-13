@@ -2,6 +2,13 @@
 use super::*;
 use serde_json::{json, Value};
 
+fn operation_key(label: &str) -> String {
+    use sha2::{Digest, Sha256};
+    static ISSUED: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    let issued = ISSUED.get_or_init(crate::util::now_millis);
+    format!("v2.{issued}.{}", &hex::encode(Sha256::digest(label.as_bytes()))[..32])
+}
+
 fn request(method: &str, params: Value) -> Value {
     let mut params = params;
     params["_meta"] = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}});
@@ -68,7 +75,7 @@ async fn mcp_propose_apply_and_retry_have_one_effect_and_bound_authority() {
     .await;
     let range = &read["results"][0]["blocks"][0]["range_id"];
     assert!(range.is_string(), "{read}");
-    let args = json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":"proposal-1"},"patches":[{"range_id":range,"find":"😀 same","replacement":"A new sentence"}],"publish":"private"});
+    let args = json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":operation_key("proposal-1")},"patches":[{"range_id":range,"find":"😀 same","replacement":"A new sentence"}],"publish":"private"});
     let proposal = tool(&server.url, &slug, &edit, "document_propose", args.clone()).await;
     assert_eq!(proposal["status"], "committed", "{proposal}");
     let replay = tool(&server.url, &slug, &edit, "document_propose", args.clone()).await;
@@ -81,7 +88,7 @@ async fn mcp_propose_apply_and_retry_have_one_effect_and_bound_authority() {
         refused["error"]["code"], "operation_key_reused",
         "{refused}"
     );
-    let apply = json!({"candidate_id":proposal["candidate_id"],"operation":{"epoch":read["operation_epoch"],"id":"apply-1"}});
+    let apply = json!({"candidate_id":proposal["candidate_id"],"operation":{"epoch":read["operation_epoch"],"id":operation_key("apply-1")}});
     let applied = tool(&server.url, &slug, &edit, "document_apply", apply.clone()).await;
     assert_eq!(applied["status"], "committed", "{applied}");
     assert_eq!(
@@ -134,7 +141,7 @@ async fn mcp_atomic_suggestion_retry_and_conflicting_apply() {
     )
     .await;
     let matches = read["results"][0]["matches"].as_array().expect("matches");
-    let args = json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":"batch"},"patches":matches.iter().map(|r|json!({"range_id":r["range_id"],"replacement":"changed"})).collect::<Vec<_>>()});
+    let args = json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":operation_key("batch")},"patches":matches.iter().map(|r|json!({"range_id":r["range_id"],"replacement":"changed"})).collect::<Vec<_>>()});
     let proposal = tool(&server.url, &slug, &edit, "document_propose", args.clone()).await;
     assert_eq!(
         proposal["effects"].as_array().expect("effects").len(),
@@ -160,7 +167,7 @@ async fn mcp_atomic_suggestion_retry_and_conflicting_apply() {
         .set_source("Collaborator edit\n", "markdown")
         .await
         .expect("edit");
-    let result=tool(&server.url,&slug,&edit,"document_apply",json!({"candidate_id":proposal["candidate_id"],"operation":{"epoch":read["operation_epoch"],"id":"stale-apply"}})).await;
+    let result=tool(&server.url,&slug,&edit,"document_apply",json!({"candidate_id":proposal["candidate_id"],"operation":{"epoch":read["operation_epoch"],"id":operation_key("stale-apply")}})).await;
     assert_eq!(result["error"]["code"], "conflict", "{result}");
 }
 
@@ -319,9 +326,9 @@ async fn mcp_multi_file_candidate_is_atomic_and_hashes_the_full_tree() {
         json!({"queries":[{"kind":"source","path":"main.md"},{"kind":"source","path":"refs.bib"}]}),
     )
     .await;
-    let proposal=tool(&server.url,&slug,&key,"document_propose",json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":"multi"},"publish":"private","patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"See [@new].\n"},{"range_id":read["results"][1]["blocks"][0]["range_id"],"replacement":"@book{new, title={New}}\n"}]})).await;
+    let proposal=tool(&server.url,&slug,&key,"document_propose",json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":operation_key("multi")},"publish":"private","patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"See [@new].\n"},{"range_id":read["results"][1]["blocks"][0]["range_id"],"replacement":"@book{new, title={New}}\n"}]})).await;
     assert!(proposal["candidate_id"].is_string(), "{proposal}");
-    let applied=tool(&server.url,&slug,&key,"document_apply",json!({"candidate_id":proposal["candidate_id"],"operation":{"epoch":read["operation_epoch"],"id":"multi-apply"}})).await;
+    let applied=tool(&server.url,&slug,&key,"document_apply",json!({"candidate_id":proposal["candidate_id"],"operation":{"epoch":read["operation_epoch"],"id":operation_key("multi-apply")}})).await;
     assert_eq!(
         applied["source_revision_after"], proposal["source_revision"],
         "{applied}"
@@ -356,7 +363,7 @@ async fn mcp_accept_and_checkpoint_replay_retained_effects() {
         json!({"queries":[{"kind":"source"}]}),
     )
     .await;
-    let proposal=tool(&server.url,&slug,&key,"document_propose",json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":"accept-proposal"},"patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"find":"😀 same","replacement":"Accepted text"}]})).await;
+    let proposal=tool(&server.url,&slug,&key,"document_propose",json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":operation_key("accept-proposal")},"patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"find":"😀 same","replacement":"Accepted text"}]})).await;
     let id = proposal["effects"][0]["id"].clone();
     assert!(id.is_string(), "{proposal}");
     let thread = tool(
@@ -367,7 +374,7 @@ async fn mcp_accept_and_checkpoint_replay_retained_effects() {
         json!({"queries":[{"kind":"thread","id":id}]}),
     )
     .await;
-    let args = json!({"action":"accept","view_id":thread["view_id"],"comment_id":id,"expected_version":thread["results"][0]["thread"]["comment_version"],"operation":{"epoch":thread["operation_epoch"],"id":"accept-once"}});
+    let args = json!({"action":"accept","view_id":thread["view_id"],"comment_id":id,"expected_version":thread["results"][0]["thread"]["comment_version"],"operation":{"epoch":thread["operation_epoch"],"id":operation_key("accept-once")}});
     let accepted = tool(&server.url, &slug, &key, "document_comment", args.clone()).await;
     assert_eq!(accepted["status"], "committed", "{accepted}");
     let replay = tool(&server.url, &slug, &key, "document_comment", args).await;
@@ -388,7 +395,7 @@ async fn mcp_accept_and_checkpoint_replay_retained_effects() {
         after["results"][1]["thread"]["outcome"], "accepted",
         "{after}"
     );
-    let checkpoint = json!({"action":"checkpoint","view_id":after["view_id"],"operation":{"epoch":after["operation_epoch"],"id":"checkpoint-once"}});
+    let checkpoint = json!({"action":"checkpoint","view_id":after["view_id"],"operation":{"epoch":after["operation_epoch"],"id":operation_key("checkpoint-once")}});
     let first = tool(
         &server.url,
         &slug,
@@ -410,7 +417,7 @@ async fn mcp_captured_selection_and_independent_items_preserve_scope() {
     let key = editor_key(&server.url, &slug).await;
     let read=tool(&server.url,&slug,&key,"document_read",json!({"queries":[{"kind":"source","selection":{"path":"main.md","exact":"same","position":12}}]})).await;
     assert_eq!(read["results"][0]["blocks"][0]["source"], "same", "{read}");
-    let result=tool(&server.url,&slug,&key,"document_propose",json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":"independent"},"batch":"independent","patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"one"},{"range_id":"invalid","replacement":"two"}]})).await;
+    let result=tool(&server.url,&slug,&key,"document_propose",json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":operation_key("independent")},"batch":"independent","patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"one"},{"range_id":"invalid","replacement":"two"}]})).await;
     assert_eq!(result["items"][0]["status"], "committed", "{result}");
     assert_eq!(
         result["items"][1]["error"]["code"], "invalid_range",
@@ -505,7 +512,7 @@ async fn mcp_large_candidate_uses_authenticated_data_path_and_revision_bound_ren
         .attach(&slug, conversation, token, "user", 101, sender)
         .await
         .unwrap();
-    let args = json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":"large-render"},"patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"Improved paragraph."}],"validation":"compile","publish":"suggestions"});
+    let args = json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":operation_key("large-render")},"patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"Improved paragraph."}],"validation":"compile","publish":"suggestions"});
     let req = request(
         "tools/call",
         json!({"name":"document_propose","arguments":args}),
@@ -638,7 +645,7 @@ async fn mcp_cancel_pending_render_is_replayable_and_preserves_committed_outcome
         json!({"queries":[{"kind":"source"}]}),
     )
     .await;
-    let target = json!({"epoch":read["operation_epoch"],"id":"pending-render"});
+    let target = json!({"epoch":read["operation_epoch"],"id":operation_key("pending-render")});
     let args = json!({"view_id":read["view_id"],"operation":target,"patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"new text"}],"validation":"compile","publish":"suggestions"});
     let pending = tool(&server.url, &slug, &key, "document_propose", args.clone()).await;
     assert_eq!(
@@ -647,7 +654,7 @@ async fn mcp_cancel_pending_render_is_replayable_and_preserves_committed_outcome
     );
     let candidate = &pending["error"]["recovery"]["candidate_id"];
     assert!(candidate.is_string(), "{pending}");
-    let cancellation = json!({"action":"cancel","kind":"render","id":candidate,"target_operation":target,"operation":{"epoch":read["operation_epoch"],"id":"cancel-render"}});
+    let cancellation = json!({"action":"cancel","kind":"render","id":candidate,"target_operation":target,"operation":{"epoch":read["operation_epoch"],"id":operation_key("cancel-render")}});
     let first = tool(
         &server.url,
         &slug,
@@ -681,7 +688,7 @@ async fn mcp_cancel_pending_render_is_replayable_and_preserves_committed_outcome
     let retried = tool(&server.url, &slug, &key, "document_propose", args).await;
     assert_eq!(retried["status"], "cancel_requested", "{retried}");
     let mut altered = cancellation;
-    altered["target_operation"]["id"] = json!("different");
+    altered["target_operation"]["id"] = json!(operation_key("different"));
     let conflict = tool(&server.url, &slug, &key, "document_result", altered).await;
     assert!(conflict["error"].is_object(), "{conflict}");
     let fresh = tool(
@@ -696,10 +703,10 @@ async fn mcp_cancel_pending_render_is_replayable_and_preserves_committed_outcome
         .as_array()
         .unwrap()
         .is_empty());
-    let committed_key = json!({"epoch":read["operation_epoch"],"id":"committed-private"});
+    let committed_key = json!({"epoch":read["operation_epoch"],"id":operation_key("committed-private")});
     let committed = tool(&server.url, &slug, &key, "document_propose", json!({"view_id":read["view_id"],"operation":committed_key,"patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"new text"}],"publish":"private"})).await;
     assert_eq!(committed["status"], "committed");
-    let late = tool(&server.url, &slug, &key, "document_result", json!({"action":"cancel","kind":"operation","target_operation":committed_key,"operation":{"epoch":read["operation_epoch"],"id":"cancel-committed"}})).await;
+    let late = tool(&server.url, &slug, &key, "document_result", json!({"action":"cancel","kind":"operation","target_operation":committed_key,"operation":{"epoch":read["operation_epoch"],"id":operation_key("cancel-committed")}})).await;
     assert_eq!(late["status"], "already_committed", "{late}");
     assert_eq!(late["rollback"], false);
     assert_eq!(late["outcome"]["candidate_id"], committed["candidate_id"]);
@@ -717,37 +724,49 @@ async fn mcp_retention_expires_terminal_receipts_but_preserves_unresolved_eviden
     let slug = text(&doc, "slug");
     let catalog = server.instance.store.catalog.as_ref().unwrap();
     let storage_id = catalog.document(&slug).unwrap().unwrap().storage_id;
+    let now = crate::util::now_millis();
     catalog.with_connection(|db| {
-        for (id, status) in [("old-terminal", "committed"), ("old-pending", "prepared")] {
-            db.execute("INSERT INTO catalog_operations(storage_id,request_id,kind,request_digest,status,intent,result,created_at)
-                VALUES(?1,?2,'agent_apply','test',?3,'{}','{}',?4)", rusqlite::params![storage_id,id,status,crate::auth::now_unix()-8*86400])?;
+        for (id, actor, state) in [
+            ("old-terminal", "account:test", "committed"),
+            ("old-pending", "account:test", "prepared"),
+            ("other-pending", "account:other", "prepared"),
+        ] {
+            db.execute(
+                "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,result_json,created_at,updated_at,work_expires_at,receipt_expires_at,completed_at)
+                 VALUES(?1,?2,?3,?1,'agent_annotations',?4,?5,(SELECT writer_generation FROM server_state WHERE id=1),'{\"version\":2}','{\"version\":2}',0,0,?6,?7,CASE WHEN ?5='prepared' THEN NULL ELSE 0 END)",
+                rusqlite::params![id,storage_id,actor,"a".repeat(64),state,now+60_000,now-1],
+            )?;
         }
-        db.execute("INSERT INTO agent_cancellations(storage_id,target_request_id,cancel_request_id,request_digest,kind,target_id,status,result,created_at)
-            VALUES(?1,'old-pending','old-cancel','test','operation','old-pending','cancel_requested','{}',?2)", rusqlite::params![storage_id,crate::auth::now_unix()-8*86400])?;
+        for (id, actor, target) in [
+            ("old-cancel", "account:test", "old-pending"),
+            ("unrelated-cancel", "account:test", "other-pending"),
+        ] {
+            db.execute(
+                "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,result_json,created_at,updated_at,receipt_expires_at,target_request_key,completed_at)
+                 VALUES(?1,?2,?3,?1,'agent_cancel',?4,'committed',(SELECT writer_generation FROM server_state WHERE id=1),'{\"version\":2}','{\"version\":2}',0,0,?5,?6,0)",
+                rusqlite::params![id,storage_id,actor,"b".repeat(64),now-1,target],
+            )?;
+        }
         Ok(())
     }).unwrap();
-    catalog
-        .put_agent_object(
-            &slug,
-            "test-actor",
-            "maintenance-trigger",
-            "test",
-            b"bounded",
-            crate::auth::now_unix() + 60,
-        )
-        .unwrap();
-    assert!(catalog
-        .operation(&storage_id, "old-terminal")
-        .unwrap()
-        .is_none());
-    assert!(catalog
-        .operation(&storage_id, "old-pending")
-        .unwrap()
-        .is_some());
-    assert!(catalog
-        .agent_cancellation(&slug, "old-pending", "test-actor", "", "")
-        .unwrap()
-        .is_some());
+    use crate::storage::maintenance_v2::V2GcCatalog;
+    catalog.expire_prepared_operations(now, 256).await.unwrap();
+    let retained = catalog.with_connection(|db| {
+        let mut query = db.prepare("SELECT id FROM operations WHERE id IN ('old-terminal','old-pending','other-pending','old-cancel','unrelated-cancel') ORDER BY id")?;
+        let rows = query.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }).unwrap();
+    assert_eq!(retained, ["old-cancel", "old-pending", "other-pending"]);
+    // Once the protected target settles, the idle worker can retire the fence.
+    catalog.with_connection(|db| {
+        db.execute("UPDATE operations SET state='aborted',completed_at=?1,receipt_expires_at=?1 WHERE id='old-pending'", [now-1])?;
+        Ok(())
+    }).unwrap();
+    catalog.expire_prepared_operations(now, 256).await.unwrap();
+    let remains: i64 = catalog.with_connection(|db| {
+        Ok(db.query_row("SELECT count(*) FROM operations WHERE id IN ('old-cancel','old-pending')", [], |row| row.get(0))?)
+    }).unwrap();
+    assert_eq!(remains, 0);
 }
 
 #[tokio::test]
@@ -785,14 +804,14 @@ async fn mcp_replacement_runner_fences_old_epoch_without_affecting_external_agen
                 json!({"name":name,"arguments":args}),
             ))
     };
-    let proposed: Value = scoped(&old, "document_propose", json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":"runner-propose"},"patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"Runner edit\n"}],"publish":"private"}))
+    let proposed: Value = scoped(&old, "document_propose", json!({"view_id":read["view_id"],"operation":{"epoch":read["operation_epoch"],"id":operation_key("runner-propose")},"patches":[{"range_id":read["results"][0]["blocks"][0]["range_id"],"replacement":"Runner edit\n"}],"publish":"private"}))
         .send().await.unwrap().json().await.unwrap();
     let candidate = &proposed["result"]["structuredContent"]["candidate_id"];
     assert!(candidate.is_string(), "{proposed}");
     let fresh_epoch = catalog
         .issue_agent_execution_lease(&slug, conversation)
         .unwrap();
-    let args = json!({"candidate_id":candidate,"operation":{"epoch":read["operation_epoch"],"id":"runner-apply"}});
+    let args = json!({"candidate_id":candidate,"operation":{"epoch":read["operation_epoch"],"id":operation_key("runner-apply")}});
     let stale: Value = scoped(&old, "document_apply", args.clone())
         .send()
         .await
