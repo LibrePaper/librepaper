@@ -857,17 +857,22 @@ async fn heartbeat_stage_leases_pages(
     Err("stage-lease heartbeat capacity exceeded during bounded maintenance pass".into())
 }
 
-async fn blocking_catalog_call<T, F, Fut>(catalog: Arc<Catalog>, operation: F) -> Result<T, String>
+async fn bounded_catalog_call<T, F, Fut>(catalog: Arc<Catalog>, operation: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce(Arc<Catalog>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
 {
-    tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(operation(catalog))
-    })
-    .await
-    .map_err(|error| format!("catalogue maintenance task failed: {error}"))?
+    let handle = tokio::runtime::Handle::current();
+    let operation_catalog = Arc::clone(&catalog);
+    catalog
+        .execute_catalog(1024, move |catalog| {
+            handle
+                .block_on(operation(operation_catalog))
+                .map_err(crate::storage::catalog::CatalogError::Conflict)
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[async_trait]
@@ -876,17 +881,17 @@ impl V2GcCatalog for V2GcCatalogAdapter {
         heartbeat_stage_leases_pages(&self.catalog, now, limit).await
     }
     async fn expire_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2GcCatalog>::expire_leases(catalog.as_ref(), now, limit).await
         }).await
     }
     async fn expire_prepared_operations(&self, now: i64, limit: usize) -> Result<usize, String> {
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2GcCatalog>::expire_prepared_operations(catalog.as_ref(), now, limit).await
         }).await
     }
     async fn settle_completed_inflight(&self, limit: usize) -> Result<usize, String> {
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2GcCatalog>::settle_completed_inflight(catalog.as_ref(), limit).await
         }).await
     }
@@ -932,7 +937,7 @@ impl V2GcCatalog for V2GcCatalogAdapter {
                     let mut settle_record = record.clone();
                     settle_record.written = Some(written);
                     let catalog = Arc::clone(&self.catalog);
-                    if blocking_catalog_call(catalog, move |catalog| async move {
+                    if bounded_catalog_call(catalog, move |catalog| async move {
                         settle_completed_record(catalog.as_ref(), settle_record).await
                     })
                     .await
@@ -945,7 +950,7 @@ impl V2GcCatalog for V2GcCatalogAdapter {
                 Err(crate::storage::blob::BlobError::NotFound) => {
                     let cleanup_record = record.clone();
                     let catalog = Arc::clone(&self.catalog);
-                    if blocking_catalog_call(catalog, move |catalog| async move {
+                    if bounded_catalog_call(catalog, move |catalog| async move {
                         abort_failed_allocation(catalog.as_ref(), &cleanup_record)
                     })
                     .await
@@ -972,14 +977,14 @@ impl V2GcCatalog for V2GcCatalogAdapter {
         Ok(settled)
     }
     async fn claim_gc(&self, now: i64, limit: usize) -> Result<Vec<GcCandidate>, String> {
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2GcCatalog>::claim_gc(catalog.as_ref(), now, limit).await
         }).await
     }
     async fn settle_gc(&self, document_id: &str, object_id: &str, confirmed: bool, retry_at: i64) -> Result<i64, String> {
         let document_id = document_id.to_owned();
         let object_id = object_id.to_owned();
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2GcCatalog>::settle_gc(catalog.as_ref(), &document_id, &object_id, confirmed, retry_at).await
         }).await
     }
@@ -988,50 +993,50 @@ impl V2GcCatalog for V2GcCatalogAdapter {
 #[async_trait]
 impl V2RecoveryCatalog for V2GcCatalogAdapter {
     async fn establish_writer_generation(&self) -> Result<String, String> {
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::establish_writer_generation(catalog.as_ref()).await
         }).await
     }
     async fn prepared_allocations_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<PreparedAllocation>, String> {
         let after = after.map(str::to_owned);
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::prepared_allocations_page(catalog.as_ref(), after.as_deref(), limit).await
         }).await
     }
     async fn settle_allocation(&self, allocation: &PreparedAllocation, byte_length: u64, digest: &str) -> Result<(), String> {
         let allocation = allocation.clone();
         let digest = digest.to_owned();
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::settle_allocation(catalog.as_ref(), &allocation, byte_length, &digest).await
         }).await
     }
     async fn abort_absent_allocation(&self, allocation: &PreparedAllocation) -> Result<(), String> {
         let allocation = allocation.clone();
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::abort_absent_allocation(catalog.as_ref(), &allocation).await
         }).await
     }
     async fn prepared_operations_page(&self, after: Option<&str>, limit: usize) -> Result<Vec<PreparedOperation>, String> {
         let after = after.map(str::to_owned);
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::prepared_operations_page(catalog.as_ref(), after.as_deref(), limit).await
         }).await
     }
     async fn abort_unacknowledged_operation(&self, operation_id: &str) -> Result<(), String> {
         let operation_id = operation_id.to_owned();
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::abort_unacknowledged_operation(catalog.as_ref(), &operation_id).await
         }).await
     }
     async fn adopt_internal_operation(&self, operation: &PreparedOperation) -> Result<(), String> {
         let operation = operation.clone();
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::adopt_internal_operation(catalog.as_ref(), &operation).await
         }).await
     }
     async fn defer_uncertain_operation(&self, operation_id: &str) -> Result<(), String> {
         let operation_id = operation_id.to_owned();
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
+        bounded_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2RecoveryCatalog>::defer_uncertain_operation(catalog.as_ref(), &operation_id).await
         }).await
     }
@@ -2601,12 +2606,26 @@ mod aborted_inflight_tests {
         let report = run_gc_pass(&adapter, blobs.as_ref(), first_pass_now)
             .await
             .expect("aborted write is reclaimed");
-        assert_eq!(report.inflight_settled, 1);
+        assert!(report.inflight_settled <= 1);
         assert_eq!(report.objects_deleted, 0, "newly settled aborted bytes observe their grace period");
+        assert!(!inflight_active(namespace, document_id, object_id.as_str()));
+        let (state, gc_after): (String, Option<i64>) = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT state,gc_after FROM objects WHERE document_id=?1 AND id=?2",
+                        params![document_id, object_id.as_str()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("settled aborted object");
+        assert_eq!(state, "available");
+        let gc_after = gc_after.expect("settled aborted object has a grace deadline");
         let deletion_report = run_gc_pass(
             &adapter,
             blobs.as_ref(),
-            first_pass_now.saturating_add(GC_RETRY_MS + 1),
+            gc_after.saturating_add(1),
         )
         .await
         .expect("settled aborted write is eventually deleted");
