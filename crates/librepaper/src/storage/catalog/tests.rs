@@ -2776,19 +2776,23 @@ fn v2_erasure_worker_resumes_pinned_operation_and_refuses_live_child_cascade() {
         .unwrap();
     crate::storage::maintenance::run_erasure_pass(&catalog, 3, 1, 1).unwrap();
 
-    // The worker reaches the annotation stage after draining the now
-    // unpinned receipt. A reply arriving between child draining and parent
-    // deletion must cause a retry, never an unbounded cascading delete.
+    // Stop before the worker consumes the annotation stage. The reply is
+    // inserted while its parent is still present, so the fixture exercises a
+    // live-child race without violating the parent foreign key.
     for now in 4..20 {
-        if catalog.erasure_stage("acct-1").unwrap().as_deref() == Some("annotations") {
+        if matches!(
+            catalog.erasure_stage("acct-1").unwrap().as_deref(),
+            Some("annotation_replies") | Some("annotations")
+        ) {
             break;
         }
         crate::storage::maintenance::run_erasure_pass(&catalog, now, 1, 1).unwrap();
     }
-    assert_eq!(
-        catalog.erasure_stage("acct-1").unwrap().as_deref(),
-        Some("annotations")
-    );
+    let stage = catalog.erasure_stage("acct-1").unwrap();
+    assert!(matches!(
+        stage.as_deref(),
+        Some("annotation_replies") | Some("annotations")
+    ));
     catalog
         .with_connection(|connection| {
             connection.execute(
