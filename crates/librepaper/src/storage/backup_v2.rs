@@ -104,6 +104,21 @@ impl BackupManifestV2 {
         }
         Ok(())
     }
+
+    pub fn validate_for_backup(&self, backup_id: &str) -> Result<(), BackupV2Error> {
+        self.validate()?;
+        if backup_id.is_empty() || backup_id.contains('/') {
+            return Err(BackupV2Error::Invalid("invalid backup identity".into()));
+        }
+        let prefix = format!("{BACKUP_PREFIX_V2}/{backup_id}/");
+        if !self.identity.backup_key.starts_with(&prefix)
+            || self.secrets.iter().any(|file| !file.backup_key.starts_with(&prefix))
+            || self.objects.iter().any(|object| !object.backup_key.starts_with(&prefix))
+        {
+            return Err(BackupV2Error::Invalid("backup entry escapes its destination scope".into()));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -260,7 +275,7 @@ pub async fn create_backup(
             return Err(BackupV2Error::Corrupt("backup object cursor did not cover snapshot".into()));
         }
         manifest.complete = true;
-        manifest.validate()?;
+        manifest.validate_for_backup(backup_id)?;
         let encoded = serde_json::to_vec(&manifest)
             .map_err(|error| BackupV2Error::Invalid(format!("manifest encoding failed: {error}")))?;
         let manifest_digest = hex::encode(Sha256::digest(&encoded));
@@ -317,7 +332,7 @@ pub async fn restore_backup(
         .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
     let manifest: BackupManifestV2 = serde_json::from_slice(&encoded)
         .map_err(|error| BackupV2Error::Corrupt(format!("manifest JSON is invalid: {error}")))?;
-    manifest.validate()?;
+    manifest.validate_for_backup(backup_id)?;
     let catalog_key = format!("{BACKUP_PREFIX_V2}/{backup_id}/catalog.db");
     let catalog_bytes = backup
         .get(&catalog_key)
