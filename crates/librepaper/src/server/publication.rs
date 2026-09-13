@@ -80,6 +80,96 @@ struct StagingMeta {
     expected_publication_id: String,
 }
 
+/// The physical manifest and its complete allocation plan are built together,
+/// so the catalog never reserves a descriptor independently of its children.
+struct EncodedPublicationBundle {
+    manifest: Vec<u8>,
+    allocations: Vec<crate::storage::catalog::V2ObjectAllocation>,
+}
+
+fn encode_publication_bundle(
+    document_id: &crate::storage::catalog::DocumentId,
+    operation_id: &crate::storage::catalog::OperationId,
+    manifest: &PublicationManifest,
+    now: crate::storage::catalog::UnixMillis,
+) -> Result<EncodedPublicationBundle, PublicationError> {
+    use crate::storage::catalog::{ObjectId, ObjectKind, V2ObjectAllocation};
+    validate_manifest(manifest)?;
+    let mut envelope = serde_json::to_value(manifest)
+        .map_err(|error| PublicationError::Storage(error.to_string()))?;
+    envelope["version"] = json!(1);
+    let mut allocations = Vec::new();
+    let mut identities: HashMap<(bool, String), (ObjectId, usize)> = HashMap::new();
+    let children = std::iter::once((&manifest.html, None)).chain(
+        manifest
+            .assets
+            .iter()
+            .enumerate()
+            .map(|(index, asset)| (&asset.object, Some(index))),
+    );
+    for (object, asset_index) in children {
+        let is_asset = asset_index.is_some();
+        let key = (is_asset, object.sha256.clone());
+        let id = if let Some((id, size)) = identities.get(&key) {
+            if *size != object.bytes {
+                return Err(PublicationError::Invalid(
+                    "one publication digest has conflicting lengths".into(),
+                ));
+            }
+            id.clone()
+        } else {
+            let id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
+                .map_err(|error| PublicationError::Storage(error.to_string()))?;
+            allocations.push(V2ObjectAllocation {
+                document_id: document_id.clone(),
+                id: id.clone(),
+                storage_key: format!("v2/documents/{document_id}/objects/{id}"),
+                kind: if is_asset {
+                    ObjectKind::PublicationAsset
+                } else {
+                    ObjectKind::PublicationHtml
+                },
+                digest: object.sha256.clone(),
+                logical_digest: None,
+                encoding_version: 1,
+                reserved_bytes: i64::try_from(object.bytes)
+                    .map_err(|_| PublicationError::TooLarge)?,
+                operation_id: operation_id.clone(),
+                now,
+            });
+            identities.insert(key, (id.clone(), object.bytes));
+            id
+        };
+        match asset_index {
+            Some(index) => envelope["assets"][index]["object_id"] = json!(id.as_str()),
+            None => envelope["html"]["object_id"] = json!(id.as_str()),
+        }
+    }
+    let encoded = serde_json::to_vec(&envelope)
+        .map_err(|error| PublicationError::Storage(error.to_string()))?;
+    if encoded.len() > MAX_MANIFEST_BYTES {
+        return Err(PublicationError::TooLarge);
+    }
+    let id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
+        .map_err(|error| PublicationError::Storage(error.to_string()))?;
+    allocations.push(V2ObjectAllocation {
+        document_id: document_id.clone(),
+        id: id.clone(),
+        storage_key: format!("v2/documents/{document_id}/objects/{id}"),
+        kind: ObjectKind::PublicationManifest,
+        digest: hex::encode(Sha256::digest(&encoded)),
+        logical_digest: None,
+        encoding_version: 1,
+        reserved_bytes: encoded.len() as i64,
+        operation_id: operation_id.clone(),
+        now,
+    });
+    Ok(EncodedPublicationBundle {
+        manifest: encoded,
+        allocations,
+    })
+}
+
 fn parse_staging_meta(bytes: &[u8]) -> Option<StagingMeta> {
     serde_json::from_slice(bytes).ok()
 }
@@ -1259,43 +1349,94 @@ impl PublicationStore {
     async fn current_leased(
         &self,
         storage_id: &str,
-    ) -> Result<Option<(crate::storage::catalog::PublicationReadLease, PublicationManifest, HashMap<String, String>)>, PublicationError> {
-        let catalog = self.store.as_ref().and_then(|store| store.catalog.as_ref())
+    ) -> Result<
+        Option<(
+            crate::storage::catalog::PublicationReadLease,
+            PublicationManifest,
+            HashMap<String, String>,
+        )>,
+        PublicationError,
+    > {
+        let catalog = self
+            .store
+            .as_ref()
+            .and_then(|store| store.catalog.as_ref())
             .ok_or_else(|| PublicationError::Storage("durable catalog required".into()))?;
         let catalog_for_read = catalog.clone();
         let document = storage_id.to_owned();
-        let lease = catalog.execute_catalog(32_768, move |_| {
-            catalog_for_read.acquire_publication_read(&document, crate::util::now_millis())
-        }).await.map_err(|error| PublicationError::Storage(error.to_string()))?;
-        let Some(lease) = lease else { return Ok(None); };
-        let physical = lease.objects.iter().find(|object| object.id == lease.manifest_object_id)
-            .ok_or_else(|| PublicationError::Storage("publication manifest is missing from leased set".into()))?;
+        let lease = catalog
+            .execute_catalog(32_768, move |_| {
+                catalog_for_read.acquire_publication_read(&document, crate::util::now_millis())
+            })
+            .await
+            .map_err(|error| PublicationError::Storage(error.to_string()))?;
+        let Some(lease) = lease else {
+            return Ok(None);
+        };
+        let physical = lease
+            .objects
+            .iter()
+            .find(|object| object.id == lease.manifest_object_id)
+            .ok_or_else(|| {
+                PublicationError::Storage("publication manifest is missing from leased set".into())
+            })?;
         let body = self.blobs.get(&physical.storage_key).await?;
-        if !lease.valid_at(crate::util::now_millis()) || body.len() > MAX_MANIFEST_BYTES
+        if !lease.valid_at(crate::util::now_millis())
+            || body.len() > MAX_MANIFEST_BYTES
             || physical.byte_length != Some(body.len() as i64)
-            || hex::encode(Sha256::digest(&body)) != physical.digest {
-            return Err(PublicationError::Storage("publication manifest failed integrity or lease expired".into()));
+            || hex::encode(Sha256::digest(&body)) != physical.digest
+        {
+            return Err(PublicationError::Storage(
+                "publication manifest failed integrity or lease expired".into(),
+            ));
         }
         let envelope: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|error| PublicationError::Storage(error.to_string()))?;
         if envelope["version"] != 1 {
-            return Err(PublicationError::Storage("unsupported publication envelope".into()));
+            return Err(PublicationError::Storage(
+                "unsupported publication envelope".into(),
+            ));
         }
         let manifest: PublicationManifest = serde_json::from_value(envelope.clone())
             .map_err(|error| PublicationError::Storage(error.to_string()))?;
         validate_manifest(&manifest)?;
         if manifest.publication_id != lease.publication_id {
-            return Err(PublicationError::Storage("publication pointer and manifest disagree".into()));
+            return Err(PublicationError::Storage(
+                "publication pointer and manifest disagree".into(),
+            ));
         }
         let mut locators = HashMap::new();
-        for (path, metadata, value, kind) in std::iter::once(("index.html", &manifest.html, &envelope["html"], "publication_html"))
-            .chain(manifest.assets.iter().enumerate().map(|(index, asset)| (asset.path.as_str(), &asset.object, &envelope["assets"][index], "publication_asset"))) {
-            let object_id = value["object_id"].as_str()
-                .ok_or_else(|| PublicationError::Storage("publication locator is missing".into()))?;
-            let object = lease.objects.iter().find(|object| object.id.as_str() == object_id)
-                .ok_or_else(|| PublicationError::Storage("publication locator is outside leased root".into()))?;
-            if object.kind != kind || object.digest != metadata.sha256 || object.byte_length != Some(metadata.bytes as i64) {
-                return Err(PublicationError::Storage("publication locator metadata mismatch".into()));
+        for (path, metadata, value, kind) in std::iter::once((
+            "index.html",
+            &manifest.html,
+            &envelope["html"],
+            "publication_html",
+        ))
+        .chain(manifest.assets.iter().enumerate().map(|(index, asset)| {
+            (
+                asset.path.as_str(),
+                &asset.object,
+                &envelope["assets"][index],
+                "publication_asset",
+            )
+        })) {
+            let object_id = value["object_id"].as_str().ok_or_else(|| {
+                PublicationError::Storage("publication locator is missing".into())
+            })?;
+            let object = lease
+                .objects
+                .iter()
+                .find(|object| object.id.as_str() == object_id)
+                .ok_or_else(|| {
+                    PublicationError::Storage("publication locator is outside leased root".into())
+                })?;
+            if object.kind != kind
+                || object.digest != metadata.sha256
+                || object.byte_length != Some(metadata.bytes as i64)
+            {
+                return Err(PublicationError::Storage(
+                    "publication locator metadata mismatch".into(),
+                ));
             }
             locators.insert(path.to_owned(), object.storage_key.clone());
         }
@@ -1307,7 +1448,10 @@ impl PublicationStore {
         storage_id: &str,
     ) -> Result<Option<PublicationManifest>, PublicationError> {
         if self.store.is_some() {
-            return self.current_leased(storage_id).await.map(|value| value.map(|(_, manifest, _)| manifest));
+            return self
+                .current_leased(storage_id)
+                .await
+                .map(|value| value.map(|(_, manifest, _)| manifest));
         }
         match self.blobs.get(&Self::manifest_key(storage_id)).await {
             Ok(body) => serde_json::from_slice(&body)
@@ -1328,11 +1472,20 @@ impl PublicationStore {
         let normalized_path = validate_path(path)?;
         let path = normalized_path.as_str();
         let current = if self.store.is_some() {
-            Some(self.current_leased(storage_id).await?.ok_or(PublicationError::Missing)?)
-        } else { None };
+            Some(
+                self.current_leased(storage_id)
+                    .await?
+                    .ok_or(PublicationError::Missing)?,
+            )
+        } else {
+            None
+        };
         let manifest = match &current {
             Some((_, manifest, _)) => manifest.clone(),
-            None => self.current(storage_id).await?.ok_or(PublicationError::Missing)?,
+            None => self
+                .current(storage_id)
+                .await?
+                .ok_or(PublicationError::Missing)?,
         };
         let object = if path == "index.html" {
             manifest.html
@@ -1346,12 +1499,20 @@ impl PublicationStore {
                 .ok_or(PublicationError::Missing)?
         };
         let storage_key = match &current {
-            Some((_, _, locators)) => locators.get(path).cloned().ok_or(PublicationError::Missing)?,
+            Some((_, _, locators)) => locators
+                .get(path)
+                .cloned()
+                .ok_or(PublicationError::Missing)?,
             None => Self::object_key(storage_id, &object.sha256),
         };
         let bytes = self.blobs.get(&storage_key).await?;
-        if current.as_ref().is_some_and(|(lease, _, _)| !lease.valid_at(crate::util::now_millis())) {
-            return Err(PublicationError::Storage("publication read lease expired".into()));
+        if current
+            .as_ref()
+            .is_some_and(|(lease, _, _)| !lease.valid_at(crate::util::now_millis()))
+        {
+            return Err(PublicationError::Storage(
+                "publication read lease expired".into(),
+            ));
         }
         if bytes.len() != object.bytes || hex::encode(Sha256::digest(&bytes)) != object.sha256 {
             return Err(PublicationError::Storage(
@@ -1466,6 +1627,11 @@ fn validate_manifest(manifest: &PublicationManifest) -> Result<(), PublicationEr
     );
     for asset in &manifest.assets {
         validate_path(&asset.path)?;
+        if asset.path == "index.html" {
+            return Err(PublicationError::Invalid(
+                "asset path conflicts with publication HTML".into(),
+            ));
+        }
         if !paths.insert(asset.path.as_str()) {
             return Err(PublicationError::Invalid(
                 "duplicate asset path or missing MIME type".into(),
@@ -1614,6 +1780,50 @@ mod tests {
         assert!(validate_path("../secret").is_err());
         assert!(validate_path("/secret").is_err());
         assert!(validate_path("figures/plot.png").is_ok());
+    }
+
+    #[test]
+    fn physical_bundle_is_complete_and_uses_fresh_allocation_ids() {
+        use crate::storage::catalog::{DocumentId, ObjectKind, OperationId, UnixMillis};
+        let manifest = test_manifest("publication", b"<h1>Text</h1>");
+        let document = DocumentId::new("doc").unwrap();
+        let operation = OperationId::new("a".repeat(32)).unwrap();
+        let first =
+            encode_publication_bundle(&document, &operation, &manifest, UnixMillis(1)).unwrap();
+        let second =
+            encode_publication_bundle(&document, &operation, &manifest, UnixMillis(1)).unwrap();
+        assert_eq!(first.allocations.len(), 2);
+        assert!(first
+            .allocations
+            .iter()
+            .all(|object| second.allocations.iter().all(|other| object.id != other.id)));
+        let value: serde_json::Value = serde_json::from_slice(&first.manifest).unwrap();
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["bundle_sha256"], manifest.bundle_sha256);
+        let html = first
+            .allocations
+            .iter()
+            .find(|object| object.kind == ObjectKind::PublicationHtml)
+            .unwrap();
+        assert_eq!(value["html"]["object_id"], html.id.as_str());
+        assert_eq!(
+            html.storage_key,
+            format!("v2/documents/doc/objects/{}", html.id)
+        );
+        let descriptor = first
+            .allocations
+            .iter()
+            .find(|object| object.kind == ObjectKind::PublicationManifest)
+            .unwrap();
+        assert_eq!(
+            descriptor.digest,
+            hex::encode(Sha256::digest(&first.manifest))
+        );
+        assert_eq!(descriptor.reserved_bytes, first.manifest.len() as i64);
+        assert_eq!(
+            serde_json::from_value::<PublicationManifest>(value).unwrap(),
+            manifest
+        );
     }
 
     #[test]
