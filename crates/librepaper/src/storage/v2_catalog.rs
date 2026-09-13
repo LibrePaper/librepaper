@@ -31,6 +31,16 @@ use crate::storage::catalog::Catalog;
 
 const GC_RETRY_MS: i64 = 15 * 60 * 1000;
 const RECEIPT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const JOURNAL_RECEIPT_RETENTION_MS: i64 = 60 * 1000;
+const AGENT_RECEIPT_RETENTION_MS: i64 = 60 * 60 * 1000;
+
+fn receipt_retention_ms(kind: &str) -> i64 {
+    match kind {
+        "journal_append" | "journal_compact" => JOURNAL_RECEIPT_RETENTION_MS,
+        "agent_stage" | "agent_execution" => AGENT_RECEIPT_RETENTION_MS,
+        _ => RECEIPT_RETENTION_MS,
+    }
+}
 
 #[derive(Clone)]
 struct InflightPut {
@@ -491,19 +501,19 @@ fn abort_failed_allocation(catalog: &Catalog, record: &InflightPut) -> Result<()
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let row: Option<(String, i64, String, String, Option<String>, Option<String>, Option<String>)> = transaction
+            let row: Option<(String, i64, String, String, Option<String>, Option<String>, Option<String>, Option<String>)> = transaction
                 .query_row(
-                    "SELECT o.state,o.reserved_bytes,o.kind,o.digest,o.allocation_operation_id,op.state,op.writer_generation
+                    "SELECT o.state,o.reserved_bytes,o.kind,o.digest,o.allocation_operation_id,op.state,op.writer_generation,op.kind
                        FROM objects o
                        LEFT JOIN operations op
                          ON op.id=o.allocation_operation_id AND op.document_id=o.document_id
                       WHERE o.document_id=?1 AND o.id=?2",
                     params![record.document_id, record.object_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
                 )
                 .optional()
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let Some((state, reserved, kind, digest, operation_id, operation_state, operation_generation)) = row else {
+            let Some((state, reserved, kind, digest, operation_id, operation_state, operation_generation, operation_kind)) = row else {
                 transaction
                     .commit()
                     .map_err(crate::storage::catalog::CatalogError::from)?;
@@ -551,7 +561,7 @@ fn abort_failed_allocation(catalog: &Catalog, record: &InflightPut) -> Result<()
                                 work_expires_at=MAX(COALESCE(work_expires_at,0),?1),
                                 updated_at=MAX(updated_at,?1)
                           WHERE id=?3 AND state='prepared'"#,
-                        params![now, now.saturating_add(RECEIPT_RETENTION_MS), operation_id],
+                        params![now, now.saturating_add(receipt_retention_ms(operation_kind.as_deref().unwrap_or(""))), operation_id],
                     )
                     .map_err(crate::storage::catalog::CatalogError::from)?;
             }
@@ -1209,8 +1219,8 @@ impl V2GcCatalog for Catalog {
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let changed = transaction
                 .execute(
-                    r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations candidate WHERE candidate.state='prepared' AND candidate.work_expires_at IS NOT NULL AND candidate.work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects allocated WHERE allocated.allocation_operation_id=candidate.id AND allocated.state='allocated') ORDER BY candidate.work_expires_at,candidate.id LIMIT ?3)"#,
-                    params![now, now.saturating_add(RECEIPT_RETENTION_MS), i64::try_from(limit).unwrap_or(i64::MAX)],
+                    r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?1 + CASE kind WHEN 'journal_append' THEN 60000 WHEN 'journal_compact' THEN 60000 WHEN 'agent_stage' THEN 3600000 WHEN 'agent_execution' THEN 3600000 ELSE 604800000 END,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations candidate WHERE candidate.state='prepared' AND candidate.work_expires_at IS NOT NULL AND candidate.work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects allocated WHERE allocated.allocation_operation_id=candidate.id AND allocated.state='allocated') ORDER BY candidate.work_expires_at,candidate.id LIMIT ?2)"#,
+                    params![now, i64::try_from(limit).unwrap_or(i64::MAX)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let expired_receipts = transaction
@@ -1526,6 +1536,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             let _ = (doc_stored, doc_reserved);
             let operation_id = journal_operation_id();
             let now = now_millis();
+            Catalog::admit_operation_slot(tx, Some(&request.document_id), "journal_append")?;
             let mut plan = serde_json::json!({"version":1,"epoch":request.epoch,"first_sequence":request.first_sequence,"last_sequence":request.last_sequence,"parts":request.parts.iter().map(|part| serde_json::json!({"first":part.first_sequence,"last":part.last_sequence,"digest":part.digest,"bytes":part.byte_length})).collect::<Vec<_>>()});
             tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,?3,?4,'journal_append',?5,'prepared',?6,?7,?8,?9,?9,?10)", params![operation_id,request.document_id,request.actor_key,request.request_key,journal_request_digest(&request),writer_generation,source_generation,plan.to_string(),now,now.saturating_add(3_600_000)]).map_err(crate::storage::catalog::CatalogError::from)?;
             let mut allocations = Vec::with_capacity(request.parts.len());
@@ -1633,7 +1644,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             tx.execute("UPDATE accounts SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2 WHERE id=(SELECT owner_id FROM documents WHERE id=?3)", params![stored_delta,reserved,admission.document_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute("UPDATE server_state SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,catalog_revision=catalog_revision+1,updated_at=?3 WHERE id=1", params![stored_delta,reserved,now]).map_err(crate::storage::catalog::CatalogError::from)?;
             let result = serde_json::json!({"version":1,"sequence":admission.expected_last_sequence,"objects":objects.len()}).to_string();
-            tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'", params![result,now,now.saturating_add(RECEIPT_RETENTION_MS),admission.operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
+            tx.execute("UPDATE operations SET state='committed',result_json=?1,plan_json='{}',completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'", params![result,now,now.saturating_add(JOURNAL_RECEIPT_RETENTION_MS),admission.operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             Ok((owner_id, reserved))
             });
             match result {
@@ -1693,6 +1704,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             }
             let operation_id = journal_operation_id();
             let now = now_millis();
+            Catalog::admit_operation_slot(tx, Some(&document_id), "journal_compact")?;
             let initial_plan = serde_json::json!({"version":1,"epoch":expected_epoch,"sequence":expected_sequence,"digest":digest,"bytes":byte_length}).to_string();
             tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,'room',?3,'journal_compact',?4,'prepared',?5,?6,?7,?8,?8,?9)", params![operation_id,document_id,format!("compact-{expected_epoch}-{expected_sequence}"),digest,writer_generation,generation,initial_plan,now,now.saturating_add(3_600_000)]).map_err(crate::storage::catalog::CatalogError::from)?;
             let object_id = ObjectId::random();
@@ -1752,7 +1764,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             tx.execute("UPDATE accounts SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2 WHERE id=(SELECT owner_id FROM documents WHERE id=?3)", params![stored_delta,reserved_delta,admission.document_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute("UPDATE server_state SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,catalog_revision=catalog_revision+1,updated_at=?3 WHERE id=1", params![stored_delta,reserved_delta,now]).map_err(crate::storage::catalog::CatalogError::from)?;
             let result = serde_json::json!({"version":1,"epoch":new_epoch,"sequence":new_sequence}).to_string();
-            tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'", params![result,now,now.saturating_add(RECEIPT_RETENTION_MS),admission.operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
+            tx.execute("UPDATE operations SET state='committed',result_json=?1,plan_json='{}',completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'", params![result,now,now.saturating_add(JOURNAL_RECEIPT_RETENTION_MS),admission.operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             Ok((owner_id, reserved_delta))
             });
             match result {
@@ -1961,7 +1973,9 @@ impl V2RecoveryCatalog for Catalog {
         sql(self.with_connection(|connection| {
             let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(crate::storage::catalog::CatalogError::from)?;
             let completed_at = now_millis();
-            transaction.execute(r#"UPDATE operations SET state='aborted',result_json='{"version":1,"recovered":true}',completed_at=?1,receipt_expires_at=?2,updated_at=max(updated_at,?1) WHERE id=?3 AND state='prepared'"#, params![completed_at, completed_at.saturating_add(RECEIPT_RETENTION_MS), operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
+            let kind: Option<String> = transaction.query_row("SELECT kind FROM operations WHERE id=?1 AND state='prepared'", [operation_id], |row| row.get(0)).optional().map_err(crate::storage::catalog::CatalogError::from)?;
+            let retention = receipt_retention_ms(kind.as_deref().unwrap_or(""));
+            transaction.execute(r#"UPDATE operations SET state='aborted',result_json='{"version":1,"recovered":true}',completed_at=?1,receipt_expires_at=?2,updated_at=max(updated_at,?1) WHERE id=?3 AND state='prepared'"#, params![completed_at, completed_at.saturating_add(retention), operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             transaction.commit().map_err(crate::storage::catalog::CatalogError::from)?; Ok(())
         }))
     }
