@@ -3627,22 +3627,21 @@ impl Catalog {
                             .and_then(serde_json::Value::as_str)
                             .filter(|value| !value.is_empty())
                             .ok_or_else(|| CatalogError::Invalid("agent acceptance version is missing".into()))?;
+                        let current_version = super::comments::comment_version_for_document_tx(
+                            tx,
+                            checkpoint.document_id.as_str(),
+                            comment_id,
+                        )?;
                         let proposed: i64 = tx
                             .query_row(
                                 "SELECT count(*) FROM annotations
                                   WHERE document_id=?1 AND id=?2 AND seq=?3
-                                    AND kind='suggestion' AND suggestion_state='proposed'
-                                    AND COALESCE(source_revision,'')=?4",
-                                params![
-                                    checkpoint.document_id.as_str(),
-                                    comment_id,
-                                    expected_seq,
-                                    expected_version,
-                                ],
+                                    AND kind='suggestion' AND suggestion_state='proposed'",
+                                params![checkpoint.document_id.as_str(), comment_id, expected_seq],
                                 |row| row.get(0),
                             )
                             .map_err(CatalogError::from)?;
-                        if proposed != 1 {
+                        if proposed != 1 || current_version != expected_version {
                             return Err(CatalogError::Conflict(
                                 "agent suggestion changed before checkpoint commit".into(),
                             ));

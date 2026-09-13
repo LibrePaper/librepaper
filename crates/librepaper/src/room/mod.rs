@@ -1757,6 +1757,10 @@ impl Room {
                 None => self.published_source(entry.as_ref()).await,
             }
         };
+        let recovered_from_durable_checkpoint = stored.is_some()
+            && checkpoint_point
+                .as_ref()
+                .map_or(false, |point| point.durable_seq == durable_journal_sequence);
 
         let mut state = self.state.lock().await;
         *state.manifest = manifest;
@@ -1887,6 +1891,17 @@ impl Room {
         }
         drop(state);
         self.load_asset_sizes().await;
+        if recovered_from_durable_checkpoint {
+            // The recovered journal is exactly at the checkpoint watermark,
+            // so its CRDT identities are the checkpoint's identities. Set the
+            // quiet comparison only after asset sizes are rehydrated; a newer
+            // journal deliberately leaves it unset and must checkpoint.
+            let mut state = self.state.lock().await;
+            state.session.last_tree = Some(tree_of(
+                &state.session.doc,
+                &state.session.asset_sizes,
+            ).0);
+        }
     }
 
     /// What each of this document's figures weighs, read once when the room is

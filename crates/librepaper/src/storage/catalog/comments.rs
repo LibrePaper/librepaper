@@ -322,6 +322,47 @@ fn context(comment: &Comment) -> String {
         .to_string()
 }
 
+fn canonical_json_digest(value: &serde_json::Value) -> String {
+    fn append(value: &serde_json::Value, output: &mut String) {
+        match value {
+            serde_json::Value::Null => output.push_str("null"),
+            serde_json::Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+            serde_json::Value::Number(value) => output.push_str(&value.to_string()),
+            serde_json::Value::String(value) => {
+                output.push_str(&serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into()))
+            }
+            serde_json::Value::Array(values) => {
+                output.push('[');
+                for (index, value) in values.iter().enumerate() {
+                    if index != 0 {
+                        output.push(',');
+                    }
+                    append(value, output);
+                }
+                output.push(']');
+            }
+            serde_json::Value::Object(values) => {
+                let mut keys = values.keys().collect::<Vec<_>>();
+                keys.sort();
+                output.push('{');
+                for (index, key) in keys.into_iter().enumerate() {
+                    if index != 0 {
+                        output.push(',');
+                    }
+                    output.push_str(&serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into()));
+                    output.push(':');
+                    append(&values[key], output);
+                }
+                output.push('}');
+            }
+        }
+    }
+
+    let mut canonical = String::new();
+    append(value, &mut canonical);
+    crate::document::store::digest_of_bytes(canonical.as_bytes())
+}
+
 pub(super) fn insert_comment_tx(
     tx: &Transaction<'_>,
     comment: &Comment,
@@ -1796,6 +1837,81 @@ impl Catalog {
             point: r.get::<_, i64>(29)? != 0,
             color: r.get(30)?,
         })
+    }
+
+    /// Rebuild the client-visible comment value from the row currently held by
+    /// `tx` and return the same digest used by the room's acceptance gate.
+    /// The acceptance version is a digest of the complete serialized
+    /// `room::Comment`, not the source checkpoint revision.
+    pub(super) fn comment_version_for_document_tx(
+        tx: &Transaction<'_>,
+        document_id: &str,
+        comment_id: &str,
+    ) -> CatalogResult<String> {
+        let slug: String = tx.query_row(
+            "SELECT slug FROM documents WHERE id=?1",
+            [document_id],
+            |row| row.get(0),
+        ).map_err(CatalogError::from)?;
+        let comment = Self::comment_in_tx(tx, &slug, comment_id)?;
+        let mut value = serde_json::Map::new();
+        value.insert("id".into(), serde_json::Value::String(comment.id));
+        value.insert("seq".into(), serde_json::Value::Number(comment.seq.into()));
+        value.insert("motivation".into(), serde_json::Value::String(comment.motivation));
+        if !comment.publication_id.is_empty() {
+            value.insert("publication_id".into(), serde_json::Value::String(comment.publication_id));
+        }
+        value.insert("exact".into(), serde_json::Value::String(comment.exact));
+        value.insert("prefix".into(), serde_json::Value::String(comment.prefix));
+        value.insert("suffix".into(), serde_json::Value::String(comment.suffix));
+        value.insert("position".into(), comment.position.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null));
+        if comment.point { value.insert("point".into(), serde_json::Value::Bool(true)); }
+        if let Some(color) = comment.color { value.insert("color".into(), serde_json::Value::String(color)); }
+        if let Some(region) = comment.region {
+            let region = serde_json::from_str::<serde_json::Value>(&region)
+                .map_err(|_| CatalogError::Invalid("stored annotation region is invalid".into()))?;
+            value.insert("region".into(), region);
+        }
+        if let Some(output_anchor) = comment.quarto_output {
+            let output_anchor = serde_json::from_str::<serde_json::Value>(&output_anchor)
+                .map_err(|_| CatalogError::Invalid("stored annotation output anchor is invalid".into()))?;
+            value.insert("output_anchor".into(), output_anchor);
+        }
+        if let Some(path) = comment.source_path {
+            value.insert("source".into(), serde_json::json!({
+                "path": path,
+                "exact": comment.source_exact.unwrap_or_default(),
+                "prefix": comment.source_prefix.unwrap_or_default(),
+                "suffix": comment.source_suffix.unwrap_or_default(),
+                "position": comment.source_position,
+            }));
+        }
+        if let Some(proposed) = comment.proposed { value.insert("proposed".into(), serde_json::Value::String(proposed)); }
+        if !comment.pass.is_empty() { value.insert("pass".into(), serde_json::Value::String(comment.pass)); }
+        if !comment.outcome.is_empty() { value.insert("outcome".into(), serde_json::Value::String(comment.outcome)); }
+        value.insert("body".into(), serde_json::Value::String(comment.body));
+        value.insert("creator".into(), serde_json::Value::String(comment.creator));
+        value.insert("created".into(), serde_json::Value::String(comment.created));
+        value.insert("resolved".into(), serde_json::Value::Bool(comment.resolved));
+        value.insert("resolved_at".into(), comment.resolved_at.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null));
+        if !comment.revision.is_empty() { value.insert("revision".into(), serde_json::Value::String(comment.revision)); }
+        if !comment.resolved_in.is_empty() { value.insert("resolved_in".into(), serde_json::Value::String(comment.resolved_in)); }
+        let mut replies = Vec::new();
+        let mut statement = tx.prepare(
+            "SELECT id,body,author_label,created_at FROM replies
+             WHERE document_id=?1 AND annotation_id=?2 ORDER BY created_at,id",
+        ).map_err(CatalogError::from)?;
+        let mut rows = statement.query(params![document_id, comment_id]).map_err(CatalogError::from)?;
+        while let Some(row) = rows.next().map_err(CatalogError::from)? {
+            replies.push(serde_json::json!({
+                "id": row.get::<_, String>(0).map_err(CatalogError::from)?,
+                "body": row.get::<_, String>(1).map_err(CatalogError::from)?,
+                "creator": row.get::<_, String>(2).map_err(CatalogError::from)?,
+                "created": timestamp(row.get::<_, i64>(3).map_err(CatalogError::from)?),
+            }));
+        }
+        value.insert("replies".into(), serde_json::Value::Array(replies));
+        Ok(canonical_json_digest(&serde_json::Value::Object(value)))
     }
     pub fn insert_reply(&self, reply: &Reply) -> CatalogResult<Reply> {
         self.insert_reply_authorized(reply, AnnotationAuthority::default())

@@ -28,6 +28,33 @@ struct CheckpointHeartbeat {
     handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// Close a prepared ordinary checkpoint only after a definitive final SQL
+/// rejection. Busy/locked/I/O failures may have an uncertain commit outcome,
+/// so those remain prepared for recovery rather than being falsely aborted.
+fn definitive_checkpoint_catalog_error(error: &crate::storage::catalog::CatalogExecError) -> bool {
+    match error {
+        crate::storage::catalog::CatalogExecError::Catalog(error) => match error {
+            crate::storage::catalog::CatalogError::Conflict(_)
+            | crate::storage::catalog::CatalogError::Invalid(_)
+            | crate::storage::catalog::CatalogError::Refused(_, _)
+            | crate::storage::catalog::CatalogError::NotFound => true,
+            crate::storage::catalog::CatalogError::Sql(error) => {
+                let text = error.to_string().to_ascii_lowercase();
+                !text.contains("busy")
+                    && !text.contains("locked")
+                    && !text.contains("disk i/o")
+                    && !text.contains("ioerr")
+            }
+            crate::storage::catalog::CatalogError::Busy
+            | crate::storage::catalog::CatalogError::Closed => false,
+        },
+        crate::storage::catalog::CatalogExecError::Saturated
+        | crate::storage::catalog::CatalogExecError::ShuttingDown
+        | crate::storage::catalog::CatalogExecError::TooLarge { .. }
+        | crate::storage::catalog::CatalogExecError::Panicked => false,
+    }
+}
+
 impl CheckpointHeartbeat {
     async fn stop(mut self) {
         if let Some(handle) = self.handle.take() {
@@ -537,11 +564,10 @@ impl Room {
             } else {
                 let snapshot_ceiling = self.config.persistence().max_encoded_snapshot_bytes;
                 let snapshot_estimate = if needs_recovery_snapshot {
-                    state
-                        .session
-                        .encoded_bound
-                        .unwrap_or(snapshot_ceiling)
-                        .max(1)
+                    // Direct Y.Doc mutations can bypass mark_dirty, leaving
+                    // encoded_bound stale. Reserve the configured upper bound
+                    // before encoding and apply the exact check below.
+                    snapshot_ceiling.max(1)
                 } else {
                     0
                 };
@@ -629,10 +655,11 @@ impl Room {
             false
         } else {
             let state = self.state.lock().await;
-            let resident_duplicate = state.manifest.checkpoints.iter().rev().any(|point| {
-                point.sha == content_sha
-                    || (!point.tree_sha.is_empty() && point.tree_sha == content_sha)
-            });
+            let resident_duplicate = state.session.last_tree.as_ref() == Some(&tree)
+                || state.manifest.checkpoints.iter().rev().any(|point| {
+                    point.sha == content_sha
+                        || (!point.tree_sha.is_empty() && point.tree_sha == content_sha)
+                });
             drop(state);
             resident_duplicate || catalog_duplicate.is_some()
         };
@@ -2307,7 +2334,7 @@ impl Room {
         let checkpoint_id = checkpoint.id.as_str().to_string();
         let checkpoint_for_commit = checkpoint.clone();
         let agent_checkpoint_for_commit = agent_checkpoint.cloned();
-        catalog
+        let commit_result = catalog
             .execute_catalog(checkpoint.object_ids.len() * 128 + 512, move |catalog| {
                 catalog.commit_v2_checkpoint_verified_with_agent(
                     &proof,
@@ -2316,8 +2343,31 @@ impl Room {
                     agent_checkpoint_for_commit.as_ref(),
                 )
             })
-            .await
-            .map_err(WriteError::from)?;
+            .await;
+        if let Err(error) = commit_result {
+            if agent_checkpoint.is_none() && definitive_checkpoint_catalog_error(&error) {
+                let operation = admitted_operation.id.clone();
+                let abort_result = catalog
+                    .execute_catalog(256, move |catalog| {
+                        catalog.finish_v2_operation(
+                            &operation,
+                            &serde_json::json!({
+                                "version": 2,
+                                "status": "aborted",
+                                "reason": "checkpoint final transaction rejected",
+                            })
+                            .to_string(),
+                            false,
+                            now,
+                        )
+                    })
+                    .await;
+                if let Err(abort_error) = abort_result {
+                    eprintln!("warning: could not close rejected checkpoint operation: {abort_error}");
+                }
+            }
+            return Err(WriteError::from(error));
+        }
         // The catalogue transaction is the durable boundary.  Commit the
         // process-local rate reservations before any best-effort cache reload;
         // a post-commit read failure must not refund a write that already
