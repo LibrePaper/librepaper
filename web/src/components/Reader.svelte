@@ -247,8 +247,6 @@
     if (!await ensureLocalApp()) return;
     await setQuartoPreviewMode("quarto");
     quartoExecutionApproved = true;
-    await tick();
-    if (quartoLiveActive) await quartoPreviewController.start();
   }
 
   async function setTypstPreviewMode(mode) {
