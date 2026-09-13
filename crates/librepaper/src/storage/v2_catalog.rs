@@ -146,8 +146,13 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
                     |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?)),
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
+            let expected_digest = if record.managed {
+                record.expected_digest.as_str()
+            } else {
+                written.digest.as_str()
+            };
             if state == "available"
-                && digest == record.expected_digest
+                && digest == expected_digest
                 && catalog_reserved == 0
                 && catalog_length == i64::try_from(written.byte_length).ok()
             {
@@ -156,11 +161,6 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
                     .map_err(crate::storage::catalog::CatalogError::from)?;
                 return Ok(());
             }
-            let expected_digest = if record.managed {
-                record.expected_digest.as_str()
-            } else {
-                written.digest.as_str()
-            };
             let operation_matches = if record.managed {
                 allocation_operation.as_deref() == Some(record.operation_id.as_str())
                     && operation_generation.as_deref() == Some(record.writer_generation.as_str())
@@ -169,7 +169,7 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
             };
             if state != "allocated"
                 || digest != expected_digest
-                || (record.managed && written.byte_length > catalog_reserved as u64)
+                || written.byte_length > catalog_reserved as u64
                 || (record.managed && catalog_reserved != record.reserved)
                 || (record.managed && catalog_kind != record.kind)
                 || operation_state.as_deref() != Some("prepared")
@@ -379,7 +379,7 @@ impl V2GcCatalog for Catalog {
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let expired_receipts = transaction
                 .execute(
-                    "DELETE FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM checkpoint_objects WHERE operation_id=operations.id) AND id IN (SELECT candidate.id FROM operations candidate WHERE candidate.state IN ('committed','aborted') AND candidate.receipt_expires_at IS NOT NULL AND candidate.receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=candidate.id) AND NOT EXISTS (SELECT 1 FROM checkpoint_objects WHERE operation_id=candidate.id) ORDER BY candidate.receipt_expires_at,candidate.id LIMIT ?2)",
+                    "DELETE FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=operations.id) AND id IN (SELECT candidate.id FROM operations candidate WHERE candidate.state IN ('committed','aborted') AND candidate.receipt_expires_at IS NOT NULL AND candidate.receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=candidate.id) AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=candidate.id) ORDER BY candidate.receipt_expires_at,candidate.id LIMIT ?2)",
                     params![now, i64::try_from(limit).unwrap_or(i64::MAX)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;

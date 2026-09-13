@@ -1523,6 +1523,8 @@ mod tests {
         fs::create_dir_all(&source_paths.state).expect("source state");
         fs::create_dir_all(&source_paths.objects).expect("source objects");
         fs::create_dir_all(&source_paths.secrets).expect("source secrets");
+        fs::write(source_paths.secrets.join("session.key"), b"session-secret").expect("session secret");
+        fs::write(source_paths.secrets.join("links.key"), b"links-secret").expect("links secret");
         let source_catalog = Arc::new(Catalog::open_with(&source_paths.catalog, false).expect("source catalog"));
         let deployment_id: String = source_catalog
             .with_connection(|connection| {
@@ -1548,6 +1550,34 @@ mod tests {
             .expect("real restore");
         assert_eq!(report.objects_restored, 0);
         assert_eq!(fs::read_to_string(&restore_paths.deployment_identity).expect("restored identity").trim(), deployment_id);
+        assert_eq!(fs::read(restore_paths.secrets.join("session.key")).expect("restored session secret"), b"session-secret");
+        assert_eq!(fs::read(restore_paths.secrets.join("links.key")).expect("restored links secret"), b"links-secret");
+        let restored_catalog = Catalog::open_with(&restore_paths.catalog, false).expect("restored catalog");
+        let prepared_backups: i64 = restored_catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT count(*) FROM operations WHERE kind='backup' AND state='prepared'", [], |row| row.get(0))
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("restored operation audit");
+        assert_eq!(prepared_backups, 0);
+        restored_catalog.shutdown().await;
+
+        destination
+            .delete(&[format!("{BACKUP_PREFIX_V2}/roundtrip/secrets/session.key")])
+            .await
+            .expect("remove secret from backup");
+        let missing_secret_root = tempfile::tempdir().expect("missing-secret restore");
+        let missing_secret_paths = DeploymentPaths::local(missing_secret_root.path().to_path_buf());
+        let missing_secret = LocalV2RestoreCatalog::new(missing_secret_paths);
+        let missing_object_root = tempfile::tempdir().expect("missing-secret objects");
+        let missing_target: Arc<dyn BlobStore> = Arc::new(FsStore::new(
+            missing_object_root.path(),
+            false,
+        ));
+        assert!(restore_backup(&missing_secret, destination.as_ref(), missing_target, "roundtrip")
+            .await
+            .is_err());
         source_catalog.shutdown().await;
     }
 }
