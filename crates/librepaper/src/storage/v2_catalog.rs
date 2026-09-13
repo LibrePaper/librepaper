@@ -1307,6 +1307,21 @@ impl V2GcCatalog for Catalog {
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let expired_receipts = transaction
                 .execute(
+                    "UPDATE objects SET live_root=0,gc_after=COALESCE(gc_after,?1+?2)
+                     WHERE kind='agent_payload' AND state='available' AND live_root=1
+                       AND allocation_operation_id IS NULL
+                       AND EXISTS (SELECT 1 FROM operations op
+                                   WHERE op.kind='agent_stage'
+                                     AND op.state IN ('committed','aborted')
+                                     AND op.receipt_expires_at IS NOT NULL
+                                     AND op.receipt_expires_at<=?1
+                                     AND op.document_id=objects.document_id
+                                     AND json_extract(op.plan_json,'$.object_id')=objects.id)",
+                    params![now, GC_RETRY_MS],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let expired_receipts = transaction
+                .execute(
                     "DELETE FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM operations blocker WHERE blocker.state='prepared' AND (blocker.target_operation_id=operations.id OR (operations.kind='agent_cancel' AND blocker.document_id=operations.document_id AND blocker.actor_key=operations.actor_key AND blocker.request_key=operations.target_request_key) OR (blocker.document_id=operations.document_id AND blocker.actor_key=operations.actor_key AND blocker.conversation_id IS NOT NULL AND blocker.conversation_id=operations.conversation_id AND blocker.execution_epoch IS NOT NULL AND blocker.execution_epoch=operations.execution_epoch AND blocker.kind IN ('agent_apply','agent_annotations','agent_execution','agent_stage')))) AND id IN (SELECT candidate.id FROM operations candidate WHERE candidate.state IN ('committed','aborted') AND candidate.receipt_expires_at IS NOT NULL AND candidate.receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=candidate.id) AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=candidate.id) AND NOT EXISTS (SELECT 1 FROM operations blocker WHERE blocker.state='prepared' AND (blocker.target_operation_id=candidate.id OR (candidate.kind='agent_cancel' AND blocker.document_id=candidate.document_id AND blocker.actor_key=candidate.actor_key AND blocker.request_key=candidate.target_request_key) OR (blocker.document_id=candidate.document_id AND blocker.actor_key=candidate.actor_key AND blocker.conversation_id IS NOT NULL AND blocker.conversation_id=candidate.conversation_id AND blocker.execution_epoch IS NOT NULL AND blocker.execution_epoch=candidate.execution_epoch AND blocker.kind IN ('agent_apply','agent_annotations','agent_execution','agent_stage')))) ORDER BY candidate.receipt_expires_at,candidate.id LIMIT ?2)",
                     params![now, i64::try_from(limit).unwrap_or(i64::MAX)],
                 )
