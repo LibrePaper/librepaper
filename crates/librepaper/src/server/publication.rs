@@ -1006,155 +1006,55 @@ impl PublicationStore {
         let Some(catalog) = &store.catalog else {
             return Ok(());
         };
-        let mut after = String::new();
+        // Durable v2 publication bytes are represented by typed `objects`
+        // allocations. The former reservation/accounting tables belonged to
+        // the mutable publication ledger and are absent from a v2 catalog.
+        // Reconcile every allocated object through the shared recovery
+        // boundary so a crash between the immutable PUT and settlement does
+        // not strand quota reservations.
+        use crate::storage::maintenance_v2::V2RecoveryCatalog;
+        let mut after = None;
         loop {
-            let page_after = after.clone();
-            let storage_ids = catalog.execute_catalog(1024, move |catalog| catalog.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT storage_id FROM (SELECT DISTINCT storage_id FROM object_reservations WHERE object_key LIKE 'publications/%' AND storage_id > ?1 UNION SELECT DISTINCT storage_id FROM object_accounting WHERE object_key LIKE 'publications/%' AND storage_id > ?1) ORDER BY storage_id LIMIT 128"
-            ).map_err(crate::storage::catalog::CatalogError::from)?;
-            let rows = statement.query_map([page_after], |row| row.get::<_, String>(0))
-                .map_err(crate::storage::catalog::CatalogError::from)?
-                .collect::<Result<Vec<_>, _>>().map_err(crate::storage::catalog::CatalogError::from);
-            rows
-        })).await.map_err(|error| PublicationError::Storage(error.to_string()))?;
-            if storage_ids.is_empty() {
+            let page = <crate::storage::catalog::Catalog as V2RecoveryCatalog>::prepared_allocations_page(
+                catalog,
+                after.as_deref(),
+                256,
+            )
+            .await
+            .map_err(PublicationError::Storage)?;
+            if page.is_empty() {
                 break;
             }
-            for storage_id in &storage_ids {
-                let lock = publication_lock(storage_id);
-                let _guard = lock.lock().await;
-                self.reconcile_storage_accounting(catalog, storage_id)
-                    .await?;
-            }
-            after = storage_ids.last().cloned().unwrap_or_default();
-        }
-        Ok(())
-    }
-
-    async fn reconcile_storage_accounting(
-        &self,
-        catalog: &Arc<crate::storage::catalog::Catalog>,
-        storage_id: &str,
-    ) -> Result<(), PublicationError> {
-        // A prefix listing keeps the usual ledger sweep metadata-only. A
-        // missing listing entry is still confirmed before accounting is freed.
-        let present = self
-            .blobs
-            .list(&format!("publications/{storage_id}/"))
-            .await?
-            .into_iter()
-            .map(|entry| entry.key)
-            .collect::<std::collections::HashSet<_>>();
-        let mut after_operation = String::new();
-        let mut after_key = String::new();
-        loop {
-            let page_operation = after_operation.clone();
-            let page_key = after_key.clone();
-            let storage = storage_id.to_owned();
-            let reservations = catalog.execute_catalog(1024, move |catalog| catalog.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT operation_id,object_key,old_bytes,new_bytes FROM object_reservations WHERE storage_id=?1 AND object_key LIKE 'publications/%' AND (operation_id > ?2 OR (operation_id=?2 AND object_key > ?3)) ORDER BY operation_id,object_key LIMIT 128"
-            ).map_err(crate::storage::catalog::CatalogError::from)?;
-            let rows = statement.query_map((&storage, &page_operation, &page_key), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)))
-                .map_err(crate::storage::catalog::CatalogError::from)?.collect::<Result<Vec<_>, _>>().map_err(crate::storage::catalog::CatalogError::from);
-            rows
-        })).await.map_err(|error| PublicationError::Storage(error.to_string()))?;
-            for (operation_id, key, old_bytes, new_bytes) in &reservations {
-                match self.blobs.get_versioned(key).await {
-                    Ok((body, version)) if body.len() as i64 == *new_bytes => {
-                        let storage = storage_id.to_owned();
-                        let operation = operation_id.clone();
-                        let key = key.clone();
-                        catalog
-                            .execute_catalog(key.len(), move |catalog| {
-                                catalog.commit_object_change(
-                                    &storage,
-                                    &operation,
-                                    &key,
-                                    "publication",
-                                    &version,
-                                )
-                            })
+            for allocation in &page {
+                match self.blobs.get(&allocation.storage_key).await {
+                    Ok(body) => {
+                        let digest = hex::encode(Sha256::digest(&body));
+                        if digest == allocation.expected_digest {
+                            <crate::storage::catalog::Catalog as V2RecoveryCatalog>::settle_allocation(
+                                catalog,
+                                allocation,
+                                body.len() as u64,
+                                &digest,
+                            )
                             .await
-                            .map_err(|error| PublicationError::Storage(error.to_string()))?;
-                    }
-                    Ok((body, version)) => {
-                        let storage = storage_id.to_owned();
-                        let lookup = key.clone();
-                        let existing = catalog.execute_catalog(key.len(), move |catalog| catalog.with_connection(|connection| {
-                        use rusqlite::OptionalExtension;
-                        connection.query_row("SELECT bytes,version FROM object_accounting WHERE storage_id=?1 AND object_key=?2", (&storage, &lookup), |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
-                            .optional().map_err(crate::storage::catalog::CatalogError::from)
-                    })).await.map_err(|error| PublicationError::Storage(error.to_string()))?;
-                        if existing.as_ref().is_some_and(|(bytes, old_version)| {
-                            *bytes == *old_bytes && old_version == &version
-                        }) {
-                            let storage = storage_id.to_owned();
-                            let operation = operation_id.clone();
-                            let key = key.clone();
-                            catalog
-                                .execute_catalog(key.len(), move |catalog| {
-                                    catalog.abort_object_change(&storage, &operation, &key)
-                                })
-                                .await
-                                .map_err(|error| PublicationError::Storage(error.to_string()))?;
-                        } else {
-                            eprintln!("warning: publication reservation differs from durable object {key}: expected {new_bytes}, found {}; retaining both", body.len());
+                            .map_err(PublicationError::Storage)?;
                         }
+                        // A present object with a mismatched digest remains
+                        // charged for operator inspection; recovery must not
+                        // infer which immutable bytes should win.
                     }
                     Err(BlobError::NotFound) => {
-                        let storage = storage_id.to_owned();
-                        let operation = operation_id.clone();
-                        let key = key.clone();
-                        catalog
-                            .execute_catalog(key.len(), move |catalog| {
-                                catalog.abort_object_change(&storage, &operation, &key)
-                            })
-                            .await
-                            .map_err(|error| PublicationError::Storage(error.to_string()))?;
+                        <crate::storage::catalog::Catalog as V2RecoveryCatalog>::abort_absent_allocation(
+                            catalog,
+                            allocation,
+                        )
+                        .await
+                        .map_err(PublicationError::Storage)?;
                     }
                     Err(error) => return Err(error.into()),
                 }
+                after = Some(allocation.storage_key.clone());
             }
-            if reservations.len() < 128 {
-                break;
-            }
-            let (operation, key, ..) = reservations.last().expect("full reservation page");
-            after_operation = operation.clone();
-            after_key = key.clone();
-        }
-        let mut after_key = String::new();
-        loop {
-            let page_key = after_key.clone();
-            let storage = storage_id.to_owned();
-            let accounted = catalog.execute_catalog(1024, move |catalog| catalog.with_connection(|connection| {
-            let mut statement = connection.prepare("SELECT object_key FROM object_accounting WHERE storage_id=?1 AND object_key LIKE 'publications/%' AND object_key > ?2 ORDER BY object_key LIMIT 128").map_err(crate::storage::catalog::CatalogError::from)?;
-            let rows = statement.query_map((&storage, &page_key), |row| row.get::<_, String>(0)).map_err(crate::storage::catalog::CatalogError::from)?.collect::<Result<Vec<_>, _>>().map_err(crate::storage::catalog::CatalogError::from);
-            rows
-        })).await.map_err(|error| PublicationError::Storage(error.to_string()))?;
-            for key in &accounted {
-                if present.contains(key) {
-                    continue;
-                }
-                match self.blobs.exists(key).await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        let key = key.clone();
-                        catalog
-                            .execute_catalog(key.len(), move |catalog| {
-                                catalog.release_object_accounting_key(&key)
-                            })
-                            .await
-                            .map_err(|error| PublicationError::Storage(error.to_string()))?;
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            if accounted.len() < 128 {
-                break;
-            }
-            after_key = accounted.last().expect("full accounting page").clone();
         }
         Ok(())
     }

@@ -617,8 +617,21 @@ pub async fn publish_display(
         })
         .unwrap(),
     );
-    let manifest = json!({"bundle_sha256":bundle_sha,"source_sha256":"a".repeat(64),"render_config_sha256":"b".repeat(64),"html":{"sha256":html_sha,"bytes":html.len(),"mime":"text/html"},"assets":asset_rows});
-    let id = crate::util::new_request_key();
+    static DISPLAY_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = format!(
+        "display-{}",
+        DISPLAY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let manifest = json!({
+        "publication_id": id,
+        "published_at": "2026-01-01T00:00:00Z",
+        "publisher": "test-publisher",
+        "bundle_sha256": bundle_sha,
+        "source_sha256": "a".repeat(64),
+        "render_config_sha256": "b".repeat(64),
+        "html": {"sha256": html_sha, "bytes": html.len(), "mime": "text/html"},
+        "assets": asset_rows,
+    });
     let current: Value = client()
         .get(format!("{base}/api/documents/{slug}/publication"))
         .header("cookie", cookie)
