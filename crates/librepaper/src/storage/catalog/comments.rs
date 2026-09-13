@@ -501,22 +501,6 @@ impl Catalog {
                 ));
             }
             validate_new_request_key(request_id)?;
-            Self::admit_operation_slot(tx, Some(&doc), "agent_apply")?;
-            let writer_busy: bool = tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM operations
-                       WHERE document_id=?1 AND state='prepared'
-                         AND kind IN ('source_publish','checkpoint','journal_append',
-                                      'journal_compact','agent_apply'))",
-                    [&doc],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if writer_busy {
-                return Err(CatalogError::Conflict(
-                    "document has another prepared source writer".into(),
-                ));
-            }
             let operation_id = hex::encode(crate::auth::random_bytes(16));
             let writer_generation: String = tx
                 .query_row(
@@ -805,6 +789,22 @@ impl Catalog {
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?;
+            Self::admit_operation_slot(tx, Some(&doc), "agent_apply")?;
+            let writer_busy: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM operations
+                       WHERE document_id=?1 AND state='prepared'
+                         AND kind IN ('source_publish','checkpoint','journal_append',
+                                      'journal_compact','agent_apply'))",
+                    [&doc],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if writer_busy {
+                return Err(CatalogError::Conflict(
+                    "document has another prepared source writer".into(),
+                ));
+            }
             let plan = serde_json::json!({
                 "version": 2,
                 "effect": "suggestion_accept",
