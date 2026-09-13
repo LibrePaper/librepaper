@@ -1654,9 +1654,15 @@ mod tests {
             blob.get_range("asset", 0..blob_len).await
         });
         started.notified().await;
-        tokio::time::sleep(std::time::Duration::from_millis(8)).await;
-        let after = asset_lease_expiry(&fixture);
-        assert!(after >= before);
+        let mut after = before;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            after = asset_lease_expiry(&fixture);
+            if after > before {
+                break;
+            }
+        }
+        assert!(after > before, "heartbeat never advanced the lease expiry");
         release.notify_one();
         assert!(get.await.unwrap().is_ok());
         heartbeat.finish().await.unwrap();
@@ -1671,7 +1677,15 @@ mod tests {
         );
         tokio::time::sleep(std::time::Duration::from_millis(6)).await;
         drop(heartbeat);
-        let stopped = asset_lease_expiry(&fixture);
+        let mut stopped = asset_lease_expiry(&fixture);
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            let current = asset_lease_expiry(&fixture);
+            if current == stopped {
+                break;
+            }
+            stopped = current;
+        }
         tokio::time::sleep(std::time::Duration::from_millis(8)).await;
         assert_eq!(asset_lease_expiry(&fixture), stopped);
     }

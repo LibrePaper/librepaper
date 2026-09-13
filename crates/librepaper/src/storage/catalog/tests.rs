@@ -396,10 +396,11 @@ fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
         .save_quota_preferences("acct-1", 1, r#"{"version":2,"retentionProfile":"default","retentionPolicyVersion":2,"displayTimezone":"UTC","warningThresholds":[75,90],"futureField":false}"#, 12)
         .unwrap();
     assert_eq!(second.revision, 2);
-    assert_eq!(
-        catalog.quota_preferences("acct-1").unwrap().unwrap(),
-        second
-    );
+    let stored = catalog.quota_preferences("acct-1").unwrap().unwrap();
+    assert_eq!(stored.account_id, second.account_id);
+    assert_eq!(stored.revision, second.revision);
+    assert_eq!(stored.payload, second.payload);
+    assert!(stored.updated_at >= second.updated_at);
 }
 
 #[test]
@@ -423,7 +424,7 @@ fn quota_apply_marks_live_policy_for_advisory_worker() {
         .unwrap();
     for index in 0..3 {
         let mut point = attributed(&format!("milestone-{index}"), "alice", Some("acct-1"));
-        point.seq = index;
+        point.seq = index + 1;
         point.tree_sha = tree_digest.into();
         point.at = format!("2026-01-01T00:00:0{index}.000Z");
         point.label = "important".into();

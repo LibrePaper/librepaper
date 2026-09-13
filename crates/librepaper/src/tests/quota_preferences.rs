@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use sha2::Digest;
 use serde_json::{json, Value};
 
 use super::*;
@@ -60,6 +61,33 @@ fn add_checkpoint(
     tree_sha: &str,
     at: i64,
 ) {
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let tree_object_id = hex::encode(sha2::Sha256::digest(tree_sha.as_bytes()))[..32].to_owned();
+    catalog
+        .with_connection(|connection| {
+            let available: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM objects WHERE document_id=(SELECT id FROM documents WHERE slug=?1)
+                   AND kind='source_tree' AND digest=?2 AND state='available')",
+                rusqlite::params![slug, tree_sha],
+                |row| row.get(0),
+            )?;
+            if !available {
+                connection.execute(
+                    "INSERT INTO objects
+                     (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                     VALUES((SELECT id FROM documents WHERE slug=?1),?2,?3,'source_tree','available',?4,0,0,?5)",
+                    rusqlite::params![
+                        slug,
+                        tree_object_id,
+                        format!("objects/{slug}/{tree_object_id}"),
+                        tree_sha,
+                        crate::util::now_millis(),
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("source tree fixture");
     server
         .instance
         .store

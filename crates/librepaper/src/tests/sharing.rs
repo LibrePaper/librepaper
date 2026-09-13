@@ -556,17 +556,22 @@ async fn an_expired_link_reads_as_no_link() {
     let key = mint(&server.url, "alice", &slug, "editor", "30d").await;
     assert_eq!(role_of(&server.url, "", &key, &slug).await, "commenter");
 
-    let expired_at = crate::util::now_unix() - 3600;
-    let created_at = expired_at - 3600;
+    let expired_at = crate::util::now_millis() - 3_600_000;
+    let created_at = expired_at - 3_600_000;
     server
         .instance
         .store
-        .modify(&slug, |entry| {
-            entry.links[0].since = crate::util::format_unix(created_at);
-            entry.links[0].until = crate::util::format_unix(expired_at);
+        .catalog
+        .as_ref()
+        .unwrap()
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE links SET created_at=?1,expires_at=?2
+                 WHERE document_id=(SELECT id FROM documents WHERE slug=?3)",
+                rusqlite::params![created_at, expired_at, slug],
+            )?;
             Ok(())
         })
-        .await
         .expect("the link is expired");
     assert_eq!(
         refused_with(&server.url, &key, &slug).await,
@@ -577,11 +582,17 @@ async fn an_expired_link_reads_as_no_link() {
     server
         .instance
         .store
-        .modify(&slug, |entry| {
-            entry.links[0].until = crate::util::format_unix(crate::util::now_unix() + 3600);
+        .catalog
+        .as_ref()
+        .unwrap()
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE links SET expires_at=?1
+                 WHERE document_id=(SELECT id FROM documents WHERE slug=?2)",
+                rusqlite::params![crate::util::now_millis() + 3_600_000, slug],
+            )?;
             Ok(())
         })
-        .await
         .expect("the link is renewed");
     // The deployment lets signed-in accounts edit, while an anonymous link
     // caller is capped at the commenter ceiling even after expiry passes.
