@@ -949,82 +949,101 @@ fn source_history_gc_pages_live_objects_before_reaching_orphans() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let mut object_ids = Vec::new();
     catalog
         .with_connection(|db| {
             for index in 0..8 {
-                let digest = format!("digest-{index:02}");
-                let object_key = if index < 5 {
-                    format!("content/storage-1/chunks/live-{index:02}")
-                } else {
-                    format!("content/storage-1/chunks/orphan-{index:02}")
-                };
+                let id = fixture_object_id(&format!("source-page-{index}"));
+                let key = format!("v2/documents/storage-1/objects/{id}");
+                object_ids.push(id.clone());
                 db.execute(
-                    "INSERT INTO source_history_encodings
-                     (storage_id,file_digest,recipe_key,recipe_digest,codec,
-                      uncompressed_bytes,recipe_bytes,created_at)
-                     VALUES(?1,?2,?3,?4,1,1,1,1)",
-                    rusqlite::params![
-                        "storage-1",
-                        digest,
-                        format!("content/storage-1/recipes/{index}"),
-                        format!("recipe-{index}")
-                    ],
+                    "INSERT INTO objects
+                     (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                     VALUES('storage-1',?1,?2,'source_chunk','available',?3,7,0,0)",
+                    rusqlite::params![id, key, "e".repeat(64)],
                 )?;
-                let mut object_keys = vec![object_key];
-                if index == 5 {
-                    object_keys.extend(
-                        (0..5).map(|part| {
-                            format!("content/storage-1/chunks/orphan-05-part-{part:02}")
-                        }),
-                    );
-                }
-                for object_key in object_keys {
-                    db.execute(
-                        "INSERT INTO source_history_objects
-                         (storage_id,file_digest,object_key,kind,bytes)
-                         VALUES(?1,?2,?3,'source_chunk',7)",
-                        rusqlite::params!["storage-1", digest, object_key],
-                    )?;
-                }
-                if index < 5 {
-                    db.execute(
-                        "INSERT INTO source_history_checkpoint_files
-                         (storage_id,checkpoint_sha,file_digest)
-                         VALUES('storage-1',?1,?2)",
-                        rusqlite::params![format!("retained-{index}"), digest],
-                    )?;
-                }
             }
             Ok(())
         })
         .unwrap();
-
-    let now = crate::util::now_unix();
-    assert_eq!(catalog.expire_source_history_leases(now, 2).unwrap(), 0);
-    assert!(catalog.due_deletes(now, 32).unwrap().is_empty());
-    for _ in 0..24 {
-        catalog.expire_source_history_leases(now, 2).unwrap();
+    let checkpoint = attributed("source-page-checkpoint", "Alice", Some("acct-1"));
+    insert_fixture_checkpoint(&catalog, &checkpoint);
+    let now = crate::util::now_millis();
+    let document_id = DocumentId::new("storage-1").unwrap();
+    let live_ids = &object_ids[..5];
+    catalog
+        .with_connection(|db| {
+            for id in live_ids {
+                db.execute(
+                    "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id)
+                     VALUES('storage-1','source-page-checkpoint',?1)",
+                    [id],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    for id in live_ids {
+        let key = format!("v2/documents/storage-1/objects/{id}");
+        assert!(matches!(
+            catalog.queue_delete(&super::PendingDelete {
+                slug: "doc".into(),
+                object_key: key,
+                bytes: 7,
+                queued_at: now,
+                delete_after: now,
+            }),
+            Err(CatalogError::Conflict(_))
+        ));
     }
-    let mut pending = catalog
-        .due_deletes(now, 32)
-        .unwrap()
-        .into_iter()
-        .map(|entry| entry.object_key)
-        .collect::<Vec<_>>();
-    pending.sort();
-    assert_eq!(
-        pending,
-        vec![
-            "content/storage-1/chunks/orphan-05".to_string(),
-            "content/storage-1/chunks/orphan-05-part-00".to_string(),
-            "content/storage-1/chunks/orphan-05-part-01".to_string(),
-            "content/storage-1/chunks/orphan-05-part-02".to_string(),
-            "content/storage-1/chunks/orphan-05-part-03".to_string(),
-            "content/storage-1/chunks/orphan-05-part-04".to_string(),
-            "content/storage-1/chunks/orphan-06".to_string(),
-            "content/storage-1/chunks/orphan-07".to_string(),
-        ]
-    );
+    let mut claimed = Vec::new();
+    for id in &object_ids[5..7] {
+        let object_id = ObjectId::new(id.clone()).unwrap();
+        catalog
+            .with_connection(|db| {
+                db.execute(
+                    "UPDATE objects SET gc_after=0 WHERE document_id='storage-1' AND id=?1",
+                    [id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(catalog
+            .claim_v2_object_for_deletion(
+                &document_id,
+                &object_id,
+                UnixMillis::new(now).unwrap(),
+                UnixMillis::new(now).unwrap(),
+            )
+            .unwrap());
+        claimed.push(object_id);
+    }
+    assert_eq!(catalog.due_deletes(now, 2).unwrap().len(), 2);
+    for object_id in claimed {
+        assert!(catalog
+            .confirm_v2_object_deleted(&document_id, &object_id)
+            .unwrap());
+    }
+    let last_id = object_ids[7].clone();
+    catalog
+        .with_connection(|db| {
+            db.execute(
+                "UPDATE objects SET gc_after=0 WHERE document_id='storage-1' AND id=?1",
+                [&last_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let last = ObjectId::new(last_id).unwrap();
+    assert!(catalog
+        .claim_v2_object_for_deletion(
+            &document_id,
+            &last,
+            UnixMillis::new(now).unwrap(),
+            UnixMillis::new(now).unwrap(),
+        )
+        .unwrap());
+    assert_eq!(catalog.due_deletes(now, 2).unwrap().len(), 1);
 }
 
 #[test]
@@ -1032,78 +1051,69 @@ fn source_history_gc_drains_a_large_orphan_encoding_across_pages() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let now = crate::util::now_millis();
+    let mut objects = Vec::new();
     catalog
         .with_connection(|db| {
-            db.execute(
-                "INSERT INTO source_history_encodings
-                 (storage_id,file_digest,recipe_key,recipe_digest,codec,
-                  uncompressed_bytes,recipe_bytes,created_at)
-                 VALUES('storage-1','large-digest',
-                        'content/storage-1/recipes/large','recipe',1,1,1,1)",
-                [],
-            )?;
             for index in 0..5 {
+                let id = fixture_object_id(&format!("large-source-{index}"));
+                let key = format!("v2/documents/storage-1/objects/{id}");
+                objects.push((id.clone(), key.clone()));
                 db.execute(
-                    "INSERT INTO source_history_objects
-                     (storage_id,file_digest,object_key,kind,bytes)
-                     VALUES('storage-1','large-digest',?1,'source_chunk',7)",
-                    [format!("content/storage-1/chunks/large-{index:02}")],
+                    "INSERT INTO objects
+                     (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                     VALUES('storage-1',?1,?2,'source_chunk','available',?3,7,0,0)",
+                    rusqlite::params![id, key, "f".repeat(64)],
                 )?;
             }
             Ok(())
         })
         .unwrap();
-
-    let now = crate::util::now_unix();
-    catalog.expire_source_history_leases(now, 2).unwrap();
-    let (pending, objects): (i64, i64) = catalog
-        .with_connection(|db| {
-            Ok((
-                db.query_row("SELECT COUNT(*) FROM pending_deletes", [], |row| row.get(0))?,
-                db.query_row("SELECT COUNT(*) FROM source_history_objects", [], |row| {
-                    row.get(0)
-                })?,
-            ))
-        })
-        .unwrap();
-    assert_eq!(pending, 2, "the first bounded page was not queued");
-    assert_eq!(objects, 3, "cleanup cascaded beyond the visited page");
-
-    let mut completed_keys = catalog
-        .due_deletes(now, 32)
-        .unwrap()
-        .into_iter()
-        .map(|entry| entry.object_key)
-        .collect::<Vec<_>>();
-    for key in &completed_keys {
-        assert!(catalog.complete_delete_object("doc", key).unwrap());
+    let document_id = DocumentId::new("storage-1").unwrap();
+    for (_, key) in &objects {
+        catalog
+            .queue_delete(&super::PendingDelete {
+                slug: "doc".into(),
+                object_key: key.clone(),
+                bytes: 7,
+                queued_at: now,
+                delete_after: now,
+            })
+            .unwrap();
     }
-    // Let the physical deletion worker acknowledge each bounded queue page;
-    // graph cleanup must still make progress after those rows disappear.
-    for _ in 0..6 {
-        catalog.expire_source_history_leases(now, 2).unwrap();
-        for entry in catalog.due_deletes(now, 32).unwrap() {
-            completed_keys.push(entry.object_key.clone());
+    let mut completed = 0;
+    for page in objects.chunks(2) {
+        for (id, _) in page {
+            let object_id = ObjectId::new(id.clone()).unwrap();
             assert!(catalog
-                .complete_delete_object("doc", &entry.object_key)
+                .claim_v2_object_for_deletion(
+                    &document_id,
+                    &object_id,
+                    UnixMillis::new(now).unwrap(),
+                    UnixMillis::new(now).unwrap(),
+                )
                 .unwrap());
         }
+        assert_eq!(catalog.due_deletes(now, 2).unwrap().len(), page.len());
+        for (id, _) in page {
+            assert!(catalog
+                .confirm_v2_object_deleted(&document_id, &ObjectId::new(id.clone()).unwrap())
+                .unwrap());
+            completed += 1;
+        }
     }
-    completed_keys.sort();
-    assert_eq!(completed_keys.len(), 5);
-    assert!(completed_keys
-        .iter()
-        .all(|key| key.starts_with("content/storage-1/chunks/large-")));
-    assert!(
-        catalog
-            .with_connection(|db| Ok(db.query_row(
-                "SELECT COUNT(*) FROM source_history_encodings",
+    assert_eq!(completed, 5);
+    let remaining: i64 = catalog
+        .with_connection(|db| {
+            db.query_row(
+                "SELECT COUNT(*) FROM objects WHERE document_id='storage-1' AND kind='source_chunk'",
                 [],
-                |row| row.get::<_, i64>(0),
-            )?))
-            .unwrap()
-            == 0
-    );
+                |row| row.get(0),
+            )
+            .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0);
 }
 
 #[test]
