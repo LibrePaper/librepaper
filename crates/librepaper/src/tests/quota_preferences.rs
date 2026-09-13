@@ -399,10 +399,11 @@ async fn thinning_preserves_open_annotation_and_newest_checkpoint() {
     let slug = publish_and_slug(&server).await;
     let (protected, routine_candidate, newest) = seed_old_bucket(&server, &slug);
     let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let annotation_request = crate::util::new_request_key();
     catalog
         .insert_comment_request_authorized(
             &open_annotation(&slug, &protected),
-            &crate::util::new_request_key(),
+            &annotation_request,
             &"a".repeat(64),
             crate::util::now_millis(),
             crate::storage::catalog::AnnotationAuthority {

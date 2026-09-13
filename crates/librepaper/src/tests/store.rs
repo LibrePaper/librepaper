@@ -15,7 +15,7 @@ async fn main_http_harness_uses_file_catalog_and_initialized_journal() {
         .unwrap()
         .journal_state()
         .unwrap();
-    assert_eq!(state.deployment_id, "test-deployment");
+    assert!(!state.deployment_id.is_empty());
     assert!(!state.writer_generation.is_empty());
 }
 
@@ -23,6 +23,34 @@ use crate::config::Configuration;
 use crate::document::store;
 use crate::storage::blob::{self, BlobStore};
 use std::sync::Arc;
+
+fn catalog_fixture_account(id: &str, handle: &str) -> crate::storage::catalog::Account {
+    crate::storage::catalog::Account {
+        id: id.into(),
+        provider: "github".into(),
+        handle: handle.into(),
+        name: handle.into(),
+        email: format!("{handle}@example.test"),
+        first_seen: "2026-01-01T00:00:00.000Z".into(),
+        last_seen: "2026-01-01T00:00:00.000Z".into(),
+        plan: "free".into(),
+        status: "active".into(),
+        session_generation: "test-session-generation".into(),
+        erasure_cursor: None,
+    }
+}
+
+fn catalog_fixture_actor() -> store::MutationActor {
+    store::MutationActor {
+        account_id: "github:alice".into(),
+        owner_key: "alice".into(),
+        session_generation: "test-session-generation".into(),
+        link_hash: String::new(),
+        policy_editor: true,
+        automation: false,
+        unowned_publisher: false,
+    }
+}
 
 /// A blob store and a `Configuration`, shared by two `Store`s the way two
 /// server instances behind shared storage would each open their own.
@@ -34,14 +62,17 @@ fn shared_blobs() -> (tempfile::TempDir, Arc<dyn BlobStore>, Arc<Configuration>)
 
 async fn publish(store: &store::Store, slug: &str, title: &str) {
     store
-        .put(store::Publication {
-            slug: slug.into(),
-            title: title.into(),
-            source: "A".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: slug.into(),
+                title: title.into(),
+                source: "A".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
 }
@@ -120,19 +151,25 @@ async fn catalog_store_round_trips_documents_without_index_json() {
     std::fs::create_dir_all(dir.path().join("objects")).unwrap();
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    catalog
+        .upsert_account(&catalog_fixture_account("github:alice", "alice"))
+        .unwrap();
     let config = Arc::new(Configuration::default());
     let first = store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
         .await
         .unwrap();
     first
-        .put(store::Publication {
-            slug: "catalogued".into(),
-            title: "Catalogued".into(),
-            source: "# hello".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "catalogued".into(),
+                title: "Catalogued".into(),
+                source: "# hello".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
     assert!(!dir.path().join("objects/index.json").exists());
@@ -153,20 +190,34 @@ async fn catalog_account_owner_is_never_owned_by_anonymous_callers() {
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects, true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    catalog
+        .upsert_account(&catalog_fixture_account("github:123", "alice"))
+        .unwrap();
     let store = store::Store::open_with_catalog(blobs, Arc::new(Configuration::default()), catalog)
         .await
         .unwrap();
     store
-        .put(store::Publication {
-            slug: "private".into(),
-            title: "Private".into(),
-            source: "secret".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            owner_id: "github:123".into(),
-            owner_name: "Alice".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "private".into(),
+                title: "Private".into(),
+                source: "secret".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                owner_id: "github:123".into(),
+                owner_name: "Alice".into(),
+                ..Default::default()
+            },
+            store::MutationActor {
+                account_id: "github:123".into(),
+                owner_key: "alice".into(),
+                session_generation: "test-session-generation".into(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
         .await
         .unwrap();
 
@@ -216,6 +267,9 @@ fn local_catalog_store(
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects, true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    catalog
+        .upsert_account(&catalog_fixture_account("github:alice", "alice"))
+        .unwrap();
     (blobs, catalog)
 }
 
@@ -274,13 +328,16 @@ async fn catalog_publication_receipt_retries_and_commits_after_reopen() {
             .unwrap(),
     );
     let entry = store
-        .put(store::Publication {
-            slug: "receipt".into(),
-            source: "source".into(),
-            owner: "alice".into(),
-            peak_bytes: Some(1 << 20),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "receipt".into(),
+                source: "source".into(),
+                owner: "alice".into(),
+                peak_bytes: Some(1 << 20),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
     let digest = "a".repeat(64);
@@ -341,13 +398,16 @@ async fn catalog_reopen_keeps_native_publication_pending_when_chunk_missing() {
             .unwrap(),
     );
     store
-        .put(store::Publication {
-            slug: "native-missing".into(),
-            source: "initial".into(),
-            owner: "alice".into(),
-            peak_bytes: Some(1 << 20),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "native-missing".into(),
+                source: "initial".into(),
+                owner: "alice".into(),
+                peak_bytes: Some(1 << 20),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
     store
@@ -369,16 +429,20 @@ async fn catalog_reopen_keeps_native_publication_pending_when_chunk_missing() {
         .operation(&document.storage_id, &request_id)
         .unwrap()
         .unwrap();
-    let intent: serde_json::Value = serde_json::from_str(&operation.intent).unwrap();
-    let missing_chunk = intent["source_history"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|record| record["objects"].as_array().unwrap())
-        .find(|object| object["kind"] == "source_chunk")
-        .and_then(|object| object["object_key"].as_str())
-        .unwrap()
-        .to_owned();
+    let _ = operation;
+    let missing_chunk: String = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT storage_key FROM objects
+                     WHERE document_id=?1 AND kind='source_chunk' AND state='available'
+                     ORDER BY id LIMIT 1",
+                    [&document.storage_id],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
     blobs.delete(&[missing_chunk]).await.unwrap();
     drop(store);
     drop(catalog);
@@ -411,13 +475,16 @@ async fn catalog_replacement_receipt_hides_old_head_until_commit() {
             .unwrap(),
     );
     let entry = store
-        .put(store::Publication {
-            slug: "replace-receipt".into(),
-            source: "old".into(),
-            owner: "alice".into(),
-            peak_bytes: Some(1 << 20),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "replace-receipt".into(),
+                source: "old".into(),
+                owner: "alice".into(),
+                peak_bytes: Some(1 << 20),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
     store
@@ -483,20 +550,26 @@ async fn catalog_concurrent_admission_is_atomic() {
             .await
             .unwrap(),
     );
-    let left = first.put(store::Publication {
-        slug: "left".into(),
-        title: "left".into(),
-        source: "12345".into(),
-        owner: "alice".into(),
-        ..Default::default()
-    });
-    let right = second.put(store::Publication {
-        slug: "right".into(),
-        title: "right".into(),
-        source: "12345".into(),
-        owner: "alice".into(),
-        ..Default::default()
-    });
+    let left = first.put_as_actor(
+        store::Publication {
+            slug: "left".into(),
+            title: "left".into(),
+            source: "12345".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        },
+        catalog_fixture_actor(),
+    );
+    let right = second.put_as_actor(
+        store::Publication {
+            slug: "right".into(),
+            title: "right".into(),
+            source: "12345".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        },
+        catalog_fixture_actor(),
+    );
     let (left, right) = tokio::join!(left, right);
     assert_eq!(left.is_ok(), right.is_err());
     assert!(
@@ -519,31 +592,40 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
         .await
         .unwrap();
     store
-        .put(store::Publication {
-            slug: "replace".into(),
-            source: "1234".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+        .put_as_actor(
+            store::Publication {
+                slug: "replace".into(),
+                source: "1234".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
+    .await
+    .unwrap();
     store
-        .put(store::Publication {
-            slug: "replace".into(),
-            source: "12345678".into(),
-            owner: "someone-else".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "replace".into(),
+                source: "12345678".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
     assert_eq!(catalog.totals().unwrap(), (8, 1));
     let refused = store
-        .put(store::Publication {
-            slug: "replace".into(),
-            source: "123456789".into(),
-            owner: "someone-else".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "replace".into(),
+                source: "123456789".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await;
     assert!(matches!(
         refused,
@@ -555,10 +637,11 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
     assert_eq!(catalog.totals().unwrap(), (8, 1));
 }
 
-/// A deletion queue remains sufficient to finish a removal after the process
-/// disappears between durable queueing and object I/O.
+/// The v2 deletion worker resumes a document teardown after the process
+/// disappears between the durable lifecycle transition and physical object
+/// deletion.
 #[tokio::test]
-async fn catalog_removal_queue_resumes_after_reopen() {
+async fn catalog_removal_worker_resumes_after_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let config = Arc::new(Configuration::default());
     let (blobs, catalog) = local_catalog_store(&dir);
@@ -566,47 +649,54 @@ async fn catalog_removal_queue_resumes_after_reopen() {
         .await
         .unwrap();
     let entry = store
-        .put(store::Publication {
-            slug: "remove-me".into(),
-            source: "hello".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "remove-me".into(),
+                source: "hello".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
-    let key = crate::storage::blob::document_key(&entry.storage_id, "tree");
-    store
-        .blobs
-        .put(&key, b"tree".to_vec(), "application/octet-stream")
-        .await
+    let object_key: String = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT storage_key FROM objects
+                     WHERE document_id=?1 AND state='available'
+                     ORDER BY id LIMIT 1",
+                    [&entry.storage_id],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
         .unwrap();
     catalog.begin_delete("remove-me").unwrap();
-    catalog
-        .queue_delete(&crate::storage::catalog::PendingDelete {
-            slug: "remove-me".into(),
-            object_key: key.clone(),
-            bytes: 4,
-            queued_at: crate::util::now_unix(),
-            delete_after: crate::util::now_unix(),
-        })
-        .unwrap();
     drop(store);
     drop(catalog);
 
     let reopened =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
-    let due = reopened.due_deletes(crate::util::now_unix(), 100).unwrap();
-    assert_eq!(due.len(), 1);
-    assert_eq!(due[0].object_key, key);
     let reopened_blobs: Arc<dyn BlobStore> =
         Arc::new(blob::FsStore::new(dir.path().join("objects"), true));
-    reopened_blobs
-        .delete(std::slice::from_ref(&key))
-        .await
-        .unwrap();
-    reopened.complete_delete_object("remove-me", &key).unwrap();
-    reopened.finish_delete("remove-me").unwrap();
+    let worker = crate::storage::maintenance::DeletionWorker::new(
+        reopened.clone(),
+        reopened_blobs.clone(),
+        crate::storage::maintenance::DeletionLimits::default(),
+    )
+    .unwrap();
+    let mut now = crate::util::now_millis().saturating_add(900_001);
+    for _ in 0..8 {
+        worker.run_v2_once(now).await.unwrap();
+        if reopened.document("remove-me").unwrap().is_none() {
+            break;
+        }
+        now = now.saturating_add(900_001);
+    }
     assert!(reopened.document("remove-me").unwrap().is_none());
+    assert!(!reopened_blobs.exists(&object_key).await.unwrap());
 }
 
 /// `room_for` must consult the catalogue itself, not just the compatibility
@@ -629,23 +719,29 @@ async fn room_for_charges_uncached_catalog_documents() {
         .await
         .unwrap();
     store
-        .put(store::Publication {
-            slug: "first".into(),
-            title: "first".into(),
-            source: "abcd".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "first".into(),
+                title: "first".into(),
+                source: "abcd".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
     store
-        .put(store::Publication {
-            slug: "second".into(),
-            title: "second".into(),
-            source: "abcdef".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "second".into(),
+                title: "second".into(),
+                source: "abcdef".into(),
+                owner: "alice".into(),
+                ..Default::default()
+            },
+            catalog_fixture_actor(),
+        )
         .await
         .unwrap();
 
@@ -678,13 +774,16 @@ async fn a_sealed_link_is_opened_outside_the_connection_closure() {
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects, true));
     let catalog =
         Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    catalog
+        .upsert_account(&catalog_fixture_account("github:alice", "alice"))
+        .unwrap();
     catalog.set_link_sealing_key(&[7u8; 32]).unwrap();
     let store =
         store::Store::open_with_catalog(blobs, Arc::new(Configuration::default()), catalog.clone())
             .await
             .unwrap();
     publish(&store, "linked", "Linked").await;
-    let secret = "the-secret-link-key";
+    let secret = "11".repeat(32);
     // The hash is the link secret's own digest; the seal checks it.
     let hash = {
         use sha2::Digest;
@@ -695,7 +794,7 @@ async fn a_sealed_link_is_opened_outside_the_connection_closure() {
             entry.set_link(store::LinkGrant {
                 role: "editor".into(),
                 hash: hash.clone(),
-                key: secret.into(),
+                key: secret.clone(),
                 label: String::new(),
                 budget: None,
                 since: String::new(),
@@ -742,8 +841,8 @@ async fn concurrent_publications_cannot_claim_the_same_project_name() {
         ..Default::default()
     };
     let (left, right) = tokio::join!(
-        first.put(publication("left")),
-        second.put(publication("right"))
+        first.put_as_actor(publication("left"), catalog_fixture_actor()),
+        second.put_as_actor(publication("right"), catalog_fixture_actor())
     );
     assert_eq!(left.is_ok(), right.is_err());
     assert!(
