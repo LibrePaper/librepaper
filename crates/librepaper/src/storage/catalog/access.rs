@@ -233,7 +233,7 @@ impl Catalog {
             "SELECT EXISTS(SELECT 1 FROM documents d
                JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'
                JOIN accounts a ON a.id=?2
-              WHERE d.slug=?1 AND d.status='active'
+              WHERE d.slug=?1 AND d.status IN ('active','creating')
                 AND a.status='active' AND a.session_generation=?3
                 AND (d.owner_id=?2 OR (?4=1 AND EXISTS(
                     SELECT 1 FROM grants g WHERE g.document_id=d.id
@@ -282,13 +282,16 @@ impl Catalog {
                 Err(CatalogError::Conflict("link sealing key changed".into()))
             };
         }
-        let mut keyring: serde_json::Value = serde_json::from_str(&durable.1)
-            .map_err(|error| CatalogError::Invalid(format!("invalid durable link keyring: {error}")))?;
+        let mut keyring: serde_json::Value = serde_json::from_str(&durable.1).map_err(|error| {
+            CatalogError::Invalid(format!("invalid durable link keyring: {error}"))
+        })?;
         let entries = keyring
             .get_mut("keys")
             .and_then(serde_json::Value::as_array_mut)
             .ok_or_else(|| CatalogError::Invalid("durable link keyring has no keys".into()))?;
-        if !entries.iter().any(|entry| entry.get("id").and_then(serde_json::Value::as_str) == Some(key_id.as_str())) {
+        if !entries.iter().any(|entry| {
+            entry.get("id").and_then(serde_json::Value::as_str) == Some(key_id.as_str())
+        }) {
             entries.push(serde_json::json!({"id": key_id, "created_at": super::unix_millis()}));
         }
         let encoded = serde_json::to_string(&keyring)
@@ -318,16 +321,24 @@ impl Catalog {
             .map_err(|_| CatalogError::Busy)?;
         let durable: String = self.with_connection(|connection| {
             connection
-                .query_row("SELECT keyring_json FROM server_state WHERE id=1", [], |row| row.get(0))
+                .query_row(
+                    "SELECT keyring_json FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
                 .map_err(CatalogError::from)
         })?;
-        let mut keyring: serde_json::Value = serde_json::from_str(&durable)
-            .map_err(|error| CatalogError::Invalid(format!("invalid durable link keyring: {error}")))?;
+        let mut keyring: serde_json::Value = serde_json::from_str(&durable).map_err(|error| {
+            CatalogError::Invalid(format!("invalid durable link keyring: {error}"))
+        })?;
         let entries = keyring
             .get_mut("keys")
             .and_then(serde_json::Value::as_array_mut)
             .ok_or_else(|| CatalogError::Invalid("durable link keyring has no keys".into()))?;
-        if !entries.iter().any(|entry| entry.get("id").and_then(serde_json::Value::as_str) == Some(id.as_str())) {
+        if !entries
+            .iter()
+            .any(|entry| entry.get("id").and_then(serde_json::Value::as_str) == Some(id.as_str()))
+        {
             entries.push(serde_json::json!({"id": id, "created_at": super::unix_millis()}));
         }
         let encoded = serde_json::to_string(&keyring)

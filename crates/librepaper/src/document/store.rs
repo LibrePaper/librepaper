@@ -33,10 +33,12 @@ use crate::auth::stored_id;
 use crate::config::Configuration;
 use crate::storage::blob::{
     document_key, document_prefix, examples_key, room_key, room_lock_key, source_key,
-    source_prefix, BlobError, BlobStore, BlobVersion, INDEX_KEY,
+    source_prefix, BlobError, BlobStore, BlobVersion, ObjectId as BlobObjectId, INDEX_KEY,
 };
 use crate::storage::catalog::{
-    Account, Catalog, CatalogError, OperationActor, OperationRequest,
+    Account, Catalog, CatalogError, CheckpointCommit, CheckpointId, DocumentId, LeasePurpose,
+    ObjectId, ObjectKind, OperationActor, OperationKind, OperationRequest, SourceFormat,
+    UnixMillis, V2AdmissionLimits, V2ObjectAllocation, V2OperationInput,
 };
 use crate::util::new_id;
 use crate::util::{now_unix, parse_timestamp, timestamp};
@@ -950,7 +952,10 @@ impl Store {
     /// uploads racing for the last of a quota cannot both be admitted.
     pub async fn put(&self, v: Publication) -> Result<IndexEntry, PutError> {
         if self.catalog.is_some() {
-            return self.put_catalog(v).await;
+            return Err(PutError::Authorization {
+                status: 401,
+                message: "catalog publication requires an authenticated mutation actor",
+            });
         }
         let size = v.source.len() as i64;
         let mut state = self.state.lock().await;
@@ -1131,6 +1136,21 @@ impl Store {
             return Err(PutError::Storage(err.to_string()));
         }
         Ok(entry)
+    }
+
+    /// Publish a catalogue-backed source with authority captured at the
+    /// request boundary. Publication metadata never supplies ownership or a
+    /// session generation.
+    pub async fn put_as_actor(
+        &self,
+        v: Publication,
+        actor: MutationActor,
+    ) -> Result<IndexEntry, PutError> {
+        if self.catalog.is_some() {
+            self.put_catalog(v, actor).await
+        } else {
+            self.put(v).await
+        }
     }
 
     /// Authoritative publication path for local SQLite deployments.  The
@@ -1320,220 +1340,543 @@ impl Store {
         Ok(())
     }
 
-    async fn put_catalog(&self, v: Publication) -> Result<IndexEntry, PutError> {
+    async fn put_catalog(
+        &self,
+        v: Publication,
+        actor: MutationActor,
+    ) -> Result<IndexEntry, PutError> {
         let catalog = self
             .catalog
             .as_ref()
             .expect("put_catalog requires a catalogue");
         let existing = document_row(catalog, &v.slug)
             .await
-            .map_err(|err| PutError::Storage(err.to_string()))?;
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let now_ms = crate::util::now_millis();
         let now = timestamp();
-        let (owner_id, owner_key, title, created_at, example, storage_id, source_format, main) =
-            if let Some(document) = existing.as_ref() {
-                (
-                    document.owner_id.clone(),
-                    document.owner_key.clone(),
-                    if v.title.is_empty() {
-                        document.title.clone()
-                    } else {
-                        v.title.clone()
-                    },
-                    document.created_at.clone(),
-                    document.example,
-                    document.storage_id.clone(),
-                    if v.source_format.is_empty() {
-                        document.source_format.clone()
-                    } else {
-                        v.source_format.clone()
-                    },
-                    if v.main.is_empty() {
-                        document.main.clone()
-                    } else {
-                        v.main.clone()
-                    },
-                )
-            } else {
-                let owner_id = (!v.owner_id.is_empty()).then(|| v.owner_id.clone());
-                let owner_key = if owner_id.is_some() {
-                    String::new()
-                } else if v.owner.is_empty() {
-                    format!("example:{}", v.slug)
-                } else {
-                    v.owner.clone()
-                };
-                (
-                    owner_id,
-                    owner_key,
-                    v.title.clone(),
-                    now.clone(),
-                    false,
-                    random_storage_id(),
-                    v.source_format.clone(),
-                    v.main.clone(),
-                )
-            };
-        if let Some(owner_id) = owner_id.as_deref() {
-            let provider = owner_id
-                .split_once(':')
-                .map(|(provider, _)| provider)
-                .unwrap_or("github");
-            let account = Account {
-                id: owner_id.to_string(),
-                provider: provider.to_string(),
-                handle: v.owner.clone(),
-                name: v.owner_name.clone(),
-                email: String::new(),
-                first_seen: created_at.clone(),
-                last_seen: now.clone(),
-                plan: "default".to_string(),
-                status: "active".to_string(),
-                session_generation: random_storage_id(),
-                erasure_cursor: None,
-            };
+        if actor.account_id.is_empty() || actor.session_generation.is_empty() {
+            return Err(PutError::Authorization {
+                status: 401,
+                message: "publication actor has no authenticated account session",
+            });
+        }
+        let account = catalog
+            .execute_catalog(STORE_JOB_BYTES + actor.account_id.len(), {
+                let account_id = actor.account_id.clone();
+                move |catalog| catalog.account(&account_id)
+            })
+            .await
+            .map_err(|error| PutError::Storage(error.to_string()))?
+            .ok_or(PutError::Authorization {
+                status: 401,
+                message: "publication actor account is not active",
+            })?;
+        if account.status != "active" || account.session_generation != actor.session_generation {
+            return Err(PutError::Authorization {
+                status: 401,
+                message: "publication actor session has changed",
+            });
+        }
+        if existing.is_none() && !actor.policy_editor {
+            return Err(PutError::Authorization {
+                status: 403,
+                message: "publication actor is not permitted to create documents",
+            });
+        }
+
+        let format = if v.source_format.is_empty() {
+            existing
+                .as_ref()
+                .map(|document| document.source_format.clone())
+                .filter(|format| !format.is_empty())
+                .unwrap_or_else(|| "markdown".into())
+        } else {
+            v.source_format.clone()
+        };
+        let source_format = match format.as_str() {
+            "markdown" => SourceFormat::Markdown,
+            "html" => SourceFormat::Html,
+            "typst" => SourceFormat::Typst,
+            "latex" => SourceFormat::Latex,
+            "quarto" => SourceFormat::Quarto,
+            _ => return Err(PutError::Storage("invalid source format".into())),
+        };
+        let title = if v.title.is_empty() {
+            existing
+                .as_ref()
+                .map(|document| document.title.clone())
+                .unwrap_or_else(|| "Untitled".into())
+        } else {
+            v.title.clone()
+        };
+        let main = if v.main.is_empty() {
+            existing
+                .as_ref()
+                .map(|document| document.main.clone())
+                .filter(|path| !path.is_empty())
+                .unwrap_or_else(|| match format.as_str() {
+                    "html" => "index.html".into(),
+                    "typst" => "index.typ".into(),
+                    "latex" => "index.tex".into(),
+                    "quarto" => "index.qmd".into(),
+                    _ => "index.md".into(),
+                })
+        } else {
+            v.main.clone()
+        };
+        let storage_id = existing
+            .as_ref()
+            .map(|document| document.storage_id.clone())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(random_storage_id);
+        let owner_id = existing
+            .as_ref()
+            .and_then(|document| document.owner_id.clone())
+            .unwrap_or_else(|| actor.account_id.clone());
+        let created_at = existing
+            .as_ref()
+            .map(|document| document.created_at.clone())
+            .unwrap_or_else(|| now.clone());
+
+        let source = v.source.as_bytes().to_vec();
+        let plan = store_encoding_pool()
+            .try_plan(source.clone())
+            .await
+            .map_err(|error| PutError::Storage(format!("source planning failed: {error}")))?;
+        let encoded = store_encoding_pool()
+            .try_encode_planned(source.clone(), plan, std::collections::HashSet::new())
+            .await
+            .map_err(|error| PutError::Storage(format!("source encoding failed: {error}")))?;
+        let file_digest = encoded.file_digest;
+
+        let recipe_id = ObjectId::new(random_storage_id())
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let chunk_ids = encoded
+            .objects
+            .iter()
+            .map(|_| {
+                ObjectId::new(random_storage_id())
+                    .map_err(|error| PutError::Storage(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let tree_id = ObjectId::new(random_storage_id())
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+
+        let chunk_locators = encoded
+            .objects
+            .iter()
+            .zip(&chunk_ids)
+            .map(|(object, object_id)| {
+                let object_digest = Sha256::digest(&object.encoded).into();
+                crate::storage::encoding::PhysicalLocator {
+                    object_id: BlobObjectId::parse(object_id.as_str().to_owned())
+                        .map_err(|error| PutError::Storage(error.to_string()))?,
+                    object_digest,
+                    logical_digest: Some(object.digest),
+                    logical_length: object.uncompressed_len as u64,
+                    byte_length: object.encoded.len() as u64,
+                    encoding_version: 1,
+                }
+            })
+            .collect::<Result<Vec<_>, PutError>>()?;
+        let recipe_envelope = crate::storage::encoding::SourceRecipeEnvelope {
+            version: crate::storage::encoding::SOURCE_ENVELOPE_VERSION,
+            recipe: encoded.recipe.clone(),
+            chunk_locators,
+        };
+        let recipe_bytes = recipe_envelope
+            .to_bytes()
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let recipe_locator = crate::storage::encoding::PhysicalLocator {
+            object_id: BlobObjectId::parse(recipe_id.as_str().to_owned())
+                .map_err(|error| PutError::Storage(error.to_string()))?,
+            object_digest: Sha256::digest(&recipe_bytes).into(),
+            logical_digest: Some(file_digest),
+            logical_length: source.len() as u64,
+            byte_length: recipe_bytes.len() as u64,
+            encoding_version: 1,
+        };
+        let mut tree_envelope = crate::storage::encoding::TreeEnvelope {
+            version: crate::storage::encoding::TREE_ENVELOPE_VERSION,
+            main_path: main.clone(),
+            source_format: format.clone(),
+            settings_json: "{}".into(),
+            logical_digest: [0; 32],
+            files: std::iter::once((
+                main.clone(),
+                crate::storage::encoding::TreeFileLocator {
+                    kind: "text".into(),
+                    file_id: String::new(),
+                    logical_digest: file_digest,
+                    logical_length: source.len() as u64,
+                    recipe: Some(recipe_locator),
+                    asset: None,
+                },
+            ))
+            .collect(),
+        };
+        let logical_tree = tree_envelope
+            .logical_bytes()
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        tree_envelope.logical_digest = Sha256::digest(&logical_tree).into();
+        let tree_bytes = tree_envelope
+            .to_bytes()
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let tree_digest = hex::encode(tree_envelope.logical_digest);
+
+        let mut object_ids = vec![tree_id.clone(), recipe_id.clone()];
+        object_ids.extend(chunk_ids.iter().cloned());
+        let request_digest = digest_of(
+            &serde_json::json!({
+                "version": 2,
+                "effect": "source_publish",
+                "slug": v.slug.clone(),
+                "source": v.source.clone(),
+                "format": format.clone(),
+                "main": main.clone(),
+            })
+            .to_string(),
+        );
+        let request_key = crate::util::new_request_key();
+        let authority = serde_json::json!({
+            "account_id": actor.account_id.clone(),
+            "session_generation": actor.session_generation.clone(),
+            "link_hash": actor.link_hash.clone(),
+            "policy_editor": actor.policy_editor,
+            "automation": actor.automation,
+            "unowned_publisher": actor.unowned_publisher,
+        });
+        let plan_json = serde_json::json!({
+            "version": 2,
+            "effect": "source_publish",
+            "closure_digest": source_closure_digest(&object_ids),
+            "tree_digest": tree_digest.clone(),
+            "tree_physical_digest": hex::encode(Sha256::digest(&tree_bytes)),
+            "authority": authority,
+        })
+        .to_string();
+        let document_input = crate::storage::catalog::NewDocument {
+            slug: v.slug.clone(),
+            storage_id: storage_id.clone(),
+            title: title.clone(),
+            sha: String::new(),
+            created_at: created_at.clone(),
+            published_at: String::new(),
+            updated_at: now.clone(),
+            example: existing
+                .as_ref()
+                .map(|document| document.example)
+                .unwrap_or(false),
+            owner_key: String::new(),
+            owner_id: Some(owner_id),
+            status: "creating".into(),
+            size: 0,
+            counted_size: 0,
+            maintenance_reserved: 0,
+            last_auto_checkpoint_at: now_ms,
+            source_format: format.clone(),
+            main: main.clone(),
+        };
+        let limits = self.config.storage;
+        if existing.is_none() {
             catalog
-                .execute_catalog(STORE_JOB_BYTES + account.id.len(), move |catalog| {
-                    catalog.upsert_account(&account)
+                .execute_catalog(STORE_JOB_BYTES + v.slug.len(), {
+                    let document_input = document_input.clone();
+                    move |catalog| {
+                        catalog.create_document_admitted(
+                            &document_input,
+                            limits.per_owner,
+                            limits.total,
+                            limits.documents_per_owner,
+                            limits.uploads_per_hour,
+                        )
+                    }
                 })
                 .await
-                .map_err(|err| PutError::Storage(err.to_string()))?;
+                .map_err(|error| PutError::Storage(error.to_string()))?;
+        } else {
+            catalog
+                .execute_catalog(STORE_JOB_BYTES + v.slug.len(), {
+                    let document_input = document_input.clone();
+                    move |catalog| {
+                        catalog.replace_document_admitted(
+                            &document_input,
+                            limits.per_owner,
+                            limits.total,
+                            limits.uploads_per_hour,
+                        )
+                    }
+                })
+                .await
+                .map_err(|error| PutError::Storage(error.to_string()))?;
         }
-        // A complete server upload supplies its exact initial object peak
-        // before any object I/O. This is a preflight reservation: a large
-        // upload cannot create a catalogue row
-        // and discover the ceiling only after writing its first tree/session
-        // object.  The direct Store API leaves it unset for compatibility;
-        // its object ledger still reserves every later materialization.
-        let publication_reservation = v
-            .peak_bytes
-            .unwrap_or(v.source.len() as i64)
-            .max(v.source.len() as i64);
-        let document = crate::storage::catalog::NewDocument {
-            slug: v.slug.clone(),
-            storage_id,
-            title,
-            sha: digest_of(&v.source),
-            created_at: created_at.clone(),
-            published_at: created_at,
-            updated_at: now,
-            example,
-            owner_key,
-            owner_id,
-            // `put` admits the catalogue row; the publication route then
-            // installs its pending receipt before any externally visible
-            // response. While that receipt is pending, normal reads/listings
-            // remain hidden. Direct Store users may round-trip an admitted
-            // document without having to manufacture a publication receipt.
-            status: if v.peak_bytes.is_some() {
-                "creating".to_string()
-            } else {
-                "active".to_string()
-            },
-            size: v.source.len() as i64,
-            // Reserve the exact initial object peak before any object is
-            // written. Reconciliation after checkpoint records the ledger's
-            // measured bytes.
-            counted_size: publication_reservation,
-            maintenance_reserved: 0,
-            last_auto_checkpoint_at: now_unix(),
-            source_format,
-            main,
-        };
-        let replacing = existing.is_some();
-        let limits = self.config.storage;
-        let hard_count =
-            (self.config.session.history_max > 0).then(|| self.config.session.history_max as u32);
-        let pressure_owner = document.owner_id.clone();
-        let pressure_growth = document.counted_size;
-        let result = catalog
-            .execute_catalog(STORE_JOB_BYTES + document.slug.len(), move |catalog| {
-                if replacing {
-                    catalog.replace_document_admitted(
-                        &document,
-                        limits.per_owner,
-                        limits.total,
-                        limits.uploads_per_hour,
-                    )
-                } else {
-                    catalog.create_document_admitted(
-                        &document,
-                        limits.per_owner,
-                        limits.total,
-                        limits.documents_per_owner,
-                        limits.uploads_per_hour,
+        let document = document_row(catalog, &v.slug)
+            .await
+            .map_err(|error| PutError::Storage(error.to_string()))?
+            .ok_or_else(|| PutError::Storage("catalogue document disappeared".into()))?;
+        let document_id = DocumentId::new(document.storage_id.clone())
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let expected_generation = catalog
+            .execute_catalog(STORE_JOB_BYTES, {
+                let document_id = document_id.clone();
+                move |catalog| catalog.v2_document_source_generation(&document_id)
+            })
+            .await
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let operation = catalog
+            .execute_catalog(STORE_JOB_BYTES + plan_json.len(), {
+                let document_id = document_id.clone();
+                let actor_key = format!("account:{}", actor.account_id);
+                let request_key = request_key.clone();
+                let request_digest = request_digest.clone();
+                let plan_json = plan_json.clone();
+                let operation_expires = now_ms
+                    .checked_add(3_600_000)
+                    .ok_or_else(|| PutError::Storage("operation expiry overflow".into()))?;
+                move |catalog| {
+                    catalog.prepare_v2_operation(
+                        &V2OperationInput {
+                            scope: crate::storage::catalog::OperationScope::Document(document_id),
+                            actor_key,
+                            request_key,
+                            kind: OperationKind::SourcePublish,
+                            request_digest,
+                            plan_json,
+                            expected_document_generation: Some(expected_generation),
+                            conversation_id: None,
+                            execution_epoch: None,
+                            work_expires_at: Some(UnixMillis::new(operation_expires)?),
+                        },
+                        UnixMillis::new(now_ms)?,
                     )
                 }
             })
             .await
-            .map_err(crate::storage::catalog::CatalogError::from);
-        if matches!(
-            &result,
-            Err(crate::storage::catalog::CatalogError::Refused(
-                crate::storage::catalog::CatalogRefusal::OwnerBytes
-                    | crate::storage::catalog::CatalogRefusal::DeploymentBytes,
-                _
-            ))
-        ) {
-            if let Some(owner) = pressure_owner {
-                let _ = catalog
-                    .execute_catalog(STORE_JOB_BYTES + owner.len(), move |catalog| {
-                        catalog.check_hard_pressure_for_growth_with_limits(
-                            &owner,
-                            limits.per_owner,
-                            // A failed admission has not charged these
-                            // prospective bytes yet; check the whole
-                            // attempted publication without creating a
-                            // persistent pressure plan.
-                            pressure_growth,
-                            hard_count,
-                            crate::util::now_unix(),
-                        )
-                    })
-                    .await;
-            }
-        }
-        let document = result.map_err(|err| match err {
-            crate::storage::catalog::CatalogError::Conflict(message)
-                if message.contains("project with this name") =>
-            {
-                PutError::Authorization {
-                    status: 409,
-                    message: "A project with this name already exists. Choose a different name.",
-                }
-            }
+            .map_err(|error| PutError::Storage(error.to_string()))?;
 
-            crate::storage::catalog::CatalogError::Refused(kind, _)
-                if matches!(
-                    kind,
-                    crate::storage::catalog::CatalogRefusal::OwnerBytes
-                        | crate::storage::catalog::CatalogRefusal::DeploymentBytes
-                        | crate::storage::catalog::CatalogRefusal::OwnerDocuments
-                        | crate::storage::catalog::CatalogRefusal::UploadRate
-                ) =>
-            {
-                PutError::Quota {
-                    status: if kind == crate::storage::catalog::CatalogRefusal::UploadRate {
-                        429
-                    } else {
-                        507
-                    },
-                    message: if kind == crate::storage::catalog::CatalogRefusal::OwnerDocuments {
-                        "you have reached the document limit; delete one first"
-                    } else if kind == crate::storage::catalog::CatalogRefusal::UploadRate {
-                        "too many uploads this hour; try later"
-                    } else if kind == crate::storage::catalog::CatalogRefusal::OwnerBytes {
-                        "your storage quota is used up; delete a document first"
-                    } else {
-                        "this deployment has no room left"
-                    },
-                }
-            }
-            other => PutError::Storage(other.to_string()),
-        })?;
-        let document = document_row(catalog, &document.slug)
+        let physical = {
+            let mut objects = vec![
+                (
+                    tree_id.clone(),
+                    ObjectKind::SourceTree,
+                    hex::encode(Sha256::digest(&tree_bytes)),
+                    None,
+                    tree_bytes.clone(),
+                    "application/vnd.librepaper.source-tree",
+                ),
+                (
+                    recipe_id.clone(),
+                    ObjectKind::SourceRecipe,
+                    hex::encode(Sha256::digest(&recipe_bytes)),
+                    Some(hex::encode(file_digest)),
+                    recipe_bytes.clone(),
+                    "application/vnd.librepaper.source-recipe",
+                ),
+            ];
+            objects.extend(encoded.objects.iter().zip(&chunk_ids).map(|(object, id)| {
+                (
+                    id.clone(),
+                    ObjectKind::SourceChunk,
+                    hex::encode(Sha256::digest(&object.encoded)),
+                    Some(hex::encode(object.digest)),
+                    object.encoded.clone(),
+                    "application/vnd.librepaper.source-chunk",
+                )
+            }));
+            objects
+        };
+        let allocations = physical
+            .iter()
+            .map(|(id, kind, digest, logical_digest, bytes, _)| {
+                Ok(V2ObjectAllocation {
+                    document_id: document_id.clone(),
+                    id: id.clone(),
+                    storage_key: format!("v2/documents/{}/objects/{}", document_id, id),
+                    kind: *kind,
+                    digest: digest.clone(),
+                    logical_digest: logical_digest.clone(),
+                    encoding_version: 1,
+                    reserved_bytes: i64::try_from(bytes.len())
+                        .map_err(|_| PutError::Storage("source object is too large".into()))?,
+                    operation_id: operation.id.clone(),
+                    now: UnixMillis::new(now_ms)
+                        .map_err(|error| PutError::Storage(error.to_string()))?,
+                })
+            })
+            .collect::<Result<Vec<_>, PutError>>()?;
+        let admission = V2AdmissionLimits {
+            owner_bytes: limits.per_owner,
+            deployment_bytes: limits.total,
+            owner_documents: limits.documents_per_owner as i64,
+        };
+        if let Err(error) = catalog
+            .execute_catalog(STORE_JOB_BYTES, {
+                let allocations = allocations.clone();
+                move |catalog| catalog.allocate_v2_objects_with_limits(&allocations, admission)
+            })
             .await
-            .map_err(|err| PutError::Storage(err.to_string()))?
-            .ok_or_else(|| PutError::Storage("catalogue publication disappeared".into()))?;
+        {
+            let _ = catalog
+                .execute_catalog(STORE_JOB_BYTES, {
+                    let operation_id = operation.id.clone();
+                    move |catalog| {
+                        catalog.finish_v2_operation(
+                            &operation_id,
+                            "{\"version\":2,\"error\":\"allocation_refused\"}",
+                            false,
+                            UnixMillis::new(crate::util::now_millis())?,
+                        )
+                    }
+                })
+                .await;
+            return Err(PutError::Storage(error.to_string()));
+        }
+        let (_, writer_generation, _) = catalog
+            .execute_catalog(STORE_JOB_BYTES, |catalog| catalog.v2_server_state())
+            .await
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let lease_expires = UnixMillis::new(
+            now_ms
+                .checked_add(120_000)
+                .ok_or_else(|| PutError::Storage("lease expiry overflow".into()))?,
+        )
+        .map_err(|error| PutError::Storage(error.to_string()))?;
+        let holder = format!("source:{}", operation.id.as_str());
+        catalog
+            .execute_catalog(STORE_JOB_BYTES, {
+                let document_id = document_id.clone();
+                let object_ids = object_ids.clone();
+                let operation_id = operation.id.clone();
+                let holder = holder.clone();
+                let writer_generation = writer_generation.clone();
+                move |catalog| {
+                    catalog.acquire_v2_leases(
+                        &document_id,
+                        &object_ids,
+                        &holder,
+                        LeasePurpose::Stage,
+                        &operation_id,
+                        &writer_generation,
+                        lease_expires,
+                        UnixMillis::new(now_ms)?,
+                    )
+                }
+            })
+            .await
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let writer = crate::storage::v2_catalog::V2ObjectWriter::new(
+            Arc::clone(catalog),
+            Arc::clone(&self.blobs),
+        );
+        for (object_id, _, _, _, bytes, content_type) in &physical {
+            let renewal_now = crate::util::now_millis();
+            let renewal_expiry = UnixMillis::new(
+                renewal_now
+                    .checked_add(120_000)
+                    .ok_or_else(|| PutError::Storage("lease renewal overflow".into()))?,
+            )
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+            catalog
+                .execute_catalog(STORE_JOB_BYTES, {
+                    let document_id = document_id.clone();
+                    let object_id = object_id.clone();
+                    let holder = holder.clone();
+                    let operation_id = operation.id.clone();
+                    let writer_generation = writer_generation.clone();
+                    move |catalog| {
+                        catalog.renew_v2_lease(
+                            &document_id,
+                            &object_id,
+                            &holder,
+                            &operation_id,
+                            &writer_generation,
+                            renewal_expiry,
+                            UnixMillis::new(renewal_now)?,
+                        )
+                    }
+                })
+                .await
+                .map_err(|error| PutError::Storage(error.to_string()))?;
+            let blob_id = BlobObjectId::parse(object_id.as_str().to_owned())
+                .map_err(|error| PutError::Storage(error.to_string()))?;
+            writer
+                .write_allocated(document_id.as_str(), blob_id, bytes.clone(), content_type)
+                .await
+                .map_err(PutError::Storage)?;
+        }
+        let checkpoint_id = CheckpointId::new(random_storage_id())
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let checkpoint_now = UnixMillis::new(crate::util::now_millis())
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let checkpoint = CheckpointCommit {
+            document_id: document_id.clone(),
+            id: checkpoint_id.clone(),
+            tree_object_id: tree_id,
+            tree_digest,
+            parent_id: None,
+            author_account_id: Some(actor.account_id.clone()),
+            author_label: account.name.clone(),
+            reason: "initial source".into(),
+            source_format,
+            logical_bytes: source.len() as i64,
+            label: None,
+            journal_epoch: 0,
+            journal_sequence: 0,
+            metadata_json: serde_json::json!({
+                "version": 2,
+                "sourceDigest": hex::encode(file_digest),
+            })
+            .to_string(),
+            eligible_after: None,
+            object_ids,
+            make_current: true,
+            now: checkpoint_now,
+        };
+        let proof = catalog
+            .execute_catalog(STORE_JOB_BYTES + tree_bytes.len() + recipe_bytes.len(), {
+                let operation_id = operation.id.clone();
+                let checkpoint = checkpoint.clone();
+                let tree_bytes = tree_bytes.clone();
+                let recipe_bytes = recipe_bytes.clone();
+                move |catalog| {
+                    catalog.verify_v2_source_closure_bytes(
+                        &operation_id,
+                        &checkpoint,
+                        &tree_bytes,
+                        &recipe_bytes,
+                    )
+                }
+            })
+            .await
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        catalog
+            .execute_catalog(STORE_JOB_BYTES, {
+                let proof = proof.clone();
+                let checkpoint = checkpoint.clone();
+                move |catalog| {
+                    catalog.commit_v2_checkpoint_verified(
+                        &proof,
+                        &checkpoint,
+                        "{\"version\":2,\"effect\":\"source_publish\"}",
+                    )
+                }
+            })
+            .await
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        for object_id in &checkpoint.object_ids {
+            let _ = catalog
+                .execute_catalog(STORE_JOB_BYTES, {
+                    let document_id = document_id.clone();
+                    let object_id = object_id.clone();
+                    let holder = holder.clone();
+                    move |catalog| catalog.release_v2_lease(&document_id, &object_id, &holder)
+                })
+                .await;
+        }
+        let document = document_row(catalog, &v.slug)
+            .await
+            .map_err(|error| PutError::Storage(error.to_string()))?
+            .ok_or_else(|| PutError::Storage("catalogue document disappeared".into()))?;
         let entry = IndexEntry::from_catalog(document);
         self.state
             .lock()
@@ -2441,6 +2784,15 @@ fn random_storage_id() -> String {
     hex::encode(crate::auth::random_bytes(16))
 }
 
+fn source_closure_digest(ids: &[ObjectId]) -> String {
+    let mut digest = Sha256::new();
+    for id in ids {
+        digest.update(id.as_str().as_bytes());
+        digest.update([0]);
+    }
+    hex::encode(digest.finalize())
+}
+
 impl IndexEntry {
     fn from_catalog(document: crate::storage::catalog::Document) -> Self {
         let unowned = document.owner_id.is_none() && document.owner_key.starts_with("example:");
@@ -2568,16 +2920,34 @@ fn load_catalog_entry_sql(
             entry.publisher_name = owner.name;
         }
     }
-    for link in catalog.links(slug)?.into_iter().take(MAX_LINKS_PER_RESULT as usize) {
+    for link in catalog
+        .links(slug)?
+        .into_iter()
+        .take(MAX_LINKS_PER_RESULT as usize)
+    {
         let key = if decrypt_links {
             catalog.open_link_key(&entry.storage_id, &link.role, &link.hash, &link.sealed)?
-        } else { String::new() };
-        entry.links.push(LinkGrant { role: link.role, hash: link.hash, key,
-            label: link.label, budget: link.budget, since: link.since, until: link.until });
+        } else {
+            String::new()
+        };
+        entry.links.push(LinkGrant {
+            role: link.role,
+            hash: link.hash,
+            key,
+            label: link.label,
+            budget: link.budget,
+            since: link.since,
+            until: link.until,
+        });
     }
     for guest in catalog.guests(slug, MAX_GUESTS_PER_RESULT as u32)? {
         if let Some(account) = catalog.account(&guest.account_id)? {
-            entry.guests.push(Guest { id: guest.account_id, name: account.name, since: guest.since, link: guest.link_hash });
+            entry.guests.push(Guest {
+                id: guest.account_id,
+                name: account.name,
+                since: guest.since,
+                link: guest.link_hash,
+            });
         }
     }
     Ok(Some(entry))

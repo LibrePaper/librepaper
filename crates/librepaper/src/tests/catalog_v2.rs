@@ -1,4 +1,11 @@
 //! Behavioral checks of the new catalog boundary, including reopen and rollback.
+use std::sync::Arc;
+
+use sha2::Digest;
+
+use crate::config::Configuration;
+use crate::document::store::{MutationActor, Publication, Store};
+use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::catalog::*;
 
 fn account(catalog: &Catalog) {
@@ -193,6 +200,105 @@ fn typed_object_ids_validate_json_as_well_as_constructors() {
     assert!(serde_json::from_str::<ObjectId>(r#""ABCDEF0123456789ABCDEF0123456789""#).is_err());
 }
 
+#[tokio::test]
+async fn store_source_write_roundtrips_through_v2_tree_decoder() {
+    let catalog = Arc::new(Catalog::open_in_memory().unwrap());
+    account(&catalog);
+    let directory = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
+    let store = Store::open_with_catalog(
+        blobs.clone(),
+        Arc::new(Configuration::default()),
+        catalog.clone(),
+    )
+    .await
+    .unwrap();
+    store
+        .put_as_actor(
+            Publication {
+                slug: "source-roundtrip".into(),
+                title: "Source roundtrip".into(),
+                source: "# v2\n\nhello".into(),
+                source_format: "markdown".into(),
+                main: "index.md".into(),
+                owner: "ignored-wire-owner".into(),
+                owner_id: "ignored-wire-account".into(),
+                owner_name: "ignored".into(),
+                peak_bytes: None,
+            },
+            MutationActor {
+                account_id: "owner".into(),
+                owner_key: "owner-key".into(),
+                session_generation: "session".into(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
+        .await
+        .unwrap();
+    let (storage_key, digest, length): (String, String, i64) = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT o.storage_key,o.digest,o.byte_length
+                 FROM objects o JOIN documents d ON d.id=o.document_id
+                 WHERE d.slug='source-roundtrip' AND o.kind='source_tree' AND o.state='available'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    let bytes = blobs.get(&storage_key).await.unwrap();
+    assert_eq!(hex::encode(sha2::Sha256::digest(&bytes)), digest);
+    assert_eq!(bytes.len() as i64, length);
+    let tree = crate::storage::encoding::TreeEnvelope::from_bytes(&bytes).unwrap();
+    assert_eq!(tree.main_path, "index.md");
+    assert_eq!(tree.files.len(), 1);
+}
+
+#[tokio::test]
+async fn store_source_write_rejects_stale_authenticated_actor() {
+    let catalog = Arc::new(Catalog::open_in_memory().unwrap());
+    account(&catalog);
+    let directory = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
+    let store = Store::open_with_catalog(blobs, Arc::new(Configuration::default()), catalog)
+        .await
+        .unwrap();
+    let error = store
+        .put_as_actor(
+            Publication {
+                slug: "stale-source".into(),
+                title: "Stale source".into(),
+                source: "hello".into(),
+                source_format: "markdown".into(),
+                main: "index.md".into(),
+                owner: String::new(),
+                owner_id: String::new(),
+                owner_name: String::new(),
+                peak_bytes: None,
+            },
+            MutationActor {
+                account_id: "owner".into(),
+                owner_key: "owner-key".into(),
+                session_generation: "stale-session".into(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::document::store::PutError::Authorization { status: 401, .. }
+    ));
+}
+
 fn allocation(catalog: &Catalog, bytes: i64) -> V2ObjectAllocation {
     account(catalog);
     document(catalog, "doc", "Title");
@@ -305,11 +411,15 @@ fn pending_edits_include_the_snapshot_still_being_written() {
     account(&catalog);
     document(&catalog, "doc", "Title");
     catalog.begin_room_write("doc", 60, 100, 100).unwrap();
-    assert!(matches!(catalog.reserve_room_edit("doc", 50, 100, 100),
-        Err(CatalogError::Refused(CatalogRefusal::OwnerBytes, _))));
+    assert!(matches!(
+        catalog.reserve_room_edit("doc", 50, 100, 100),
+        Err(CatalogError::Refused(CatalogRefusal::OwnerBytes, _))
+    ));
     catalog.reserve_room_edit("doc", 40, 100, 100).unwrap();
-    assert!(matches!(catalog.reserve_room_edit("doc", 41, 1000, 100),
-        Err(CatalogError::Refused(CatalogRefusal::DeploymentBytes, _))));
+    assert!(matches!(
+        catalog.reserve_room_edit("doc", 41, 1000, 100),
+        Err(CatalogError::Refused(CatalogRefusal::DeploymentBytes, _))
+    ));
     catalog.finish_room_write("doc", true).unwrap();
     catalog.reserve_room_edit("doc", 100, 100, 100).unwrap();
     assert!(catalog.audit_v2_counters().unwrap());
@@ -448,11 +558,16 @@ fn publication_reader_keeps_superseded_bundle_until_release() {
     assert_eq!(lease.objects.len(), 2);
     // Erasure withdraws reads as soon as the account changes lifecycle, even
     // before the bounded worker has reached its owned document rows.
-    catalog.with_connection(|db| {
-        db.execute("UPDATE accounts SET status='erasing' WHERE id='owner'", [])?;
-        Ok(())
-    }).unwrap();
-    assert!(catalog.acquire_publication_read("doc", 2).unwrap().is_none());
+    catalog
+        .with_connection(|db| {
+            db.execute("UPDATE accounts SET status='erasing' WHERE id='owner'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(catalog
+        .acquire_publication_read("doc", 2)
+        .unwrap()
+        .is_none());
     catalog.with_connection(|db| {
         db.execute("UPDATE documents SET publication_id=NULL,publication_object_id=NULL,published_at=NULL WHERE id='doc'",[])?;
         db.execute("UPDATE objects SET publication_root=0,gc_after=1 WHERE document_id='doc'",[])?;

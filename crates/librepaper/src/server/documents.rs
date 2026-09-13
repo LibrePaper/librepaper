@@ -230,7 +230,9 @@ impl Server {
                     let targeted = room.comment_event_for(&result, &author, may_edit).await;
                     return write_json(200, &targeted);
                 }
-                let status = result.get("status").and_then(Value::as_u64)
+                let status = result
+                    .get("status")
+                    .and_then(Value::as_u64)
                     .filter(|status| matches!(status, 400 | 403 | 404 | 409 | 410 | 503))
                     .unwrap_or(400) as u16;
                 write_json(status, &result)
@@ -367,19 +369,31 @@ impl Server {
         {
             return response;
         }
+        let actor = crate::document::store::MutationActor {
+            account_id: who.id.clone(),
+            owner_key: who.key.clone(),
+            session_generation: who.session_generation.clone(),
+            link_hash: String::new(),
+            policy_editor: true,
+            automation: false,
+            unowned_publisher: false,
+        };
         let entry = match self
             .store
-            .put(Publication {
-                slug: key.clone(),
-                title: parsed.title.clone(),
-                source: parsed.source.clone(),
-                source_format: parsed.source_format.clone(),
-                main: main.clone(),
-                owner: who.key,
-                owner_id: who.id,
-                owner_name: who.name,
-                peak_bytes: Some(self.exact_publication_peak(&parsed, &main)),
-            })
+            .put_as_actor(
+                Publication {
+                    slug: key.clone(),
+                    title: parsed.title.clone(),
+                    source: parsed.source.clone(),
+                    source_format: parsed.source_format.clone(),
+                    main: main.clone(),
+                    owner: who.key.clone(),
+                    owner_id: who.id.clone(),
+                    owner_name: who.name.clone(),
+                    peak_bytes: Some(self.exact_publication_peak(&parsed, &main)),
+                },
+                actor,
+            )
             .await
         {
             Ok(entry) => entry,
@@ -394,17 +408,18 @@ impl Server {
             }
         };
         if self.store.catalog.is_some() {
-            if let Err(error) = self
-                .store
-                .prepare_publication(&key, &upload_digest(&parsed), "publish", None)
-                .await
-            {
-                let _ = self
-                    .store
-                    .abort_publication(&key, &format!("prepare failed: {error}"))
-                    .await;
-                return write_json(409, &json!({"error": error}));
-            }
+            return write_json(
+                201,
+                &json!({
+                    "slug": entry.slug,
+                    "title": entry.title,
+                    "sha": entry.sha,
+                    "created_at": entry.created_at,
+                    "updated_at": entry.updated_at,
+                    "url": format!("/docs/{}", entry.slug),
+                    "share_url": Self::read_link_of(&entry),
+                }),
+            );
         }
         // The document itself is the session, and the session's first
         // checkpoint is the source it was published with. Written here rather
