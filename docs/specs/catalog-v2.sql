@@ -242,6 +242,8 @@ CREATE INDEX objects_reuse ON objects(document_id, kind, digest, encoding_versio
     WHERE state = 'available';
 CREATE INDEX objects_recipe_reuse ON objects(document_id, logical_digest, encoding_version)
     WHERE state = 'available' AND kind = 'source_recipe';
+CREATE INDEX objects_live_roots ON objects(document_id, kind, id)
+    WHERE state = 'available' AND live_root = 1;
 CREATE INDEX objects_gc ON objects(gc_after, document_id, id)
     WHERE state = 'available' AND live_root = 0 AND publication_root = 0;
 CREATE INDEX objects_delete ON objects(retry_at, document_id, id) WHERE state = 'deleting';

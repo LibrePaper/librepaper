@@ -1777,7 +1777,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             // acknowledged; checkpoint/publication edges remain independent
             // blockers and therefore cannot be reclaimed by this transition.
             tx.execute(
-                "UPDATE objects SET live_root=0,gc_after=?1
+                "UPDATE objects INDEXED BY objects_live_roots SET live_root=0,gc_after=?1
                  WHERE document_id=?2 AND state='available' AND live_root=1
                    AND kind IN ('asset','publication_asset','source_chunk','source_recipe','source_tree')",
                 params![now.saturating_add(900_000), admission.document_id],
@@ -1942,7 +1942,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             let now = now_millis();
             tx.execute("UPDATE objects SET state='available',byte_length=COALESCE(byte_length,?1),reserved_bytes=0,allocation_operation_id=NULL,live_root=1 WHERE document_id=?2 AND id=?3 AND state IN ('allocated','available')", params![measured,admission.document_id,admission.base_allocation.object_id.as_str()]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute(
-                "UPDATE objects SET live_root=0,gc_after=?1
+                "UPDATE objects INDEXED BY objects_live_roots SET live_root=0,gc_after=?1
                  WHERE document_id=?2 AND state='available' AND live_root=1
                    AND kind IN ('asset','publication_asset','source_chunk','source_recipe','source_tree')",
                 params![now.saturating_add(900_000), admission.document_id],

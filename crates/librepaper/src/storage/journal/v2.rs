@@ -665,7 +665,7 @@ where
     }
 
     async fn compact(&self, document_id: &str, _epoch: u64, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
-        self.compact_with_dependencies(document_id, _epoch, sequence, body, Vec::new()).await
+        <Self as DocumentJournal>::compact_with_dependencies(self, document_id, _epoch, sequence, body, Vec::new()).await
     }
 
     async fn compact_with_dependencies(

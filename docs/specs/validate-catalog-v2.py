@@ -248,6 +248,12 @@ for op_id, doc_id, kind, account_id, key_column in (
     reject("one erasure per " + key_column, *insert_statement("operations", duplicate),
            error_contains="UNIQUE constraint failed: operations." + key_column)
 
+# Replacing a journal dependency set must visit current roots, not the entire
+# retained physical inventory of a document.
+root_query = "UPDATE objects INDEXED BY objects_live_roots SET live_root=0,gc_after=? WHERE document_id=? AND state='available' AND live_root=1 AND kind IN ('asset','source_chunk','source_recipe','source_tree')"
+root_plan = " ".join(row[3] for row in db.execute("EXPLAIN QUERY PLAN " + root_query, (3000, "d1")))
+check("objects_live_roots" in root_plan, "journal roots index: " + root_plan)
+
 # Each natural replay query must use the corresponding unique index without
 # hints or COALESCE spellings. The same key is allowed in different scopes.
 for scope, document_id, account_id, kind, predicate, parameters in (
