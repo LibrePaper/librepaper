@@ -329,12 +329,45 @@ impl V2RecoveryCatalog for Catalog {
 
     async fn adopt_internal_operation(&self, operation: &PreparedOperation) -> Result<(), String> {
         sql(self.with_connection(|connection| {
-            connection.query_row("SELECT 1 FROM operations WHERE id=?1 AND state='prepared'", [operation.operation_id.as_str()], |_| Ok(())).optional().map_err(crate::storage::catalog::CatalogError::from)?.ok_or(crate::storage::catalog::CatalogError::NotFound)
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let changed = transaction
+                .execute(
+                    "UPDATE operations SET writer_generation=(SELECT writer_generation FROM server_state WHERE id=1),updated_at=max(updated_at,?1) WHERE id=?2 AND state='prepared'",
+                    params![now_millis(), operation.operation_id],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            if changed == 0 {
+                return Err(crate::storage::catalog::CatalogError::NotFound);
+            }
+            transaction
+                .commit()
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            Ok(())
         }))
     }
 
     async fn defer_uncertain_operation(&self, operation_id: &str) -> Result<(), String> {
-        self.adopt_internal_operation(&PreparedOperation { operation_id: operation_id.to_owned(), kind: PreparedKind::DisplayPublish, document_id: None, writer_generation: String::new() }).await
+        sql(self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let now = now_millis();
+            let changed = transaction
+                .execute(
+                    "UPDATE operations SET work_expires_at=MAX(COALESCE(work_expires_at,0),?1),updated_at=max(updated_at,?1) WHERE id=?2 AND state='prepared'",
+                    params![now.saturating_add(GC_RETRY_MS), operation_id],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            if changed == 0 {
+                return Err(crate::storage::catalog::CatalogError::NotFound);
+            }
+            transaction
+                .commit()
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            Ok(())
+        }))
     }
 }
 
