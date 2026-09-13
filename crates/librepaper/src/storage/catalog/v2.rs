@@ -3148,7 +3148,7 @@ impl Catalog {
         // decoded recipe retains every occurrence so reconstruction preserves
         // order. Compare the distinct physical identity sets, not occurrence
         // counts.
-        if expected_set != actual_set || expected_set.len() != actual_set.len() {
+        if expected_set != actual_set || actual_set.len() != checkpoint.object_ids.len() {
             return Err(CatalogError::Conflict(
                 "source checkpoint closure does not match decoded envelopes".into(),
             ));
