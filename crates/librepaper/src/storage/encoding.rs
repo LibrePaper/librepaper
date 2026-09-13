@@ -880,6 +880,7 @@ pub async fn read_file_v2(
     document_id: &str,
     recipe_object_id: &ObjectId,
     expected_recipe_digest: [u8; 32],
+    leased_objects: &[crate::storage::catalog::v2::V2Object],
 ) -> Result<Vec<u8>, EncodingError> {
     // Hold the bounded reconstruction slot before fetching any physical
     // payload. Otherwise concurrent callers can each materialize a full
@@ -891,6 +892,16 @@ pub async fn read_file_v2(
         .map_err(|_| EncodingError::Worker("reconstruction pool is closed".into()))?;
     let recipe_key = crate::storage::blob::v2_object_key(document_id, recipe_object_id)
         .map_err(|error| EncodingError::Integrity(error.to_string()))?;
+    let recipe_descriptor = leased_objects
+        .iter()
+        .find(|object| object.document_id.as_str() == document_id && object.id.as_str() == recipe_object_id.as_str())
+        .ok_or_else(|| EncodingError::Integrity("recipe object is outside the acquired read set".into()))?;
+    if recipe_descriptor.state != "available"
+        || recipe_descriptor.kind != "source_recipe"
+        || recipe_descriptor.digest != hex::encode(expected_recipe_digest)
+    {
+        return Err(EncodingError::Integrity("recipe descriptor does not match the requested object".into()));
+    }
     let recipe_bytes = blobs
         .get(&recipe_key)
         .await
@@ -898,6 +909,9 @@ pub async fn read_file_v2(
     let actual_recipe_digest: [u8; 32] = Sha256::digest(&recipe_bytes).into();
     if actual_recipe_digest != expected_recipe_digest {
         return Err(EncodingError::Integrity("recipe object digest mismatch".into()));
+    }
+    if recipe_descriptor.byte_length != Some(recipe_bytes.len() as i64) {
+        return Err(EncodingError::Integrity("recipe object length mismatch".into()));
     }
     let envelope = SourceRecipeEnvelope::from_bytes(&recipe_bytes)?;
     let mut objects = HashMap::<[u8; 32], Vec<u8>>::with_capacity(envelope.chunk_locators.len());
@@ -910,6 +924,17 @@ pub async fn read_file_v2(
         let logical_digest = locator
             .logical_digest
             .ok_or_else(|| EncodingError::Integrity("source locator has no logical digest".into()))?;
+        let descriptor = leased_objects
+            .iter()
+            .find(|object| object.document_id.as_str() == document_id && object.id.as_str() == locator.object_id.as_str())
+            .ok_or_else(|| EncodingError::Integrity("source chunk is outside the acquired read set".into()))?;
+        if descriptor.state != "available"
+            || descriptor.kind != "source_chunk"
+            || descriptor.digest != hex::encode(locator.object_digest)
+            || descriptor.byte_length != Some(locator.byte_length as i64)
+        {
+            return Err(EncodingError::Integrity("source chunk descriptor does not match locator".into()));
+        }
         let key = crate::storage::blob::v2_object_key(document_id, &locator.object_id)
             .map_err(|error| EncodingError::Integrity(error.to_string()))?;
         let bytes = blobs
