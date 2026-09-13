@@ -340,7 +340,7 @@ fn reopening_annotation_restores_protection_from_stored_source_revision() {
     catalog
         .with_connection(|connection| {
             connection.execute(
-                "UPDATE annotations SET resolved_at=10,protected_checkpoint_id=NULL
+                "UPDATE annotations SET resolved_at=created_at+1,protected_checkpoint_id=NULL
                  WHERE document_id='storage-1' AND id='protected'",
                 [],
             )?;
@@ -384,7 +384,12 @@ fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
     assert_eq!(first.revision, 1);
     assert_eq!(first.payload, r#"{"version":2,"retentionProfile":"default","retentionPolicyVersion":2,"displayTimezone":"UTC","warningThresholds":[75,90],"futureField":true}"#);
     assert!(matches!(
-        catalog.save_quota_preferences("acct-1", 0, "{}", 11),
+        catalog.save_quota_preferences(
+            "acct-1",
+            0,
+            r#"{"version":2,"retentionProfile":"default","retentionPolicyVersion":2,"displayTimezone":"UTC","warningThresholds":[75,90],"futureField":true}"#,
+            11,
+        ),
         Err(CatalogError::Conflict(_))
     ));
     let second = catalog
@@ -402,9 +407,24 @@ fn quota_apply_marks_live_policy_for_advisory_worker() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let tree_digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,
+                  created_at,live_root,gc_after)
+                 VALUES('storage-1','quota-tree','objects/quota-tree','source_tree','available',
+                        ?1,1,0,0,1,0)",
+                [tree_digest],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     for index in 0..3 {
         let mut point = attributed(&format!("milestone-{index}"), "alice", Some("acct-1"));
         point.seq = index;
+        point.tree_sha = tree_digest.into();
         point.at = format!("2026-01-01T00:00:0{index}.000Z");
         point.label = "important".into();
         point.parent = if index == 0 {
@@ -1008,6 +1028,33 @@ fn quarto_checkpoint_authority_is_checked_at_the_atomic_commit() {
 }
 
 #[test]
+fn system_seed_identity_cannot_forge_checkpoint_authority() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let point = attributed("forged-system-checkpoint", "Examples", None);
+    let forged = MutationAuthority {
+        account_id: "system:examples",
+        owner_key: "",
+        generation: "seed-session",
+        link_hash: "",
+        policy_editor: true,
+        automation: false,
+        unowned_publisher: false,
+        execution_epoch: "",
+        agent_checkpoint: None,
+    };
+    assert!(matches!(
+        catalog.insert_checkpoints_atomic_with_authority(&[point], Some(forged)),
+        Err(CatalogError::Refused(_, _))
+    ));
+    assert!(catalog
+        .checkpoint("doc", "forged-system-checkpoint")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn execution_epoch_fences_checkpoint_commit_inside_sql_transaction() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
@@ -1386,30 +1433,33 @@ fn publication_receipts_are_atomic_and_idempotent() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let request_id = crate::util::new_request_key();
+    let digest = "a".repeat(64);
+    let now = crate::util::now_millis();
     let prepared = catalog
         .prepare_operation(&OperationRequest {
             storage_id: "storage-1",
-            request_id: "request-1",
-            kind: "publish",
-            request_digest: "digest-1",
-            intent: "{\"v\":1}",
-            created_at: 1,
+            request_id: &request_id,
+            kind: "source_publish",
+            request_digest: &digest,
+            intent: r#"{"version":1}"#,
+            created_at: now,
             actor: None,
         })
         .unwrap();
     assert_eq!(prepared.status, "prepared");
     let committed = catalog
-        .commit_operation("storage-1", "request-1", "{\"head\":2}", "request-1")
+        .commit_operation("storage-1", &request_id, "{\"head\":2}", "")
         .unwrap();
     assert_eq!(committed.status, "committed");
     let retry = catalog
         .prepare_operation(&OperationRequest {
             storage_id: "storage-1",
-            request_id: "request-1",
-            kind: "publish",
-            request_digest: "digest-1",
-            intent: "{\"v\":1}",
-            created_at: 1,
+            request_id: &request_id,
+            kind: "source_publish",
+            request_digest: &digest,
+            intent: r#"{"version":1}"#,
+            created_at: now,
             actor: None,
         })
         .unwrap();
@@ -1422,6 +1472,71 @@ fn publication_receipts_are_atomic_and_idempotent() {
             .pending_publication,
         None
     );
+}
+
+#[test]
+fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let now = crate::util::now_millis();
+    for index in 0..112 {
+        let request_id = crate::util::new_request_key();
+        let digest = format!("{index:064x}");
+        catalog
+            .prepare_operation(&OperationRequest {
+                storage_id: "storage-1",
+                request_id: &request_id,
+                kind: "source_publish",
+                request_digest: &digest,
+                intent: r#"{"version":1}"#,
+                created_at: now,
+                actor: None,
+            })
+            .unwrap();
+    }
+    let before: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM operations WHERE document_id='storage-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(before, 112);
+    let request_id = crate::util::new_request_key();
+    let digest = "e".repeat(64);
+    assert!(matches!(
+        catalog.prepare_operation(&OperationRequest {
+            storage_id: "storage-1",
+            request_id: &request_id,
+            kind: "source_publish",
+            request_digest: &digest,
+            intent: r#"{"version":1}"#,
+            created_at: now,
+            actor: None,
+        }),
+        Err(CatalogError::Busy)
+    ));
+    let after: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM operations WHERE document_id='storage-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(after, before);
+    assert!(catalog
+        .operation("storage-1", &request_id)
+        .unwrap()
+        .is_none());
 }
 
 #[test]

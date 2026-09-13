@@ -52,7 +52,14 @@ fn set_checkpoint_time(server: &TestServer, slug: &str, sha: &str, at: i64) {
         .expect("checkpoint timestamp update");
 }
 
-fn add_checkpoint(server: &TestServer, slug: &str, sha: &str, parent: &str, at: i64) {
+fn add_checkpoint(
+    server: &TestServer,
+    slug: &str,
+    sha: &str,
+    parent: &str,
+    tree_sha: &str,
+    at: i64,
+) {
     server
         .instance
         .store
@@ -64,7 +71,7 @@ fn add_checkpoint(server: &TestServer, slug: &str, sha: &str, parent: &str, at: 
             sha: sha.into(),
             seq: -1,
             durable_seq: 0,
-            tree_sha: format!("tree-{sha}"),
+            tree_sha: tree_sha.into(),
             parent: parent.into(),
             at: at.to_string(),
             by: TEST_PUBLISHER.into(),
@@ -92,17 +99,32 @@ fn seed_old_bucket(server: &TestServer, slug: &str) -> (String, String, String) 
         .into_iter()
         .next()
         .expect("publication checkpoint");
-    let now = crate::util::now_unix();
+    let now = crate::util::now_millis();
     // Anchor the old points away from the two-day preset boundary so the
     // fixture cannot become flaky when the test starts near a boundary.
-    let old_at = now.div_euclid(172_800) * 172_800 + 100 - 4 * 172_800;
+    let bucket = 172_800_000;
+    let old_at = now.div_euclid(bucket) * bucket + 100_000 - 4 * bucket;
     set_checkpoint_time(server, slug, &initial.sha, old_at);
     let old_loser = "old-loser";
-    add_checkpoint(server, slug, old_loser, &initial.sha, old_at + 5);
+    add_checkpoint(
+        server,
+        slug,
+        old_loser,
+        &initial.sha,
+        &initial.tree_sha,
+        old_at + 5,
+    );
     let old_winner = "old-winner";
-    add_checkpoint(server, slug, old_winner, old_loser, old_at + 10);
+    add_checkpoint(
+        server,
+        slug,
+        old_winner,
+        old_loser,
+        &initial.tree_sha,
+        old_at + 10,
+    );
     let newest = "newest-checkpoint";
-    add_checkpoint(server, slug, newest, old_winner, now);
+    add_checkpoint(server, slug, newest, old_winner, &initial.tree_sha, now);
     (initial.sha, old_loser.into(), newest.into())
 }
 
@@ -230,25 +252,26 @@ async fn quota_routes_reject_anonymous_link_only_invalid_session_and_cross_site_
 }
 
 #[tokio::test]
-async fn storage_status_exposes_balanced_v1_utc_tiers_without_changing_hard_quota() {
+async fn storage_status_exposes_v2_default_retention_without_changing_hard_quota() {
     let server = new_test_server().await;
     publish_and_slug(&server).await;
 
     let (status, payload) = quota_status(&session_as(TEST_PUBLISHER), &server.url).await;
     assert_eq!(status, 200, "storage status: {payload}");
     assert_eq!(payload["preferences"]["displayTimezone"], "UTC");
-    assert_eq!(payload["effective"]["profile"], "balanced");
+    assert_eq!(payload["effective"]["retention"]["profile"], "default");
     assert_eq!(
         payload["constraints"]["hardQuotaBytes"],
         server.instance.store.config.storage.per_owner
     );
-    let widths: Vec<i64> = payload["effective"]["retention"]["tiers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tier| tier["bucketSeconds"].as_i64().unwrap())
-        .collect();
-    assert_eq!(widths, [300, 3_600, 21_600, 86_400]);
+    assert_eq!(
+        payload["effective"]["retention"]["maxRoutineCount"],
+        50
+    );
+    assert_eq!(
+        payload["effective"]["retention"]["maxAgeMs"],
+        crate::document::quota::DEFAULT_MAX_AGE_MS
+    );
 }
 
 #[tokio::test]
@@ -266,8 +289,8 @@ async fn preview_timezone_is_presentation_only_and_apply_is_advisory() {
     assert_eq!(utc_preview.0, 200, "UTC preview: {}", utc_preview.1);
     assert_eq!(local_preview.0, 200, "local preview: {}", local_preview.1);
     assert_eq!(
-        utc_preview.1["effective"]["retention"],
-        local_preview.1["effective"]["retention"]
+        utc_preview.1["effective"],
+        local_preview.1["effective"]
     );
     assert_eq!(
         utc_preview.1["affectedCount"],
@@ -294,7 +317,7 @@ async fn preview_timezone_is_presentation_only_and_apply_is_advisory() {
 #[tokio::test]
 async fn advisory_apply_rejects_stale_revision_without_durable_job() {
     let server = new_test_server().await;
-    publish_and_slug(&server).await;
+    let slug = publish_and_slug(&server).await;
     let cookie = session_as(TEST_PUBLISHER);
     let preferences = QuotaPreferences::default();
 
@@ -306,8 +329,8 @@ async fn advisory_apply_rejects_stale_revision_without_durable_job() {
     let catalog = server.instance.store.catalog.as_ref().unwrap();
     let due: i64 = catalog.with_connection(|connection| {
         connection.query_row(
-            "SELECT retention_due_at FROM documents WHERE owner_id=?1 AND status='active' ORDER BY id LIMIT 1",
-            [ACCOUNT], |row| row.get(0),
+            "SELECT retention_due_at FROM documents WHERE slug=?1 AND status='active'",
+            [&slug], |row| row.get(0),
         ).map_err(crate::storage::catalog::CatalogError::from)
     }).unwrap();
     assert_eq!(
