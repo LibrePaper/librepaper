@@ -1200,6 +1200,16 @@ fn v2_settlement_releases_the_admitted_reservation() {
     assert_eq!(settled.maintenance_reserved, 0);
     assert!(catalog.audit_v2_counters().unwrap());
 }
+
+#[test]
+fn quarto_checkpoint_authority_is_checked_at_the_atomic_commit() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    let tree_digest = "f".repeat(64);
+    let tree_object_id = fixture_object_id("quarto");
+    catalog
+        .with_connection(|connection| {
             connection.execute(
                 "INSERT INTO objects
                  (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
