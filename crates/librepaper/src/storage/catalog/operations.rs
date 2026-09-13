@@ -428,6 +428,11 @@ impl Catalog {
                             .collect::<rusqlite::Result<Vec<_>>>()?;
                         for annotation_id in &ids {
                             tx.execute(
+                                "UPDATE annotations SET protected_checkpoint_id=NULL
+                                 WHERE document_id=?1 AND id=?2",
+                                params![document_id, annotation_id],
+                            )?;
+                            tx.execute(
                                 "DELETE FROM annotations WHERE document_id=?1 AND id=?2
                                  AND NOT EXISTS (SELECT 1 FROM replies
                                                  WHERE document_id=?1 AND annotation_id=?2)",
