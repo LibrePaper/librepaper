@@ -115,7 +115,7 @@ async fn v2_append_recover_compact_and_reopen() {
                 "SELECT storage_key FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available'",
             )?;
             let rows = statement.query_map(["journal-test-document"], |row| row.get(0))?;
-            rows.collect::<Result<Vec<String>, _>>()
+            Ok(rows.collect::<Result<Vec<String>, _>>()?)
         })
         .expect("segment keys");
     let recovered = DocumentJournal::recover_latest(&runtime, "journal-test-document")
@@ -128,11 +128,11 @@ async fn v2_append_recover_compact_and_reopen() {
         .expect("compact");
     let retired_segments: i64 = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT count(*) FROM objects WHERE document_id=?1 AND kind='journal_segment' AND live_root=0",
                 ["journal-test-document"],
                 |row| row.get(0),
-            )
+            )?)
         })
         .expect("retired segments");
     assert!(retired_segments > 0);
@@ -215,11 +215,11 @@ async fn v2_asset_dependency_is_rooted_only_by_the_acknowledged_snapshot() {
     .expect("asset dependency append");
     let rooted: i64 = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT live_root FROM objects WHERE document_id=?1 AND id=?2",
                 rusqlite::params!["journal-test-document", asset_id],
                 |row| row.get(0),
-            )
+            )?)
         })
         .expect("rooted asset");
     assert_eq!(rooted, 1);
@@ -229,11 +229,11 @@ async fn v2_asset_dependency_is_rooted_only_by_the_acknowledged_snapshot() {
         .expect("append without asset");
     let retired: (i64, Option<i64>) = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT live_root,gc_after FROM objects WHERE document_id=?1 AND id=?2",
                 rusqlite::params!["journal-test-document", asset_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            )?)
         })
         .expect("retired asset");
     assert_eq!(retired.0, 0);
@@ -248,11 +248,11 @@ async fn v2_recovery_fails_closed_when_an_acknowledged_object_is_missing() {
         .expect("append");
     let key: String = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT storage_key FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available'",
                 ["journal-test-document"],
                 |row| row.get(0),
-            )
+            )?)
         })
         .expect("segment key");
     blobs.delete(std::slice::from_ref(&key)).await.expect("remove segment");
@@ -270,11 +270,11 @@ async fn v2_recovery_fails_closed_when_an_acknowledged_object_is_corrupt() {
         .expect("append");
     let key: String = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT storage_key FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available'",
                 ["journal-test-document"],
                 |row| row.get(0),
-            )
+            )?)
         })
         .expect("segment key");
     blobs
@@ -486,11 +486,11 @@ async fn spec24_per_document_journal_comparison_trace() {
     let v2_recovery_millis = v2_recovery_started.elapsed().as_millis();
     let (physical_objects, physical_bytes, server_stored_bytes): (i64, i64, i64) = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT count(*),COALESCE(SUM(byte_length),0),(SELECT stored_bytes FROM server_state WHERE id=1) FROM objects WHERE kind='journal_segment' AND state='available'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
+            )?)
         })
         .expect("physical byte total");
     println!(

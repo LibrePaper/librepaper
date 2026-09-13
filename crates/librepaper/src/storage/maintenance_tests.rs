@@ -205,11 +205,11 @@ async fn v2_gc_confirms_physical_delete_before_releasing_charge() {
     assert!(state.is_none(), "confirmed deletion releases the object row");
     let counters: (i64, i64) = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT stored_bytes,(SELECT stored_bytes FROM server_state WHERE id=1) FROM accounts WHERE id='maintenance-account'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            )?)
         })
         .expect("settled counters");
     assert_eq!(counters, (0, 0));
@@ -319,11 +319,11 @@ async fn v2_gc_malformed_retirement_does_not_block_valid_candidates() {
     assert!(!blobs.exists(&valid_key).await.expect("valid candidate deleted"));
     let malformed_state: (String, i64) = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT state,byte_length FROM objects WHERE document_id=?1 AND id=?2",
                 rusqlite::params![document_id, malformed_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            )?)
         })
         .expect("malformed candidate remains queued");
     assert_eq!(malformed_state, ("deleting".to_owned(), 5));
@@ -342,11 +342,11 @@ async fn v2_gc_delete_failure_keeps_charge_for_a_later_retry() {
     assert!(run_gc_pass(&adapter, &refusing, now).await.is_err());
     let state: (String, i64, i64) = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT o.state,d.stored_bytes,(SELECT stored_bytes FROM server_state WHERE id=1) FROM objects o JOIN documents d ON d.id=o.document_id WHERE o.document_id=?1 AND o.id=?2",
                 rusqlite::params![document_id, object_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
+            )?)
         })
         .expect("failed deletion remains charged");
     assert_eq!(state.0, "deleting");
@@ -371,11 +371,11 @@ async fn v2_gc_accepts_confirmed_physical_absence_and_releases_charge() {
     assert_eq!(report.objects_deleted, 1);
     let remaining: i64 = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT count(*) FROM objects WHERE document_id=?1 AND id=?2",
                 rusqlite::params![document_id, object_id],
                 |row| row.get(0),
-            )
+            )?)
         })
         .expect("object absence is durable");
     assert_eq!(remaining, 0);
@@ -436,11 +436,11 @@ async fn v2_gc_page_is_bounded_and_resumable() {
         pass_now += 1;
         let remaining: i64 = catalog
             .with_connection(|connection| {
-                connection.query_row(
+                Ok(connection.query_row(
                     "SELECT count(*) FROM objects WHERE document_id=?1",
                     [&document_id],
                     |row| row.get(0),
-                )
+                )?)
             })
             .expect("remaining page count");
         if remaining == 0 {
@@ -452,11 +452,11 @@ async fn v2_gc_page_is_bounded_and_resumable() {
     assert!(batch_sizes.lock().unwrap().iter().all(|size| *size <= 64));
     let counters: (i64, i64, i64) = catalog
         .with_connection(|connection| {
-            connection.query_row(
+            Ok(connection.query_row(
                 "SELECT d.stored_bytes,a.stored_bytes,s.stored_bytes FROM documents d JOIN accounts a ON a.id='maintenance-account' CROSS JOIN server_state s WHERE d.id=?1 AND s.id=1",
                 [&document_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
+            )?)
         })
         .expect("page counters");
     assert_eq!(counters, (0, 0, 0));
