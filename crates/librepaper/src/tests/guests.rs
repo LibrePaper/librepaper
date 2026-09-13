@@ -246,7 +246,11 @@ async fn a_second_open_does_not_duplicate_the_guest() {
     }
 
     let catalog = server.instance.store.catalog.as_ref().expect("catalogue");
-    let document_id = catalog.document(&slug).unwrap().expect("document").id;
+    let document_id = catalog
+        .document(&slug)
+        .unwrap()
+        .expect("document")
+        .storage_id;
     let payload: String = catalog
         .with_connection(|connection| {
             connection

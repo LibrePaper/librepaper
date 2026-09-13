@@ -2013,10 +2013,27 @@ fn sql_children_are_bounded_and_expiry_filtered() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let tree_digest = fixture_tree_digest("sql-children");
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                 VALUES('storage-1','sql-children-tree','objects/sql-children-tree',
+                        'source_tree','available',?1,0,0,0)",
+                [&tree_digest],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     let link = Link {
         slug: "doc".into(),
         role: "reader".into(),
-        hash: "link-hash".into(),
+        // v2 token hashes are persisted as canonical SHA-256 hex.  Keep the
+        // envelope deliberately tiny: this test exercises the SQL child
+        // bounds, while the production lookup test below covers malformed
+        // sealed credentials separately.
+        hash: "a".repeat(64),
         sealed: vec![1, 2, 3],
         label: "reader".into(),
         budget: None,
@@ -2030,7 +2047,7 @@ fn sql_children_are_bounded_and_expiry_filtered() {
             sha: "checkpoint".into(),
             seq: -1,
             durable_seq: 0,
-            tree_sha: "tree".into(),
+            tree_sha: tree_digest,
             parent: String::new(),
             at: "2026-01-01T00:00:00.000Z".into(),
             by: "acct-1".into(),
@@ -2421,7 +2438,10 @@ async fn checked_production_lookup_propagates_corrupt_authorization_rows() {
         .put_link(&Link {
             slug: "doc".into(),
             role: "reader".into(),
-            hash: "not-a-real-digest".into(),
+            // The row must satisfy the v2 schema's hash shape so the lookup
+            // reaches credential decoding and reports corruption instead of
+            // failing while constructing the fixture.
+            hash: "b".repeat(64),
             sealed: vec![1, 2, 3],
             label: String::new(),
             budget: None,
@@ -2610,7 +2630,7 @@ fn attributed(sha: &str, by: &str, by_account: Option<&str>) -> Checkpoint {
         sha: sha.into(),
         seq: -1,
         durable_seq: 0,
-        tree_sha: format!("tree-{sha}"),
+        tree_sha: fixture_tree_digest(sha),
         parent: String::new(),
         at: "2026-02-02T00:00:00.000Z".into(),
         by: by.into(),
@@ -2623,6 +2643,44 @@ fn attributed(sha: &str, by: &str, by_account: Option<&str>) -> Checkpoint {
         dirty: false,
         changed: Some("[]".into()),
     }
+}
+
+fn fixture_tree_digest(seed: &str) -> String {
+    hex::encode(sha2::Sha256::digest(seed.as_bytes()))
+}
+
+/// v2 checkpoint admission requires a settled source-tree object.  The old
+/// catalog fixtures carried that object implicitly, so install a minimal
+/// available row before exercising attribution and erasure behavior.
+fn insert_fixture_checkpoint(catalog: &Catalog, checkpoint: &Checkpoint) {
+    let document_id = catalog
+        .document(&checkpoint.slug)
+        .unwrap()
+        .expect("fixture document")
+        .storage_id;
+    let object_id = format!("fixture-tree-{}", checkpoint.sha);
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT OR IGNORE INTO objects
+                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                 VALUES(?1,?2,?3,'source_tree','available',?4,0,0,0)",
+                rusqlite::params![
+                    document_id,
+                    object_id,
+                    format!("objects/fixture/{}/{}", checkpoint.slug, checkpoint.sha),
+                    checkpoint.tree_sha,
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    catalog.insert_checkpoint(checkpoint).unwrap();
+}
+
+fn insert_attributed(catalog: &Catalog, sha: &str, by: &str, by_account: Option<&str>) {
+    let checkpoint = attributed(sha, by, by_account);
+    insert_fixture_checkpoint(catalog, &checkpoint);
 }
 
 fn drain_erasure(catalog: &Catalog, id: &str, limit: u32) {
@@ -2670,12 +2728,8 @@ fn erasure_follows_the_account_not_the_handle() {
     catalog
         .upsert_account(&contributor("acct-other", "alice"))
         .unwrap();
-    catalog
-        .insert_checkpoint(&attributed("mine", "alice", Some("acct-writer")))
-        .unwrap();
-    catalog
-        .insert_checkpoint(&attributed("theirs", "alice", Some("acct-other")))
-        .unwrap();
+    insert_attributed(&catalog, "mine", "alice", Some("acct-writer"));
+    insert_attributed(&catalog, "theirs", "alice", Some("acct-other"));
     // The handle moves on: the writer is renamed and its old name is taken
     // by the other account. Neither rename may reach a checkpoint.
     let mut renamed = contributor("acct-writer", "carol");
@@ -2698,7 +2752,7 @@ fn erasure_follows_the_account_not_the_handle() {
         "an equal display name on another account is untouched"
     );
     let kept = catalog.checkpoint("doc", "mine").unwrap().unwrap();
-    assert_eq!(kept.tree_sha, "tree-mine");
+    assert_eq!(kept.tree_sha, fixture_tree_digest("mine"));
     assert_eq!(kept.at, "2026-02-02T00:00:00.000Z");
     assert_eq!(kept.size, 7);
     assert_eq!(kept.why, "cli");
@@ -2717,20 +2771,12 @@ fn erasure_covers_legacy_rows_and_leaves_unattributed_ones_alone() {
     catalog
         .upsert_account(&contributor("acct-writer", "alice"))
         .unwrap();
-    catalog
-        .insert_checkpoint(&attributed("stable", "alice", Some("acct-writer")))
-        .unwrap();
+    insert_attributed(&catalog, "stable", "alice", Some("acct-writer"));
     // Written before this column existed, when the erasure query matched the
     // account id in `by`.
-    catalog
-        .insert_checkpoint(&attributed("legacy", "acct-writer", None))
-        .unwrap();
-    catalog
-        .insert_checkpoint(&attributed("anonymous", "Reviewer two", None))
-        .unwrap();
-    catalog
-        .insert_checkpoint(&attributed("imported", "", None))
-        .unwrap();
+    insert_attributed(&catalog, "legacy", "acct-writer", None);
+    insert_attributed(&catalog, "anonymous", "Reviewer two", None);
+    insert_attributed(&catalog, "imported", "", None);
 
     catalog
         .begin_erasure("acct-writer", "generation-2")
@@ -2765,13 +2811,12 @@ fn erasure_batches_restart_without_skipping_checkpoints() {
         .upsert_account(&contributor("acct-writer", "alice"))
         .unwrap();
     for index in 0..25 {
-        catalog
-            .insert_checkpoint(&attributed(
-                &format!("point-{index:03}"),
-                "alice",
-                Some("acct-writer"),
-            ))
-            .unwrap();
+        insert_attributed(
+            &catalog,
+            &format!("point-{index:03}"),
+            "alice",
+            Some("acct-writer"),
+        );
     }
     catalog
         .begin_erasure("acct-writer", "generation-2")
@@ -2823,15 +2868,19 @@ fn a_queued_checkpoint_cannot_reintroduce_erased_attribution() {
         .begin_erasure("acct-writer", "generation-2")
         .unwrap();
     drain_erasure(&catalog, "acct-writer", 1000);
-    catalog.insert_checkpoint(&queued).unwrap();
+    insert_fixture_checkpoint(&catalog, &queued);
     let stored = catalog.checkpoint("doc", "queued").unwrap().unwrap();
     assert_eq!(stored.by_account, None);
     assert_eq!(stored.by, "Deleted user");
-    assert_eq!(stored.tree_sha, "tree-queued", "the content is retained");
+    assert_eq!(
+        stored.tree_sha,
+        fixture_tree_digest("queued"),
+        "the content is retained"
+    );
     // The batched insert path and the erasure gate agree.
     let mut second = attributed("staged", "alice", Some("acct-writer"));
     second.seq = -1;
-    catalog.insert_checkpoints_atomic(&[second]).unwrap();
+    insert_fixture_checkpoint(&catalog, &second);
     assert_eq!(
         attribution_of(&catalog, "staged"),
         ("Deleted user".to_string(), None)
@@ -2848,12 +2897,8 @@ fn finish_erasure_waits_for_checkpoint_attribution() {
     catalog
         .upsert_account(&contributor("acct-writer", "alice"))
         .unwrap();
-    catalog
-        .insert_checkpoint(&attributed("stable", "alice", Some("acct-writer")))
-        .unwrap();
-    catalog
-        .insert_checkpoint(&attributed("legacy", "acct-writer", None))
-        .unwrap();
+    insert_attributed(&catalog, "stable", "alice", Some("acct-writer"));
+    insert_attributed(&catalog, "legacy", "acct-writer", None);
     catalog
         .begin_erasure("acct-writer", "generation-2")
         .unwrap();
@@ -2893,16 +2938,10 @@ fn vacuum_backup_preserves_the_identity_distinction() {
     catalog
         .upsert_account(&contributor("acct-gone", "bob"))
         .unwrap();
-    catalog
-        .insert_checkpoint(&attributed("stable", "alice", Some("acct-writer")))
-        .unwrap();
-    catalog
-        .insert_checkpoint(&attributed("anonymous", "Reviewer two", None))
-        .unwrap();
+    insert_attributed(&catalog, "stable", "alice", Some("acct-writer"));
+    insert_attributed(&catalog, "anonymous", "Reviewer two", None);
     catalog.begin_erasure("acct-gone", "generation-2").unwrap();
-    catalog
-        .insert_checkpoint(&attributed("erased", "bob", Some("acct-gone")))
-        .unwrap();
+    insert_attributed(&catalog, "erased", "bob", Some("acct-gone"));
     let snapshot = dir.path().join("backup.db");
     catalog
         .with_connection(|connection| {
