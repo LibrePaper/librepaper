@@ -3052,9 +3052,7 @@
   function refreshPeers() {
     if (!session) return;
     peersByFile = session.whereEveryoneIs();
-    participants = [...session.awareness.getStates().entries()]
-      .filter(([client, state]) => client !== session.doc.clientID && state?.user)
-      .map(([client, state]) => ({ key: String(client), name: state.user.name || "Anonymous" }));
+    participants = session.participants();
   }
 
   function openTheFile(file) {

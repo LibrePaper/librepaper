@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from "y-protocols/awareness.js";
-import { join } from "../../src/lib/collab.js";
+import { join, uniquePresences } from "../../src/lib/collab.js";
 
 const encode = (bytes) => btoa(String.fromCharCode(...bytes));
 const awarenessFrames = (sent) => sent.filter((message) => message.type === "y-awareness");
+
+{
+  const states = new Map([
+    [1, { user: { name: "Ada", tab: "same-tab" } }],
+    [2, { user: { name: "Ada", tab: "same-tab" } }],
+    [3, { user: { name: "Ada", tab: "other-tab" } }],
+    [4, { user: { name: "Grace" } }],
+  ]);
+  const people = uniquePresences(states);
+  assert.deepEqual(people.map(({ key }) => key), ["same-tab", "other-tab", "client:4"]);
+  assert.equal(uniquePresences(states, { localTab: "same-tab" }).length, 2,
+    "reconnects from this tab disappear while another tab for the same user remains");
+}
 
 const timers = new Map();
 let timerId = 0;

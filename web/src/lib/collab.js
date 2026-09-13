@@ -57,6 +57,8 @@ const decode = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
 // set rather than at random so two people in a session rarely look alike, and
 // so a person keeps the same colour for as long as they are in it.
 const COLOURS = ["#2f5bd0", "#c2410c", "#15803d", "#7c3aed", "#be123c", "#0e7490"];
+const TAB_PRESENCE_KEY = "librepaper-presence-tab";
+let fallbackTabPresence = "";
 
 // An id for a file: twelve hex characters, which is what `session.rs` mints
 // and enough randomness that two people creating a file at the same instant
@@ -65,6 +67,29 @@ function mintId() {
   const bytes = new Uint8Array(6);
   crypto.getRandomValues(bytes);
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function tabPresenceId() {
+  try {
+    const existing = sessionStorage.getItem(TAB_PRESENCE_KEY);
+    if (existing) return existing;
+    const id = crypto.randomUUID?.() || `${mintId()}${mintId()}`;
+    sessionStorage.setItem(TAB_PRESENCE_KEY, id);
+    return id;
+  } catch {
+    return fallbackTabPresence ||= crypto.randomUUID?.() || `${mintId()}${mintId()}`;
+  }
+}
+
+export function uniquePresences(states, { localClient = null, localTab = "" } = {}) {
+  const unique = new Map();
+  for (const [client, state] of states || []) {
+    if (client === localClient || !state?.user) continue;
+    const tab = String(state.user.tab || "");
+    if (localTab && tab === localTab) continue;
+    unique.set(tab || `client:${client}`, { client, state });
+  }
+  return [...unique.entries()].map(([key, value]) => ({ key, ...value }));
 }
 
 /// Joins the document's session. `send` puts a message on the room's socket;
@@ -172,6 +197,7 @@ export function join({
   awareness.setLocalStateField("user", {
     name: name || "Anonymous",
     color: COLOURS[Math.floor(Math.random() * COLOURS.length)],
+    tab: tabPresenceId(),
   });
 
   // Anything this browser changes is sent on and held until it is
@@ -515,8 +541,9 @@ export function join({
     /// Who is in which file: an id to the initials of the people in it.
     whereEveryoneIs() {
       const by = new Map();
-      for (const [client, state] of awareness.getStates()) {
-        if (client === doc.clientID || !state?.file) continue;
+      const localTab = awareness.getLocalState()?.user?.tab || "";
+      for (const { state } of uniquePresences(awareness.getStates(), { localClient: doc.clientID, localTab })) {
+        if (!state.file) continue;
         const name = state?.user?.name || "?";
         const initials = name
           .split(/\s+/)
@@ -527,6 +554,15 @@ export function join({
         by.set(state.file, [...(by.get(state.file) || []), initials]);
       }
       return by;
+    },
+
+    participants() {
+      const localTab = awareness.getLocalState()?.user?.tab || "";
+      return uniquePresences(awareness.getStates(), { localClient: doc.clientID, localTab })
+        .map(({ key: presence, state }) => ({
+          key: presence,
+          name: state.user.name || "Anonymous",
+        }));
     },
 
     /// Called when the text being followed is a different text, so whoever is
