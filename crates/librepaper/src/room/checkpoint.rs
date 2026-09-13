@@ -480,19 +480,26 @@ impl Room {
         // authenticated MutationAuthority to carry into the final SQL fence.
         if !duplicate {
             if let (Some(catalog), Some(actor)) = (self.catalog.get(), actor.as_ref()) {
-                return self
-                    .checkpoint_v2_canonical(
-                        catalog,
-                        why,
-                        by,
-                        &tree,
-                        &bodies,
-                        &format,
-                        &last,
-                        tree_generation,
-                        actor,
-                    )
-                    .await;
+                if actor.agent_checkpoint.is_some() {
+                    // Agent acceptance carries an additional receipt that
+                    // must be settled by the established acceptance
+                    // transaction below; the generic v2 checkpoint commit
+                    // cannot silently drop that proof.
+                } else {
+                    return self
+                        .checkpoint_v2_canonical(
+                            catalog,
+                            why,
+                            by,
+                            &tree,
+                            &bodies,
+                            &format,
+                            &last,
+                            tree_generation,
+                            actor,
+                        )
+                        .await;
+                }
             }
         }
         if !duplicate && budget_token.is_none() {
@@ -1181,6 +1188,13 @@ impl Room {
         let now_ms = crate::util::now_millis();
         let now =
             UnixMillis::new(now_ms).map_err(|error| WriteError::Storage(error.to_string()))?;
+        let (journal_epoch, journal_sequence) = catalog
+            .execute_catalog(256, {
+                let document_id = document_id.clone();
+                move |catalog| catalog.v2_document_journal_head(&document_id)
+            })
+            .await
+            .map_err(WriteError::from)?;
         let operation_id = OperationId::new(hex::encode(crate::auth::random_bytes(16)))
             .map_err(|error| WriteError::Storage(error.to_string()))?;
         let checkpoint_id =
@@ -1195,6 +1209,19 @@ impl Room {
             "quarto" => SourceFormat::Quarto,
             _ => return Err(WriteError::Storage("invalid source format".into())),
         };
+        let estimated_logical_bytes = tree.files.values().try_fold(0usize, |total, file| {
+            let bytes = usize::try_from(file.size.max(0))
+                .map_err(|_| WriteError::Storage("checkpoint size exceeds memory bounds".into()))?;
+            total
+                .checked_add(bytes)
+                .ok_or_else(|| WriteError::Storage("checkpoint size exceeds memory bounds".into()))
+        })?;
+        if estimated_logical_bytes > self.config.persistence().max_encoded_snapshot_bytes {
+            return Err(WriteError::Size(crate::config::SizeRefusal::Encoded {
+                bytes: estimated_logical_bytes,
+                ceiling: self.config.persistence().max_encoded_snapshot_bytes,
+            }));
+        }
 
         struct PhysicalObject {
             id: ObjectId,
@@ -1292,12 +1319,29 @@ impl Room {
                     },
                 );
             } else if entry.kind == "asset" {
+                let v2_asset = catalog
+                    .execute_catalog(256, {
+                        let document_id = document_id.clone();
+                        let digest = entry.sha.clone();
+                        move |catalog| {
+                            catalog.available_object_by_logical_digest(
+                                &document_id,
+                                &digest,
+                                ObjectKind::Asset,
+                            )
+                        }
+                    })
+                    .await
+                    .map_err(WriteError::from)?;
+                let asset_key = v2_asset
+                    .as_ref()
+                    .map(|object| object.storage_key.clone())
+                    .unwrap_or_else(|| {
+                        crate::storage::blob::asset_key(&self.storage_id, &entry.sha)
+                    });
                 let bytes = self
                     .blobs
-                    .get(&crate::storage::blob::asset_key(
-                        &self.storage_id,
-                        &entry.sha,
-                    ))
+                    .get(&asset_key)
                     .await
                     .map_err(|error| WriteError::Storage(error.to_string()))?;
                 let digest = hex::encode(Sha256::digest(&bytes));
@@ -1393,11 +1437,11 @@ impl Room {
             "policy_editor": actor.policy_editor,
             "automation": actor.automation,
             "unowned_publisher": actor.unowned_publisher,
+            "execution_epoch": actor.execution_epoch,
         });
         let plan_json = serde_json::json!({
             "version": 2,
             "effect": "checkpoint",
-            "title": self.slug.clone(),
             "source_format": format,
             "main": tree.main,
             "closure_digest": closure_digest,
@@ -1446,7 +1490,8 @@ impl Room {
             plan_json,
             expected_document_generation: Some(expected_source_generation),
             conversation_id: None,
-            execution_epoch: None,
+            execution_epoch: (!actor.execution_epoch.is_empty())
+                .then(|| actor.execution_epoch.to_owned()),
             work_expires_at: Some(
                 UnixMillis::new(operation_expires)
                     .map_err(|error| WriteError::Storage(error.to_string()))?,
@@ -1488,8 +1533,16 @@ impl Room {
                     lease_holder: holder.clone(),
                     lease_expires_at: lease_expires,
                     limits: V2AdmissionLimits {
-                        owner_bytes: self.config.storage.per_owner,
-                        deployment_bytes: self.config.storage.total,
+                        owner_bytes: if self.config.storage.per_owner < 0 {
+                            i64::MAX
+                        } else {
+                            self.config.storage.per_owner
+                        },
+                        deployment_bytes: if self.config.storage.total < 0 {
+                            i64::MAX
+                        } else {
+                            self.config.storage.total
+                        },
                         owner_documents: self.config.storage.documents_per_owner as i64,
                     },
                     now,
@@ -1503,42 +1556,69 @@ impl Room {
             Arc::clone(catalog),
             Arc::clone(&self.blobs),
         );
-        let mut last_heartbeat = 0i64;
-        for object in &physical {
-            let current_ms = crate::util::now_millis();
-            if last_heartbeat == 0 || current_ms.saturating_sub(last_heartbeat) >= 30_000 {
-                let expiry = UnixMillis::new(
-                    current_ms
-                        .checked_add(120_000)
-                        .ok_or_else(|| WriteError::Storage("lease heartbeat overflow".into()))?,
-                )
-                .map_err(|error| WriteError::Storage(error.to_string()))?;
-                let current = UnixMillis::new(current_ms)
-                    .map_err(|error| WriteError::Storage(error.to_string()))?;
-                let ids = object_ids.clone();
-                let document = document_id.clone();
-                let holder_id = holder.clone();
-                let operation_id_for_lease = admitted_operation.id.clone();
-                let generation = writer_generation.clone();
-                catalog
-                    .execute_catalog(ids.len() * 64 + 256, move |catalog| {
-                        catalog.renew_v2_lease_set(
-                            &document,
-                            &ids,
-                            &holder_id,
-                            &operation_id_for_lease,
-                            &generation,
-                            expiry,
-                            current,
-                        )
+        let heartbeat_error = Arc::new(std::sync::Mutex::new(None::<String>));
+        let heartbeat_catalog = Arc::clone(catalog);
+        let heartbeat_document = document_id.clone();
+        let heartbeat_ids = object_ids.clone();
+        let heartbeat_holder = holder.clone();
+        let heartbeat_operation = admitted_operation.id.clone();
+        let heartbeat_generation = writer_generation.clone();
+        let heartbeat_error_slot = Arc::clone(&heartbeat_error);
+        let heartbeat = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let current_ms = crate::util::now_millis();
+                let current = match UnixMillis::new(current_ms) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if let Ok(mut slot) = heartbeat_error_slot.lock() {
+                            *slot = Some(error.to_string());
+                        }
+                        break;
+                    }
+                };
+                let expiry = match UnixMillis::new(current_ms.saturating_add(120_000)) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if let Ok(mut slot) = heartbeat_error_slot.lock() {
+                            *slot = Some(error.to_string());
+                        }
+                        break;
+                    }
+                };
+                let result = heartbeat_catalog
+                    .execute_catalog(heartbeat_ids.len() * 64 + 256, {
+                        let document = heartbeat_document.clone();
+                        let ids = heartbeat_ids.clone();
+                        let holder = heartbeat_holder.clone();
+                        let operation = heartbeat_operation.clone();
+                        let generation = heartbeat_generation.clone();
+                        move |catalog| {
+                            catalog.renew_v2_lease_set(
+                                &document,
+                                &ids,
+                                &holder,
+                                &operation,
+                                &generation,
+                                expiry,
+                                current,
+                            )
+                        }
                     })
-                    .await
-                    .map_err(WriteError::from)?;
-                last_heartbeat = current_ms;
+                    .await;
+                if let Err(error) = result {
+                    if let Ok(mut slot) = heartbeat_error_slot.lock() {
+                        *slot = Some(error.to_string());
+                    }
+                    break;
+                }
             }
+        });
+        for object in &physical {
             let blob_id = BlobObjectId::parse(object.id.as_str().to_owned())
                 .map_err(|error| WriteError::Storage(error.to_string()))?;
-            writer
+            let write_result = writer
                 .write_allocated(
                     document_id.as_str(),
                     blob_id,
@@ -1546,7 +1626,21 @@ impl Room {
                     object.content_type,
                 )
                 .await
-                .map_err(WriteError::Storage)?;
+                .map_err(WriteError::Storage);
+            if let Err(error) = write_result {
+                heartbeat.abort();
+                let _ = heartbeat.await;
+                return Err(error);
+            }
+        }
+        heartbeat.abort();
+        let _ = heartbeat.await;
+        if let Ok(slot) = heartbeat_error.lock() {
+            if let Some(error) = slot.as_ref() {
+                return Err(WriteError::Storage(format!(
+                    "checkpoint closure heartbeat failed: {error}"
+                )));
+            }
         }
         let checkpoint = CheckpointCommit {
             document_id: document_id.clone(),
@@ -1560,8 +1654,8 @@ impl Room {
             source_format,
             logical_bytes: tree.files.values().map(|file| file.size).sum(),
             label: None,
-            journal_epoch: 0,
-            journal_sequence: 0,
+            journal_epoch,
+            journal_sequence,
             metadata_json:
                 serde_json::json!({"version": 2, "tree": hex::encode(tree_envelope.logical_digest)})
                     .to_string(),
@@ -1571,35 +1665,38 @@ impl Room {
             now: UnixMillis::new(crate::util::now_millis())
                 .map_err(|error| WriteError::Storage(error.to_string()))?,
         };
+        let checkpoint_for_verify = checkpoint.clone();
         let proof = catalog
             .execute_catalog(checkpoint.object_ids.len() * 128 + 512, {
                 let operation_id = admitted_operation.id.clone();
-                let checkpoint = checkpoint.clone();
-                move |catalog| catalog.verify_v2_checkpoint_closure(&operation_id, &checkpoint)
+                move |catalog| {
+                    catalog.verify_v2_checkpoint_closure(&operation_id, &checkpoint_for_verify)
+                }
             })
             .await
             .map_err(WriteError::from)?;
         let checkpoint_id = checkpoint.id.as_str().to_string();
+        let checkpoint_for_commit = checkpoint.clone();
         catalog
             .execute_catalog(checkpoint.object_ids.len() * 128 + 512, move |catalog| {
                 catalog.commit_v2_checkpoint_verified(
                     &proof,
-                    &checkpoint,
+                    &checkpoint_for_commit,
                     &serde_json::json!({"version": 2, "effect": "checkpoint", "checkpoint_id": checkpoint_id}).to_string(),
                 )
             })
             .await
             .map_err(WriteError::from)?;
-        for object_id in &checkpoint.object_ids {
-            let document = document_id.clone();
-            let object_id = object_id.clone();
-            let holder = holder.clone();
-            catalog
-                .execute_catalog(256, move |catalog| {
-                    catalog.release_v2_lease(&document, &object_id, &holder)
-                })
-                .await
-                .map_err(WriteError::from)?;
+        if let Err(error) = catalog
+            .execute_catalog(checkpoint.object_ids.len() * 64 + 256, {
+                let document = document_id.clone();
+                let ids = checkpoint.object_ids.clone();
+                let holder = holder.clone();
+                move |catalog| catalog.release_v2_lease_set(&document, &ids, &holder)
+            })
+            .await
+        {
+            eprintln!("warning: checkpoint lease cleanup failed: {error}");
         }
 
         let mut state = self.state.lock().await;

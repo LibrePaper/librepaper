@@ -1087,6 +1087,56 @@ impl Catalog {
         })
     }
 
+    /// Locate one available physical object by its document-local logical
+    /// digest.  Asset bytes are immutable v2 objects; callers must read the
+    /// returned canonical storage key rather than reconstructing a legacy
+    /// content path from a digest.
+    pub(crate) fn available_object_by_logical_digest(
+        &self,
+        document_id: &DocumentId,
+        logical_digest: &str,
+        kind: ObjectKind,
+    ) -> CatalogResult<Option<V2Object>> {
+        let object_id: Option<String> = self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT o.id FROM objects o JOIN documents d ON d.id=o.document_id
+                     JOIN accounts a ON a.id=d.owner_id
+                     WHERE o.document_id=?1 AND o.logical_digest=?2 AND o.kind=?3
+                       AND o.state='available' AND d.status='active' AND a.status='active'
+                     ORDER BY o.created_at DESC,o.id DESC LIMIT 1",
+                    params![document_id.as_str(), logical_digest, kind.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(CatalogError::from)
+        })?;
+        let Some(object_id) = object_id else {
+            return Ok(None);
+        };
+        self.object_by_id(
+            document_id,
+            &ObjectId::new(object_id).map_err(|error| CatalogError::Invalid(error.to_string()))?,
+        )
+    }
+
+    /// Read the journal watermark captured by a checkpoint snapshot.
+    pub(crate) fn v2_document_journal_head(
+        &self,
+        document_id: &DocumentId,
+    ) -> CatalogResult<(i64, i64)> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT journal_epoch,journal_sequence FROM documents
+                     WHERE id=?1 AND status<>'deleting'",
+                    [document_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(CatalogError::from)
+        })
+    }
+
     pub fn objects_by_ids(
         &self,
         document_id: &DocumentId,
@@ -1470,16 +1520,53 @@ impl Catalog {
             let writer_generation: String = tx
                 .query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0))
                 .map_err(CatalogError::from)?;
-            let duplicate: bool = tx
+            let existing: Option<(String, String, String, String, String, Option<i64>)> = tx
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM operations
-                      WHERE document_id=?1 AND actor_key=?2 AND request_key=?3)",
+                    "SELECT id,kind,state,request_digest,writer_generation,receipt_expires_at
+                       FROM operations
+                      WHERE document_id=?1 AND actor_key=?2 AND request_key=?3",
                     params![input.document_id.as_str(), input.operation.actor_key, input.operation.request_key],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
                 )
+                .optional()
                 .map_err(CatalogError::from)?;
-            if duplicate {
-                return Err(CatalogError::Conflict("checkpoint request key already exists".into()));
+            if let Some((id, kind, state, digest, generation, receipt_expires_at)) = existing {
+                if digest != input.operation.request_digest || kind != input.operation.kind.as_str() {
+                    return Err(CatalogError::Conflict(
+                        "checkpoint request key was reused with different content".into(),
+                    ));
+                }
+                if state == "aborted" {
+                    return Err(CatalogError::Conflict("checkpoint operation was aborted".into()));
+                }
+                if state == "committed" && receipt_expires_at.is_some_and(|expires| expires <= input.now.0) {
+                    return Err(CatalogError::refused(
+                        CatalogRefusal::RequestExpired,
+                        "checkpoint request receipt has expired; submit a new request key",
+                    ));
+                }
+                return Ok((
+                    V2Operation {
+                        id: OperationId::new(id).map_err(|error| CatalogError::Invalid(error.to_string()))?,
+                        scope: input.operation.scope.clone(),
+                        actor_key: input.operation.actor_key.clone(),
+                        request_key: input.operation.request_key.clone(),
+                        kind,
+                        state,
+                        request_digest: digest,
+                        writer_generation: generation.clone(),
+                    },
+                    writer_generation,
+                ));
+            }
+            let issued = crate::util::request_key_timestamp(&input.operation.request_key)
+                .ok_or_else(|| CatalogError::Invalid("invalid v2 request key".into()))?;
+            if issued > input.now.0.saturating_add(60_000)
+                || input.now.0.saturating_sub(issued) > 15 * 60_000
+            {
+                return Err(CatalogError::Invalid(
+                    "checkpoint request key is outside its admission window".into(),
+                ));
             }
             Self::admit_operation_slot(tx, Some(input.document_id.as_str()), input.operation.kind.as_str())?;
             let (owner_stored, owner_reserved): (i64, i64) = tx
@@ -2488,6 +2575,33 @@ impl Catalog {
             )
             .map(|count| count != 0)
             .map_err(CatalogError::from)
+        })
+    }
+
+    /// Release a completed closure's stage leases in one transaction.  Lease
+    /// cleanup is best effort after the checkpoint receipt commits; failure to
+    /// remove a lease must never turn that committed result into an error.
+    pub(crate) fn release_v2_lease_set(
+        &self,
+        document_id: &DocumentId,
+        object_ids: &[ObjectId],
+        holder_id: &str,
+    ) -> CatalogResult<()> {
+        if object_ids.is_empty() || holder_id.is_empty() {
+            return Err(CatalogError::Invalid(
+                "invalid closure lease release".into(),
+            ));
+        }
+        self.immediate(|tx| {
+            for object_id in object_ids {
+                tx.execute(
+                    "DELETE FROM object_leases WHERE document_id=?1 AND object_id=?2
+                     AND holder_id=?3",
+                    params![document_id.as_str(), object_id.as_str(), holder_id],
+                )
+                .map_err(CatalogError::from)?;
+            }
+            Ok(())
         })
     }
 
