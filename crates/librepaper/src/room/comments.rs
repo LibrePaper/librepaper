@@ -908,8 +908,9 @@ impl Room {
         via: &str,
         budget: Option<i64>,
         is_owner: bool,
-        mutation_actor: crate::document::store::MutationActor,
+        mut mutation_actor: crate::document::store::MutationActor,
     ) -> (Value, bool) {
+        mutation_actor.owner_key = author.to_owned();
         let temp_id = command.temp_id().to_owned();
         let request_id = command.request_id().to_owned();
         let comment_id = command.comment_id().to_owned();

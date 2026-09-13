@@ -2853,6 +2853,44 @@ fn annotation_receipt_rechecks_live_link_and_preserves_seven_day_window() {
         .insert_comment_request_authorized(&comment, &key, &digest, now, authority)
         .unwrap();
     assert_eq!(inserted, replay);
+    let mut changed = inserted.clone();
+    changed.body = "Updated words".into();
+    let own_authority = AnnotationAuthority {
+        author_key: "acct-1",
+        ..authority
+    };
+    let foreign_authority = AnnotationAuthority {
+        author_key: "another-visitor",
+        ..authority
+    };
+    assert!(matches!(
+        catalog.update_comment_authorized(&changed, foreign_authority),
+        Err(CatalogError::Refused(super::CatalogRefusal::ActorRights, _))
+    ));
+    catalog
+        .update_comment_authorized(&changed, own_authority)
+        .unwrap();
+    let suggestion = catalog
+        .insert_comment_request_authorized(
+            &annotation("suggestion-wire", "editing"),
+            &crate::util::new_request_key(),
+            &digest,
+            now,
+            authority,
+        )
+        .unwrap();
+    assert_eq!(suggestion.motivation, "editing");
+    assert_eq!(suggestion.outcome, "");
+    let highlight = catalog
+        .insert_comment_request_authorized(
+            &annotation("highlight-wire", "highlighting"),
+            &crate::util::new_request_key(),
+            &digest,
+            now,
+            authority,
+        )
+        .unwrap();
+    assert_eq!(highlight.motivation, "highlighting");
     catalog.with_connection(|db| {
         let (created,completed,expiry):(i64,i64,i64) = db.query_row("SELECT created_at,completed_at,receipt_expires_at FROM operations WHERE request_key=?1",[&key],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
         assert_eq!(created,now);

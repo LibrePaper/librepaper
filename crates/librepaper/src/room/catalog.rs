@@ -1327,6 +1327,7 @@ pub(super) async fn insert_comment_request(
                     at.saturating_mul(1000),
                     crate::storage::catalog::AnnotationAuthority {
                         account_id: &actor.account_id,
+                        author_key: &actor.owner_key,
                         generation: &actor.session_generation,
                         link_hash: &actor.link_hash,
                         policy_comment: actor.policy_editor,
@@ -1361,6 +1362,7 @@ pub(super) async fn update_comment_row(
                     &row,
                     crate::storage::catalog::AnnotationAuthority {
                         account_id: &actor.account_id,
+                        author_key: &actor.owner_key,
                         generation: &actor.session_generation,
                         link_hash: &actor.link_hash,
                         policy_comment: actor.policy_editor,
@@ -1397,6 +1399,7 @@ pub(super) async fn delete_comment_row(
                         &id,
                         crate::storage::catalog::AnnotationAuthority {
                             account_id: &actor.account_id,
+                            author_key: &actor.owner_key,
                             generation: &actor.session_generation,
                             link_hash: &actor.link_hash,
                             policy_comment: actor.policy_editor,
@@ -1439,6 +1442,7 @@ pub(super) async fn insert_reply_request(
                     at.saturating_mul(1000),
                     crate::storage::catalog::AnnotationAuthority {
                         account_id: &actor.account_id,
+                        author_key: &actor.owner_key,
                         generation: &actor.session_generation,
                         link_hash: &actor.link_hash,
                         policy_comment: actor.policy_editor,
@@ -1490,6 +1494,7 @@ pub(super) async fn begin_suggestion_accept(
                 at.saturating_mul(1000),
                 crate::storage::catalog::AnnotationAuthority {
                     account_id: &actor.account_id,
+                    author_key: &actor.owner_key,
                     generation: &actor.session_generation,
                     link_hash: &actor.link_hash,
                     policy_comment: actor.policy_editor,
@@ -1577,6 +1582,7 @@ pub(super) async fn stage_suggestion_accept_update(
                 &update,
                 crate::storage::catalog::AnnotationAuthority {
                     account_id: &actor.account_id,
+                    author_key: &actor.owner_key,
                     generation: &actor.session_generation,
                     link_hash: &actor.link_hash,
                     policy_comment: actor.policy_editor,

@@ -224,6 +224,7 @@ pub struct MutationAuthority<'a> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AnnotationAuthority<'a> {
     pub account_id: &'a str,
+    pub author_key: &'a str,
     pub generation: &'a str,
     pub link_hash: &'a str,
     pub policy_comment: bool,
