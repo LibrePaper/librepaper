@@ -109,6 +109,31 @@ fn v2_link_rotation_invalidates_bookmarks_without_changing_link_identity() {
 }
 
 #[test]
+fn v2_document_cursors_preserve_subsecond_order() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    account(&catalog);
+    for id in ["a", "b", "c"] {
+        document(&catalog, id, id);
+    }
+    catalog.with_connection(|db| {
+        db.execute("UPDATE documents SET status='active',created_at=1800000000000,updated_at=1800000000000+CASE id WHEN 'a' THEN 3 WHEN 'b' THEN 2 ELSE 1 END", [])?;
+        Ok(())
+    }).unwrap();
+    let mut cursor: Option<(String, String)> = None;
+    let mut ids = Vec::new();
+    loop {
+        let page = catalog.documents_page(cursor.as_ref().map(|(time,id)| (time.as_str(),id.as_str())), 1).unwrap();
+        let Some(row) = page.first() else { break; };
+        assert!(crate::util::parse_timestamp_millis(&row.created_at).is_some());
+        assert_eq!(crate::util::parse_timestamp_millis(&row.updated_at), Some(1800000000003 - ids.len() as i64));
+        ids.push(row.slug.clone());
+        cursor = Some((row.updated_at.clone(), row.slug.clone()));
+    }
+    assert_eq!(ids, ["a", "b", "c"]);
+    assert!(catalog.documents_page(Some(("invalid", "a")), 1).is_err());
+}
+
+#[test]
 fn v2_reopens_with_exact_inventory_and_preserves_singleton() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("catalog.db");

@@ -87,6 +87,19 @@ pub fn parse_timestamp(value: &str) -> Option<i64> {
         .map(|at| at.unix_timestamp())
 }
 
+/// Catalog timestamps retain milliseconds in wire values and keyset cursors.
+pub fn format_unix_millis(unix: i64) -> String {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix) * 1_000_000)
+        .ok()
+        .and_then(|at| at.format(&Rfc3339).ok())
+        .unwrap_or_default()
+}
+
+pub fn parse_timestamp_millis(value: &str) -> Option<i64> {
+    let at = OffsetDateTime::parse(value, &Rfc3339).ok()?;
+    i64::try_from(at.unix_timestamp_nanos().div_euclid(1_000_000)).ok()
+}
+
 /// Parse the timestamp without applying freshness: existing receipts may be replayed
 /// after the first-seen admission window. Freshness belongs inside admission.
 pub fn request_key_timestamp(key: &str) -> Option<i64> {

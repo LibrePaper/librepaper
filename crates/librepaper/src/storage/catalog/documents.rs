@@ -27,8 +27,7 @@ pub(super) fn document_time_ms(value: &str) -> CatalogResult<i64> {
             Ok(number)
         };
     }
-    crate::util::parse_timestamp(value)
-        .and_then(|seconds| seconds.checked_mul(1_000))
+    crate::util::parse_timestamp_millis(value)
         .filter(|value| *value >= 0)
         .ok_or_else(|| CatalogError::Invalid("document timestamp is invalid".into()))
 }
@@ -590,7 +589,10 @@ impl Catalog {
         limit: u32,
     ) -> CatalogResult<Vec<Document>> {
         let limit = i64::from(limit.clamp(1, 200));
-        let cursor_at = cursor.and_then(|(value, _)| value.parse::<i64>().ok());
+        let cursor_at = cursor.map(|(value, _)| {
+            crate::util::parse_timestamp_millis(value)
+                .ok_or_else(|| CatalogError::Invalid("invalid document cursor timestamp".into()))
+        }).transpose()?;
         let cursor_slug = cursor.map(|(_, slug)| slug);
         self.with_connection(|connection| {
             let mut statement = connection
@@ -672,7 +674,7 @@ impl Catalog {
     }
 
     pub(super) const DOCUMENT_SELECT: &'static str =
-        "SELECT d.slug,d.id,d.title,'',CAST(d.created_at AS TEXT),COALESCE(CAST(d.published_at AS TEXT),''),CAST(d.updated_at AS TEXT),
+        "SELECT d.slug,d.id,d.title,'',d.created_at,d.published_at,d.updated_at,
                 d.ownership_mode='example','',d.owner_id,d.status,d.stored_bytes,d.stored_bytes+d.reserved_bytes,
                 d.reserved_bytes,d.next_annotation_seq,d.last_checkpoint_at,NULL,COALESCE(d.publication_id,''),d.source_format,d.main_path
          FROM documents d JOIN accounts a ON a.id=d.owner_id AND a.status='active'";
@@ -692,9 +694,9 @@ impl Catalog {
             storage_id: row.get(1)?,
             title: row.get(2)?,
             sha: row.get(3)?,
-            created_at: row.get(4)?,
-            published_at: row.get(5)?,
-            updated_at: row.get(6)?,
+            created_at: crate::util::format_unix_millis(row.get(4)?),
+            published_at: row.get::<_, Option<i64>>(5)?.map(crate::util::format_unix_millis).unwrap_or_default(),
+            updated_at: crate::util::format_unix_millis(row.get(6)?),
             example: row.get::<_, i64>(7)? != 0,
             owner_key: row.get(8)?,
             owner_id: row.get(9)?,
