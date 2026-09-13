@@ -1513,4 +1513,41 @@ mod tests {
         let backup = root.join("recovery/v2/backup");
         assert!(paths_overlap(&root, &backup));
     }
+
+    #[tokio::test]
+    async fn local_backup_restore_round_trip_uses_real_catalog_and_files() {
+        let source_root = tempfile::tempdir().expect("source deployment");
+        let backup_root = tempfile::tempdir().expect("backup deployment");
+        let restore_root = tempfile::tempdir().expect("restore deployment");
+        let source_paths = DeploymentPaths::local(source_root.path().to_path_buf());
+        fs::create_dir_all(&source_paths.state).expect("source state");
+        fs::create_dir_all(&source_paths.objects).expect("source objects");
+        fs::create_dir_all(&source_paths.secrets).expect("source secrets");
+        let source_catalog = Arc::new(Catalog::open_with(&source_paths.catalog, false).expect("source catalog"));
+        let deployment_id: String = source_catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT deployment_id FROM server_state WHERE id=1", [], |row| row.get(0))
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("deployment identity");
+        fs::write(&source_paths.deployment_identity, format!("{deployment_id}\n")).expect("identity");
+        let source: Arc<dyn BlobStore> = Arc::new(FsStore::new(&source_paths.objects, false));
+        let destination: Arc<dyn BlobStore> = Arc::new(FsStore::new(backup_root.path(), false));
+        let source_adapter = LocalV2BackupCatalog::new(source_catalog.clone(), source_paths.clone());
+        let manifest = create_backup(&source_adapter, source, destination.clone(), "roundtrip", 10)
+            .await
+            .expect("real backup");
+        assert!(manifest.complete);
+
+        let restore_paths = DeploymentPaths::local(restore_root.path().to_path_buf());
+        let restore_adapter = LocalV2RestoreCatalog::new(restore_paths.clone());
+        let target: Arc<dyn BlobStore> = Arc::new(FsStore::new(&restore_paths.objects, false));
+        let report = restore_backup(&restore_adapter, destination.as_ref(), target, "roundtrip")
+            .await
+            .expect("real restore");
+        assert_eq!(report.objects_restored, 0);
+        assert_eq!(fs::read_to_string(&restore_paths.deployment_identity).expect("restored identity").trim(), deployment_id);
+        source_catalog.shutdown().await;
+    }
 }
