@@ -475,6 +475,26 @@ impl Room {
             drop(state);
             resident_duplicate || catalog_duplicate.is_some()
         };
+        // Catalogue-backed actor writes use the v2 physical graph.  Keep the
+        // old path below only for isolated/legacy callers that have no
+        // authenticated MutationAuthority to carry into the final SQL fence.
+        if !duplicate {
+            if let (Some(catalog), Some(actor)) = (self.catalog.get(), actor.as_ref()) {
+                return self
+                    .checkpoint_v2_canonical(
+                        catalog,
+                        why,
+                        by,
+                        &tree,
+                        &bodies,
+                        &format,
+                        &last,
+                        tree_generation,
+                        actor,
+                    )
+                    .await;
+            }
+        }
         if !duplicate && budget_token.is_none() {
             if let Some(catalog) = self.catalog.get() {
                 let automatic = matches!(why, "automatic" | "quiet");
@@ -1119,6 +1139,478 @@ impl Room {
             }
         }
         Ok(Some(sha))
+    }
+
+    /// Write a catalogue checkpoint as one canonical v2 physical closure.
+    ///
+    /// Admission installs the operation, every allocation, counters, and
+    /// stage leases before object I/O.  The final verified commit inserts the
+    /// checkpoint graph, advances the document head, and settles the receipt
+    /// in one SQLite transaction.  This is deliberately kept separate from
+    /// the old source-history writer until callers without a MutationAuthority
+    /// have been removed; those callers cannot satisfy the final auth fence.
+    async fn checkpoint_v2_canonical(
+        &self,
+        catalog: &Arc<crate::storage::catalog::Catalog>,
+        why: &str,
+        by: &Attribution,
+        tree: &crate::document::history::Tree,
+        bodies: &HashMap<String, String>,
+        format: &str,
+        parent: &str,
+        tree_generation: u64,
+        actor: &crate::storage::catalog::MutationAuthority<'_>,
+    ) -> Result<Option<String>, WriteError> {
+        use crate::storage::blob::ObjectId as BlobObjectId;
+        use crate::storage::catalog::{
+            CheckpointCommit, DocumentId, ObjectId, ObjectKind, OperationId, OperationKind,
+            OperationScope, SourceFormat, UnixMillis, V2AdmissionLimits,
+            V2CheckpointAdmissionInput, V2ObjectAllocation, V2OperationInput,
+        };
+        use crate::storage::encoding::{
+            PhysicalLocator, SourceRecipeEnvelope, TreeEnvelope, TreeFileLocator,
+            SOURCE_ENVELOPE_VERSION, TREE_ENVELOPE_VERSION,
+        };
+        use sha2::{Digest, Sha256};
+
+        let document_id = DocumentId::new(self.storage_id.clone())
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
+        let now_ms = crate::util::now_millis();
+        let now =
+            UnixMillis::new(now_ms).map_err(|error| WriteError::Storage(error.to_string()))?;
+        let operation_id = OperationId::new(hex::encode(crate::auth::random_bytes(16)))
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
+        let checkpoint_id =
+            crate::storage::catalog::CheckpointId::new(hex::encode(crate::auth::random_bytes(16)))
+                .map_err(|error| WriteError::Storage(error.to_string()))?;
+
+        let source_format = match format {
+            "markdown" => SourceFormat::Markdown,
+            "html" => SourceFormat::Html,
+            "typst" => SourceFormat::Typst,
+            "latex" => SourceFormat::Latex,
+            "quarto" => SourceFormat::Quarto,
+            _ => return Err(WriteError::Storage("invalid source format".into())),
+        };
+
+        struct PhysicalObject {
+            id: ObjectId,
+            kind: ObjectKind,
+            bytes: Vec<u8>,
+            content_type: &'static str,
+            digest: String,
+            logical_digest: Option<String>,
+        }
+
+        let mut physical = Vec::<PhysicalObject>::new();
+        let mut files = std::collections::BTreeMap::new();
+        for (path, entry) in &tree.files {
+            if entry.kind == "text" {
+                let body = bodies.get(&entry.sha).ok_or_else(|| {
+                    WriteError::Storage(format!("checkpoint text body {} is missing", entry.sha))
+                })?;
+                let plan = source_encoding_pool()
+                    .try_plan(body.as_bytes().to_vec())
+                    .await
+                    .map_err(|error| WriteError::Storage(error.to_string()))?;
+                let encoded = source_encoding_pool()
+                    .try_encode_planned(
+                        body.as_bytes().to_vec(),
+                        plan,
+                        std::collections::HashSet::new(),
+                    )
+                    .await
+                    .map_err(|error| WriteError::Storage(error.to_string()))?;
+                if hex::encode(encoded.file_digest) != entry.sha {
+                    return Err(WriteError::Storage(
+                        "checkpoint source digest differs from tree".into(),
+                    ));
+                }
+                let mut chunk_locators = Vec::with_capacity(encoded.objects.len());
+                for object in &encoded.objects {
+                    let id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
+                        .map_err(|error| WriteError::Storage(error.to_string()))?;
+                    let object_digest: [u8; 32] = Sha256::digest(&object.encoded).into();
+                    chunk_locators.push(PhysicalLocator {
+                        object_id: BlobObjectId::parse(id.as_str().to_owned())
+                            .map_err(|error| WriteError::Storage(error.to_string()))?,
+                        object_digest,
+                        logical_digest: Some(object.digest),
+                        logical_length: object.uncompressed_len as u64,
+                        byte_length: object.encoded.len() as u64,
+                        encoding_version: 1,
+                    });
+                    physical.push(PhysicalObject {
+                        id,
+                        kind: ObjectKind::SourceChunk,
+                        bytes: object.encoded.clone(),
+                        content_type: "application/vnd.librepaper.source-chunk",
+                        digest: hex::encode(object_digest),
+                        logical_digest: Some(hex::encode(object.digest)),
+                    });
+                }
+                let recipe_envelope = SourceRecipeEnvelope {
+                    version: SOURCE_ENVELOPE_VERSION,
+                    recipe: encoded.recipe.clone(),
+                    chunk_locators,
+                };
+                let recipe_bytes = recipe_envelope
+                    .to_bytes()
+                    .map_err(|error| WriteError::Storage(error.to_string()))?;
+                let recipe_id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
+                    .map_err(|error| WriteError::Storage(error.to_string()))?;
+                let recipe_digest: [u8; 32] = Sha256::digest(&recipe_bytes).into();
+                let recipe_locator = PhysicalLocator {
+                    object_id: BlobObjectId::parse(recipe_id.as_str().to_owned())
+                        .map_err(|error| WriteError::Storage(error.to_string()))?,
+                    object_digest: recipe_digest,
+                    logical_digest: Some(encoded.file_digest),
+                    logical_length: body.len() as u64,
+                    byte_length: recipe_bytes.len() as u64,
+                    encoding_version: 1,
+                };
+                physical.push(PhysicalObject {
+                    id: recipe_id.clone(),
+                    kind: ObjectKind::SourceRecipe,
+                    bytes: recipe_bytes,
+                    content_type: "application/vnd.librepaper.source-recipe",
+                    digest: hex::encode(recipe_digest),
+                    logical_digest: Some(entry.sha.clone()),
+                });
+                files.insert(
+                    path.clone(),
+                    TreeFileLocator {
+                        kind: "text".into(),
+                        file_id: entry.id.clone(),
+                        logical_digest: encoded.file_digest,
+                        logical_length: body.len() as u64,
+                        recipe: Some(recipe_locator),
+                        asset: None,
+                    },
+                );
+            } else if entry.kind == "asset" {
+                let bytes = self
+                    .blobs
+                    .get(&crate::storage::blob::asset_key(
+                        &self.storage_id,
+                        &entry.sha,
+                    ))
+                    .await
+                    .map_err(|error| WriteError::Storage(error.to_string()))?;
+                let digest = hex::encode(Sha256::digest(&bytes));
+                if digest != entry.sha || entry.size < 0 || bytes.len() as i64 != entry.size {
+                    return Err(WriteError::Storage(
+                        "checkpoint asset bytes differ from tree".into(),
+                    ));
+                }
+                let id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
+                    .map_err(|error| WriteError::Storage(error.to_string()))?;
+                let object_digest: [u8; 32] = Sha256::digest(&bytes).into();
+                let locator = PhysicalLocator {
+                    object_id: BlobObjectId::parse(id.as_str().to_owned())
+                        .map_err(|error| WriteError::Storage(error.to_string()))?,
+                    object_digest,
+                    logical_digest: Some(object_digest),
+                    logical_length: bytes.len() as u64,
+                    byte_length: bytes.len() as u64,
+                    encoding_version: 1,
+                };
+                physical.push(PhysicalObject {
+                    id,
+                    kind: ObjectKind::Asset,
+                    bytes,
+                    content_type: "application/octet-stream",
+                    digest: digest.clone(),
+                    logical_digest: Some(digest),
+                });
+                files.insert(
+                    path.clone(),
+                    TreeFileLocator {
+                        kind: "asset".into(),
+                        file_id: String::new(),
+                        logical_digest: object_digest,
+                        logical_length: entry.size as u64,
+                        recipe: None,
+                        asset: Some(locator),
+                    },
+                );
+            } else {
+                return Err(WriteError::Storage(
+                    "checkpoint has unknown file kind".into(),
+                ));
+            }
+        }
+
+        let settings_json = serde_json::to_string(&tree.settings)
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
+        let mut tree_envelope = TreeEnvelope {
+            version: TREE_ENVELOPE_VERSION,
+            main_path: tree.main.clone(),
+            source_format: format.to_string(),
+            settings_json,
+            logical_digest: [0; 32],
+            files,
+        };
+        let logical_tree = tree_envelope
+            .logical_bytes()
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
+        tree_envelope.logical_digest = Sha256::digest(&logical_tree).into();
+        let tree_bytes = tree_envelope
+            .to_bytes()
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
+        let tree_id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
+        let tree_physical_digest: [u8; 32] = Sha256::digest(&tree_bytes).into();
+        physical.push(PhysicalObject {
+            id: tree_id.clone(),
+            kind: ObjectKind::SourceTree,
+            bytes: tree_bytes,
+            content_type: "application/vnd.librepaper.source-tree",
+            digest: hex::encode(tree_physical_digest),
+            logical_digest: None,
+        });
+
+        // The tree is committed first in the closure so replay and recovery
+        // always have a canonical root, while the digest covers every object.
+        let mut object_ids = Vec::with_capacity(physical.len());
+        for object in physical.iter().rev() {
+            object_ids.push(object.id.clone());
+        }
+        object_ids.reverse();
+        let mut closure_hasher = Sha256::new();
+        for id in &object_ids {
+            closure_hasher.update(id.as_str().as_bytes());
+            closure_hasher.update([0]);
+        }
+        let closure_digest = hex::encode(closure_hasher.finalize());
+        let authority = serde_json::json!({
+            "account_id": actor.account_id,
+            "session_generation": actor.generation,
+            "link_hash": actor.link_hash,
+            "policy_editor": actor.policy_editor,
+            "automation": actor.automation,
+            "unowned_publisher": actor.unowned_publisher,
+        });
+        let plan_json = serde_json::json!({
+            "version": 2,
+            "effect": "checkpoint",
+            "title": self.slug.clone(),
+            "source_format": format,
+            "main": tree.main,
+            "closure_digest": closure_digest,
+            "tree_digest": hex::encode(tree_envelope.logical_digest),
+            "tree_physical_digest": hex::encode(tree_physical_digest),
+            "authority": authority,
+        })
+        .to_string();
+        let request_digest = hex::encode(Sha256::digest(
+            serde_json::json!({
+                "version": 2,
+                "effect": "checkpoint",
+                "document": self.slug.clone(),
+                "why": why,
+                "tree": hex::encode(tree_envelope.logical_digest),
+                "generation": tree_generation,
+                "objects": object_ids.iter().map(ObjectId::as_str).collect::<Vec<_>>(),
+            })
+            .to_string(),
+        ));
+        let actor_key = if !actor.account_id.is_empty() {
+            format!("account:{}", actor.account_id)
+        } else if !actor.link_hash.is_empty() {
+            format!("link:{}", actor.link_hash)
+        } else {
+            return Err(WriteError::Storage(
+                "checkpoint actor has no accountable identity".into(),
+            ));
+        };
+        let operation_expires = now_ms
+            .checked_add(120_000)
+            .ok_or_else(|| WriteError::Storage("operation expiry overflow".into()))?;
+        let expected_source_generation = catalog
+            .execute_catalog(256, {
+                let document_id = document_id.clone();
+                move |catalog| catalog.v2_document_source_generation(&document_id)
+            })
+            .await
+            .map_err(WriteError::from)?;
+        let operation = V2OperationInput {
+            scope: OperationScope::Document(document_id.clone()),
+            actor_key,
+            request_key: crate::util::new_request_key(),
+            kind: OperationKind::Checkpoint,
+            request_digest,
+            plan_json,
+            expected_document_generation: Some(expected_source_generation),
+            conversation_id: None,
+            execution_epoch: None,
+            work_expires_at: Some(
+                UnixMillis::new(operation_expires)
+                    .map_err(|error| WriteError::Storage(error.to_string()))?,
+            ),
+        };
+        let allocations = physical
+            .iter()
+            .map(|object| {
+                Ok::<_, WriteError>(V2ObjectAllocation {
+                    document_id: document_id.clone(),
+                    id: object.id.clone(),
+                    storage_key: format!("v2/documents/{}/objects/{}", document_id, object.id),
+                    kind: object.kind,
+                    digest: object.digest.clone(),
+                    logical_digest: object.logical_digest.clone(),
+                    encoding_version: 1,
+                    reserved_bytes: i64::try_from(object.bytes.len()).map_err(|_| {
+                        WriteError::Storage("checkpoint object is too large".into())
+                    })?,
+                    operation_id: operation_id.clone(),
+                    now,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let lease_expires = UnixMillis::new(
+            now_ms
+                .checked_add(120_000)
+                .ok_or_else(|| WriteError::Storage("lease expiry overflow".into()))?,
+        )
+        .map_err(|error| WriteError::Storage(error.to_string()))?;
+        let holder = format!("checkpoint:{}", operation_id.as_str());
+        let (admitted_operation, writer_generation) = catalog
+            .execute_catalog(4096 + physical.len() * 256, {
+                let input = V2CheckpointAdmissionInput {
+                    document_id: document_id.clone(),
+                    operation_id: operation_id.clone(),
+                    operation,
+                    allocations,
+                    lease_holder: holder.clone(),
+                    lease_expires_at: lease_expires,
+                    limits: V2AdmissionLimits {
+                        owner_bytes: self.config.storage.per_owner,
+                        deployment_bytes: self.config.storage.total,
+                        owner_documents: self.config.storage.documents_per_owner as i64,
+                    },
+                    now,
+                };
+                move |catalog| catalog.admit_v2_checkpoint(input)
+            })
+            .await
+            .map_err(WriteError::from)?;
+
+        let writer = crate::storage::v2_catalog::V2ObjectWriter::new(
+            Arc::clone(catalog),
+            Arc::clone(&self.blobs),
+        );
+        let mut last_heartbeat = 0i64;
+        for object in &physical {
+            let current_ms = crate::util::now_millis();
+            if last_heartbeat == 0 || current_ms.saturating_sub(last_heartbeat) >= 30_000 {
+                let expiry = UnixMillis::new(
+                    current_ms
+                        .checked_add(120_000)
+                        .ok_or_else(|| WriteError::Storage("lease heartbeat overflow".into()))?,
+                )
+                .map_err(|error| WriteError::Storage(error.to_string()))?;
+                let current = UnixMillis::new(current_ms)
+                    .map_err(|error| WriteError::Storage(error.to_string()))?;
+                let ids = object_ids.clone();
+                let document = document_id.clone();
+                let holder_id = holder.clone();
+                let operation_id_for_lease = admitted_operation.id.clone();
+                let generation = writer_generation.clone();
+                catalog
+                    .execute_catalog(ids.len() * 64 + 256, move |catalog| {
+                        catalog.renew_v2_lease_set(
+                            &document,
+                            &ids,
+                            &holder_id,
+                            &operation_id_for_lease,
+                            &generation,
+                            expiry,
+                            current,
+                        )
+                    })
+                    .await
+                    .map_err(WriteError::from)?;
+                last_heartbeat = current_ms;
+            }
+            let blob_id = BlobObjectId::parse(object.id.as_str().to_owned())
+                .map_err(|error| WriteError::Storage(error.to_string()))?;
+            writer
+                .write_allocated(
+                    document_id.as_str(),
+                    blob_id,
+                    object.bytes.clone(),
+                    object.content_type,
+                )
+                .await
+                .map_err(WriteError::Storage)?;
+        }
+        let checkpoint = CheckpointCommit {
+            document_id: document_id.clone(),
+            id: checkpoint_id,
+            tree_object_id: tree_id,
+            tree_digest: hex::encode(tree_envelope.logical_digest),
+            parent_id: (!parent.is_empty()).then(|| parent.to_string()),
+            author_account_id: (!actor.account_id.is_empty()).then(|| actor.account_id.to_string()),
+            author_label: by.display().to_string(),
+            reason: why.to_string(),
+            source_format,
+            logical_bytes: tree.files.values().map(|file| file.size).sum(),
+            label: None,
+            journal_epoch: 0,
+            journal_sequence: 0,
+            metadata_json:
+                serde_json::json!({"version": 2, "tree": hex::encode(tree_envelope.logical_digest)})
+                    .to_string(),
+            eligible_after: None,
+            object_ids,
+            make_current: true,
+            now: UnixMillis::new(crate::util::now_millis())
+                .map_err(|error| WriteError::Storage(error.to_string()))?,
+        };
+        let proof = catalog
+            .execute_catalog(checkpoint.object_ids.len() * 128 + 512, {
+                let operation_id = admitted_operation.id.clone();
+                let checkpoint = checkpoint.clone();
+                move |catalog| catalog.verify_v2_checkpoint_closure(&operation_id, &checkpoint)
+            })
+            .await
+            .map_err(WriteError::from)?;
+        let checkpoint_id = checkpoint.id.as_str().to_string();
+        catalog
+            .execute_catalog(checkpoint.object_ids.len() * 128 + 512, move |catalog| {
+                catalog.commit_v2_checkpoint_verified(
+                    &proof,
+                    &checkpoint,
+                    &serde_json::json!({"version": 2, "effect": "checkpoint", "checkpoint_id": checkpoint_id}).to_string(),
+                )
+            })
+            .await
+            .map_err(WriteError::from)?;
+        for object_id in &checkpoint.object_ids {
+            let document = document_id.clone();
+            let object_id = object_id.clone();
+            let holder = holder.clone();
+            catalog
+                .execute_catalog(256, move |catalog| {
+                    catalog.release_v2_lease(&document, &object_id, &holder)
+                })
+                .await
+                .map_err(WriteError::from)?;
+        }
+
+        let mut state = self.state.lock().await;
+        state.session.last_tree = Some(tree.clone());
+        state.session.last_checkpoint = checkpoint.id.as_str().to_string();
+        state.session.last_checkpoint_at = now_unix();
+        state.session.checkpoint_generation = tree_generation;
+        if state.session.generation == tree_generation {
+            state.session.pending_checkpoint_since = 0;
+        }
+        drop(state);
+        self.record_size_now(Some(checkpoint.id.as_str()), format, &tree.main)
+            .await;
+        Ok(Some(checkpoint.id.as_str().to_string()))
     }
 
     /// Puts back a checkpoint the manifest lost, into a staged manifest the

@@ -42,7 +42,7 @@ mod room_edits;
 mod source_history;
 mod v2;
 
-pub(crate) use v2::V2SourceAdmissionInput;
+pub(crate) use v2::{V2CheckpointAdmissionInput, V2SourceAdmissionInput};
 
 pub use agent_annotations::AgentAnnotationAuthority;
 pub use execution::{
