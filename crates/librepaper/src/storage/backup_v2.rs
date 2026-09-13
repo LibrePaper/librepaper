@@ -12,7 +12,7 @@
 //! restore tests. The old deployment-wide `storage_id` fixtures remain only
 //! as an explicit v1 converter module and are not a serving fallback.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufWriter, Read, Write};
 use std::fs::OpenOptions;
@@ -30,6 +30,59 @@ use crate::storage::catalog::Catalog;
 pub const BACKUP_FORMAT_V2: u16 = 2;
 pub const MAX_CATALOG_SNAPSHOT_BYTES: usize = 512 * 1024 * 1024;
 pub const BACKUP_PREFIX_V2: &str = "recovery/v2";
+pub const BACKUP_WORK_LEASE_MS: i64 = 24 * 60 * 60 * 1000;
+
+static ACTIVE_BACKUPS: std::sync::OnceLock<Mutex<HashMap<(String, String), usize>>> =
+    std::sync::OnceLock::new();
+
+fn active_backups() -> &'static Mutex<HashMap<(String, String), usize>> {
+    ACTIVE_BACKUPS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn backup_copy_active(deployment_id: &str, operation_id: &str) -> bool {
+    active_backups()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&(deployment_id.to_owned(), operation_id.to_owned()))
+        .is_some_and(|count| *count != 0)
+}
+
+#[derive(Debug)]
+struct ActiveBackupInner {
+    key: (String, String),
+}
+
+impl Drop for ActiveBackupInner {
+    fn drop(&mut self) {
+        let mut active = active_backups()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(count) = active.get_mut(&self.key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                active.remove(&self.key);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ActiveBackupCopy {
+    inner: Arc<ActiveBackupInner>,
+}
+
+impl ActiveBackupCopy {
+    fn new(deployment_id: &str, operation_id: &str) -> Self {
+        let key = (deployment_id.to_owned(), operation_id.to_owned());
+        let mut active = active_backups()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *active.entry(key.clone()).or_insert(0) += 1;
+        Self {
+            inner: Arc::new(ActiveBackupInner { key }),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupObjectEntry {
@@ -171,6 +224,7 @@ pub struct BackupSnapshot {
     pub identity: BackupPayload,
     pub secrets: Vec<BackupPayload>,
     pub secret_versions: Vec<String>,
+    pub(crate) active_copy: Option<ActiveBackupCopy>,
 }
 
 #[derive(Clone, Debug)]
@@ -198,6 +252,13 @@ pub struct BackupObjectCursor {
 #[async_trait::async_trait]
 pub trait V2BackupCatalog: Send + Sync {
     async fn prepare_backup(&self, now: i64) -> Result<BackupSnapshot, String>;
+    /// Keep the destructive-reclamation fence alive while the caller still
+    /// owns the physical copy.  A prepared operation has a finite recovery
+    /// deadline so a crashed backup cannot freeze GC forever, but an active
+    /// copier must renew it before every potentially slow object transfer.
+    async fn heartbeat_backup(&self, _operation_id: &str, _now: i64) -> Result<(), String> {
+        Ok(())
+    }
     async fn backup_objects_page(
         &self,
         operation_id: &str,
@@ -208,15 +269,49 @@ pub trait V2BackupCatalog: Send + Sync {
     async fn abort_backup(&self, operation_id: &str) -> Result<(), String>;
 }
 
+async fn backup_io_with_heartbeat<F, T>(
+    catalog: &dyn V2BackupCatalog,
+    operation_id: &str,
+    future: F,
+) -> Result<T, BackupV2Error>
+where
+    F: std::future::Future<Output = Result<T, BackupV2Error>>,
+{
+    tokio::pin!(future);
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+    let mut heartbeat_error = None;
+    loop {
+        if let Some(error) = heartbeat_error.take() {
+            // The physical operation owns the active-copy guard.  Finish it
+            // before returning the heartbeat failure so expiry cannot race a
+            // still-running copy and release its allocation prematurely.
+            let _ = future.await;
+            return Err(error);
+        }
+        tokio::select! {
+            result = &mut future => return result,
+            _ = heartbeat.tick() => {
+                if let Err(error) = catalog
+                    .heartbeat_backup(operation_id, crate::util::now_millis() as i64)
+                    .await
+                {
+                    heartbeat_error = Some(BackupV2Error::Catalog(error));
+                }
+            }
+        }
+    }
+}
+
 struct InventoryWriter {
     sender: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
     task: Option<tokio::task::JoinHandle<Result<(tempfile::NamedTempFile, String, u64), String>>>,
 }
 
 impl InventoryWriter {
-    fn new(file: tempfile::NamedTempFile) -> Self {
+    fn new(file: tempfile::NamedTempFile, active_copy: Option<ActiveBackupCopy>) -> Self {
         let (sender, mut receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
         let task = tokio::task::spawn_blocking(move || {
+            let _active_copy = active_copy;
             let mut writer = BufWriter::new(file.as_file());
             let mut digest = Sha256::new();
             let mut byte_length = 0_u64;
@@ -280,6 +375,9 @@ pub async fn create_backup(
         return Err(BackupV2Error::Invalid("invalid backup identity or time".into()));
     }
     let snapshot = catalog.prepare_backup(now).await.map_err(BackupV2Error::Catalog)?;
+    let active_copy = snapshot.active_copy.clone().unwrap_or_else(|| {
+        ActiveBackupCopy::new(&snapshot.deployment_id, &snapshot.operation_id)
+    });
     if snapshot.catalog_file.is_none() && snapshot.catalog_bytes.len() > MAX_CATALOG_SNAPSHOT_BYTES {
         let _ = catalog.abort_backup(&snapshot.operation_id).await;
         return Err(BackupV2Error::Invalid("catalog snapshot exceeds backup bound".into()));
@@ -324,45 +422,87 @@ pub async fn create_backup(
     };
     let result = async {
         let catalog_key = format!("{BACKUP_PREFIX_V2}/{backup_id}/catalog.db");
+        catalog
+            .heartbeat_backup(&snapshot.operation_id, crate::util::now_millis() as i64)
+            .await
+            .map_err(BackupV2Error::Catalog)?;
         if let Some(catalog_file) = snapshot.catalog_file.as_ref() {
             if catalog_file.byte_length != manifest.catalog_length
                 || catalog_file.digest != manifest.catalog_digest
             {
                 return Err(BackupV2Error::Corrupt("catalog snapshot metadata changed".into()));
             }
-            put_new_file_destination(
-                Arc::clone(&destination),
-                &catalog_key,
-                &catalog_file.path,
-                "application/vnd.sqlite3",
-                manifest.catalog_length,
-                &manifest.catalog_digest,
+            backup_io_with_heartbeat(
+                catalog,
+                &snapshot.operation_id,
+                put_new_file_destination(
+                    Arc::clone(&destination),
+                    &catalog_key,
+                    &catalog_file.path,
+                    "application/vnd.sqlite3",
+                    manifest.catalog_length,
+                    &manifest.catalog_digest,
+                    Some(active_copy.clone()),
+                ),
             )
             .await?;
         } else {
-            put_new_destination(
-                Arc::clone(&destination),
-                &catalog_key,
-                snapshot.catalog_bytes,
-                "application/vnd.sqlite3",
+            backup_io_with_heartbeat(
+                catalog,
+                &snapshot.operation_id,
+                put_new_destination(
+                    Arc::clone(&destination),
+                    &catalog_key,
+                    snapshot.catalog_bytes,
+                    "application/vnd.sqlite3",
+                    Some(active_copy.clone()),
+                ),
             )
             .await?;
         }
-        copy_file_payload(&destination, &manifest.identity, &snapshot.identity.bytes).await?;
+        catalog
+            .heartbeat_backup(&snapshot.operation_id, crate::util::now_millis() as i64)
+            .await
+            .map_err(BackupV2Error::Catalog)?;
+        backup_io_with_heartbeat(
+            catalog,
+            &snapshot.operation_id,
+            copy_file_payload(&destination, &manifest.identity, &snapshot.identity.bytes, Some(active_copy.clone())),
+        )
+        .await?;
         for (secret, entry) in snapshot.secrets.iter().zip(&manifest.secrets) {
-            copy_file_payload(&destination, entry, &secret.bytes).await?;
+            catalog
+                .heartbeat_backup(&snapshot.operation_id, crate::util::now_millis() as i64)
+                .await
+                .map_err(BackupV2Error::Catalog)?;
+            backup_io_with_heartbeat(
+                catalog,
+                &snapshot.operation_id,
+                copy_file_payload(&destination, entry, &secret.bytes, Some(active_copy.clone())),
+            )
+            .await?;
         }
         let inventory_file = tempfile::NamedTempFile::new()
             .map_err(|error| BackupV2Error::Storage(format!("inventory temp file: {error}")))?;
-        let mut inventory_writer = Some(InventoryWriter::new(inventory_file));
+        let mut inventory_writer = Some(InventoryWriter::new(
+            inventory_file,
+            Some(active_copy.clone()),
+        ));
         let mut after: Option<BackupObjectCursor> = None;
         let mut copied = 0usize;
         let mut previous_cursor: Option<BackupObjectCursor> = None;
         loop {
-            let page = catalog
-                .backup_objects_page(&snapshot.operation_id, after.as_ref(), 256)
-                .await
-                .map_err(BackupV2Error::Catalog)?;
+            let page = backup_io_with_heartbeat(
+                catalog,
+                &snapshot.operation_id,
+                async {
+                    catalog
+                        .backup_objects_page(&snapshot.operation_id, after.as_ref(), 256)
+                        .await
+                        .map_err(BackupV2Error::Catalog)
+                },
+            )
+            .await?;
             if page.is_empty() {
                 break;
             }
@@ -389,10 +529,31 @@ pub async fn create_backup(
                     "{BACKUP_PREFIX_V2}/{backup_id}/objects/{}/{}",
                     object.document_id, object.object_id
                 );
-            let body = source
-                .get(&object.source_key)
-                .await
-                .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+                catalog
+                    .heartbeat_backup(&snapshot.operation_id, crate::util::now_millis() as i64)
+                    .await
+                    .map_err(BackupV2Error::Catalog)?;
+            let body = backup_io_with_heartbeat(
+                catalog,
+                &snapshot.operation_id,
+                {
+                    let source_for_get = Arc::clone(&source);
+                    let active_for_get = active_copy.clone();
+                    let source_key = object.source_key.clone();
+                    async move {
+                        tokio::spawn(async move {
+                            let _active_copy = active_for_get;
+                            source_for_get
+                                .get(&source_key)
+                                .await
+                                .map_err(|error| BackupV2Error::Storage(error.to_string()))
+                        })
+                        .await
+                        .map_err(|error| BackupV2Error::Storage(format!("source object task failed: {error}")))?
+                    }
+                },
+            )
+            .await?;
             if body.len() as u64 != object.byte_length
                 || hex::encode(Sha256::digest(&body)) != object.digest
             {
@@ -401,15 +562,33 @@ pub async fn create_backup(
                     object.source_key
                 )));
             }
-            put_new_destination(Arc::clone(&destination), &object.backup_key, body, "application/octet-stream").await?;
+            backup_io_with_heartbeat(
+                catalog,
+                &snapshot.operation_id,
+                put_new_destination(
+                    Arc::clone(&destination),
+                    &object.backup_key,
+                    body,
+                    "application/octet-stream",
+                    Some(active_copy.clone()),
+                ),
+            )
+            .await?;
             page_last = Some(cursor);
             let line = serde_json::to_vec(&object)
                 .map_err(|error| BackupV2Error::Invalid(format!("inventory encoding failed: {error}")))?;
-            inventory_writer
-                .as_mut()
-                .ok_or_else(|| BackupV2Error::Storage("inventory writer disappeared".into()))?
-                .write(line)
-                .await?;
+            backup_io_with_heartbeat(
+                catalog,
+                &snapshot.operation_id,
+                async {
+                    inventory_writer
+                        .as_mut()
+                        .ok_or_else(|| BackupV2Error::Storage("inventory writer disappeared".into()))?
+                        .write(line)
+                        .await
+                },
+            )
+            .await?;
                 copied = copied.saturating_add(1);
             }
             let next = page_last.ok_or_else(|| BackupV2Error::Catalog("backup object page had no cursor".into()))?;
@@ -421,24 +600,40 @@ pub async fn create_backup(
         if copied != snapshot.object_count {
             return Err(BackupV2Error::Corrupt("backup object cursor did not cover snapshot".into()));
         }
-        let (inventory_file, digest, byte_length) = inventory_writer
-            .take()
-            .ok_or_else(|| BackupV2Error::Storage("inventory writer disappeared".into()))?
-            .finish()
-            .await?;
+        let (inventory_file, digest, byte_length) = backup_io_with_heartbeat(
+            catalog,
+            &snapshot.operation_id,
+            async {
+                inventory_writer
+                    .take()
+                    .ok_or_else(|| BackupV2Error::Storage("inventory writer disappeared".into()))?
+                    .finish()
+                    .await
+            },
+        )
+        .await?;
         let entry = BackupFileEntry {
             relative: "objects/index.jsonl".into(),
             backup_key: format!("{BACKUP_PREFIX_V2}/{backup_id}/objects/index.jsonl"),
             digest: digest.clone(),
             byte_length,
         };
-        put_new_file_destination(
-            Arc::clone(&destination),
-            &entry.backup_key,
-            inventory_file.path(),
-            "application/x-ndjson",
-            byte_length,
-            &digest,
+        catalog
+            .heartbeat_backup(&snapshot.operation_id, crate::util::now_millis() as i64)
+            .await
+            .map_err(BackupV2Error::Catalog)?;
+        backup_io_with_heartbeat(
+            catalog,
+            &snapshot.operation_id,
+            put_new_file_destination(
+                Arc::clone(&destination),
+                &entry.backup_key,
+                inventory_file.path(),
+                "application/x-ndjson",
+                byte_length,
+                &digest,
+                Some(active_copy.clone()),
+            ),
         )
         .await?;
         manifest.inventory = Some(entry);
@@ -448,7 +643,22 @@ pub async fn create_backup(
         let encoded = serde_json::to_vec(&manifest)
             .map_err(|error| BackupV2Error::Invalid(format!("manifest encoding failed: {error}")))?;
         let manifest_digest = hex::encode(Sha256::digest(&encoded));
-        put_new_destination(Arc::clone(&destination), &backup_manifest_key(backup_id), encoded, "application/json").await?;
+        catalog
+            .heartbeat_backup(&snapshot.operation_id, crate::util::now_millis() as i64)
+            .await
+            .map_err(BackupV2Error::Catalog)?;
+        backup_io_with_heartbeat(
+            catalog,
+            &snapshot.operation_id,
+            put_new_destination(
+                Arc::clone(&destination),
+                &backup_manifest_key(backup_id),
+                encoded,
+                "application/json",
+                Some(active_copy.clone()),
+            ),
+        )
+        .await?;
         catalog
             .commit_backup(&manifest.operation_id, &manifest_digest)
             .await
@@ -812,6 +1022,7 @@ async fn put_new_destination(
     key: &str,
     body: Vec<u8>,
     content_type: &str,
+    active_copy: Option<ActiveBackupCopy>,
 ) -> Result<(), BackupV2Error> {
     if destination
         .exists(key)
@@ -827,6 +1038,7 @@ async fn put_new_destination(
     let destination_for_put = Arc::clone(&destination);
     let key_for_put = key.clone();
     tokio::spawn(async move {
+        let _active_copy = active_copy;
         destination_for_put
             .put(&key_for_put, body, &content_type)
             .await
@@ -844,6 +1056,7 @@ async fn put_new_file_destination(
     content_type: &str,
     expected_length: u64,
     expected_digest: &str,
+    active_copy: Option<ActiveBackupCopy>,
 ) -> Result<(), BackupV2Error> {
     if destination
         .exists(key)
@@ -858,6 +1071,7 @@ async fn put_new_file_destination(
     let key_for_put = key.clone();
     let destination_for_put = Arc::clone(&destination);
     tokio::spawn(async move {
+        let _active_copy = active_copy;
         destination_for_put
             .put_file(&key_for_put, &source, &content_type)
             .await
@@ -912,11 +1126,19 @@ async fn copy_file_payload(
     destination: &Arc<dyn BlobStore>,
     entry: &BackupFileEntry,
     body: &[u8],
+    active_copy: Option<ActiveBackupCopy>,
 ) -> Result<(), BackupV2Error> {
     if body.len() as u64 != entry.byte_length || hex::encode(Sha256::digest(body)) != entry.digest {
         return Err(BackupV2Error::Corrupt(format!("backup payload {} failed digest verification", entry.relative)));
     }
-    put_new_destination(Arc::clone(destination), &entry.backup_key, body.to_vec(), "application/octet-stream").await
+    put_new_destination(
+        Arc::clone(destination),
+        &entry.backup_key,
+        body.to_vec(),
+        "application/octet-stream",
+        active_copy,
+    )
+    .await
 }
 
 fn valid_backup_file(file: &BackupFileEntry) -> bool {
@@ -1014,13 +1236,27 @@ fn secret_payloads(paths: &DeploymentPaths) -> Result<Vec<BackupPayload>, Backup
 impl V2BackupCatalog for LocalV2BackupCatalog {
     async fn prepare_backup(&self, now: i64) -> Result<BackupSnapshot, String> {
         let identity = secure_read_limited(&self.paths.deployment_identity, 1024 * 1024)?;
+        let deployment_from_file = std::str::from_utf8(&identity)
+            .map_err(|_| "deployment identity is not UTF-8".to_string())?
+            .trim()
+            .to_owned();
+        if deployment_from_file.is_empty() {
+            return Err("deployment identity is empty".into());
+        }
         let secrets = secret_payloads(&self.paths).map_err(|error| error.to_string())?;
         let snapshot_path = self
             .paths
             .state
             .join(format!(".backup-v2-{}.db", std::process::id()));
+        let operation_id = backup_operation_id();
+        // Register before the prepared-operation INSERT.  The guard is
+        // carried in the returned snapshot, so GC cannot expire this backup
+        // in the interval between admission and VACUUM.
+        let active_copy = ActiveBackupCopy::new(&deployment_from_file, &operation_id);
+        let operation_id_for_sql = operation_id.clone();
+        let deployment_from_file_for_sql = deployment_from_file.clone();
         let catalog = Arc::clone(&self.catalog);
-        let (operation_id, deployment_id, _revision) = catalog
+        let (inserted_operation_id, deployment_id, _revision) = catalog
             .execute_catalog(4096, move |catalog| {
                 catalog
                     .with_connection(|connection| {
@@ -1055,7 +1291,11 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
                                 "a lifecycle operation is still in progress".into(),
                             ));
                         }
-                        let operation_id = backup_operation_id();
+                        if deployment_id != deployment_from_file_for_sql {
+                            return Err(crate::storage::catalog::CatalogError::Conflict(
+                                "deployment identity changed during backup admission".into(),
+                            ));
+                        }
                         let writer_generation: String = connection
                             .query_row(
                                 "SELECT writer_generation FROM server_state WHERE id=1",
@@ -1074,21 +1314,22 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
                             .execute(
                                 "INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,NULL,NULL,'backup',?2,'backup',?3,'prepared',?4,NULL,?5,?6,?6,?7)",
                                 rusqlite::params![
-                                    operation_id,
+                                    operation_id_for_sql.clone(),
                                     format!("backup-{now}"),
                                     hex::encode(Sha256::digest(plan.as_bytes())),
                                     writer_generation,
                                     plan,
                                     now,
-                                    now.saturating_add(24 * 60 * 60 * 1000),
+                                    now.saturating_add(BACKUP_WORK_LEASE_MS),
                                 ],
                             )
                             .map_err(crate::storage::catalog::CatalogError::from)?;
-                        Ok((operation_id, deployment_id, revision))
+                        Ok((operation_id_for_sql, deployment_id, revision))
                     })
             })
             .await
             .map_err(|error| error.to_string())?;
+        let operation_id = inserted_operation_id;
         // The prepared operation is committed before VACUUM starts. GC and
         // compaction therefore observe the backup freeze while the immutable
         // image is made.
@@ -1101,20 +1342,30 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
         }
         let path_for_snapshot = snapshot_path.clone();
         let catalog_for_snapshot = Arc::clone(&self.catalog);
-        let snapshot_result = catalog_for_snapshot
-            .execute_catalog(4096, move |catalog| {
-                catalog.with_connection(|connection| {
-                    connection
-                        .execute_batch("PRAGMA wal_checkpoint(FULL);")
-                        .map_err(crate::storage::catalog::CatalogError::from)?;
-                    let escaped = path_for_snapshot.to_string_lossy().to_string();
-                    connection
-                        .execute("VACUUM INTO ?1", [&escaped])
-                        .map_err(crate::storage::catalog::CatalogError::from)?;
-                    Ok(())
-                })
-            })
-            .await;
+        let active_copy_for_snapshot = active_copy.clone();
+        let snapshot_result = backup_io_with_heartbeat(
+            self,
+            &operation_id,
+            async move {
+                catalog_for_snapshot
+                    .execute_catalog(4096, move |catalog| {
+                        let _active_copy = active_copy_for_snapshot;
+                        catalog.with_connection(|connection| {
+                            connection
+                                .execute_batch("PRAGMA wal_checkpoint(FULL);")
+                                .map_err(crate::storage::catalog::CatalogError::from)?;
+                            let escaped = path_for_snapshot.to_string_lossy().to_string();
+                            connection
+                                .execute("VACUUM INTO ?1", [&escaped])
+                                .map_err(crate::storage::catalog::CatalogError::from)?;
+                            Ok(())
+                        })
+                    })
+                    .await
+                    .map_err(|error| BackupV2Error::Catalog(error.to_string()))
+            },
+        )
+        .await;
         if let Err(error) = snapshot_result {
             let _ = self.abort_backup(&operation_id).await;
             let _ = fs::remove_file(&snapshot_path);
@@ -1192,7 +1443,32 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
             },
             secret_versions: secrets.iter().map(|secret| secret.digest.clone()).collect(),
             secrets,
+            active_copy: Some(active_copy),
         })
+    }
+
+    async fn heartbeat_backup(&self, operation_id: &str, now: i64) -> Result<(), String> {
+        let operation_id = operation_id.to_owned();
+        let catalog = Arc::clone(&self.catalog);
+        catalog
+            .execute_catalog(operation_id.len().saturating_add(256), move |catalog| {
+                catalog.with_connection(|connection| {
+                    let changed = connection
+                        .execute(
+                            "UPDATE operations SET work_expires_at=?1,updated_at=max(updated_at,?2) WHERE id=?3 AND kind='backup' AND state='prepared' AND work_expires_at>?2",
+                            rusqlite::params![now.saturating_add(BACKUP_WORK_LEASE_MS), now, operation_id],
+                        )
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                    if changed != 1 {
+                        return Err(crate::storage::catalog::CatalogError::Conflict(
+                            "backup copy lease expired or is no longer prepared".into(),
+                        ));
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|error| error.to_string())
     }
 
     async fn backup_objects_page(
@@ -1776,7 +2052,10 @@ fn resolve_backup_source(path: &Path) -> Result<(PathBuf, String), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::encoding::{PhysicalLocator, TreeEnvelope, TreeFileLocator, TREE_ENVELOPE_VERSION};
+    use crate::storage::encoding::{
+        reconstruct, PhysicalLocator, SourceRecipeEnvelope, TreeEnvelope, TreeFileLocator,
+        SOURCE_ENVELOPE_VERSION, TREE_ENVELOPE_VERSION,
+    };
     use std::collections::HashMap;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
@@ -1982,11 +2261,46 @@ mod tests {
         events: Arc<Mutex<Vec<&'static str>>>,
     }
 
+    struct FailingHeartbeatCatalog;
+
+    #[async_trait::async_trait]
+    impl V2BackupCatalog for FailingHeartbeatCatalog {
+        async fn prepare_backup(&self, _now: i64) -> Result<BackupSnapshot, String> {
+            Err("not used in heartbeat test".into())
+        }
+
+        async fn heartbeat_backup(&self, _operation_id: &str, _now: i64) -> Result<(), String> {
+            Err("heartbeat fence failed".into())
+        }
+
+        async fn backup_objects_page(
+            &self,
+            _operation_id: &str,
+            _after: Option<&BackupObjectCursor>,
+            _limit: usize,
+        ) -> Result<Vec<BackupObjectEntry>, String> {
+            Err("not used in heartbeat test".into())
+        }
+
+        async fn commit_backup(&self, _operation_id: &str, _manifest_digest: &str) -> Result<(), String> {
+            Err("not used in heartbeat test".into())
+        }
+
+        async fn abort_backup(&self, _operation_id: &str) -> Result<(), String> {
+            Err("not used in heartbeat test".into())
+        }
+    }
+
     #[async_trait::async_trait]
     impl V2BackupCatalog for MockBackupCatalog {
         async fn prepare_backup(&self, _now: i64) -> Result<BackupSnapshot, String> {
             self.events.lock().unwrap().push("prepare");
             Ok(self.snapshot.clone())
+        }
+
+        async fn heartbeat_backup(&self, _operation_id: &str, _now: i64) -> Result<(), String> {
+            self.events.lock().unwrap().push("heartbeat");
+            Ok(())
         }
 
         async fn backup_objects_page(
@@ -2084,6 +2398,7 @@ mod tests {
             },
             secrets: Vec::new(),
             secret_versions: Vec::new(),
+            active_copy: None,
         }
     }
 
@@ -2187,7 +2502,11 @@ mod tests {
             .await
             .expect("backup completes");
         assert!(manifest.complete);
-        assert_eq!(events.lock().unwrap().as_slice(), &["prepare", "page", "page", "commit"]);
+        let events = events.lock().unwrap();
+        assert_eq!(events.first(), Some(&"prepare"));
+        assert_eq!(events.last(), Some(&"commit"));
+        assert_eq!(events.iter().filter(|event| **event == "page").count(), 2);
+        assert!(events.iter().filter(|event| **event == "heartbeat").count() >= 2);
 
         let restore_events = Arc::new(Mutex::new(Vec::new()));
         let restore = MockRestoreCatalog {
@@ -2199,6 +2518,197 @@ mod tests {
             .expect("restore completes");
         assert_eq!(report.objects_restored, 1);
         assert_eq!(restore_events.lock().unwrap().as_slice(), &["install_file", "install_catalog", "abort_copied", "finish"]);
+    }
+
+    #[tokio::test]
+    async fn streamed_inventory_rejects_duplicate_order_malformed_count_and_digest_failures() {
+        let (first, first_body) = sample_object();
+        let mut second = first.clone();
+        second.document_id = "doc-2".into();
+        second.object_id = "00000000000000000000000000000001".into();
+        second.source_key = format!("v2/documents/{}/objects/{}", second.document_id, second.object_id);
+        second.digest = hex::encode(Sha256::digest(b"second"));
+        second.byte_length = 6;
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let catalog = MockBackupCatalog {
+            snapshot: BackupSnapshot { object_count: 2, ..sample_snapshot(first.clone()) },
+            objects: vec![first.clone(), second.clone()],
+            events: Arc::clone(&events),
+        };
+        let source_map = Arc::new(Mutex::new(HashMap::from([
+            (first.source_key.clone(), first_body),
+            (second.source_key.clone(), b"second".to_vec()),
+        ])));
+        let backup_map = Arc::new(Mutex::new(HashMap::new()));
+        let source: Arc<dyn BlobStore> = Arc::new(MemoryStore(source_map));
+        let destination: Arc<dyn BlobStore> = Arc::new(MemoryStore(Arc::clone(&backup_map)));
+        let manifest = create_backup(&catalog, source, Arc::clone(&destination), "inventory", 10)
+            .await
+            .expect("inventory backup");
+        let inventory_key = manifest.inventory.as_ref().expect("inventory entry").backup_key.clone();
+        let original_inventory = backup_map.lock().unwrap().get(&inventory_key).cloned().expect("inventory bytes");
+        let lines = original_inventory
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        let join_lines = |entries: &[Vec<u8>]| {
+            let mut joined = Vec::new();
+            for line in entries {
+                joined.extend_from_slice(line);
+                joined.push(b'\n');
+            }
+            joined
+        };
+        let cases = vec![
+            ("duplicate", join_lines(&[lines[0].clone(), lines[0].clone()]), true, false),
+            ("out-of-order", join_lines(&[lines[1].clone(), lines[0].clone()]), true, false),
+            ("malformed", b"not-json\n".to_vec(), true, false),
+            ("count", join_lines(&[lines[0].clone()]), true, false),
+            // Keep the inventory body valid and alter only the authenticated
+            // digest metadata. This reaches the digest check rather than the
+            // entry parser or identity validator.
+            ("digest", original_inventory.clone(), false, true),
+        ];
+        for (name, bytes, update_digest, corrupt_manifest_digest) in cases {
+            let mut map = backup_map.lock().unwrap().clone();
+            let mut mutated = bytes;
+            if !mutated.ends_with(b"\n") {
+                mutated.push(b'\n');
+            }
+            map.insert(inventory_key.clone(), mutated.clone());
+            let manifest_key = backup_manifest_key("inventory");
+            let mut case_manifest: BackupManifestV2 = serde_json::from_slice(map.get(&manifest_key).expect("manifest"))
+                .expect("manifest JSON");
+            if update_digest {
+                let digest = hex::encode(Sha256::digest(&mutated));
+                let inventory = case_manifest.inventory.as_mut().expect("inventory metadata");
+                inventory.digest = digest.clone();
+                inventory.byte_length = mutated.len() as u64;
+                case_manifest.objects_digest = digest;
+            }
+            if corrupt_manifest_digest {
+                let inventory = case_manifest.inventory.as_mut().expect("inventory metadata");
+                inventory.digest = "b".repeat(64);
+                case_manifest.objects_digest = "b".repeat(64);
+            }
+            map.insert(manifest_key, serde_json::to_vec(&case_manifest).expect("manifest encoding"));
+            let restore_events = Arc::new(Mutex::new(Vec::new()));
+            let restore = MockRestoreCatalog { events: Arc::clone(&restore_events) };
+            let backup: Arc<dyn BlobStore> = Arc::new(MemoryStore(Arc::new(Mutex::new(map))));
+            let target: Arc<dyn BlobStore> = Arc::new(MemoryStore(Arc::new(Mutex::new(HashMap::new()))));
+            let error = restore_backup(&restore, backup.as_ref(), target, "inventory")
+                .await
+                .expect_err(name);
+            let message = error.to_string();
+            match name {
+                "duplicate" | "out-of-order" => assert!(message.contains("strictly ordered"), "{name}: {message}"),
+                "malformed" => assert!(message.contains("inventory entry is invalid"), "{name}: {message}"),
+                "count" => assert!(message.contains("count mismatch"), "{name}: {message}"),
+                "digest" => assert!(message.contains("digest mismatch"), "{name}: {message}"),
+                _ => unreachable!(),
+            }
+            assert!(!restore_events.lock().unwrap().contains(&"finish"), "{name} completed restore");
+        }
+    }
+
+    #[tokio::test]
+    async fn v2_backup_round_trips_encoded_source_objects() {
+        let document_id = "encoded-document";
+        let source = b"encoded source that survives the v2 backup";
+        let encoded = crate::storage::encoding::encode_source(source).expect("encode source");
+        assert_eq!(encoded.objects.len(), 1);
+        let tree_id = "00000000000000000000000000000001";
+        let recipe_id = "00000000000000000000000000000002";
+        let chunk_id = "00000000000000000000000000000003";
+        let chunk_body = encoded.objects[0].encoded.clone();
+        let chunk_digest: [u8; 32] = Sha256::digest(&chunk_body).into();
+        let chunk_locator = PhysicalLocator {
+            object_id: crate::storage::blob::ObjectId::parse(chunk_id).expect("chunk id"),
+            object_digest: chunk_digest,
+            logical_digest: Some(encoded.objects[0].digest),
+            logical_length: encoded.objects[0].uncompressed_len as u64,
+            byte_length: chunk_body.len() as u64,
+            encoding_version: 1,
+        };
+        let envelope = SourceRecipeEnvelope {
+            version: SOURCE_ENVELOPE_VERSION,
+            recipe: encoded.recipe.clone(),
+            chunk_locators: vec![chunk_locator],
+        };
+        let recipe_body = envelope.to_bytes().expect("recipe envelope");
+        let recipe_locator = PhysicalLocator {
+            object_id: crate::storage::blob::ObjectId::parse(recipe_id).expect("recipe id"),
+            object_digest: Sha256::digest(&recipe_body).into(),
+            logical_digest: Some(encoded.file_digest),
+            logical_length: source.len() as u64,
+            byte_length: recipe_body.len() as u64,
+            encoding_version: 1,
+        };
+        let mut tree = TreeEnvelope {
+            version: TREE_ENVELOPE_VERSION,
+            main_path: "index.md".into(),
+            source_format: "markdown".into(),
+            settings_json: "{}".into(),
+            logical_digest: [0; 32],
+            files: BTreeMap::from([(
+                "index.md".into(),
+                TreeFileLocator {
+                    kind: "text".into(),
+                    file_id: "file-id".into(),
+                    logical_digest: encoded.file_digest,
+                    logical_length: source.len() as u64,
+                    recipe: Some(recipe_locator),
+                    asset: None,
+                },
+            )]),
+        };
+        tree.logical_digest = Sha256::digest(tree.logical_bytes().expect("logical tree")).into();
+        let tree_body = tree.to_bytes().expect("tree envelope");
+        let make_entry = |object_id: &str, body: &[u8]| BackupObjectEntry {
+            document_id: document_id.into(),
+            object_id: object_id.into(),
+            source_key: format!("v2/documents/{document_id}/objects/{object_id}"),
+            backup_key: String::new(),
+            digest: hex::encode(Sha256::digest(body)),
+            byte_length: body.len() as u64,
+        };
+        let entries = vec![
+            make_entry(tree_id, &tree_body),
+            make_entry(recipe_id, &recipe_body),
+            make_entry(chunk_id, &chunk_body),
+        ];
+        let catalog = MockBackupCatalog {
+            snapshot: BackupSnapshot {
+                object_count: entries.len(),
+                ..sample_snapshot(entries[0].clone())
+            },
+            objects: entries.clone(),
+            events: Arc::new(Mutex::new(Vec::new())),
+        };
+        let source_map = Arc::new(Mutex::new(HashMap::from([
+            (entries[0].source_key.clone(), tree_body.clone()),
+            (entries[1].source_key.clone(), recipe_body.clone()),
+            (entries[2].source_key.clone(), chunk_body.clone()),
+        ])));
+        let backup_map = Arc::new(Mutex::new(HashMap::new()));
+        let source_store: Arc<dyn BlobStore> = Arc::new(MemoryStore(source_map));
+        let backup_store: Arc<dyn BlobStore> = Arc::new(MemoryStore(Arc::clone(&backup_map)));
+        let manifest = create_backup(&catalog, source_store, Arc::clone(&backup_store), "encoded", 10)
+            .await
+            .expect("encoded source backup");
+        assert_eq!(manifest.object_count, 3);
+        let restore = MockRestoreCatalog { events: Arc::new(Mutex::new(Vec::new())) };
+        let target_map = Arc::new(Mutex::new(HashMap::new()));
+        let target: Arc<dyn BlobStore> = Arc::new(MemoryStore(Arc::clone(&target_map)));
+        let report = restore_backup(&restore, backup_store.as_ref(), target, "encoded")
+            .await
+            .expect("encoded source restore");
+        assert_eq!(report.objects_restored, 3);
+        assert_eq!(TreeEnvelope::from_bytes(&target_map.lock().unwrap()[&entries[0].source_key]).expect("tree"), tree);
+        assert_eq!(SourceRecipeEnvelope::from_bytes(&target_map.lock().unwrap()[&entries[1].source_key]).expect("recipe"), envelope);
+        assert_eq!(target_map.lock().unwrap()[&entries[2].source_key], chunk_body);
     }
 
     #[tokio::test]
@@ -2445,6 +2955,83 @@ mod tests {
         assert!(matches!(adapter.prepare_backup(10).await, Err(error) if error.contains("lifecycle operation")));
     }
 
+    #[tokio::test]
+    async fn active_backup_copy_blocks_expiry_until_all_clones_release() {
+        use crate::storage::maintenance_v2::V2GcCatalog;
+
+        let root = tempfile::tempdir().expect("deployment directory");
+        let paths = DeploymentPaths::local(root.path().to_path_buf());
+        fs::create_dir_all(&paths.state).expect("state directory");
+        fs::create_dir_all(&paths.secrets).expect("secret directory");
+        let catalog = Arc::new(Catalog::open_with(&paths.catalog, false).expect("catalog"));
+        let (deployment_id, writer_generation) = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT deployment_id,writer_generation FROM server_state WHERE id=1",
+                        [],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("server identity");
+        let operation_id = "active-expired-backup";
+        let now = 10_000_i64;
+        catalog
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,NULL,NULL,'backup',?2,'backup',?3,'prepared',?4,NULL,'{}',?5,?5,?6)",
+                        rusqlite::params![
+                            operation_id,
+                            operation_id,
+                            "a".repeat(64),
+                            writer_generation,
+                            now - 100,
+                            now - 1,
+                        ],
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("expired backup operation");
+
+        let first = ActiveBackupCopy::new(&deployment_id, operation_id);
+        let second = first.clone();
+        assert_eq!(
+            V2GcCatalog::expire_prepared_operations(catalog.as_ref(), now, 256)
+                .await
+                .expect("active expiry pass"),
+            0
+        );
+        let state: String = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT state FROM operations WHERE id=?1", [operation_id], |row| row.get(0))
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("active operation state");
+        assert_eq!(state, "prepared");
+        drop(first);
+        assert!(backup_copy_active(&deployment_id, operation_id));
+        drop(second);
+        assert!(!backup_copy_active(&deployment_id, operation_id));
+        assert_eq!(
+            V2GcCatalog::expire_prepared_operations(catalog.as_ref(), now, 256)
+                .await
+                .expect("released expiry pass"),
+            1
+        );
+        let state: String = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT state FROM operations WHERE id=?1", [operation_id], |row| row.get(0))
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("released operation state");
+        assert_eq!(state, "aborted");
+        catalog.shutdown().await;
+    }
+
     #[test]
     fn restore_source_and_destination_must_not_overlap() {
         let root = std::env::temp_dir().join(format!("librepaper-backup-test-{}", std::process::id()));
@@ -2505,30 +3092,72 @@ mod tests {
         let asset_id = "00000000000000000000000000000001";
         let asset_body = b"roundtrip asset bytes".to_vec();
         let asset_digest: [u8; 32] = Sha256::digest(&asset_body).into();
+        let source_body = b"roundtrip source text";
+        let encoded_source = crate::storage::encoding::encode_source(source_body)
+            .expect("source encoding");
+        assert_eq!(encoded_source.objects.len(), 1);
+        let recipe_id = "00000000000000000000000000000002";
+        let chunk_id = "00000000000000000000000000000003";
+        let chunk_body = encoded_source.objects[0].encoded.clone();
+        let chunk_locator = PhysicalLocator {
+            object_id: crate::storage::blob::ObjectId::parse(chunk_id).expect("chunk id"),
+            object_digest: Sha256::digest(&chunk_body).into(),
+            logical_digest: Some(encoded_source.objects[0].digest),
+            logical_length: encoded_source.objects[0].uncompressed_len as u64,
+            byte_length: chunk_body.len() as u64,
+            encoding_version: 1,
+        };
+        let source_envelope = SourceRecipeEnvelope {
+            version: SOURCE_ENVELOPE_VERSION,
+            recipe: encoded_source.recipe.clone(),
+            chunk_locators: vec![chunk_locator],
+        };
+        let recipe_body = source_envelope.to_bytes().expect("source recipe");
+        let recipe_locator = PhysicalLocator {
+            object_id: crate::storage::blob::ObjectId::parse(recipe_id).expect("recipe id"),
+            object_digest: Sha256::digest(&recipe_body).into(),
+            logical_digest: Some(encoded_source.file_digest),
+            logical_length: source_body.len() as u64,
+            byte_length: recipe_body.len() as u64,
+            encoding_version: 1,
+        };
         let mut tree = TreeEnvelope {
             version: TREE_ENVELOPE_VERSION,
-            main_path: "asset.bin".into(),
+            main_path: "index.md".into(),
             source_format: "markdown".into(),
             settings_json: "{\"version\":1}".into(),
             logical_digest: [0; 32],
-            files: BTreeMap::from([(
-                "asset.bin".into(),
-                TreeFileLocator {
-                    kind: "asset".into(),
-                    file_id: "asset-file".into(),
-                    logical_digest: asset_digest,
-                    logical_length: asset_body.len() as u64,
-                    recipe: None,
-                    asset: Some(PhysicalLocator {
-                        object_id: crate::storage::blob::ObjectId::parse(asset_id).expect("asset id"),
-                        object_digest: asset_digest,
-                        logical_digest: None,
+            files: BTreeMap::from([
+                (
+                    "index.md".into(),
+                    TreeFileLocator {
+                        kind: "text".into(),
+                        file_id: "source-file".into(),
+                        logical_digest: encoded_source.file_digest,
+                        logical_length: source_body.len() as u64,
+                        recipe: Some(recipe_locator),
+                        asset: None,
+                    },
+                ),
+                (
+                    "asset.bin".into(),
+                    TreeFileLocator {
+                        kind: "asset".into(),
+                        file_id: "asset-file".into(),
+                        logical_digest: asset_digest,
                         logical_length: asset_body.len() as u64,
-                        byte_length: asset_body.len() as u64,
-                        encoding_version: 1,
-                    }),
-                },
-            )]),
+                        recipe: None,
+                        asset: Some(PhysicalLocator {
+                            object_id: crate::storage::blob::ObjectId::parse(asset_id).expect("asset id"),
+                            object_digest: asset_digest,
+                            logical_digest: None,
+                            logical_length: asset_body.len() as u64,
+                            byte_length: asset_body.len() as u64,
+                            encoding_version: 1,
+                        }),
+                    },
+                ),
+            ]),
         };
         tree.logical_digest = Sha256::digest(tree.logical_bytes().expect("logical tree")).into();
         let object_body = tree.to_bytes().expect("tree envelope");
@@ -2543,6 +3172,16 @@ mod tests {
             .put(&asset_key, asset_body.clone(), "application/octet-stream")
             .await
             .expect("source asset object");
+        let recipe_key = format!("v2/documents/{document_id}/objects/{recipe_id}");
+        let chunk_key = format!("v2/documents/{document_id}/objects/{chunk_id}");
+        source
+            .put(&recipe_key, recipe_body.clone(), "application/octet-stream")
+            .await
+            .expect("source recipe object");
+        source
+            .put(&chunk_key, chunk_body.clone(), "application/octet-stream")
+            .await
+            .expect("source chunk object");
         source_catalog
             .with_connection(|connection| {
                 connection.execute(
@@ -2562,8 +3201,20 @@ mod tests {
                     rusqlite::params![document_id, asset_id, asset_key, hex::encode(asset_digest), asset_body.len() as i64],
                 )?;
                 connection.execute(
+                    "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,live_root,publication_root) VALUES(?1,?2,?3,'source_recipe','available',?4,1,?5,0,NULL,1,0,0)",
+                    rusqlite::params![document_id, recipe_id, recipe_key, hex::encode(Sha256::digest(&recipe_body)), recipe_body.len() as i64],
+                )?;
+                connection.execute(
+                    "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,live_root,publication_root) VALUES(?1,?2,?3,'source_chunk','available',?4,1,?5,0,NULL,1,0,0)",
+                    rusqlite::params![document_id, chunk_id, chunk_key, hex::encode(Sha256::digest(&chunk_body)), chunk_body.len() as i64],
+                )?;
+                connection.execute(
                     "INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,journal_epoch,journal_sequence) VALUES(?1,'checkpoint-roundtrip',1,?2,?3,NULL,1,?4,'Roundtrip','backup fixture','markdown',?5,0,0)",
-                    rusqlite::params![document_id, object_id, object_digest, account_id, object_body.len() as i64],
+                    rusqlite::params![document_id, object_id, object_digest, account_id, (source_body.len() + asset_body.len()) as i64],
+                )?;
+                connection.execute(
+                    "INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,journal_epoch,journal_sequence) VALUES(?1,'checkpoint-roundtrip-forced',2,?2,?3,'checkpoint-roundtrip',2,?4,'Roundtrip','restore','markdown',?5,0,0)",
+                    rusqlite::params![document_id, object_id, object_digest, account_id, (source_body.len() + asset_body.len()) as i64],
                 )?;
                 connection.execute(
                     "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,'checkpoint-roundtrip',?2)",
@@ -2574,16 +3225,40 @@ mod tests {
                     rusqlite::params![document_id, asset_id],
                 )?;
                 connection.execute(
-                    "UPDATE documents SET current_checkpoint_id='checkpoint-roundtrip',stored_bytes=?1,checkpoint_ref_count=2 WHERE id=?2",
-                    rusqlite::params![(object_body.len() + asset_body.len()) as i64, document_id],
+                    "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,'checkpoint-roundtrip',?2)",
+                    rusqlite::params![document_id, recipe_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,'checkpoint-roundtrip',?2)",
+                    rusqlite::params![document_id, chunk_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,'checkpoint-roundtrip-forced',?2)",
+                    rusqlite::params![document_id, object_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,'checkpoint-roundtrip-forced',?2)",
+                    rusqlite::params![document_id, asset_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,'checkpoint-roundtrip-forced',?2)",
+                    rusqlite::params![document_id, recipe_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,'checkpoint-roundtrip-forced',?2)",
+                    rusqlite::params![document_id, chunk_id],
+                )?;
+                connection.execute(
+                    "UPDATE documents SET current_checkpoint_id='checkpoint-roundtrip-forced',next_checkpoint_seq=3,stored_bytes=?1,checkpoint_ref_count=8 WHERE id=?2",
+                    rusqlite::params![(object_body.len() + asset_body.len() + recipe_body.len() + chunk_body.len()) as i64, document_id],
                 )?;
                 connection.execute(
                     "UPDATE accounts SET stored_bytes=?1,document_count=1 WHERE id=?2",
-                    rusqlite::params![(object_body.len() + asset_body.len()) as i64, account_id],
+                    rusqlite::params![(object_body.len() + asset_body.len() + recipe_body.len() + chunk_body.len()) as i64, account_id],
                 )?;
                 connection.execute(
-                    "UPDATE server_state SET stored_bytes=?1,document_count=1,checkpoint_ref_count=2,catalog_revision=catalog_revision+1 WHERE id=1",
-                    rusqlite::params![(object_body.len() + asset_body.len()) as i64],
+                    "UPDATE server_state SET stored_bytes=?1,document_count=1,checkpoint_ref_count=8,catalog_revision=catalog_revision+1 WHERE id=1",
+                    rusqlite::params![(object_body.len() + asset_body.len() + recipe_body.len() + chunk_body.len()) as i64],
                 )?;
                 Ok(())
             })
@@ -2594,8 +3269,17 @@ mod tests {
             .await
             .expect("real backup");
         assert!(manifest.complete);
-        assert_eq!(manifest.object_count, 2);
+        assert_eq!(manifest.object_count, 4);
         assert!(manifest.inventory.is_some(), "object closure uses the streamed index");
+        let catalog_backup = destination
+            .get(&format!("{BACKUP_PREFIX_V2}/roundtrip/catalog.db"))
+            .await
+            .expect("catalog snapshot bytes");
+        assert_eq!(
+            hex::encode(Sha256::digest(&catalog_backup)),
+            manifest.catalog_digest,
+            "the completion manifest authenticates every authoritative catalog row"
+        );
 
         let restore_paths = DeploymentPaths::local(restore_root.path().to_path_buf());
         let restore_adapter = LocalV2RestoreCatalog::new(restore_paths.clone());
@@ -2603,8 +3287,8 @@ mod tests {
         let report = restore_backup(&restore_adapter, destination.as_ref(), target, "roundtrip")
             .await
             .expect("real restore");
-        assert_eq!(report.objects_restored, 2);
-        assert_eq!(report.bytes_restored, (object_body.len() + asset_body.len()) as u64);
+        assert_eq!(report.objects_restored, 4);
+        assert_eq!(report.bytes_restored, (object_body.len() + asset_body.len() + recipe_body.len() + chunk_body.len()) as u64);
         assert_eq!(fs::read_to_string(&restore_paths.deployment_identity).expect("restored identity").trim(), deployment_id);
         assert_eq!(fs::read(restore_paths.secrets.join("session.key")).expect("restored session secret"), b"session-secret");
         assert_eq!(fs::read(restore_paths.secrets.join("links.key")).expect("restored links secret"), b"links-secret");
@@ -2662,11 +3346,54 @@ mod tests {
             .expect("restored counters");
         assert_eq!(
             restored_counters,
-            ((object_body.len() + asset_body.len()) as i64, (object_body.len() + asset_body.len()) as i64, (object_body.len() + asset_body.len()) as i64, 2, 2)
+            ((object_body.len() + asset_body.len() + recipe_body.len() + chunk_body.len()) as i64,
+                (object_body.len() + asset_body.len() + recipe_body.len() + chunk_body.len()) as i64,
+                (object_body.len() + asset_body.len() + recipe_body.len() + chunk_body.len()) as i64,
+                8,
+                8)
+        );
+        let restored_checkpoints: Vec<(String, i64, String, Option<String>)> = restored_catalog
+            .with_connection(|connection| {
+                let mut statement = connection.prepare(
+                    "SELECT id,seq,reason,parent_id FROM checkpoints WHERE document_id=?1 ORDER BY seq,id",
+                )?;
+                let rows = statement.query_map([document_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            })
+            .expect("restored forced checkpoint chronology");
+        assert_eq!(
+            restored_checkpoints,
+            vec![
+                ("checkpoint-roundtrip".into(), 1, "backup fixture".into(), None),
+                ("checkpoint-roundtrip-forced".into(), 2, "restore".into(), Some("checkpoint-roundtrip".into())),
+            ]
         );
         let restored_target: Arc<dyn BlobStore> = Arc::new(FsStore::new(&restore_paths.objects, false));
         assert_eq!(restored_target.get(&object_key).await.expect("restored object bytes"), object_body);
         assert_eq!(restored_target.get(&asset_key).await.expect("restored asset bytes"), asset_body);
+        let restored_tree = TreeEnvelope::from_bytes(
+            &restored_target.get(&object_key).await.expect("restored tree bytes"),
+        )
+        .expect("restored tree envelope");
+        let restored_recipe = SourceRecipeEnvelope::from_bytes(
+            &restored_target.get(&recipe_key).await.expect("restored recipe bytes"),
+        )
+        .expect("restored source recipe");
+        assert_eq!(restored_tree.files["index.md"].logical_digest, encoded_source.file_digest);
+        let restored_chunk = restored_target.get(&chunk_key).await.expect("restored source chunk");
+        let reconstructed = reconstruct(&restored_recipe.recipe, |digest| {
+            if *digest == encoded_source.objects[0].digest {
+                Ok(restored_chunk.clone())
+            } else {
+                Err(crate::storage::encoding::EncodingError::Integrity(
+                    "restored source recipe refers to an unbacked chunk".into(),
+                ))
+            }
+        })
+        .expect("restored source reconstructs");
+        assert_eq!(reconstructed, source_body);
         let prepared_backups: i64 = restored_catalog
             .with_connection(|connection| {
                 connection
@@ -2713,5 +3440,56 @@ mod tests {
             .await
             .is_err());
         source_catalog.shutdown().await;
+    }
+
+    #[test]
+    fn active_backup_copy_guard_counts_detached_clones() {
+        let deployment = "active-copy-test-deployment";
+        let operation = "active-copy-test-operation";
+        let first = ActiveBackupCopy::new(deployment, operation);
+        let second = ActiveBackupCopy::new(deployment, operation);
+        assert!(backup_copy_active(deployment, operation));
+        drop(first);
+        assert!(backup_copy_active(deployment, operation));
+        let detached = second.clone();
+        drop(second);
+        assert!(backup_copy_active(deployment, operation));
+        drop(detached);
+        assert!(!backup_copy_active(deployment, operation));
+    }
+
+    #[test]
+    fn active_backup_copy_concurrent_last_drop_clears_registry() {
+        let deployment = "concurrent-copy-test-deployment";
+        let operation = "concurrent-copy-test-operation";
+        let guard = ActiveBackupCopy::new(deployment, operation);
+        let clones = (0..8).map(|_| guard.clone()).collect::<Vec<_>>();
+        let workers = clones
+            .into_iter()
+            .map(|guard| std::thread::spawn(move || drop(guard)))
+            .collect::<Vec<_>>();
+        drop(guard);
+        for worker in workers {
+            worker.join().expect("active-copy drop worker");
+        }
+        assert!(!backup_copy_active(deployment, operation));
+    }
+
+    #[tokio::test]
+    async fn failed_backup_heartbeat_waits_for_owned_io() {
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished_by_io = Arc::clone(&finished);
+        let result = backup_io_with_heartbeat(
+            &FailingHeartbeatCatalog,
+            "heartbeat-test-operation",
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                finished_by_io.store(true, std::sync::atomic::Ordering::Release);
+                Ok::<_, BackupV2Error>(())
+            },
+        )
+        .await;
+        assert!(matches!(result, Err(BackupV2Error::Catalog(_))));
+        assert!(finished.load(std::sync::atomic::Ordering::Acquire));
     }
 }

@@ -173,6 +173,20 @@ impl Catalog {
                     "SELECT storage_key FROM objects WHERE document_id=?1 AND id=?2",
                     params![document_id, object_id.as_str()], |row| row.get(0),
                 ).map_err(CatalogError::from)?;
+                let replay_state: String = if existing.1 == "prepared" {
+                    let object_state: Option<String> = tx.query_row(
+                        "SELECT state FROM objects WHERE document_id=?1 AND id=?2 AND kind='agent_payload'",
+                        params![document_id, object_id.as_str()],
+                        |row| row.get(0),
+                    ).optional().map_err(CatalogError::from)?;
+                    if object_state.as_deref() == Some("available") {
+                        "staged".into()
+                    } else {
+                        existing.1.clone()
+                    }
+                } else {
+                    existing.1.clone()
+                };
                 return Ok(AgentPayloadAdmission {
                     document_id: DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?,
                     object_id,
@@ -180,7 +194,7 @@ impl Catalog {
                     storage_key, writer_generation: existing.3, actor_key, request_key,
                     request_digest: input.request_digest.clone(), logical_digest: input.logical_digest.clone(),
                     physical_digest: input.physical_digest.clone(), expires_at: input.expires_at,
-                    state: existing.1, replay: true,
+                    state: replay_state, replay: true,
                 });
             }
             Catalog::admit_operation_slot(tx, Some(&document_id), "agent_stage")?;
@@ -270,7 +284,7 @@ impl Catalog {
             };
             let request_key = natural_key(&document_id, &actor_key, agent_id, agent_kind);
             let row: Option<(String,String,String,String,String,i64,i64,String,String,i64)> = tx.query_row(
-                "SELECT op.id,o.id,o.storage_key,o.digest,COALESCE(o.logical_digest,''),o.byte_length,o.reserved_bytes,s.writer_generation,op.plan_json,CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER) FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state='committed' AND op.writer_generation=s.writer_generation AND op.work_expires_at>?4 AND o.kind='agent_payload' AND o.state='available' AND o.byte_length IS NOT NULL AND o.byte_length=CAST(json_extract(op.plan_json,'$.reserved_bytes') AS INTEGER) AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?4",
+                "SELECT op.id,o.id,o.storage_key,o.digest,COALESCE(o.logical_digest,''),o.byte_length,o.reserved_bytes,s.writer_generation,op.plan_json,CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER) FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state='prepared' AND op.writer_generation=s.writer_generation AND op.work_expires_at>?4 AND o.kind='agent_payload' AND o.state='available' AND o.byte_length IS NOT NULL AND o.byte_length=CAST(json_extract(op.plan_json,'$.reserved_bytes') AS INTEGER) AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?4 AND EXISTS (SELECT 1 FROM object_leases stage WHERE stage.document_id=op.document_id AND stage.object_id=o.id AND stage.operation_id=op.id AND stage.purpose='stage' AND stage.writer_generation=s.writer_generation AND stage.expires_at>?4)",
                 params![document_id, actor_key, request_key, now.0],
                 |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?)),
             ).optional().map_err(CatalogError::from)?;
@@ -294,8 +308,9 @@ impl Catalog {
         })
     }
 
-    /// Settle a payload only while the same live authority and writer
-    /// generation still hold. This is the final acknowledgement boundary.
+    /// Complete the physical hand-off only while the same live authority and
+    /// writer generation still hold. The stage remains prepared until its
+    /// finite deadline; its stage lease protects the available object.
     pub fn finish_agent_payload(
         &self,
         operation_id: &OperationId,
@@ -353,21 +368,11 @@ impl Catalog {
             if object_state != "available" || object_digest != expected_digest || object_length != Some(expected_length) || allocation.is_some() {
                 return Err(CatalogError::Conflict("agent payload physical object is not settled at the admitted digest".into()));
             }
-            tx.execute(
-                "UPDATE objects SET live_root=1 WHERE document_id=?1 AND id=?2 AND state='available' AND digest=?3 AND byte_length IS NOT NULL",
-                params![document_id, object_id, expected_digest],
-            ).map_err(CatalogError::from)?;
-            tx.execute(
-                "DELETE FROM object_leases WHERE document_id=?1 AND object_id=?2 AND operation_id=?3 AND purpose='stage'",
-                params![document_id, object_id, operation_id.as_str()],
-            ).map_err(CatalogError::from)?;
-            let changed = tx.execute(
-                "UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?2+3600000,updated_at=max(updated_at,?2) WHERE id=?3 AND state='prepared'",
-                params![result_json, now.0, operation_id.as_str()],
-            ).map_err(CatalogError::from)?;
-            if changed != 1 {
-                return Err(CatalogError::Conflict("agent payload operation was settled concurrently".into()));
-            }
+            // A successful physical write hands the object to the prepared
+            // stage operation. The stage lease remains the sole protection
+            // until its finite deadline; agent payloads are not acknowledged
+            // journal/checkpoint roots and therefore never set live_root.
+            let _ = (result_json, now, operation_id);
             Ok(())
         })
     }
@@ -399,7 +404,7 @@ impl Catalog {
             };
             let request_key = natural_key(&document_id, &actor_key, agent_id, agent_kind);
             let present: i64 = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state='committed' AND op.writer_generation=s.writer_generation AND op.work_expires_at>?4 AND op.receipt_expires_at>?4 AND o.kind='agent_payload' AND o.state='available' AND o.live_root=1 AND o.byte_length=CAST(json_extract(op.plan_json,'$.reserved_bytes') AS INTEGER) AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?4)",
+                "SELECT EXISTS(SELECT 1 FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') CROSS JOIN server_state s WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state='prepared' AND op.writer_generation=s.writer_generation AND op.work_expires_at>?4 AND o.kind='agent_payload' AND o.state='available' AND o.byte_length=CAST(json_extract(op.plan_json,'$.reserved_bytes') AS INTEGER) AND CAST(json_extract(op.plan_json,'$.expires_at') AS INTEGER)>?4 AND EXISTS (SELECT 1 FROM object_leases stage WHERE stage.document_id=op.document_id AND stage.object_id=o.id AND stage.operation_id=op.id AND stage.purpose='stage' AND stage.writer_generation=s.writer_generation AND stage.expires_at>?4))",
                 params![document_id, actor_key, request_key, now.0],
                 |row| row.get(0),
             ).map_err(CatalogError::from)?;
@@ -533,5 +538,56 @@ mod tests {
             &admitted.operation_id, &authority(), r#"{"version":2}"#, UnixMillis(2),
         );
         assert!(matches!(result, Err(CatalogError::Refused(CatalogRefusal::ActorRights, _))));
+    }
+
+    #[test]
+    fn finished_payload_stays_prepared_and_stage_leased_without_live_root() {
+        let catalog = fixture();
+        let request = input();
+        let authority = authority();
+        let admitted = catalog.admit_agent_payload(
+            &request,
+            &authority,
+            V2AdmissionLimits { owner_bytes: i64::MAX, deployment_bytes: i64::MAX, owner_documents: i64::MAX },
+            UnixMillis(1),
+        ).expect("admission");
+        catalog.with_connection(|db| {
+            db.execute(
+                "UPDATE objects SET state='available',byte_length=128,allocation_operation_id=NULL WHERE document_id=?1 AND id=?2",
+                params![admitted.document_id.as_str(), admitted.object_id.as_str()],
+            )?;
+            Ok(())
+        }).expect("settled physical object");
+        catalog.finish_agent_payload(
+            &admitted.operation_id,
+            &authority,
+            r#"{"version":2}"#,
+            UnixMillis(2),
+        ).expect("finish stage");
+        let (state, live_root, leases): (String, i64, i64) = catalog.with_connection(|db| {
+            db.query_row(
+                "SELECT op.state,o.live_root,(SELECT count(*) FROM object_leases l WHERE l.operation_id=op.id AND l.purpose='stage') FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') WHERE op.id=?1",
+                [admitted.operation_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+        }).expect("stage state");
+        assert_eq!(state, "prepared");
+        assert_eq!(live_root, 0);
+        assert_eq!(leases, 1);
+        let read = catalog.acquire_agent_payload_read(
+            "payload-doc", &authority, "stable-id", "view", "holder", UnixMillis(3),
+        ).expect("stage read");
+        assert!(read.is_some());
+        catalog.with_connection(|db| {
+            db.execute(
+                "UPDATE object_leases SET expires_at=2 WHERE operation_id=?1 AND purpose='stage'",
+                [admitted.operation_id.as_str()],
+            )?;
+            Ok(())
+        }).expect("expire stage lease");
+        let expired_read = catalog.acquire_agent_payload_read(
+            "payload-doc", &authority, "stable-id", "view", "expired-holder", UnixMillis(3),
+        ).expect("expired stage read");
+        assert!(expired_read.is_none());
     }
 }

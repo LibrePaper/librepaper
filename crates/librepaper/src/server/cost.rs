@@ -192,6 +192,14 @@ impl CostMeter {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    /// Shared bounded memory admission for handlers that retain decoded data
+    /// after the HTTP request body has been parsed (for example MCP payloads).
+    /// Callers must hold the returned permit through every physical write and
+    /// decode step; a detached writer may therefore own it after cancellation.
+    pub(crate) fn memory_semaphore(&self) -> Arc<tokio::sync::Semaphore> {
+        Arc::clone(&self.incoming_memory)
+    }
+
     fn expire(state: &mut State, now: i64) {
         while state
             .durable

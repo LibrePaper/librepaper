@@ -1300,12 +1300,72 @@ impl V2GcCatalog for Catalog {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let changed = transaction
-                .execute(
-                    r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?1 + CASE kind WHEN 'journal_append' THEN 60000 WHEN 'journal_compact' THEN 60000 WHEN 'agent_stage' THEN 3600000 WHEN 'agent_execution' THEN 3600000 ELSE 604800000 END,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations candidate WHERE candidate.state='prepared' AND candidate.work_expires_at IS NOT NULL AND candidate.work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects allocated WHERE allocated.allocation_operation_id=candidate.id AND allocated.state='allocated') ORDER BY candidate.work_expires_at,candidate.id LIMIT ?2)"#,
-                    params![now, i64::try_from(page_limit).unwrap_or(256)],
-                )
+            let deployment_id: String = transaction
+                .query_row("SELECT deployment_id FROM server_state WHERE id=1", [], |row| {
+                    row.get(0)
+                })
                 .map_err(crate::storage::catalog::CatalogError::from)?;
+            let expirable = {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT candidate.id,candidate.kind
+                         FROM operations candidate
+                         WHERE candidate.state='prepared'
+                           AND candidate.work_expires_at IS NOT NULL
+                           AND candidate.work_expires_at<=?1
+                           AND NOT EXISTS (SELECT 1 FROM objects allocated
+                                           WHERE allocated.allocation_operation_id=candidate.id
+                                             AND allocated.state='allocated')
+                         ORDER BY candidate.work_expires_at,candidate.id
+                         LIMIT ?2",
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                let rows = statement
+                    .query_map(
+                        params![now, i64::try_from(page_limit).unwrap_or(256)],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                rows
+            };
+            let mut changed = 0usize;
+            for (operation_id, kind) in expirable {
+                // A detached backup copy owns this operation until its
+                // physical I/O has completed.  Once the process restarts the
+                // registry is empty and normal expiry/recovery may resume.
+                if kind == "backup"
+                    && crate::storage::backup_v2::backup_copy_active(
+                        &deployment_id,
+                        &operation_id,
+                    )
+                {
+                    continue;
+                }
+                changed += transaction
+                    .execute(
+                        r#"UPDATE operations
+                         SET state='aborted',result_json='{"version":2,"expired":true}',
+                             plan_json='{}',
+                             completed_at=?1,
+                             receipt_expires_at=?1 + CASE kind
+                               WHEN 'journal_append' THEN 60000
+                               WHEN 'journal_compact' THEN 60000
+                               WHEN 'agent_stage' THEN 3600000
+                               WHEN 'agent_execution' THEN 3600000
+                               ELSE 604800000 END,
+                             updated_at=?1
+                         WHERE id=?2 AND state='prepared'
+                           AND work_expires_at IS NOT NULL
+                           AND work_expires_at<=?1
+                           AND NOT EXISTS (SELECT 1 FROM objects
+                                           WHERE allocation_operation_id=operations.id
+                                             AND state='allocated')"#,
+                        params![now, operation_id],
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+            }
             // Select the exact terminal receipt page once.  Unrooting one page
             // and independently deleting another allowed blocked stage rows to
             // starve forever while later rows lost their live roots.

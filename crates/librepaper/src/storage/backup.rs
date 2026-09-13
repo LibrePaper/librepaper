@@ -617,6 +617,7 @@ pub struct BackupRequest<'a> {
 /// closes that gap: it is held from the first private write through
 /// publication, so no cleanup of this id can be running while this attempt can
 /// still publish.
+#[cfg(test)]
 pub async fn create_backup(
     blobs: &dyn BlobStore,
     ownership: &BackupOwnership,
@@ -704,6 +705,7 @@ pub async fn create_backup(
     copy_result
 }
 
+#[cfg(test)]
 pub async fn read_manifest(blobs: &dyn BlobStore, backup_id: &str) -> BackupResult<BackupManifest> {
     let prefix = backup_prefix(backup_id)?;
     let bytes = blobs
@@ -734,6 +736,7 @@ async fn verify_objects(blobs: &dyn BlobStore, manifest: &BackupManifest) -> Bac
     Ok(())
 }
 
+#[cfg(test)]
 pub async fn verify_backup(blobs: &dyn BlobStore, backup_id: &str) -> BackupResult<BackupManifest> {
     let manifest = read_manifest(blobs, backup_id).await?;
     verify_objects(blobs, &manifest).await?;
@@ -743,6 +746,7 @@ pub async fn verify_backup(blobs: &dyn BlobStore, backup_id: &str) -> BackupResu
 /// Verify the complete backup before writing any restored object.  Restores
 /// are intentionally explicit and never copy a backup's private recovery
 /// prefix back into the normal namespace.
+#[cfg(test)]
 pub async fn restore_backup(
     blobs: &dyn BlobStore,
     backup_id: &str,
@@ -764,6 +768,7 @@ pub async fn restore_backup(
 /// creator's lock was released by the operating system when it exited, and a
 /// live one would still hold it. The completion check remains fail closed, so
 /// a transient read never counts as absence.
+#[cfg(test)]
 pub async fn remove_incomplete_backup(
     blobs: &dyn BlobStore,
     ownership: &BackupOwnership,
@@ -1430,6 +1435,7 @@ pub fn read_local_manifest(backup_dir: &Path) -> BackupResult<LocalBackupManifes
 /// lock. The SQLite image is produced with `VACUUM INTO`, so it is consistent
 /// even when the source database is in WAL mode. The completion manifest is
 /// published last.
+#[cfg(test)]
 pub fn create_local_backup(
     paths: &DeploymentPaths,
     catalog: &Catalog,
@@ -1809,6 +1815,7 @@ fn completed_backups_for_deployment(
 /// Restore into a new directory. Validation happens before any destination
 /// files are written; the populated temporary tree is renamed into place only
 /// after every digest and the SQLite integrity check succeeds.
+#[cfg(test)]
 pub fn restore_local_backup(
     backup_dir: &Path,
     destination: &Path,
@@ -1888,6 +1895,7 @@ pub fn restore_local_backup(
     result
 }
 
+#[cfg(test)]
 pub async fn backup_cli(
     storage: crate::storage::StorageOptions,
     output: String,
@@ -1959,6 +1967,7 @@ pub async fn backup_cli(
     );
 }
 
+#[cfg(test)]
 pub async fn restore_cli(backup: String, destination: String) {
     let manifest = restore_local_backup(Path::new(&backup), Path::new(&destination))
         .unwrap_or_else(|error| crate::util::die(format!("could not restore backup: {error}")));
@@ -2421,406 +2430,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn local_backup_restores_catalog_objects_secrets_and_identity() {
-        let live = TempDir::new().expect("live tempdir");
-        let backup_root = TempDir::new().expect("backup tempdir");
-        let paths = DeploymentPaths::local(live.path());
-        paths.prepare_state().expect("state");
-        let deployment_id = paths.ensure_deployment_identity(false).expect("identity");
-        let catalog_path = &paths.catalog;
-        let catalog = Catalog::open(catalog_path).expect("catalog");
-        let secrets = &paths.secrets;
-        let link_key = link_sealing_keyring_file(&secrets.join("links.key"), false)
-            .expect("links")
-            .remove(0);
-        session_key_file(&secrets.join("session.key"), false).expect("session");
-        catalog
-            .set_link_sealing_key(&link_key)
-            .expect("sealing key");
-        catalog
-            .with_connection(|connection| {
-                connection.execute(
-                    "CREATE TABLE cost_state (id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL)",
-                    [],
-                )?;
-                connection.execute(
-                    "INSERT INTO cost_state(id,state) VALUES(1,?1)",
-                    [r#"{"minutes":[{"expires":4102444800,"ordinary":37,"emergency":2}],"sent":[37,0,0,0,0,0,0,0],"policy":{"cost":{"transfer_bytes":1000}}}"#],
-                )?;
-                Ok(())
-            })
-            .expect("cost state");
-        let objects = FsStore::new(&paths.objects, true);
-        objects
-            .put(
-                "content/sid/trees/a",
-                b"object bytes".to_vec(),
-                "text/plain",
-            )
-            .await
-            .expect("object");
 
-        catalog
-            .create_document(&crate::storage::catalog::NewDocument {
-                slug: "paper".into(),
-                storage_id: "sid".into(),
-                title: "Paper".into(),
-                sha: "source".into(),
-                created_at: "2026-09-09".into(),
-                published_at: "2026-09-09".into(),
-                updated_at: "2026-09-09".into(),
-                example: false,
-                owner_key: "backup-owner".into(),
-                owner_id: None,
-                status: "active".into(),
-                size: 0,
-                counted_size: 0,
-                maintenance_reserved: 0,
-                last_auto_checkpoint_at: 0,
-                source_format: "quarto".into(),
-                main: "paper.qmd".into(),
-            })
-            .expect("Quarto document");
 
-        let manifest = create_local_backup(&paths, &catalog, backup_root.path(), "point-1", 10)
-            .expect("create local backup");
-        assert_eq!(manifest.deployment_id, deployment_id);
-        assert_eq!(
-            manifest.catalog.digest,
-            digest(
-                &fs::read(backup_root.path().join("point-1/catalog.db")).expect("snapshot catalog")
-            )
-        );
-        let payload_bytes = std::iter::once(&manifest.catalog)
-            .chain(std::iter::once(&manifest.identity))
-            .chain(manifest.objects.iter())
-            .chain(manifest.secrets.iter())
-            .map(|file| file.length)
-            .sum::<u64>();
-        let manifest_bytes = fs::metadata(backup_root.path().join("point-1/manifest.json"))
-            .expect("backup manifest")
-            .len();
-        assert_eq!(manifest.bytes_written, payload_bytes + manifest_bytes);
-        let backup_dir = backup_root.path().join("point-1");
-        verify_local_backup(&backup_dir).expect("verify local backup");
 
-        let object = backup_dir.join(
-            &manifest
-                .objects
-                .iter()
-                .find(|object| object.relative == "objects/content/sid/trees/a")
-                .expect("source object")
-                .relative,
-        );
-        fs::write(&object, b"tampered").expect("tamper object");
-        assert!(matches!(
-            verify_local_backup(&backup_dir),
-            Err(BackupError::Corrupt(_))
-        ));
-        fs::write(&object, b"object bytes").expect("repair object");
-        verify_local_backup(&backup_dir).expect("verify repaired backup");
 
-        let restored = live.path().join("restored");
-        restore_local_backup(&backup_dir, &restored).expect("restore local backup");
-        let restored_paths = DeploymentPaths::local(&restored);
-        assert_eq!(
-            fs::read_to_string(restored_paths.deployment_identity)
-                .expect("restored identity")
-                .trim(),
-            deployment_id
-        );
-        assert_eq!(
-            fs::read(restored.join("objects/content/sid/trees/a")).expect("restored object"),
-            b"object bytes"
-        );
-        assert_eq!(
-            fs::read(restored.join("secrets/session.key")).expect("restored session key"),
-            fs::read(secrets.join("session.key")).expect("source session key")
-        );
-    }
-
-    #[tokio::test]
-    async fn local_backup_round_trips_encoded_source_and_force_event_tree() {
-        let live = TempDir::new().expect("live tempdir");
-        let backup_root = TempDir::new().expect("backup tempdir");
-        let paths = DeploymentPaths::local(live.path());
-        paths.prepare_state().expect("state");
-        paths.ensure_deployment_identity(false).expect("identity");
-        link_sealing_keyring_file(&paths.secrets.join("links.key"), false).expect("links");
-        session_key_file(&paths.secrets.join("session.key"), false).expect("session");
-        let catalog = Catalog::open(&paths.catalog).expect("catalog");
-        catalog
-            .create_document(&crate::storage::catalog::NewDocument {
-                slug: "encoded".into(),
-                storage_id: "encoded-storage".into(),
-                title: "Encoded".into(),
-                sha: String::new(),
-                created_at: "2026-01-01T00:00:00Z".into(),
-                published_at: "2026-01-01T00:00:00Z".into(),
-                updated_at: "2026-01-01T00:00:00Z".into(),
-                example: false,
-                owner_key: "backup-owner".into(),
-                owner_id: None,
-                status: "active".into(),
-                size: 0,
-                counted_size: 0,
-                maintenance_reserved: 0,
-                last_auto_checkpoint_at: 0,
-                source_format: "markdown".into(),
-                main: "main.md".into(),
-            })
-            .expect("document");
-
-        let source: Vec<u8> = (0usize..65_536)
-            .map(|position| (position.wrapping_mul(17) % 251) as u8)
-            .collect();
-        let encoded = crate::storage::encoding::encode_source(&source).expect("encode source");
-        let record =
-            crate::storage::catalog::SourceHistoryRecord::from_encoded("encoded-storage", &encoded)
-                .expect("source record");
-        let mut files = std::collections::BTreeMap::new();
-        files.insert(
-            "main.md".into(),
-            crate::document::history::TreeEntry {
-                kind: "text".into(),
-                id: String::new(),
-                sha: record.file_digest.clone(),
-                size: source.len() as i64,
-            },
-        );
-        let tree = crate::document::history::Tree {
-            main: "main.md".into(),
-            files,
-            settings: None,
-        };
-        let event_sha = "force-event-1";
-        let tree_sha = tree.digest();
-        let objects = FsStore::new(&paths.objects, true);
-        objects
-            .put(
-                &crate::storage::blob::checkpoint_key("encoded-storage", event_sha),
-                tree.to_bytes(),
-                "application/json",
-            )
-            .await
-            .expect("tree");
-        for object in &record.objects {
-            let body = if object.kind == "source_recipe" {
-                encoded.recipe_bytes.clone()
-            } else {
-                encoded
-                    .objects
-                    .iter()
-                    .find(|candidate| {
-                        crate::storage::blob::content_chunk_key(
-                            "encoded-storage",
-                            &hex::encode(candidate.digest),
-                        ) == object.object_key
-                    })
-                    .expect("encoded chunk")
-                    .encoded
-                    .clone()
-            };
-            objects
-                .put(&object.object_key, body.clone(), "application/octet-stream")
-                .await
-                .expect("source object");
-            let key = object.object_key.clone();
-            let kind = object.kind.clone();
-            let bytes = body.len() as i64;
-            catalog
-                .with_connection(|connection| {
-                    connection.execute(
-                        "INSERT INTO object_accounting
-                         (storage_id,object_key,kind,bytes,version)
-                         VALUES(?1,?2,?3,?4,'backup-test')",
-                        rusqlite::params!["encoded-storage", key, kind, bytes],
-                    )?;
-                    Ok(())
-                })
-                .expect("source accounting");
-        }
-        let tree_key = crate::storage::blob::checkpoint_key("encoded-storage", event_sha);
-        let tree_bytes = tree.to_bytes();
-        catalog
-            .with_connection(|connection| {
-                connection.execute(
-                    "INSERT INTO object_accounting
-                     (storage_id,object_key,kind,bytes,version)
-                     VALUES(?1,?2,'tree',?3,'backup-test')",
-                    rusqlite::params!["encoded-storage", tree_key, tree_bytes.len() as i64],
-                )?;
-                Ok(())
-            })
-            .expect("tree accounting");
-        catalog
-            .insert_checkpoints_atomic_with_sources(
-                &[crate::storage::catalog::Checkpoint {
-                    slug: "encoded".into(),
-                    sha: event_sha.into(),
-                    seq: -1,
-                    durable_seq: 0,
-                    tree_sha: tree_sha.clone(),
-                    parent: String::new(),
-                    at: "2026-01-01T00:00:00Z".into(),
-                    by: String::new(),
-                    why: "restore".into(),
-                    source_format: "markdown".into(),
-                    size: source.len() as i64,
-                    label: String::new(),
-                    git_commit: String::new(),
-                    dirty: false,
-                    changed: None,
-                    by_account: None,
-                }],
-                None,
-                std::slice::from_ref(&record),
-            )
-            .expect("checkpoint graph");
-
-        let manifest =
-            create_local_backup(&paths, &catalog, backup_root.path(), "encoded-point", 10)
-                .expect("encoded backup");
-        verify_local_backup(&backup_root.path().join(&manifest.backup_id))
-            .expect("verify encoded backup");
-        let restored = live.path().join("restored-encoded");
-        restore_local_backup(&backup_root.path().join(&manifest.backup_id), &restored)
-            .expect("restore encoded backup");
-        let restored_objects = FsStore::new(restored.join("objects"), true);
-        let restored_source = crate::storage::encoding::read_file(
-            &restored_objects,
-            "encoded-storage",
-            &record.file_digest,
-        )
-        .await
-        .expect("decode restored source");
-        assert_eq!(restored_source, source);
-        assert!(manifest
-            .objects
-            .iter()
-            .any(|object| { object.relative == format!("objects/{}", tree_key) }));
-    }
-
-    #[tokio::test]
-    async fn local_backup_accepts_canonical_compacted_manifest_digest() {
-        let live = TempDir::new().expect("live tempdir");
-        let backup_root = TempDir::new().expect("backup tempdir");
-        let paths = DeploymentPaths::local(live.path());
-        paths.prepare_state().expect("state");
-        let deployment_id = paths.ensure_deployment_identity(false).expect("identity");
-        let catalog = Catalog::open(&paths.catalog).expect("catalog");
-        let secrets = &paths.secrets;
-        link_sealing_keyring_file(&secrets.join("links.key"), false).expect("links");
-        session_key_file(&secrets.join("session.key"), false).expect("session");
-
-        let key = crate::storage::blob::journal_manifest_key(&deployment_id, "1-0");
-        let shard = ManifestShard {
-            shard_id: "manifest-1-0".into(),
-            shard_seq: 1,
-            object_key: key.clone(),
-            digest: String::new(),
-            encoded_bytes: 0,
-            committed_at: 1,
-            next_key: None,
-            bases: Vec::new(),
-            segments: Vec::new(),
-        };
-        let (shard, body) = finalize_manifest_shard(shard).expect("finalize shard");
-        let objects = FsStore::new(&paths.objects, true);
-        objects
-            .put(&key, body.clone(), "application/json")
-            .await
-            .expect("manifest object");
-        catalog
-            .with_connection(|connection| {
-                connection
-                    .execute(
-                        "INSERT INTO journal_manifest_shards
-                         (shard_id,shard_seq,object_key,digest,encoded_bytes,committed_at)
-                         VALUES (?1,?2,?3,?4,?5,?6)",
-                        rusqlite::params![
-                            &shard.shard_id,
-                            shard.shard_seq as i64,
-                            &shard.object_key,
-                            &shard.digest,
-                            body.len() as i64,
-                            shard.committed_at,
-                        ],
-                    )
-                    .map_err(crate::storage::catalog::CatalogError::from)?;
-                connection
-                    .execute(
-                        "UPDATE journal_state
-                         SET manifest_key=?1,manifest_digest=?2,manifest_length=?3
-                         WHERE id=1",
-                        rusqlite::params![key, &shard.digest, body.len() as i64],
-                    )
-                    .map_err(crate::storage::catalog::CatalogError::from)?;
-                Ok(())
-            })
-            .expect("catalog manifest");
-
-        create_local_backup(&paths, &catalog, backup_root.path(), "point-compact", 10)
-            .expect("backup with compacted manifest");
-        verify_local_backup(&backup_root.path().join("point-compact"))
-            .expect("verify compacted backup");
-    }
-
-    #[test]
-    fn catalogue_snapshot_digest_covers_non_journal_authoritative_rows() {
-        let live = TempDir::new().expect("live tempdir");
-        let paths = DeploymentPaths::local(live.path());
-        paths.prepare_state().expect("state");
-        paths.ensure_deployment_identity(false).expect("identity");
-        let catalog_path = &paths.catalog;
-        let catalog = Catalog::open(catalog_path).expect("catalog");
-        let before = catalog_snapshot_digest(&catalog, catalog_path).expect("digest");
-        catalog
-            .upsert_account(&Account {
-                id: "acct-1".into(),
-                provider: "github".into(),
-                handle: "alice".into(),
-                name: "Alice".into(),
-                email: String::new(),
-                first_seen: "2026-01-01T00:00:00Z".into(),
-                last_seen: "2026-01-01T00:00:00Z".into(),
-                plan: "default".into(),
-                status: "active".into(),
-                session_generation: "generation-1".into(),
-                erasure_cursor: None,
-            })
-            .expect("account");
-        let after = catalog_snapshot_digest(&catalog, catalog_path).expect("digest after");
-        assert_ne!(before, after);
-        let revision = catalog.journal_state().expect("journal state").revision;
-        assert_eq!(revision, 0);
-    }
-
-    #[test]
-    fn local_backup_rejects_active_lifecycle_transition() {
-        let live = TempDir::new().expect("live tempdir");
-        let backup_root = TempDir::new().expect("backup tempdir");
-        let paths = DeploymentPaths::local(live.path());
-        paths.prepare_state().expect("state");
-        paths.ensure_deployment_identity(false).expect("identity");
-        let catalog = Catalog::open(&paths.catalog).expect("catalog");
-        let secrets = &paths.secrets;
-        link_sealing_keyring_file(&secrets.join("links.key"), false).expect("links");
-        session_key_file(&secrets.join("session.key"), false).expect("session");
-        catalog
-            .with_connection(|connection| {
-                connection
-                    .execute(
-                        "INSERT INTO maintenance_jobs
-                         (id,status,reserved_bytes,created_at,updated_at)
-                         VALUES ('seed-test','active',1,1,1)",
-                        [],
-                    )
-                    .map_err(crate::storage::catalog::CatalogError::from)
-            })
-            .expect("insert transition");
-        let result = create_local_backup(&paths, &catalog, backup_root.path(), "point-1", 10);
-        assert!(matches!(result, Err(BackupError::Invalid(_))));
-    }
 }

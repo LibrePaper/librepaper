@@ -4,7 +4,10 @@
 //! `catalog.db`, `objects/`, `state/` and `secrets/`. A directory is the
 //! default, because that is what running it on your own machine should mean.
 
-pub mod backup;
+/// Import-only v1 backup converter used by the seed importer. Serving and
+/// restore entry points use `backup_v2`; keeping this module crate-private
+/// prevents the retired shared-manifest protocol from becoming an API path.
+pub(crate) mod backup;
 pub mod backup_v2;
 pub mod blob;
 pub mod catalog;
