@@ -364,6 +364,9 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         if request.parts.is_empty() || request.parts.len() > 128 || request.first_sequence == 0 || request.last_sequence < request.first_sequence {
             return Err("invalid journal append request".into());
         }
+        if self.owner_limit < 0 || self.deployment_limit < 0 {
+            return Err("negative storage quota is invalid".into());
+        }
         let mut expected_sequence = request.first_sequence;
         let total_bytes = request.parts.iter().try_fold(0usize, |total, part| {
             if part.epoch != request.epoch
@@ -392,17 +395,24 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         let owner_limit = self.owner_limit;
         let deployment_limit = self.deployment_limit;
         let catalog = Arc::clone(&self.catalog);
-        catalog.execute_catalog(256, move |catalog| journal_tx(catalog, |tx| {
+        catalog.execute_catalog(256, move |catalog| {
+            let mut reservations = catalog
+                .room_reservations
+                .lock()
+                .map_err(|_| crate::storage::catalog::CatalogError::Busy)?;
+            let result = journal_tx(catalog, |tx| {
             let (current_epoch, current_sequence, source_generation, owner_id, writer_generation, doc_stored, doc_reserved, owner_stored, owner_reserved, server_stored, server_reserved): (i64,i64,i64,String,String,i64,i64,i64,i64,i64,i64) = tx.query_row(
-                "SELECT d.journal_epoch,d.journal_sequence,d.source_generation,d.owner_id,s.writer_generation,d.stored_bytes,d.reserved_bytes,a.stored_bytes,a.reserved_bytes,s.stored_bytes,s.reserved_bytes FROM documents d JOIN accounts a ON a.id=d.owner_id CROSS JOIN server_state s WHERE d.id=?1 AND d.status<>'deleting'",
+                "SELECT d.journal_epoch,d.journal_sequence,d.source_generation,d.owner_id,s.writer_generation,d.stored_bytes,d.reserved_bytes,a.stored_bytes,a.reserved_bytes,s.stored_bytes,s.reserved_bytes FROM documents d JOIN accounts a ON a.id=d.owner_id AND a.status='active' CROSS JOIN server_state s WHERE d.id=?1 AND d.status='active'",
                 [&request.document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?,row.get(10)?)),
             ).map_err(crate::storage::catalog::CatalogError::from)?;
             if u64::try_from(current_epoch).ok() != Some(request.epoch)
                 || u64::try_from(current_sequence).ok() != Some(request.first_sequence.saturating_sub(1))
                 || u64::try_from(source_generation).ok() != Some(request.expected_source_generation)
             { return Err(crate::storage::catalog::CatalogError::Conflict("journal head changed".into())); }
-            let owner_after = owner_stored.checked_add(owner_reserved).and_then(|value| value.checked_add(i64::try_from(total_bytes).ok()?)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("owner quota accounting overflow".into()))?;
-            let deployment_after = server_stored.checked_add(server_reserved).and_then(|value| value.checked_add(i64::try_from(total_bytes).ok()?)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("deployment quota accounting overflow".into()))?;
+            let admitted_i64 = i64::try_from(total_bytes).map_err(|_| crate::storage::catalog::CatalogError::Invalid("journal reservation exceeds SQL range".into()))?;
+            let owner_ram = reservations.owner_bytes.get(&owner_id).copied().unwrap_or(0);
+            let owner_after = owner_stored.checked_add(owner_reserved).and_then(|value| value.checked_add(owner_ram)).and_then(|value| value.checked_add(admitted_i64)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("owner quota accounting overflow".into()))?;
+            let deployment_after = server_stored.checked_add(server_reserved).and_then(|value| value.checked_add(reservations.deployment_bytes)).and_then(|value| value.checked_add(admitted_i64)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("deployment quota accounting overflow".into()))?;
             if (owner_limit >= 0 && owner_after > owner_limit) || (deployment_limit >= 0 && deployment_after > deployment_limit) {
                 return Err(crate::storage::catalog::CatalogError::Conflict("journal allocation exceeds storage quota".into()));
             }
@@ -424,8 +434,18 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             tx.execute("UPDATE documents SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![reserved,request.document_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute("UPDATE accounts SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![reserved,owner_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute("UPDATE server_state SET reserved_bytes=reserved_bytes+?1,catalog_revision=catalog_revision+1 WHERE id=1", [reserved]).map_err(crate::storage::catalog::CatalogError::from)?;
-            Ok(JournalAppendAdmission { operation_id, document_id: request.document_id, epoch: request.epoch, first_sequence: request.first_sequence, expected_last_sequence: request.last_sequence, source_generation: request.expected_source_generation, writer_generation, allocations })
-        })).await.map_err(|error| error.to_string())
+            Ok((JournalAppendAdmission { operation_id, document_id: request.document_id, epoch: request.epoch, first_sequence: request.first_sequence, expected_last_sequence: request.last_sequence, source_generation: request.expected_source_generation, writer_generation, allocations }, owner_id, admitted_i64))
+            });
+            match result {
+                Ok((admission, owner_id, admitted_i64)) => {
+                    let owner_reserved = reservations.owner_bytes.entry(owner_id).or_default();
+                    *owner_reserved = owner_reserved.saturating_add(admitted_i64);
+                    reservations.deployment_bytes = reservations.deployment_bytes.saturating_add(admitted_i64);
+                    Ok(admission)
+                }
+                Err(error) => Err(error),
+            }
+        }).await.map_err(|error| error.to_string())
     }
 
     async fn commit_append(&self, admission: JournalAppendAdmission, objects: Vec<WrittenJournalObject>) -> Result<(), String> {
@@ -433,10 +453,15 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             return Err("journal completion object count does not match admission".into());
         }
         let catalog = Arc::clone(&self.catalog);
-        catalog.execute_catalog(256, move |catalog| journal_tx(catalog, |tx| {
-            let (state, operation_generation, expected_generation, current_generation, current_source_generation, current_sequence): (String,String,i64,String,i64,i64) = tx.query_row(
-                "SELECT o.state,o.writer_generation,o.expected_document_generation,s.writer_generation,d.source_generation,d.journal_sequence FROM operations o JOIN server_state s JOIN documents d ON d.id=o.document_id WHERE o.id=?1 AND o.document_id=?2",
-                params![admission.operation_id, admission.document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
+        catalog.execute_catalog(256, move |catalog| {
+            let mut reservations = catalog
+                .room_reservations
+                .lock()
+                .map_err(|_| crate::storage::catalog::CatalogError::Busy)?;
+            let result = journal_tx(catalog, |tx| {
+            let (state, operation_generation, expected_generation, current_generation, current_source_generation, current_sequence, owner_id): (String,String,i64,String,i64,i64,String) = tx.query_row(
+                "SELECT o.state,o.writer_generation,o.expected_document_generation,s.writer_generation,d.source_generation,d.journal_sequence,d.owner_id FROM operations o JOIN server_state s JOIN documents d ON d.id=o.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE o.id=?1 AND o.document_id=?2 AND d.status='active'",
+                params![admission.operation_id, admission.document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)),
             ).map_err(crate::storage::catalog::CatalogError::from)?;
             if state != "prepared"
                 || operation_generation != admission.writer_generation
@@ -468,8 +493,22 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             tx.execute("UPDATE server_state SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,catalog_revision=catalog_revision+1,updated_at=?3 WHERE id=1", params![measured,reserved,now]).map_err(crate::storage::catalog::CatalogError::from)?;
             let result = serde_json::json!({"version":1,"sequence":admission.expected_last_sequence,"objects":objects.len()}).to_string();
             tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'", params![result,now,now.saturating_add(RECEIPT_RETENTION_MS),admission.operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
-            Ok(())
-        })).await.map_err(|error| error.to_string())
+            Ok((owner_id, reserved))
+            });
+            match result {
+                Ok((owner_id, reserved)) => {
+                    let mut remove_owner = false;
+                    if let Some(value) = reservations.owner_bytes.get_mut(&owner_id) {
+                        *value = value.saturating_sub(reserved);
+                        remove_owner = *value == 0;
+                    }
+                    if remove_owner { reservations.owner_bytes.remove(&owner_id); }
+                    reservations.deployment_bytes = reservations.deployment_bytes.saturating_sub(reserved);
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }).await.map_err(|error| error.to_string())
     }
 
     async fn abort_append(&self, operation_id: &str) -> Result<(), String> {
@@ -484,6 +523,9 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
 
     async fn prepare_compaction(&self, document_id: &str, expected_epoch: u64, expected_sequence: u64, byte_length: u64, digest: String) -> Result<JournalCompactionAdmission, String> {
         if byte_length == 0 || !is_sha256(&digest) { return Err("invalid journal base descriptor".into()); }
+        if self.owner_limit < 0 || self.deployment_limit < 0 {
+            return Err("negative storage quota is invalid".into());
+        }
         if byte_length as usize > self.limits.max_encoded_snapshot_bytes {
             return Err("journal base exceeds the configured encoded snapshot limit".into());
         }
@@ -491,12 +533,18 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
         let deployment_limit = self.deployment_limit;
         let catalog = Arc::clone(&self.catalog);
         let document_id = document_id.to_owned();
-        catalog.execute_catalog(256, move |catalog| journal_tx(catalog, |tx| {
-            let (epoch, sequence, generation, writer_generation, owner_id, owner_stored, owner_reserved, server_stored, server_reserved): (i64,i64,i64,String,String,i64,i64,i64,i64) = tx.query_row("SELECT d.journal_epoch,d.journal_sequence,d.source_generation,s.writer_generation,d.owner_id,a.stored_bytes,a.reserved_bytes,s.stored_bytes,s.reserved_bytes FROM documents d JOIN accounts a ON a.id=d.owner_id CROSS JOIN server_state s WHERE d.id=?1 AND d.status<>'deleting'", [&document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?))).map_err(crate::storage::catalog::CatalogError::from)?;
+        catalog.execute_catalog(256, move |catalog| {
+            let mut reservations = catalog
+                .room_reservations
+                .lock()
+                .map_err(|_| crate::storage::catalog::CatalogError::Busy)?;
+            let result = journal_tx(catalog, |tx| {
+            let (epoch, sequence, generation, writer_generation, owner_id, owner_stored, owner_reserved, server_stored, server_reserved): (i64,i64,i64,String,String,i64,i64,i64,i64) = tx.query_row("SELECT d.journal_epoch,d.journal_sequence,d.source_generation,s.writer_generation,d.owner_id,a.stored_bytes,a.reserved_bytes,s.stored_bytes,s.reserved_bytes FROM documents d JOIN accounts a ON a.id=d.owner_id AND a.status='active' CROSS JOIN server_state s WHERE d.id=?1 AND d.status='active'", [&document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?))).map_err(crate::storage::catalog::CatalogError::from)?;
             if u64::try_from(epoch).ok() != Some(expected_epoch) || u64::try_from(sequence).ok() != Some(expected_sequence) { return Err(crate::storage::catalog::CatalogError::Conflict("journal compaction head changed".into())); }
             let bytes_i64 = i64::try_from(byte_length).map_err(|_| crate::storage::catalog::CatalogError::Invalid("journal base is too large".into()))?;
-            let owner_after = owner_stored.checked_add(owner_reserved).and_then(|value| value.checked_add(bytes_i64)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("owner quota accounting overflow".into()))?;
-            let deployment_after = server_stored.checked_add(server_reserved).and_then(|value| value.checked_add(bytes_i64)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("deployment quota accounting overflow".into()))?;
+            let owner_ram = reservations.owner_bytes.get(&owner_id).copied().unwrap_or(0);
+            let owner_after = owner_stored.checked_add(owner_reserved).and_then(|value| value.checked_add(owner_ram)).and_then(|value| value.checked_add(bytes_i64)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("owner quota accounting overflow".into()))?;
+            let deployment_after = server_stored.checked_add(server_reserved).and_then(|value| value.checked_add(reservations.deployment_bytes)).and_then(|value| value.checked_add(bytes_i64)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("deployment quota accounting overflow".into()))?;
             if (owner_limit >= 0 && owner_after > owner_limit) || (deployment_limit >= 0 && deployment_after > deployment_limit) {
                 return Err(crate::storage::catalog::CatalogError::Conflict("journal allocation exceeds storage quota".into()));
             }
@@ -512,14 +560,29 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             tx.execute("UPDATE documents SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![bytes,document_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute("UPDATE accounts SET reserved_bytes=reserved_bytes+?1 WHERE id=?2", params![bytes,owner_id]).map_err(crate::storage::catalog::CatalogError::from)?;
             tx.execute("UPDATE server_state SET reserved_bytes=reserved_bytes+?1,catalog_revision=catalog_revision+1 WHERE id=1", [bytes]).map_err(crate::storage::catalog::CatalogError::from)?;
-            Ok(JournalCompactionAdmission { operation_id, document_id, captured_epoch: expected_epoch, captured_sequence: expected_sequence, captured_source_generation: generation as u64, writer_generation, base_allocation: JournalObjectAllocation { object_id, storage_key, epoch: new_epoch, first_sequence: expected_sequence, last_sequence: expected_sequence } })
-        })).await.map_err(|error| error.to_string())
+            Ok((JournalCompactionAdmission { operation_id, document_id, captured_epoch: expected_epoch, captured_sequence: expected_sequence, captured_source_generation: generation as u64, writer_generation, base_allocation: JournalObjectAllocation { object_id, storage_key, epoch: new_epoch, first_sequence: expected_sequence, last_sequence: expected_sequence } }, owner_id, bytes_i64))
+            });
+            match result {
+                Ok((admission, owner_id, bytes_i64)) => {
+                    let owner_reserved = reservations.owner_bytes.entry(owner_id).or_default();
+                    *owner_reserved = owner_reserved.saturating_add(bytes_i64);
+                    reservations.deployment_bytes = reservations.deployment_bytes.saturating_add(bytes_i64);
+                    Ok(admission)
+                }
+                Err(error) => Err(error),
+            }
+        }).await.map_err(|error| error.to_string())
     }
 
     async fn commit_compaction(&self, admission: JournalCompactionAdmission, base: WrittenObject, new_epoch: u64, new_sequence: u64) -> Result<(), String> {
         let catalog = Arc::clone(&self.catalog);
-        catalog.execute_catalog(256, move |catalog| journal_tx(catalog, |tx| {
-            let (state,operation_generation,expected_generation,current_generation,current_source_generation,current_epoch,current_sequence): (String,String,i64,String,i64,i64,i64) = tx.query_row("SELECT o.state,o.writer_generation,o.expected_document_generation,s.writer_generation,d.source_generation,d.journal_epoch,d.journal_sequence FROM operations o JOIN server_state s JOIN documents d ON d.id=o.document_id WHERE o.id=?1 AND o.document_id=?2", params![admission.operation_id,admission.document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))).map_err(crate::storage::catalog::CatalogError::from)?;
+        catalog.execute_catalog(256, move |catalog| {
+            let mut reservations = catalog
+                .room_reservations
+                .lock()
+                .map_err(|_| crate::storage::catalog::CatalogError::Busy)?;
+            let result = journal_tx(catalog, |tx| {
+            let (state,operation_generation,expected_generation,current_generation,current_source_generation,current_epoch,current_sequence,owner_id): (String,String,i64,String,i64,i64,i64,String) = tx.query_row("SELECT o.state,o.writer_generation,o.expected_document_generation,s.writer_generation,d.source_generation,d.journal_epoch,d.journal_sequence,d.owner_id FROM operations o JOIN server_state s JOIN documents d ON d.id=o.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE o.id=?1 AND o.document_id=?2 AND d.status='active'", params![admission.operation_id,admission.document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?))).map_err(crate::storage::catalog::CatalogError::from)?;
             if state != "prepared" || operation_generation != admission.writer_generation || operation_generation != current_generation || u64::try_from(expected_generation).ok() != Some(admission.captured_source_generation) || u64::try_from(current_source_generation).ok() != Some(admission.captured_source_generation) || u64::try_from(current_epoch).ok() != Some(admission.captured_epoch) || u64::try_from(current_sequence).ok() != Some(admission.captured_sequence) || new_sequence != admission.captured_sequence || new_epoch != admission.base_allocation.epoch { return Err(crate::storage::catalog::CatalogError::Conflict("journal compaction fence changed".into())); }
             let (reserved,expected_digest,old_state): (i64,String,String) = tx.query_row("SELECT reserved_bytes,digest,state FROM objects WHERE document_id=?1 AND id=?2 AND allocation_operation_id=?3", params![admission.document_id,admission.base_allocation.object_id.as_str(),admission.operation_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(crate::storage::catalog::CatalogError::from)?;
             let measured = i64::try_from(base.byte_length).map_err(|_| crate::storage::catalog::CatalogError::Invalid("journal base length exceeds SQL range".into()))?;
@@ -532,8 +595,22 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             tx.execute("UPDATE server_state SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,catalog_revision=catalog_revision+1,updated_at=?3 WHERE id=1", params![measured,reserved,now]).map_err(crate::storage::catalog::CatalogError::from)?;
             let result = serde_json::json!({"version":1,"epoch":new_epoch,"sequence":new_sequence}).to_string();
             tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'", params![result,now,now.saturating_add(RECEIPT_RETENTION_MS),admission.operation_id]).map_err(crate::storage::catalog::CatalogError::from)?;
-            Ok(())
-        })).await.map_err(|error| error.to_string())
+            Ok((owner_id, reserved))
+            });
+            match result {
+                Ok((owner_id, reserved)) => {
+                    let mut remove_owner = false;
+                    if let Some(value) = reservations.owner_bytes.get_mut(&owner_id) {
+                        *value = value.saturating_sub(reserved);
+                        remove_owner = *value == 0;
+                    }
+                    if remove_owner { reservations.owner_bytes.remove(&owner_id); }
+                    reservations.deployment_bytes = reservations.deployment_bytes.saturating_sub(reserved);
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }).await.map_err(|error| error.to_string())
     }
 
     async fn abort_compaction(&self, operation_id: &str) -> Result<(), String> {

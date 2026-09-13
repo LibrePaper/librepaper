@@ -322,7 +322,7 @@ impl<C> V2JournalRuntime<C>
 where
     C: V2JournalCatalog + 'static,
 {
-    async fn latest_sequence_v2(&self, document_id: &str) -> JournalResult<u64> {
+    async fn latest_sequence_v2(&self, document_id: &str, _epoch: u64) -> JournalResult<u64> {
         self.catalog
             .journal_head(document_id)
             .await
@@ -408,6 +408,7 @@ where
     ) -> JournalResult<()> {
         let mut cursor = (first_sequence.saturating_sub(1), String::new());
         let mut pending = BTreeMap::<u64, Vec<JournalRecord>>::new();
+        let mut pending_bytes = 0usize;
         let mut next_sequence = first_sequence;
         loop {
             let page = self
@@ -439,24 +440,32 @@ where
                     .map_err(|error| JournalError::Storage(error.to_string()))?;
                 verify_object_bytes(reference, &bytes)?;
                 let decoded = decode_segment(&bytes, document_id, epoch)?;
+                if decoded.first_sequence != reference.first_sequence
+                    || decoded.last_sequence != reference.last_sequence
+                {
+                    return Err(JournalError::Corrupt("journal descriptor range does not match its object".into()));
+                }
                 drop(permit);
                 for record in decoded.segment.records {
                     if record.sequence < first_sequence || record.sequence > last_sequence {
                         return Err(JournalError::Corrupt("journal record lies outside acknowledged range".into()));
                     }
+                    pending_bytes = pending_bytes.saturating_add(record.payload.len());
                     pending.entry(record.sequence).or_default().push(record);
+                }
+                pending_bytes = pending_bytes.saturating_sub(flush_recovered_records(
+                    &mut pending,
+                    reference.last_sequence.saturating_sub(1),
+                    document_id,
+                    epoch,
+                    &mut next_sequence,
+                    document,
+                )?);
+                if pending_bytes > self.max_encoded_snapshot_bytes {
+                    return Err(JournalError::Limit("journal fragment group exceeds the configured recovery ceiling".into()));
                 }
             }
             let terminal = page.last().map(|reference| reference.last_sequence).unwrap_or(0);
-            let flush_through = if page.len() < 128 { terminal } else { terminal.saturating_sub(1) };
-            flush_recovered_records(
-                &mut pending,
-                flush_through,
-                document_id,
-                epoch,
-                &mut next_sequence,
-                document,
-            )?;
             let last = page.last().expect("nonempty page");
             let next_cursor = (last.last_sequence, last.object_id.clone());
             if next_cursor <= cursor {
@@ -467,17 +476,18 @@ where
                 break;
             }
         }
-        flush_recovered_records(
+        pending_bytes = pending_bytes.saturating_sub(flush_recovered_records(
             &mut pending,
             last_sequence,
             document_id,
             epoch,
             &mut next_sequence,
             document,
-        )?;
+        )?);
         if next_sequence != last_sequence.saturating_add(1) || !pending.is_empty() {
             return Err(JournalError::Corrupt("acknowledged journal range is missing".into()));
         }
+        let _ = pending_bytes;
         Ok(())
     }
 }
@@ -487,8 +497,9 @@ impl<C> DocumentJournal for V2JournalRuntime<C>
 where
     C: V2JournalCatalog + 'static,
 {
-    async fn latest_sequence(&self, document_id: &str, _epoch: u64) -> JournalResult<u64> {
-        self.latest_sequence_v2(document_id).await
+
+    async fn latest_sequence(&self, document_id: &str, epoch: u64) -> JournalResult<u64> {
+        self.latest_sequence_v2(document_id, epoch).await
     }
 
     async fn recover_latest(&self, document_id: &str) -> JournalResult<Option<Vec<u8>>> {
@@ -598,7 +609,8 @@ fn flush_recovered_records(
     epoch: u64,
     next_sequence: &mut u64,
     document: &yrs::Doc,
-) -> JournalResult<()> {
+) -> JournalResult<usize> {
+    let mut released_bytes = 0usize;
     let sequences = pending
         .range(..=through)
         .map(|(&sequence, _)| sequence)
@@ -607,6 +619,9 @@ fn flush_recovered_records(
         let parts = pending
             .remove(&sequence)
             .ok_or_else(|| JournalError::Corrupt("journal fragment group disappeared".into()))?;
+        released_bytes = released_bytes.saturating_add(
+            parts.iter().map(|part| part.payload.len()).sum::<usize>(),
+        );
         if sequence != *next_sequence {
             return Err(JournalError::Corrupt("journal sequence gap".into()));
         }
@@ -643,7 +658,7 @@ fn flush_recovered_records(
             .map_err(|error| JournalError::Corrupt(format!("journal update {sequence} is invalid: {error}")))?;
         *next_sequence = (*next_sequence).saturating_add(1);
     }
-    Ok(())
+    Ok(released_bytes)
 }
 
 fn replay_complete_state(
