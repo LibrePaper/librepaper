@@ -1342,7 +1342,7 @@ impl V2GcCatalog for Catalog {
                          LIMIT ?2",
                     )
                     .map_err(crate::storage::catalog::CatalogError::from)?;
-                statement
+                let rows = statement
                     .query_map(
                         params![now, i64::try_from(page_limit).unwrap_or(256)],
                         |row| {
@@ -1356,7 +1356,8 @@ impl V2GcCatalog for Catalog {
                     )
                     .map_err(crate::storage::catalog::CatalogError::from)?
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(crate::storage::catalog::CatalogError::from)?
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                Ok(rows)
             };
             let mut unrooted = 0usize;
             let mut expired_receipts = 0usize;
@@ -3447,7 +3448,8 @@ mod journal_commit_race_tests {
                         )?;
                     }
                 }
-                transaction.commit()
+                transaction.commit()?;
+                Ok(())
             })
             .expect("expiry fixture");
 
@@ -3457,14 +3459,14 @@ mod journal_commit_race_tests {
             .expect("bounded expiry cleanup");
         let rows: (i64, i64, i64) = catalog
             .with_connection(|connection| {
-                connection.query_row(
+                Ok(connection.query_row(
                     "SELECT
                        (SELECT count(*) FROM operations WHERE kind='agent_stage'),
                        (SELECT live_root FROM objects WHERE document_id=?1 AND id=?2),
                        (SELECT count(*) FROM operations WHERE id=?3)",
-                    params![document_id, format!("{:032x}", 257_u32), format!("{256:032x}")],
+                    params![document_id, format!("{:032x}", 257_u32), format!("{:032x}", 256_u32)],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
+                )?)
             })
             .expect("expiry result");
         assert_eq!(rows.0, 1, "the blocked first receipt remains for a later pass");
