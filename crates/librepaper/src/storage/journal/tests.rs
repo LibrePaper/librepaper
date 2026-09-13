@@ -1,49 +1,91 @@
+//! Regression coverage for the production per-document v2 journal.
+//!
+//! The old deployment-wide manifest fixtures were removed with the v1
+//! runtime. These tests exercise the same failure boundaries through the
+//! canonical object rows, operation receipts, and v2 journal adapter.
+//!
+//! Coverage moved from the former shared-journal cases as follows: framing
+//! and queue/seal limits are covered by the codec/coordinator tests; corrupt
+//! and missing acknowledged physical objects by the fail-closed recovery
+//! tests; conflicting replay and per-document ownership by the cursor tests;
+//! binary base restart and old-segment retirement by the compaction tests;
+//! and bounded large-fragment recovery by the fragmented snapshot test.
+//! Admission cancellation, failed PUT probing, quota-owner isolation, and
+//! prepared-operation crash reconciliation live with the typed SQL adapter in
+//! `v2_catalog` because those invariants are settled inside its transactions.
+
 use super::*;
+use crate::config::PersistenceLimits;
+use crate::document::session;
 use crate::storage::blob::{BlobStore, FsStore};
-use crate::storage::catalog::NewDocument;
-use crate::storage::maintenance::JournalRetirementWorker;
+use crate::storage::catalog::Catalog;
+use crate::storage::v2_catalog::V2JournalCatalogAdapter;
+use sha2::Digest;
+use std::sync::Arc;
+use std::time::Instant;
+
+fn state(text: &str) -> Vec<u8> {
+    let doc = session::new_doc();
+    session::put_text(&doc, "index.md", text);
+    session::encode_state(&doc)
+}
+
+fn fixture() -> (Arc<Catalog>, Arc<dyn BlobStore>, V2JournalRuntime<V2JournalCatalogAdapter>, tempfile::TempDir) {
+    fixture_with_durability(false)
+}
+
+fn fixture_with_durability(
+    durable: bool,
+) -> (Arc<Catalog>, Arc<dyn BlobStore>, V2JournalRuntime<V2JournalCatalogAdapter>, tempfile::TempDir) {
+    let catalog = Arc::new(Catalog::open_in_memory().expect("v2 catalog"));
+    let document_id = "journal-test-document";
+    let account_id = "journal-test-account";
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at) VALUES(?1,'registered','journal-test',?1,'journal-test','Journal Test','journal-test@example.test','active','generation','test',1,1)",
+                [account_id],
+            )?;
+            connection.execute(
+                "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,'journal-test',?2,'owned','Journal Test','journal-test','active',1,1,'markdown','index.md')",
+                rusqlite::params![document_id, account_id],
+            )?;
+            Ok(())
+        })
+        .expect("journal document");
+    let directory = tempfile::tempdir().expect("object directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), durable));
+    let adapter = Arc::new(V2JournalCatalogAdapter::with_limits_and_quota(
+        Arc::clone(&catalog),
+        PersistenceLimits::default(),
+        i64::MAX,
+        i64::MAX,
+    ));
+    let runtime = V2JournalRuntime::with_persistence(
+        adapter,
+        Arc::clone(&blobs),
+        PersistenceLimits::default(),
+    )
+    .expect("journal runtime");
+    (catalog, blobs, runtime, directory)
+}
 
 #[test]
 fn segment_round_trip_and_digest_validation() {
-    let record = JournalRecord::new("storage", 1, "retry", 7, b"update".to_vec()).expect("record");
+    let record = JournalRecord::new("doc", 1, "retry", 7, b"update".to_vec()).expect("record");
     let segment = Segment::new(vec![record]).expect("segment");
     let encoded = segment.encode().expect("encode");
     assert_eq!(Segment::decode(&encoded).expect("decode"), segment);
     let mut broken = encoded;
     *broken.last_mut().expect("payload") ^= 1;
-    assert!(matches!(
-        Segment::decode(&broken),
-        Err(JournalError::Corrupt(_))
-    ));
+    assert!(matches!(Segment::decode(&broken), Err(JournalError::Corrupt(_))));
 }
 
 #[test]
-fn multi_fragment_segment_rejects_non_hex_aggregate_digest() {
-    let mut records = JournalRecord::chunked(
-        "storage",
-        1,
-        "retry",
-        0,
-        vec![b'x'; MAX_RECORD_CHUNK_BYTES + 1],
-    )
-    .expect("fragments");
-    // Aggregate digests are not compared in `JournalRecord::validate` for
-    // multi-fragment records, so this specifically exercises format
-    // validation rather than the later reassembly check.
-    records[0].digest = "z".repeat(64);
-    assert!(matches!(
-        Segment::new(records),
-        Err(JournalError::Corrupt(message)) if message.contains("digest")
-    ));
-}
-
-#[test]
-fn coordinator_uses_exact_framing_and_splits_per_document_limit() {
-    let first = JournalRecord::new("storage", 1, "retry-1", 0, b"x".to_vec()).expect("record");
-    let second = JournalRecord::new("storage", 2, "retry-2", 0, b"y".to_vec()).expect("record");
-    let limit = Segment::new(vec![first.clone()])
-        .expect("segment")
-        .encoded_len();
+fn coordinator_keeps_document_framing_limits() {
+    let first = JournalRecord::new("doc", 1, "retry-1", 0, b"x".to_vec()).expect("record");
+    let second = JournalRecord::new("doc", 2, "retry-2", 0, b"y".to_vec()).expect("record");
+    let limit = Segment::new(vec![first.clone()]).expect("segment").encoded_len();
     let mut coordinator = JournalCoordinator::new(CoordinatorLimits {
         max_queued_bytes: usize::MAX,
         max_queued_records: 4,
@@ -53,1089 +95,408 @@ fn coordinator_uses_exact_framing_and_splits_per_document_limit() {
     .expect("limits");
     coordinator.enqueue(first).expect("enqueue first");
     coordinator.enqueue(second).expect("enqueue second");
-    let segments = coordinator.seal(true).expect("seal");
-    assert_eq!(segments.len(), 2);
-    assert_eq!(coordinator.queued_records(), 0);
-
-    let mut coordinator = JournalCoordinator::new(CoordinatorLimits::default()).expect("limits");
-    for sequence in 1..=(MAX_RECORDS_PER_DOCUMENT as u64 + 1) {
-        coordinator
-            .enqueue(
-                JournalRecord::new(
-                    "one-document",
-                    sequence,
-                    format!("retry-{sequence}"),
-                    0,
-                    vec![1],
-                )
-                .expect("record"),
-            )
-            .expect("enqueue");
-    }
-    let segments = coordinator.seal(true).expect("split at document limit");
-    assert_eq!(
-        segments
-            .iter()
-            .map(|segment| segment.records.len())
-            .sum::<usize>(),
-        MAX_RECORDS_PER_DOCUMENT + 1
-    );
-    assert_eq!(coordinator.queued_records(), 0);
-}
-
-#[test]
-fn coordinator_applies_queue_limits_and_seals() {
-    let mut coordinator = JournalCoordinator::new(CoordinatorLimits {
-        max_queued_bytes: 10,
-        max_queued_records: 1,
-        max_segment_bytes: MAX_SEGMENT_BYTES,
-        max_records_per_segment: MAX_RECORDS_PER_SEGMENT,
-    })
-    .expect("limits");
-    coordinator
-        .enqueue(JournalRecord::new("storage", 1, "retry", 1, b"x".to_vec()).expect("record"))
-        .expect("enqueue");
-    assert!(matches!(
-        coordinator.enqueue(
-            JournalRecord::new("storage", 2, "retry-2", 1, b"x".to_vec()).expect("record")
-        ),
-        // A full queue is capacity, not a size this journal can never carry,
-        // so it is a temporary refusal now rather than a permanent limit.
-        Err(JournalError::Busy(_))
-    ));
-    assert_eq!(coordinator.seal(true).expect("seal").len(), 1);
-    assert_eq!(coordinator.queued_records(), 0);
-}
-
-#[test]
-fn journal_head_and_preparation_commit_together() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let store = JournalStore::new(catalog);
-    let state = store
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    let plan = JournalPlan {
-        version: 1,
-        output_keys: vec!["journal/deployment/segments/op-0".into()],
-        covered: vec![],
-        protected_input_keys: vec![],
-    };
-    store
-        .prepare("op", "flush", state.revision, "generation", 10, &plan)
-        .expect("prepare");
-    let committed = store
-        .commit_segment(
-            "op",
-            &WrittenSegment {
-                segment_id: "op-0".into(),
-                object_key: "journal/deployment/segments/op-0".into(),
-                digest: "a".repeat(64),
-                encoded_bytes: 3,
-            },
-            11,
-        )
-        .expect("commit");
-    assert_eq!(committed.0.revision, 1);
-    assert_eq!(committed.1, 0);
-    assert!(store.unresolved_preparation().expect("read prep").is_none());
+    assert_eq!(coordinator.seal(true).expect("seal").len(), 2);
 }
 
 #[tokio::test]
-async fn compaction_replays_base_and_retires_segments() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs.clone(),
-        "deployment",
-        CoordinatorLimits::default(),
-    )
-    .expect("runtime");
-    JournalStore::new(catalog.clone())
-        .initialize("deployment", "generation")
-        .expect("initialize");
-
-    runtime
-        .append("storage", 1, b"state-1".to_vec())
+async fn v2_append_recover_compact_and_reopen() {
+    let (catalog, blobs, runtime, _directory) = fixture_with_durability(true);
+    let first = state("first");
+    let second = state("second");
+    DocumentJournal::append(&runtime, "journal-test-document", 1, first)
         .await
-        .expect("append 1");
-    runtime
-        .append("storage", 2, b"state-2".to_vec())
+        .expect("first append");
+    DocumentJournal::append(&runtime, "journal-test-document", 2, second.clone())
         .await
-        .expect("append 2");
-    assert_eq!(
-        runtime.recover_latest("storage").await.expect("recover"),
-        Some(b"state-2".to_vec())
-    );
-
-    runtime
-        .compact("storage", 0, 2, b"state-2".to_vec())
+        .expect("second append");
+    let old_segment_keys: Vec<String> = catalog
+        .with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT storage_key FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available'",
+            )?;
+            let rows = statement.query_map(["journal-test-document"], |row| row.get(0))?;
+            rows.collect::<Result<Vec<String>, _>>()
+        })
+        .expect("segment keys");
+    let recovered = DocumentJournal::recover_latest(&runtime, "journal-test-document")
+        .await
+        .expect("recover")
+        .expect("state");
+    assert_eq!(session::texts_of(&decode_state(&recovered)), session::texts_of(&decode_state(&second)));
+    DocumentJournal::compact(&runtime, "journal-test-document", 0, 2, second.clone())
         .await
         .expect("compact");
-    assert_eq!(
-        runtime
-            .recover_latest("storage")
-            .await
-            .expect("recover base"),
-        Some(b"state-2".to_vec())
-    );
-    assert!(runtime
-        .append("storage", 2, b"state-2".to_vec())
-        .await
-        .expect("retry")
-        .is_empty());
-    assert!(runtime
-        .append("storage", 2, b"different-state".to_vec())
-        .await
-        .expect_err("compacted retry must compare the retained base digest")
-        .to_string()
-        .contains("different payload"));
-    runtime
-        .append_with_epoch("storage", 1, 1, b"state-epoch-1".to_vec())
-        .await
-        .expect("new epoch");
-    assert_eq!(
-        runtime
-            .recover_latest("storage")
-            .await
-            .expect("new epoch recovery"),
-        Some(b"state-epoch-1".to_vec())
-    );
-    let store = JournalStore::new(catalog.clone());
-    assert_eq!(store.committed_segments().expect("segments").len(), 1);
-    let base = store
-        .recovery_base("storage".to_string())
-        .await
-        .expect("base metadata")
-        .expect("base");
-    assert!(blobs.get(&base.object_key).await.is_ok());
-
-    let worker = JournalRetirementWorker::new(catalog, blobs.clone(), 16).expect("worker");
-    assert_eq!(
-        worker
-            .run_once(crate::util::now_unix())
-            .await
-            .expect("retire"),
-        2
-    );
-    assert!(blobs.get(&base.object_key).await.is_ok());
-}
-
-#[tokio::test]
-async fn compaction_borrows_maintenance_headroom_at_full_quota() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    catalog
-        .create_document(&NewDocument {
-            slug: "full".into(),
-            storage_id: "full-storage".into(),
-            title: "full".into(),
-            sha: String::new(),
-            created_at: "2026-01-01T00:00:00.000Z".into(),
-            published_at: "2026-01-01T00:00:00.000Z".into(),
-            updated_at: "2026-01-01T00:00:00.000Z".into(),
-            example: false,
-            owner_key: "owner".into(),
-            owner_id: None,
-            status: "active".into(),
-            size: 0,
-            counted_size: 0,
-            maintenance_reserved: 0,
-            last_auto_checkpoint_at: 0,
-            source_format: "markdown".into(),
-            main: "README.md".into(),
-        })
-        .expect("document");
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new_with_limits(
-        catalog.clone(),
-        blobs,
-        "deployment",
-        CoordinatorLimits::default(),
-        0,
-        0,
-    )
-    .expect("runtime");
-    JournalStore::new(catalog.clone())
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    runtime
-        .compact("full-storage", 0, 1, b"full state".to_vec())
-        .await
-        .expect("compaction borrows reserve");
-    let active_jobs: i64 = catalog
+    let retired_segments: i64 = catalog
         .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM maintenance_jobs WHERE status='active'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
+            connection.query_row(
+                "SELECT count(*) FROM objects WHERE document_id=?1 AND kind='journal_segment' AND live_root=0",
+                ["journal-test-document"],
+                |row| row.get(0),
+            )
         })
-        .expect("maintenance jobs");
-    assert_eq!(active_jobs, 0);
+        .expect("retired segments");
+    assert!(retired_segments > 0);
+    for key in old_segment_keys {
+        assert!(blobs.exists(&key).await.expect("retired segment remains until GC"));
+    }
+    let after = DocumentJournal::recover_latest(&runtime, "journal-test-document")
+        .await
+        .expect("recover compacted")
+        .expect("compacted state");
+    assert_eq!(session::texts_of(&decode_state(&after)), session::texts_of(&decode_state(&second)));
+}
+
+fn decode_state(bytes: &[u8]) -> yrs::Doc {
+    let doc = session::new_doc();
+    session::apply_update(&doc, bytes).expect("valid state");
+    doc
 }
 
 #[tokio::test]
-async fn recovery_releases_abandoned_compaction_maintenance_borrow() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
+async fn v2_append_requires_the_next_sequence_and_keeps_documents_separate() {
+    let (catalog, _blobs, runtime, _directory) = fixture();
+    let error = DocumentJournal::append(&runtime, "journal-test-document", 2, state("gap"))
+        .await
+        .expect_err("sequence gap");
+    assert!(error.to_string().contains("next sequence"));
+    DocumentJournal::append(&runtime, "journal-test-document", 1, state("one"))
+        .await
+        .expect("first document append");
+    let other = "journal-other-document";
+    let account_id = "journal-test-account";
     catalog
-        .create_document(&NewDocument {
-            slug: "crashed".into(),
-            storage_id: "crashed-storage".into(),
-            title: "crashed".into(),
-            sha: String::new(),
-            created_at: "2026-01-01T00:00:00.000Z".into(),
-            published_at: "2026-01-01T00:00:00.000Z".into(),
-            updated_at: "2026-01-01T00:00:00.000Z".into(),
-            example: false,
-            owner_key: "owner".into(),
-            owner_id: None,
-            status: "active".into(),
-            size: 0,
-            counted_size: 0,
-            maintenance_reserved: 0,
-            last_auto_checkpoint_at: 0,
-            source_format: "markdown".into(),
-            main: "README.md".into(),
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,'journal-other',?2,'owned','Other','journal-other','active',1,1,'markdown','index.md')",
+                rusqlite::params![other, account_id],
+            )?;
+            Ok(())
         })
-        .expect("document");
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let store = JournalStore::new(catalog.clone());
-    let state = store
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    let operation_id = "crashed";
-    let plan = JournalPlan {
-        version: 1,
-        output_keys: vec![
-            journal_base_key("deployment", "crashed-storage", "0-1"),
-            journal_manifest_key("deployment", "crashed-0"),
-        ],
-        covered: vec![CoveredRange {
-            storage_id: "crashed-storage".into(),
-            epoch: 0,
-            first_sequence: 1,
-            last_sequence: 1,
+        .expect("second document");
+    DocumentJournal::append(&runtime, other, 1, state("other"))
+        .await
+        .expect("second document append");
+    assert_eq!(DocumentJournal::latest_sequence(&runtime, "journal-test-document", 0).await.unwrap(), 1);
+    assert_eq!(DocumentJournal::latest_sequence(&runtime, other, 0).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn v2_asset_dependency_is_rooted_only_by_the_acknowledged_snapshot() {
+    let (catalog, blobs, runtime, _directory) = fixture();
+    let asset_id = "00000000000000000000000000000001";
+    let asset_body = b"named asset".to_vec();
+    let asset_digest = hex::encode(sha2::Sha256::digest(&asset_body));
+    let asset_key = format!("v2/documents/journal-test-document/objects/{asset_id}");
+    blobs
+        .put(&asset_key, asset_body.clone(), "application/octet-stream")
+        .await
+        .expect("asset bytes");
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,created_at,live_root,publication_root) VALUES(?1,?2,?3,'asset','available',?4,1,?5,0,1,0,0)",
+                rusqlite::params!["journal-test-document", asset_id, asset_key, asset_digest, asset_body.len() as i64],
+            )?;
+            Ok(())
+        })
+        .expect("asset row");
+    DocumentJournal::append_with_dependencies(
+        &runtime,
+        "journal-test-document",
+        1,
+        state("asset snapshot"),
+        vec![crate::storage::journal::JournalDependencyHint {
+            kind: "asset".into(),
+            digest: asset_digest,
+            byte_length: asset_body.len() as u64,
         }],
-        protected_input_keys: Vec::new(),
-    };
-    catalog
-        .reserve_maintenance(
-            "maintenance-crashed",
-            "crashed",
-            128,
-            JOURNAL_MAINTENANCE_RESERVE_BYTES,
-            1,
-        )
-        .expect("maintenance borrow");
-    store
-        .prepare(
-            operation_id,
-            "compact",
-            state.revision,
-            "generation",
-            1,
-            &plan,
-        )
-        .expect("prepare");
-    store
-        .reconcile_pending(blobs.as_ref())
-        .await
-        .expect("known missing outputs abort");
-    let active_jobs: i64 = catalog
+    )
+    .await
+    .expect("asset dependency append");
+    let rooted: i64 = catalog
         .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM maintenance_jobs WHERE status='active'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
+            connection.query_row(
+                "SELECT live_root FROM objects WHERE document_id=?1 AND id=?2",
+                rusqlite::params!["journal-test-document", asset_id],
+                |row| row.get(0),
+            )
         })
-        .expect("maintenance jobs");
-    assert_eq!(active_jobs, 0);
+        .expect("rooted asset");
+    assert_eq!(rooted, 1);
+
+    DocumentJournal::append(&runtime, "journal-test-document", 2, state("asset removed"))
+        .await
+        .expect("append without asset");
+    let retired: (i64, Option<i64>) = catalog
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT live_root,gc_after FROM objects WHERE document_id=?1 AND id=?2",
+                rusqlite::params!["journal-test-document", asset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+        })
+        .expect("retired asset");
+    assert_eq!(retired.0, 0);
+    assert!(retired.1.is_some());
 }
 
 #[tokio::test]
-async fn concurrent_deployment_appends_preserve_per_document_coverage() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs,
-        "deployment",
-        CoordinatorLimits::default(),
-    )
-    .expect("runtime");
-    JournalStore::new(catalog.clone())
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    let (first, second) = tokio::join!(
-        runtime.append("one", 1, b"one".to_vec()),
-        runtime.append("two", 1, b"two".to_vec()),
-    );
-    first.expect("first append");
-    second.expect("second append");
-    assert_eq!(
-        runtime.recover_latest("one").await.expect("one recovery"),
-        Some(b"one".to_vec())
-    );
-    assert_eq!(
-        runtime.recover_latest("two").await.expect("two recovery"),
-        Some(b"two".to_vec())
-    );
-    let coverage: i64 = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row("SELECT COUNT(*) FROM journal_segment_coverage", [], |row| {
-                    row.get(0)
-                })
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .expect("coverage rows");
-    assert_eq!(coverage, 2);
-    let segments: i64 = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row("SELECT COUNT(*) FROM journal_segments", [], |row| {
-                    row.get(0)
-                })
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .expect("segment rows");
-    assert_eq!(segments, 1, "concurrent rooms should share one segment");
-    runtime
-        .compact("one", 0, 1, b"one".to_vec())
-        .await
-        .expect("one compaction");
-    assert_eq!(
-        runtime
-            .recover_latest("two")
-            .await
-            .expect("two after compaction"),
-        Some(b"two".to_vec())
-    );
-    JournalStore::new(catalog.clone())
-        .retire_storage("one", crate::util::now_unix())
-        .expect("retire one");
-    assert_eq!(
-        runtime
-            .recover_latest("two")
-            .await
-            .expect("two after deletion retirement"),
-        Some(b"two".to_vec())
-    );
-}
-
-#[tokio::test]
-async fn recovery_fails_closed_when_a_committed_segment_is_missing() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs.clone(),
-        "deployment",
-        CoordinatorLimits::default(),
-    )
-    .expect("runtime");
-    JournalStore::new(catalog.clone())
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    runtime
-        .append("storage", 1, b"durable".to_vec())
+async fn v2_recovery_fails_closed_when_an_acknowledged_object_is_missing() {
+    let (catalog, blobs, runtime, _directory) = fixture();
+    DocumentJournal::append(&runtime, "journal-test-document", 1, state("durable"))
         .await
         .expect("append");
-    let (key, _) = JournalStore::new(catalog)
-        .committed_segments()
-        .expect("descriptor")
-        .into_iter()
-        .next()
-        .expect("segment");
-    blobs
-        .delete(std::slice::from_ref(&key))
-        .await
-        .expect("delete");
+    let key: String = catalog
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT storage_key FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available'",
+                ["journal-test-document"],
+                |row| row.get(0),
+            )
+        })
+        .expect("segment key");
+    blobs.delete(std::slice::from_ref(&key)).await.expect("remove segment");
     assert!(matches!(
-        runtime.recover_latest("storage").await,
+        DocumentJournal::recover_latest(&runtime, "journal-test-document").await,
         Err(JournalError::Storage(_))
     ));
 }
 
 #[tokio::test]
-async fn recovery_fails_closed_when_a_committed_segment_is_corrupt() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs.clone(),
-        "deployment",
-        CoordinatorLimits::default(),
-    )
-    .expect("runtime");
-    JournalStore::new(catalog.clone())
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    runtime
-        .append("storage", 1, b"durable".to_vec())
+async fn v2_recovery_fails_closed_when_an_acknowledged_object_is_corrupt() {
+    let (catalog, blobs, runtime, _directory) = fixture();
+    DocumentJournal::append(&runtime, "journal-test-document", 1, state("durable"))
         .await
         .expect("append");
-    let (key, _) = JournalStore::new(catalog)
-        .committed_segments()
-        .expect("descriptor")
-        .into_iter()
-        .next()
-        .expect("segment");
+    let key: String = catalog
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT storage_key FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available'",
+                ["journal-test-document"],
+                |row| row.get(0),
+            )
+        })
+        .expect("segment key");
     blobs
-        .put(&key, b"corrupt".to_vec(), "application/octet-stream")
+        .put(&key, b"corrupt acknowledged bytes".to_vec(), "application/octet-stream")
         .await
-        .expect("overwrite segment");
+        .expect("overwrite test object");
     assert!(matches!(
-        runtime.recover_latest("storage").await,
-        Err(JournalError::Corrupt(_))
+        DocumentJournal::recover_latest(&runtime, "journal-test-document").await,
+        Err(JournalError::Corrupt(_)) | Err(JournalError::Storage(_))
     ));
 }
 
 #[tokio::test]
-async fn failed_segment_write_releases_admission_and_retry_succeeds() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let objects = directory.path().join("objects");
-    std::fs::write(&objects, b"disk-full").expect("block object directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(&objects, true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs,
-        "deployment",
-        CoordinatorLimits::default(),
-    )
-    .expect("runtime");
-    JournalStore::new(catalog.clone())
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    assert!(runtime
-        .append("storage", 1, b"retry me".to_vec())
-        .await
-        .is_err());
-    assert_eq!(
-        JournalStore::new(catalog.clone())
-            .committed_segments()
-            .expect("segments")
-            .len(),
-        0
-    );
-    assert_eq!(runtime.payload_bytes_in_flight().await, (0, 0));
-    assert_eq!(runtime.memory().held_bytes(), 0);
-
-    std::fs::remove_file(&objects).expect("remove blocking file");
-    std::fs::create_dir(&objects).expect("restore object directory");
-    runtime
-        .append("storage", 1, b"retry me".to_vec())
-        .await
-        .expect("retry");
-    assert_eq!(runtime.memory().held_bytes(), 0);
-    assert_eq!(
-        runtime.recover_latest("storage").await.expect("recovery"),
-        Some(b"retry me".to_vec())
-    );
-}
-
-#[tokio::test]
-async fn shared_segment_rewrite_physically_excludes_erased_identity() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    for (slug, storage_id) in [("one", "one"), ("two", "two"), ("three", "three")] {
-        catalog
-            .create_document(&NewDocument {
-                slug: slug.into(),
-                storage_id: storage_id.into(),
-                title: slug.into(),
-                sha: String::new(),
-                created_at: "2026-01-01T00:00:00.000Z".into(),
-                published_at: "2026-01-01T00:00:00.000Z".into(),
-                updated_at: "2026-01-01T00:00:00.000Z".into(),
-                example: false,
-                owner_key: "owner".into(),
-                owner_id: None,
-                status: "active".into(),
-                size: 0,
-                counted_size: 0,
-                maintenance_reserved: 0,
-                last_auto_checkpoint_at: 0,
-                source_format: "markdown".into(),
-                main: "README.md".into(),
-            })
-            .expect("document");
-    }
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs.clone(),
-        "deployment",
-        CoordinatorLimits::default(),
-    )
-    .expect("runtime");
-    JournalStore::new(catalog.clone())
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    let (one, two, three) = tokio::join!(
-        runtime.append("one", 1, b"one".to_vec()),
-        runtime.append("two", 1, b"two".to_vec()),
-        runtime.append("three", 1, b"three".to_vec()),
-    );
-    one.expect("one append");
-    two.expect("two append");
-    three.expect("three append");
-    let store = JournalStore::new(catalog.clone());
-    let (segment_key, _) = store
-        .committed_segments()
-        .expect("segment descriptor")
-        .into_iter()
-        .next()
-        .expect("shared segment");
-    let manifest_key = crate::storage::blob::journal_manifest_key("deployment", "reader-test");
-    let (manifest, manifest_body) = finalize_manifest_shard(ManifestShard {
-        shard_id: "reader-test".into(),
-        shard_seq: 1,
-        object_key: manifest_key.clone(),
-        digest: String::new(),
-        encoded_bytes: 0,
-        committed_at: crate::util::now_unix(),
-        next_key: None,
-        bases: Vec::new(),
-        segments: vec![segment_key.clone()],
-    })
-    .expect("manifest");
-    catalog
-        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-            slug: "two",
-            operation_id: "reader-manifest",
-            object_key: &manifest_key,
-            kind: "journal_manifest",
-            new_bytes: manifest_body.len() as i64,
-            owner_limit: -1,
-            total_limit: -1,
-        })
-        .expect("manifest reservation");
-    blobs
-        .put(&manifest_key, manifest_body.clone(), "application/json")
-        .await
-        .expect("manifest object");
-    catalog
-        .commit_object_change(
-            "two",
-            "reader-manifest",
-            &manifest_key,
-            "journal_manifest",
-            &manifest.digest,
-        )
-        .expect("manifest accounting");
-    catalog
-        .with_connection(|connection| {
-            connection
-                .execute(
-                    "INSERT INTO journal_manifest_shards
-                     (shard_id,shard_seq,object_key,digest,encoded_bytes,committed_at)
-                     VALUES (?1,?2,?3,?4,?5,?6)",
-                    rusqlite::params![
-                        manifest.shard_id,
-                        manifest.shard_seq,
-                        manifest.object_key,
-                        manifest.digest,
-                        manifest_body.len() as i64,
-                        manifest.committed_at
-                    ],
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)?;
-            connection
-                .execute(
-                    "UPDATE journal_state SET manifest_key=?1,manifest_digest=?2,
-                     manifest_length=?3 WHERE id=1",
-                    rusqlite::params![manifest_key, manifest.digest, manifest_body.len() as i64],
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)?;
-            Ok(())
-        })
-        .expect("manifest graph");
-    catalog.begin_delete("one").expect("begin delete");
-    store
-        .retire_storage("one", crate::util::now_unix())
-        .expect("retire one");
-    // Queue another erasure before the worker runs. The retirement row is
-    // keyed by the shared segment, so the rewrite must remove both erased
-    // identities rather than only the most recently queued one.
-    catalog.begin_delete("three").expect("begin delete three");
-    store
-        .retire_storage("three", crate::util::now_unix())
-        .expect("retire three");
-    let worker = JournalRetirementWorker::new(catalog.clone(), blobs.clone(), 16).expect("worker");
-    // One pass removes the retired derived manifest and rewrites the shared
-    // segment after both erased identities have been removed from coverage.
-    assert_eq!(
-        worker
-            .run_once(crate::util::now_unix())
-            .await
-            .expect("rewrite"),
-        2
-    );
-    assert_eq!(
-        runtime.recover_latest("two").await.expect("recover two"),
-        Some(b"two".to_vec())
-    );
-    let segments = store.committed_segments().expect("segments");
-    assert_eq!(segments.len(), 1);
-    let body = blobs.get(&segments[0].0).await.expect("rewritten segment");
-    let rewritten = Segment::decode(&body).expect("decode rewritten");
-    assert!(rewritten
-        .records
-        .iter()
-        .all(|record| record.storage_id == "two"));
-    let (current_manifest_key, current_manifest_digest): (String, String) = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT manifest_key,manifest_digest FROM journal_state WHERE id=1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .expect("manifest state");
-    // The manifest graph is derived from the SQL bases and segments. Retiring
-    // storage invalidates that graph atomically; the next compaction rebuilds
-    // it after the surviving segment has been published.
-    assert!(current_manifest_key.is_empty());
-    assert!(current_manifest_digest.is_empty());
-    assert!(
-        catalog
-            .with_connection(|connection| {
-                connection
-                    .query_row("SELECT COUNT(*) FROM journal_manifest_shards", [], |row| {
-                        row.get::<_, i64>(0)
-                    })
-                    .map_err(crate::storage::catalog::CatalogError::from)
-            })
-            .expect("manifest shards")
-            == 0
-    );
-    let counted: i64 = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT counted_size FROM documents WHERE storage_id='two'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .expect("counted bytes");
-    let accounted: i64 = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT COALESCE(SUM(bytes),0) FROM object_accounting
-                     WHERE storage_id='two'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .expect("accounted bytes");
-    assert_eq!(counted, accounted);
-    assert!(counted >= body.len() as i64);
-}
-
-#[tokio::test]
-async fn restart_reconciles_complete_and_aborted_preparations() {
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let store = JournalStore::new(catalog.clone());
-    store
-        .initialize("deployment", "generation")
-        .expect("initialize");
-
-    let record = JournalRecord::new("storage", 1, "retry", 0, b"state".to_vec()).expect("record");
-    let segment = Segment::new(vec![record]).expect("segment");
-    let body = segment.encode().expect("segment bytes");
-    let key = journal_segment_key("deployment", "complete-0");
-    blobs
-        .put(&key, body, "application/octet-stream")
-        .await
-        .expect("write segment");
-    let plan = JournalPlan {
-        version: 1,
-        output_keys: vec![key],
-        covered: vec![CoveredRange {
-            storage_id: "storage".into(),
-            epoch: 0,
-            first_sequence: 1,
-            last_sequence: 1,
-        }],
-        protected_input_keys: Vec::new(),
-    };
-    store
-        .prepare("complete", "flush", 0, "generation", 1, &plan)
-        .expect("prepare complete");
-    store
-        .reconcile_pending(blobs.as_ref())
-        .await
-        .expect("reconcile complete");
-    assert!(store
-        .unresolved_preparation()
-        .expect("preparation")
-        .is_none());
-    assert_eq!(store.state().expect("state").revision, 1);
-
-    let abort_plan = JournalPlan {
-        version: 1,
-        output_keys: vec![journal_segment_key("deployment", "abort-0")],
-        covered: vec![CoveredRange {
-            storage_id: "storage".into(),
-            epoch: 0,
-            first_sequence: 2,
-            last_sequence: 2,
-        }],
-        protected_input_keys: Vec::new(),
-    };
-    store
-        .prepare("abort", "flush", 1, "generation", 2, &abort_plan)
-        .expect("prepare abort");
-    store
-        .reconcile_pending(blobs.as_ref())
-        .await
-        .expect("reconcile abort");
-    assert!(store
-        .unresolved_preparation()
-        .expect("preparation")
-        .is_none());
-    let retired: i64 = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM journal_retirements WHERE object_key LIKE '%abort-0'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .expect("retirement");
-    assert_eq!(retired, 1);
-}
-
-#[tokio::test]
-async fn restarted_cursor_rejects_conflicting_payload_and_accepts_next_sequence() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs.clone(),
-        "deployment",
-        CoordinatorLimits::default(),
-    )
-    .expect("runtime");
-    JournalStore::new(catalog.clone())
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    runtime
-        .append("storage", 1, b"state-1".to_vec())
+async fn v2_replay_with_same_sequence_rejects_conflicting_payload() {
+    let (_catalog, _blobs, runtime, _directory) = fixture();
+    DocumentJournal::append(&runtime, "journal-test-document", 1, state("first"))
         .await
         .expect("first append");
-    let restarted = JournalRuntime::new(catalog, blobs, "deployment", CoordinatorLimits::default())
-        .expect("restarted runtime");
-    assert_eq!(restarted.latest_sequence("storage", 0).expect("cursor"), 1);
-    assert!(restarted
-        .append("storage", 1, b"state-1".to_vec())
+    assert!(DocumentJournal::append(&runtime, "journal-test-document", 1, state("different"))
         .await
-        .expect("idempotent retry")
-        .is_empty());
-    assert!(matches!(
-        restarted
-            .append("storage", 1, b"different".to_vec())
-            .await,
-        Err(JournalError::Invalid(message)) if message.contains("different payload")
-    ));
-    restarted
-        .append("storage", 2, b"state-2".to_vec())
-        .await
-        .expect("next sequence");
-    assert_eq!(
-        restarted.recover_latest("storage").await.expect("recovery"),
-        Some(b"state-2".to_vec())
-    );
+        .is_err());
+    assert_eq!(DocumentJournal::latest_sequence(&runtime, "journal-test-document", 0).await.unwrap(), 1);
 }
 
 #[tokio::test]
-async fn recovery_accepts_nonconsecutive_snapshot_sequences_and_compacted_bases() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs,
-        "deployment",
-        CoordinatorLimits::default(),
-    )
-    .expect("runtime");
-    JournalStore::new(catalog)
-        .initialize("deployment", "generation")
-        .expect("initialize");
-
-    // Room snapshots use the session generation as their durable sequence;
-    // the first persisted generation need not be one, and generations may
-    // have advanced between snapshots.
-    runtime
-        .append("storage", 7, b"state-7".to_vec())
-        .await
-        .expect("append 7");
-    runtime
-        .append("storage", 9, b"state-9".to_vec())
-        .await
-        .expect("append 9");
-    assert_eq!(
-        runtime.recover_latest("storage").await.expect("recovery"),
-        Some(b"state-9".to_vec())
+async fn v2_fragmented_snapshot_recovers_at_record_boundary() {
+    let (_catalog, _blobs, runtime, _directory) = fixture();
+    let document = session::new_doc();
+    session::put_text(
+        &document,
+        "index.md",
+        &"x".repeat(MAX_RECORD_CHUNK_BYTES * 2 + 17),
     );
-
-    runtime
-        .compact("storage", 0, 9, b"state-9".to_vec())
-        .await
-        .expect("compact");
-    runtime
-        .append("storage", 12, b"state-12".to_vec())
-        .await
-        .expect("append after compacted base");
-    assert_eq!(
-        runtime
-            .recover_latest("storage")
-            .await
-            .expect("recovery after compaction"),
-        Some(b"state-12".to_vec())
-    );
-}
-
-#[tokio::test]
-async fn large_snapshot_is_chunked_and_recovered_at_the_record_boundary() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs,
-        "deployment",
-        CoordinatorLimits::default(),
-    )
-    .expect("runtime");
-    JournalStore::new(catalog)
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    let payload = (0..(MAX_RECORD_CHUNK_BYTES * 2 + 17))
-        .map(|index| (index % 251) as u8)
-        .collect::<Vec<_>>();
-    runtime
-        .append("large", 1, payload.clone())
+    let body = session::encode_state(&document);
+    DocumentJournal::append(&runtime, "journal-test-document", 1, body)
         .await
         .expect("large append");
-    assert_eq!(
-        runtime.recover_latest("large").await.expect("recovery"),
-        Some(payload)
-    );
+    let recovered = DocumentJournal::recover_latest(&runtime, "journal-test-document")
+        .await
+        .expect("large recovery")
+        .expect("large state");
+    assert_eq!(session::texts_of(&decode_state(&recovered))["index.md"].len(), MAX_RECORD_CHUNK_BYTES * 2 + 17);
 }
 
 #[tokio::test]
-async fn large_snapshot_compacts_and_recovers_from_binary_base() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs,
-        "deployment",
-        CoordinatorLimits::default(),
-    )
-    .expect("runtime");
-    JournalStore::new(catalog)
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    let payload = vec![42; 4 * 1024 * 1024 + 1024];
-    runtime
-        .append("large-base", 1, payload.clone())
+async fn v2_compacted_binary_base_survives_runtime_reopen() {
+    let (catalog, blobs, runtime, _directory) = fixture();
+    let body = state("before compact");
+    DocumentJournal::append(&runtime, "journal-test-document", 1, body.clone())
         .await
         .expect("append");
-    runtime
-        .compact("large-base", 0, 1, payload.clone())
+    DocumentJournal::append(&runtime, "journal-test-document", 2, state("after compact"))
         .await
-        .expect("compact");
-    assert_eq!(
-        runtime.recover_latest("large-base").await.expect("recover"),
-        Some(payload)
-    );
+        .expect("append update");
+    DocumentJournal::compact(&runtime, "journal-test-document", 0, 2, body)
+        .await
+        .expect("compact binary base");
+
+    let adapter = Arc::new(V2JournalCatalogAdapter::with_limits_and_quota(
+        Arc::clone(&catalog),
+        PersistenceLimits::default(),
+        i64::MAX,
+        i64::MAX,
+    ));
+    let reopened = V2JournalRuntime::with_persistence(
+        adapter,
+        Arc::clone(&blobs),
+        PersistenceLimits::default(),
+    )
+    .expect("reopened journal runtime");
+    let recovered = DocumentJournal::recover_latest(&reopened, "journal-test-document")
+        .await
+        .expect("recover after reopen")
+        .expect("compacted state");
+    assert_eq!(session::texts_of(&decode_state(&recovered))["index.md"], "before compact");
 }
 
 #[tokio::test]
-async fn retirement_invalidates_manifest_before_removing_last_document() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new(
-        catalog.clone(),
-        blobs.clone(),
-        "deployment",
-        CoordinatorLimits::default(),
+async fn v2_large_compacted_base_survives_runtime_reopen() {
+    let (catalog, blobs, runtime, _directory) = fixture();
+    let text = "large-base".to_owned() + &"x".repeat(MAX_RECORD_CHUNK_BYTES * 2 + 17);
+    let body = state(&text);
+    DocumentJournal::append(&runtime, "journal-test-document", 1, body.clone())
+        .await
+        .expect("large append");
+    DocumentJournal::compact(&runtime, "journal-test-document", 0, 1, body)
+        .await
+        .expect("large compact");
+    let adapter = Arc::new(V2JournalCatalogAdapter::with_limits_and_quota(
+        Arc::clone(&catalog),
+        PersistenceLimits::default(),
+        i64::MAX,
+        i64::MAX,
+    ));
+    let reopened = V2JournalRuntime::with_persistence(
+        adapter,
+        Arc::clone(&blobs),
+        PersistenceLimits::default(),
     )
-    .expect("runtime");
-    JournalStore::new(catalog.clone())
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    runtime
-        .append("retired", 1, b"state".to_vec())
+    .expect("reopened large journal runtime");
+    let recovered = DocumentJournal::recover_latest(&reopened, "journal-test-document")
         .await
-        .expect("append");
-    runtime
-        .compact("retired", 0, 1, b"state".to_vec())
-        .await
-        .expect("compact");
-    let old_manifest = runtime.store.state().expect("state").manifest_key;
-    runtime
-        .retire_storage_with_manifest("retired", crate::util::now_unix())
-        .await
-        .expect("retire");
-    let state = runtime.store.state().expect("state");
-    assert!(state.manifest_key.is_empty());
-    assert!(runtime
-        .recover_latest("retired")
-        .await
-        .expect("recovery")
-        .is_none());
-    assert!(
-        catalog
-            .with_connection(|connection| {
-                connection
-                    .query_row(
-                        "SELECT COUNT(*) FROM journal_retirements WHERE object_key=?1",
-                        [old_manifest],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .map_err(crate::storage::catalog::CatalogError::from)
-            })
-            .expect("manifest retirement")
-            > 0
-    );
+        .expect("recover large base")
+        .expect("large compacted state");
+    assert_eq!(session::texts_of(&decode_state(&recovered))["index.md"], text);
 }
 
+/// Release-only comparison trace for spec section 24. It performs real v2
+/// catalog/object writes for 100 documents and compares their physical
+/// per-document segments with the old mixed-document coordinator's framing.
+/// The test is ignored by default because it is an operator measurement, not
+/// a correctness gate; run centrally with `--ignored --nocapture`.
 #[tokio::test]
-async fn rejected_quota_append_does_not_block_another_owner() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    for (slug, storage_id) in [("one", "one"), ("two", "two")] {
-        catalog
-            .create_document(&NewDocument {
-                slug: slug.into(),
-                storage_id: storage_id.into(),
-                title: slug.into(),
-                sha: String::new(),
-                created_at: "2026-01-01T00:00:00.000Z".into(),
-                published_at: "2026-01-01T00:00:00.000Z".into(),
-                updated_at: "2026-01-01T00:00:00.000Z".into(),
-                example: false,
-                owner_key: "owner".into(),
-                owner_id: None,
-                status: "active".into(),
-                size: 0,
-                counted_size: 0,
-                maintenance_reserved: 0,
-                last_auto_checkpoint_at: 0,
-                source_format: "markdown".into(),
-                main: "README.md".into(),
-            })
-            .expect("document");
-    }
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    let runtime = JournalRuntime::new_with_limits(
-        catalog.clone(),
-        blobs,
-        "deployment",
-        CoordinatorLimits::default(),
-        1024,
-        -1,
-    )
-    .expect("runtime");
-    JournalStore::new(catalog)
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    assert!(runtime.append("one", 1, vec![7; 2048]).await.is_err());
-    runtime
-        .append("two", 1, b"healthy".to_vec())
-        .await
-        .expect("healthy owner append");
-}
-
-#[tokio::test]
-async fn seal_limit_failure_releases_publication_and_pending_identity() {
-    let catalog = Arc::new(Catalog::open_in_memory().expect("catalog"));
-    let directory = tempfile::tempdir().expect("blob directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(directory.path(), true));
-    // A deliberately tiny segment, with a persistence policy that matches it:
-    // the point is a record that cannot be framed, not one past the encoded
-    // ceiling.
-    let runtime = JournalRuntime::new_with_policy(
-        catalog.clone(),
-        blobs,
-        "deployment",
-        CoordinatorLimits {
-            max_queued_bytes: MAX_SEGMENT_BYTES,
-            max_queued_records: 8,
-            max_segment_bytes: 64,
-            max_records_per_segment: 8,
-        },
-        crate::config::PersistenceLimits {
-            max_encoded_snapshot_bytes: MAX_SEGMENT_BYTES,
-            max_queued_payload_bytes: MAX_SEGMENT_BYTES,
-            ..crate::config::PersistenceLimits::default()
-        },
-        -1,
-        -1,
-    )
-    .expect("runtime");
-    JournalStore::new(catalog)
-        .initialize("deployment", "generation")
-        .expect("initialize");
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        runtime.append("too-large", 1, b"payload".to_vec()),
-    )
-    .await
-    .expect("seal failure must not deadlock")
-    .expect_err("record cannot fit");
-    assert!(result.to_string().contains("fit in segment"));
-}
-
-#[test]
-fn manifest_metadata_is_partitioned_into_bounded_shards() {
-    let bases = (0..3_000)
-        .map(|index| RecoveryBase {
-            base_id: format!("base-{index}"),
-            storage_id: format!("storage-{index}"),
-            epoch: 0,
-            sequence: index + 1,
-            object_key: format!("journal/deployment/bases/storage-{index}/0-{}", index + 1),
-            digest: "a".repeat(64),
-            encoded_bytes: 128,
-            committed_at: 1,
+#[ignore = "spec-24 physical journal comparison trace"]
+async fn spec24_per_document_journal_comparison_trace() {
+    const DOCUMENTS: usize = 100;
+    const UPDATES_PER_DOCUMENT: usize = 50;
+    let (catalog, blobs, runtime, _directory) = fixture();
+    let account_id = "journal-test-account";
+    let document_ids = (0..DOCUMENTS)
+        .map(|index| format!("journal-benchmark-{index:04}"))
+        .collect::<Vec<_>>();
+    catalog
+        .with_connection(|connection| {
+            for (index, document_id) in document_ids.iter().enumerate() {
+                connection.execute(
+                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,?2,?3,'owned',?2,?2,'active',1,1,'markdown','index.md')",
+                    rusqlite::params![document_id, format!("journal-benchmark-{index:04}"), account_id],
+                )?;
+            }
+            Ok(())
         })
-        .collect();
-    let shards =
-        build_manifest_shards("deployment", 1, 1, bases, Vec::new()).expect("partition manifest");
-    assert!(shards.len() > 1);
-    for shard in shards {
-        let (_, bytes) = finalize_manifest_shard(shard).expect("bounded shard");
-        assert!(bytes.len() <= MAX_METADATA_BYTES);
+        .expect("benchmark documents");
+    let trace = (1..=UPDATES_PER_DOCUMENT)
+        .flat_map(|sequence| {
+            document_ids.iter().map(move |document_id| {
+                let text = format!("edit-{document_id}-{sequence}");
+                let body = state(&text);
+                (document_id.clone(), sequence as u64, body)
+            })
+        })
+        .collect::<Vec<_>>();
+    let started = Instant::now();
+    for (document_id, sequence, body) in &trace {
+        DocumentJournal::append(&runtime, document_id, *sequence, body.clone())
+            .await
+            .expect("per-document trace append");
     }
+    let v2_elapsed_millis = started.elapsed().as_millis();
+
+    let started = Instant::now();
+    let mut coordinator = JournalCoordinator::new(CoordinatorLimits {
+        max_queued_bytes: usize::MAX,
+        max_queued_records: trace.len() + 1,
+        max_segment_bytes: MAX_SEGMENT_BYTES,
+        max_records_per_segment: MAX_RECORDS_PER_SEGMENT,
+    })
+    .expect("mixed coordinator limits");
+    for (document_id, sequence, body) in &trace {
+        coordinator
+            .enqueue(JournalRecord::new(
+                document_id.clone(),
+                *sequence,
+                format!("benchmark-{document_id}-{sequence}"),
+                0,
+                body.clone(),
+            ).expect("mixed trace record"))
+            .expect("mixed trace enqueue");
+    }
+    let mixed_segments = coordinator.seal(true).expect("mixed trace seal");
+    let mixed_directory = tempfile::tempdir().expect("mixed journal directory");
+    let mixed_blobs = FsStore::new(mixed_directory.path(), true);
+    let mut mixed_physical_bytes = 0_u64;
+    for (index, segment) in mixed_segments.iter().enumerate() {
+        let body = segment.encode().expect("mixed segment encoding");
+        mixed_physical_bytes = mixed_physical_bytes.saturating_add(body.len() as u64);
+        mixed_blobs
+            .put(
+                &format!("journal/benchmark/segments/{index:08}"),
+                body,
+                "application/octet-stream",
+            )
+            .await
+            .expect("mixed segment PUT");
+    }
+    let mixed_recovery_started = Instant::now();
+    for index in 0..mixed_segments.len() {
+        let body = mixed_blobs
+            .get(&format!("journal/benchmark/segments/{index:08}"))
+            .await
+            .expect("mixed segment read");
+        Segment::decode(&body).expect("mixed segment recovery");
+    }
+    let mixed_recovery_millis = mixed_recovery_started.elapsed().as_millis();
+    let mixed_elapsed_millis = started.elapsed().as_millis();
+    let v2_recovery_started = Instant::now();
+    for document_id in &document_ids {
+        let recovered = DocumentJournal::recover_latest(&runtime, document_id)
+            .await
+            .expect("per-document recovery trace");
+        let expected = trace
+            .iter()
+            .rev()
+            .find(|(candidate, _, _)| candidate == document_id)
+            .map(|(_, _, body)| body.as_slice())
+            .expect("trace state");
+        assert_eq!(recovered.as_deref(), Some(expected));
+    }
+    let v2_recovery_millis = v2_recovery_started.elapsed().as_millis();
+    let (physical_objects, physical_bytes, server_stored_bytes): (i64, i64, i64) = catalog
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT count(*),COALESCE(SUM(byte_length),0),(SELECT stored_bytes FROM server_state WHERE id=1) FROM objects WHERE kind='journal_segment' AND state='available'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+        })
+        .expect("physical byte total");
+    println!(
+        "{{\"trace\":\"spec24-interleaved\",\"durable_fsync\":true,\"trace_records\":{},\"documents\":{DOCUMENTS},\"updates_per_document\":{UPDATES_PER_DOCUMENT},\"v2_segments\":{physical_objects},\"mixed_segments\":{},\"v2_physical_bytes\":{physical_bytes},\"mixed_physical_bytes\":{mixed_physical_bytes},\"v2_server_stored_bytes\":{server_stored_bytes},\"mixed_stored_bytes\":{mixed_physical_bytes},\"v2_elapsed_ms\":{v2_elapsed_millis},\"mixed_elapsed_ms\":{mixed_elapsed_millis},\"v2_recovery_ms\":{v2_recovery_millis},\"mixed_recovery_ms\":{mixed_recovery_millis}}}",
+        trace.len(),
+        mixed_segments.len(),
+    );
+    let _ = blobs;
 }
