@@ -498,9 +498,10 @@ async fn seed_with_store(
                 .await
                 .unwrap_or_else(|err| die(format!("could not store {path}: {err}")));
         }
-        for (path, bytes) in seed_assets(document) {
+        let assets = seed_assets(document);
+        for (path, bytes) in &assets {
             let (sha, _) = room
-                .put_asset(bytes, (config.max_asset, config.max_assets))
+                .put_asset(bytes.clone(), (config.max_asset, config.max_assets))
                 .await
                 .unwrap_or_else(|err| die(format!("could not store {path}: {err}")));
             room.name_asset(&path, &sha)
@@ -510,18 +511,52 @@ async fn seed_with_store(
         // Seeded and imported documents have no authenticated caller behind
         // them: the operator ran a command. There is no account to record,
         // and the empty display name is the one this path has always written.
-        let checkpoint = match room
-            .checkpoint("cli", crate::room::Attribution::system())
+        let checkpoint_authority = crate::storage::catalog::MutationAuthority {
+            account_id: &seed_actor.account_id,
+            owner_key: &seed_actor.owner_key,
+            generation: &seed_actor.session_generation,
+            link_hash: &seed_actor.link_hash,
+            policy_editor: seed_actor.policy_editor,
+            automation: seed_actor.automation,
+            unowned_publisher: seed_actor.unowned_publisher,
+            execution_epoch: "",
+            agent_checkpoint: None,
+        };
+        let checkpoint_display = if seed_actor.account_id.is_empty() {
+            owner.trim()
+        } else if system_owner_id.is_some() {
+            "Examples"
+        } else {
+            owner.trim()
+        };
+        let _checkpoint = match room
+            .checkpoint_now_with_authority(
+                "cli",
+                crate::room::Attribution::account(
+                    &seed_actor.account_id,
+                    checkpoint_display,
+                ),
+                checkpoint_authority,
+            )
             .await
         {
             Ok(Some(sha)) => sha,
-            Ok(None) => room.tree().await.digest(),
+            Ok(None) => die(format!("could not store {}: checkpoint deferred", document.file)),
             Err(err) => die(format!("could not store {}: {err}", document.file)),
         };
-        store
-            .commit_publication(&slug, &checkpoint)
+        if store.catalog.is_some() {
+            publish_seed_display(
+                &store,
+                &entry.storage_id,
+                &seed_actor,
+                &source,
+                &format,
+                &raw,
+                &assets,
+            )
             .await
             .unwrap_or_else(|error| die(format!("could not publish {}: {error}", document.file)));
+        }
         let (placed, missed) =
             seed_annotations(&room, &document.annotations, &text, &source, &main).await;
         seeded.push(slug.clone());
@@ -781,6 +816,201 @@ pub fn source_anchor(item: &SeedAnnotation, source: &str, path: &str) -> Option<
     })
 }
 
+fn seed_publication_mime(path: &str) -> &'static str {
+    match Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "css" => "text/css",
+        "csv" => "text/csv",
+        "gif" => "image/gif",
+        "html" => "text/html",
+        "jpeg" | "jpg" => "image/jpeg",
+        "js" | "mjs" => "text/javascript",
+        "json" => "application/json",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "txt" | "md" => "text/plain",
+        "wasm" => "application/wasm",
+        _ => "application/octet-stream",
+    }
+}
+
+fn seed_display_html(raw: &str, format: &str) -> Vec<u8> {
+    if matches!(format, "html" | "markdown") {
+        raw.as_bytes().to_vec()
+    } else {
+        format!("<pre>{}</pre>", html_escape::encode_text(raw)).into_bytes()
+    }
+}
+
+#[derive(Serialize)]
+struct SeedBundleAsset<'a> {
+    path: &'a str,
+    sha256: &'a str,
+    bytes: usize,
+    mime: &'a str,
+}
+
+#[derive(Serialize)]
+struct SeedBundle<'a> {
+    html: &'a str,
+    assets: Vec<SeedBundleAsset<'a>>,
+}
+
+async fn publish_seed_display(
+    store: &Arc<Store>,
+    storage_id: &str,
+    actor: &crate::document::store::MutationActor,
+    source: &str,
+    format: &str,
+    rendered: &str,
+    assets: &[(String, Vec<u8>)],
+) -> Result<(), String> {
+    let mut publication_actor = actor.clone();
+    if publication_actor.account_id.is_empty() && !publication_actor.owner_key.is_empty() {
+        let catalog = store
+            .catalog
+            .as_ref()
+            .ok_or_else(|| "anonymous seed publication requires a catalogue".to_string())?;
+        let storage = storage_id.to_owned();
+        let slug = catalog
+            .execute_catalog(storage.len(), move |catalog| {
+                catalog.slug_by_storage_id(&storage)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "seed publication document disappeared".to_string())?;
+        let slug_for_document = slug.clone();
+        let document = catalog
+            .execute_catalog(slug.len(), move |catalog| {
+                catalog.document(&slug_for_document)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "seed publication document disappeared".to_string())?;
+        let owner_id = document
+            .owner_id
+            .ok_or_else(|| "anonymous seed publication has no owner account".to_string())?;
+        let owner = owner_id.clone();
+        let account = catalog
+            .execute_catalog(owner_id.len(), move |catalog| catalog.account(&owner))
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "anonymous seed publication owner disappeared".to_string())?;
+        publication_actor.account_id = account.id;
+        publication_actor.owner_key.clear();
+        publication_actor.session_generation = account.session_generation;
+    }
+    let html = seed_display_html(rendered, format);
+    let html_sha256 = crate::document::store::digest_of_bytes(&html);
+    let mut publication_assets = assets
+        .iter()
+        .map(|(path, bytes)| crate::server::publication::PublicationAsset {
+            path: path.clone(),
+            object: crate::server::publication::PublicationObject {
+                sha256: crate::document::store::digest_of_bytes(bytes),
+                bytes: bytes.len(),
+                mime: seed_publication_mime(path).into(),
+            },
+        })
+        .collect::<Vec<_>>();
+    publication_assets.sort_by(|left, right| left.path.cmp(&right.path));
+    let bundle_assets = publication_assets
+        .iter()
+        .map(|asset| SeedBundleAsset {
+            path: &asset.path,
+            sha256: &asset.object.sha256,
+            bytes: asset.object.bytes,
+            mime: &asset.object.mime,
+        })
+        .collect::<Vec<_>>();
+    let bundle = serde_json::to_vec(&SeedBundle {
+        html: &html_sha256,
+        assets: bundle_assets,
+    })
+    .map_err(|error| error.to_string())?;
+    let manifest = crate::server::publication::PublicationManifest {
+        publication_id: crate::util::new_request_key(),
+        bundle_sha256: crate::document::store::digest_of_bytes(&bundle),
+        source_sha256: crate::document::store::digest_of(source),
+        render_config_sha256: crate::document::store::digest_of(format),
+        published_at: timestamp(),
+        publisher: if actor.account_id == "system:examples" {
+            "Examples".into()
+        } else if actor.owner_key.is_empty() {
+            "Anonymous".into()
+        } else {
+            actor.owner_key.clone()
+        },
+        previous_publication_id: String::new(),
+        html: crate::server::publication::PublicationObject {
+            sha256: html_sha256,
+            bytes: html.len(),
+            mime: "text/html".into(),
+        },
+        assets: publication_assets,
+    };
+    let publication = crate::server::publication::PublicationStore::for_store(store.clone())
+        .with_actor(publication_actor);
+    let request_id = manifest.publication_id.clone();
+    let missing = publication
+        .prepare(
+            storage_id,
+            &request_id,
+            "",
+            &manifest,
+            crate::server::publication::MAX_STAGED_BYTES,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    for hash in missing.hashes {
+        if hash == manifest.html.sha256 {
+            publication
+                .stage_object(
+                    storage_id,
+                    &request_id,
+                    &hash,
+                    false,
+                    &html,
+                    &manifest.html.mime,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            continue;
+        }
+        let Some((asset, (_, bytes))) = manifest.assets.iter().find_map(|asset| {
+            assets
+                .iter()
+                .find(|(_, bytes)| {
+                    crate::document::store::digest_of_bytes(bytes) == asset.object.sha256
+                })
+                .map(|entry| (asset, entry))
+        }) else {
+            return Err(format!("publication asset {hash} has no source bytes"));
+        };
+        publication
+            .stage_object(
+                storage_id,
+                &request_id,
+                &hash,
+                false,
+                bytes,
+                &asset.object.mime,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    publication
+        .activate(storage_id, &request_id, "", &manifest)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Writes one document's annotations, anchoring each to where its passage
 /// actually appears.
 pub async fn seed_annotations(
@@ -842,7 +1072,7 @@ mod catalog_seed_tests {
         SeedDocument {
             file: file.display().to_string(),
             files: Vec::new(),
-            assets: Vec::new(),
+            assets: vec!["asset.txt".into()],
             title: "Catalog seed fixture",
             annotations: vec![SeedAnnotation {
                 motivation: "commenting",
@@ -860,6 +1090,7 @@ mod catalog_seed_tests {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("example.html");
         std::fs::write(&source, "<p>seed phrase</p>").unwrap();
+        std::fs::write(root.path().join("asset.txt"), "seed asset").unwrap();
         let catalog = Arc::new(
             crate::storage::catalog::Catalog::open(root.path().join("catalog.db")).unwrap(),
         );
@@ -883,6 +1114,24 @@ mod catalog_seed_tests {
         let comment = catalog.comments(&slug, None, 10).unwrap().remove(0);
         assert_eq!(comment.creator, "Seed display");
         assert_eq!(catalog.replies(&slug, &comment.id, 10).unwrap().len(), 1);
+        let reader = Arc::new(
+            Store::open_with_catalog(blobs.clone(), Arc::new(Configuration::default()), catalog.clone())
+                .await
+                .unwrap(),
+        );
+        let publication = crate::server::publication::PublicationStore::for_store(reader);
+        let manifest = publication
+            .current(&row.storage_id)
+            .await
+            .unwrap()
+            .expect("seed display publication");
+        assert!(!manifest.publication_id.is_empty());
+        assert_eq!(manifest.html.mime, "text/html");
+        assert_eq!(manifest.assets.len(), 1);
+        let (_, html) = publication.deliver(&row.storage_id, "index.html").await.unwrap();
+        assert!(String::from_utf8(html).unwrap().contains("seed phrase"));
+        let (_, asset) = publication.deliver(&row.storage_id, "asset.txt").await.unwrap();
+        assert_eq!(asset, b"seed asset");
         let kind: String = catalog
             .with_connection(|connection| {
                 connection
@@ -902,6 +1151,7 @@ mod catalog_seed_tests {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("owned.html");
         std::fs::write(&source, "<p>seed phrase</p>").unwrap();
+        std::fs::write(root.path().join("asset.txt"), "seed asset").unwrap();
         let catalog = Arc::new(
             crate::storage::catalog::Catalog::open(root.path().join("catalog.db")).unwrap(),
         );

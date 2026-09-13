@@ -10,14 +10,26 @@ pub const DEFAULT_WARNING_THRESHOLDS: &[u8] = &[75, 90];
 pub const DEFAULT_MAX_AGE_MS: i64 = 30 * 86_400_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CustomRetention {
     pub max_routine_count: Option<u32>,
     pub max_age_ms: Option<i64>,
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl Default for CustomRetention {
+    fn default() -> Self {
+        Self {
+            max_routine_count: None,
+            max_age_ms: None,
+            extra: std::collections::BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct QuotaPreferences {
     pub version: u32,
     pub retention_profile: String,
@@ -26,6 +38,8 @@ pub struct QuotaPreferences {
     pub custom_retention: Option<CustomRetention>,
     pub display_timezone: String,
     pub warning_thresholds: Vec<u8>,
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 impl Default for QuotaPreferences {
     fn default() -> Self {
@@ -36,6 +50,7 @@ impl Default for QuotaPreferences {
             custom_retention: None,
             display_timezone: "UTC".into(),
             warning_thresholds: DEFAULT_WARNING_THRESHOLDS.to_vec(),
+            extra: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -252,6 +267,7 @@ mod tests {
             custom_retention: Some(CustomRetention {
                 max_routine_count: Some(0),
                 max_age_ms: Some(0),
+                ..Default::default()
             }),
             ..Default::default()
         };

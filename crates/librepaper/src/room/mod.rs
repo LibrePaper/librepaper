@@ -2219,7 +2219,7 @@ impl Room {
             comments.push(comment);
             (seq, comments)
         };
-        self.persist_comments(seq, comments).await
+        self.persist_seed_comments(seq, comments).await
     }
 
     /// Persists one prepared comment list with room state released, and
@@ -2241,12 +2241,34 @@ impl Room {
     pub(super) async fn persist_comments(
         &self,
         seq: i64,
+        comments: Vec<Comment>,
+    ) -> Result<(), String> {
+        self.persist_comments_inner(seq, comments, false).await
+    }
+
+    async fn persist_seed_comments(
+        &self,
+        seq: i64,
+        comments: Vec<Comment>,
+    ) -> Result<(), String> {
+        self.persist_comments_inner(seq, comments, true).await
+    }
+
+    async fn persist_comments_inner(
+        &self,
+        seq: i64,
         mut comments: Vec<Comment>,
+        allow_seed_catalog: bool,
     ) -> Result<(), String> {
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
         if let Some(catalog) = self.catalog.get() {
+            if !allow_seed_catalog {
+                return Err(
+                    "catalog-backed comments must use an authenticated typed mutation".into(),
+                );
+            }
             let mut seq = seq;
             save_catalog_comments(catalog, &self.slug, &mut seq, &mut comments).await?;
             let mut state = self.state.lock().await;

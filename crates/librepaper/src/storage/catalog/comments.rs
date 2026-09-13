@@ -217,6 +217,29 @@ fn annotation_protection(
         params![document, comment.revision],
         |row| row.get(0),
     )
+        .optional()
+        .map_err(CatalogError::from)
+}
+
+fn annotation_protection_from_stored(
+    tx: &Transaction<'_>,
+    document: &str,
+    id: &str,
+) -> CatalogResult<Option<String>> {
+    let revision: String = tx.query_row(
+        "SELECT COALESCE(source_revision,'') FROM annotations
+         WHERE document_id=?1 AND id=?2",
+        params![document, id],
+        |row| row.get(0),
+    )?;
+    if revision.is_empty() {
+        return Ok(None);
+    }
+    tx.query_row(
+        "SELECT id FROM checkpoints WHERE document_id=?1 AND id=?2",
+        params![document, revision],
+        |row| row.get(0),
+    )
     .optional()
     .map_err(CatalogError::from)
 }
@@ -547,11 +570,12 @@ impl Catalog {
         let protected: Option<String> = if comment.resolved {
             None
         } else {
-            tx.query_row(
+            let existing: Option<String> = tx.query_row(
                 "SELECT protected_checkpoint_id FROM annotations WHERE document_id=?1 AND id=?2",
                 params![doc, comment.id],
                 |row| row.get(0),
-            )?
+            )?;
+            existing.or(annotation_protection_from_stored(tx, &doc, &comment.id)?)
         };
         let changed = tx
             .execute(

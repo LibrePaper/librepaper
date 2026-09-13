@@ -639,6 +639,7 @@ impl Catalog {
             let writer_generation: String = tx.query_row(
                 "SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0))?;
             let now = super::unix_millis();
+            Self::admit_operation_slot(tx, None, "erase_account")?;
             tx.execute(
                 "INSERT INTO operations
                     (id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at)
@@ -827,6 +828,7 @@ impl Catalog {
                                 "document_id": document_id,
                             })
                             .to_string();
+                            Self::admit_operation_slot(tx, Some(&document_id), "erase_document")?;
                             tx.execute(
                                 "INSERT INTO operations
                                  (id,document_id,actor_key,request_key,kind,request_digest,

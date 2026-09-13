@@ -305,6 +305,68 @@ fn reply_edit_and_delete_require_author_or_editor_and_keep_attribution() {
 }
 
 #[test]
+fn reopening_annotation_restores_protection_from_stored_source_revision() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog.create_document(&document()).unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                 VALUES('storage-1','tree-revision','objects/tree-revision','source_tree',
+                        'available',?1,1,0,0)",
+                ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut revision = attributed("revision", "Alice", Some("acct-1"));
+    revision.tree_sha = "a".repeat(64);
+    catalog
+        .insert_checkpoints_atomic(&[revision])
+        .unwrap();
+    let owner = AnnotationAuthority {
+        account_id: "acct-1",
+        generation: "generation-1",
+        policy_comment: true,
+        ..Default::default()
+    };
+    let mut comment = annotation("protected", "commenting");
+    comment.revision = "revision".into();
+    catalog
+        .insert_comment_request_authorized(&comment, "", "", 0, owner)
+        .unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE annotations SET resolved_at=10,protected_checkpoint_id=NULL
+                 WHERE document_id='storage-1' AND id='protected'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut reopened = comment;
+    reopened.body = "reopened body".into();
+    catalog
+        .update_comment_authorized(&reopened, owner)
+        .unwrap();
+    let protected: Option<String> = catalog
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT protected_checkpoint_id FROM annotations
+                 WHERE document_id='storage-1' AND id='protected'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(protected.as_deref(), Some("revision"));
+}
+
+#[test]
 fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
@@ -317,16 +379,16 @@ fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
         0
     );
     let first = catalog
-        .save_quota_preferences("acct-1", 0, r#"{"version":1,"futureField":true}"#, 10)
+        .save_quota_preferences("acct-1", 0, r#"{"version":2,"retentionProfile":"default","retentionPolicyVersion":2,"displayTimezone":"UTC","warningThresholds":[75,90],"futureField":true}"#, 10)
         .unwrap();
     assert_eq!(first.revision, 1);
-    assert_eq!(first.payload, r#"{"version":1,"futureField":true}"#);
+    assert_eq!(first.payload, r#"{"version":2,"retentionProfile":"default","retentionPolicyVersion":2,"displayTimezone":"UTC","warningThresholds":[75,90],"futureField":true}"#);
     assert!(matches!(
         catalog.save_quota_preferences("acct-1", 0, "{}", 11),
         Err(CatalogError::Conflict(_))
     ));
     let second = catalog
-        .save_quota_preferences("acct-1", 1, r#"{"version":1,"futureField":false}"#, 12)
+        .save_quota_preferences("acct-1", 1, r#"{"version":2,"retentionProfile":"default","retentionPolicyVersion":2,"displayTimezone":"UTC","warningThresholds":[75,90],"futureField":false}"#, 12)
         .unwrap();
     assert_eq!(second.revision, 2);
     assert_eq!(

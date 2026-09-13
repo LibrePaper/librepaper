@@ -352,6 +352,7 @@ async fn thinning_preserves_open_annotation_and_newest_checkpoint() {
         custom_retention: Some(crate::document::quota::CustomRetention {
             max_routine_count: Some(1),
             max_age_ms: None,
+            ..Default::default()
         }),
         ..QuotaPreferences::default()
     };

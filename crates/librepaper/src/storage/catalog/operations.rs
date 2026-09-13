@@ -133,6 +133,7 @@ impl Catalog {
                     .map_err(CatalogError::from)?;
                 let plan =
                     serde_json::json!({"version":2,"stage":"roots","cursor":null}).to_string();
+                Self::admit_operation_slot(tx, Some(&document_id), "erase_document")?;
                 tx.execute(
                     "INSERT INTO operations
                      (id,document_id,actor_key,request_key,kind,request_digest,state,

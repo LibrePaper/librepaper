@@ -131,6 +131,7 @@ impl Catalog {
                         custom_retention: None,
                         display_timezone: "UTC".into(),
                         warning_thresholds: vec![1],
+                        extra: std::collections::BTreeMap::new(),
                     }
                 })
             };
