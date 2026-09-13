@@ -780,7 +780,11 @@ impl Catalog {
             .map_err(|e| CatalogError::Invalid(e.to_string()))?;
         let kind = match request.kind {
             "source_publish" => OperationKind::SourcePublish,
-            "display_publish" => OperationKind::DisplayPublish,
+            // The HTTP replacement route historically called this intent
+            // `replace`. It is the same v2 display publication receipt: keep
+            // one canonical operation kind so pending/commit/recovery queries
+            // cannot strand a replacement under a legacy-only kind.
+            "display_publish" | "replace" => OperationKind::DisplayPublish,
             "checkpoint" => OperationKind::Checkpoint,
             "checkpoint_delete" => OperationKind::CheckpointDelete,
             "journal_append" => OperationKind::JournalAppend,
