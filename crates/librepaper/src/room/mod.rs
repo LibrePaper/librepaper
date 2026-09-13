@@ -2209,7 +2209,7 @@ impl Room {
     /// seeding command -- the one comment writer outside `room/`, and until
     /// now the one that took no gate at all while writing the same object
     /// every comment mutation writes.
-    pub async fn append_comment(&self, mut comment: Comment) -> Result<(), String> {
+    pub(crate) async fn append_seed_comment(&self, mut comment: Comment) -> Result<(), String> {
         let _comment_writer = self.comment_write.lock().await;
         let (seq, comments) = {
             let state = self.state.lock().await;

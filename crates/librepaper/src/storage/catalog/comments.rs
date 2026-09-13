@@ -176,6 +176,34 @@ fn authorize_annotation_change(
     annotation_account_authorized(tx, document, authority)
 }
 
+/// A reply is mutable by its author or by an editor. A commenter may create
+/// replies, but cannot rewrite another person's contribution.
+fn authorize_reply_change(
+    tx: &Transaction<'_>,
+    document: &str,
+    comment_id: &str,
+    reply_id: &str,
+    mut authority: AnnotationAuthority<'_>,
+) -> CatalogResult<()> {
+    let (account, author): (Option<String>, String) = tx
+        .query_row(
+            "SELECT author_account_id,author_key FROM replies
+             WHERE document_id=?1 AND annotation_id=?2 AND id=?3",
+            params![document, comment_id, reply_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(CatalogError::from)?
+        .ok_or(CatalogError::NotFound)?;
+    let owns = if authority.account_id.is_empty() {
+        account.is_none() && !authority.author_key.is_empty() && author == authority.author_key
+    } else {
+        account.as_deref() == Some(authority.account_id)
+    };
+    authority.require_editor |= !owns;
+    annotation_account_authorized(tx, document, authority)
+}
+
 fn annotation_protection(
     tx: &Transaction<'_>,
     document: &str,
@@ -381,6 +409,7 @@ impl Catalog {
                     |row| row.get(0),
                 )
                 .map_err(CatalogError::from)?;
+            Catalog::admit_operation_slot(tx, Some(&document_id), "agent_annotations")?;
             let plan = serde_json::json!({
                 "version": 2,
                 "effect": "annotation_insert",
@@ -503,7 +532,63 @@ impl Catalog {
         comment: &Comment,
         authority: AnnotationAuthority<'_>,
     ) -> CatalogResult<Comment> {
-        self.immediate(|tx|{annotation_session_active(tx,authority)?;let doc=document_id(tx,&comment.slug)?;authorize_annotation_change(tx,&doc,&comment.id,authority)?;let updated=millis(&comment.created);let protected=annotation_protection(tx,&doc,comment)?;let changed=tx.execute("UPDATE annotations SET body=?3,author_key=?4,author_label=?5,via=?6,updated_at=max(updated_at,?7),publication_id=?8,source_revision=?9,selector_json=?10,context_json=?11,protected_checkpoint_id=?12,proposed_text=?13,suggestion_state=?14,resolution_revision=?15,resolved_at=?16 WHERE document_id=?1 AND id=?2 AND seq=?17",params![doc,comment.id,comment.body,comment.author,comment.creator,comment.via,updated,(!comment.publication_id.is_empty()).then_some(comment.publication_id.as_str()),(!comment.revision.is_empty()).then_some(comment.revision.as_str()),selector(comment),context(comment),protected,comment.proposed,if comment.motivation == "editing" { Some(if comment.outcome.is_empty() { "proposed" } else { comment.outcome.as_str() }) } else { None },(!comment.resolved_in.is_empty()).then_some(comment.resolved_in.as_str()),comment.resolved_at.as_deref().map(millis),comment.seq]).map_err(CatalogError::from)?;if changed!=1{return Err(CatalogError::NotFound)}tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=?1",[doc.as_str()])?;Self::comment_in_tx(tx,&comment.slug,&comment.id)})
+        self.immediate(|tx| Self::update_comment_tx(tx, comment, authority))
+    }
+
+    pub(super) fn update_comment_tx(
+        tx: &Transaction<'_>,
+        comment: &Comment,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Comment> {
+        annotation_session_active(tx, authority)?;
+        let doc = document_id(tx, &comment.slug)?;
+        authorize_annotation_change(tx, &doc, &comment.id, authority)?;
+        let updated = millis(&comment.created);
+        let protected = annotation_protection(tx, &doc, comment)?;
+        let changed = tx
+            .execute(
+                "UPDATE annotations SET body=?3,author_key=?4,author_label=?5,via=?6,
+                    updated_at=max(updated_at,?7),publication_id=?8,source_revision=?9,
+                    selector_json=?10,context_json=?11,protected_checkpoint_id=?12,
+                    proposed_text=?13,suggestion_state=?14,resolution_revision=?15,
+                    resolved_at=?16 WHERE document_id=?1 AND id=?2 AND seq=?17",
+                params![
+                    doc,
+                    comment.id,
+                    comment.body,
+                    comment.author,
+                    comment.creator,
+                    comment.via,
+                    updated,
+                    (!comment.publication_id.is_empty()).then_some(comment.publication_id.as_str()),
+                    (!comment.revision.is_empty()).then_some(comment.revision.as_str()),
+                    selector(comment),
+                    context(comment),
+                    protected,
+                    comment.proposed,
+                    if comment.motivation == "editing" {
+                        Some(if comment.outcome.is_empty() {
+                            "proposed"
+                        } else {
+                            comment.outcome.as_str()
+                        })
+                    } else {
+                        None
+                    },
+                    (!comment.resolved_in.is_empty()).then_some(comment.resolved_in.as_str()),
+                    comment.resolved_at.as_deref().map(millis),
+                    comment.seq,
+                ],
+            )
+            .map_err(CatalogError::from)?;
+        if changed != 1 {
+            return Err(CatalogError::NotFound);
+        }
+        tx.execute(
+            "UPDATE documents SET retention_due_at=0 WHERE id=?1",
+            [doc.as_str()],
+        )?;
+        Self::comment_in_tx(tx, &comment.slug, &comment.id)
     }
 
     // Suggestion receipts use the v2 operations table.  The actor key binds a
@@ -603,6 +688,7 @@ impl Catalog {
             let work_expires = created_at.checked_add(3_600_000).ok_or_else(|| {
                 CatalogError::Invalid("acceptance receipt expiry overflow".into())
             })?;
+            Catalog::admit_operation_slot(tx, Some(&doc), "agent_annotations")?;
             tx.execute(
                 "INSERT INTO operations(
                     id,document_id,actor_key,request_key,kind,request_digest,state,
@@ -706,25 +792,32 @@ impl Catalog {
         id: &str,
         authority: AnnotationAuthority<'_>,
     ) -> CatalogResult<bool> {
-        self.immediate(|tx| {
-            annotation_session_active(tx, authority)?;
-            let doc = document_id(tx, slug)?;
-            authorize_annotation_change(tx, &doc, id, authority)?;
-            let deleted = tx
-                .execute(
-                    "DELETE FROM annotations WHERE document_id=?1 AND id=?2",
-                    params![doc, id],
-                )
-                .map_err(CatalogError::from)?
-                == 1;
-            if deleted {
-                tx.execute(
-                    "UPDATE documents SET retention_due_at=0 WHERE id=?1",
-                    [doc.as_str()],
-                )?;
-            }
-            Ok(deleted)
-        })
+        self.immediate(|tx| Self::delete_comment_tx(tx, slug, id, authority))
+    }
+
+    pub(super) fn delete_comment_tx(
+        tx: &Transaction<'_>,
+        slug: &str,
+        id: &str,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<bool> {
+        annotation_session_active(tx, authority)?;
+        let doc = document_id(tx, slug)?;
+        authorize_annotation_change(tx, &doc, id, authority)?;
+        let deleted = tx
+            .execute(
+                "DELETE FROM annotations WHERE document_id=?1 AND id=?2",
+                params![doc, id],
+            )
+            .map_err(CatalogError::from)?
+            == 1;
+        if deleted {
+            tx.execute(
+                "UPDATE documents SET retention_due_at=0 WHERE id=?1",
+                [doc.as_str()],
+            )?;
+        }
+        Ok(deleted)
     }
     pub fn delete_reply(&self, slug: &str, comment_id: &str, id: &str) -> CatalogResult<bool> {
         self.delete_reply_authorized(slug, comment_id, id, AnnotationAuthority::default())
@@ -740,7 +833,7 @@ impl Catalog {
         self.immediate(|tx| {
             annotation_session_active(tx, authority)?;
             let doc = document_id(tx, slug)?;
-            annotation_account_authorized(tx, &doc, authority)?;
+            authorize_reply_change(tx, &doc, comment_id, id, authority)?;
             let deleted = tx
                 .execute(
                     "DELETE FROM replies WHERE document_id=?1 AND annotation_id=?2 AND id=?3",
@@ -984,6 +1077,7 @@ impl Catalog {
             let work_expires = created_at
                 .checked_add(3_600_000)
                 .ok_or_else(|| CatalogError::Invalid("reply receipt expiry overflow".into()))?;
+            Catalog::admit_operation_slot(tx, Some(&document_id), "agent_annotations")?;
             tx.execute(
                 "INSERT INTO operations(
                     id,document_id,actor_key,request_key,kind,request_digest,state,
@@ -1039,7 +1133,7 @@ impl Catalog {
         self.immediate(|tx| {
             annotation_session_active(tx, authority)?;
             let doc = document_id(tx, &reply.slug)?;
-            annotation_account_authorized(tx, &doc, authority)?;
+            authorize_reply_change(tx, &doc, &reply.comment_id, &reply.id, authority)?;
             let at = millis(&reply.created);
             let changed = tx
                 .execute(

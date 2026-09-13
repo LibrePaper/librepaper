@@ -1434,6 +1434,38 @@ impl Store {
         } else {
             None
         };
+        if actor.account_id.starts_with("system:") {
+            if actor.account_id != "system:examples"
+                || actor.owner_key != ""
+                || actor.link_hash != ""
+                || !actor.policy_editor
+                || actor.automation
+                || !v.owner_id.is_empty()
+            {
+                return Err(PutError::Authorization {
+                    status: 403,
+                    message: "system publication requires the seed capability",
+                });
+            }
+            let account_id = actor.account_id.clone();
+            let kind = catalog
+                .with_connection(|connection| {
+                    connection
+                        .query_row(
+                            "SELECT kind FROM accounts WHERE id=?1 AND status='active' AND session_generation=?2",
+                            rusqlite::params![account_id, actor.session_generation],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .map_err(CatalogError::from)
+                })
+                .map_err(|error| PutError::Storage(error.to_string()))?;
+            if kind != "system" {
+                return Err(PutError::Authorization {
+                    status: 403,
+                    message: "the seed actor is not a system account",
+                });
+            }
+        }
         if existing.is_none() && !actor.policy_editor && !actor.unowned_publisher {
             return Err(PutError::Authorization {
                 status: 403,
@@ -1641,7 +1673,7 @@ impl Store {
             example: existing
                 .as_ref()
                 .map(|document| document.example)
-                .unwrap_or(false),
+                .unwrap_or(actor.account_id == "system:examples"),
             owner_key: if owner_id.is_none() {
                 actor.owner_key.clone()
             } else {

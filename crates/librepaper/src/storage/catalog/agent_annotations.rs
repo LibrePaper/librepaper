@@ -245,16 +245,19 @@ impl Catalog {
             let operation_id = hex::encode(crate::auth::random_bytes(16));
             let plan = serde_json::json!({"version":2,"effect":"annotations","authority":{"account_id":authority.account_id,"session_generation":authority.generation,"link_hash":authority.link_hash,"policy_editor":authority.require_editor,"execution_epoch":authority.execution_epoch}}).to_string();
             tx.execute("INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,?3,?4,'agent_annotations',?5,'prepared',?6,?7,?8,?8,?9)", params![operation_id,document_id,actor,request_id,digest,generation,plan,now,now.saturating_add(3_600_000)]).map_err(CatalogError::from)?;
-            if !deletes.is_empty() {
-                let mut editor = authority.clone();
-                editor.require_editor = true;
-                authorize(tx, slug, &editor)?;
-            }
-            for id in deletes {
-                tx.execute("DELETE FROM annotations WHERE document_id=?1 AND id=?2", params![document_id,id]).map_err(CatalogError::from)?;
-            }
             let annotation_authority = AnnotationAuthority { account_id:&authority.account_id, author_key:&authority.account_id, generation:&authority.generation, link_hash:&authority.link_hash, policy_comment:authority.policy_comment, automation:true, require_editor:authority.require_editor };
-            for row in rows { if row.slug != slug { return Err(CatalogError::Invalid("wrong comment document".into())); } super::comments::insert_comment_tx(tx,row,annotation_authority)?; }
+            for id in deletes {
+                if id.is_empty() {
+                    return Err(CatalogError::Invalid("annotation delete id is empty".into()));
+                }
+                Self::delete_comment_tx(tx, slug, id, annotation_authority)?;
+            }
+            for row in rows {
+                if row.slug != slug { return Err(CatalogError::Invalid("wrong comment document".into())); }
+                let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM annotations WHERE document_id=?1 AND id=?2)", params![document_id, row.id], |row| row.get(0))?;
+                if exists { Self::update_comment_tx(tx, row, annotation_authority)?; }
+                else { super::comments::insert_comment_tx(tx, row, annotation_authority)?; }
+            }
             for reply in replies { if reply.slug != slug { return Err(CatalogError::Invalid("wrong reply document".into())); } Catalog::insert_reply_tx(tx,reply,annotation_authority)?; }
             if !deletes.is_empty() { tx.execute("UPDATE documents SET retention_due_at=0 WHERE id=?1", [&document_id])?; }
             let result = if receipt.is_empty() { serde_json::json!({"version":2,"request_id":request_id}).to_string() } else { receipt.to_owned() };

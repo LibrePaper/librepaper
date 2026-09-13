@@ -401,7 +401,7 @@ async fn seed_with_store(
         ),
         _ => None,
     };
-    let store = match catalog {
+    let store = match catalog.clone() {
         Some(catalog) => Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
             .await
             .unwrap_or_else(|err| die(err)),
@@ -410,6 +410,34 @@ async fn seed_with_store(
             .unwrap_or_else(|err| die(err)),
     };
     let store = Arc::new(store);
+    let seed_actor = if let Some(owner_id) = &system_owner_id {
+        let catalog = catalog
+            .as_ref()
+            .expect("system seed ownership requires a catalogue");
+        let account = catalog
+            .account(owner_id)
+            .unwrap_or_else(|error| die(format!("could not read seed owner: {error}")))
+            .unwrap_or_else(|| die("seed owner disappeared"));
+        crate::document::store::MutationActor {
+            account_id: account.id,
+            owner_key: String::new(),
+            session_generation: account.session_generation,
+            link_hash: String::new(),
+            policy_editor: true,
+            automation: false,
+            unowned_publisher: false,
+        }
+    } else {
+        crate::document::store::MutationActor {
+            account_id: String::new(),
+            owner_key: owner.trim().to_lowercase(),
+            session_generation: String::new(),
+            link_hash: String::new(),
+            policy_editor: true,
+            automation: false,
+            unowned_publisher: owner.trim().is_empty(),
+        }
+    };
     let rooms = RoomSet::new(blobs.clone(), config.clone());
     rooms.attach_store(store.clone());
     if let Some(catalog) = &store.catalog {
@@ -435,23 +463,23 @@ async fn seed_with_store(
         let slug = format!("{base}-{}", example_suffix(&base, &config));
         let main = seed_main(document);
         let entry = store
-            .put(Publication {
-                slug: slug.clone(),
-                title: document.title.to_string(),
-                source: source.clone(),
-                source_format: format.clone(),
-                main: main.clone(),
-                owner: system_owner_id
-                    .is_some()
-                    .then(String::new)
-                    .unwrap_or_else(|| owner.trim().to_lowercase()),
-                owner_id: system_owner_id.clone().unwrap_or_default(),
-                owner_name: system_owner_id
-                    .as_ref()
-                    .map(|_| "Examples".to_string())
-                    .unwrap_or_else(|| owner.trim().to_string()),
-                ..Publication::default()
-            })
+            .put_as_actor(
+                Publication {
+                    slug: slug.clone(),
+                    title: document.title.to_string(),
+                    source: source.clone(),
+                    source_format: format.clone(),
+                    main: main.clone(),
+                    owner: owner.trim().to_lowercase(),
+                    owner_id: String::new(),
+                    owner_name: system_owner_id
+                        .as_ref()
+                        .map(|_| "Examples".to_string())
+                        .unwrap_or_else(|| owner.trim().to_string()),
+                    ..Publication::default()
+                },
+                seed_actor.clone(),
+            )
             .await
             .unwrap_or_else(|err| die(format!("could not store {}: {err}", document.file)));
 
@@ -791,7 +819,7 @@ pub async fn seed_annotations(
                 author: String::new(),
             });
         }
-        if let Err(err) = room.append_comment(written).await {
+        if let Err(err) = room.append_seed_comment(written).await {
             die(format!(
                 "could not write the seeded comments for {}: {err}",
                 room.slug
