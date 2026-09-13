@@ -348,8 +348,9 @@ impl Catalog {
         actor: &MutationActor,
         now: i64,
     ) -> CatalogResult<SourceAssetReadLease> {
-        DocumentId::new(slug.to_owned())
-            .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+        if slug.is_empty() || slug.len() > 256 {
+            return Err(CatalogError::Invalid("invalid source asset document slug".into()));
+        }
         if digest.len() != 64
             || !digest
                 .bytes()

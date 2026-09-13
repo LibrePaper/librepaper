@@ -1078,24 +1078,32 @@ pub(super) async fn leased_blob_response(
     let key = lease.object.storage_key.clone();
     let digest = lease.object.digest.clone();
     let expected_length = lease.object.byte_length;
-    let heartbeat = SourceAssetHeartbeat::start(lease);
-    if heartbeat.recheck().await.is_err() {
-        let _ = heartbeat.finish().await;
+    let mut heartbeat = Some(SourceAssetHeartbeat::start(lease));
+    let heartbeat_ref = heartbeat.as_ref().expect("source asset heartbeat exists");
+    if heartbeat_ref.recheck().await.is_err() {
+        let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
         return plain(404, "not found");
     }
     let length = match blobs.length(&key).await {
         Ok(length) => length,
         Err(crate::storage::blob::BlobError::NotFound) => {
-            let _ = heartbeat.finish().await;
+            let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
             return plain(404, "not found");
         }
         Err(_) => {
-            let _ = heartbeat.finish().await;
+            let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
             return plain(503, "storage temporarily unavailable");
         }
     };
-    if expected_length != Some(length as i64) || heartbeat.recheck().await.is_err() {
-        let _ = heartbeat.finish().await;
+    if expected_length != Some(length as i64)
+        || heartbeat
+            .as_ref()
+            .expect("source asset heartbeat exists")
+            .recheck()
+            .await
+            .is_err()
+    {
+        let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
         return plain(503, "storage temporarily unavailable");
     }
     let etag = format!("\"{digest}\"");
@@ -1108,7 +1116,7 @@ pub(super) async fn leased_blob_response(
                 .any(|tag| tag.trim() == etag || tag.trim() == "*")
         })
     {
-        let _ = heartbeat.finish().await;
+        let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::NOT_MODIFIED;
         set(&mut response, "etag", &etag);
@@ -1129,7 +1137,7 @@ pub(super) async fn leased_blob_response(
         Some(range) => match byte_range(range, length) {
             Some((start, end)) => (start, end, true),
             None => {
-                let _ = heartbeat.finish().await;
+                let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
                 let mut response = plain(416, "range not satisfiable");
                 set(&mut response, "content-range", &format!("bytes */{length}"));
                 return response;
@@ -1137,13 +1145,13 @@ pub(super) async fn leased_blob_response(
         },
     };
     let reservation = if head {
-        let _ = heartbeat.finish().await;
+        let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
         None
     } else {
         match meter.reserve(end - start, false) {
             Some(reservation) => Some(reservation),
             None => {
-                let _ = heartbeat.finish().await;
+                let _ = heartbeat.take().expect("source asset heartbeat exists").finish().await;
                 return refusal("transfer_budget", "deployment");
             }
         }
@@ -1151,6 +1159,7 @@ pub(super) async fn leased_blob_response(
     let body = if head {
         Body::empty()
     } else {
+        let heartbeat = heartbeat.expect("source asset heartbeat retained for body");
         let stream = futures_util::stream::unfold(
             (Some(heartbeat), blobs, key, start),
             move |(heartbeat, blobs, key, offset)| async move {
@@ -1338,12 +1347,261 @@ fn wrap(
 mod tests {
     use super::*;
     use serde_json::json;
+    use sha2::Digest;
 
     fn meter(limit: u64) -> Arc<CostMeter> {
         let mut config = Configuration::default();
         config.cost.transfer_bytes = Some(limit);
         let catalog = Arc::new(crate::storage::catalog::Catalog::open_in_memory().unwrap());
         Arc::new(CostMeter::new(&Arc::new(config), Some(catalog)))
+    }
+
+    struct AssetFixture {
+        catalog: Arc<crate::storage::catalog::Catalog>,
+        actor: crate::document::store::MutationActor,
+        digest: String,
+        body: Arc<Vec<u8>>,
+    }
+
+    fn asset_fixture() -> AssetFixture {
+        let catalog = Arc::new(crate::storage::catalog::Catalog::open_in_memory().unwrap());
+        catalog
+            .upsert_account(&crate::storage::catalog::Account {
+                id: "acct-1".into(),
+                provider: "github".into(),
+                handle: "alice".into(),
+                name: "Alice".into(),
+                email: "alice@example.test".into(),
+                first_seen: "2026-01-01T00:00:00.000Z".into(),
+                last_seen: "2026-01-01T00:00:00.000Z".into(),
+                plan: "free".into(),
+                status: "active".into(),
+                session_generation: "generation-1".into(),
+                erasure_cursor: None,
+            })
+            .unwrap();
+        catalog
+            .create_document(&crate::storage::catalog::NewDocument {
+                slug: "asset-doc".into(),
+                storage_id: "storage-asset".into(),
+                title: "Asset".into(),
+                sha: "source".into(),
+                created_at: "2026-01-01T00:00:00.000Z".into(),
+                published_at: "2026-01-01T00:00:00.000Z".into(),
+                updated_at: "2026-01-01T00:00:00.000Z".into(),
+                example: false,
+                owner_key: String::new(),
+                owner_id: Some("acct-1".into()),
+                status: "active".into(),
+                size: 10,
+                counted_size: 10,
+                maintenance_reserved: 0,
+                last_auto_checkpoint_at: 0,
+                source_format: "markdown".into(),
+                main: "README.md".into(),
+            })
+            .unwrap();
+        let body = Arc::new(b"0123456789abcdefghijklmnopqrstuvwxyz".to_vec());
+        let digest = hex::encode(sha2::Sha256::digest(body.as_ref()));
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO objects
+                       (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                     VALUES(?1,?2,?3,'asset','available',?4,?5,0,0)",
+                    rusqlite::params![
+                        "storage-asset",
+                        "0123456789abcdef0123456789abcdef",
+                        "objects/storage-asset/0123456789abcdef0123456789abcdef",
+                        digest,
+                        body.len() as i64,
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        AssetFixture {
+            catalog,
+            actor: crate::document::store::MutationActor {
+                account_id: "acct-1".into(),
+                owner_key: String::new(),
+                session_generation: "generation-1".into(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+            digest,
+            body,
+        }
+    }
+
+    async fn asset_lease(
+        fixture: &AssetFixture,
+    ) -> crate::storage::catalog::SourceAssetReadLease {
+        let slug = "asset-doc".to_owned();
+        let digest = fixture.digest.clone();
+        let actor = fixture.actor.clone();
+        let read_catalog = fixture.catalog.clone();
+        fixture
+            .catalog
+            .clone()
+            .execute_catalog(4096, move |_| {
+                read_catalog.acquire_source_asset_read(
+                    &slug,
+                    &digest,
+                    &actor,
+                    crate::storage::catalog::unix_millis(),
+                )
+            })
+            .await
+            .unwrap()
+    }
+
+    struct AssetBlob {
+        body: Arc<Vec<u8>>,
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        block_ranges: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::storage::blob::BlobStore for AssetBlob {
+        async fn get(&self, _key: &str) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            Ok(self.body.as_ref().clone())
+        }
+
+        async fn get_range(
+            &self,
+            _key: &str,
+            range: std::ops::Range<u64>,
+        ) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            if self.block_ranges {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            if range.end > self.body.len() as u64 {
+                return Err(crate::storage::blob::BlobError::Other(
+                    "test range out of bounds".into(),
+                ));
+            }
+            Ok(self.body[range.start as usize..range.end as usize].to_vec())
+        }
+
+        async fn put(
+            &self,
+            _key: &str,
+            _body: Vec<u8>,
+            _content_type: &str,
+        ) -> crate::storage::blob::BlobResult<()> {
+            Ok(())
+        }
+
+        async fn delete(&self, _keys: &[String]) -> crate::storage::blob::BlobResult<()> {
+            Ok(())
+        }
+
+        async fn list(
+            &self,
+            _prefix: &str,
+        ) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+            Ok(Vec::new())
+        }
+
+        async fn swap(
+            &self,
+            _key: &str,
+            _body: Vec<u8>,
+            _expect: &str,
+        ) -> crate::storage::blob::BlobResult<crate::storage::blob::BlobVersion> {
+            Err(crate::storage::blob::BlobError::Other(
+                "unused by asset read test".into(),
+            ))
+        }
+
+        async fn get_versioned(
+            &self,
+            _key: &str,
+        ) -> crate::storage::blob::BlobResult<(
+            Vec<u8>,
+            crate::storage::blob::BlobVersion,
+        )> {
+            Err(crate::storage::blob::BlobError::Other(
+                "unused by asset read test".into(),
+            ))
+        }
+
+        fn describe(&self) -> String {
+            "asset-read-test".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn leased_asset_preserves_range_and_conditional_responses() {
+        let fixture = asset_fixture();
+        let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(AssetBlob {
+            body: fixture.body.clone(),
+            started: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            block_ranges: false,
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, HeaderValue::from_static("bytes=2-5"));
+        let response = leased_blob_response(
+            &meter(1024),
+            blobs.clone(),
+            asset_lease(&fixture).await,
+            &headers,
+            false,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), "2345");
+
+        headers.remove(header::RANGE);
+        headers.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_str(&format!("\"{}\"", fixture.digest)).unwrap(),
+        );
+        let response = leased_blob_response(
+            &meter(1024),
+            blobs,
+            asset_lease(&fixture).await,
+            &headers,
+            false,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert!(to_bytes(response.into_body(), 1024).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoked_asset_after_slow_get_is_never_yielded() {
+        let fixture = asset_fixture();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(AssetBlob {
+            body: fixture.body.clone(),
+            started: started.clone(),
+            release: release.clone(),
+            block_ranges: true,
+        });
+        let response = leased_blob_response(
+            &meter(1024),
+            blobs,
+            asset_lease(&fixture).await,
+            &HeaderMap::new(),
+            false,
+        )
+        .await;
+        let body = tokio::spawn(async move { to_bytes(response.into_body(), 1024).await });
+        started.notified().await;
+        fixture
+            .catalog
+            .revoke_sessions("acct-1", "generation-2")
+            .unwrap();
+        release.notify_one();
+        assert!(body.await.unwrap().is_err());
     }
 
     #[tokio::test]

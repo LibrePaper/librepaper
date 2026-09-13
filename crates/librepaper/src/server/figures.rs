@@ -212,12 +212,18 @@ impl Server {
             automation: who.automation,
             unowned_publisher: false,
         };
+        let read_catalog = catalog.clone();
         let lease = match catalog
             .execute_catalog(4096 + slug.len() + sha.len(), {
                 let slug = slug.to_owned();
                 let sha = sha.to_owned();
-                move |catalog| {
-                    catalog.acquire_source_asset_read(&slug, &sha, &actor, crate::storage::catalog::unix_millis())
+                move |_| {
+                    read_catalog.acquire_source_asset_read(
+                        &slug,
+                        &sha,
+                        &actor,
+                        crate::storage::catalog::unix_millis(),
+                    )
                 }
             })
             .await
