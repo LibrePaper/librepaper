@@ -617,13 +617,10 @@ pub async fn publish_display(
         })
         .unwrap(),
     );
-    static DISPLAY_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let id = format!(
-        "display-{}",
-        DISPLAY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    );
+    let id = crate::util::new_request_key();
+    let publication_id = hex::encode(crate::auth::random_bytes(16));
     let manifest = json!({
-        "publication_id": id,
+        "publication_id": publication_id,
         "published_at": "2026-01-01T00:00:00Z",
         "publisher": "test-publisher",
         "bundle_sha256": bundle_sha,

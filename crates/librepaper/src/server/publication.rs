@@ -995,70 +995,6 @@ impl PublicationStore {
         Ok(())
     }
 
-    /// Recover bounded pages of publication ledger changes left between blob
-    /// I/O and the catalogue settlement.  The deployment writer lock held by
-    /// `serve` excludes a second server process; the per-document lock also
-    /// excludes this janitor from in-process publication writes.
-    pub async fn reconcile_accounting(&self) -> Result<(), PublicationError> {
-        let Some(store) = &self.store else {
-            return Ok(());
-        };
-        let Some(catalog) = &store.catalog else {
-            return Ok(());
-        };
-        // Durable v2 publication bytes are represented by typed `objects`
-        // allocations. The former reservation/accounting tables belonged to
-        // the mutable publication ledger and are absent from a v2 catalog.
-        // Reconcile every allocated object through the shared recovery
-        // boundary so a crash between the immutable PUT and settlement does
-        // not strand quota reservations.
-        use crate::storage::maintenance_v2::V2RecoveryCatalog;
-        let mut after = None;
-        loop {
-            let page = <crate::storage::catalog::Catalog as V2RecoveryCatalog>::prepared_allocations_page(
-                catalog,
-                after.as_deref(),
-                256,
-            )
-            .await
-            .map_err(PublicationError::Storage)?;
-            if page.is_empty() {
-                break;
-            }
-            for allocation in &page {
-                match self.blobs.get(&allocation.storage_key).await {
-                    Ok(body) => {
-                        let digest = hex::encode(Sha256::digest(&body));
-                        if digest == allocation.expected_digest {
-                            <crate::storage::catalog::Catalog as V2RecoveryCatalog>::settle_allocation(
-                                catalog,
-                                allocation,
-                                body.len() as u64,
-                                &digest,
-                            )
-                            .await
-                            .map_err(PublicationError::Storage)?;
-                        }
-                        // A present object with a mismatched digest remains
-                        // charged for operator inspection; recovery must not
-                        // infer which immutable bytes should win.
-                    }
-                    Err(BlobError::NotFound) => {
-                        <crate::storage::catalog::Catalog as V2RecoveryCatalog>::abort_absent_allocation(
-                            catalog,
-                            allocation,
-                        )
-                        .await
-                        .map_err(PublicationError::Storage)?;
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-                after = Some(allocation.storage_key.clone());
-            }
-        }
-        Ok(())
-    }
-
     pub fn manifest_key(storage_id: &str) -> String {
         format!("publications/{storage_id}/current.json")
     }
@@ -1092,6 +1028,12 @@ impl PublicationStore {
     ) -> Result<usize, PublicationError> {
         let lock = publication_lock(storage_id);
         let _guard = lock.lock().await;
+        // v2 object rows are reclaimed by DeletionWorker's global GC pass;
+        // this slug-scoped legacy sweep must not claim rows for another
+        // document.
+        if self.store.is_some() {
+            return Ok(0);
+        }
         let mut live = std::collections::HashSet::new();
         if let Some(manifest) = self.current(storage_id).await? {
             live.insert(manifest.html.sha256);
@@ -1594,7 +1536,6 @@ impl PublicationStore {
     }
 
     pub async fn cleanup_all_staging(&self, now: i64) -> Result<usize, PublicationError> {
-        self.reconcile_accounting().await?;
         let entries = self.blobs.list("publications/").await?;
         let mut storage_ids = std::collections::BTreeSet::new();
         for entry in entries {

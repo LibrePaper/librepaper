@@ -10,6 +10,29 @@ fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// Keep the fixture labels readable while sending the canonical v2 request
+/// key required by publication admission. Reusing a label must reuse the
+/// same key so retries exercise idempotency rather than creating a new
+/// operation.
+fn publication_request_key(label: &str) -> String {
+    static KEYS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    if crate::util::request_key_timestamp(label).is_some() {
+        return label.to_owned();
+    }
+    let keys = KEYS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut keys = keys.lock().expect("publication test request keys");
+    keys.entry(label.to_owned())
+        .or_insert_with(|| {
+            format!(
+                "v2.{}.{}",
+                crate::util::now_millis().saturating_sub(1_000),
+                digest(label.as_bytes())
+            )
+        })
+        .clone()
+}
+
 async fn source_document(base: &str, cookie: &str, title: &str) -> String {
     let (status, document) = post_as(
         cookie,
@@ -121,19 +144,16 @@ async fn prepare(
     bundle: &Value,
     expected: Option<&str>,
 ) -> (u16, Value) {
-    let mut manifest = bundle.clone();
-    // The v2 publication identity is bound to the idempotency request. The
-    // legacy fixture let the server invent this field after staging.
-    manifest["publication_id"] = json!(id);
+    let request_id = publication_request_key(id);
     request(
         base,
         (cookie, link),
         slug,
         "prepare",
-        id,
+        &request_id,
         reqwest::Method::POST,
         (
-            serde_json::to_vec(&json!({"manifest":manifest,"expected_publication_id":expected}))
+            serde_json::to_vec(&json!({"manifest":bundle,"expected_publication_id":expected}))
                 .unwrap(),
             "application/json",
         ),
@@ -149,12 +169,13 @@ async fn stage(
     bytes: &[u8],
     mime: &str,
 ) -> (u16, Value) {
+    let request_id = publication_request_key(id);
     request(
         base,
         (cookie, link),
         slug,
         &format!("objects/{}", digest(bytes)),
-        id,
+        &request_id,
         reqwest::Method::PUT,
         (bytes.to_vec(), mime),
     )
@@ -169,17 +190,16 @@ async fn activate(
     bundle: &Value,
     expected: Option<&str>,
 ) -> (u16, Value) {
-    let mut manifest = bundle.clone();
-    manifest["publication_id"] = json!(id);
+    let request_id = publication_request_key(id);
     request(
         base,
         (cookie, link),
         slug,
         "activate",
-        id,
+        &request_id,
         reqwest::Method::POST,
         (
-            serde_json::to_vec(&json!({"manifest":manifest,"expected_publication_id":expected}))
+            serde_json::to_vec(&json!({"manifest":bundle,"expected_publication_id":expected}))
                 .unwrap(),
             "application/json",
         ),
@@ -242,7 +262,7 @@ async fn publication_staging_and_promoted_objects_are_charged_to_catalogue_quota
     let server = new_test_server_config(limits(10 << 20, 10 << 20)).await;
     let owner = session_as(TEST_PUBLISHER);
     let slug = source_document(&server.url, &owner, "quota source").await;
-    let catalogue = server.instance.store.catalog.as_ref().unwrap();
+    let catalogue = server.instance.store.catalog.as_ref().unwrap().clone();
     let before = catalogue.totals().unwrap().0;
     let html = b"<p>display</p>";
     let asset = vec![7; 2 << 20];
@@ -370,7 +390,7 @@ async fn repeated_publication_key_does_not_double_charge_and_cleanup_releases_st
     let server = new_test_server_config(limits(20 << 20, 20 << 20)).await;
     let owner = session_as(TEST_PUBLISHER);
     let slug = source_document(&server.url, &owner, "retry source").await;
-    let catalogue = server.instance.store.catalog.as_ref().unwrap();
+    let catalogue = server.instance.store.catalog.as_ref().unwrap().clone();
     let before = catalogue.totals().unwrap().0;
     let asset = vec![5; 1 << 20];
     let html = b"<p>retry</p>";
@@ -418,11 +438,20 @@ async fn repeated_publication_key_does_not_double_charge_and_cleanup_releases_st
         once,
         "same key charged staging twice"
     );
-    let storage_id = catalogue.document(&slug).unwrap().unwrap().storage_id;
-    PublicationStore::for_store(server.instance.store.clone())
-        .cleanup_staging(&storage_id, crate::util::now_unix() + STAGING_TTL_SECS + 1)
-        .await
-        .unwrap();
+    let worker = crate::storage::maintenance::DeletionWorker::new(
+        catalogue.clone(),
+        server.instance.store.blobs.clone(),
+        crate::storage::maintenance::DeletionLimits::default(),
+    )
+    .unwrap();
+    let mut now = crate::util::now_millis().saturating_add(900_001);
+    for _ in 0..4 {
+        worker.run_v2_once(now).await.unwrap();
+        if catalogue.totals().unwrap().0 == before {
+            break;
+        }
+        now = now.saturating_add(900_001);
+    }
     assert_eq!(
         catalogue.totals().unwrap().0,
         before,
@@ -494,20 +523,27 @@ async fn editor_link_revocation_refuses_stage_and_activation() {
         .unwrap()
         .unwrap()
         .storage_id;
-    assert!(
-        !server
-            .instance
-            .store
-            .blobs
-            .exists(&PublicationStore::staging_key(
-                &storage_id,
-                "revoked-stage",
-                &digest(html)
-            ))
-            .await
-            .unwrap(),
-        "revoked stage wrote an object"
-    );
+    let request_id = publication_request_key("revoked-stage");
+    let available: i64 = server
+        .instance
+        .store
+        .catalog
+        .as_ref()
+        .unwrap()
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM objects o
+                     JOIN operations p ON p.id=o.allocation_operation_id
+                     WHERE o.document_id=?1 AND p.request_key=?2
+                       AND o.kind='publication_html' AND o.state='available'",
+                    (&storage_id, &request_id),
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(available, 0, "revoked stage wrote an available object");
     let (_, grant) = post_as(
         &owner,
         &server.url,
@@ -571,11 +607,7 @@ async fn editor_link_revocation_refuses_stage_and_activation() {
         403 | 404
     ));
     let entry = server.instance.store.get(&slug).await.unwrap();
-    assert!(PublicationStore::for_store(server.instance.store.clone())
-        .current(&entry.storage_id)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(entry.last_publication_id.is_empty());
 }
 
 #[tokio::test]
@@ -635,22 +667,34 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
     let server = new_test_server().await;
     let owner = session_as(TEST_PUBLISHER);
     let slug = source_document(&server.url, &owner, "accounting recovery").await;
-    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let catalog = server.instance.store.catalog.as_ref().unwrap().clone();
     let storage_id = catalog.document(&slug).unwrap().unwrap().storage_id;
-    let key = PublicationStore::object_key(&storage_id, &digest(b"recovered object"));
-
-    // This models a crash after blob I/O but before `commit_object_change`.
-    catalog
-        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-            slug: &slug,
-            operation_id: "interrupted-put",
-            object_key: &key,
-            kind: "publication",
-            new_bytes: 16,
-            owner_limit: -1,
-            total_limit: -1,
+    let manifest = bundle(b"recovered object", &[]);
+    let (status, _) = prepare(
+        &server.url,
+        &owner,
+        None,
+        &slug,
+        "interrupted-put",
+        &manifest,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let request_id = publication_request_key("interrupted-put");
+    let (key, object_id): (String, String) = catalog
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT o.storage_key,o.id FROM objects o
+                 JOIN operations p ON p.id=o.allocation_operation_id
+                 WHERE o.document_id=?1 AND p.request_key=?2 AND o.kind='publication_html'",
+                (&storage_id, &request_id),
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
+    // This models a crash after blob I/O but before the typed settlement.
     server
         .instance
         .store
@@ -658,31 +702,32 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
         .put(
             &key,
             b"recovered object".to_vec(),
-            "application/octet-stream",
+            "text/html",
         )
         .await
         .unwrap();
-    let publications = PublicationStore::for_store(server.instance.store.clone());
-    publications.reconcile_accounting().await.unwrap();
-    let (reservations, accounting): (i64, i64) = catalog
+    let worker = crate::storage::maintenance::DeletionWorker::new(
+        catalog.clone(),
+        server.instance.store.blobs.clone(),
+        crate::storage::maintenance::DeletionLimits::default(),
+    )
+    .unwrap();
+    worker.recover_v2_startup().await.unwrap();
+    let (state, reserved, bytes): (String, i64, i64) = catalog
         .with_connection(|connection| {
-            Ok((
-                connection.query_row(
-                    "SELECT COUNT(*) FROM object_reservations WHERE object_key=?1",
+            connection
+                .query_row(
+                    "SELECT state,reserved_bytes,byte_length FROM objects WHERE storage_key=?1",
                     [&key],
-                    |row| row.get(0),
-                )?,
-                connection.query_row(
-                    "SELECT COUNT(*) FROM object_accounting WHERE object_key=?1",
-                    [&key],
-                    |row| row.get(0),
-                )?,
-            ))
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
-    assert_eq!((reservations, accounting), (0, 1));
+    assert_eq!((state, reserved, bytes), ("available".into(), 0, 16));
 
-    // This models a crash after confirmed deletion but before ledger release.
+    // The physical deletion worker settles the catalogue only after the
+    // object store confirms absence. Keep that two-step invariant explicit.
     server
         .instance
         .store
@@ -690,46 +735,56 @@ async fn publication_accounting_recovers_interrupted_write_and_delete_windows() 
         .delete(std::slice::from_ref(&key))
         .await
         .unwrap();
-    publications.reconcile_accounting().await.unwrap();
-    let accounting: i64 = catalog
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM object_accounting WHERE object_key=?1",
-                    [&key],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .unwrap();
-    assert_eq!(accounting, 0);
-
-    // A reservation whose object never became durable is safely refunded.
-    let missing = PublicationStore::object_key(&storage_id, &digest(b"missing object"));
+    let document_id = crate::storage::catalog::DocumentId::new(storage_id.clone()).unwrap();
+    let object_id = crate::storage::catalog::ObjectId::new(object_id).unwrap();
+    let now = crate::storage::catalog::UnixMillis::now();
     catalog
-        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-            slug: &slug,
-            operation_id: "interrupted-before-put",
-            object_key: &missing,
-            kind: "publication",
-            new_bytes: 14,
-            owner_limit: -1,
-            total_limit: -1,
+        .with_connection(|connection| {
+            connection
+                .execute(
+                    "UPDATE objects SET gc_after=?1 WHERE document_id=?2 AND id=?3",
+                    (now.0, document_id.as_str(), object_id.as_str()),
+                )
+                .map(|_| ())
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
-    publications.reconcile_accounting().await.unwrap();
-    let reservations: i64 = catalog
+    assert!(catalog
+        .claim_v2_object_for_deletion(&document_id, &object_id, now, now)
+        .unwrap();
+    assert!(catalog
+        .confirm_v2_object_deleted(&document_id, &object_id)
+        .unwrap());
+
+    // A typed allocation whose object never became durable is safely
+    // refunded by the same bounded recovery pass.
+    let missing_manifest = bundle(b"missing object", &[]);
+    let (status, _) = prepare(
+        &server.url,
+        &owner,
+        None,
+        &slug,
+        "interrupted-before-put",
+        &missing_manifest,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    worker.recover_v2_startup().await.unwrap();
+    let remaining: i64 = catalog
         .with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM object_reservations WHERE object_key=?1",
-                    [&missing],
+                    "SELECT COUNT(*) FROM objects o
+                     JOIN operations p ON p.id=o.allocation_operation_id
+                     WHERE o.document_id=?1 AND p.request_key=?2 AND o.state='allocated'",
+                    (&storage_id, publication_request_key("interrupted-before-put")),
                     |row| row.get(0),
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
-    assert_eq!(reservations, 0);
+    assert_eq!(remaining, 0);
 }
 
 #[tokio::test]
@@ -737,65 +792,127 @@ async fn gc_retirement_marker_remains_catalogue_accounted_under_quota_pressure()
     let server = new_test_server_config(limits(20 << 20, 20 << 20)).await;
     let owner = session_as(TEST_PUBLISHER);
     let slug = source_document(&server.url, &owner, "retirement accounting").await;
-    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let catalog = server.instance.store.catalog.as_ref().unwrap().clone();
     let storage_id = catalog.document(&slug).unwrap().unwrap().storage_id;
-    let full = 20_i64 << 20;
-    // Fill both ordinary limits. A user object would now be refused, while
-    // bounded retirement metadata remains counted and can make GC progress.
-    catalog
-        .with_connection(|connection| {
-            connection.execute(
-                "UPDATE documents SET counted_size=?1 WHERE slug=?2",
-                (full, &slug),
-            )?;
-            connection.execute("UPDATE totals SET bytes=?1 WHERE id=1", [full])?;
-            Ok(())
-        })
-        .unwrap();
-    let object = PublicationStore::object_key(&storage_id, &digest(b"obsolete"));
-    // This is an already-existing orphan from an interrupted older version.
-    // Marker accounting is explicit so quota admission can never turn it into
-    // an untracked blob when maintenance later runs under pressure.
-    server
-        .instance
-        .store
-        .blobs
-        .put(&object, b"obsolete".to_vec(), "application/octet-stream")
-        .await
-        .unwrap();
-    PublicationStore::for_store(server.instance.store.clone())
-        .garbage_collect(&storage_id, crate::util::now_unix())
-        .await
-        .unwrap();
-    let markers: i64 = catalog
-        .with_connection(|connection| {
-            connection.query_row(
-        "SELECT COUNT(*) FROM object_accounting WHERE storage_id=?1 AND object_key LIKE ?2",
-        (&storage_id, format!("publications/{storage_id}/retire/%")), |row| row.get(0),
-    ).map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .unwrap();
-    assert_eq!(markers, 1, "retirement marker was not ledger-accounted");
-    assert!(
-        catalog.totals().unwrap().0 > full,
-        "maintenance metadata was not charged"
+    let first = bundle(b"<p>first</p>", &[("old.bin", "application/octet-stream", b"obsolete")]);
+    assert_eq!(
+        prepare(&server.url, &owner, None, &slug, "retirement-first", &first, None)
+            .await
+            .0,
+        200
     );
-    PublicationStore::for_store(server.instance.store.clone())
-        .garbage_collect(&storage_id, crate::util::now_unix() + STAGING_TTL_SECS + 1)
+    assert_eq!(
+        stage(&server.url, &owner, None, &slug, "retirement-first", b"<p>first</p>", "text/html")
+            .await
+            .0,
+        201
+    );
+    assert_eq!(
+        stage(&server.url, &owner, None, &slug, "retirement-first", b"obsolete", "application/octet-stream")
+            .await
+            .0,
+        201
+    );
+    assert_eq!(
+        activate(&server.url, &owner, None, &slug, "retirement-first", &first, None)
+            .await
+            .0,
+        200
+    );
+    let current: Value = client()
+        .get(format!("{}/api/documents/{slug}/publication", server.url))
+        .header("cookie", &owner)
+        .header("x-librepaper-client", "1")
+        .send()
+        .await
+        .unwrap()
+        .json()
         .await
         .unwrap();
-    let markers: i64 = catalog
+    let first_publication_id = current["publication"]["id"]
+        .as_str()
+        .expect("first publication identity")
+        .to_owned();
+    let second = bundle(b"<p>second</p>", &[("new.bin", "application/octet-stream", b"current")]);
+    assert_eq!(
+        prepare(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "retirement-second",
+            &second,
+            Some(&first_publication_id),
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        stage(&server.url, &owner, None, &slug, "retirement-second", b"<p>second</p>", "text/html")
+            .await
+            .0,
+        201
+    );
+    assert_eq!(
+        stage(&server.url, &owner, None, &slug, "retirement-second", b"current", "application/octet-stream")
+            .await
+            .0,
+        201
+    );
+    assert_eq!(
+        activate(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "retirement-second",
+            &second,
+            Some(&first_publication_id),
+        )
+        .await
+        .0,
+        200
+    );
+    let old_digest = digest(b"obsolete");
+    let pending: i64 = catalog
         .with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM object_accounting WHERE storage_id=?1 AND object_key LIKE ?2",
-                    (&storage_id, format!("publications/{storage_id}/retire/%")),
+                    "SELECT COUNT(*) FROM objects WHERE document_id=?1 AND kind='publication_asset'
+                     AND digest=?2 AND state='available' AND publication_root=0",
+                    (&storage_id, &old_digest),
                     |row| row.get(0),
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
-    assert_eq!(markers, 0, "retired marker accounting was not released");
+    assert_eq!(pending, 1, "old publication was not marked for bounded GC");
+    let worker = crate::storage::maintenance::DeletionWorker::new(
+        catalog.clone(),
+        server.instance.store.blobs.clone(),
+        crate::storage::maintenance::DeletionLimits::default(),
+    )
+    .unwrap();
+    let now = crate::util::now_millis();
+    assert_eq!(
+        worker.run_v2_once(now).await.unwrap().objects_deleted,
+        0
+    );
+    let report = worker.run_v2_once(now.saturating_add(900_001)).await.unwrap();
+    assert!(report.objects_deleted >= 1, "retired object was not physically collected");
+    let remaining: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM objects WHERE document_id=?1 AND kind='publication_asset' AND digest=?2",
+                    (&storage_id, &old_digest),
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0, "retired publication object remained accounted");
 }
 
 #[tokio::test]
@@ -877,112 +994,121 @@ async fn recovery_aborts_a_current_swap_that_never_reached_blob_cas() {
     let server = new_test_server().await;
     let owner = session_as(TEST_PUBLISHER);
     let slug = source_document(&server.url, &owner, "current swap recovery").await;
-    let catalog = server.instance.store.catalog.as_ref().unwrap();
-    let storage_id = catalog.document(&slug).unwrap().unwrap().storage_id;
-    let key = PublicationStore::manifest_key(&storage_id);
-    let old = b"{\"publication\":\"old\"}".to_vec();
-    catalog
-        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-            slug: &slug,
-            operation_id: "initial-current",
-            object_key: &key,
-            kind: "publication",
-            new_bytes: old.len() as i64,
-            owner_limit: -1,
-            total_limit: -1,
-        })
-        .unwrap();
-    server
-        .instance
-        .store
-        .blobs
-        .put(&key, old.clone(), "application/json")
-        .await
-        .unwrap();
-    let (_, old_version) = server
-        .instance
-        .store
-        .blobs
-        .get_versioned(&key)
-        .await
-        .unwrap();
-    catalog
-        .commit_object_change(
-            &storage_id,
-            "initial-current",
-            &key,
-            "publication",
-            &old_version,
+    let first = publish_display(
+        &server.url,
+        &owner,
+        &slug,
+        b"<p>current</p>",
+        &[],
+    )
+    .await;
+    let current_id = first["publication"]["id"]
+        .as_str()
+        .expect("current publication identity")
+        .to_owned();
+    let second = bundle(b"<p>interrupted</p>", &[]);
+    assert_eq!(
+        prepare(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "interrupted-current-swap",
+            &second,
+            Some(&current_id),
         )
-        .unwrap();
-    // The reservation survived a crash before swap() changed current.json.
-    catalog
-        .reserve_object_change(crate::storage::catalog::ObjectReservationRequest {
-            slug: &slug,
-            operation_id: "interrupted-current-swap",
-            object_key: &key,
-            kind: "publication",
-            new_bytes: (old.len() + 7) as i64,
-            owner_limit: -1,
-            total_limit: -1,
+        .await
+        .0,
+        200
+    );
+    let catalog = server.instance.store.catalog.as_ref().unwrap().clone();
+    let worker = crate::storage::maintenance::DeletionWorker::new(
+        catalog.clone(),
+        server.instance.store.blobs.clone(),
+        crate::storage::maintenance::DeletionLimits::default(),
+    )
+    .unwrap();
+    let report = worker.recover_v2_startup().await.unwrap();
+    assert!(report.allocations_aborted >= 1);
+    let remaining: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM objects o
+                     JOIN operations p ON p.id=o.allocation_operation_id
+                     WHERE o.document_id=(SELECT id FROM documents WHERE slug=?1)
+                       AND p.request_key=?2 AND o.state='allocated'",
+                    (&slug, publication_request_key("interrupted-current-swap")),
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
-    PublicationStore::for_store(server.instance.store.clone())
-        .reconcile_accounting()
+    assert_eq!(remaining, 0, "missing publication bytes stayed allocated");
+    let current: Value = client()
+        .get(format!("{}/api/documents/{slug}/publication", server.url))
+        .header("cookie", &owner)
+        .header("x-librepaper-client", "1")
+        .send()
+        .await
+        .unwrap()
+        .json()
         .await
         .unwrap();
-    let (reservations, bytes, version): (i64, i64, String) = catalog
-        .with_connection(|connection| {
-            Ok((
-                connection.query_row(
-                    "SELECT COUNT(*) FROM object_reservations WHERE object_key=?1",
-                    [&key],
-                    |row| row.get(0),
-                )?,
-                connection.query_row(
-                    "SELECT bytes FROM object_accounting WHERE storage_id=?1 AND object_key=?2",
-                    (&storage_id, &key),
-                    |row| row.get(0),
-                )?,
-                connection.query_row(
-                    "SELECT version FROM object_accounting WHERE storage_id=?1 AND object_key=?2",
-                    (&storage_id, &key),
-                    |row| row.get(0),
-                )?,
-            ))
-        })
-        .unwrap();
-    assert_eq!(reservations, 0);
-    assert_eq!(bytes, old.len() as i64);
-    assert_eq!(version, old_version);
+    assert_eq!(current["publication"]["id"], current_id);
 }
 
 #[tokio::test]
-async fn recovery_sweeps_accounting_rows_after_the_first_page() {
-    let server = new_test_server().await;
+async fn recovery_sweeps_publication_allocations_after_the_first_page() {
+    let server = new_test_server_config(limits(20 << 20, 20 << 20)).await;
     let owner = session_as(TEST_PUBLISHER);
-    let slug = source_document(&server.url, &owner, "ledger page recovery").await;
-    let catalog = server.instance.store.catalog.as_ref().unwrap();
-    let storage_id = catalog.document(&slug).unwrap().unwrap().storage_id;
-    catalog.with_connection(|connection| {
-        for index in 0..129 {
-            connection.execute(
-                "INSERT INTO object_accounting(storage_id,object_key,kind,bytes,version) VALUES(?1,?2,'publication',1,'absent')",
-                (&storage_id, format!("publications/{storage_id}/objects/{index:064x}")),
-            )?;
-        }
-        Ok(())
-    }).unwrap();
-    PublicationStore::for_store(server.instance.store.clone())
-        .reconcile_accounting()
-        .await
-        .unwrap();
-    let remaining: i64 = catalog.with_connection(|connection| connection.query_row(
-        "SELECT COUNT(*) FROM object_accounting WHERE storage_id=?1 AND object_key LIKE 'publications/%'",
-        [&storage_id], |row| row.get(0),
-    ).map_err(crate::storage::catalog::CatalogError::from)).unwrap();
+    let slug = source_document(&server.url, &owner, "publication allocation page recovery").await;
+    let bodies: Vec<Vec<u8>> = (0..257)
+        .map(|index| format!("asset-{index}").into_bytes())
+        .collect();
+    let paths: Vec<String> = (0..257).map(|index| format!("asset-{index}.bin")).collect();
+    let assets: Vec<(&str, &str, &[u8])> = paths
+        .iter()
+        .zip(bodies.iter())
+        .map(|(path, body)| (path.as_str(), "application/octet-stream", body.as_slice()))
+        .collect();
+    let manifest = bundle(b"<p>page recovery</p>", &assets);
     assert_eq!(
-        remaining, 0,
-        "the later accounting page was never reconciled"
+        prepare(
+            &server.url,
+            &owner,
+            None,
+            &slug,
+            "allocation-page-recovery",
+            &manifest,
+            None,
+        )
+        .await
+        .0,
+        200
     );
+    let catalog = server.instance.store.catalog.as_ref().unwrap().clone();
+    let worker = crate::storage::maintenance::DeletionWorker::new(
+        catalog.clone(),
+        server.instance.store.blobs.clone(),
+        crate::storage::maintenance::DeletionLimits::default(),
+    )
+    .unwrap();
+    let report = worker.recover_v2_startup().await.unwrap();
+    assert!(report.allocations_aborted >= 257);
+    let remaining: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM objects o
+                     JOIN operations p ON p.id=o.allocation_operation_id
+                     WHERE o.document_id=(SELECT id FROM documents WHERE slug=?1)
+                       AND p.request_key=?2 AND o.state='allocated'",
+                    (&slug, publication_request_key("allocation-page-recovery")),
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0, "allocation recovery stopped at its first page");
 }
