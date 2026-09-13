@@ -34,6 +34,10 @@ pub(super) struct Capacity {
     effects: tokio::sync::Semaphore,
     results: tokio::sync::Semaphore,
     cancellations: tokio::sync::Semaphore,
+    /// Byte permits shared by MCP payload serialization, compression, reads,
+    /// and decode. A permit is moved into blocking work so caller cancellation
+    /// cannot release the budget while that work still owns its buffers.
+    pub(super) payload_memory: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl Default for Capacity {
@@ -43,8 +47,35 @@ impl Default for Capacity {
             effects: tokio::sync::Semaphore::new(8),
             results: tokio::sync::Semaphore::new(4),
             cancellations: tokio::sync::Semaphore::new(2),
+            payload_memory: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                crate::config::PersistenceLimits::staging_cost(16 * 1024 * 1024),
+            )),
         }
     }
+
+    pub(super) fn with_payload_memory(bytes: usize) -> Self {
+        Self {
+            payload_memory: std::sync::Arc::new(tokio::sync::Semaphore::new(bytes)),
+            ..Self::default()
+        }
+    }
+}
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl std::io::Write for BoundedJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "JSON payload exceeds limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -344,11 +375,18 @@ impl Server {
         object: &T,
         expiry: i64,
     ) -> Result<(), Failure> {
-        let raw = serde_json::to_vec(object)
-            .map_err(|e| Failure::new("internal", e.to_string()))?;
-        if raw.len() > 16 * 1024 * 1024 {
-            return Err(Failure::new("budget_exceeded", "retained object exceeds its decoded size limit"));
-        }
+        const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+        let memory_permit = self
+            .mcp_capacity
+            .payload_memory
+            .clone()
+            .acquire_many_owned(u32::try_from(crate::config::PersistenceLimits::staging_cost(MAX_PAYLOAD_BYTES)).unwrap_or(u32::MAX))
+            .await
+            .map_err(|_| Failure::new("unavailable", "MCP payload memory is saturated"))?;
+        let mut bounded = BoundedJsonWriter { bytes: Vec::new(), limit: MAX_PAYLOAD_BYTES };
+        serde_json::to_writer(&mut bounded, object)
+            .map_err(|error| Failure::new("budget_exceeded", error.to_string()))?;
+        let raw = bounded.bytes;
         if id.is_empty() || id.len() > 256 || kind.is_empty() || kind.len() > 128 {
             return Err(Failure::new("invalid_params", "agent object identity is invalid"));
         }
@@ -366,13 +404,13 @@ impl Server {
             return Err(Failure::new("permission_changed", "a live account or link is required"));
         };
         let logical_digest = hex::encode(Sha256::digest(&raw));
-        let bytes = tokio::task::spawn_blocking(move || {
+        let (bytes, memory_permit) = tokio::task::spawn_blocking(move || {
             let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
             encoder.write_all(&raw)?;
-            encoder.finish()
+            Ok::<_, std::io::Error>((encoder.finish()?, memory_permit))
         }).await.map_err(|e| Failure::new("unavailable", e.to_string()))?
           .map_err(|e| Failure::new("internal", e.to_string()))?;
-        if bytes.len() > 16 * 1024 * 1024 {
+        if bytes.len() > MAX_PAYLOAD_BYTES {
             return Err(Failure::new("budget_exceeded", "encoded object exceeds its size limit"));
         }
         let Some(catalog) = &self.store.catalog else {
@@ -480,16 +518,25 @@ impl Server {
         let id_owned = id.to_owned();
         let kind_owned = kind.to_owned();
         let holder_owned = holder.clone();
+        let admission_authority = authority.clone();
         let read = catalog.execute_catalog(
             slug.len().saturating_add(id.len()).saturating_add(kind.len()).saturating_add(holder.len()).saturating_add(512),
             move |catalog| catalog.acquire_agent_payload_read(
-                &slug_owned, &authority, &id_owned, &kind_owned, &holder_owned, UnixMillis(now),
+                &slug_owned, &admission_authority, &id_owned, &kind_owned, &holder_owned, UnixMillis(now),
             ),
         ).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
         let Some(read) = read else {
             return Err(Failure::new("view_expired", "object is unavailable; capture a fresh view"));
         };
         let descriptor = read.object;
+        const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+        let memory_permit = self
+            .mcp_capacity
+            .payload_memory
+            .clone()
+            .acquire_many_owned(u32::try_from(crate::config::PersistenceLimits::staging_cost(MAX_PAYLOAD_BYTES)).unwrap_or(u32::MAX))
+            .await
+            .map_err(|_| Failure::new("unavailable", "MCP payload memory is saturated"))?;
         let mut get = Box::pin(self.store.blobs.get(&descriptor.storage_key));
         let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
         let raw = loop {
@@ -497,7 +544,11 @@ impl Server {
                 result = &mut get => break match result {
                     Ok(raw) => raw,
                     Err(error) => {
-                        let _ = catalog.release_v2_lease(&descriptor.document_id, &descriptor.id, &holder);
+                        let release_catalog = Arc::clone(catalog);
+                        let release_document = descriptor.document_id.clone();
+                        let release_object = descriptor.id.clone();
+                        let release_holder = holder.clone();
+                        let _ = release_catalog.execute_catalog(128, move |catalog| catalog.release_v2_lease(&release_document, &release_object, &release_holder)).await;
                         return Err(Failure::new("unavailable", error.to_string()));
                     }
                 },
@@ -515,32 +566,57 @@ impl Server {
                         },
                     ).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
                     if !renewed {
-                        let _ = catalog.release_v2_lease(&descriptor.document_id, &descriptor.id, &holder);
+                        let release_catalog = Arc::clone(catalog);
+                        let release_document = descriptor.document_id.clone();
+                        let release_object = descriptor.id.clone();
+                        let release_holder = holder.clone();
+                        let _ = release_catalog.execute_catalog(128, move |catalog| catalog.release_v2_lease(&release_document, &release_object, &release_holder)).await;
                         return Err(Failure::new("view_expired", "agent read lease expired"));
                     }
                 }
             }
         };
-        let _ = catalog.release_v2_lease(&descriptor.document_id, &descriptor.id, &holder);
+        let release_catalog = Arc::clone(catalog);
+        let release_document = descriptor.document_id.clone();
+        let release_object = descriptor.id.clone();
+        let release_holder = holder.clone();
+        let _ = release_catalog.execute_catalog(128, move |catalog| catalog.release_v2_lease(&release_document, &release_object, &release_holder)).await;
         if descriptor.byte_length != i64::try_from(raw.len()).ok()
             || hex::encode(Sha256::digest(&raw)) != descriptor.digest
         {
             return Err(Failure::new("internal", "agent object integrity check failed"));
         }
         let logical_digest = read.logical_digest;
-        tokio::task::spawn_blocking(move || {
-            let mut decoder = flate2::read::ZlibDecoder::new(raw.as_slice()).take(16 * 1024 * 1024 + 1);
+        let decoded = tokio::task::spawn_blocking(move || {
+            let _memory_permit = memory_permit;
+            let mut decoder = flate2::read::ZlibDecoder::new(raw.as_slice()).take(MAX_PAYLOAD_BYTES + 1);
             let mut decoded = Vec::new();
             decoder.read_to_end(&mut decoded)
                 .map_err(|e| Failure::new("internal", e.to_string()))?;
-            if decoded.len() > 16 * 1024 * 1024 {
+            if decoded.len() > MAX_PAYLOAD_BYTES {
                 return Err(Failure::new("budget_exceeded", "object decode limit"));
             }
             if hex::encode(Sha256::digest(&decoded)) != logical_digest {
                 return Err(Failure::new("internal", "agent object logical digest mismatch"));
             }
             serde_json::from_slice(&decoded).map_err(|e| Failure::new("internal", e.to_string()))
-        }).await.map_err(|e| Failure::new("unavailable", e.to_string()))?
+        }).await.map_err(|e| Failure::new("unavailable", e.to_string()))??;
+        let final_authority = catalog.execute_catalog(
+            slug.len().saturating_add(id.len()).saturating_add(kind.len()).saturating_add(512),
+            {
+                let slug = slug.to_owned();
+                let authority = authority.clone();
+                let id = id.to_owned();
+                let kind = kind.to_owned();
+                move |catalog| catalog.check_agent_payload_authority(
+                    &slug, &authority, &id, &kind, UnixMillis(crate::util::now_millis()),
+                )
+            },
+        ).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        if !final_authority {
+            return Err(Failure::new("permission_changed", "payload authority was revoked during the read"));
+        }
+        Ok(decoded)
     }
     async fn mcp_recheck(
         &self,

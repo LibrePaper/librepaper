@@ -372,6 +372,41 @@ impl Catalog {
         })
     }
 
+    /// Recheck live authority after physical I/O, without acquiring another
+    /// read lease. The caller must perform this immediately before exposing
+    /// decoded payload bytes.
+    pub fn check_agent_payload_authority(
+        &self,
+        slug: &str,
+        authority: &AgentPayloadAuthority,
+        agent_id: &str,
+        agent_kind: &str,
+        now: UnixMillis,
+    ) -> CatalogResult<bool> {
+        self.immediate(|tx| {
+            let document_id: String = tx.query_row(
+                "SELECT id FROM documents WHERE slug=?1 AND status='active'",
+                [slug],
+                |row| row.get(0),
+            ).map_err(CatalogError::from)?;
+            if !live_authority(tx, &document_id, authority, now.0)? {
+                return Ok(false);
+            }
+            let actor_key = if !authority.account_id.is_empty() {
+                format!("account:{}", authority.account_id)
+            } else {
+                format!("link:{}", authority.link_hash)
+            };
+            let request_key = natural_key(&document_id, &actor_key, agent_id, agent_kind);
+            let present: i64 = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') WHERE op.document_id=?1 AND op.actor_key=?2 AND op.request_key=?3 AND op.kind='agent_stage' AND op.state='committed' AND op.receipt_expires_at>?4 AND o.kind='agent_payload' AND o.state='available' AND o.live_root=1)",
+                params![document_id, actor_key, request_key, now.0],
+                |row| row.get(0),
+            ).map_err(CatalogError::from)?;
+            Ok(present != 0)
+        })
+    }
+
     pub fn renew_agent_payload_read(
         &self,
         document_id: &DocumentId,

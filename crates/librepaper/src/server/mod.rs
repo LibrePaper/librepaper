@@ -343,7 +343,9 @@ impl Server {
             pending: PendingCodes::new(),
             onboarding: tokio::sync::Mutex::new(()),
             chat: chat::Hub::default(),
-            mcp_capacity: mcp::Capacity::default(),
+            mcp_capacity: mcp::Capacity::with_payload_memory(
+                config.persistence().max_staging_bytes,
+            ),
             latex: None,
             fonts: None,
             cost,
