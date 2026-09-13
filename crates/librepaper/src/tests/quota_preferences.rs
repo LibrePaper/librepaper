@@ -1,6 +1,5 @@
-//! Regression coverage for the account quota/retention API and its durable
-//! retention jobs.  These tests deliberately exercise the HTTP boundary and
-//! then inspect the catalogue to verify the durable operation identity.
+//! Regression coverage for the account quota/retention API and its advisory
+//! policy recalculation boundary.
 
 use std::collections::HashMap;
 
@@ -44,7 +43,8 @@ fn set_checkpoint_time(server: &TestServer, slug: &str, sha: &str, at: i64) {
         .with_connection(|connection| {
             connection
                 .execute(
-                    "UPDATE checkpoints SET at=?1 WHERE slug=?2 AND sha=?3",
+                    "UPDATE checkpoints SET created_at=?1
+                     WHERE document_id=(SELECT id FROM documents WHERE slug=?2) AND id=?3",
                     rusqlite::params![at.to_string(), slug, sha],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)
@@ -161,9 +161,7 @@ async fn apply(
     server: &TestServer,
     cookie: &str,
     revision: i64,
-    generation: &str,
     preferences: &QuotaPreferences,
-    confirmed: bool,
 ) -> (u16, Value) {
     post_as(
         cookie,
@@ -171,9 +169,7 @@ async fn apply(
         "/api/account/storage/apply",
         json!({
             "revision": revision,
-            "generation": generation,
             "preferences": preferences_value(preferences),
-            "confirmed": confirmed,
         }),
     )
     .await
@@ -256,16 +252,13 @@ async fn storage_status_exposes_balanced_v1_utc_tiers_without_changing_hard_quot
 }
 
 #[tokio::test]
-async fn preview_timezone_is_presentation_only_and_stale_label_changes_are_rejected() {
+async fn preview_timezone_is_presentation_only_and_apply_is_advisory() {
     let server = new_test_server().await;
     let slug = publish_and_slug(&server).await;
     let (old, _, _) = seed_old_bucket(&server, &slug);
     let cookie = session_as(TEST_PUBLISHER);
 
-    let utc = QuotaPreferences {
-        retention_profile: "useLessStorage".into(),
-        ..QuotaPreferences::default()
-    };
+    let utc = QuotaPreferences::default();
     let mut toronto = utc.clone();
     toronto.display_timezone = "America/Toronto".into();
     let utc_preview = preview(&server, &cookie, 0, &utc).await;
@@ -280,10 +273,9 @@ async fn preview_timezone_is_presentation_only_and_stale_label_changes_are_rejec
         utc_preview.1["affectedCount"],
         local_preview.1["affectedCount"]
     );
-
-    let generation = text(&utc_preview.1, "generation");
-    assert!(!generation.is_empty());
+    assert!(utc_preview.1["generation"].is_null());
     assert!(utc_preview.1["affectedCount"].as_u64().unwrap() >= 1);
+
     server
         .instance
         .store
@@ -292,114 +284,60 @@ async fn preview_timezone_is_presentation_only_and_stale_label_changes_are_rejec
         .unwrap()
         .label_checkpoint(&slug, &old, "important")
         .expect("label old checkpoint");
-    let stale = apply(&server, &cookie, 0, &generation, &utc, true).await;
-    assert_eq!(
-        stale.0, 409,
-        "label mutation must stale preview: {}",
-        stale.1
-    );
-    assert!(text(&stale.1, "error").contains("stale"));
+    let saved = apply(&server, &cookie, 0, &utc).await;
+    assert_eq!(saved.0, 200, "advisory apply: {}", saved.1);
+    assert_eq!(saved.1["status"], "saved");
+    assert_eq!(saved.1["revision"], 1);
+    assert_eq!(saved.1["graceMs"], 86_400_000);
 }
 
 #[tokio::test]
-async fn destructive_apply_requires_confirmation_enters_grace_and_replays_idempotently() {
+async fn advisory_apply_rejects_stale_revision_without_durable_job() {
     let server = new_test_server().await;
-    let slug = publish_and_slug(&server).await;
-    seed_old_bucket(&server, &slug);
     let cookie = session_as(TEST_PUBLISHER);
-    let preferences = QuotaPreferences {
-        retention_profile: "useLessStorage".into(),
-        ..QuotaPreferences::default()
-    };
-    let preview = preview(&server, &cookie, 0, &preferences).await;
-    assert_eq!(preview.0, 200, "preview: {}", preview.1);
-    let generation = text(&preview.1, "generation");
+    let preferences = QuotaPreferences::default();
 
-    let not_confirmed = apply(&server, &cookie, 0, &generation, &preferences, false).await;
-    assert_eq!(
-        not_confirmed.0, 400,
-        "missing confirmation: {}",
-        not_confirmed.1
-    );
-    assert!(text(&not_confirmed.1, "error").contains("confirmation"));
-
-    let accepted = apply(&server, &cookie, 0, &generation, &preferences, true).await;
-    assert_eq!(accepted.0, 202, "confirmed apply: {}", accepted.1);
-    assert_eq!(accepted.1["thinning"], "grace");
-    assert!(accepted.1["graceSeconds"].as_i64().unwrap() > 0);
-
-    let replay = apply(&server, &cookie, 0, &generation, &preferences, true).await;
-    assert_eq!(replay.0, 202, "idempotent replay: {}", replay.1);
-    assert_eq!(replay.1["generation"], generation);
-    assert_eq!(replay.1["revision"], 1);
-    let job_count: i64 = server
-        .instance
-        .store
-        .catalog
-        .as_ref()
-        .unwrap()
-        .with_connection(|connection| {
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM quota_retention_jobs WHERE account_id=?1 AND revision=1",
-                    [ACCOUNT],
-                    |row| row.get(0),
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .unwrap();
-    assert_eq!(job_count, 1, "replay created another durable job");
-}
-
-#[tokio::test]
-async fn newer_policy_marks_an_older_grace_job_stale() {
-    let server = new_test_server().await;
-    let slug = publish_and_slug(&server).await;
-    seed_old_bucket(&server, &slug);
-    let cookie = session_as(TEST_PUBLISHER);
-
-    let narrower = QuotaPreferences {
-        retention_profile: "useLessStorage".into(),
-        ..QuotaPreferences::default()
-    };
-    let first_preview = preview(&server, &cookie, 0, &narrower).await;
-    let first_generation = text(&first_preview.1, "generation");
-    let first_apply = apply(&server, &cookie, 0, &first_generation, &narrower, true).await;
-    assert_eq!(first_apply.0, 202, "first apply: {}", first_apply.1);
-
-    let broader = QuotaPreferences::default();
-    let second_preview = preview(&server, &cookie, 1, &broader).await;
-    assert_eq!(
-        second_preview.0, 200,
-        "second preview: {}",
-        second_preview.1
-    );
-    let second_generation = text(&second_preview.1, "generation");
-    let second_apply = apply(&server, &cookie, 1, &second_generation, &broader, true).await;
-    assert_eq!(second_apply.0, 202, "second apply: {}", second_apply.1);
-    assert_ne!(second_generation, first_generation);
+    let accepted = apply(&server, &cookie, 0, &preferences).await;
+    assert_eq!(accepted.0, 200, "first apply: {}", accepted.1);
+    let stale = apply(&server, &cookie, 0, &preferences).await;
+    assert_eq!(stale.0, 409, "stale apply: {}", stale.1);
 
     let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let due: i64 = catalog.with_connection(|connection| {
+        connection.query_row(
+            "SELECT retention_due_at FROM documents WHERE owner_id=?1 AND status='active' ORDER BY id LIMIT 1",
+            [ACCOUNT], |row| row.get(0),
+        ).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
     assert_eq!(
-        catalog
-            .retention_job(ACCOUNT, &first_generation)
-            .unwrap()
-            .unwrap()
-            .status,
-        "stale"
-    );
-    assert_eq!(
-        catalog
-            .latest_retention_job(ACCOUNT)
-            .unwrap()
-            .unwrap()
-            .generation,
-        second_generation
+        due, 0,
+        "policy apply did not enqueue document recalculation"
     );
 }
 
 #[tokio::test]
-async fn thinning_removes_routine_bucket_loser_but_preserves_open_annotation_and_newest() {
+async fn newer_policy_restarts_due_document_evaluation() {
+    let server = new_test_server().await;
+    publish_and_slug(&server).await;
+    let cookie = session_as(TEST_PUBLISHER);
+    let first = apply(&server, &cookie, 0, &QuotaPreferences::default()).await;
+    assert_eq!(first.0, 200, "first apply: {}", first.1);
+    let second = apply(
+        &server,
+        &cookie,
+        1,
+        &QuotaPreferences {
+            retention_profile: "manual".into(),
+            ..QuotaPreferences::default()
+        },
+    )
+    .await;
+    assert_eq!(second.0, 200, "second apply: {}", second.1);
+    assert!(second.1["generation"].is_null());
+}
+
+#[tokio::test]
+async fn thinning_preserves_open_annotation_and_newest_checkpoint() {
     let server = new_test_server().await;
     let slug = publish_and_slug(&server).await;
     let (protected, routine_candidate, newest) = seed_old_bucket(&server, &slug);
@@ -409,38 +347,35 @@ async fn thinning_removes_routine_bucket_loser_but_preserves_open_annotation_and
         .expect("open annotation fixture");
     let cookie = session_as(TEST_PUBLISHER);
     let preferences = QuotaPreferences {
-        retention_profile: "useLessStorage".into(),
+        retention_profile: "custom".into(),
+        custom_retention: Some(crate::document::quota::CustomRetention {
+            max_routine_count: Some(1),
+            max_age_ms: None,
+        }),
         ..QuotaPreferences::default()
     };
-    let preview = preview(&server, &cookie, 0, &preferences).await;
-    assert_eq!(preview.0, 200, "preview: {}", preview.1);
-    assert!(preview.1["affectedCount"].as_u64().unwrap() >= 1);
-    let generation = text(&preview.1, "generation");
-    let applied = apply(&server, &cookie, 0, &generation, &preferences, true).await;
-    assert_eq!(applied.0, 202, "apply: {}", applied.1);
+    let applied = apply(&server, &cookie, 0, &preferences).await;
+    assert_eq!(applied.0, 200, "apply: {}", applied.1);
 
-    // The HTTP contract supplies a bounded grace period.  Advancing the
-    // durable clock here lets the test exercise the same pass the worker uses
-    // without making a wall-clock test wait for a day.
+    let now = crate::util::now_millis();
     catalog
-        .with_connection(|connection| {
-            connection
-                .execute(
-                    "UPDATE quota_retention_jobs SET grace_until=0 WHERE account_id=?1 AND generation=?2",
-                    rusqlite::params![ACCOUNT, generation],
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)?;
-            connection
-                .execute(
-                    "UPDATE quota_retention_candidates SET grace_until=0 WHERE account_id=?1 AND generation=?2",
-                    rusqlite::params![ACCOUNT, generation],
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .unwrap();
-    let pass = catalog
-        .run_retention_pass(crate::util::now_unix() + 1, 100)
-        .expect("retention pass");
+        .schedule_document_balanced(
+            &slug,
+            now,
+            crate::document::quota::RetentionBounds::default(),
+        )
+        .expect("schedule retention");
+    catalog.with_connection(|connection| {
+        connection.execute(
+            "UPDATE checkpoints SET eligible_after=?1 WHERE document_id=(SELECT id FROM documents WHERE slug=?2) AND id=?3",
+            rusqlite::params![now - 1, slug, routine_candidate],
+        ).map_err(crate::storage::catalog::CatalogError::from)?;
+        connection.execute(
+            "UPDATE documents SET retention_due_at=?1 WHERE slug=?2",
+            rusqlite::params![now, slug],
+        ).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
+    let pass = catalog.run_retention_pass(now, 32).expect("retention pass");
     assert!(
         !pass.removed.iter().any(|(_, sha)| sha == &protected),
         "open annotation checkpoint was removed: {:?}",
@@ -450,7 +385,7 @@ async fn thinning_removes_routine_bucket_loser_but_preserves_open_annotation_and
         pass.removed
             .iter()
             .any(|(_, sha)| sha == &routine_candidate),
-        "routine bucket loser was not removed: {:?}",
+        "routine checkpoint was not removed: {:?}",
         pass.removed
     );
     assert!(catalog.checkpoint(&slug, &protected).unwrap().is_some());

@@ -8,6 +8,7 @@ use super::*;
 use std::collections::HashMap;
 
 const RETENTION_GRACE_MS: i64 = 24 * 60 * 60 * 1_000;
+const RETENTION_DOCUMENT_PAGE: i64 = 64;
 
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,19 +82,7 @@ fn policy_fingerprint(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[deprecated(note = "v2 has no durable retention jobs")]
-pub struct RetentionJob {
-    pub account_id: String,
-    pub generation: String,
-    pub revision: i64,
-    pub status: String,
-    pub grace_until: i64,
-    pub candidate_fingerprint: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetentionPass {
-    pub generation: String,
     pub removed: Vec<(String, String)>,
     pub blocked: usize,
 }
@@ -219,6 +208,7 @@ impl Catalog {
             let checkpoints: Vec<_> = rows.collect::<Result<Vec<_>, _>>().map_err(CatalogError::from)?;
             let mut routine_rank = 0u32;
             let mut candidates = Vec::with_capacity(checkpoints.len());
+            let mut next_age_due: Option<i64> = None;
             for (id, _seq, label, created_at, _eligible_after, current, protected) in &checkpoints {
                 let labelled = label.is_some();
                 let rank = if !current && !labelled && !protected {
@@ -226,6 +216,17 @@ impl Catalog {
                     routine_rank = routine_rank.checked_add(1).ok_or_else(|| CatalogError::Invalid("retention rank overflow".into()))?;
                     Some(rank)
                 } else { None };
+                if !*current && !labelled && !protected {
+                    if let Some(age) = max_age_ms {
+                        let age_due = created_at
+                            .checked_add(age)
+                            .and_then(|value| value.checked_add(1))
+                            .unwrap_or(i64::MAX);
+                        if age_due > now {
+                            next_age_due = Some(next_age_due.map_or(age_due, |old| old.min(age_due)));
+                        }
+                    }
+                }
                 candidates.push(RetentionCandidate {
                     id: id.clone(), current: *current, labelled, protected: *protected,
                     routine_rank: rank,
@@ -255,9 +256,50 @@ impl Catalog {
             new_payload.evaluation = Some(RetentionEvaluation { account_revision, document_revision, policy: fingerprint });
             let new_json = serde_json::to_string(&new_payload).map_err(|e| CatalogError::Invalid(format!("retention payload: {e}")))?;
             let next_due: Option<i64> = tx.query_row("SELECT min(eligible_after) FROM checkpoints WHERE document_id=?1 AND eligible_after IS NOT NULL", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
-            tx.execute("UPDATE documents SET retention_json=?1,retention_due_at=COALESCE(?2,0),updated_at=max(updated_at,?3) WHERE id=?4", params![new_json, next_due, now, document_id]).map_err(CatalogError::from)?;
+            let next_due = match (next_due, next_age_due) {
+                (Some(eligible), Some(age)) => Some(eligible.min(age)),
+                (Some(eligible), None) => Some(eligible),
+                (None, Some(age)) => Some(age),
+                (None, None) => Some(i64::MAX),
+            };
+            tx.execute("UPDATE documents SET retention_json=?1,retention_due_at=?2,updated_at=max(updated_at,?3) WHERE id=?4", params![new_json, next_due, now, document_id]).map_err(CatalogError::from)?;
             Ok(scheduled)
         })
+    }
+
+    /// Recalculate a fair, indexed page of documents whose retention marker
+    /// says policy work is due.  The marker is persisted by the document
+    /// transaction and by preference updates, so a restart resumes from the
+    /// same bounded queue without a durable candidate list.
+    pub fn schedule_due_documents(
+        &self,
+        now: i64,
+        limit: u32,
+        bounds: crate::document::quota::RetentionBounds,
+    ) -> CatalogResult<usize> {
+        if now < 0 {
+            return Err(CatalogError::Invalid("negative retention time".into()));
+        }
+        let limit = i64::from(limit).clamp(1, RETENTION_DOCUMENT_PAGE);
+        let documents: Vec<String> = self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT slug FROM documents
+                     WHERE status='active' AND retention_due_at<=?1
+                     ORDER BY retention_due_at,id LIMIT ?2",
+                )
+                .map_err(CatalogError::from)?;
+            let rows = statement
+                .query_map(params![now, limit], |row| row.get(0))
+                .map_err(CatalogError::from)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(CatalogError::from)
+        })?;
+        let count = documents.len();
+        for slug in documents {
+            self.schedule_document_balanced(&slug, now, bounds.clone())?;
+        }
+        Ok(count)
     }
 
     pub fn retention_metadata_range(
@@ -312,6 +354,11 @@ impl Catalog {
         if now < 0 {
             return Err(CatalogError::Invalid("negative retention time".into()));
         }
+        self.schedule_due_documents(
+            now,
+            RETENTION_DOCUMENT_PAGE as u32,
+            crate::document::quota::RetentionBounds::default(),
+        )?;
         // A retention transaction is bounded to the normative 32 checkpoint
         // rows.  Closure edges are checked before each delete and stop the
         // pass before the 32,768-row transaction budget can be exceeded.
@@ -351,34 +398,7 @@ impl Catalog {
                 blocked += 1;
             }
         }
-        Ok(RetentionPass {
-            generation: format!("retention:{now}"),
-            removed,
-            blocked,
-        })
-    }
-
-    pub fn retention_job(
-        &self,
-        _account_id: &str,
-        _generation: &str,
-    ) -> CatalogResult<Option<RetentionJob>> {
-        Err(CatalogError::Invalid(
-            "durable retention jobs were removed in catalog v2".into(),
-        ))
-    }
-    pub fn latest_retention_job(&self, _account_id: &str) -> CatalogResult<Option<RetentionJob>> {
-        Err(CatalogError::Invalid(
-            "durable retention jobs were removed in catalog v2".into(),
-        ))
-    }
-    pub fn last_completed_retention_generation(
-        &self,
-        _account_id: &str,
-    ) -> CatalogResult<Option<String>> {
-        Err(CatalogError::Invalid(
-            "durable retention jobs were removed in catalog v2".into(),
-        ))
+        Ok(RetentionPass { removed, blocked })
     }
 }
 

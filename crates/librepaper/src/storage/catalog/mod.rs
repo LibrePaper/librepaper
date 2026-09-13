@@ -52,7 +52,7 @@ pub(crate) use publication::{publication_actor_key, PublicationWork};
 pub use read_objects::{
     CheckpointReadLease, CheckpointReadSet, ObjectReadLease, PublicationReadLease,
 };
-pub use retention::{RetentionJob, RetentionPass};
+pub use retention::RetentionPass;
 pub use room_edits::RoomEditReservation;
 pub use source_history::{SourceHistoryLease, SourceHistoryObject, SourceHistoryRecord};
 pub use v2::{

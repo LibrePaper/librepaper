@@ -324,7 +324,14 @@ pub async fn serve(options: ServeOptions) {
         commenters.clone(),
     );
     if let Some(catalog) = instance.store.catalog.clone() {
-        let journal_catalog = Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits_and_quota(catalog, config.persistence(), config.storage.per_owner, config.storage.total));
+        let journal_catalog = Arc::new(
+            crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits_and_quota(
+                catalog,
+                config.persistence(),
+                config.storage.per_owner,
+                config.storage.total,
+            ),
+        );
         let journal = Arc::new(
             crate::storage::journal::V2JournalRuntime::with_persistence(
                 journal_catalog,
@@ -495,12 +502,11 @@ pub async fn serve(options: ServeOptions) {
                         .await;
                     match retention_result {
                         Ok(pass) => {
-                            if !pass.generation.is_empty() {
+                            if !pass.removed.is_empty() || pass.blocked != 0 {
                                 eprintln!(
                                     "{}",
                                     serde_json::json!({
                                         "event": "history_retention_pass",
-                                        "generation": pass.generation,
                                         "removed": pass.removed.len(),
                                         "blocked": pass.blocked,
                                     })

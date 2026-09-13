@@ -356,6 +356,7 @@ impl Catalog {
         tx.execute(
             "UPDATE documents SET next_checkpoint_seq=MAX(next_checkpoint_seq,?1),
              checkpoint_ref_count=checkpoint_ref_count+1,last_checkpoint_at=?2,
+             retention_due_at=0,
              current_checkpoint_id=?3,updated_at=MAX(updated_at,?2)
              WHERE id=?4",
             params![next_seq, created_at, checkpoint.sha, document_id],
