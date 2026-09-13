@@ -1199,7 +1199,7 @@ impl Room {
                                 kind: &kind,
                                 request_digest: &digest_for_job,
                                 intent: &intent_for_job,
-                                created_at: crate::util::now_unix(),
+                                created_at: crate::util::now_millis(),
                                 // Full MutationAuthority was checked above;
                                 // the generic OperationActor path cannot
                                 // represent link-bounded anonymous editors.
