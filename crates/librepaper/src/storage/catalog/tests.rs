@@ -704,6 +704,7 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
     let (recipe_b_id, recipe_b_key) = recipe_key("recipe-b");
     let tree_a_id = fixture_object_id("tree-a");
     let tree_b_id = fixture_object_id("tree-b");
+    let tree_head_id = fixture_object_id("tree-head");
     catalog
         .with_connection(|connection| {
             for (id, key, kind, digest, bytes) in [
@@ -740,6 +741,13 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
                     format!("v2/documents/storage-1/objects/{tree_b_id}"),
                     "source_tree",
                     fixture_tree_digest("checkpoint-b"),
+                    1,
+                ),
+                (
+                    tree_head_id.clone(),
+                    format!("v2/documents/storage-1/objects/{tree_head_id}"),
+                    "source_tree",
+                    fixture_tree_digest("checkpoint-head"),
                     1,
                 ),
             ] {
@@ -808,6 +816,10 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
             &[record(&file_b, &recipe_b_key, &"d".repeat(64))],
         )
         .unwrap();
+    let head = checkpoint("checkpoint-head");
+    catalog
+        .insert_checkpoints_atomic_with_sources(std::slice::from_ref(&head), None, &[])
+        .unwrap();
 
     // Supply the durable v2 retention evaluation that makes these historical
     // points eligible for the typed checkpoint-delete boundary.
@@ -821,13 +833,6 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
                 r#"UPDATE documents SET retention_due_at=1,
                  retention_json='{"version":1,"evaluation":{"accountRevision":0,"documentRevision":0}}'
                  WHERE id='storage-1'"#,
-                [],
-            )?;
-            // The current checkpoint is protected by the v2 delete fence.
-            // Clear the display head explicitly: this fixture is about
-            // pruning two retained historical files and their shared chunk.
-            connection.execute(
-                "UPDATE documents SET current_checkpoint_id=NULL WHERE id='storage-1'",
                 [],
             )?;
             Ok(())
@@ -1746,9 +1751,9 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
     let plans = catalog
         .with_connection(|connection| {
             let queries = [
-                "EXPLAIN QUERY PLAN SELECT d.slug FROM grants g JOIN documents d INDEXED BY documents_active_updated ON d.id=g.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE d.status='active' AND g.account_id='acct-1' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
-                "EXPLAIN QUERY PLAN SELECT d.slug FROM links l JOIN documents d INDEXED BY documents_active_updated ON d.id=l.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE d.status='active' AND l.credential_generation>0 ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
-                "EXPLAIN QUERY PLAN SELECT d.slug FROM documents d INDEXED BY documents_active_example_updated WHERE d.status='active' AND d.ownership_mode='example' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
+                "EXPLAIN QUERY PLAN SELECT d.slug FROM grants g JOIN documents d ON d.id=g.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE d.status='active' AND g.account_id='acct-1' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
+                "EXPLAIN QUERY PLAN SELECT d.slug FROM documents d JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE d.status='active' AND d.ownership_mode='open' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
+                "EXPLAIN QUERY PLAN SELECT d.slug FROM documents d WHERE d.status='active' AND d.ownership_mode='example' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
             ];
             Ok(queries
                 .iter()

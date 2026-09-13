@@ -3269,7 +3269,13 @@ mod tests {
             .expect("complete checkpoint closure");
         let destination: Arc<dyn BlobStore> = Arc::new(FsStore::new(backup_root.path(), false));
         let source_adapter = LocalV2BackupCatalog::new(source_catalog.clone(), source_paths.clone());
-        let manifest = create_backup(&source_adapter, source, destination.clone(), "roundtrip", 10)
+        let manifest = create_backup(
+            &source_adapter,
+            source,
+            destination.clone(),
+            "roundtrip",
+            crate::util::now_millis(),
+        )
             .await
             .expect("real backup");
         assert!(manifest.complete);

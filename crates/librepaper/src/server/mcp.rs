@@ -803,7 +803,7 @@ impl Server {
                 tokio::select! {
                     result = &mut get => break result.map_err(|error| Failure::new("unavailable", error.to_string())),
                     _ = heartbeat.tick() => {
-                        let renewed = read_catalog.execute_catalog(
+                        let renewed = match read_catalog.execute_catalog(
                             256,
                             {
                                 let document_id = read_document.clone();
@@ -814,8 +814,19 @@ impl Server {
                                     UnixMillis(crate::util::now_millis()), read_deadline,
                                 )
                             },
-                        ).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
+                        ).await {
+                            Ok(renewed) => renewed,
+                            Err(error) => {
+                                // A BlobStore read may be backed by a
+                                // detached blocking task.  Drain the read
+                                // future before returning so its allocation
+                                // cannot outlive the owned budget permit.
+                                let _ = (&mut get).await;
+                                break Err(Failure::new("unavailable", error.to_string()));
+                            }
+                        };
                         if !renewed {
+                            let _ = (&mut get).await;
                             break Err(Failure::new("view_expired", "agent read lease expired"));
                         }
                     }
