@@ -160,10 +160,22 @@ pub struct BackupSnapshot {
     pub deployment_id: String,
     pub snapshot_revision: i64,
     pub catalog_bytes: Vec<u8>,
+    /// A local immutable snapshot can be handed to the destination as a
+    /// stream. Test and remote adapters may continue to provide bytes through
+    /// `catalog_bytes`, but production local backups never materialize the
+    /// SQLite image in the request heap.
+    pub catalog_file: Option<BackupCatalogFile>,
     pub object_count: usize,
     pub identity: BackupPayload,
     pub secrets: Vec<BackupPayload>,
     pub secret_versions: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BackupCatalogFile {
+    pub path: PathBuf,
+    pub digest: String,
+    pub byte_length: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -203,18 +215,26 @@ pub async fn create_backup(
         return Err(BackupV2Error::Invalid("invalid backup identity or time".into()));
     }
     let snapshot = catalog.prepare_backup(now).await.map_err(BackupV2Error::Catalog)?;
-    if snapshot.catalog_bytes.len() > MAX_CATALOG_SNAPSHOT_BYTES {
+    if snapshot.catalog_file.is_none() && snapshot.catalog_bytes.len() > MAX_CATALOG_SNAPSHOT_BYTES {
         let _ = catalog.abort_backup(&snapshot.operation_id).await;
         return Err(BackupV2Error::Invalid("catalog snapshot exceeds backup bound".into()));
     }
+    let (catalog_digest, catalog_length) = snapshot
+        .catalog_file
+        .as_ref()
+        .map(|file| (file.digest.clone(), file.byte_length))
+        .unwrap_or_else(|| (
+            hex::encode(Sha256::digest(&snapshot.catalog_bytes)),
+            snapshot.catalog_bytes.len() as u64,
+        ));
     let mut manifest = BackupManifestV2 {
         format_version: BACKUP_FORMAT_V2,
         operation_id: snapshot.operation_id.clone(),
         deployment_id: snapshot.deployment_id,
         snapshot_revision: snapshot.snapshot_revision,
         created_at: now,
-        catalog_digest: hex::encode(Sha256::digest(&snapshot.catalog_bytes)),
-        catalog_length: snapshot.catalog_bytes.len() as u64,
+        catalog_digest,
+        catalog_length,
         identity: BackupFileEntry {
             relative: snapshot.identity.relative.clone(),
             backup_key: format!("{BACKUP_PREFIX_V2}/{backup_id}/{}", snapshot.identity.relative),
@@ -241,8 +261,28 @@ pub async fn create_backup(
     }
     let result = async {
         let catalog_key = format!("{BACKUP_PREFIX_V2}/{backup_id}/catalog.db");
-        put_new_destination(Arc::clone(&destination), &catalog_key, snapshot.catalog_bytes, "application/vnd.sqlite3")
+        if let Some(catalog_file) = snapshot.catalog_file.as_ref() {
+            if catalog_file.byte_length != manifest.catalog_length
+                || catalog_file.digest != manifest.catalog_digest
+            {
+                return Err(BackupV2Error::Corrupt("catalog snapshot metadata changed".into()));
+            }
+            put_new_file_destination(
+                Arc::clone(&destination),
+                &catalog_key,
+                &catalog_file.path,
+                "application/vnd.sqlite3",
+            )
             .await?;
+        } else {
+            put_new_destination(
+                Arc::clone(&destination),
+                &catalog_key,
+                snapshot.catalog_bytes,
+                "application/vnd.sqlite3",
+            )
+            .await?;
+        }
         copy_file_payload(&destination, &manifest.identity, &snapshot.identity.bytes).await?;
         for (secret, entry) in snapshot.secrets.iter().zip(&manifest.secrets) {
             copy_file_payload(&destination, entry, &secret.bytes).await?;
@@ -328,6 +368,23 @@ pub trait V2RestoreCatalog: Send + Sync {
         snapshot_revision: i64,
         catalog_bytes: Vec<u8>,
     ) -> Result<(), String>;
+    /// Install a catalog image staged in a bounded temporary file. The
+    /// default keeps small test adapters compatible; local production restore
+    /// overrides this to validate and rename the file without materializing
+    /// the image.
+    async fn install_catalog_snapshot_file(
+        &self,
+        deployment_id: &str,
+        snapshot_revision: i64,
+        path: PathBuf,
+    ) -> Result<(), String> {
+        let bytes = tokio::task::spawn_blocking(move || fs::read(path))
+            .await
+            .map_err(|error| format!("catalog snapshot read task failed: {error}"))?
+            .map_err(|error| error.to_string())?;
+        self.install_catalog_snapshot(deployment_id, snapshot_revision, bytes)
+            .await
+    }
     /// A restored catalogue contains the source backup operation copied by
     /// the SQLite image.  It belongs to the source deployment and must be
     /// closed before the destination can be considered live.
@@ -354,13 +411,49 @@ pub async fn restore_backup(
         .map_err(|error| BackupV2Error::Corrupt(format!("manifest JSON is invalid: {error}")))?;
     manifest.validate_for_backup(backup_id)?;
     let catalog_key = format!("{BACKUP_PREFIX_V2}/{backup_id}/catalog.db");
-    let catalog_bytes = backup
-        .get(&catalog_key)
+    let catalog_length = backup
+        .length(&catalog_key)
         .await
         .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
-    if catalog_bytes.len() as u64 != manifest.catalog_length
-        || hex::encode(Sha256::digest(&catalog_bytes)) != manifest.catalog_digest
-    {
+    if catalog_length != manifest.catalog_length {
+        return Err(BackupV2Error::Corrupt("catalog snapshot length mismatch".into()));
+    }
+    let catalog_path = std::env::temp_dir().join(format!(
+        ".librepaper-catalog-restore-{}-{}",
+        std::process::id(),
+        hex::encode(crate::auth::random_bytes(8))
+    ));
+    let mut catalog_digest = Sha256::new();
+    let mut catalog_offset = 0_u64;
+    while catalog_offset < catalog_length {
+        let end = catalog_offset.saturating_add(64 * 1024).min(catalog_length);
+        let chunk = backup
+            .get_range(&catalog_key, catalog_offset..end)
+            .await
+            .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
+        if chunk.len() as u64 != end.saturating_sub(catalog_offset) {
+            let _ = fs::remove_file(&catalog_path);
+            return Err(BackupV2Error::Corrupt("catalog snapshot range length mismatch".into()));
+        }
+        catalog_digest.update(&chunk);
+        let path = catalog_path.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            use std::fs::OpenOptions;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|error| error.to_string())?;
+            file.write_all(&chunk).map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| format!("catalog snapshot write task failed: {error}"))??;
+        catalog_offset = end;
+    }
+    if hex::encode(catalog_digest.finalize()) != manifest.catalog_digest {
+        let _ = fs::remove_file(&catalog_path);
         return Err(BackupV2Error::Corrupt("catalog snapshot digest mismatch".into()));
     }
     for file in std::iter::once(&manifest.identity).chain(manifest.secrets.iter()) {
@@ -384,14 +477,18 @@ pub async fn restore_backup(
             .await
             .map_err(BackupV2Error::Catalog)?;
     }
-    catalog
-        .install_catalog_snapshot(
+    if let Err(error) = catalog
+        .install_catalog_snapshot_file(
             &manifest.deployment_id,
             manifest.snapshot_revision,
-            catalog_bytes,
+            catalog_path.clone(),
         )
         .await
-        .map_err(BackupV2Error::Catalog)?;
+    {
+        let _ = fs::remove_file(&catalog_path);
+        return Err(BackupV2Error::Catalog(error));
+    }
+    let _ = fs::remove_file(&catalog_path);
     catalog
         .abort_restored_backup(&manifest.operation_id)
         .await
@@ -453,6 +550,32 @@ async fn put_new_destination(
     })
     .await
     .map_err(|error| BackupV2Error::Storage(format!("backup object task failed: {error}")))?
+}
+
+async fn put_new_file_destination(
+    destination: Arc<dyn BlobStore>,
+    key: &str,
+    source: &Path,
+    content_type: &str,
+) -> Result<(), BackupV2Error> {
+    if destination
+        .exists(key)
+        .await
+        .map_err(|error| BackupV2Error::Storage(error.to_string()))?
+    {
+        return Err(BackupV2Error::Invalid(format!("backup destination already contains {key}")));
+    }
+    let key = key.to_owned();
+    let source = source.to_owned();
+    let content_type = content_type.to_owned();
+    tokio::spawn(async move {
+        destination
+            .put_file(&key, &source, &content_type)
+            .await
+            .map_err(|error| BackupV2Error::Storage(error.to_string()))
+    })
+    .await
+    .map_err(|error| BackupV2Error::Storage(format!("backup snapshot task failed: {error}")))?
 }
 
 async fn copy_file_payload(
@@ -660,10 +783,7 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
                 let snapshot_bytes = fs::metadata(&snapshot_for_read)
                     .map_err(|error| error.to_string())?
                     .len();
-                if snapshot_bytes > MAX_CATALOG_SNAPSHOT_BYTES as u64 {
-                    return Err("catalog snapshot exceeds backup bound".into());
-                }
-                let bytes = fs::read(&snapshot_for_read).map_err(|error| error.to_string())?;
+                let digest = digest_file(&snapshot_for_read)?;
                 let connection = Connection::open_with_flags(
                     &snapshot_for_read,
                     OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -685,11 +805,11 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
                     .map_err(|error| error.to_string())?;
                 let count = usize::try_from(count)
                     .map_err(|_| "invalid object count".to_string())?;
-                Ok((bytes, count, deployment, revision))
+                Ok((snapshot_bytes, digest, count, deployment, revision))
             })
             .await
             .map_err(|error| error.to_string());
-        let (catalog_bytes, object_count, snapshot_deployment, snapshot_revision) =
+        let (catalog_length, catalog_digest, object_count, snapshot_deployment, snapshot_revision) =
             match snapshot_read {
                 Ok(Ok(value)) => value,
                 Ok(Err(error)) => {
@@ -711,12 +831,17 @@ impl V2BackupCatalog for LocalV2BackupCatalog {
         *self
             .snapshot_path
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot_path);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot_path.clone());
         Ok(BackupSnapshot {
             operation_id,
             deployment_id: snapshot_deployment,
             snapshot_revision,
-            catalog_bytes,
+            catalog_bytes: Vec::new(),
+            catalog_file: Some(BackupCatalogFile {
+                path: snapshot_path,
+                digest: catalog_digest,
+                byte_length: catalog_length,
+            }),
             object_count,
             identity: BackupPayload {
                 relative: "state/deployment.id".into(),
@@ -895,6 +1020,45 @@ impl V2RestoreCatalog for LocalV2RestoreCatalog {
         Ok(())
     }
 
+    async fn install_catalog_snapshot_file(
+        &self,
+        deployment_id: &str,
+        _snapshot_revision: i64,
+        source: PathBuf,
+    ) -> Result<(), String> {
+        if self.paths.catalog.exists() {
+            return Err("restore destination already has a catalog".into());
+        }
+        create_secure_dirs(&self.paths.deployment)?;
+        create_secure_dirs(&self.paths.state)?;
+        let temporary = self.paths.catalog.with_extension("restore");
+        secure_copy_atomic(&temporary, &source)?;
+        Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
+        let snapshot_identity = Connection::open_with_flags(
+            &temporary,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| error.to_string())?
+        .query_row(
+            "SELECT deployment_id FROM server_state WHERE id=1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| error.to_string())?;
+        if snapshot_identity != deployment_id {
+            let _ = fs::remove_file(&temporary);
+            return Err("restore deployment identity does not match the catalog snapshot".into());
+        }
+        let actual = fs::read_to_string(&self.paths.deployment_identity).unwrap_or_default();
+        if !actual.trim().is_empty() && actual.trim() != deployment_id {
+            let _ = fs::remove_file(&temporary);
+            return Err("restore deployment identity does not match the catalog snapshot".into());
+        }
+        fs::rename(&temporary, &self.paths.catalog).map_err(|error| error.to_string())?;
+        sync_directory(self.paths.catalog.parent())?;
+        Ok(())
+    }
+
     async fn abort_restored_backup(&self, operation_id: &str) -> Result<(), String> {
         let operation_id = operation_id.to_owned();
         let catalog = Arc::new(Catalog::open_with(&self.paths.catalog, true)
@@ -1037,6 +1201,44 @@ fn secure_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 
+fn secure_copy_atomic(path: &Path, source: &Path) -> Result<(), String> {
+    if path.exists() {
+        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        return Err(if metadata.file_type().is_symlink() {
+            "refusing to replace a symlink during restore".into()
+        } else {
+            format!("restore destination already contains {}", path.display())
+        });
+    }
+    let parent = path.parent().ok_or_else(|| "restore file has no parent".to_string())?;
+    create_secure_dirs(parent)?;
+    let temporary = parent.join(format!(
+        ".{}.restore-{}",
+        path.file_name().and_then(|name| name.to_str()).unwrap_or("file"),
+        std::process::id()
+    ));
+    let result = (|| {
+        let mut input = fs::File::open(source).map_err(|error| error.to_string())?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(nofollow_flag());
+        }
+        let mut output = options.open(&temporary).map_err(|error| error.to_string())?;
+        std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+        output.sync_all().map_err(|error| error.to_string())?;
+        drop(output);
+        fs::rename(&temporary, path).map_err(|error| error.to_string())?;
+        sync_directory(Some(parent))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 fn secure_read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
@@ -1056,6 +1258,20 @@ fn secure_read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).map_err(|error| error.to_string())?;
     Ok(bytes)
+}
+
+fn digest_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(hex::encode(digest.finalize()))
 }
 
 #[cfg(target_os = "linux")]
@@ -1350,6 +1566,7 @@ mod tests {
             deployment_id: "deployment".into(),
             snapshot_revision: 7,
             catalog_bytes: b"catalog".to_vec(),
+            catalog_file: None,
             object_count: 1,
             identity: BackupPayload {
                 relative: "state/deployment.id".into(),

@@ -270,6 +270,14 @@ pub trait BlobStore: Send + Sync {
         }
     }
     async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()>;
+    /// Publish a filesystem snapshot without requiring the caller to retain
+    /// the complete file in memory. Backends with a native streaming upload
+    /// may override this; the fallback is intentionally bounded to the
+    /// existing small test stores.
+    async fn put_file(&self, key: &str, path: &Path, content_type: &str) -> BlobResult<()> {
+        let body = std::fs::read(path).map_err(BlobError::from)?;
+        self.put(key, body, content_type).await
+    }
     /// Publish an immutable v2 object. Implementations with an atomic
     /// no-replace primitive should override this; the default remains useful
     /// for small test stores and detects an already registered key before PUT.
@@ -692,6 +700,23 @@ impl BlobStore for FsStore {
         self.blocking(move || {
             let _space = reserve_fs_space(&path, &capacity_root, &reserved_space, body.len())?;
             write_file_atomically(&path, &body, durable)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn put_file(&self, key: &str, source: &Path, _content_type: &str) -> BlobResult<()> {
+        let path = self.path_for(key)?;
+        let source = source.to_owned();
+        let durable = self.durable;
+        let capacity_root = self.dir.clone();
+        let reserved_space = Arc::clone(&self.reserved_space);
+        self.blocking(move || {
+            let length = std::fs::metadata(&source)?.len();
+            let length = usize::try_from(length)
+                .map_err(|_| BlobError::Other("snapshot is too large for this platform".into()))?;
+            let _space = reserve_fs_space(&path, &capacity_root, &reserved_space, length)?;
+            copy_file_atomically(&path, &source, durable)?;
             Ok(())
         })
         .await
@@ -1150,6 +1175,47 @@ pub fn write_file_atomically(name: &Path, body: &[u8], durable: bool) -> std::io
             }
             Ok(())
         });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// Copy a potentially large local snapshot to its final key while retaining
+/// only the operating-system copy buffer in memory. The temporary file is
+/// private and the final rename is the publication point.
+fn copy_file_atomically(name: &Path, source: &Path, durable: bool) -> std::io::Result<()> {
+    if let Some(parent) = name.parent() {
+        durable_create_dir_all(parent, durable)?;
+    }
+    static COPY_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+    let serial = COPY_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+    let basename = name
+        .file_name()
+        .map(|part| part.to_string_lossy())
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("object"));
+    let temporary = name.with_file_name(format!(
+        ".{basename}.tmp-copy-{}-{serial}",
+        std::process::id()
+    ));
+    let result = (|| {
+        let mut input = std::fs::File::open(source)?;
+        #[cfg(unix)]
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut output = options.open(&temporary)?;
+        std::io::copy(&mut input, &mut output)?;
+        sync_file(&output, durable)?;
+        drop(output);
+        std::fs::rename(&temporary, name)?;
+        if let Some(parent) = name.parent() {
+            sync_directory(parent, durable)?;
+        }
+        Ok(())
+    })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
