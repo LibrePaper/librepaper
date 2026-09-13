@@ -551,8 +551,8 @@ async fn spec24_per_document_journal_comparison_trace() {
     println!(
         "{{\"trace\":\"spec24-interleaved\",\"mixed_baseline\":\"coordinator+FsStore\",\"durable_fsync\":true,\"trace_records\":{},\"documents\":{},\"benchmark_documents\":{DOCUMENTS},\"updates_per_document\":{UPDATES_PER_DOCUMENT},\"v2_segments\":{physical_objects},\"mixed_segments\":{},\"v2_physical_bytes\":{physical_bytes},\"mixed_physical_bytes\":{mixed_physical_bytes},\"v2_server_stored_bytes\":{server_stored_bytes},\"mixed_stored_bytes\":{mixed_physical_bytes},\"v2_document_count\":{server_document_count},\"mixed_document_count\":{},\"v2_elapsed_ms\":{v2_elapsed_millis},\"mixed_elapsed_ms\":{mixed_write_elapsed_millis},\"v2_recovery_ms\":{v2_recovery_millis},\"mixed_recovery_ms\":{mixed_recovery_millis}}}",
         trace.len(),
-        mixed_segments.len(),
         DOCUMENTS + 1,
+        mixed_segments.len(),
         DOCUMENTS + 1,
     );
     let _ = blobs;

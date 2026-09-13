@@ -1,0 +1,96 @@
+{
+  "scope": "SQL-only synthetic reference storage; not application protocol acceptance",
+  "complete": true,
+  "started_at": "2026-09-13T08:35:50.918188+00:00",
+  "schema_sha256": "f8be2a45ec9ca7733a41c2bf492415cd80ed811757daf25ef26ca7b594be7ad0",
+  "requested_cases": [
+    {
+      "workload": "deployment-ceiling",
+      "reuse_percent": 100
+    }
+  ],
+  "sqlite_version": "3.53.1",
+  "python_version": "3.14.6",
+  "platform": "Linux-6.18.45-x86_64-with-glibc2.42",
+  "cpu": "AMD Ryzen AI 7 PRO 450 w/ Radeon 860M",
+  "cpu_count": 16,
+  "journal_mode": "WAL",
+  "synchronous": "FULL",
+  "results": [
+    {
+      "name": "deployment-ceiling",
+      "reuse_percent": 100,
+      "documents": 8,
+      "checkpoints_per_document": 64,
+      "edges_per_checkpoint": 16384,
+      "reference_rows_before_deletion": 8388608,
+      "distinct_object_rows": 131072,
+      "prepared_operations": 0,
+      "terminal_operations": 0,
+      "catalog_bytes_including_indexes": 2100101120,
+      "sampled_max_wal_bytes": 89519392,
+      "build_seconds": 311.9025717090117,
+      "checkpoint_transaction": {
+        "samples": 512,
+        "mean_ms": 608.7778812202487,
+        "p95_ms": 1659.3711350578815,
+        "max_ms": 3224.8236420564353
+      },
+      "bounded_deletion": {
+        "checkpoints": 2,
+        "edges": 32768,
+        "wall_ms": 500.61751692555845
+      },
+      "probes": {
+        "quota_rows": {
+          "wall_ms": 0.1204879954457283,
+          "vm_steps_interval": [
+            0,
+            99
+          ],
+          "rows": 1,
+          "plan": [
+            "SEARCH d USING PRIMARY KEY (id=?)",
+            "SEARCH a USING PRIMARY KEY (id=?)",
+            "SCAN s"
+          ]
+        },
+        "reference_count_rows": {
+          "wall_ms": 0.02818298526108265,
+          "vm_steps_interval": [
+            0,
+            99
+          ],
+          "rows": 1,
+          "plan": [
+            "SEARCH d USING PRIMARY KEY (id=?)",
+            "SCAN s"
+          ]
+        },
+        "gc_candidates": {
+          "wall_ms": 0.6620209896937013,
+          "vm_steps_interval": [
+            2000,
+            2099
+          ],
+          "rows": 256,
+          "plan": [
+            "SEARCH objects USING INDEX objects_gc (gc_after<?)"
+          ]
+        },
+        "live_root_selection": {
+          "wall_ms": 0.010269926860928535,
+          "vm_steps_interval": [
+            0,
+            99
+          ],
+          "rows": 0,
+          "plan": [
+            "SEARCH objects USING COVERING INDEX objects_live_roots (document_id=? AND kind=?)"
+          ]
+        }
+      }
+    }
+  ],
+  "finished_at": "2026-09-13T08:41:15.497166+00:00"
+}
