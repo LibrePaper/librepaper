@@ -2927,7 +2927,7 @@ impl Room {
         if !self.hold().await {
             return Err(self.fenced());
         }
-        let (body, generation, durable, mut version) = {
+        let (body, generation, durable, mut version, dependencies) = {
             let mut state = self.state.lock().await;
             let body = session::encode_state(&state.session.doc);
             // `E`, at the last gate before anything durable happens. Room
@@ -2953,7 +2953,17 @@ impl Room {
                 .iter()
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
-            (body, generation, durable, state.session_version.clone())
+            let dependencies = state
+                .session
+                .asset_sizes
+                .iter()
+                .map(|(digest, bytes)| crate::storage::journal::JournalDependencyHint {
+                    kind: "asset".to_string(),
+                    digest: digest.clone(),
+                    byte_length: u64::try_from(*bytes).unwrap_or(0),
+                })
+                .collect();
+            (body, generation, durable, state.session_version.clone(), dependencies)
         };
         // The reservation comes back as a guard rather than as a bare
         // success, so the window between this transaction committing and
@@ -2996,7 +3006,12 @@ impl Room {
                 .map_err(|error| error.to_string())?;
             durable_sequence = durable_sequence.max(latest.saturating_add(1));
             journal
-                .append(&self.storage_id, durable_sequence, body.clone())
+                .append_with_dependencies(
+                    &self.storage_id,
+                    durable_sequence,
+                    body.clone(),
+                    dependencies.clone(),
+                )
                 .await
                 .map_err(|error| error.to_string())?;
             // Keep the committed replay tail bounded even for rooms whose
@@ -3010,7 +3025,13 @@ impl Room {
                 .map_err(|error| error.to_string())?
             {
                 journal
-                    .compact(&self.storage_id, 0, durable_sequence, body.clone())
+                    .compact_with_dependencies(
+                        &self.storage_id,
+                        0,
+                        durable_sequence,
+                        body.clone(),
+                        dependencies.clone(),
+                    )
                     .await
                     .map_err(|error| error.to_string())?;
             }

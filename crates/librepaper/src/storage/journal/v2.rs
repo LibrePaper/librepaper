@@ -27,8 +27,33 @@ pub trait DocumentJournal: Send + Sync {
     async fn latest_sequence(&self, document_id: &str, epoch: u64) -> JournalResult<u64>;
     async fn recover_latest(&self, document_id: &str) -> JournalResult<Option<Vec<u8>>>;
     async fn append(&self, document_id: &str, sequence: u64, body: Vec<u8>) -> JournalResult<()>;
+    /// Append a complete snapshot while retaining the physical objects named
+    /// by the snapshot.  Hints are resolved inside the journal admission
+    /// transaction, so a GC pass cannot reclaim an asset between lookup and
+    /// acknowledgement.
+    async fn append_with_dependencies(
+        &self,
+        document_id: &str,
+        sequence: u64,
+        body: Vec<u8>,
+        dependencies: Vec<JournalDependencyHint>,
+    ) -> JournalResult<()> {
+        let _ = dependencies;
+        self.append(document_id, sequence, body).await
+    }
     async fn compaction_due(&self, document_id: &str, epoch: u64, sequence: u64) -> JournalResult<bool>;
     async fn compact(&self, document_id: &str, epoch: u64, sequence: u64, body: Vec<u8>) -> JournalResult<()>;
+    async fn compact_with_dependencies(
+        &self,
+        document_id: &str,
+        epoch: u64,
+        sequence: u64,
+        body: Vec<u8>,
+        dependencies: Vec<JournalDependencyHint>,
+    ) -> JournalResult<()> {
+        let _ = dependencies;
+        self.compact(document_id, epoch, sequence, body).await
+    }
     async fn payload_bytes_in_flight(&self) -> (usize, usize);
     fn memory(&self) -> std::sync::Arc<crate::storage::journal::MemoryBudget>;
 }
@@ -67,6 +92,17 @@ pub struct JournalAppendRequest {
     /// append. They become live roots in the same transaction that
     /// acknowledges the journal append.
     pub dependencies: Vec<JournalDependency>,
+    /// Logical references found in the encoded snapshot.  The catalog maps
+    /// these to immutable physical IDs in the same immediate transaction as
+    /// the prepared operation.
+    pub dependency_hints: Vec<JournalDependencyHint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalDependencyHint {
+    pub kind: String,
+    pub digest: String,
+    pub byte_length: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,6 +160,7 @@ pub struct JournalCompactionAdmission {
     pub captured_source_generation: u64,
     pub writer_generation: String,
     pub base_allocation: JournalObjectAllocation,
+    pub dependencies: Vec<JournalDependency>,
 }
 
 /// SQL-side hooks for the v2 append protocol. The implementation must use an
@@ -159,6 +196,7 @@ pub trait V2JournalCatalog: Send + Sync {
         expected_sequence: u64,
         byte_length: u64,
         digest: String,
+        dependencies: Vec<JournalDependencyHint>,
     ) -> Result<JournalCompactionAdmission, String>;
     async fn commit_compaction(
         &self,
@@ -312,6 +350,26 @@ where
         base: Vec<u8>,
         content_type: &str,
     ) -> JournalResult<WrittenObject> {
+        self.compact_with_dependencies(
+            document_id,
+            expected_epoch,
+            expected_sequence,
+            base,
+            content_type,
+            Vec::new(),
+        )
+        .await
+    }
+
+    pub async fn compact_with_dependencies(
+        &self,
+        document_id: &str,
+        expected_epoch: u64,
+        expected_sequence: u64,
+        base: Vec<u8>,
+        content_type: &str,
+        dependencies: Vec<JournalDependencyHint>,
+    ) -> JournalResult<WrittenObject> {
         let base_body = crate::storage::journal::RecoveryBaseBody {
             format_version: super::SEGMENT_FORMAT,
             storage_id: document_id.to_owned(),
@@ -324,7 +382,7 @@ where
         let digest = hex::encode(Sha256::digest(&encoded_base));
         let admission = self
             .catalog
-            .prepare_compaction(document_id, expected_epoch, expected_sequence, encoded_base.len() as u64, digest)
+            .prepare_compaction(document_id, expected_epoch, expected_sequence, encoded_base.len() as u64, digest, dependencies)
             .await
             .map_err(JournalError::CatalogText)?;
         let written = match guarded_write_v2_object(
@@ -543,6 +601,16 @@ where
     }
 
     async fn append(&self, document_id: &str, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
+        self.append_with_dependencies(document_id, sequence, body, Vec::new()).await
+    }
+
+    async fn append_with_dependencies(
+        &self,
+        document_id: &str,
+        sequence: u64,
+        body: Vec<u8>,
+        dependencies: Vec<JournalDependencyHint>,
+    ) -> JournalResult<()> {
         if body.len() > self.max_encoded_snapshot_bytes {
             return Err(JournalError::Limit("journal snapshot exceeds the configured encoded ceiling".into()));
         }
@@ -574,6 +642,7 @@ where
                 last_sequence: sequence,
                 parts: Vec::new(),
                 dependencies: Vec::new(),
+                dependency_hints: dependencies,
             };
             self.append(request, &[segment]).await.map(|_| ())
         }
@@ -596,6 +665,17 @@ where
     }
 
     async fn compact(&self, document_id: &str, _epoch: u64, sequence: u64, body: Vec<u8>) -> JournalResult<()> {
+        self.compact_with_dependencies(document_id, _epoch, sequence, body, Vec::new()).await
+    }
+
+    async fn compact_with_dependencies(
+        &self,
+        document_id: &str,
+        _epoch: u64,
+        sequence: u64,
+        body: Vec<u8>,
+        dependencies: Vec<JournalDependencyHint>,
+    ) -> JournalResult<()> {
         if body.len() > self.max_encoded_snapshot_bytes {
             return Err(JournalError::Limit("journal base exceeds the configured encoded ceiling".into()));
         }
@@ -614,12 +694,13 @@ where
             if sequence != head.sequence {
                 return Err(JournalError::Conflict("journal compaction cursor changed".into()));
             }
-            self.compact(
+            self.compact_with_dependencies(
                 document_id,
                 head.epoch,
                 sequence,
                 body,
                 "application/vnd.librepaper.journal-base",
+                dependencies,
             )
             .await
             .map(|_| ())

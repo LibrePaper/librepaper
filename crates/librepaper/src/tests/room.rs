@@ -1021,6 +1021,181 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
     assert_eq!(recovered.source().await, "journaled");
 }
 
+/// A named Room asset is a journal dependency, rather than an untracked blob
+/// whose lifetime happens to match the in-memory session.  The dependency is
+/// promoted with the journal acknowledgement, retired when the next
+/// acknowledged snapshot drops it, and survives a room reopen until bounded
+/// v2 GC has confirmed the physical delete.
+#[tokio::test]
+async fn catalog_room_named_asset_is_journal_root_through_reopen_and_gc() {
+    let dir = tempfile::tempdir().unwrap();
+    let objects = dir.path().join("objects");
+    std::fs::create_dir_all(&objects).unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(&objects, true));
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap(),
+    );
+    let config = Arc::new(Configuration::default());
+    let store = Arc::new(
+        store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
+            .await
+            .unwrap(),
+    );
+    store
+        .put(store::Publication {
+            slug: "asset-journal".into(),
+            source: "initial".into(),
+            source_format: "markdown".into(),
+            owner: "alice".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let runtime = Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                catalog.clone(),
+                config.persistence(),
+            )),
+            blobs.clone(),
+            config.persistence(),
+        )
+        .unwrap(),
+    );
+    let rooms = room::RoomSet::new(blobs.clone(), config.clone());
+    rooms.attach_store(store.clone());
+    rooms.attach_journal(runtime);
+    let room = rooms.get("asset-journal").await;
+    let body = b"named asset body".to_vec();
+    let (digest, size) = room.put_asset(body.clone(), (1024, 4096)).await.unwrap();
+    room.name_asset("figure.bin", &digest).await.unwrap();
+    let document_id: String = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT id FROM documents WHERE slug='asset-journal'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+
+    // Asset upload remains a Room-facing operation, while its v2 immutable
+    // row is created by the physical-object writer.  This fixture supplies
+    // that settled row so the test exercises the same journal dependency
+    // lookup used by production publication workers.
+    let object_id = blob::ObjectId::random();
+    let storage_key = blob::v2_object_key(&document_id, &object_id).unwrap();
+    blobs
+        .put(&storage_key, body.clone(), "application/octet-stream")
+        .await
+        .unwrap();
+    let size = size;
+    catalog
+        .with_connection(|connection| {
+            let tx = connection
+                .unchecked_transaction()
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let owner_id: String = tx.query_row(
+                "SELECT owner_id FROM documents WHERE id=?1",
+                [&document_id],
+                |row| row.get(0),
+            )?;
+            tx.execute(
+                "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,created_at,live_root,publication_root) VALUES(?1,?2,?3,'asset','available',?4,1,?5,0,?6,0,0)",
+                rusqlite::params![
+                    document_id,
+                    object_id.as_str(),
+                    storage_key,
+                    digest,
+                    size,
+                    crate::util::now_millis(),
+                ],
+            )?;
+            tx.execute(
+                "UPDATE documents SET stored_bytes=stored_bytes+?1 WHERE id=?2",
+                rusqlite::params![size, document_id],
+            )?;
+            tx.execute(
+                "UPDATE accounts SET stored_bytes=stored_bytes+?1 WHERE id=?2",
+                rusqlite::params![size, owner_id],
+            )?;
+            tx.execute(
+                "UPDATE server_state SET stored_bytes=stored_bytes+?1 WHERE id=1",
+                [size],
+            )?;
+            tx.commit()
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    room.checkpoint_now("asset", "alice").await.unwrap();
+    let live: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT live_root FROM objects WHERE document_id=?1 AND id=?2",
+                    rusqlite::params![document_id, object_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(live, 1, "the acknowledged snapshot must pin its asset");
+
+    {
+        let state = room.state.lock().await;
+        state
+            .session
+            .doc
+            .get_or_insert_map(session::ASSETS)
+            .remove(&mut state.session.doc.transact_mut(), "figure.bin");
+    }
+    room.set_source("asset removed", "markdown").await.unwrap();
+    room.checkpoint_now("asset-removed", "alice").await.unwrap();
+    let retired: (i64, Option<i64>) = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT live_root,gc_after FROM objects WHERE document_id=?1 AND id=?2",
+                    rusqlite::params![document_id, object_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(retired.0, 0);
+    let gc_at = retired.1.expect("retired asset gets a GC grace deadline");
+
+    blobs
+        .delete(&[blob::session_key(&document_id), blob::room_lock_key(&document_id)])
+        .await
+        .unwrap();
+    let reopened_runtime = Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                catalog.clone(),
+                config.persistence(),
+            )),
+            blobs.clone(),
+            config.persistence(),
+        )
+        .unwrap(),
+    );
+    let reopened_rooms = room::RoomSet::new(blobs.clone(), config);
+    reopened_rooms.attach_store(store);
+    reopened_rooms.attach_journal(reopened_runtime);
+    let reopened = reopened_rooms.get("asset-journal").await;
+    assert!(!session::assets_of(&reopened.state.lock().await.session.doc)
+        .contains_key("figure.bin"));
+
+    let gc = crate::storage::v2_catalog::V2GcCatalogAdapter::new(catalog.clone());
+    crate::storage::maintenance_v2::run_gc_pass(&gc, blobs.as_ref(), gc_at + 1)
+        .await
+        .unwrap();
+    assert!(blobs.get(&storage_key).await.is_err());
+}
+
 #[tokio::test]
 async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
     let dir = tempfile::tempdir().unwrap();
