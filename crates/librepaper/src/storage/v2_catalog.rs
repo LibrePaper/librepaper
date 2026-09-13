@@ -124,27 +124,10 @@ fn completed_inflight(namespace: usize, limit: usize) -> Vec<InflightPut> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .values()
-        .filter(|record| record.namespace == namespace && record.managed && record.written.is_some())
+        .filter(|record| record.namespace == namespace && record.written.is_some())
         .take(limit)
         .cloned()
         .collect()
-}
-
-fn reap_completed_unmanaged(namespace: usize, limit: usize) -> usize {
-    let mut guards = inflight_puts()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let keys = guards
-        .iter()
-        .filter(|(_, record)| record.namespace == namespace && !record.managed && record.written.is_some())
-        .map(|(key, _)| key.clone())
-        .take(limit)
-        .collect::<Vec<_>>();
-    let removed = keys.len();
-    for key in keys {
-        guards.remove(&key);
-    }
-    removed
 }
 
 async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Result<(), String> {
@@ -173,20 +156,36 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
                     .map_err(crate::storage::catalog::CatalogError::from)?;
                 return Ok(());
             }
+            let expected_digest = if record.managed {
+                record.expected_digest.as_str()
+            } else {
+                written.digest.as_str()
+            };
+            let operation_matches = if record.managed {
+                allocation_operation.as_deref() == Some(record.operation_id.as_str())
+                    && operation_generation.as_deref() == Some(record.writer_generation.as_str())
+            } else {
+                allocation_operation.is_some()
+            };
             if state != "allocated"
-                || digest != record.expected_digest
-                || written.byte_length > catalog_reserved as u64
-                || catalog_reserved != record.reserved
-                || catalog_kind != record.kind
-                || allocation_operation.as_deref() != Some(record.operation_id.as_str())
+                || digest != expected_digest
+                || (record.managed && written.byte_length > catalog_reserved as u64)
+                || (record.managed && catalog_reserved != record.reserved)
+                || (record.managed && catalog_kind != record.kind)
                 || operation_state.as_deref() != Some("prepared")
                 || operation_generation.as_deref() != Some(writer_generation.as_str())
-                || operation_generation.as_deref() != Some(record.writer_generation.as_str())
+                || !operation_matches
             {
                 return Err(crate::storage::catalog::CatalogError::Conflict(
                     "in-flight physical object no longer matches its admission".into(),
                 ));
             }
+            let reserved = if record.managed { record.reserved } else { catalog_reserved };
+            let kind = if record.managed {
+                record.kind.as_str()
+            } else {
+                catalog_kind.as_str()
+            };
             let measured = i64::try_from(written.byte_length).map_err(|_| {
                 crate::storage::catalog::CatalogError::Invalid(
                     "object length overflows SQL integer".into(),
@@ -198,11 +197,11 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
                     params![measured, record.document_id, written.object_id.as_str()],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            let delta = measured - record.reserved;
+            let delta = measured - reserved;
             transaction
                 .execute(
                     "UPDATE documents SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,agent_payload_bytes=CASE WHEN ?3='agent_payload' THEN agent_payload_bytes+?4 ELSE agent_payload_bytes END WHERE id=?5",
-                    params![measured, record.reserved, record.kind, delta, record.document_id],
+                    params![measured, reserved, kind, delta, record.document_id],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let owner: String = transaction
@@ -215,13 +214,13 @@ async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Resu
             transaction
                 .execute(
                     "UPDATE accounts SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2 WHERE id=?3",
-                    params![measured, record.reserved, owner],
+                    params![measured, reserved, owner],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             transaction
                 .execute(
                     "UPDATE server_state SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,agent_payload_bytes=CASE WHEN ?3='agent_payload' THEN agent_payload_bytes+?4 ELSE agent_payload_bytes END,catalog_revision=catalog_revision+1 WHERE id=1",
-                    params![measured, record.reserved, record.kind, delta],
+                    params![measured, reserved, kind, delta],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             transaction
@@ -374,13 +373,13 @@ impl V2GcCatalog for Catalog {
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let changed = transaction
                 .execute(
-                    r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 ORDER BY work_expires_at,id LIMIT ?3)"#,
+                    r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations candidate WHERE candidate.state='prepared' AND candidate.work_expires_at IS NOT NULL AND candidate.work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects allocated WHERE allocated.allocation_operation_id=candidate.id AND allocated.state='allocated') ORDER BY candidate.work_expires_at,candidate.id LIMIT ?3)"#,
                     params![now, now.saturating_add(RECEIPT_RETENTION_MS), i64::try_from(limit).unwrap_or(i64::MAX)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let expired_receipts = transaction
                 .execute(
-                    "DELETE FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM objects o JOIN object_leases l ON l.document_id=o.document_id AND l.object_id=o.id WHERE o.allocation_operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM objects o JOIN checkpoint_objects c ON c.document_id=o.document_id AND c.object_id=o.id WHERE o.allocation_operation_id=operations.id) AND id IN (SELECT id FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 ORDER BY receipt_expires_at,id LIMIT ?2)",
+                    "DELETE FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=operations.id) AND NOT EXISTS (SELECT 1 FROM checkpoint_objects WHERE operation_id=operations.id) AND id IN (SELECT candidate.id FROM operations candidate WHERE candidate.state IN ('committed','aborted') AND candidate.receipt_expires_at IS NOT NULL AND candidate.receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=candidate.id) AND NOT EXISTS (SELECT 1 FROM checkpoint_objects WHERE operation_id=candidate.id) ORDER BY candidate.receipt_expires_at,candidate.id LIMIT ?2)",
                     params![now, i64::try_from(limit).unwrap_or(i64::MAX)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
@@ -393,7 +392,7 @@ impl V2GcCatalog for Catalog {
 
     async fn settle_completed_inflight(&self, limit: usize) -> Result<usize, String> {
         let namespace = self as *const Catalog as usize;
-        let mut settled = reap_completed_unmanaged(namespace, limit.min(256));
+        let mut settled = 0usize;
         let records = completed_inflight(namespace, limit.min(256));
         for record in records {
             let key_document = record.document_id.clone();
