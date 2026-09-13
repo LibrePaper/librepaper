@@ -1225,168 +1225,8 @@ impl Room {
         &self,
         point: &Checkpoint,
     ) -> Result<(crate::document::history::Tree, HashMap<String, String>), String> {
-        let (path, id) = {
-            let state = self.state.lock().await;
-            (
-                session::main_path(&state.session.doc),
-                session::main_id(&state.session.doc),
-            )
-        };
-        // Install a lease for the event tree before the first object-store
-        // read. Retention queues the tree in the same transaction that removes
-        // its checkpoint row, so this admission either protects the read or
-        // fails closed instead of leasing an already-deleted object.
-        let lease = if let Some(catalog) = self.catalog.get() {
-            let operation = crate::util::new_id();
-            Some(
-                begin_source_history_lease(
-                    catalog,
-                    &self.storage_id,
-                    &operation,
-                    vec![crate::storage::catalog::SourceHistoryObject {
-                        object_key: crate::storage::blob::checkpoint_key(
-                            &self.storage_id,
-                            &point.sha,
-                        ),
-                        kind: "checkpoint_tree".into(),
-                        bytes: 0,
-                    }],
-                    crate::util::now_unix(),
-                    crate::util::now_unix().saturating_add(600),
-                )
-                .await
-                .map_err(|error| error.to_string())?,
-            )
-        } else {
-            None
-        };
-        let mut native_digests = std::collections::HashSet::new();
-        let result = async {
-            // Membership is part of the read admission for both native trees
-            // and legacy one-file checkpoints.  A lease protects bytes, but
-            // cannot make a checkpoint row that retention has already removed
-            // authoritative again.
-            if self
-                .checkpoint_by_sha(&point.sha)
-                .await?
-                .is_none_or(|current| current.sha != point.sha)
-            {
-                return Err("checkpoint was removed while it was being read".into());
-            }
-            if point.tree {
-                let (Some(catalog), Some(lease)) = (self.catalog.get(), lease.as_ref()) else {
-                    return self
-                        .checkpoint_cache
-                        .load_checkpoint(self.blobs.as_ref(), &self.storage_id, point, &path, &id)
-                        .await;
-                };
-                let raw = self
-                    .checkpoint_cache
-                    .get(
-                        self.blobs.as_ref(),
-                        &checkpoint_key(&self.storage_id, &point.sha),
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let tree: history::Tree =
-                    serde_json::from_slice(raw.as_slice()).map_err(|error| error.to_string())?;
-                let mut objects = vec![crate::storage::catalog::SourceHistoryObject {
-                    object_key: crate::storage::blob::checkpoint_key(&self.storage_id, &point.sha),
-                    kind: "checkpoint_tree".into(),
-                    bytes: i64::try_from(raw.len()).unwrap_or(i64::MAX),
-                }];
-                let mut seen = std::collections::HashSet::new();
-                for digest in tree
-                    .files
-                    .values()
-                    .filter(|entry| entry.kind == "text")
-                    .map(|entry| entry.sha.as_str())
-                    .filter(|digest| digest.len() == 64 && hex::decode(digest).is_ok())
-                {
-                    if !seen.insert(digest.to_owned()) {
-                        continue;
-                    }
-                    let record = read_source_history_record(catalog, &self.storage_id, digest)
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .ok_or_else(|| format!("checkpoint source recipe {digest} is missing"))?;
-                    native_digests.insert(digest.to_owned());
-                    objects.push(crate::storage::catalog::SourceHistoryObject {
-                        object_key: record.recipe_key,
-                        kind: "source_recipe".into(),
-                        bytes: record.recipe_bytes,
-                    });
-                    objects.extend(record.objects);
-                }
-                // Assets are tree references too, but were previously absent
-                // from the read lease. Their recorded byte size is the exact
-                // physical upload size used by the asset writer.
-                for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
-                    if entry.size < 0 {
-                        return Err(format!(
-                            "checkpoint asset {} has an invalid size",
-                            entry.sha
-                        ));
-                    }
-                    objects.push(crate::storage::catalog::SourceHistoryObject {
-                        object_key: crate::storage::blob::asset_key(&self.storage_id, &entry.sha),
-                        kind: "asset".into(),
-                        bytes: entry.size,
-                    });
-                }
-                // The tree itself was admitted before the first object read
-                // with a provisional zero byte count.  Do not replay that
-                // row with its discovered size: read leases protect lifetime,
-                // while publication leases are the source of accounting, and
-                // begin_source_history_lease intentionally rejects a changed
-                // plan for an existing operation.  Every newly discovered
-                // object (including assets with their exact physical size)
-                // is added below before it is materialized.
-                let tree_key = crate::storage::blob::checkpoint_key(&self.storage_id, &point.sha);
-                let extension = objects
-                    .into_iter()
-                    .filter(|object| object.object_key != tree_key)
-                    .collect();
-                lease
-                    .extend(
-                        extension,
-                        crate::util::now_unix(),
-                        crate::util::now_unix().saturating_add(600),
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                // A checkpoint can be removed only after its tree row is
-                // gone, but assets have no checkpoint graph table. Verify
-                // their physical presence while the lease now blocks queued
-                // cleanup, before a restore can install their references.
-                for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
-                    let key = crate::storage::blob::asset_key(&self.storage_id, &entry.sha);
-                    if !self
-                        .blobs
-                        .exists(&key)
-                        .await
-                        .map_err(|error| error.to_string())?
-                    {
-                        return Err(format!("checkpoint asset {} is not readable", entry.sha));
-                    }
-                }
-            }
-            self.checkpoint_cache
-                .load_checkpoint_with_native_digests(
-                    self.blobs.as_ref(),
-                    &self.storage_id,
-                    point,
-                    &path,
-                    &id,
-                    &native_digests,
-                )
-                .await
-        }
-        .await;
-        if let Some(lease) = lease {
-            lease.finish().await.map_err(|error| error.to_string())?;
-        }
-        result
+        let catalog = self.catalog.get().ok_or("durable catalog required")?;
+        self.checkpoint_cache.load_checkpoint_v2(self.blobs.as_ref(), catalog, &self.slug, point).await
     }
 
     /// Look up one checkpoint without requiring the bounded resident history
@@ -1493,7 +1333,7 @@ impl Room {
         &self,
         doc: &yrs::Doc,
         manifest: &Manifest,
-        named: &str,
+        _named: &str,
     ) -> Result<(), String> {
         let point = manifest
             .latest()
@@ -1504,7 +1344,7 @@ impl Room {
         // rather than the (empty) document.
         let (tree, bodies) = self
             .checkpoint_cache
-            .load_checkpoint(self.blobs.as_ref(), &self.storage_id, &point, named, "")
+            .load_checkpoint_v2(self.blobs.as_ref(), self.catalog.get().ok_or("durable catalog required")?, &self.slug, &point)
             .await?;
         session::restore(doc, &tree, &bodies);
         Ok(())
@@ -1519,85 +1359,16 @@ impl Room {
         &self,
         point: &Checkpoint,
         tree: &history::Tree,
-    ) -> Result<Option<crate::room::catalog::SourceHistoryLeaseGuard>, WriteError> {
-        let Some(catalog) = self.catalog.get() else {
-            return Ok(None);
-        };
-        if self
-            .checkpoint_by_sha(&point.sha)
-            .await
-            .map_err(WriteError::Storage)?
-            .is_none_or(|current| current.sha != point.sha)
-        {
-            return Err(WriteError::Storage(
-                "checkpoint was removed while it was being restored".into(),
-            ));
-        }
-        let mut objects = vec![crate::storage::catalog::SourceHistoryObject {
-            object_key: crate::storage::blob::checkpoint_key(&self.storage_id, &point.sha),
-            kind: "checkpoint_tree".into(),
-            bytes: i64::try_from(tree.to_bytes().len()).unwrap_or(i64::MAX),
-        }];
-        let mut seen = std::collections::HashSet::new();
-        for digest in tree
-            .files
-            .values()
-            .filter(|entry| entry.kind == "text")
-            .map(|entry| entry.sha.as_str())
-            .filter(|digest| digest.len() == 64 && hex::decode(digest).is_ok())
-        {
-            if !seen.insert(digest.to_owned()) {
-                continue;
-            }
-            let record = read_source_history_record(catalog, &self.storage_id, digest)
-                .await
-                .map_err(|error| WriteError::Storage(error.to_string()))?
-                .ok_or_else(|| {
-                    WriteError::Storage(format!("checkpoint source recipe {digest} is missing"))
-                })?;
-            objects.push(crate::storage::catalog::SourceHistoryObject {
-                object_key: record.recipe_key,
-                kind: "source_recipe".into(),
-                bytes: record.recipe_bytes,
-            });
-            objects.extend(record.objects);
-        }
-        for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
-            if entry.size < 0 {
-                return Err(WriteError::Storage(
-                    "checkpoint asset has an invalid size".into(),
-                ));
-            }
-            objects.push(crate::storage::catalog::SourceHistoryObject {
-                object_key: crate::storage::blob::asset_key(&self.storage_id, &entry.sha),
-                kind: "asset".into(),
-                bytes: entry.size,
-            });
-        }
-        let operation = crate::util::new_id();
-        let lease = begin_source_history_lease(
-            catalog,
-            &self.storage_id,
-            &operation,
-            objects,
-            crate::util::now_unix(),
-            crate::util::now_unix().saturating_add(600),
-        )
-        .await?;
-        for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
-            let key = crate::storage::blob::asset_key(&self.storage_id, &entry.sha);
-            if !self
-                .blobs
-                .exists(&key)
-                .await
-                .map_err(|error| WriteError::Storage(error.to_string()))?
-            {
-                let _ = lease.finish().await;
-                return Err(WriteError::Storage(format!(
-                    "checkpoint asset {} is not readable",
-                    entry.sha
-                )));
-            }
+    ) -> Result<Option<crate::storage::catalog::CheckpointReadLease>, WriteError> {
+        let catalog = self.catalog.get().ok_or_else(|| WriteError::Storage("durable catalog required".into()))?;
+        let owner = catalog.clone();
+        let slug = self.slug.clone();
+        let event = point.sha.clone();
+        let lease = catalog.execute_catalog(4096, move |_| {
+            owner.acquire_checkpoint_read(&slug, Some(&event), crate::util::now_millis())
+        }).await?;
+        if hex::encode(sha2::Sha256::digest(tree.to_bytes())) != lease.set.tree_digest {
+            return Err(WriteError::Storage("restore tree does not match checkpoint closure".into()));
         }
         Ok(Some(lease))
     }

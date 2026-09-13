@@ -1,581 +1,74 @@
-//! Accounts: the row an identity becomes, its sessions, and erasing one.
-
+//! Account identity, preferences, bounded usage queries, and erasure.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl Catalog {
-    /// Durable references held by unresolved annotations/suggestions. They
-    /// are keyed by document so account-wide retention cannot accidentally
-    /// protect a same-named revision in another document.
     pub fn account_open_annotation_references(
         &self,
         account_id: &str,
     ) -> CatalogResult<BTreeMap<String, BTreeSet<String>>> {
         self.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT c.slug,c.revision FROM comments c JOIN documents d ON d.slug=c.slug
-                 WHERE d.owner_id=?1 AND d.status IN ('active','creating')
-                   AND c.resolved=0 AND c.revision<>'' ORDER BY c.slug,c.revision",
-            )?;
-            let rows = statement.query_map([account_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?;
-            let mut references = BTreeMap::new();
-            for row in rows {
-                let (slug, revision) = row?;
-                references
-                    .entry(slug)
-                    .or_insert_with(BTreeSet::new)
-                    .insert(revision);
-            }
+            let mut statement=connection.prepare("SELECT d.slug,a.protected_checkpoint_id FROM annotations a JOIN documents d ON d.id=a.document_id WHERE d.owner_id=?1 AND d.status='active' AND a.resolved_at IS NULL AND a.protected_checkpoint_id IS NOT NULL ORDER BY d.slug,a.protected_checkpoint_id")?;
+            let mut references=BTreeMap::<String,BTreeSet<String>>::new();
+            let rows=statement.query_map([account_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?;
+            for row in rows { let (slug,event)=row?; references.entry(slug).or_default().insert(event); }
             Ok(references)
         })
     }
 
+    /// An advisory account settings view. Mutation admission never enumerates
+    /// these rows; it uses the maintained account and deployment counters.
     pub fn account_checkpoints(&self, account_id: &str) -> CatalogResult<Vec<Checkpoint>> {
         self.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT c.slug,c.sha,c.seq,c.durable_seq,c.tree_sha,c.parent,c.at,c.by,
-                        c.by_account,c.why,c.source_format,c.size,c.label,c.git_commit,
-                        c.dirty,c.changed
-                 FROM checkpoints c JOIN documents d ON d.slug=c.slug
-                 WHERE d.owner_id=?1 AND d.status IN ('active','creating')
-                 ORDER BY c.slug,c.seq",
-            )?;
-            let rows = statement.query_map([account_id], |row| {
-                Ok(Checkpoint {
-                    slug: row.get(0)?,
-                    sha: row.get(1)?,
-                    seq: row.get(2)?,
-                    durable_seq: row.get(3)?,
-                    tree_sha: row.get(4)?,
-                    parent: row.get(5)?,
-                    at: row.get(6)?,
-                    by: row.get(7)?,
-                    by_account: row.get(8)?,
-                    why: row.get(9)?,
-                    source_format: row.get(10)?,
-                    size: row.get(11)?,
-                    label: row.get(12)?,
-                    git_commit: row.get(13)?,
-                    dirty: row.get::<_, i64>(14)? != 0,
-                    changed: row.get(15)?,
-                })
+            let mut statement=connection.prepare("SELECT d.slug,c.id,c.seq,c.journal_sequence,c.tree_digest,COALESCE(c.parent_id,''),c.created_at,c.author_label,c.author_account_id,c.reason,c.source_format,c.logical_bytes,COALESCE(c.label,''),c.metadata_json FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.owner_id=?1 AND d.status='active' ORDER BY d.slug,c.seq")?;
+            let rows=statement.query_map([account_id],|row| {
+                let raw:String=row.get(13)?;
+                let metadata:serde_json::Value=serde_json::from_str(&raw).map_err(|error|rusqlite::Error::FromSqlConversionFailure(13,rusqlite::types::Type::Text,Box::new(error)))?;
+                Ok(Checkpoint {slug:row.get(0)?,sha:row.get(1)?,seq:row.get(2)?,durable_seq:row.get(3)?,tree_sha:row.get(4)?,parent:row.get(5)?,at:crate::util::format_unix(row.get::<_,i64>(6)?/1000),by:row.get(7)?,by_account:row.get(8)?,why:row.get(9)?,source_format:row.get(10)?,size:row.get(11)?,label:row.get(12)?,git_commit:metadata["commit"].as_str().unwrap_or_default().to_owned(),dirty:metadata["dirty"].as_bool().unwrap_or(false),changed:metadata.get("changed").cloned().unwrap_or_else(||serde_json::json!([])).to_string()})
             })?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(CatalogError::from)
+            rows.collect::<Result<Vec<_>,_>>().map_err(CatalogError::from)
         })
     }
 
-    /// Return the owner's charged physical storage.
-    ///
-    /// The rows below are deliberately combined by `(storage_id, object_key)`
-    /// before they are summed.  A source-history object can be present in the
-    /// graph, in an in-flight lease, and in the deletion queue at the same
-    /// time; those are three catalogue views of one physical object, not
-    /// three charges.  The same rule also handles the migration period where
-    /// a source object is represented by both the legacy object ledger and the
-    /// new source-history graph.
-    ///
-    /// `checkpoints.size` is never used here.  It is the uncompressed logical
-    /// tree size and is not evidence of either an encoded object or a
-    /// reclaimable allocation.
     pub fn account_storage_usage(&self, account_id: &str) -> CatalogResult<AccountStorageUsage> {
-        self.with_connection(|connection| {
-            let usage: Option<AccountStorageUsage> = connection.query_row(
-                "SELECT stored_bytes+reserved_bytes,stored_bytes,0,0,0,document_count,
-                        (SELECT count(*) FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.owner_id=?1)
-                 FROM accounts WHERE id=?1",
-                [account_id],
-                |row| Ok(AccountStorageUsage {
-                    charged_bytes: row.get(0)?, live_bytes: row.get(1)?, history_bytes: 0,
-                    asset_bytes: 0, publication_bytes: 0, metadata_bytes: 0,
-                    document_count: row.get(5)?, checkpoint_count: row.get(6)?, physical_accounting: true,
-                }),
-            ).optional().map_err(CatalogError::from)?;
-            usage.ok_or(CatalogError::NotFound)
-        })
+        self.with_connection(|connection| Self::account_storage_usage_on(connection, account_id))
     }
-
-    /// Connection-scoped form used by admission transactions.  Keeping the
-    /// physical evaluator below the catalogue lock boundary avoids a nested
-    /// connection lock while retaining exactly the same object/metadata
-    /// categories as the account status endpoint.
     pub(super) fn account_storage_usage_on(
         connection: &Connection,
         account_id: &str,
     ) -> CatalogResult<AccountStorageUsage> {
-        #[derive(Clone)]
-        struct PhysicalObject {
-            storage_id: String,
-            key: String,
-            kind: String,
-            bytes: i64,
-            /// A source/tree object named by the newest checkpoint is
-            /// also needed by the live document.  It is charged in the
-            /// live category and not again as history.
-            live_root: bool,
-        }
-
-        let (document_count, checkpoint_count): (i64, i64) = connection
-            .query_row(
-                "SELECT COUNT(*),
-                            (SELECT COUNT(*) FROM checkpoints c
-                             JOIN documents cd ON cd.slug=c.slug
-                             WHERE cd.owner_id=?1
-                               AND cd.status IN ('active','creating','deleting'))
-                     FROM documents
-                     WHERE owner_id=?1 AND status IN ('active','creating','deleting')",
-                [account_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(CatalogError::from)?;
-
-        // Keep this query as a UNION ALL and deduplicate in Rust.  SQL
-        // UNION cannot detect a catalogue repair disagreement where the
-        // same key has two different recorded lengths; retaining that
-        // signal lets the caller avoid claiming verified accounting.
-        let mut statement = connection.prepare(
-            "SELECT d.storage_id, o.object_key, o.kind, o.bytes, 0
-                   FROM documents d JOIN object_accounting o
-                     ON o.storage_id=d.storage_id
-                  WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')
-                 UNION ALL
-                 SELECT d.storage_id, o.object_key, o.kind, o.bytes,
-                        EXISTS(
-                          SELECT 1
-                            FROM source_history_checkpoint_files newest
-                            JOIN checkpoints c
-                              ON c.slug=d.slug AND c.sha=newest.checkpoint_sha
-                           WHERE newest.storage_id=o.storage_id
-                             AND newest.file_digest=o.file_digest
-                             AND c.seq=(SELECT MAX(c2.seq) FROM checkpoints c2
-                                        WHERE c2.slug=d.slug))
-                   FROM documents d JOIN source_history_objects o
-                     ON o.storage_id=d.storage_id
-                  WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')
-                 UNION ALL
-                 SELECT d.storage_id, l.object_key, 'source_lease', l.bytes, 0
-                   FROM documents d JOIN source_history_write_leases l
-                     ON l.storage_id=d.storage_id
-                  WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')
-                 UNION ALL
-                 SELECT d.storage_id, r.object_key, 'object_reservation', r.new_bytes, 0
-                   FROM documents d JOIN object_reservations r
-                     ON r.storage_id=d.storage_id
-                  WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')
-                 UNION ALL
-                 SELECT d.storage_id, p.object_key, 'pending_delete', p.bytes, 0
-                   FROM documents d JOIN pending_deletes p ON p.slug=d.slug
-                  WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')
-                 UNION ALL
-                 SELECT d.storage_id, r.object_key, 'asset_reference', r.bytes, 0
-                   FROM documents d JOIN checkpoint_asset_refs r
-                     ON r.storage_id=d.storage_id
-                  WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-        )?;
-        let rows = statement.query_map([account_id], |row| {
-            Ok(PhysicalObject {
-                storage_id: row.get(0)?,
-                key: row.get(1)?,
-                kind: row.get(2)?,
-                bytes: row.get(3)?,
-                live_root: row.get::<_, i64>(4)? != 0,
-            })
-        })?;
-        let mut objects = BTreeMap::<(String, String), PhysicalObject>::new();
-        let mut verified = true;
-        for row in rows {
-            let object = row?;
-            let key = (object.storage_id.clone(), object.key.clone());
-            if let Some(previous) = objects.get_mut(&key) {
-                if previous.bytes != object.bytes {
-                    // Queue/lease lengths are plans copied into the
-                    // catalogue.  A committed object ledger or source graph
-                    // length is measured, while an ordinary reservation is
-                    // the prospective replacement and must contribute its
-                    // positive delta.  Taking the maximum keeps an old
-                    // measured object charged until its replacement commits,
-                    // and prevents a reservation overwrite from hiding the
-                    // bytes admission already promised.
-                    let previous_planned = matches!(
-                        previous.kind.as_str(),
-                        "object_reservation" | "pending" | "pending_delete" | "source_lease"
-                    );
-                    let object_planned = matches!(
-                        object.kind.as_str(),
-                        "object_reservation" | "pending" | "pending_delete" | "source_lease"
-                    );
-                    if previous_planned || object_planned {
-                        previous.bytes = previous.bytes.max(object.bytes);
-                    } else {
-                        // Two measured catalogue records disagree.  Keep the
-                        // conservative value but do not report verification.
-                        verified = false;
-                        previous.bytes = previous.bytes.max(object.bytes);
-                    }
-                }
-                previous.live_root |= object.live_root;
-            } else {
-                objects.insert(key, object);
-            }
-        }
-        drop(statement);
-
-        fn class(kind: &str, key: &str, live_root: bool, historical_asset: bool) -> &'static str {
-            if live_root {
-                return "live";
-            }
-            if historical_asset && (kind == "asset" || key.contains("/assets/")) {
-                return "history";
-            }
-            if kind == "asset" || key.contains("/assets/") {
-                return "asset";
-            }
-            if kind == "publication" || kind == "publication-maintenance" {
-                return "publication";
-            }
-            if kind.starts_with("source_")
-                || kind == "text"
-                || key.contains("/chunks/")
-                || key.contains("/recipes/")
-                || key.contains("/blobs/")
-                || key.contains("/trees/")
-            {
-                return "history";
-            }
-            // Sessions, journals, room state, Quarto state, and any
-            // future unclassified durable object belong to the live
-            // footprint until a dedicated category is introduced.
-            "live"
-        }
-
-        let mut live_bytes = 0i64;
-        let mut history_bytes = 0i64;
-        let mut asset_bytes = 0i64;
-        let mut publication_bytes = 0i64;
-        let mut object_bytes = 0i64;
-        let mut latest_trees = BTreeSet::<(String, String)>::new();
-        let mut statement = connection.prepare(
-            "SELECT d.storage_id,
-                        'content/'||d.storage_id||'/trees/'||c.sha
-                   FROM documents d JOIN checkpoints c ON c.slug=d.slug
-                  WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')
-                    AND c.seq=(SELECT MAX(c2.seq) FROM checkpoints c2 WHERE c2.slug=c.slug)",
-        )?;
-        let rows = statement.query_map([account_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            latest_trees.insert(row?);
-        }
-        drop(statement);
-        let mut historical_assets = BTreeSet::<(String, String)>::new();
-        let mut live_assets = BTreeSet::<(String, String)>::new();
-        let mut statement = connection.prepare(
-            "SELECT d.slug,
-                    EXISTS(
-                      SELECT 1 FROM checkpoints c
-                       WHERE c.slug=d.slug
-                         AND NOT EXISTS(
-                           SELECT 1 FROM checkpoint_asset_sets s
-                            WHERE s.storage_id=d.storage_id
-                              AND s.checkpoint_sha=c.sha
-                         )),
-                    d.pending_publication IS NOT NULL,
-                    (
-                      COALESCE((
-                        SELECT MAX(j.last_sequence)
-                          FROM journal_segment_coverage j
-                         WHERE j.storage_id=d.storage_id OR j.storage_id=''
-                      ),0) > COALESCE((
-                        SELECT MAX(c.durable_seq) FROM checkpoints c WHERE c.slug=d.slug
-                      ),0)
-                      OR COALESCE((
-                        SELECT MAX(b.sequence)
-                          FROM journal_bases b
-                         WHERE b.storage_id=d.storage_id OR b.storage_id=''
-                      ),0) > COALESCE((
-                        SELECT MAX(c.durable_seq) FROM checkpoints c WHERE c.slug=d.slug
-                      ),0)
-                    )
-               FROM documents d
-              WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-        )?;
-        let rows = statement.query_map([account_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, bool>(1)?,
-                row.get::<_, bool>(2)?,
-                row.get::<_, bool>(3)?,
-            ))
-        })?;
-        let mut safe_documents = BTreeSet::new();
-        for row in rows {
-            let (slug, legacy, pending_publication, journal_ahead) = row?;
-            if !legacy && !pending_publication && !journal_ahead {
-                safe_documents.insert(slug);
-            }
-        }
-        drop(statement);
-        let mut statement = connection.prepare(
-            "SELECT r.storage_id,r.object_key,d.slug,
-                    r.checkpoint_sha=(SELECT c.sha FROM checkpoints c
-                                      WHERE c.slug=d.slug ORDER BY c.seq DESC LIMIT 1)
-               FROM checkpoint_asset_refs r
-               JOIN documents d ON d.storage_id=r.storage_id
-              WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-        )?;
-        let rows = statement.query_map([account_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, bool>(3)?,
-            ))
-        })?;
-        for row in rows {
-            let (storage_id, object_key, slug, newest) = row?;
-            let object = (storage_id, object_key);
-            if newest || !safe_documents.contains(&slug) {
-                live_assets.insert(object);
-            } else {
-                historical_assets.insert(object);
-            }
-        }
-        drop(statement);
-        for object in objects.values() {
-            if object.bytes < 0 {
-                verified = false;
-                continue;
-            }
-            object_bytes = object_bytes.saturating_add(object.bytes);
-            let live_root = object.live_root
-                || latest_trees.contains(&(object.storage_id.clone(), object.key.clone()));
-            let object_id = (object.storage_id.clone(), object.key.clone());
-            let historical_asset =
-                historical_assets.contains(&object_id) && !live_assets.contains(&object_id);
-            match class(&object.kind, &object.key, live_root, historical_asset) {
-                "history" => history_bytes = history_bytes.saturating_add(object.bytes),
-                "asset" => asset_bytes = asset_bytes.saturating_add(object.bytes),
-                "publication" => publication_bytes = publication_bytes.saturating_add(object.bytes),
-                _ => live_bytes = live_bytes.saturating_add(object.bytes),
-            }
-        }
-
-        // Catalogue records have no backend page-size meaning.  This is
-        // the deterministic serialized-record charge used for quota
-        // attribution: text columns contribute their UTF-8 byte lengths,
-        // while integer fields contribute their fixed 64-bit wire width.
-        // SQLite page slack and indexes remain deployment overhead.
-        let (metadata_total, history_metadata) =
-            Self::account_catalogue_metadata_bytes(connection, account_id)?;
-        history_bytes = history_bytes.saturating_add(history_metadata);
-        let metadata_bytes = metadata_total.saturating_sub(history_metadata);
-        // Every serialized catalogue record is charged exactly once;
-        // history records are exposed in `history_bytes` for the soft
-        // target, while `metadata_bytes` keeps the category totals
-        // disjoint from the physical object total.
-        let charged_bytes = object_bytes.saturating_add(metadata_total);
-
-        // A legacy document with a non-zero admission ledger but no
-        // measured object/lease/queue rows cannot be represented by this
-        // query.  Preserve the safe migration signal rather than
-        // claiming that an inferred logical value is physical.
-        let unrepresented_ledger: i64 = connection.query_row(
-            "SELECT COALESCE(SUM(MAX(0,counted_size-size)),0)
-                   FROM documents d
-                  WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')
-                    AND NOT EXISTS (SELECT 1 FROM object_accounting o
-                                    WHERE o.storage_id=d.storage_id)
-                    AND NOT EXISTS (SELECT 1 FROM source_history_objects o
-                                    WHERE o.storage_id=d.storage_id)",
-            [account_id],
-            |row| row.get(0),
-        )?;
-        if unrepresented_ledger > 0 {
-            verified = false;
-        }
-        // A catalogue row without any measured physical object is a
-        // legacy reservation, not proof that its physical footprint is
-        // zero.  Keep admission on the conservative counted-size path
-        // until at least one object/graph measurement exists.
-        let measured_objects: i64 = connection.query_row(
-                "SELECT
-                    (SELECT COUNT(*) FROM object_accounting o JOIN documents d ON d.storage_id=o.storage_id
-                     WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting'))+
-                    (SELECT COUNT(*) FROM source_history_objects o JOIN documents d ON d.storage_id=o.storage_id
-                     WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting'))",
-                [account_id], |row| row.get(0),
-            )?;
-        if document_count > 0 && measured_objects == 0 {
-            verified = false;
-        }
-        Ok(AccountStorageUsage {
-            charged_bytes,
-            live_bytes,
-            history_bytes,
-            asset_bytes,
-            publication_bytes,
-            metadata_bytes,
-            document_count,
-            checkpoint_count,
-            physical_accounting: verified,
-        })
+        connection.query_row("SELECT stored_bytes+reserved_bytes,document_count,(SELECT count(*) FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.owner_id=?1) FROM accounts WHERE id=?1",[account_id],|row|Ok(AccountStorageUsage{charged_bytes:row.get(0)?,document_count:row.get(1)?,checkpoint_count:row.get(2)?,physical_accounting:true,live_bytes:0,history_bytes:0,asset_bytes:0,publication_bytes:0,metadata_bytes:0})).optional()?.ok_or(CatalogError::NotFound)
     }
-
-    /// Return the amount admission should charge for one owner while the
-    /// caller already holds the catalogue transaction.  Unknown legacy
-    /// layouts deliberately fall back to their existing reservation rather
-    /// than turning an unverified physical measurement into authority.
     pub(super) fn owner_admission_bytes_on(
         connection: &Connection,
         owner_id: Option<&str>,
-        owner_key: &str,
+        _owner_key: &str,
     ) -> CatalogResult<(i64, bool)> {
-        let owner_id_value = owner_id.as_deref().ok_or_else(|| CatalogError::Invalid("v2 documents always have an owner account".into()))?;
-        let bytes: i64 = connection.query_row("SELECT stored_bytes+reserved_bytes FROM accounts WHERE id=?1", [owner_id_value], |row| row.get(0)).map_err(CatalogError::from)?;
-        let _ = owner_key;
-        return Ok((bytes, true));
-        #[allow(unreachable_code)]
-        let Some(owner_id) = owner_id else {
-            let bytes = connection
-                .query_row(
-                    "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents
-                 WHERE owner_id IS NULL AND owner_key=?1",
-                    [owner_key],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            return Ok((bytes, false));
-        };
-        let usage = Self::account_storage_usage_on(connection, owner_id)?;
-        if usage.physical_accounting {
-            let counted_headroom: i64 = connection
-                .query_row(
-                    "SELECT COALESCE(SUM(MAX(counted_size-size,0)),0)
-                 FROM documents WHERE owner_id=?1
-                   AND status IN ('active','creating','deleting')",
-                    [owner_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            let pending_headroom: i64 = connection
-                .query_row(
-                    "SELECT COALESCE(SUM(MAX(counted_size-size,0)),0)
-                 FROM documents WHERE owner_id=?1 AND pending_publication IS NOT NULL
-                   AND status IN ('active','creating','deleting')",
-                    [owner_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            let object_reservation_delta: i64 = connection
-                .query_row(
-                    "SELECT COALESCE(SUM(MAX(r.new_bytes-r.old_bytes,0)),0)
-                 FROM object_reservations r JOIN documents d ON d.storage_id=r.storage_id
-                WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                    [owner_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            let pending_object_reservation_delta: i64 = connection
-                .query_row(
-                    "SELECT COALESCE(SUM(MAX(r.new_bytes-r.old_bytes,0)),0)
-                 FROM object_reservations r JOIN documents d ON d.storage_id=r.storage_id
-                WHERE d.owner_id=?1 AND d.pending_publication IS NOT NULL
-                  AND d.status IN ('active','creating','deleting')",
-                    [owner_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            let edit_headroom: i64 = connection
-                .query_row(
-                    "SELECT COALESCE(SUM(e.pending_bytes+e.writing_bytes),0)
-                 FROM room_edit_reservations e JOIN documents d ON d.storage_id=e.storage_id
-                 WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                    [owner_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            // `reserve` and `reserve_document_bytes` predate the object
-            // reservation table and only grow counted_size.  Preserve those
-            // bytes, while removing the two kinds of headroom represented by
-            // explicit rows above so they are not charged a second time.
-            let generic_headroom = counted_headroom
-                .saturating_sub(pending_headroom)
-                .saturating_sub(object_reservation_delta);
-            Ok((
-                usage
-                    .charged_bytes
-                    // Object reservations are already represented by the
-                    // prospective maximum in `usage`; only the publication
-                    // peak not covered by one of those reservations remains
-                    // additional headroom.
-                    .saturating_add(
-                        pending_headroom.saturating_sub(pending_object_reservation_delta),
-                    )
-                    .saturating_add(edit_headroom)
-                    .saturating_add(generic_headroom),
-                true,
-            ))
-        } else {
-            let bytes: i64 = connection
-                .query_row(
-                    "SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents
-                 WHERE owner_id=?1",
-                    [owner_id],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            // Unverified legacy accounting may be larger, but it must not
-            // erase measured objects/metadata already known for this owner.
-            Ok((bytes.max(usage.charged_bytes), false))
-        }
+        let owner = owner_id
+            .ok_or_else(|| CatalogError::Invalid("every v2 document requires an account".into()))?;
+        Ok((
+            connection.query_row(
+                "SELECT stored_bytes+reserved_bytes FROM accounts WHERE id=?1",
+                [owner],
+                |row| row.get(0),
+            )?,
+            true,
+        ))
     }
-
-    /// Deployment-wide counterpart to [`owner_admission_bytes_on`].  It is
-    /// intentionally computed in the same transaction as the prospective
-    /// reservation, so concurrent writers cannot bypass the physical limit.
     pub(super) fn deployment_admission_bytes_on(
         connection: &Connection,
     ) -> CatalogResult<(i64, bool)> {
-        let bytes: i64 = connection.query_row("SELECT stored_bytes+reserved_bytes FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)?;
-        return Ok((bytes, true));
-        #[allow(unreachable_code)]
-        // Account-owned rows are grouped by durable owner id.  The owner key
-        // is a legacy/display identity and can differ between that owner's
-        // documents; grouping by both would charge the same account twice.
-        // Anonymous rows have no durable id, so their owner key remains the
-        // identity for the fallback bucket.
-        let mut statement = connection.prepare(
-            "SELECT owner_id, MIN(owner_key) FROM documents
-               WHERE status IN ('active','creating','deleting') AND owner_id IS NOT NULL
-             GROUP BY owner_id
-             UNION ALL
-             SELECT NULL, owner_key FROM documents
-               WHERE status IN ('active','creating','deleting') AND owner_id IS NULL
-             GROUP BY owner_key",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
-        })?;
-        let owners = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(statement);
-        let mut total = 0i64;
-        let mut verified = true;
-        for (owner_id, owner_key) in owners {
-            let (bytes, known) =
-                Self::owner_admission_bytes_on(connection, owner_id.as_deref(), &owner_key)?;
-            total = total.saturating_add(bytes);
-            verified &= known;
-        }
-        Ok((total, verified))
+        Ok((
+            connection.query_row(
+                "SELECT stored_bytes+reserved_bytes FROM server_state WHERE id=1",
+                [],
+                |row| row.get(0),
+            )?,
+            true,
+        ))
     }
-
-    /// Physical counterpart of the room allowance. The current document is
-    /// excluded using its durable reservation so edits may replace its own
-    /// bytes; the owner/deployment totals still include every other lifecycle
-    /// row and all measured metadata.
+    /// Advisory remaining allocation headroom. Existing immutable bytes stay
+    /// charged throughout a replacement and cannot be subtracted prospectively.
     pub fn physical_room_for(
         &self,
         slug: &str,
@@ -583,198 +76,38 @@ impl Catalog {
         total_limit: i64,
     ) -> CatalogResult<Option<i64>> {
         self.with_connection(|connection| {
-            let current: Option<(Option<String>, String, i64)> = connection.query_row(
-                "SELECT owner_id,owner_key,counted_size FROM documents
-                 WHERE slug=?1 AND status='active'",
-                [slug], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ).optional().map_err(CatalogError::from)?;
-            let Some((owner_id, owner_key, counted)) = current else { return Ok(None); };
-            let (owner_total, owner_known) = Self::owner_admission_bytes_on(
-                connection, owner_id.as_deref(), &owner_key,
-            )?;
-            let (deployment_total, deployment_known) = Self::deployment_admission_bytes_on(connection)?;
-            if !owner_known || !deployment_known {
-                // Legacy/unmeasured rows retain the established reservation
-                // behavior; physical status must never be inferred here.
-                let owner_total: i64 = if let Some(owner) = owner_id.as_deref() {
-                    connection.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id=?1", [owner], |row| row.get(0)).map_err(CatalogError::from)?
-                } else {
-                    connection.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents WHERE owner_id IS NULL AND owner_key=?1", [&owner_key], |row| row.get(0)).map_err(CatalogError::from)?
-                };
-                let total: i64 = connection.query_row("SELECT COALESCE(SUM(admission_bytes),0) FROM admission_documents", [], |row| row.get(0)).map_err(CatalogError::from)?;
-                return Ok(Some(
-                    total_limit
-                        .saturating_sub(total.saturating_sub(counted))
-                        .min(owner_limit.saturating_sub(owner_total.saturating_sub(counted)))
-                        .max(0),
-                ));
-            }
-            Ok(Some(
-                total_limit
-                    .saturating_sub(deployment_total.saturating_sub(counted))
-                    .min(owner_limit.saturating_sub(owner_total.saturating_sub(counted)))
-                    .max(0),
-            ))
+            let values:Option<(i64,i64)>=connection.query_row("SELECT a.stored_bytes+a.reserved_bytes,s.stored_bytes+s.reserved_bytes FROM documents d JOIN accounts a ON a.id=d.owner_id CROSS JOIN server_state s WHERE d.slug=?1 AND d.status='active'",[slug],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+            Ok(values.map(|(owner,total)| {
+                let owner_limit=if owner_limit<0 {i64::MAX}else{owner_limit};
+                let global=if total_limit<0{i64::MAX}else{total_limit.saturating_sub(total)};
+                global.min(owner_limit.saturating_sub(owner)).max(0)
+            }))
         })
     }
-
-    /// Re-evaluate a graph write after all prospective checkpoint and
-    /// source-history rows have been inserted into `connection`.  This is
-    /// intentionally called before the surrounding transaction commits: a
-    /// rejected graph rolls back its metadata edges together with the
-    /// checkpoint, so a reused object cannot bypass quota merely because it
-    /// needed no new blob allocation.
     pub(super) fn enforce_physical_quota_on(
         connection: &Connection,
         slug: &str,
         owner_limit: i64,
         total_limit: i64,
     ) -> CatalogResult<()> {
-        let (owner_id, owner_key): (Option<String>, String) = connection
-            .query_row(
-                "SELECT owner_id,owner_key FROM documents
-                 WHERE slug=?1 AND status IN ('active','creating','deleting')",
-                [slug],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(CatalogError::from)?
-            .ok_or(CatalogError::NotFound)?;
-        let (owner_bytes, owner_known) =
-            Self::owner_admission_bytes_on(connection, owner_id.as_deref(), &owner_key)?;
-        let (deployment_bytes, deployment_known) = Self::deployment_admission_bytes_on(connection)?;
-        // An unmeasured legacy row has no trustworthy physical value.  Its
-        // established counted/admission reservation remains authoritative;
-        // do not turn an unknown measurement into a guessed rejection.
-        if owner_known && owner_limit >= 0 && owner_bytes > owner_limit {
+        let (owner_bytes,global_bytes):(i64,i64)=connection.query_row("SELECT a.stored_bytes+a.reserved_bytes,s.stored_bytes+s.reserved_bytes FROM documents d JOIN accounts a ON a.id=d.owner_id CROSS JOIN server_state s WHERE d.slug=?1",[slug],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        if owner_limit >= 0 && owner_bytes > owner_limit {
             return Err(CatalogError::refused(
-                super::CatalogRefusal::OwnerBytes,
-                "owner storage quota exceeded by catalogue metadata",
+                CatalogRefusal::OwnerBytes,
+                "owner storage quota exceeded",
             ));
         }
-        if deployment_known && total_limit >= 0 && deployment_bytes > total_limit {
+        if total_limit >= 0 && global_bytes > total_limit {
             return Err(CatalogError::refused(
-                super::CatalogRefusal::DeploymentBytes,
-                "deployment storage quota exceeded by catalogue metadata",
+                CatalogRefusal::DeploymentBytes,
+                "deployment storage quota exceeded",
             ));
         }
         Ok(())
     }
 
-    /// Deterministic catalogue-record charge for one owner's durable rows.
-    /// This intentionally excludes SQLite page slack, indexes, and shared
-    /// database overhead; those are deployment measurements, not per-object
-    /// owner bytes.
-    fn account_catalogue_metadata_bytes(
-        connection: &Connection,
-        account_id: &str,
-    ) -> CatalogResult<(i64, i64)> {
-        let mut total = 0i64;
-        let mut history = 0i64;
-        let queries = [
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(c.slug AS BLOB))+length(CAST(c.sha AS BLOB))+
-                length(CAST(c.tree_sha AS BLOB))+length(CAST(c.parent AS BLOB))+
-                length(CAST(c.at AS BLOB))+length(CAST(c.by AS BLOB))+
-                length(CAST(c.why AS BLOB))+length(CAST(c.source_format AS BLOB))+
-                length(CAST(c.label AS BLOB))+length(CAST(c.git_commit AS BLOB))+
-                length(CAST(COALESCE(c.changed,'') AS BLOB))+
-                length(CAST(COALESCE(c.by_account,'') AS BLOB))+56),0)
-             FROM checkpoints c JOIN documents d ON d.slug=c.slug
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                true,
-            ),
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(e.storage_id AS BLOB))+length(CAST(e.file_digest AS BLOB))+
-                length(CAST(e.recipe_key AS BLOB))+length(CAST(e.recipe_digest AS BLOB))+32),0)
-             FROM source_history_encodings e JOIN documents d ON d.storage_id=e.storage_id
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                true,
-            ),
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(o.storage_id AS BLOB))+length(CAST(o.file_digest AS BLOB))+
-                length(CAST(o.object_key AS BLOB))+length(CAST(o.kind AS BLOB))+8),0)
-             FROM source_history_objects o JOIN documents d ON d.storage_id=o.storage_id
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                true,
-            ),
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(r.storage_id AS BLOB))+length(CAST(r.checkpoint_sha AS BLOB))+
-                length(CAST(r.file_digest AS BLOB))),0)
-             FROM source_history_checkpoint_files r JOIN documents d ON d.storage_id=r.storage_id
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                true,
-            ),
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(o.storage_id AS BLOB))+length(CAST(o.object_key AS BLOB))+
-                length(CAST(o.kind AS BLOB))+length(CAST(o.version AS BLOB))+8),0)
-             FROM object_accounting o JOIN documents d ON d.storage_id=o.storage_id
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                false,
-            ),
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(p.slug AS BLOB))+length(CAST(p.object_key AS BLOB))+16),0)
-             FROM pending_deletes p JOIN documents d ON d.slug=p.slug
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                false,
-            ),
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(l.storage_id AS BLOB))+length(CAST(l.operation_id AS BLOB))+
-                length(CAST(l.object_key AS BLOB))+24),0)
-             FROM source_history_write_leases l JOIN documents d ON d.storage_id=l.storage_id
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                false,
-            ),
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(r.storage_id AS BLOB))+length(CAST(r.operation_id AS BLOB))+
-                length(CAST(r.object_key AS BLOB))+16),0)
-             FROM object_reservations r JOIN documents d ON d.storage_id=r.storage_id
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                false,
-            ),
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(r.storage_id AS BLOB))+length(CAST(r.checkpoint_sha AS BLOB))+
-                length(CAST(r.object_key AS BLOB))+8),0)
-             FROM checkpoint_asset_refs r JOIN documents d ON d.storage_id=r.storage_id
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                false,
-            ),
-            (
-                "SELECT COALESCE(SUM(
-                length(CAST(s.storage_id AS BLOB))+length(CAST(s.checkpoint_sha AS BLOB))+8),0)
-             FROM checkpoint_asset_sets s JOIN documents d ON d.storage_id=s.storage_id
-             WHERE d.owner_id=?1 AND d.status IN ('active','creating','deleting')",
-                false,
-            ),
-        ];
-        for (query, is_history) in queries {
-            let bytes: i64 = connection
-                .query_row(query, [account_id], |row| row.get(0))
-                .map_err(CatalogError::from)?;
-            let bytes = bytes.max(0);
-            total = total.saturating_add(bytes);
-            if is_history {
-                history = history.saturating_add(bytes);
-            }
-        }
-        Ok((total, history))
-    }
-
-    /// Compute the bytes that would become unreachable after removing a
-    /// proposed checkpoint set.  This is intentionally a catalogue-only
-    /// calculation: object-store listings are not authoritative for a
-    /// concurrent publication and a checkpoint's logical `size` is not a
-    /// physical byte measure.
-    #[allow(clippy::type_complexity)]
+    /// Advisory bytes that would lose their final checkpoint reference. This
+    /// is never a quota credit: only confirmed physical deletion releases bytes.
     pub fn reclaimable_checkpoint_bytes(
         &self,
         candidates: &[(String, String)],
@@ -783,351 +116,25 @@ impl Catalog {
             Self::reclaimable_checkpoint_bytes_on(connection, candidates)
         })
     }
-
-    /// Transaction-scoped counterpart used by hard-pressure workers.  The
-    /// caller must hold the same immediate transaction that will delete the
-    /// candidate rows; otherwise a lease or newest-checkpoint change could
-    /// invalidate the estimate between planning and deletion.
-    #[allow(clippy::type_complexity)]
     pub(super) fn reclaimable_checkpoint_bytes_on(
         connection: &Connection,
         candidates: &[(String, String)],
     ) -> CatalogResult<i64> {
-        if candidates.is_empty() {
-            return Ok(0);
+        if candidates.len() > 128 {
+            return Err(CatalogError::Invalid(
+                "checkpoint deletion selection exceeds 128".into(),
+            ));
         }
-        let candidate_set: BTreeSet<(String, String)> = candidates.iter().cloned().collect();
-        let candidate_slugs: BTreeSet<&str> =
-            candidates.iter().map(|(slug, _)| slug.as_str()).collect();
-        let candidate_slugs_json = serde_json::to_string(&candidate_slugs)
+        let wanted = serde_json::to_string(candidates)
             .map_err(|error| CatalogError::Invalid(error.to_string()))?;
-        let mut object_bytes = BTreeMap::<(String, String), i64>::new();
-        let mut pending = BTreeSet::<(String, String)>::new();
-        let mut statement = connection.prepare(
-            "SELECT d.storage_id,o.object_key,o.bytes
-                   FROM documents d JOIN json_each(?1) wanted ON wanted.value=d.slug
-                   JOIN object_accounting o
-                     ON o.storage_id=d.storage_id
-                  WHERE d.status IN ('active','creating','deleting')
-                 UNION ALL
-                 SELECT d.storage_id,o.object_key,o.bytes
-                   FROM documents d JOIN json_each(?1) wanted ON wanted.value=d.slug
-                   JOIN source_history_objects o
-                     ON o.storage_id=d.storage_id
-                  WHERE d.status IN ('active','creating','deleting')
-                 UNION ALL
-                 SELECT d.storage_id,p.object_key,p.bytes
-                   FROM documents d JOIN json_each(?1) wanted ON wanted.value=d.slug
-                   JOIN pending_deletes p ON p.slug=d.slug
-                  WHERE d.status IN ('active','creating','deleting')",
-        )?;
-        // The physical map may include other documents, but only
-        // objects named by the supplied candidate set are returned as
-        // reclaimable below.
-        let rows = statement.query_map([candidate_slugs_json.as_str()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })?;
-        for row in rows {
-            let (storage_id, key, bytes) = row?;
-            object_bytes
-                .entry((storage_id, key))
-                .and_modify(|old| *old = (*old).max(bytes))
-                .or_insert(bytes);
+        let prefix="WITH wanted AS (SELECT d.id AS document_id,json_extract(w.value,'$[1]') AS checkpoint_id FROM json_each(?1) w JOIN documents d ON d.slug=json_extract(w.value,'$[0]'))";
+        let edges:i64=connection.query_row(&format!("{prefix} SELECT count(*) FROM checkpoint_objects co JOIN wanted w USING(document_id,checkpoint_id)"),[&wanted],|row|row.get(0))?;
+        if edges > 32768 {
+            return Err(CatalogError::Invalid(
+                "checkpoint deletion selection exceeds 32768 closure references".into(),
+            ));
         }
-        drop(statement);
-
-        // Asset references are durable per-checkpoint roots, not a property
-        // of the newest tree alone. A missing set marker means pre-migration
-        // history; never infer that such a checkpoint had no assets.
-        let mut asset_sets_known = true;
-        for (slug, sha) in &candidate_set {
-            let known: bool = connection.query_row(
-                "SELECT EXISTS(
-                     SELECT 1 FROM checkpoint_asset_sets s
-                      JOIN documents d ON d.storage_id=s.storage_id
-                     WHERE d.slug=?1 AND s.checkpoint_sha=?2
-                 )",
-                params![slug, sha],
-                |row| row.get(0),
-            )?;
-            // A retained pre-migration checkpoint may name the same physical
-            // asset without a durable root row.  Do not claim that asset is
-            // reclaimable merely because the selected checkpoint is measured.
-            let document_fully_measured: bool = connection.query_row(
-                "SELECT NOT EXISTS(
-                     SELECT 1 FROM checkpoints c
-                      JOIN documents d ON d.slug=c.slug
-                     WHERE c.slug=?1
-                       AND d.status IN ('active','creating','deleting')
-                       AND NOT EXISTS(
-                           SELECT 1 FROM checkpoint_asset_sets s
-                            WHERE s.storage_id=d.storage_id
-                              AND s.checkpoint_sha=c.sha
-                       )
-                 )",
-                [slug],
-                |row| row.get(0),
-            )?;
-            asset_sets_known &= known && document_fully_measured;
-        }
-        let mut asset_references = BTreeMap::<(String, String), BTreeSet<(String, String)>>::new();
-        if asset_sets_known {
-            // Never reclaim the newest checkpoint's assets: the live room may
-            // have changed since its last durable tree, and the catalogue has
-            // no independent current-tree asset root to prove otherwise.
-            for (slug, sha) in &candidate_set {
-                let newest: Option<String> = connection
-                    .query_row(
-                        "SELECT c.sha FROM checkpoints c
-                          WHERE c.slug=?1 ORDER BY c.seq DESC LIMIT 1",
-                        [slug],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                let pending_publication: bool = connection.query_row(
-                    "SELECT pending_publication IS NOT NULL FROM documents WHERE slug=?1",
-                    [slug],
-                    |row| row.get(0),
-                )?;
-                if newest.as_deref() == Some(sha.as_str()) || pending_publication {
-                    let mut statement = connection.prepare(
-                        "SELECT object_key FROM checkpoint_asset_refs
-                          WHERE storage_id=(SELECT storage_id FROM documents WHERE slug=?1)
-                            AND checkpoint_sha=?2",
-                    )?;
-                    let rows = statement.query_map(params![slug, sha], |row| row.get(0))?;
-                    for row in rows {
-                        let object_key: String = row?;
-                        let storage_id: String = connection.query_row(
-                            "SELECT storage_id FROM documents WHERE slug=?1",
-                            [slug],
-                            |row| row.get(0),
-                        )?;
-                        pending.insert((storage_id, object_key));
-                    }
-                }
-            }
-            let mut statement = connection.prepare(
-                "SELECT d.storage_id,r.object_key,r.bytes,r.checkpoint_sha,d.slug
-                   FROM checkpoint_asset_refs r
-                   JOIN documents d ON d.storage_id=r.storage_id
-                  WHERE d.status IN ('active','creating','deleting')",
-            )?;
-            let rows = statement.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
-            })?;
-            for row in rows {
-                let (storage_id, object_key, bytes, sha, slug) = row?;
-                object_bytes
-                    .entry((storage_id.clone(), object_key.clone()))
-                    .and_modify(|old| *old = (*old).max(bytes))
-                    .or_insert(bytes);
-                asset_references
-                    .entry((storage_id, object_key))
-                    .or_default()
-                    .insert((slug, sha));
-            }
-            drop(statement);
-        }
-
-        let mut statement = connection.prepare(
-            "SELECT d.storage_id,p.object_key
-                   FROM documents d JOIN json_each(?1) wanted ON wanted.value=d.slug
-                   JOIN pending_deletes p ON p.slug=d.slug
-                  WHERE d.status IN ('active','creating','deleting')",
-        )?;
-        let rows = statement.query_map([candidate_slugs_json.as_str()], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            pending.insert(row?);
-        }
-        drop(statement);
-        let mut statement = connection.prepare(
-            "SELECT l.storage_id,l.object_key FROM source_history_write_leases l
-                   JOIN documents d ON d.storage_id=l.storage_id
-                   JOIN json_each(?1) wanted ON wanted.value=d.slug
-                 UNION ALL
-                 SELECT r.storage_id,r.object_key FROM object_reservations r
-                   JOIN documents d ON d.storage_id=r.storage_id
-                   JOIN json_each(?1) wanted ON wanted.value=d.slug",
-        )?;
-        let rows = statement.query_map([candidate_slugs_json.as_str()], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            pending.insert(row?);
-        }
-        drop(statement);
-
-        // Restrict physical roots to objects named by the candidate
-        // checkpoints.  A source object referenced by one retained
-        // checkpoint is not reclaimable when another checkpoint is
-        // removed, even if the removed event is its first occurrence.
-        let mut references = BTreeMap::<(String, String), BTreeSet<(String, String)>>::new();
-        let mut statement = connection.prepare(
-            "SELECT d.storage_id,r.file_digest,o.object_key,r.checkpoint_sha,d.slug
-                   FROM source_history_checkpoint_files r
-                   JOIN documents d ON d.storage_id=r.storage_id
-                   JOIN json_each(?1) wanted ON wanted.value=d.slug
-                   JOIN source_history_objects o
-                     ON o.storage_id=r.storage_id AND o.file_digest=r.file_digest
-                  WHERE d.status IN ('active','creating','deleting')",
-        )?;
-        let rows = statement.query_map([candidate_slugs_json.as_str()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-            ))
-        })?;
-        for row in rows {
-            let (storage_id, _file_digest, object_key, sha, slug) = row?;
-            references
-                .entry((storage_id, object_key))
-                .or_default()
-                .insert((slug, sha));
-        }
-        drop(statement);
-
-        let mut reclaimable = BTreeSet::<(String, String)>::new();
-        for (object, refs) in references {
-            if !refs.is_empty()
-                && refs
-                    .iter()
-                    .all(|reference| candidate_set.contains(reference))
-                && !pending.contains(&object)
-            {
-                reclaimable.insert(object);
-            }
-        }
-        if asset_sets_known {
-            for (object, refs) in asset_references {
-                if !refs.is_empty()
-                    && refs
-                        .iter()
-                        .all(|reference| candidate_set.contains(reference))
-                    && !pending.contains(&object)
-                {
-                    reclaimable.insert(object);
-                }
-            }
-        }
-        for (slug, sha) in &candidate_set {
-            let Some((storage_id,)) = connection
-                .query_row(
-                    "SELECT storage_id FROM documents WHERE slug=?1",
-                    [slug],
-                    |row| Ok((row.get::<_, String>(0)?,)),
-                )
-                .optional()
-                .map_err(CatalogError::from)?
-            else {
-                continue;
-            };
-            let tree_key = crate::storage::blob::checkpoint_key(&storage_id, sha);
-            if !pending.contains(&(storage_id.clone(), tree_key.clone())) {
-                reclaimable.insert((storage_id, tree_key));
-            }
-        }
-
-        let mut bytes = 0i64;
-        for object in reclaimable {
-            if let Some(value) = object_bytes.get(&object) {
-                bytes = bytes.saturating_add((*value).max(0));
-            }
-        }
-
-        // Add only the deterministic metadata of the candidate rows. It
-        // is separate from logical tree payload size and is reclaimable
-        // even when all source objects are shared with retained events.
-        for (slug, sha) in candidate_set {
-            let row: Option<(
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-            )> = connection
-                .query_row(
-                    "SELECT c.slug,c.sha,c.tree_sha,c.parent,c.at,c.by,c.why,
-                                c.source_format,c.label,c.git_commit,c.changed,c.by_account
-                           FROM checkpoints c JOIN documents d ON d.slug=c.slug
-                          WHERE c.slug=?1 AND c.sha=?2
-                            AND d.status IN ('active','creating','deleting')",
-                    params![slug, sha],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                            row.get(6)?,
-                            row.get(7)?,
-                            row.get(8)?,
-                            row.get(9)?,
-                            row.get(10)?,
-                            row.get(11)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(CatalogError::from)?;
-            if let Some(values) = row {
-                let text_bytes = values.0.len() as i64
-                    + values.1.len() as i64
-                    + values.2.len() as i64
-                    + values.3.len() as i64
-                    + values.4.len() as i64
-                    + values.5.len() as i64
-                    + values.6.len() as i64
-                    + values.7.len() as i64
-                    + values.8.len() as i64
-                    + values.9.len() as i64
-                    + values.10.as_deref().unwrap_or_default().len() as i64
-                    + values.11.as_deref().unwrap_or_default().len() as i64;
-                bytes = bytes.saturating_add(text_bytes.saturating_add(56));
-                let asset_metadata: i64 = connection.query_row(
-                    "SELECT
-                       COALESCE((SELECT SUM(length(CAST(r.storage_id AS BLOB))+
-                                           length(CAST(r.checkpoint_sha AS BLOB))+
-                                           length(CAST(r.object_key AS BLOB))+8)
-                                  FROM checkpoint_asset_refs r
-                                 WHERE r.storage_id=(SELECT storage_id FROM documents WHERE slug=?1)
-                                   AND r.checkpoint_sha=?2),0)+
-                       COALESCE((SELECT SUM(length(CAST(s.storage_id AS BLOB))+
-                                           length(CAST(s.checkpoint_sha AS BLOB))+8)
-                                  FROM checkpoint_asset_sets s
-                                 WHERE s.storage_id=(SELECT storage_id FROM documents WHERE slug=?1)
-                                   AND s.checkpoint_sha=?2),0)",
-                    params![slug, sha],
-                    |row| row.get(0),
-                )?;
-                bytes = bytes.saturating_add(asset_metadata);
-            }
-        }
-        Ok(bytes)
+        connection.query_row(&format!("{prefix} SELECT COALESCE(SUM(o.byte_length),0) FROM objects o WHERE o.state='available' AND o.live_root=0 AND o.publication_root=0 AND EXISTS(SELECT 1 FROM checkpoint_objects co JOIN wanted w USING(document_id,checkpoint_id) WHERE co.document_id=o.document_id AND co.object_id=o.id) AND NOT EXISTS(SELECT 1 FROM checkpoint_objects co WHERE co.document_id=o.document_id AND co.object_id=o.id AND NOT EXISTS(SELECT 1 FROM wanted w WHERE w.document_id=co.document_id AND w.checkpoint_id=co.checkpoint_id)) AND NOT EXISTS(SELECT 1 FROM object_leases l WHERE l.document_id=o.document_id AND l.object_id=o.id) AND NOT EXISTS(SELECT 1 FROM documents d WHERE d.id=o.document_id AND (d.journal_base_object_id=o.id OR d.publication_object_id=o.id))"),[wanted],|row|row.get(0)).map_err(CatalogError::from)
     }
     /// Read the account owner's saved quota intent.  Missing preferences are
     /// deliberately distinct from a malformed payload: callers can expose a
@@ -1174,6 +181,10 @@ impl Catalog {
                 "invalid quota preference record".into(),
             ));
         }
+        let preferences: crate::document::quota::QuotaPreferences =
+            serde_json::from_str(payload)
+                .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+        preferences.validate().map_err(CatalogError::Invalid)?;
         self.immediate(|tx| {
             let current: Option<i64> = tx
                 .query_row(
@@ -1192,7 +203,7 @@ impl Catalog {
                 }
                 _ => {}
             }
-            let revision = current.unwrap_or(0).saturating_add(1);
+            let revision = current.unwrap_or(0).checked_add(1).ok_or_else(||CatalogError::Invalid("preference revision overflow".into()))?;
             let account_active: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND status='active')",
@@ -1209,6 +220,10 @@ impl Catalog {
                 params![account_id, revision, payload, updated_at],
             )
             .map_err(CatalogError::from)?;
+            // Mark owned documents due for bounded policy evaluation. Their
+            // previous evaluation revision no longer authorizes deletion.
+            tx.execute("UPDATE documents SET retention_due_at=0 WHERE owner_id=?1 AND status='active'",[account_id])?;
+            tx.execute("UPDATE server_state SET catalog_revision=catalog_revision+1,updated_at=max(updated_at,?1) WHERE id=1",[updated_at])?;
             Ok(QuotaPreferencesRecord {
                 account_id: account_id.to_string(),
                 revision,
@@ -1218,63 +233,30 @@ impl Catalog {
             })
         })
     }
-    /// Insert or refresh a profile.  Lifecycle state and session generation
-    /// are never overwritten by a profile refresh.
+    /// Refresh display metadata while preserving session revocation and policy.
     pub fn upsert_account(&self, profile: &Account) -> CatalogResult<Account> {
         if profile.id.is_empty() || profile.session_generation.is_empty() {
             return Err(CatalogError::Invalid(
-                "account id and generation are required".into(),
+                "account identity and session generation are required".into(),
             ));
         }
+        let provider = (!profile.provider.is_empty()).then_some(profile.provider.as_str());
+        let prefix = format!("{}:", profile.provider);
+        let subject = provider.map(|_| profile.id.strip_prefix(&prefix).unwrap_or(&profile.id));
         self.immediate(|tx| {
-            let existing: Option<(String, String)> = tx
-                .query_row(
-                    "SELECT status, session_generation FROM accounts WHERE id = ?1",
-                    [&profile.id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(CatalogError::from)?;
-            if let Some((status, generation)) = existing {
-                if status != "active" {
-                    return Err(CatalogError::Conflict(format!(
-                        "account is {status} and cannot sign in"
-                    )));
-                }
-                tx.execute(
-                    "UPDATE accounts SET provider = ?2, provider_subject = ?2, handle = ?3,
-                     display_name = ?4, email = ?5, last_seen_at = max(last_seen_at,?6)
-                     WHERE id = ?1",
-                    params![
-                        profile.id,
-                        profile.provider,
-                        profile.handle,
-                        profile.name,
-                        profile.email,
-                        super::unix_millis()
-                    ],
-                )
-                .map_err(CatalogError::from)?;
-                return self.account_in_tx(tx, &profile.id, Some(generation));
+            let existing:Option<(String,Option<String>,Option<String>)>=tx.query_row("SELECT status,provider,provider_subject FROM accounts WHERE id=?1",[&profile.id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+            let now=unix_millis();
+            if let Some((status,old_provider,old_subject))=existing {
+                if status!="active" || old_provider.as_deref()!=provider || old_subject.as_deref()!=subject {return Err(CatalogError::Conflict("account lifecycle or provider identity changed".into()));}
+                tx.execute("UPDATE accounts SET handle=?2,display_name=?3,email=?4,last_seen_at=max(last_seen_at,?5) WHERE id=?1",params![profile.id,profile.handle,profile.name,(!profile.email.is_empty()).then_some(&profile.email),now])?;
+            } else {
+                let items:Vec<_>=(0..crate::seed::ACCOUNT_EXAMPLE_COUNT).map(|position|serde_json::json!({"position":position,"slug":format!("starter-{}",crate::util::new_id()),"completed":false})).collect();
+                let onboarding=serde_json::json!({"version":1,"items":items}).to_string();
+                let preferences=serde_json::to_string(&crate::document::quota::QuotaPreferences::default()).map_err(|error|CatalogError::Invalid(error.to_string()))?;
+                tx.execute("INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,plan,status,session_generation,created_at,last_seen_at,preferences_json,onboarding_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'active',?9,?10,?10,?11,?12)",params![profile.id,if provider.is_some(){"registered"}else{"anonymous"},provider,subject,profile.handle,profile.name,(!profile.email.is_empty()).then_some(&profile.email),profile.plan,profile.session_generation,now,preferences,onboarding])?;
             }
-            tx.execute(
-                "INSERT INTO accounts
-                 (id, kind, provider, provider_subject, handle, display_name, email, plan,
-                  status, session_generation, created_at, last_seen_at)
-                 VALUES (?1, 'registered', ?2, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?8)",
-                params![
-                    profile.id,
-                    profile.provider,
-                    profile.handle,
-                    profile.name,
-                    profile.email,
-                    profile.plan,
-                    profile.session_generation,
-                    super::unix_millis()
-                ],
-            )
-            .map_err(CatalogError::from)?;
-            self.account_in_tx(tx, &profile.id, None)
+            tx.execute("UPDATE server_state SET catalog_revision=catalog_revision+1,updated_at=max(updated_at,?1) WHERE id=1",[now])?;
+            self.account_in_tx(tx,&profile.id,None)
         })
     }
 
@@ -1283,23 +265,45 @@ impl Catalog {
             Self::account_on(connection, id).map_err(CatalogError::from)
         })
     }
-
-    /// The durable remaining work for this account's first sign-in.
     pub fn pending_account_examples(&self, id: &str) -> CatalogResult<Vec<(usize, String)>> {
         self.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT position, slug FROM account_examples WHERE account_id = ?1 AND completed = 0 ORDER BY position",
+            let payload: String = connection.query_row(
+                "SELECT onboarding_json FROM accounts WHERE id=?1 AND status='active'",
+                [id],
+                |row| row.get(0),
             )?;
-            let rows = statement.query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(CatalogError::from)
+            let onboarding = decode_onboarding(&payload)?;
+            Ok(onboarding
+                .items
+                .into_iter()
+                .filter(|item| !item.completed)
+                .map(|item| (item.position, item.slug))
+                .collect())
         })
     }
-
     pub fn complete_account_example(&self, id: &str, position: usize) -> CatalogResult<()> {
-        self.with_connection(|connection| {
-            connection.execute(
-                "UPDATE account_examples SET completed = 1 WHERE account_id = ?1 AND position = ?2",
-                params![id, position],
+        self.immediate(|tx| {
+            let payload: String = tx.query_row(
+                "SELECT onboarding_json FROM accounts WHERE id=?1 AND status='active'",
+                [id],
+                |row| row.get(0),
+            )?;
+            let mut onboarding = decode_onboarding(&payload)?;
+            let item = onboarding
+                .items
+                .iter_mut()
+                .find(|item| item.position == position)
+                .ok_or(CatalogError::NotFound)?;
+            item.completed = true;
+            let payload = serde_json::to_string(&onboarding)
+                .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+            tx.execute(
+                "UPDATE accounts SET onboarding_json=?2 WHERE id=?1",
+                params![id, payload],
+            )?;
+            tx.execute(
+                "UPDATE server_state SET catalog_revision=catalog_revision+1 WHERE id=1",
+                [],
             )?;
             Ok(())
         })
@@ -1343,8 +347,8 @@ impl Catalog {
             handle: row.get(2)?,
             name: row.get(3)?,
             email: row.get(4)?,
-            first_seen: row.get::<_, i64>(5)?.to_string(),
-            last_seen: row.get::<_, i64>(6)?.to_string(),
+            first_seen: crate::util::format_unix(row.get::<_, i64>(5)? / 1000),
+            last_seen: crate::util::format_unix(row.get::<_, i64>(6)? / 1000),
             plan: row.get(7)?,
             status: row.get(8)?,
             session_generation: row.get(9)?,
@@ -1417,26 +421,15 @@ impl Catalog {
     /// monotonic: an imported older timestamp cannot make an account look
     /// recently active, and repeated requests on one UTC day are a no-op.
     pub fn record_activity(&self, id: &str, at: &str) -> CatalogResult<()> {
-        if id.is_empty() || at.len() < 10 {
-            return Err(CatalogError::Invalid("invalid account activity".into()));
-        }
+        let seconds = crate::util::parse_timestamp(at)
+            .ok_or_else(|| CatalogError::Invalid("invalid activity timestamp".into()))?;
+        let at = seconds
+            .checked_mul(1000)
+            .filter(|value| *value >= 0)
+            .ok_or_else(|| CatalogError::Invalid("activity timestamp overflow".into()))?;
         self.immediate(|tx| {
-            let active: Option<String> = tx
-                .query_row("SELECT status FROM accounts WHERE id = ?1", [id], |r| r.get(0))
-                .optional()
-                .map_err(CatalogError::from)?;
-            if active.as_deref() != Some("active") {
-                return Err(CatalogError::Conflict("account is not active".into()));
-            }
-            tx.execute(
-                "INSERT INTO account_activity(account_id, last_qualified_at)
-                 VALUES (?1, ?2)
-                 ON CONFLICT(account_id) DO UPDATE SET last_qualified_at =
-                   CASE WHEN account_activity.last_qualified_at < excluded.last_qualified_at
-                        THEN excluded.last_qualified_at ELSE account_activity.last_qualified_at END",
-                params![id, at],
-            )
-            .map_err(CatalogError::from)?;
+            let changed=tx.execute("UPDATE accounts SET last_active_at=max(COALESCE(last_active_at,0),?2) WHERE id=?1 AND status='active'",params![id,at])?;
+            if changed!=1{return Err(CatalogError::NotFound);}
             Ok(())
         })
     }
@@ -1864,4 +857,34 @@ impl Catalog {
                 .map_err(CatalogError::from)
         })
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Onboarding {
+    version: u32,
+    items: Vec<OnboardingItem>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OnboardingItem {
+    position: usize,
+    slug: String,
+    completed: bool,
+}
+fn decode_onboarding(payload: &str) -> CatalogResult<Onboarding> {
+    let value: Onboarding = serde_json::from_str(payload)
+        .map_err(|error| CatalogError::Invalid(format!("invalid onboarding payload: {error}")))?;
+    let mut positions = BTreeSet::new();
+    if value.version != 1
+        || value.items.len() > 16
+        || value.items.iter().any(|item| {
+            item.slug.is_empty() || item.slug.len() > 256 || !positions.insert(item.position)
+        })
+    {
+        return Err(CatalogError::Invalid(
+            "invalid onboarding payload version or entries".into(),
+        ));
+    }
+    Ok(value)
 }

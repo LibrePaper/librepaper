@@ -217,6 +217,87 @@ impl CheckpointCache {
         result
     }
 
+    /// Resolve one complete catalog closure, keeping every physical dependency
+    /// leased while it is verified and reconstructed. Cache identity includes
+    /// physical allocation identity; matching logical text alone is insufficient.
+    pub async fn load_checkpoint_v2(
+        &self,
+        blobs: &dyn BlobStore,
+        catalog: &Arc<crate::storage::catalog::Catalog>,
+        slug: &str,
+        point: &Checkpoint,
+    ) -> Result<(Tree, HashMap<String, String>), String> {
+        let owner = catalog.clone();
+        let slug = slug.to_owned();
+        let event = point.sha.clone();
+        let mut lease = catalog
+            .execute_catalog(4096, move |_| {
+                owner.acquire_checkpoint_read(&slug, Some(&event), crate::util::now_millis())
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let (tree, envelope) = crate::document::history::load_tree_envelope(blobs, &lease).await?;
+        let mut bodies = HashMap::new();
+        for file in envelope.files.values() {
+            lease = lease
+                .renew_owned(crate::util::now_millis())
+                .await
+                .map_err(|error| error.to_string())?;
+            if let Some(recipe) = &file.recipe {
+                let key = format!(
+                    "decoded:{}:{}:{}",
+                    lease.set.document_id,
+                    recipe.object_id,
+                    hex::encode(recipe.object_digest)
+                );
+                let bytes = self
+                    .get_loaded(&key, || async {
+                        crate::storage::encoding::read_file_v2(
+                            blobs,
+                            lease.set.document_id.as_str(),
+                            &recipe.object_id,
+                            recipe.object_digest,
+                            &lease.set.objects,
+                        )
+                        .await
+                        .map_err(|error| BlobError::Other(error.to_string()))
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if bytes.len() as u64 != file.logical_length
+                    || hex::encode(sha2::Sha256::digest(bytes.as_slice()))
+                        != hex::encode(file.logical_digest)
+                {
+                    return Err("checkpoint text logical integrity check failed".into());
+                }
+                bodies.insert(
+                    hex::encode(file.logical_digest),
+                    decode_text(bytes.as_slice())?,
+                );
+            } else if let Some(asset) = &file.asset {
+                let object = lease
+                    .set
+                    .objects
+                    .iter()
+                    .find(|object| object.id.as_str() == asset.object_id.as_str())
+                    .ok_or("checkpoint asset is outside read closure")?;
+                let bytes = self
+                    .get(blobs, &object.storage_key)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if bytes.len() as u64 != asset.byte_length
+                    || sha2::Sha256::digest(bytes.as_slice()).as_slice() != asset.object_digest
+                {
+                    return Err("checkpoint asset integrity check failed".into());
+                }
+            }
+            if !lease.valid_at(crate::util::now_millis()) {
+                return Err("checkpoint read lease expired".into());
+            }
+        }
+        Ok((tree, bodies))
+    }
+
     /// Reads a checkpoint's tree and all its text bodies. Authorization and
     /// manifest membership remain the caller's responsibility.
     ///

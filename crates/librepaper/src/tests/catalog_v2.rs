@@ -345,9 +345,121 @@ fn independent_batch_children_keep_retry_format_and_parent_issue_time() {
     };
     let child = parent.batch_child("actor", 0);
     child.validate().unwrap();
-    assert_eq!(crate::util::request_key_timestamp(&child.id), Some(1770000000123));
+    assert_eq!(
+        crate::util::request_key_timestamp(&child.id),
+        Some(1770000000123)
+    );
     assert_eq!(child, parent.batch_child("actor", 0));
     assert_ne!(child, parent.batch_child("actor", 1));
     assert_ne!(child, parent.batch_child("other-actor", 0));
     assert_ne!(child, parent);
+}
+
+#[test]
+fn publication_reader_keeps_superseded_bundle_until_release() {
+    let catalog = std::sync::Arc::new(Catalog::open_in_memory().unwrap());
+    account(&catalog);
+    document(&catalog, "doc", "Title");
+    let manifest = "11111111111111111111111111111111";
+    let html = "22222222222222222222222222222222";
+    catalog.with_connection(|db| {
+        for (id, kind) in [(manifest, "publication_manifest"), (html, "publication_html")] {
+            db.execute("INSERT INTO objects(document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at,publication_root) VALUES('doc',?1,?2,?3,'available',?4,0,0,1,1)",rusqlite::params![id,format!("v2/documents/doc/objects/{id}"),kind,"a".repeat(64)])?;
+        }
+        db.execute("UPDATE documents SET status='active',publication_id='publication',publication_object_id=?1,published_at=1 WHERE id='doc'",[manifest])?;
+        Ok(())
+    }).unwrap();
+    let lease = catalog.acquire_publication_read("doc", 1).unwrap().unwrap();
+    assert_eq!(lease.objects.len(), 2);
+    catalog.with_connection(|db| {
+        db.execute("UPDATE documents SET publication_id=NULL,publication_object_id=NULL,published_at=NULL WHERE id='doc'",[])?;
+        db.execute("UPDATE objects SET publication_root=0,gc_after=1 WHERE document_id='doc'",[])?;
+        Ok(())
+    }).unwrap();
+    let doc = DocumentId::new("doc").unwrap();
+    let html = ObjectId::new(html).unwrap();
+    let now = UnixMillis::new(2).unwrap();
+    assert!(!catalog
+        .claim_v2_object_for_deletion(&doc, &html, now, now)
+        .unwrap());
+    drop(lease);
+    assert!(catalog
+        .claim_v2_object_for_deletion(&doc, &html, now, now)
+        .unwrap());
+}
+
+#[test]
+fn account_profiles_keep_provider_subjects_and_durable_onboarding() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    let profile = Account {
+        id: "github:123".into(),
+        provider: "github".into(),
+        handle: "first".into(),
+        name: "First".into(),
+        email: String::new(),
+        first_seen: String::new(),
+        last_seen: String::new(),
+        plan: "default".into(),
+        status: "active".into(),
+        session_generation: "session-one".into(),
+        erasure_cursor: None,
+    };
+    catalog.upsert_account(&profile).unwrap();
+    let mut second = profile.clone();
+    second.id = "github:456".into();
+    catalog.upsert_account(&second).unwrap();
+    let pending = catalog.pending_account_examples(&profile.id).unwrap();
+    assert_eq!(pending.len(), crate::seed::ACCOUNT_EXAMPLE_COUNT);
+    catalog
+        .complete_account_example(&profile.id, pending[0].0)
+        .unwrap();
+    catalog.revoke_sessions(&profile.id, "session-two").unwrap();
+    let mut refreshed = profile.clone();
+    refreshed.name = "New Name".into();
+    let result = catalog.upsert_account(&refreshed).unwrap();
+    assert_eq!(result.session_generation, "session-two");
+    assert_eq!(result.name, "New Name");
+    assert_eq!(
+        catalog.pending_account_examples(&profile.id).unwrap().len(),
+        pending.len() - 1
+    );
+    catalog
+        .with_connection(|db| {
+            assert_eq!(
+                db.query_row(
+                    "SELECT provider_subject FROM accounts WHERE id=?1",
+                    [profile.id],
+                    |row| row.get::<_, String>(0)
+                )?,
+                "123"
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn quota_preferences_reject_stale_and_invalid_updates_atomically() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    account(&catalog);
+    let preferences = crate::document::quota::QuotaPreferences::default();
+    let payload = serde_json::to_string(&preferences).unwrap();
+    let saved = catalog
+        .save_quota_preferences("owner", 0, &payload, "", 100)
+        .unwrap();
+    assert_eq!(saved.revision, 1);
+    assert!(catalog
+        .save_quota_preferences("owner", 0, &payload, "", 200)
+        .is_err());
+    assert!(catalog
+        .save_quota_preferences("owner", 1, r#"{"version":99}"#, "", 200)
+        .is_err());
+    assert_eq!(
+        catalog
+            .quota_preferences("owner")
+            .unwrap()
+            .unwrap()
+            .revision,
+        1
+    );
 }

@@ -48,7 +48,7 @@ pub use execution::{
 pub use pressure::HardPressurePlan;
 pub use retention::{RetentionJob, RetentionPass};
 pub use room_edits::RoomEditReservation;
-pub use read_objects::{CheckpointReadLease, CheckpointReadSet};
+pub use read_objects::{CheckpointReadLease, CheckpointReadSet, ObjectReadLease, PublicationReadLease};
 pub use source_history::{SourceHistoryLease, SourceHistoryObject, SourceHistoryRecord};
 pub use v2::{
     AccountKind, CheckpointCommit, CheckpointId, DocumentId, DocumentStatus, IdError,

@@ -1256,10 +1256,59 @@ impl PublicationStore {
         Ok(())
     }
 
+    async fn current_leased(
+        &self,
+        storage_id: &str,
+    ) -> Result<Option<(crate::storage::catalog::PublicationReadLease, PublicationManifest, HashMap<String, String>)>, PublicationError> {
+        let catalog = self.store.as_ref().and_then(|store| store.catalog.as_ref())
+            .ok_or_else(|| PublicationError::Storage("durable catalog required".into()))?;
+        let catalog_for_read = catalog.clone();
+        let document = storage_id.to_owned();
+        let lease = catalog.execute_catalog(32_768, move |_| {
+            catalog_for_read.acquire_publication_read(&document, crate::util::now_millis())
+        }).await.map_err(|error| PublicationError::Storage(error.to_string()))?;
+        let Some(lease) = lease else { return Ok(None); };
+        let physical = lease.objects.iter().find(|object| object.id == lease.manifest_object_id)
+            .ok_or_else(|| PublicationError::Storage("publication manifest is missing from leased set".into()))?;
+        let body = self.blobs.get(&physical.storage_key).await?;
+        if !lease.valid_at(crate::util::now_millis()) || body.len() > MAX_MANIFEST_BYTES
+            || physical.byte_length != Some(body.len() as i64)
+            || hex::encode(Sha256::digest(&body)) != physical.digest {
+            return Err(PublicationError::Storage("publication manifest failed integrity or lease expired".into()));
+        }
+        let envelope: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|error| PublicationError::Storage(error.to_string()))?;
+        if envelope["version"] != 1 {
+            return Err(PublicationError::Storage("unsupported publication envelope".into()));
+        }
+        let manifest: PublicationManifest = serde_json::from_value(envelope.clone())
+            .map_err(|error| PublicationError::Storage(error.to_string()))?;
+        validate_manifest(&manifest)?;
+        if manifest.publication_id != lease.publication_id {
+            return Err(PublicationError::Storage("publication pointer and manifest disagree".into()));
+        }
+        let mut locators = HashMap::new();
+        for (path, metadata, value, kind) in std::iter::once(("index.html", &manifest.html, &envelope["html"], "publication_html"))
+            .chain(manifest.assets.iter().enumerate().map(|(index, asset)| (asset.path.as_str(), &asset.object, &envelope["assets"][index], "publication_asset"))) {
+            let object_id = value["object_id"].as_str()
+                .ok_or_else(|| PublicationError::Storage("publication locator is missing".into()))?;
+            let object = lease.objects.iter().find(|object| object.id.as_str() == object_id)
+                .ok_or_else(|| PublicationError::Storage("publication locator is outside leased root".into()))?;
+            if object.kind != kind || object.digest != metadata.sha256 || object.byte_length != Some(metadata.bytes as i64) {
+                return Err(PublicationError::Storage("publication locator metadata mismatch".into()));
+            }
+            locators.insert(path.to_owned(), object.storage_key.clone());
+        }
+        Ok(Some((lease, manifest, locators)))
+    }
+
     pub async fn current(
         &self,
         storage_id: &str,
     ) -> Result<Option<PublicationManifest>, PublicationError> {
+        if self.store.is_some() {
+            return self.current_leased(storage_id).await.map(|value| value.map(|(_, manifest, _)| manifest));
+        }
         match self.blobs.get(&Self::manifest_key(storage_id)).await {
             Ok(body) => serde_json::from_slice(&body)
                 .map(Some)
@@ -1276,10 +1325,15 @@ impl PublicationStore {
         storage_id: &str,
         path: &str,
     ) -> Result<(PublicationObject, Vec<u8>), PublicationError> {
-        let manifest = self
-            .current(storage_id)
-            .await?
-            .ok_or(PublicationError::Missing)?;
+        let normalized_path = validate_path(path)?;
+        let path = normalized_path.as_str();
+        let current = if self.store.is_some() {
+            Some(self.current_leased(storage_id).await?.ok_or(PublicationError::Missing)?)
+        } else { None };
+        let manifest = match &current {
+            Some((_, manifest, _)) => manifest.clone(),
+            None => self.current(storage_id).await?.ok_or(PublicationError::Missing)?,
+        };
         let object = if path == "index.html" {
             manifest.html
         } else {
@@ -1291,10 +1345,14 @@ impl PublicationStore {
                 .map(|asset| asset.object)
                 .ok_or(PublicationError::Missing)?
         };
-        let bytes = self
-            .blobs
-            .get(&Self::object_key(storage_id, &object.sha256))
-            .await?;
+        let storage_key = match &current {
+            Some((_, _, locators)) => locators.get(path).cloned().ok_or(PublicationError::Missing)?,
+            None => Self::object_key(storage_id, &object.sha256),
+        };
+        let bytes = self.blobs.get(&storage_key).await?;
+        if current.as_ref().is_some_and(|(lease, _, _)| !lease.valid_at(crate::util::now_millis())) {
+            return Err(PublicationError::Storage("publication read lease expired".into()));
+        }
         if bytes.len() != object.bytes || hex::encode(Sha256::digest(&bytes)) != object.sha256 {
             return Err(PublicationError::Storage(
                 "publication object failed validation".into(),

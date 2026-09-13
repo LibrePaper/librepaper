@@ -434,6 +434,13 @@ pub async fn load_tree(
         })
         .await
         .map_err(|error| error.to_string())?;
+    load_tree_envelope(blobs, &lease).await.map(|(tree, _)| tree)
+}
+
+pub(crate) async fn load_tree_envelope(
+    blobs: &dyn BlobStore,
+    lease: &crate::storage::catalog::CheckpointReadLease,
+) -> Result<(Tree, crate::storage::encoding::TreeEnvelope), String> {
     let object = lease
         .set
         .objects
@@ -481,8 +488,9 @@ pub async fn load_tree(
             return Err("checkpoint file is outside its available closure".into());
         }
     }
-    serde_json::from_slice(&logical)
-        .map_err(|error| format!("invalid logical checkpoint tree: {error}"))
+    let tree = serde_json::from_slice(&logical)
+        .map_err(|error| format!("invalid logical checkpoint tree: {error}"))?;
+    Ok((tree, envelope))
 }
 
 /// The manifest alone, for the callers that are only reading it.

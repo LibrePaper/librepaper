@@ -50,13 +50,17 @@ fn decode_durable(saved: &str) -> Result<Durable, String> {
     #[serde(deny_unknown_fields)]
     struct Envelope {
         version: u32,
-        state: Option<Durable>,
+        state: Value,
     }
     let envelope: Envelope = serde_json::from_str(saved).map_err(|error| error.to_string())?;
     if envelope.version != 2 {
         return Err("unsupported cost state version".into());
     }
-    let durable = envelope.state.unwrap_or_default();
+    let durable: Durable = if envelope.state.is_null() {
+        Durable::default()
+    } else {
+        serde_json::from_value(envelope.state).map_err(|error| error.to_string())?
+    };
     if durable.minutes.len() > 1442 {
         return Err("cost state exceeds its rolling window bound".into());
     }
@@ -1447,5 +1451,15 @@ mod tests {
         assert!(meter.admit_request("a", "one", Some("x"), 2));
         assert!(meter.admit_request("b", "two", Some("y"), 2));
         assert!(!meter.admit_request("c", "three", Some("z"), 2));
+    }
+}
+
+#[cfg(test)]
+mod catalog_state_tests {
+    #[test]
+    fn missing_cost_payload_cannot_silently_reset_admission_counters() {
+        assert!(super::decode_durable(r#"{"version":2}"#).is_err());
+        assert!(super::decode_durable(r#"{"version":2,"state":null}"#).is_ok());
+        assert!(super::decode_durable(r#"{"version":99,"state":null}"#).is_err());
     }
 }
