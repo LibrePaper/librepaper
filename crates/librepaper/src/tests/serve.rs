@@ -699,52 +699,35 @@ async fn awareness_reaches_the_other_editors_and_is_not_kept() {
 
 #[tokio::test]
 async fn browser_submission_retries_are_idempotent_and_author_scoped() {
-    use crate::room::Message;
     let server = new_test_server().await;
     let published = publish_test_document(&server.url).await;
     let slug = text(&published, "slug");
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
+    let key = comment_key(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
+    let alice = format!("{}={}", crate::auth::VISITOR_COOKIE, crate::auth::sign_visitor(TEST_KEY, "alice"));
+    let bob = format!("{}={}", crate::auth::VISITOR_COOKIE, crate::auth::sign_visitor(TEST_KEY, "bob"));
+    let endpoint = format!("/api/documents/{slug}/comments");
     let room = server.instance.rooms.get(&slug).await;
-    let request = Message {
-        kind: "comment".into(),
-        exact: "passage".into(),
-        body: "A comment whose acknowledgment was lost".into(),
-        temp_id: crate::util::new_id(),
-        ..Default::default()
-    };
-    let (first, ok) = room
-        .apply(request.clone(), "", "visitor:alice", "", None, false)
-        .await;
-    assert!(ok);
-    assert_eq!(first["comment"]["id"], request.temp_id);
-    let (again, ok) = room
-        .apply(request.clone(), "", "visitor:alice", "", None, false)
-        .await;
-    assert!(ok);
-    assert_eq!(first, again);
+    let request = json!({"type":"comment", "exact":"hello", "body":"A comment whose acknowledgment was lost",
+        "temp_id":crate::util::new_id(), "request_id":crate::util::new_request_key(), "publication_id":publication_id});
+    let (status, first) = post_keyed(&alice, &key, &server.url, &endpoint, request.clone()).await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["comment"]["id"], request["temp_id"]);
+    let (status, again) = post_keyed(&alice, &key, &server.url, &endpoint, request.clone()).await;
+    assert_eq!(status, 200, "{again}");
+    assert_eq!(first["comment"], again["comment"]);
     assert_eq!(room.counts().await.0, 1);
-    let (_, ok) = room
-        .apply(request.clone(), "", "visitor:bob", "", None, true)
-        .await;
-    assert!(
-        !ok,
-        "even a moderator cannot reuse another author's submission ID"
-    );
-    let reply = Message {
-        kind: "reply".into(),
-        comment_id: request.temp_id,
-        body: "A reply".into(),
-        temp_id: crate::util::new_id(),
-        ..Default::default()
-    };
-    let (first, ok) = room
-        .apply(reply.clone(), "", "visitor:alice", "", None, false)
-        .await;
-    assert!(ok);
-    let (again, ok) = room
-        .apply(reply, "", "visitor:alice", "", None, false)
-        .await;
-    assert!(ok);
-    assert_eq!(first, again);
+    let (status, response) = post_keyed(&bob, &key, &server.url, &endpoint, request.clone()).await;
+    assert_eq!(status, 409, "another visitor cannot take over the submission: {response}");
+    let (status, response) = post_keyed(&session_as(TEST_PUBLISHER), &key, &server.url, &endpoint, request.clone()).await;
+    assert_eq!(status, 409, "even the owner cannot take over the submission: {response}");
+    let reply = json!({"type":"reply", "comment_id":request["temp_id"], "body":"A reply",
+        "temp_id":crate::util::new_id(), "request_id":crate::util::new_request_key()});
+    let (status, first) = post_keyed(&alice, &key, &server.url, &endpoint, reply.clone()).await;
+    assert_eq!(status, 200, "{first}");
+    let (status, again) = post_keyed(&alice, &key, &server.url, &endpoint, reply).await;
+    assert_eq!(status, 200, "{again}");
+    assert_eq!(first["reply"], again["reply"]);
 }
 
 #[test]

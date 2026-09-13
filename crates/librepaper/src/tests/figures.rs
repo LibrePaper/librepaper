@@ -141,7 +141,8 @@ async fn an_authenticated_editor_can_update_inputs_but_cannot_upload_renderings(
     .await;
     let document = publish_test_document(&server.url).await;
     let slug = text(&document, "slug");
-    let sha = text(&document, "sha");
+    let sha = server.instance.store.catalog.as_ref().unwrap()
+        .checkpoints(&slug, None, 1).unwrap().remove(0).sha;
     let (_, shared) = post_as(
         &session_as(TEST_PUBLISHER),
         &server.url,
@@ -223,22 +224,16 @@ async fn the_same_figure_twice_is_stored_once() {
     assert_eq!(status, 200);
     assert_eq!(text(&first, "sha"), text(&again, "sha"));
 
-    let stored = server
-        .instance
-        .store
-        .blobs
-        .list(&crate::storage::blob::asset_prefix(
-            &server
-                .instance
-                .store
-                .get(&slug)
-                .await
-                .expect("the document is in the index")
-                .storage_id,
-        ))
-        .await
-        .unwrap();
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let stored = catalog.with_connection(|db| {
+        let mut query = db.prepare("SELECT storage_key,byte_length FROM objects WHERE document_id=(SELECT id FROM documents WHERE slug=?1) AND kind='asset'")?;
+        let rows = query.query_map([&slug], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }).unwrap();
     assert_eq!(stored.len(), 1, "the same bytes were stored twice");
+    assert_eq!(stored[0].1, bytes.len() as i64);
+    assert!(stored[0].0.starts_with("v2/documents/"));
+    assert_eq!(server.instance.store.blobs.get(&stored[0].0).await.unwrap(), bytes);
 }
 
 /* ------------------------------------------------------------------- rights */

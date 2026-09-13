@@ -3517,7 +3517,7 @@ fn v2_document_worker_bounds_checkpoint_edges_and_repeated_begin() {
 }
 
 #[test]
-fn replacement_receipt_uses_v2_display_publish_kind() {
+fn obsolete_replacement_alias_is_not_a_display_publication() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
@@ -3530,9 +3530,8 @@ fn replacement_receipt_uses_v2_display_publish_kind() {
             intent: "{}",
             created_at: crate::util::now_millis(),
             actor: None,
-        })
-        .unwrap();
-    assert_eq!(operation.kind, "display_publish");
+        });
+    assert!(matches!(operation, Err(CatalogError::Invalid(_))));
 }
 
 #[test]

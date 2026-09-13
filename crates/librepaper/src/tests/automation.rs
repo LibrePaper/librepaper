@@ -211,13 +211,14 @@ async fn automation_annotation_is_attributed_to_the_link_and_deduplicated() {
     .await;
     let key = mint_role(&server.url, &slug, "commenter").await;
     let endpoint = format!("/api/documents/{slug}/comments");
+    let request_id = crate::util::new_request_key();
     let payload = json!({
         "type": "comment",
         "exact": "hello",
         "body": "agent note",
         "motivation": "commenting",
         "temp_id": "11111111-1111-4111-8111-111111111111",
-        "request_id": "annotation-1",
+        "request_id": request_id,
         "publication_id": publication["publication"]["id"],
     });
     let (status, first) = automation_post(
@@ -229,7 +230,7 @@ async fn automation_annotation_is_attributed_to_the_link_and_deduplicated() {
     )
     .await;
     assert_eq!(status, 200, "{first}");
-    assert_eq!(first["request_id"], "annotation-1");
+    assert_eq!(first["request_id"], request_id);
     assert_eq!(first["version"], 1);
     assert_eq!(first["comment"]["creator"], "vincent");
     // The same signed-in person still owns this comment in the ordinary
