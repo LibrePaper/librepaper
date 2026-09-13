@@ -727,15 +727,34 @@ impl Catalog {
         })
     }
     pub fn delete_reply(&self, slug: &str, comment_id: &str, id: &str) -> CatalogResult<bool> {
+        self.delete_reply_authorized(slug, comment_id, id, AnnotationAuthority::default())
+    }
+
+    pub fn delete_reply_authorized(
+        &self,
+        slug: &str,
+        comment_id: &str,
+        id: &str,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<bool> {
         self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
             let doc = document_id(tx, slug)?;
-            Ok(tx
+            annotation_account_authorized(tx, &doc, authority)?;
+            let deleted = tx
                 .execute(
                     "DELETE FROM replies WHERE document_id=?1 AND annotation_id=?2 AND id=?3",
                     params![doc, comment_id, id],
                 )
                 .map_err(CatalogError::from)?
-                == 1)
+                == 1;
+            if deleted {
+                tx.execute(
+                    "UPDATE documents SET retention_due_at=0 WHERE id=?1",
+                    [doc.as_str()],
+                )?;
+            }
+            Ok(deleted)
         })
     }
     pub(super) fn comment_in_tx(
@@ -1006,7 +1025,46 @@ impl Catalog {
         })
     }
     pub fn update_reply(&self, reply: &Reply) -> CatalogResult<Reply> {
-        self.immediate(|tx|{let doc=document_id(tx,&reply.slug)?;let at=millis(&reply.created);let n=tx.execute("UPDATE replies SET body=?4,author_key=?5,author_label=?6,updated_at=?7 WHERE document_id=?1 AND annotation_id=?2 AND id=?3",params![doc,reply.comment_id,reply.id,reply.body,reply.author,reply.creator,at]).map_err(CatalogError::from)?;if n==1{Ok(reply.clone())}else{Err(CatalogError::NotFound)}})
+        self.update_reply_authorized(reply, AnnotationAuthority::default())
+    }
+
+    pub fn update_reply_authorized(
+        &self,
+        reply: &Reply,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Reply> {
+        if reply.body.len() > 65_536 || reply.id.is_empty() {
+            return Err(CatalogError::Invalid("invalid reply".into()));
+        }
+        self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
+            let doc = document_id(tx, &reply.slug)?;
+            annotation_account_authorized(tx, &doc, authority)?;
+            let at = millis(&reply.created);
+            let changed = tx
+                .execute(
+                    "UPDATE replies SET body=?4,author_key=?5,author_label=?6,updated_at=?7
+                     WHERE document_id=?1 AND annotation_id=?2 AND id=?3",
+                    params![
+                        doc,
+                        reply.comment_id,
+                        reply.id,
+                        reply.body,
+                        reply.author,
+                        reply.creator,
+                        at
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+            if changed != 1 {
+                return Err(CatalogError::NotFound);
+            }
+            tx.execute(
+                "UPDATE documents SET retention_due_at=0 WHERE id=?1",
+                [doc.as_str()],
+            )?;
+            Ok(reply.clone())
+        })
     }
     pub fn replies(&self, slug: &str, comment_id: &str, limit: u32) -> CatalogResult<Vec<Reply>> {
         let limit = i64::from(limit.clamp(1, 100));

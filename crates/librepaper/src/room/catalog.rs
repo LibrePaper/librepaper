@@ -9,7 +9,9 @@
 //! into the room.
 
 use super::*;
-use crate::storage::catalog::{Catalog, CatalogExecError, MutationAuthority, RoomEditReservation};
+use crate::storage::catalog::{
+    AnnotationAuthority, Catalog, CatalogExecError, MutationAuthority, RoomEditReservation,
+};
 
 /// What a job's owned arguments cost beyond the strings it carries: the
 /// identifiers, limits and flags every catalogue descriptor has.  Small
@@ -1879,6 +1881,28 @@ fn save_catalog_comments_blocking(
     slug: &str,
     comments: &mut [Comment],
 ) -> Result<(), String> {
+    // Administrative seeding still writes through the same typed annotation
+    // boundary as a live room.  The document's current owner account is the
+    // authority for this one-shot catalogue import; checkpoint attribution is
+    // separately marked as system by the caller.  Looking the account up here
+    // also preserves anonymous/example ownership instead of manufacturing a
+    // second synthetic identity for the seed process.
+    let document = catalog
+        .document(slug)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "cannot seed annotations for a missing document".to_string())?;
+    let owner_id = document
+        .owner_id
+        .ok_or_else(|| "v2 seed documents require an owner account".to_string())?;
+    let owner = catalog
+        .account(&owner_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "cannot seed annotations for a missing owner account".to_string())?;
+    let authority = AnnotationAuthority {
+        account_id: &owner.id,
+        generation: &owner.session_generation,
+        ..Default::default()
+    };
     for item in comments.iter_mut() {
         let current = match catalog.comment(slug, &item.id) {
             Ok(row) => Some(row),
@@ -1889,13 +1913,13 @@ fn save_catalog_comments_blocking(
         if let Some(current) = current.as_ref() {
             row.seq = current.seq;
             catalog
-                .update_comment(&row)
+                .update_comment_authorized(&row, authority)
                 .map_err(|err| err.to_string())?;
             item.seq = current.seq;
         } else {
             row.seq = -1;
             let inserted = catalog
-                .insert_comment(&row)
+                .insert_comment_request_authorized(&row, "", "", 0, authority)
                 .map_err(|err| err.to_string())?;
             item.seq = inserted.seq;
         }
@@ -1924,15 +1948,19 @@ fn save_catalog_comments_blocking(
                 created: reply.created.clone(),
             };
             if current_replies.iter().any(|old| old.id == reply.id) {
-                catalog.update_reply(&row).map_err(|err| err.to_string())?;
+                catalog
+                    .update_reply_authorized(&row, authority)
+                    .map_err(|err| err.to_string())?;
             } else {
-                catalog.insert_reply(&row).map_err(|err| err.to_string())?;
+                catalog
+                    .insert_reply_request_authorized(&row, "", "", 0, authority)
+                    .map_err(|err| err.to_string())?;
             }
         }
         for reply in current_replies {
             if !desired_reply_ids.contains(&reply.id) {
                 catalog
-                    .delete_reply(slug, &item.id, &reply.id)
+                    .delete_reply_authorized(slug, &item.id, &reply.id, authority)
                     .map_err(|err| err.to_string())?;
             }
         }
