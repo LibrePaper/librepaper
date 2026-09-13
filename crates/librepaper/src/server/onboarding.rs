@@ -106,7 +106,12 @@ impl Server {
             owner_key: account.handle.clone(),
             session_generation: who.session_generation.clone(),
             link_hash: String::new(),
-            policy_editor: self.publishers.allows(&account.handle),
+            // Provisioning is an authenticated first-party write for the
+            // account itself.  It must not depend on the deployment's public
+            // publisher policy: a newly signed-in reader still receives the
+            // private starter set, while ordinary document creation remains
+            // governed by that policy at its request boundary.
+            policy_editor: true,
             automation: false,
             unowned_publisher: false,
         };
