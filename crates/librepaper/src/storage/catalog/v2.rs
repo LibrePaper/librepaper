@@ -684,6 +684,7 @@ impl Catalog {
         }
         let mut asset_ids = Vec::with_capacity(assets.len());
         let mut paths = HashSet::new();
+        let mut counted_asset_ids = HashSet::new();
         let mut total_asset_bytes = 0i64;
         for asset in assets {
             let object = asset.get("object").unwrap_or(asset);
@@ -735,9 +736,11 @@ impl Catalog {
                     "invalid publication asset descriptor".into(),
                 ));
             }
-            total_asset_bytes = total_asset_bytes
-                .checked_add(bytes)
-                .ok_or_else(|| CatalogError::Invalid("publication asset size overflow".into()))?;
+            if counted_asset_ids.insert(object_id.clone()) {
+                total_asset_bytes = total_asset_bytes.checked_add(bytes).ok_or_else(|| {
+                    CatalogError::Invalid("publication asset size overflow".into())
+                })?;
+            }
             asset_ids.push(object_id.clone());
             if !object_ids.iter().any(|existing| existing == &object_id) {
                 object_ids.push(object_id);
