@@ -102,7 +102,8 @@ pub fn run_erasure_pass(
     rows: u32,
 ) -> MaintenanceResult<u32> {
     validate_erasure_limits(now, accounts, rows)?;
-    erasure_pass_sql(catalog, now, accounts, rows.min(250)).map_err(MaintenanceError::from)
+    let now_millis = erasure_time_millis(now)?;
+    erasure_pass_sql(catalog, now_millis, accounts, rows.min(250)).map_err(MaintenanceError::from)
 }
 
 /// The asynchronous counterpart of [`run_erasure_pass`].
@@ -121,9 +122,10 @@ pub async fn run_erasure_pass_async(
     rows: u32,
 ) -> MaintenanceResult<u32> {
     validate_erasure_limits(now, accounts, rows)?;
+    let now_millis = erasure_time_millis(now)?;
     catalog
         .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
-            erasure_pass_sql(catalog, now, accounts, rows.min(250))
+            erasure_pass_sql(catalog, now_millis, accounts, rows.min(250))
         })
         .await
         .map_err(MaintenanceError::from)
@@ -138,6 +140,23 @@ fn validate_erasure_limits(now: i64, accounts: u32, rows: u32) -> MaintenanceRes
     Ok(())
 }
 
+/// Server maintenance callers historically supplied Unix seconds while v2
+/// catalogue timestamps are milliseconds. Normalize at this boundary so a
+/// seconds value can never move `updated_at` backwards and hide progress.
+fn erasure_time_millis(now: i64) -> MaintenanceResult<i64> {
+    if now < 0 {
+        return Err(MaintenanceError::Invalid(
+            "invalid erasure timestamp".into(),
+        ));
+    }
+    if now < 10_000_000_000 {
+        now.checked_mul(1_000)
+            .ok_or_else(|| MaintenanceError::Invalid("erasure timestamp overflow".into()))
+    } else {
+        Ok(now)
+    }
+}
+
 fn erasure_pass_sql(
     catalog: &Catalog,
     now: i64,
@@ -150,6 +169,7 @@ fn erasure_pass_sql(
         let stages = [
             "owned_documents",
             "operations",
+            "operations_owned_documents",
             "grants",
             "bookmarks",
             "annotation_replies",
@@ -179,6 +199,17 @@ fn erasure_pass_sql(
                 };
             if removed != 0 {
                 break;
+            }
+            // An owned-document operation page can advance to the next
+            // document without deleting a receipt. Keep that stage active
+            // when its cursor changed; only a stable empty cursor permits a
+            // transition to the next erasure phase.
+            let latest_cursor = catalog
+                .erasure_progress(&id)?
+                .and_then(|(_, cursor)| cursor);
+            if latest_cursor != cursor {
+                cursor = latest_cursor;
+                continue;
             }
             index += 1;
             if index == stages.len() {

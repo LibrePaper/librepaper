@@ -2682,3 +2682,115 @@ fn v2_erasure_drains_annotation_children_within_250_row_budget() {
         1
     );
 }
+
+#[test]
+fn v2_erasure_worker_resumes_pinned_operation_and_refuses_live_child_cascade() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog
+        .begin_erasure("acct-1", "generation-erasing")
+        .unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO documents
+                 (id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,
+                  source_format,main_path)
+                 VALUES('doc-worker','worker','acct-1','owned','Worker','worker','active',0,0,
+                        'markdown','README.md')",
+                [],
+            )?;
+            connection.execute(
+                r#"INSERT INTO annotations
+                 (document_id,id,seq,kind,body,author_account_id,author_key,author_label,
+                  via,created_at,updated_at,selector_json,context_json)
+                 VALUES('doc-worker','annotation-worker',1,'comment','body','acct-1',
+                        'account:acct-1','Account','web',0,0,'{}','{"version":1}')"#,
+                [],
+            )?;
+            let generation: String = connection.query_row(
+                "SELECT writer_generation FROM server_state WHERE id=1",
+                [],
+                |row| row.get(0),
+            )?;
+            connection.execute(
+                r#"INSERT INTO operations
+                 (id,document_id,actor_key,request_key,kind,request_digest,state,
+                  writer_generation,result_json,created_at,updated_at,completed_at,receipt_expires_at)
+                 VALUES('operation-pinned','doc-worker','acct-1','worker-request','source_publish',
+                        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                        'aborted',?1,'{"version":1}',0,0,0,0)"#,
+                [&generation],
+            )?;
+            connection.execute(
+                r#"INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,reserved_bytes,
+                  allocation_operation_id,created_at)
+                 VALUES('doc-worker','object-pinned','objects/pinned','source_chunk','allocated',
+                        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                        1,'operation-pinned',0)"#,
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    crate::storage::maintenance::run_erasure_pass(&catalog, 1, 1, 1).unwrap();
+    crate::storage::maintenance::run_erasure_pass(&catalog, 2, 1, 1).unwrap();
+    assert_eq!(
+        catalog.erasure_stage("acct-1").unwrap().as_deref(),
+        Some("operations")
+    );
+
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "DELETE FROM objects WHERE document_id='doc-worker' AND id='object-pinned'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    crate::storage::maintenance::run_erasure_pass(&catalog, 3, 1, 1).unwrap();
+
+    // The worker reaches the annotation stage after draining the now
+    // unpinned receipt. A reply arriving between child draining and parent
+    // deletion must cause a retry, never an unbounded cascading delete.
+    for now in 4..20 {
+        if catalog.erasure_stage("acct-1").unwrap().as_deref() == Some("annotations") {
+            break;
+        }
+        crate::storage::maintenance::run_erasure_pass(&catalog, now, 1, 1).unwrap();
+    }
+    assert_eq!(
+        catalog.erasure_stage("acct-1").unwrap().as_deref(),
+        Some("annotations")
+    );
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO replies
+                 (document_id,annotation_id,id,body,author_account_id,author_key,author_label,
+                  created_at,updated_at)
+                 VALUES('doc-worker','annotation-worker','live-reply','reply',NULL,
+                        'account:other','Other',0,0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    crate::storage::maintenance::run_erasure_pass(&catalog, 20, 1, 1).unwrap();
+    let still_there: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM annotations
+                     WHERE document_id='doc-worker' AND id='annotation-worker'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(still_there, 1);
+}
