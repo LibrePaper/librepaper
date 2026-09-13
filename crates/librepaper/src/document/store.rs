@@ -47,6 +47,20 @@ const MAX_LINKS_PER_RESULT: i64 = 16;
 const MAX_GUESTS_PER_RESULT: i64 = 256;
 const CATALOG_PAGE_SIZE: u32 = 200;
 
+static SOURCE_ENCODING_POOL: std::sync::OnceLock<crate::storage::encoding::EncodingPool> =
+    std::sync::OnceLock::new();
+
+fn source_encoding_pool() -> &'static crate::storage::encoding::EncodingPool {
+    SOURCE_ENCODING_POOL.get_or_init(|| {
+        crate::storage::encoding::EncodingPool::new(
+            if cfg!(test) { 32 } else { 2 },
+            64 * 1024 * 1024,
+            crate::storage::encoding::EncodingProfile::default(),
+        )
+        .expect("static source encoding profile is valid")
+    })
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct IndexEntry {
     pub slug: String,
@@ -525,6 +539,43 @@ impl std::fmt::Display for PutError {
             PutError::Authorization { message, .. } => write!(f, "{message}"),
             PutError::Storage(message) => write!(f, "{message}"),
         }
+    }
+}
+
+fn source_put_error(error: CatalogError) -> PutError {
+    match error {
+        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::ActorRights, _) => {
+            PutError::Authorization {
+                status: 403,
+                message: "edit access changed",
+            }
+        }
+        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::RequestExpired, _) => {
+            PutError::Authorization {
+                status: 410,
+                message: "request receipt has expired",
+            }
+        }
+        CatalogError::Refused(
+            crate::storage::catalog::CatalogRefusal::OwnerBytes
+            | crate::storage::catalog::CatalogRefusal::DeploymentBytes
+            | crate::storage::catalog::CatalogRefusal::OwnerDocuments,
+            _,
+        ) => PutError::Quota {
+            status: 507,
+            message: "storage quota is used up; delete a document first",
+        },
+        CatalogError::Refused(crate::storage::catalog::CatalogRefusal::UploadRate, _) => {
+            PutError::Quota {
+                status: 429,
+                message: "too many uploads this hour; try later",
+            }
+        }
+        CatalogError::NotFound => PutError::Authorization {
+            status: 404,
+            message: "not found",
+        },
+        other => PutError::Storage(other.to_string()),
     }
 }
 
@@ -1354,30 +1405,36 @@ impl Store {
             .map_err(|error| PutError::Storage(error.to_string()))?;
         let now_ms = crate::util::now_millis();
         let now = timestamp();
-        if actor.account_id.is_empty() || actor.session_generation.is_empty() {
+        if actor.account_id.is_empty() && actor.owner_key.is_empty() && actor.link_hash.is_empty() {
             return Err(PutError::Authorization {
                 status: 401,
-                message: "publication actor has no authenticated account session",
+                message: "publication actor has no accountable identity",
             });
         }
-        let account = catalog
-            .execute_catalog(STORE_JOB_BYTES + actor.account_id.len(), {
-                let account_id = actor.account_id.clone();
-                move |catalog| catalog.account(&account_id)
-            })
-            .await
-            .map_err(|error| PutError::Storage(error.to_string()))?
-            .ok_or(PutError::Authorization {
-                status: 401,
-                message: "publication actor account is not active",
-            })?;
-        if account.status != "active" || account.session_generation != actor.session_generation {
-            return Err(PutError::Authorization {
-                status: 401,
-                message: "publication actor session has changed",
-            });
-        }
-        if existing.is_none() && !actor.policy_editor {
+        let account = if !actor.account_id.is_empty() {
+            let account = catalog
+                .execute_catalog(STORE_JOB_BYTES + actor.account_id.len(), {
+                    let account_id = actor.account_id.clone();
+                    move |catalog| catalog.account(&account_id)
+                })
+                .await
+                .map_err(|error| PutError::Storage(error.to_string()))?
+                .ok_or(PutError::Authorization {
+                    status: 401,
+                    message: "publication actor account is not active",
+                })?;
+            if account.status != "active" || account.session_generation != actor.session_generation
+            {
+                return Err(PutError::Authorization {
+                    status: 401,
+                    message: "publication actor session has changed",
+                });
+            }
+            Some(account)
+        } else {
+            None
+        };
+        if existing.is_none() && !actor.policy_editor && !actor.unowned_publisher {
             return Err(PutError::Authorization {
                 status: 403,
                 message: "publication actor is not permitted to create documents",
@@ -1432,18 +1489,18 @@ impl Store {
         let owner_id = existing
             .as_ref()
             .and_then(|document| document.owner_id.clone())
-            .unwrap_or_else(|| actor.account_id.clone());
+            .or_else(|| (!actor.account_id.is_empty()).then(|| actor.account_id.clone()));
         let created_at = existing
             .as_ref()
             .map(|document| document.created_at.clone())
             .unwrap_or_else(|| now.clone());
 
         let source = v.source.as_bytes().to_vec();
-        let plan = store_encoding_pool()
+        let plan = source_encoding_pool()
             .try_plan(source.clone())
             .await
             .map_err(|error| PutError::Storage(format!("source planning failed: {error}")))?;
-        let encoded = store_encoding_pool()
+        let encoded = source_encoding_pool()
             .try_encode_planned(source.clone(), plan, std::collections::HashSet::new())
             .await
             .map_err(|error| PutError::Storage(format!("source encoding failed: {error}")))?;
@@ -1468,7 +1525,7 @@ impl Store {
             .zip(&chunk_ids)
             .map(|(object, object_id)| {
                 let object_digest = Sha256::digest(&object.encoded).into();
-                crate::storage::encoding::PhysicalLocator {
+                Ok(crate::storage::encoding::PhysicalLocator {
                     object_id: BlobObjectId::parse(object_id.as_str().to_owned())
                         .map_err(|error| PutError::Storage(error.to_string()))?,
                     object_digest,
@@ -1476,7 +1533,7 @@ impl Store {
                     logical_length: object.uncompressed_len as u64,
                     byte_length: object.encoded.len() as u64,
                     encoding_version: 1,
-                }
+                })
             })
             .collect::<Result<Vec<_>, PutError>>()?;
         let recipe_envelope = crate::storage::encoding::SourceRecipeEnvelope {
@@ -1549,6 +1606,9 @@ impl Store {
         let plan_json = serde_json::json!({
             "version": 2,
             "effect": "source_publish",
+            "title": title.clone(),
+            "source_format": format.clone(),
+            "main": main.clone(),
             "closure_digest": source_closure_digest(&object_ids),
             "tree_digest": tree_digest.clone(),
             "tree_physical_digest": hex::encode(Sha256::digest(&tree_bytes)),
@@ -1567,8 +1627,12 @@ impl Store {
                 .as_ref()
                 .map(|document| document.example)
                 .unwrap_or(false),
-            owner_key: String::new(),
-            owner_id: Some(owner_id),
+            owner_key: if owner_id.is_none() {
+                actor.owner_key.clone()
+            } else {
+                String::new()
+            },
+            owner_id,
             status: "creating".into(),
             size: 0,
             counted_size: 0,
@@ -1580,6 +1644,19 @@ impl Store {
         let limits = self.config.storage;
         let document_id = DocumentId::new(storage_id.clone())
             .map_err(|error| PutError::Storage(error.to_string()))?;
+        let observed_generation = if existing.is_some() {
+            let generation_document = document_id.clone();
+            Some(
+                catalog
+                    .execute_catalog(STORE_JOB_BYTES, move |catalog| {
+                        catalog.v2_document_source_generation(&generation_document)
+                    })
+                    .await
+                    .map_err(|error| PutError::Storage(error.to_string()))?,
+            )
+        } else {
+            None
+        };
         let operation_id = crate::storage::catalog::OperationId::new(random_storage_id())
             .map_err(|error| PutError::Storage(error.to_string()))?;
         let physical = {
@@ -1616,6 +1693,10 @@ impl Store {
         let operation_expires = now_ms
             .checked_add(3_600_000)
             .ok_or_else(|| PutError::Storage("operation expiry overflow".into()))?;
+        let operation_deadline = UnixMillis::new(operation_expires)
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let admission_now =
+            UnixMillis::new(now_ms).map_err(|error| PutError::Storage(error.to_string()))?;
         let lease_expires = UnixMillis::new(
             now_ms
                 .checked_add(120_000)
@@ -1652,15 +1733,21 @@ impl Store {
                 let operation_id = operation_id.clone();
                 let operation = V2OperationInput {
                     scope: crate::storage::catalog::OperationScope::Document(document_id.clone()),
-                    actor_key: format!("account:{}", actor.account_id),
+                    actor_key: if !actor.account_id.is_empty() {
+                        format!("account:{}", actor.account_id)
+                    } else if !actor.link_hash.is_empty() {
+                        format!("link:{}", actor.link_hash)
+                    } else {
+                        actor.owner_key.clone()
+                    },
                     request_key,
                     kind: OperationKind::SourcePublish,
                     request_digest,
                     plan_json,
-                    expected_document_generation: None,
+                    expected_document_generation: observed_generation,
                     conversation_id: None,
                     execution_epoch: None,
-                    work_expires_at: Some(UnixMillis::new(operation_expires)?),
+                    work_expires_at: Some(operation_deadline),
                 };
                 let document = document_input.clone();
                 let allocations = allocations.clone();
@@ -1675,37 +1762,39 @@ impl Store {
                         lease_holder: holder,
                         lease_expires_at: lease_expires,
                         limits: admission,
-                        now: UnixMillis::new(now_ms)?,
+                        now: admission_now,
                     })
                 }
             })
             .await
-            .map_err(|error| PutError::Storage(error.to_string()))?;
+            .map_err(crate::storage::catalog::CatalogError::from)
+            .map_err(source_put_error)?;
         let (operation, writer_generation) = operation;
         let writer = crate::storage::v2_catalog::V2ObjectWriter::new(
             Arc::clone(catalog),
             Arc::clone(&self.blobs),
         );
+        let mut last_heartbeat = 0i64;
         for (object_id, _, _, _, bytes, content_type) in &physical {
             let renewal_now = crate::util::now_millis();
-            let renewal_expiry = UnixMillis::new(
-                renewal_now
-                    .checked_add(120_000)
-                    .ok_or_else(|| PutError::Storage("lease renewal overflow".into()))?,
-            )
-            .map_err(|error| PutError::Storage(error.to_string()))?;
-            for lease_object_id in &object_ids {
+            if last_heartbeat == 0 || renewal_now.saturating_sub(last_heartbeat) >= 30_000 {
+                let renewal_expiry = UnixMillis::new(
+                    renewal_now
+                        .checked_add(120_000)
+                        .ok_or_else(|| PutError::Storage("lease renewal overflow".into()))?,
+                )
+                .map_err(|error| PutError::Storage(error.to_string()))?;
                 catalog
                     .execute_catalog(STORE_JOB_BYTES, {
                         let document_id = document_id.clone();
-                        let lease_object_id = lease_object_id.clone();
+                        let object_ids = object_ids.clone();
                         let holder = holder.clone();
                         let operation_id = operation.id.clone();
                         let writer_generation = writer_generation.clone();
                         move |catalog| {
-                            catalog.renew_v2_lease(
+                            catalog.renew_v2_lease_set(
                                 &document_id,
-                                &lease_object_id,
+                                &object_ids,
                                 &holder,
                                 &operation_id,
                                 &writer_generation,
@@ -1716,6 +1805,7 @@ impl Store {
                     })
                     .await
                     .map_err(|error| PutError::Storage(error.to_string()))?;
+                last_heartbeat = renewal_now;
             }
             let blob_id = BlobObjectId::parse(object_id.as_str().to_owned())
                 .map_err(|error| PutError::Storage(error.to_string()))?;
@@ -1734,8 +1824,11 @@ impl Store {
             tree_object_id: tree_id,
             tree_digest,
             parent_id: None,
-            author_account_id: Some(actor.account_id.clone()),
-            author_label: account.name.clone(),
+            author_account_id: (!actor.account_id.is_empty()).then(|| actor.account_id.clone()),
+            author_label: account
+                .as_ref()
+                .map(|account| account.name.clone())
+                .unwrap_or_else(|| "Anonymous".into()),
             reason: "initial source".into(),
             source_format,
             logical_bytes: source.len() as i64,

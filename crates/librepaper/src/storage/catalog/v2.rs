@@ -536,6 +536,27 @@ fn checked_add(a: i64, b: i64, label: &str) -> CatalogResult<i64> {
         .ok_or_else(|| CatalogError::Invalid(format!("{label} counter overflow")))
 }
 
+fn source_document_time_ms(value: &str) -> CatalogResult<i64> {
+    if let Ok(number) = value.parse::<i64>() {
+        if number < 0 {
+            return Err(CatalogError::Invalid(
+                "document timestamp cannot be negative".into(),
+            ));
+        }
+        return if number < 10_000_000_000 {
+            number
+                .checked_mul(1_000)
+                .ok_or_else(|| CatalogError::Invalid("document timestamp overflow".into()))
+        } else {
+            Ok(number)
+        };
+    }
+    crate::util::parse_timestamp(value)
+        .and_then(|seconds| seconds.checked_mul(1_000))
+        .filter(|value| *value >= 0)
+        .ok_or_else(|| CatalogError::Invalid("document timestamp is invalid".into()))
+}
+
 fn operation_authorized_in_tx(
     tx: &Transaction<'_>,
     document_id: &str,
@@ -578,6 +599,29 @@ fn operation_authorized_in_tx(
     let legacy_account_actor = !account_id.is_empty()
         && authorization.get("session_generation").is_none()
         && actor_key == account_id;
+
+    // Anonymous source writers are represented by a durable anonymous account
+    // derived from their owner credential.  Keep that credential out of the
+    // persisted authority JSON; the operation actor key is the admission
+    // secret and its derived account is checked against the live document.
+    if account_id.is_empty() && link_hash.is_empty() && !actor_key.is_empty() {
+        let digest = Sha256::digest(actor_key.as_bytes());
+        let anonymous_id = format!("anonymous:{}", hex::encode(digest));
+        let owner_match: bool = tx
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM documents d JOIN accounts a ON a.id=d.owner_id
+                    WHERE d.id=?1 AND d.owner_id=?2
+                      AND d.status IN ('active','creating') AND a.status='active')",
+                params![document_id, anonymous_id],
+                |row| row.get(0),
+            )
+            .map_err(CatalogError::from)?;
+        if owner_match {
+            return Ok(required_role == "editor");
+        }
+    }
+
     if expected_actor != actor_key && !legacy_account_actor {
         return Err(CatalogError::refused(
             CatalogRefusal::ActorRights,
@@ -1357,210 +1401,6 @@ impl Catalog {
 
     /// Admit a complete physical closure in one transaction. A quota refusal
     /// therefore leaves neither a partial object set nor partial counters.
-    pub(crate) fn allocate_v2_objects_with_limits(
-        &self,
-        allocations: &[V2ObjectAllocation],
-        limits: V2AdmissionLimits,
-    ) -> CatalogResult<Vec<V2Object>> {
-        if allocations.is_empty() {
-            return Err(CatalogError::Invalid("object allocation is empty".into()));
-        }
-        let first = &allocations[0];
-        let mut ids = HashSet::with_capacity(allocations.len());
-        let mut total = 0i64;
-        let mut agent_bytes = 0i64;
-        let mut agent_count = 0i64;
-        for allocation in allocations {
-            validate_digest(&allocation.digest, "object digest")?;
-            if let Some(logical) = allocation.logical_digest.as_deref() {
-                validate_digest(logical, "logical digest")?;
-            }
-            if allocation.document_id != first.document_id
-                || allocation.operation_id != first.operation_id
-                || allocation.reserved_bytes < 0
-                || allocation.encoding_version < 1
-                || !ids.insert(&allocation.id)
-            {
-                return Err(CatalogError::Invalid(
-                    "object allocations must share a document and operation and use distinct ids"
-                        .into(),
-                ));
-            }
-            let expected_key = format!(
-                "v2/documents/{}/objects/{}",
-                allocation.document_id, allocation.id
-            );
-            if allocation.storage_key != expected_key {
-                return Err(CatalogError::Invalid(
-                    "invalid object allocation key".into(),
-                ));
-            }
-            total = checked_add(total, allocation.reserved_bytes, "object reservation")?;
-            if allocation.kind == ObjectKind::AgentPayload {
-                agent_bytes = checked_add(agent_bytes, allocation.reserved_bytes, "agent bytes")?;
-                agent_count = checked_add(agent_count, 1, "agent count")?;
-            }
-        }
-        if limits.owner_bytes < 0 || limits.deployment_bytes < 0 {
-            return Err(CatalogError::Invalid("negative admission limit".into()));
-        }
-        let _guard = self
-            .room_reservations
-            .lock()
-            .map_err(|_| CatalogError::Busy)?;
-        self.immediate(|tx| {
-            let owner_id: String = tx
-                .query_row(
-                    "SELECT owner_id FROM documents WHERE id=?1 AND status <> 'deleting'",
-                    [first.document_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            let prepared: i64 = tx
-                .query_row(
-                    "SELECT count(*) FROM operations
-                     WHERE id=?1 AND document_id=?2 AND state='prepared'",
-                    params![first.operation_id.as_str(), first.document_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if prepared != 1 {
-                return Err(CatalogError::Conflict(
-                    "allocation requires a prepared document operation".into(),
-                ));
-            }
-            let (doc_reserved, doc_agent_bytes, doc_agent_count): (i64, i64, i64) = tx
-                .query_row(
-                    "SELECT reserved_bytes,agent_payload_bytes,agent_payload_count
-                     FROM documents WHERE id=?1",
-                    [first.document_id.as_str()],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .map_err(CatalogError::from)?;
-            let (owner_stored, owner_reserved): (i64, i64) = tx
-                .query_row(
-                    "SELECT stored_bytes,reserved_bytes FROM accounts WHERE id=?1",
-                    [&owner_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(CatalogError::from)?;
-            let (server_stored, server_reserved, server_agent_bytes, server_agent_count): (
-                i64,
-                i64,
-                i64,
-                i64,
-            ) = tx
-                .query_row(
-                    "SELECT stored_bytes,reserved_bytes,agent_payload_bytes,agent_payload_count
-                     FROM server_state WHERE id=1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )
-                .map_err(CatalogError::from)?;
-            let new_doc_reserved = checked_add(doc_reserved, total, "document reserved")?;
-            let new_owner_reserved = checked_add(owner_reserved, total, "owner reserved")?;
-            let new_server_reserved = checked_add(server_reserved, total, "deployment reserved")?;
-            let process_owner = _guard.owner_bytes.get(&owner_id).copied().unwrap_or(0);
-            let process_total = _guard.deployment_bytes;
-            if owner_stored
-                .checked_add(new_owner_reserved)
-                .and_then(|value| value.checked_add(process_owner))
-                .ok_or_else(|| CatalogError::Invalid("owner accounting overflow".into()))?
-                > limits.owner_bytes
-                || server_stored
-                    .checked_add(new_server_reserved)
-                    .and_then(|value| value.checked_add(process_total))
-                    .ok_or_else(|| CatalogError::Invalid("deployment accounting overflow".into()))?
-                    > limits.deployment_bytes
-            {
-                return Err(CatalogError::refused(
-                    CatalogRefusal::OwnerBytes,
-                    "object allocation exceeds configured byte limit",
-                ));
-            }
-            let new_doc_agent_bytes = checked_add(doc_agent_bytes, agent_bytes, "agent bytes")?;
-            let new_doc_agent_count = checked_add(doc_agent_count, agent_count, "agent count")?;
-            let new_server_agent_bytes =
-                checked_add(server_agent_bytes, agent_bytes, "deployment agent bytes")?;
-            let new_server_agent_count =
-                checked_add(server_agent_count, agent_count, "deployment agent count")?;
-            if new_doc_agent_bytes > MAX_AGENT_PAYLOAD_BYTES
-                || new_doc_agent_count > MAX_AGENT_PAYLOAD_COUNT
-                || new_server_agent_bytes > 134_217_728
-                || new_server_agent_count > 16_384
-            {
-                return Err(CatalogError::refused(
-                    CatalogRefusal::OwnerBytes,
-                    "agent staging capacity exceeded",
-                ));
-            }
-            for allocation in allocations {
-                tx.execute(
-                    "INSERT INTO objects
-                     (document_id,id,storage_key,kind,state,digest,logical_digest,encoding_version,
-                      byte_length,reserved_bytes,allocation_operation_id,created_at)
-                     VALUES (?1,?2,?3,?4,'allocated',?5,?6,?7,NULL,?8,?9,?10)",
-                    params![
-                        allocation.document_id.as_str(),
-                        allocation.id.as_str(),
-                        allocation.storage_key,
-                        allocation.kind.as_str(),
-                        allocation.digest,
-                        allocation.logical_digest,
-                        allocation.encoding_version,
-                        allocation.reserved_bytes,
-                        allocation.operation_id.as_str(),
-                        allocation.now.0
-                    ],
-                )
-                .map_err(CatalogError::from)?;
-            }
-            tx.execute(
-                "UPDATE documents SET reserved_bytes=?1,agent_payload_bytes=?2,
-                    agent_payload_count=?3,updated_at=max(updated_at,?4) WHERE id=?5",
-                params![
-                    new_doc_reserved,
-                    new_doc_agent_bytes,
-                    new_doc_agent_count,
-                    first.now.0,
-                    first.document_id.as_str()
-                ],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE accounts SET reserved_bytes=?1 WHERE id=?2",
-                params![new_owner_reserved, owner_id],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE server_state SET reserved_bytes=?1,agent_payload_bytes=?2,
-                    agent_payload_count=?3,catalog_revision=catalog_revision+1,updated_at=?4
-                 WHERE id=1",
-                params![
-                    new_server_reserved,
-                    new_server_agent_bytes,
-                    new_server_agent_count,
-                    first.now.0
-                ],
-            )
-            .map_err(CatalogError::from)?;
-            Ok(allocations
-                .iter()
-                .map(|allocation| V2Object {
-                    document_id: allocation.document_id.clone(),
-                    id: allocation.id.clone(),
-                    storage_key: allocation.storage_key.clone(),
-                    kind: allocation.kind.as_str().into(),
-                    state: ObjectState::Allocated.as_str().into(),
-                    digest: allocation.digest.clone(),
-                    byte_length: None,
-                    reserved_bytes: allocation.reserved_bytes,
-                    allocation_operation_id: Some(allocation.operation_id.clone()),
-                })
-                .collect())
-        })
-    }
-
     /// Admit the first source closure as one transaction. Filesystem writes
     /// happen only after this returns: at that point the document, operation,
     /// reservations, and every stage lease already share one live fence.
@@ -1664,13 +1504,49 @@ impl Catalog {
             let owner_id: String;
             let source_generation: i64;
             if input.create_document {
-                let created_at = super::documents::document_time_ms(&document.created_at)?;
+                let created_at = source_document_time_ms(&document.created_at)?;
                 if !matches!(document.status.as_str(), "creating" | "active")
                     || !matches!(document.source_format.as_str(), "markdown" | "html" | "typst" | "latex" | "quarto")
                 {
                     return Err(CatalogError::Invalid("invalid source document metadata".into()));
                 }
-                owner_id = super::documents::ensure_owner_account_in_tx(tx, document, created_at)?;
+                owner_id = if let Some(owner_id) = document.owner_id.clone() {
+                    owner_id
+                } else {
+                    if document.owner_key.is_empty() {
+                        return Err(CatalogError::Invalid(
+                            "anonymous source document requires a stable owner key".into(),
+                        ));
+                    }
+                    let digest = sha2::Sha256::digest(document.owner_key.as_bytes());
+                    let owner_id = format!("anonymous:{}", hex::encode(digest));
+                    tx.execute(
+                        "INSERT OR IGNORE INTO accounts(
+                         id,kind,provider,provider_subject,handle,display_name,email,status,
+                         session_generation,plan,created_at,last_seen_at)
+                         VALUES(?1,'anonymous',NULL,NULL,'anonymous','Anonymous',NULL,'active',
+                           ?2,'default',?3,?3)",
+                        params![
+                            owner_id,
+                            hex::encode(crate::auth::random_bytes(16)),
+                            created_at
+                        ],
+                    )
+                    .map_err(CatalogError::from)?;
+                    owner_id
+                };
+                let owner_active: bool = tx
+                    .query_row(
+                        "SELECT status='active' FROM accounts WHERE id=?1",
+                        [&owner_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(CatalogError::from)?
+                    .unwrap_or(false);
+                if !owner_active {
+                    return Err(CatalogError::Conflict("owner account is not active".into()));
+                }
                 let (owner_bytes, owner_documents): (i64, i64) = tx
                     .query_row(
                         "SELECT stored_bytes+reserved_bytes,document_count FROM accounts WHERE id=?1",
@@ -1703,20 +1579,48 @@ impl Catalog {
                         "deployment storage limit is already exceeded",
                     ));
                 }
-                super::documents::unique_project_title_in_tx(
+                Catalog::unique_project_title_in_tx(
                     tx,
                     &document.slug,
                     &document.title,
                     Some(&owner_id),
                     "",
                 )?;
-                super::documents::insert_document_in_tx(
-                    tx,
-                    document,
-                    &owner_id,
-                    created_at,
-                    document.status.as_str(),
-                )?;
+                let inserted = tx
+                    .execute(
+                        "INSERT INTO documents
+                         (id,slug,owner_id,ownership_mode,title,title_key,status,created_at,
+                          updated_at,source_format,main_path)
+                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8,?9,?10)",
+                        params![
+                            document.storage_id,
+                            document.slug,
+                            owner_id,
+                            if document.example { "example" } else { "owned" },
+                            document.title,
+                            title_key(&document.title),
+                            document.status,
+                            created_at,
+                            document.source_format,
+                            document.main,
+                        ],
+                    )
+                    .map_err(CatalogError::from)?;
+                if inserted != 1 {
+                    return Err(CatalogError::Conflict("document already exists".into()));
+                }
+                tx.execute(
+                    "UPDATE accounts SET document_count=document_count+1 WHERE id=?1",
+                    [&owner_id],
+                )
+                .map_err(CatalogError::from)?;
+                tx.execute(
+                    "UPDATE server_state SET document_count=document_count+1,
+                     catalog_revision=catalog_revision+1,updated_at=max(updated_at,?1)
+                     WHERE id=1",
+                    [created_at],
+                )
+                .map_err(CatalogError::from)?;
                 source_generation = 0;
             } else {
                 let current = Catalog::document_in_tx(tx, &document.slug)?;
@@ -1728,26 +1632,13 @@ impl Catalog {
                         "source replacement cannot change ownership".into(),
                     ));
                 }
-                super::documents::unique_project_title_in_tx(
+                Catalog::unique_project_title_in_tx(
                     tx,
                     &document.slug,
                     &document.title,
                     Some(&owner_id),
                     "",
                 )?;
-                tx.execute(
-                    "UPDATE documents SET title=?1,title_key=?2,updated_at=?3,
-                     source_format=?4,main_path=?5 WHERE id=?6 AND status<>'deleting'",
-                    params![
-                        document.title,
-                        super::documents::normalized_title(&document.title),
-                        input.now.0,
-                        document.source_format,
-                        document.main,
-                        document.storage_id
-                    ],
-                )
-                .map_err(CatalogError::from)?;
                 source_generation = tx
                     .query_row(
                         "SELECT source_generation FROM documents WHERE id=?1 AND status<>'deleting'",
@@ -1755,6 +1646,13 @@ impl Catalog {
                         |row| row.get(0),
                     )
                     .map_err(CatalogError::from)?;
+            }
+            if let Some(expected) = operation_input.expected_document_generation {
+                if expected != source_generation {
+                    return Err(CatalogError::Conflict(
+                        "source document generation changed before admission".into(),
+                    ));
+                }
             }
             let current_generation: String = tx
                 .query_row(
@@ -2207,6 +2105,70 @@ impl Catalog {
         })
     }
 
+    /// Heartbeat a bounded closure under one SQLite transaction. A source
+    /// write may settle earlier objects while later ones are still being
+    /// written, so available objects remain valid members of this operation's
+    /// lease set.
+    pub(crate) fn renew_v2_lease_set(
+        &self,
+        document_id: &DocumentId,
+        object_ids: &[ObjectId],
+        holder_id: &str,
+        operation_id: &OperationId,
+        writer_generation: &str,
+        expires_at: UnixMillis,
+        now: UnixMillis,
+    ) -> CatalogResult<()> {
+        if object_ids.is_empty() || holder_id.is_empty() || expires_at <= now {
+            return Err(CatalogError::Invalid("invalid closure heartbeat".into()));
+        }
+        self.immediate(|tx| {
+            for object_id in object_ids {
+                let changed = tx
+                    .execute(
+                        "UPDATE object_leases SET expires_at=MIN(?1,?7+120000,
+                             COALESCE((SELECT work_expires_at FROM operations
+                               WHERE id=?5 AND document_id=?2),?1))
+                         WHERE document_id=?2 AND object_id=?3 AND holder_id=?4
+                           AND purpose='stage' AND operation_id=?5
+                           AND writer_generation=?6 AND expires_at>?7
+                           AND MIN(?1,?7+120000,
+                             COALESCE((SELECT work_expires_at FROM operations
+                               WHERE id=?5 AND document_id=?2),?1))>?7
+                           AND EXISTS(SELECT 1 FROM objects o JOIN documents d
+                               ON d.id=o.document_id JOIN accounts a ON a.id=d.owner_id
+                               JOIN server_state s ON s.id=1
+                               WHERE o.document_id=?2 AND o.id=?3
+                                 AND (o.state='available' OR
+                                      (o.state='allocated' AND o.allocation_operation_id=?5))
+                                 AND d.status<>'deleting' AND a.status='active'
+                                 AND s.writer_generation=?6)
+                           AND EXISTS(SELECT 1 FROM operations
+                               WHERE id=?5 AND document_id=?2 AND state='prepared'
+                                 AND writer_generation=?6
+                                 AND writer_generation=(SELECT writer_generation FROM server_state WHERE id=1)
+                                 AND (work_expires_at IS NULL OR work_expires_at>?7))",
+                        params![
+                            expires_at.0,
+                            document_id.as_str(),
+                            object_id.as_str(),
+                            holder_id,
+                            operation_id.as_str(),
+                            writer_generation,
+                            now.0
+                        ],
+                    )
+                    .map_err(CatalogError::from)?;
+                if changed != 1 {
+                    return Err(CatalogError::Conflict(
+                        "source closure heartbeat is expired or fenced".into(),
+                    ));
+                }
+            }
+            Ok(())
+        })
+    }
+
     pub fn release_v2_lease(
         &self,
         document_id: &DocumentId,
@@ -2621,11 +2583,37 @@ impl Catalog {
                 ).map_err(CatalogError::from)?;
                 if leased == 0 { return Err(CatalogError::Conflict("checkpoint closure is missing an active operation lease".into())); }
             }
+            let (title, title_key_value, plan_format, plan_main) = if kind == OperationKind::SourcePublish.as_str() {
+                let plan: serde_json::Value = serde_json::from_str(&plan_json)
+                    .map_err(|error| CatalogError::Invalid(format!("source operation plan: {error}")))?;
+                let title = plan
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty() && value.len() <= 4096)
+                    .ok_or_else(|| CatalogError::Invalid("source operation title is invalid".into()))?
+                    .to_owned();
+                let format = plan
+                    .get("source_format")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| matches!(*value, "markdown" | "html" | "typst" | "latex" | "quarto"))
+                    .ok_or_else(|| CatalogError::Invalid("source operation format is invalid".into()))?
+                    .to_owned();
+                let main = plan
+                    .get("main")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| CatalogError::Invalid("source operation main path is missing".into()))?
+                    .to_owned();
+                validate_main_path(&main)?;
+                let key = title_key(&title);
+                (Some(title), Some(key), Some(format), Some(main))
+            } else {
+                (None, None, None, None)
+            };
             let count = i64::try_from(checkpoint.object_ids.len()).map_err(|_| CatalogError::Invalid("checkpoint closure too large".into()))?;
             if checked_add(doc_refs,count,"document checkpoint references")? > MAX_DOCUMENT_CHECKPOINT_REFS { return Err(CatalogError::refused(super::CatalogRefusal::Other,"checkpoint_reference_limit")); }
             tx.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,checkpoint.author_account_id,checkpoint.author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,checkpoint.journal_epoch,checkpoint.journal_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|value|value.0)]).map_err(CatalogError::from)?;
             for object_id in &checkpoint.object_ids { tx.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?; }
-            tx.execute("UPDATE documents SET status=CASE WHEN status='creating' THEN 'active' ELSE status END,next_checkpoint_seq=next_checkpoint_seq+1,source_generation=source_generation+1,checkpoint_ref_count=checkpoint_ref_count+?1,last_checkpoint_at=?2,retention_due_at=0,current_checkpoint_id=CASE WHEN ?3 THEN ?4 ELSE current_checkpoint_id END,updated_at=max(updated_at,?2) WHERE id=?5",params![count,checkpoint.now.0,checkpoint.make_current,checkpoint.id.as_str(),checkpoint.document_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE documents SET title=COALESCE(?1,title),title_key=COALESCE(?2,title_key),source_format=COALESCE(?3,source_format),main_path=COALESCE(?4,main_path),status=CASE WHEN status='creating' THEN 'active' ELSE status END,next_checkpoint_seq=next_checkpoint_seq+1,source_generation=source_generation+1,checkpoint_ref_count=checkpoint_ref_count+?5,last_checkpoint_at=?6,retention_due_at=0,current_checkpoint_id=CASE WHEN ?7 THEN ?8 ELSE current_checkpoint_id END,updated_at=max(updated_at,?6) WHERE id=?9",params![title.as_deref(),title_key_value.as_deref(),plan_format.as_deref(),plan_main.as_deref(),count,checkpoint.now.0,checkpoint.make_current,checkpoint.id.as_str(),checkpoint.document_id.as_str()]).map_err(CatalogError::from)?;
             let receipt_expires=checkpoint.now.0.checked_add(7*24*60*60*1_000).ok_or_else(||CatalogError::Invalid("checkpoint receipt expiry overflow".into()))?;
             tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'",params![result_json,checkpoint.now.0,receipt_expires,operation_id.as_str()]).map_err(CatalogError::from)?;
             tx.execute("UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count+?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1",params![count,checkpoint.now.0]).map_err(CatalogError::from)?;

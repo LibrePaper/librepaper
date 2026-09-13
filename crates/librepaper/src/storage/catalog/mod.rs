@@ -41,6 +41,8 @@ mod room_edits;
 mod source_history;
 mod v2;
 
+pub(crate) use v2::V2SourceAdmissionInput;
+
 pub use agent_annotations::AgentAnnotationAuthority;
 pub use execution::{
     CatalogCompletion, CatalogExecError, CatalogExecutionSnapshot, CatalogOutcome,
@@ -59,7 +61,7 @@ pub use v2::{
     AccountKind, CheckpointCommit, CheckpointId, DocumentId, DocumentStatus, IdError, LeasePurpose,
     ObjectId, ObjectKind, ObjectState, OperationId, OperationKind, OperationScope, SourceFormat,
     UnixMillis, V2AccountInput, V2AdmissionLimits, V2DocumentInput, V2Object, V2ObjectAllocation,
-    V2Operation, V2OperationInput, V2SourceAdmissionInput, VerifiedCheckpointClosure,
+    V2Operation, V2OperationInput, VerifiedCheckpointClosure,
     VerifiedPublicationBundle, MAX_CHECKPOINT_OBJECTS,
 };
 
