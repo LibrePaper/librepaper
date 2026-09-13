@@ -6,7 +6,8 @@
 //! every GC transition is conditional on the row still being in the expected
 //! state.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
@@ -26,6 +27,161 @@ use crate::storage::catalog::Catalog;
 
 const GC_RETRY_MS: i64 = 15 * 60 * 1000;
 const RECEIPT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+#[derive(Clone)]
+struct InflightPut {
+    document_id: String,
+    object_id: String,
+    reserved: i64,
+    kind: String,
+    operation_id: String,
+    writer_generation: String,
+    expected_digest: String,
+    written: Option<WrittenObject>,
+}
+
+static INFLIGHT_PUTS: OnceLock<Mutex<HashMap<(String, String), InflightPut>>> = OnceLock::new();
+
+fn inflight_puts() -> &'static Mutex<HashMap<(String, String), InflightPut>> {
+    INFLIGHT_PUTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_inflight(
+    document_id: &str,
+    object_id: &str,
+    reserved: i64,
+    kind: &str,
+    operation_id: &str,
+    writer_generation: &str,
+    expected_digest: &str,
+) {
+    let record = InflightPut {
+        document_id: document_id.to_owned(),
+        object_id: object_id.to_owned(),
+        reserved,
+        kind: kind.to_owned(),
+        operation_id: operation_id.to_owned(),
+        writer_generation: writer_generation.to_owned(),
+        expected_digest: expected_digest.to_owned(),
+        written: None,
+    };
+    inflight_puts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert((document_id.to_owned(), object_id.to_owned()), record);
+}
+
+fn complete_inflight(written: WrittenObject, document_id: &str) {
+    let key = (document_id.to_owned(), written.object_id.as_str().to_owned());
+    if let Some(record) = inflight_puts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_mut(&key)
+    {
+        record.written = Some(written);
+    }
+}
+
+fn remove_inflight(document_id: &str, object_id: &str) {
+    inflight_puts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&(document_id.to_owned(), object_id.to_owned()));
+}
+
+fn inflight_active(document_id: &str, object_id: &str) -> bool {
+    inflight_puts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(&(document_id.to_owned(), object_id.to_owned()))
+}
+
+fn completed_inflight(limit: usize) -> Vec<InflightPut> {
+    inflight_puts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+        .filter(|record| record.written.is_some())
+        .take(limit)
+        .cloned()
+        .collect()
+}
+
+async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Result<(), String> {
+    let Some(written) = record.written else {
+        return Ok(());
+    };
+    catalog
+        .execute(1024, move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let (state, digest, catalog_reserved, catalog_kind, allocation_operation, operation_state, operation_generation, writer_generation): (String, String, i64, String, Option<String>, Option<String>, Option<String>, String) = transaction
+                .query_row(
+                    "SELECT o.state,o.digest,o.reserved_bytes,o.kind,o.allocation_operation_id,op.state,op.writer_generation,s.writer_generation FROM objects o LEFT JOIN operations op ON op.id=o.allocation_operation_id AND op.document_id=o.document_id CROSS JOIN server_state s WHERE o.document_id=?1 AND o.id=?2",
+                    params![record.document_id, written.object_id.as_str()],
+                    |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            if state != "allocated"
+                || digest != record.expected_digest
+                || written.byte_length > catalog_reserved as u64
+                || catalog_reserved != record.reserved
+                || catalog_kind != record.kind
+                || allocation_operation.as_deref() != Some(record.operation_id.as_str())
+                || operation_state.as_deref() != Some("prepared")
+                || operation_generation.as_deref() != Some(writer_generation.as_str())
+                || operation_generation.as_deref() != Some(record.writer_generation.as_str())
+            {
+                return Err(crate::storage::catalog::CatalogError::Conflict(
+                    "in-flight physical object no longer matches its admission".into(),
+                ));
+            }
+            let measured = i64::try_from(written.byte_length).map_err(|_| {
+                crate::storage::catalog::CatalogError::Invalid(
+                    "object length overflows SQL integer".into(),
+                )
+            })?;
+            transaction
+                .execute(
+                    "UPDATE objects SET state='available',byte_length=?1,reserved_bytes=0,allocation_operation_id=NULL WHERE document_id=?2 AND id=?3 AND state='allocated'",
+                    params![measured, record.document_id, written.object_id.as_str()],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let delta = measured - record.reserved;
+            transaction
+                .execute(
+                    "UPDATE documents SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,agent_payload_bytes=CASE WHEN ?3='agent_payload' THEN agent_payload_bytes+?4 ELSE agent_payload_bytes END WHERE id=?5",
+                    params![measured, record.reserved, record.kind, delta, record.document_id],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let owner: String = transaction
+                .query_row(
+                    "SELECT owner_id FROM documents WHERE id=?1",
+                    [record.document_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            transaction
+                .execute(
+                    "UPDATE accounts SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2 WHERE id=?3",
+                    params![measured, record.reserved, owner],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            transaction
+                .execute(
+                    "UPDATE server_state SET stored_bytes=stored_bytes+?1,reserved_bytes=reserved_bytes-?2,agent_payload_bytes=CASE WHEN ?3='agent_payload' THEN agent_payload_bytes+?4 ELSE agent_payload_bytes END,catalog_revision=catalog_revision+1 WHERE id=1",
+                    params![measured, record.reserved, record.kind, delta],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            transaction
+                .commit()
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
 
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
@@ -169,15 +325,38 @@ impl V2GcCatalog for Catalog {
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let changed = transaction
                 .execute(
-                    r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations WHERE state='prepared' ORDER BY work_expires_at,id LIMIT ?3)"#,
+                    r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id AND state='allocated') AND id IN (SELECT id FROM operations WHERE state='prepared' AND work_expires_at IS NOT NULL AND work_expires_at<=?1 ORDER BY work_expires_at,id LIMIT ?3)"#,
                     params![now, now.saturating_add(RECEIPT_RETENTION_MS), i64::try_from(limit).unwrap_or(i64::MAX)],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let expired_receipts = transaction
+                .execute(
+                    "DELETE FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=operations.id) AND id IN (SELECT id FROM operations WHERE state IN ('committed','aborted') AND receipt_expires_at IS NOT NULL AND receipt_expires_at<=?1 ORDER BY receipt_expires_at,id LIMIT ?2)",
+                    params![now, i64::try_from(limit).unwrap_or(i64::MAX)],
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             transaction
                 .commit()
                 .map_err(crate::storage::catalog::CatalogError::from)?;
-            Ok(changed)
+            Ok(changed.saturating_add(expired_receipts))
         }))
+    }
+
+    async fn settle_completed_inflight(&self, limit: usize) -> Result<usize, String> {
+        let records = completed_inflight(limit.min(256));
+        let mut settled = 0usize;
+        for record in records {
+            let key_document = record.document_id.clone();
+            let key_object = record.object_id.clone();
+            if settle_completed_record(self, record)
+                .await
+                .is_ok()
+            {
+                remove_inflight(&key_document, &key_object);
+                settled = settled.saturating_add(1);
+            }
+        }
+        Ok(settled)
     }
 
     async fn claim_gc(&self, now: i64, limit: usize) -> Result<Vec<GcCandidate>, String> {
@@ -189,6 +368,15 @@ impl V2GcCatalog for Catalog {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
             let page_limit = i64::try_from(limit).unwrap_or(i64::MAX);
+            // A failed publication can leave an available row without a
+            // retirement timestamp. Put such rows through the same grace
+            // period before selecting them; otherwise they are immortal.
+            transaction
+                .execute(
+                    "UPDATE objects SET gc_after=?1 WHERE state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NULL AND id IN (SELECT id FROM objects WHERE state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NULL ORDER BY created_at,document_id,id LIMIT ?2)",
+                    params![now.saturating_add(GC_RETRY_MS), page_limit],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
             let mut rows: Vec<(String, String, String, i64, String)> = {
                 let mut statement = transaction
                     .prepare("SELECT document_id,id,storage_key,gc_after,'available' FROM objects WHERE state='available' AND live_root=0 AND publication_root=0 AND gc_after IS NOT NULL AND gc_after<=?1 ORDER BY gc_after,document_id,id LIMIT ?2")
@@ -219,6 +407,9 @@ impl V2GcCatalog for Catalog {
             let retry_at = now.saturating_add(GC_RETRY_MS);
             let mut claimed = Vec::with_capacity(rows.len());
             for (document_id, object_id, storage_key, gc_after, state) in rows {
+                if inflight_active(&document_id, &object_id) {
+                    continue;
+                }
                 let backup_frozen: i64 = transaction
                     .query_row(
                         "SELECT count(*) FROM operations WHERE kind='backup' AND document_id IS NULL AND account_id IS NULL AND state='prepared'",
@@ -905,19 +1096,44 @@ impl V2ObjectWriter {
         let blobs = Arc::clone(&self.blobs);
         let document_for_write = document_id.to_owned();
         let content_type_for_write = content_type.to_owned();
-        let written = tokio::spawn(async move {
-            write_v2_object_with_id(
+        register_inflight(
+            document_id,
+            object_id.as_str(),
+            reserved,
+            &kind,
+            &admitted_operation,
+            &admitted_generation,
+            &expected_digest,
+        );
+        let guarded_document = document_id.to_owned();
+        let guarded_object = object_id.as_str().to_owned();
+        let physical_result = tokio::spawn(async move {
+            let result = write_v2_object_with_id(
                 blobs.as_ref(),
                 &document_for_write,
                 object_id,
                 body,
                 &content_type_for_write,
             )
-            .await
+            .await;
+            if let Ok(written) = &result {
+                complete_inflight(written.clone(), &guarded_document);
+            }
+            result
         })
         .await
-        .map_err(|error| format!("physical object task failed: {error}"))?
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            remove_inflight(document_id, &guarded_object);
+            format!("physical object task failed: {error}")
+        })?
+        .map_err(|error| {
+            remove_inflight(document_id, &guarded_object);
+            error.to_string()
+        });
+        let written = match physical_result {
+            Ok(written) => written,
+            Err(error) => return Err(error),
+        };
         let written_for_settle = written.clone();
         let document_for_settle = document_id.to_owned();
         let expected_digest_for_settle = expected_digest.clone();
@@ -974,6 +1190,7 @@ impl V2ObjectWriter {
         })
         .await
         .map_err(|error| error.to_string())?;
+        remove_inflight(document_id, written.object_id.as_str());
         Ok(written)
     }
 }

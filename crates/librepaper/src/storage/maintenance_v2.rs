@@ -33,6 +33,7 @@ pub struct GcReport {
     pub bytes_released: i64,
     pub lease_rows_expired: usize,
     pub prepared_operations_expired: usize,
+    pub inflight_settled: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +110,10 @@ pub trait V2GcCatalog: Send + Sync {
     /// operation with an admitted PUT remains charged for startup recovery.
     async fn expire_prepared_operations(&self, now: i64, limit: usize) -> Result<usize, String> {
         let _ = (now, limit);
+        Ok(0)
+    }
+    async fn settle_completed_inflight(&self, limit: usize) -> Result<usize, String> {
+        let _ = limit;
         Ok(0)
     }
     async fn claim_gc(&self, now: i64, limit: usize) -> Result<Vec<GcCandidate>, String>;
@@ -278,6 +283,10 @@ pub async fn run_gc_pass(
         .expire_prepared_operations(now, GC_PAGE_SIZE)
         .await
         .map_err(GcError::Catalog)?;
+    let inflight_settled = catalog
+        .settle_completed_inflight(GC_PAGE_SIZE)
+        .await
+        .map_err(GcError::Catalog)?;
     let candidates = catalog
         .claim_gc(now, GC_PAGE_SIZE)
         .await
@@ -286,6 +295,7 @@ pub async fn run_gc_pass(
         candidates_claimed: candidates.len(),
         lease_rows_expired,
         prepared_operations_expired,
+        inflight_settled,
         ..GcReport::default()
     };
     let mut first_error = None;
