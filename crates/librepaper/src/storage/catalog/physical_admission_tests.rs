@@ -1,287 +1,189 @@
+//! V2 charges payloads and reservations; SQL references have separate bounds.
+//! These quota-preview fixtures do not stand in for closure-verification tests.
 use super::*;
 
-#[test]
-fn physical_admission_includes_measured_metadata_headroom() {
+fn catalog() -> Catalog {
     let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&super::tests::account()).unwrap();
+    catalog.create_document(&super::tests::document()).unwrap();
     catalog
-        .upsert_account(&Account {
-            id: "acct-physical".into(),
-            provider: "test".into(),
-            handle: "physical".into(),
-            name: "Physical".into(),
-            email: String::new(),
-            first_seen: "2026-01-01T00:00:00Z".into(),
-            last_seen: "2026-01-01T00:00:00Z".into(),
-            plan: "test".into(),
-            status: "active".into(),
-            session_generation: "generation".into(),
-            erasure_cursor: None,
-        })
-        .unwrap();
-    catalog
-        .create_document(&NewDocument {
-            slug: "physical-doc".into(),
-            storage_id: "physical-storage".into(),
-            title: "Physical".into(),
-            sha: "sha".into(),
-            created_at: "2026-01-01T00:00:00Z".into(),
-            published_at: "2026-01-01T00:00:00Z".into(),
-            updated_at: "2026-01-01T00:00:00Z".into(),
-            example: false,
-            owner_key: String::new(),
-            owner_id: Some("acct-physical".into()),
-            status: "active".into(),
-            size: 1,
-            counted_size: 1,
-            maintenance_reserved: 0,
-            last_auto_checkpoint_at: 0,
-            source_format: "markdown".into(),
-            main: "index.md".into(),
-        })
-        .unwrap();
-    catalog
-        .with_connection(|connection| {
-            connection
-                .execute(
-                    "INSERT INTO object_accounting(storage_id,object_key,kind,bytes,version)
-                     VALUES('physical-storage','content/physical-storage/chunks/a','source_chunk',10,'v1')",
-                    [],
-                )
-                .map_err(CatalogError::from)
-        })
-        .unwrap();
-    let usage = catalog.account_storage_usage("acct-physical").unwrap();
-    assert!(usage.physical_accounting);
-
-    // The object payload alone would fit, but the physical admission path
-    // also reserves bounded catalogue-record headroom before the graph rows
-    // are committed.
-    let request = ObjectReservationRequest {
-        slug: "physical-doc",
-        operation_id: "operation",
-        object_key: "content/physical-storage/chunks/new",
-        kind: "source_chunk",
-        new_bytes: 1,
-        owner_limit: usage.charged_bytes + 1,
-        total_limit: usage.charged_bytes + 1,
-    };
-    assert!(matches!(
-        catalog.reserve_object_change(request),
-        Err(CatalogError::Refused(super::CatalogRefusal::OwnerBytes, _))
-    ));
 }
 
 #[test]
-fn graph_metadata_cannot_cross_physical_quota_when_objects_are_reused() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    let account = crate::storage::catalog::tests::account();
-    catalog.upsert_account(&account).unwrap();
-    let mut document = crate::storage::catalog::tests::document();
-    document.counted_size = document.size;
-    catalog.create_document(&document).unwrap();
-    catalog
-        .with_connection(|connection| {
-            for (key, kind, bytes) in [
-                ("content/storage-1/recipes/reused", "source_recipe", 4),
-                ("content/storage-1/chunks/reused", "source_chunk", 8),
-            ] {
-                connection.execute(
-                    "INSERT INTO object_accounting(storage_id,object_key,kind,bytes,version)
-                     VALUES('storage-1',?1,?2,?3,'measured')",
-                    rusqlite::params![key, kind, bytes],
-                )?;
-            }
-            Ok(())
-        })
-        .unwrap();
-    let usage = catalog.account_storage_usage("acct-1").unwrap();
-    assert!(usage.physical_accounting);
-    let record = SourceHistoryRecord {
-        file_digest: "reused-file".into(),
-        recipe_key: "content/storage-1/recipes/reused".into(),
-        recipe_digest: "reused-recipe".into(),
-        codec: 1,
-        uncompressed_bytes: 8,
-        recipe_bytes: 4,
-        objects: vec![
-            SourceHistoryObject {
-                object_key: "content/storage-1/recipes/reused".into(),
-                kind: "source_recipe".into(),
-                bytes: 4,
+fn physical_admission_charges_exact_reservations_without_sql_byte_estimates() {
+    let catalog = catalog();
+    let now = UnixMillis::now();
+    let operation = catalog
+        .prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(DocumentId::new("storage-1").unwrap()),
+                actor_key: "account:acct-1".into(),
+                request_key: crate::util::new_request_key(),
+                kind: OperationKind::AgentStage,
+                request_digest: "a".repeat(64),
+                plan_json: r#"{"version":1}"#.into(),
+                expected_document_generation: Some(0),
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis(now.0 + 120_000)),
             },
-            SourceHistoryObject {
-                object_key: "content/storage-1/chunks/reused".into(),
-                kind: "source_chunk".into(),
-                bytes: 8,
-            },
-        ],
-    };
-    let checkpoint = Checkpoint {
-        slug: "doc".into(),
-        sha: "reused-graph-checkpoint".into(),
-        seq: -1,
-        durable_seq: 0,
-        tree_sha: "reused-graph-checkpoint".into(),
-        parent: String::new(),
-        at: "2026-01-01T00:00:00Z".into(),
-        by: String::new(),
-        why: "test".into(),
-        source_format: "markdown".into(),
-        size: 8,
-        label: String::new(),
-        git_commit: String::new(),
-        dirty: false,
-        changed: None,
-        by_account: None,
-    };
-    assert!(matches!(
-        catalog.insert_checkpoints_atomic_with_sources_and_quota(
-            std::slice::from_ref(&checkpoint),
-            None,
-            std::slice::from_ref(&record),
-            None,
-            usage.charged_bytes,
-            usage.charged_bytes,
-        ),
-        Err(CatalogError::Refused(super::CatalogRefusal::OwnerBytes, _))
-    ));
-    assert!(catalog
-        .checkpoint("doc", &checkpoint.sha)
-        .unwrap()
-        .is_none());
-}
-
-#[test]
-fn shared_checkpoint_assets_are_reclaimed_only_after_the_union_is_removed() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    catalog
-        .upsert_account(&crate::storage::catalog::tests::account())
+            now,
+        )
         .unwrap();
-    catalog
-        .create_document(&crate::storage::catalog::tests::document())
-        .unwrap();
-    let shared = crate::storage::blob::content_asset_key("storage-1", "shared");
-    let first_asset = crate::storage::blob::content_asset_key("storage-1", "first");
-    let second_asset = crate::storage::blob::content_asset_key("storage-1", "second");
-    let newest_asset = crate::storage::blob::content_asset_key("storage-1", "newest");
-    catalog
-        .with_connection(|connection| {
-            for (key, bytes) in [
-                (&shared, 7),
-                (&first_asset, 5),
-                (&second_asset, 6),
-                (&newest_asset, 9),
-            ] {
-                connection.execute(
-                    "INSERT INTO object_accounting(storage_id,object_key,kind,bytes,version)
-                     VALUES('storage-1',?1,'asset',?2,'test')",
-                    rusqlite::params![key, bytes],
-                )?;
-            }
-            Ok(())
-        })
-        .unwrap();
-    let checkpoint = |sha: &str, seq| Checkpoint {
-        slug: "doc".into(),
-        sha: sha.into(),
-        seq,
-        durable_seq: seq,
-        tree_sha: sha.into(),
-        parent: String::new(),
-        at: format!("2026-01-01T00:00:0{seq}Z"),
-        by: String::new(),
-        why: "test".into(),
-        source_format: "markdown".into(),
-        size: 0,
-        label: String::new(),
-        git_commit: String::new(),
-        dirty: false,
-        changed: None,
-        by_account: None,
+    let mut allocation = V2ObjectAllocation {
+        document_id: DocumentId::new("storage-1").unwrap(),
+        id: ObjectId::new(format!("{:032x}", 1)).unwrap(),
+        storage_key: format!("v2/documents/storage-1/objects/{:032x}", 1),
+        kind: ObjectKind::AgentPayload,
+        digest: "b".repeat(64),
+        logical_digest: None,
+        encoding_version: 1,
+        reserved_bytes: 11,
+        operation_id: operation.id,
+        now,
     };
-    let first = checkpoint("asset-first", 0);
-    let second = checkpoint("asset-second", 1);
-    let newest = checkpoint("asset-newest", 2);
-    let insert = |point: &Checkpoint, refs: Vec<CheckpointAssetRef>| {
+    let limits = V2AdmissionLimits {
+        owner_bytes: 11,
+        deployment_bytes: 11,
+        owner_documents: 10,
+    };
+    catalog
+        .allocate_v2_object_with_limits(&allocation, limits)
+        .unwrap();
+    assert_eq!(
         catalog
-            .insert_checkpoints_atomic_with_sources_assets_and_quota(
-                std::slice::from_ref(point),
-                None,
-                &[],
-                &refs,
-                None,
-                -1,
-                -1,
-            )
-            .unwrap();
-    };
-    insert(
-        &first,
-        vec![
-            CheckpointAssetRef {
-                object_key: shared.clone(),
-                bytes: 7,
-            },
-            CheckpointAssetRef {
-                object_key: first_asset.clone(),
-                bytes: 5,
-            },
-        ],
+            .account_storage_usage("acct-1")
+            .unwrap()
+            .charged_bytes,
+        11
     );
-    insert(
-        &second,
-        vec![
-            CheckpointAssetRef {
-                object_key: shared.clone(),
-                bytes: 7,
-            },
-            CheckpointAssetRef {
-                object_key: second_asset.clone(),
-                bytes: 6,
-            },
-        ],
+    assert!(catalog.audit_v2_counters().unwrap());
+    allocation.id = ObjectId::new(format!("{:032x}", 2)).unwrap();
+    allocation.storage_key = format!("v2/documents/storage-1/objects/{:032x}", 2);
+    allocation.reserved_bytes = 1;
+    assert!(matches!(
+        catalog.allocate_v2_object_with_limits(&allocation, limits),
+        Err(CatalogError::Refused(CatalogRefusal::OwnerBytes, _))
+    ));
+    assert_eq!(
+        catalog
+            .account_storage_usage("acct-1")
+            .unwrap()
+            .charged_bytes,
+        11
     );
-    insert(
-        &newest,
-        vec![CheckpointAssetRef {
-            object_key: newest_asset,
-            bytes: 9,
-        }],
+    assert!(catalog.audit_v2_counters().unwrap());
+    assert_eq!(
+        catalog
+            .with_connection(|db| Ok(db
+                .query_row("SELECT count(*) FROM objects", [], |row| row
+                    .get::<_, i64>(0))?))
+            .unwrap(),
+        1
     );
-    let only_first = catalog
-        .reclaimable_checkpoint_bytes(&[("doc".into(), first.sha.clone())])
-        .unwrap();
-    let both = catalog
-        .reclaimable_checkpoint_bytes(&[("doc".into(), first.sha), ("doc".into(), second.sha)])
-        .unwrap();
-    assert!(
-        both > only_first,
-        "removing the union must release the shared asset"
-    );
-    let usage = catalog.account_storage_usage("acct-1").unwrap();
-    assert_eq!(usage.asset_bytes, 9, "only the newest asset remains live");
+}
+
+fn object(db: &Connection, number: u32, kind: &str, bytes: i64) -> rusqlite::Result<()> {
+    let id = format!("{number:032x}");
+    db.execute("INSERT INTO objects(document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at,gc_after)
+        VALUES('storage-1',?1,?2,?3,'available',?4,?5,0,0,0)",
+        rusqlite::params![id, format!("v2/documents/storage-1/objects/{id}"), kind, "a".repeat(64), bytes])?;
+    Ok(())
+}
+
+fn checkpoint(db: &Connection, number: u32, tree: u32, closure: &[u32]) -> rusqlite::Result<()> {
+    let id = format!("{number:032x}");
+    db.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,created_at,author_label,reason,source_format,logical_bytes,journal_epoch,journal_sequence)
+        VALUES('storage-1',?1,?2,?3,?4,0,'Fixture','automatic','markdown',0,0,0)",
+        rusqlite::params![id, number, format!("{tree:032x}"), "a".repeat(64)])?;
+    for member in closure {
+        db.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES('storage-1',?1,?2)",
+            rusqlite::params![id, format!("{member:032x}")])?;
+    }
+    Ok(())
+}
+
+fn reconcile_fixture(db: &Connection) -> rusqlite::Result<()> {
+    db.execute("UPDATE documents SET stored_bytes=(SELECT sum(byte_length) FROM objects), checkpoint_ref_count=(SELECT count(*) FROM checkpoint_objects), next_checkpoint_seq=(SELECT max(seq)+1 FROM checkpoints) WHERE id='storage-1'", [])?;
+    db.execute("UPDATE accounts SET stored_bytes=(SELECT stored_bytes FROM documents WHERE id='storage-1') WHERE id='acct-1'", [])?;
+    db.execute("UPDATE server_state SET stored_bytes=(SELECT stored_bytes FROM documents WHERE id='storage-1'), checkpoint_ref_count=(SELECT count(*) FROM checkpoint_objects) WHERE id=1", [])?;
+    Ok(())
+}
+
+#[test]
+fn reused_checkpoint_references_do_not_invent_physical_payload_charges() {
+    let catalog = catalog();
     catalog
-        .with_connection(|connection| {
-            connection.execute(
-                "UPDATE object_accounting SET bytes=0 WHERE storage_id='storage-1'",
-                [],
-            )?;
-            connection.execute(
-                "UPDATE checkpoint_asset_refs SET bytes=0 WHERE storage_id='storage-1'",
-                [],
-            )?;
+        .with_connection(|db| {
+            object(db, 1, "source_tree", 7)?;
+            for number in 1..=128 {
+                checkpoint(db, number, 1, &[1])?;
+            }
+            reconcile_fixture(db)?;
             Ok(())
         })
         .unwrap();
-    let metadata_only = catalog.account_storage_usage("acct-1").unwrap();
+    let usage = catalog.account_storage_usage("acct-1").unwrap();
+    assert!(usage.physical_accounting);
     assert_eq!(
-        usage.charged_bytes - metadata_only.charged_bytes,
-        27,
-        "shared assets are charged once before catalogue metadata"
+        usage.charged_bytes, 7,
+        "128 references still name one seven-byte object"
+    );
+    assert_eq!(catalog.physical_room_for("doc", 8, 8).unwrap(), Some(1));
+    assert!(catalog.audit_v2_counters().unwrap());
+    let too_many = (1..=129)
+        .map(|id| ("doc".into(), format!("{id:032x}")))
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        catalog.reclaimable_checkpoint_bytes(&too_many),
+        Err(CatalogError::Invalid(_))
+    ));
+}
+
+#[test]
+fn shared_checkpoint_assets_are_reclaimable_only_after_the_union_is_removed() {
+    let catalog = catalog();
+    catalog
+        .with_connection(|db| {
+            for number in 1..=3 {
+                object(db, number, "source_tree", 0)?;
+            }
+            for (number, bytes) in [(4, 7), (5, 5), (6, 6), (7, 9)] {
+                object(db, number, "asset", bytes)?;
+            }
+            checkpoint(db, 1, 1, &[1, 4, 5])?;
+            checkpoint(db, 2, 2, &[2, 4, 6])?;
+            checkpoint(db, 3, 3, &[3, 7])?;
+            db.execute(
+                "UPDATE documents SET current_checkpoint_id=?1 WHERE id='storage-1'",
+                [format!("{:032x}", 3)],
+            )?;
+            reconcile_fixture(db)?;
+            Ok(())
+        })
+        .unwrap();
+    let first = ("doc".into(), format!("{:032x}", 1));
+    let second = ("doc".into(), format!("{:032x}", 2));
+    assert_eq!(
+        catalog
+            .reclaimable_checkpoint_bytes(std::slice::from_ref(&first))
+            .unwrap(),
+        5
     );
     assert_eq!(
-        usage.history_bytes - metadata_only.history_bytes,
+        catalog
+            .reclaimable_checkpoint_bytes(&[first, second])
+            .unwrap(),
         18,
-        "the historical shared-asset union contributes 5+6+7 bytes"
+        "the shared seven-byte asset contributes once to the union"
     );
+    assert_eq!(
+        catalog
+            .account_storage_usage("acct-1")
+            .unwrap()
+            .charged_bytes,
+        27,
+        "a preview cannot refund bytes before physical deletion"
+    );
+    assert!(catalog.audit_v2_counters().unwrap());
 }
