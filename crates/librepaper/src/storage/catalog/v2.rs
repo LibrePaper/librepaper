@@ -526,7 +526,7 @@ fn validate_digest(value: &str, label: &str) -> CatalogResult<()> {
     Ok(())
 }
 
-fn validate_json(value: &str, label: &str, max_bytes: usize) -> CatalogResult<()> {
+pub(super) fn validate_json(value: &str, label: &str, max_bytes: usize) -> CatalogResult<()> {
     if value.len() > max_bytes {
         return Err(CatalogError::Invalid(format!(
             "{label} exceeds {max_bytes} bytes"
