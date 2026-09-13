@@ -36,6 +36,7 @@ pub(crate) mod agent_comments;
 mod agent_view;
 mod catalog;
 mod checkpoint;
+pub(crate) use checkpoint::PublicationCheckpointToken;
 mod command;
 mod comments;
 pub(crate) mod error;
