@@ -2079,13 +2079,18 @@ impl V2ObjectWriter {
         let expected_digest_for_admission = expected_digest.clone();
         let body_length = body.len() as u64;
         let namespace = Arc::as_ptr(&self.catalog) as usize;
+        let admission_input_bytes = document_id
+            .len()
+            .saturating_add(object_id.as_str().len())
+            .saturating_add(expected_digest.len())
+            .saturating_add(96);
         if !register_physical_guard(namespace, document_id, object_id.as_str()) {
             return Err("physical object write is already in flight for this allocation".into());
         }
         let admission = self
             .catalog
             .clone()
-            .execute(1024, move |connection| {
+            .execute(admission_input_bytes, move |connection| {
                 let (state, digest, reserved, kind, allocation_operation, operation_state, operation_generation, writer_generation): (String, String, i64, String, Option<String>, String, String, String) = connection
                     .query_row(
                         "SELECT o.state,o.digest,o.reserved_bytes,o.kind,o.allocation_operation_id,op.state,op.writer_generation,s.writer_generation FROM objects o LEFT JOIN operations op ON op.id=o.allocation_operation_id AND op.document_id=o.document_id CROSS JOIN server_state s WHERE o.document_id=?1 AND o.id=?2",
@@ -2191,9 +2196,17 @@ impl V2ObjectWriter {
         let expected_digest_for_settle = expected_digest.clone();
         let admitted_operation_for_settle = admitted_operation.clone();
         let admitted_generation_for_settle = admitted_generation.clone();
+        let settlement_input_bytes = document_id
+            .len()
+            .saturating_add(written_for_settle.object_id.as_str().len())
+            .saturating_add(expected_digest_for_settle.len())
+            .saturating_add(admitted_operation_for_settle.len())
+            .saturating_add(admitted_generation_for_settle.len())
+            .saturating_add(kind.len())
+            .saturating_add(128);
         self.catalog
             .clone()
-            .execute(1024, move |connection| {
+            .execute(settlement_input_bytes, move |connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(crate::storage::catalog::CatalogError::from)?;
