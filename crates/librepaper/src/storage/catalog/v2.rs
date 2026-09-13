@@ -34,6 +34,9 @@ pub struct V2AdmissionLimits {
 /// one SQLite write transaction.
 pub(crate) struct V2SourceAdmissionInput {
     pub document: super::NewDocument,
+    /// The credential is used only while admitting the anonymous account. It
+    /// must never be copied into an operation row or plan JSON.
+    pub owner_credential: Option<String>,
     pub create_document: bool,
     pub operation_id: OperationId,
     pub operation: V2OperationInput,
@@ -536,27 +539,6 @@ fn checked_add(a: i64, b: i64, label: &str) -> CatalogResult<i64> {
         .ok_or_else(|| CatalogError::Invalid(format!("{label} counter overflow")))
 }
 
-fn source_document_time_ms(value: &str) -> CatalogResult<i64> {
-    if let Ok(number) = value.parse::<i64>() {
-        if number < 0 {
-            return Err(CatalogError::Invalid(
-                "document timestamp cannot be negative".into(),
-            ));
-        }
-        return if number < 10_000_000_000 {
-            number
-                .checked_mul(1_000)
-                .ok_or_else(|| CatalogError::Invalid("document timestamp overflow".into()))
-        } else {
-            Ok(number)
-        };
-    }
-    crate::util::parse_timestamp(value)
-        .and_then(|seconds| seconds.checked_mul(1_000))
-        .filter(|value| *value >= 0)
-        .ok_or_else(|| CatalogError::Invalid("document timestamp is invalid".into()))
-}
-
 fn operation_authorized_in_tx(
     tx: &Transaction<'_>,
     document_id: &str,
@@ -599,28 +581,6 @@ fn operation_authorized_in_tx(
     let legacy_account_actor = !account_id.is_empty()
         && authorization.get("session_generation").is_none()
         && actor_key == account_id;
-
-    // Anonymous source writers are represented by a durable anonymous account
-    // derived from their owner credential.  Keep that credential out of the
-    // persisted authority JSON; the operation actor key is the admission
-    // secret and its derived account is checked against the live document.
-    if account_id.is_empty() && link_hash.is_empty() && !actor_key.is_empty() {
-        let digest = Sha256::digest(actor_key.as_bytes());
-        let anonymous_id = format!("anonymous:{}", hex::encode(digest));
-        let owner_match: bool = tx
-            .query_row(
-                "SELECT EXISTS(
-                   SELECT 1 FROM documents d JOIN accounts a ON a.id=d.owner_id
-                    WHERE d.id=?1 AND d.owner_id=?2
-                      AND d.status IN ('active','creating') AND a.status='active')",
-                params![document_id, anonymous_id],
-                |row| row.get(0),
-            )
-            .map_err(CatalogError::from)?;
-        if owner_match && required_role == "editor" {
-            return Ok(());
-        }
-    }
 
     if expected_actor != actor_key && !legacy_account_actor {
         return Err(CatalogError::refused(
@@ -1512,14 +1472,39 @@ impl Catalog {
         self.immediate(|tx| {
             let owner_id: String;
             let source_generation: i64;
+            let mut operation_plan = serde_json::from_str::<serde_json::Value>(
+                &operation_input.plan_json,
+            )
+            .map_err(|error| CatalogError::Invalid(format!("source operation plan: {error}")))?;
             if input.create_document {
-                let created_at = source_document_time_ms(&document.created_at)?;
+                let created_at = super::documents::document_time_ms(&document.created_at)?;
                 if !matches!(document.status.as_str(), "creating" | "active")
                     || !matches!(document.source_format.as_str(), "markdown" | "html" | "typst" | "latex" | "quarto")
                 {
                     return Err(CatalogError::Invalid("invalid source document metadata".into()));
                 }
                 owner_id = if let Some(owner_id) = document.owner_id.clone() {
+                    owner_id
+                } else if let Some(owner_credential) = input
+                    .owner_credential
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                {
+                    let digest = Sha256::digest(owner_credential.as_bytes());
+                    let owner_id = format!("anonymous:{}", hex::encode(digest));
+                    tx.execute(
+                        "INSERT OR IGNORE INTO accounts(
+                         id,kind,provider,provider_subject,handle,display_name,email,status,
+                         session_generation,plan,created_at,last_seen_at)
+                         VALUES(?1,'anonymous',NULL,NULL,'anonymous','Anonymous',NULL,'active',
+                           ?2,'default',?3,?3)",
+                        params![
+                            owner_id,
+                            hex::encode(crate::auth::random_bytes(16)),
+                            created_at
+                        ],
+                    )
+                    .map_err(CatalogError::from)?;
                     owner_id
                 } else {
                     if document.owner_key.is_empty() {
@@ -1555,6 +1540,32 @@ impl Catalog {
                     .unwrap_or(false);
                 if !owner_active {
                     return Err(CatalogError::Conflict("owner account is not active".into()));
+                }
+                let owner_generation: String = tx
+                    .query_row(
+                        "SELECT session_generation FROM accounts WHERE id=?1",
+                        [&owner_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if let Some(authority) = operation_plan
+                    .get_mut("authority")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    let account_id = authority
+                        .get("account_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    if account_id.is_empty() {
+                        authority.insert(
+                            "account_id".into(),
+                            serde_json::Value::String(owner_id.clone()),
+                        );
+                        authority.insert(
+                            "session_generation".into(),
+                            serde_json::Value::String(owner_generation),
+                        );
+                    }
                 }
                 let (owner_bytes, owner_documents): (i64, i64) = tx
                     .query_row(
@@ -1656,6 +1667,33 @@ impl Catalog {
                     )
                     .map_err(CatalogError::from)?;
             }
+            if let Some(authority) = operation_plan
+                .get_mut("authority")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                let account_id = authority
+                    .get("account_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if account_id.starts_with("anonymous:")
+                    && authority
+                        .get("session_generation")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none_or(str::is_empty)
+                {
+                    let generation: String = tx
+                        .query_row(
+                            "SELECT session_generation FROM accounts WHERE id=?1 AND status='active'",
+                            [account_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(CatalogError::from)?;
+                    authority.insert(
+                        "session_generation".into(),
+                        serde_json::Value::String(generation),
+                    );
+                }
+            }
             if let Some(expected) = operation_input.expected_document_generation {
                 if expected != source_generation {
                     return Err(CatalogError::Conflict(
@@ -1696,6 +1734,7 @@ impl Catalog {
             if duplicate != 0 {
                 return Err(CatalogError::Conflict("source operation id already exists".into()));
             }
+            let operation_plan_json = operation_plan.to_string();
             tx.execute(
                 "INSERT INTO operations
                  (id,document_id,account_id,actor_key,request_key,kind,request_digest,state,
@@ -1713,7 +1752,7 @@ impl Catalog {
                     source_generation,
                     operation_input.conversation_id,
                     operation_input.execution_epoch,
-                    operation_input.plan_json,
+                    operation_plan_json,
                     input.now.0,
                     work_expires.0
                 ],

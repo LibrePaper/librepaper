@@ -53,7 +53,7 @@ static SOURCE_ENCODING_POOL: std::sync::OnceLock<crate::storage::encoding::Encod
 fn source_encoding_pool() -> &'static crate::storage::encoding::EncodingPool {
     SOURCE_ENCODING_POOL.get_or_init(|| {
         crate::storage::encoding::EncodingPool::new(
-            if cfg!(test) { 32 } else { 2 },
+            2,
             64 * 1024 * 1024,
             crate::storage::encoding::EncodingProfile::default(),
         )
@@ -1490,6 +1490,17 @@ impl Store {
             .as_ref()
             .and_then(|document| document.owner_id.clone())
             .or_else(|| (!actor.account_id.is_empty()).then(|| actor.account_id.clone()));
+        let anonymous_owner_id = if actor.account_id.is_empty()
+            && actor.link_hash.is_empty()
+            && !actor.owner_key.is_empty()
+        {
+            Some(format!(
+                "anonymous:{}",
+                hex::encode(Sha256::digest(actor.owner_key.as_bytes()))
+            ))
+        } else {
+            None
+        };
         let created_at = existing
             .as_ref()
             .map(|document| document.created_at.clone())
@@ -1596,7 +1607,11 @@ impl Store {
         );
         let request_key = crate::util::new_request_key();
         let authority = serde_json::json!({
-            "account_id": actor.account_id.clone(),
+            "account_id": if !actor.account_id.is_empty() {
+                actor.account_id.clone()
+            } else {
+                anonymous_owner_id.clone().unwrap_or_default()
+            },
             "session_generation": actor.session_generation.clone(),
             "link_hash": actor.link_hash.clone(),
             "policy_editor": actor.policy_editor,
@@ -1737,8 +1752,13 @@ impl Store {
                         format!("account:{}", actor.account_id)
                     } else if !actor.link_hash.is_empty() {
                         format!("link:{}", actor.link_hash)
+                    } else if let Some(anonymous_owner_id) = anonymous_owner_id.clone() {
+                        format!("account:{anonymous_owner_id}")
                     } else {
-                        actor.owner_key.clone()
+                        return Err(PutError::Authorization {
+                            status: 401,
+                            message: "publication actor has no accountable identity",
+                        });
                     },
                     request_key,
                     kind: OperationKind::SourcePublish,
@@ -1755,6 +1775,8 @@ impl Store {
                 move |catalog| {
                     catalog.admit_v2_source(V2SourceAdmissionInput {
                         document,
+                        owner_credential: (!actor.owner_key.is_empty())
+                            .then(|| actor.owner_key.clone()),
                         create_document: existing.is_none(),
                         operation_id,
                         operation,
