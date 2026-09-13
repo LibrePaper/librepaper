@@ -15,7 +15,7 @@ fn read_operation_v2(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
 }
 fn actor_key(actor: MutationAuthority<'_>) -> String {
     if !actor.account_id.is_empty() {
-        actor.account_id.to_owned()
+        format!("account:{}", actor.account_id)
     } else if !actor.link_hash.is_empty() {
         format!("link:{}", actor.link_hash)
     } else {

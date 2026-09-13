@@ -48,12 +48,13 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             tx.execute(
                 "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,
-                    receipt_expires_at=?2,updated_at=?2
-                 WHERE document_id=?3 AND kind='agent_execution' AND conversation_id=?4
+                    receipt_expires_at=?3,updated_at=?2
+                 WHERE document_id=?4 AND kind='agent_execution' AND conversation_id=?5
                    AND state='prepared'",
                 params![
                     r#"{"version":2,"reason":"superseded"}"#,
                     now,
+                    now.saturating_add(3_600_000),
                     document_id,
                     conversation_id
                 ],

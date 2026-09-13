@@ -401,15 +401,38 @@ impl Catalog {
             ));
         }
         for record in records {
+            if record.file_digest.len() != 64
+                || !record
+                    .file_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                || record.recipe_key.is_empty()
+                || record.recipe_digest.len() != 64
+                || !record
+                    .recipe_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                || record.codec < 0
+                || record.uncompressed_bytes < 0
+                || record.recipe_bytes < 0
+            {
+                return Err(CatalogError::Invalid(
+                    "invalid source-history record metadata".into(),
+                ));
+            }
             for object in &record.objects {
                 let (object_id, kind, state, byte_length): (String, String, String, Option<i64>) = tx.query_row(
                     "SELECT id,kind,state,byte_length FROM objects WHERE document_id=?1 AND storage_key=?2",
                     params![document_id.as_str(), object.object_key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 ).optional().map_err(CatalogError::from)?.ok_or(CatalogError::NotFound)?;
-                if kind != object.kind || state != "available" || byte_length != Some(object.bytes)
-                {
+                if kind != object.kind || state != "available" {
                     return Err(CatalogError::Conflict(
-                        "source-history object is not settled with the measured size".into(),
+                        "source-history object is not settled".into(),
+                    ));
+                }
+                if object.bytes < 0 || byte_length != Some(object.bytes) && object.bytes != 0 {
+                    return Err(CatalogError::Conflict(
+                        "source-history object size changed".into(),
                     ));
                 }
                 tx.execute(

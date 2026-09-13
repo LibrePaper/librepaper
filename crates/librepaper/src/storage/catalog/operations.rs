@@ -130,17 +130,15 @@ impl Catalog {
                 ))
             }
         };
-        let actor_key = request
-            .actor
-            .as_ref()
-            .map(|actor| {
-                if actor.account_id.is_empty() {
-                    actor.owner_key
-                } else {
-                    actor.account_id
-                }
-            })
-            .unwrap_or("internal");
+        let actor_key = match request.actor.as_ref() {
+            Some(actor) if actor.account_id.is_empty() => actor.owner_key.to_owned(),
+            Some(actor) => {
+                // Account actors are namespaced so a link or internal actor
+                // can never collide with an account id.
+                format!("account:{}", actor.account_id)
+            }
+            None => "internal".to_owned(),
+        };
         if actor_key.is_empty() || request.intent.len() > 65_536 {
             return Err(CatalogError::Invalid(
                 "operation actor or intent is invalid".into(),
@@ -179,7 +177,7 @@ impl Catalog {
         let operation = self.prepare_v2_operation(
             &V2OperationInput {
                 scope: OperationScope::Document(document_id.clone()),
-                actor_key: actor_key.to_owned(),
+                actor_key: actor_key.clone(),
                 request_key: request.request_id.to_owned(),
                 kind,
                 request_digest: request.request_digest.to_owned(),
