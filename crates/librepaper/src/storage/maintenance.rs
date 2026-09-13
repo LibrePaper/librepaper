@@ -373,6 +373,22 @@ impl DeletionWorker {
         })
     }
 
+    /// Run the production v2 object-row collector.  The legacy queue worker
+    /// remains available to the converter only; serving deployments should
+    /// call this entry point so deletion is driven by canonical object rows,
+    /// leases, roots, and physical confirmation.
+    pub async fn run_v2_once(
+        &self,
+        now: i64,
+    ) -> Result<crate::storage::maintenance_v2::GcReport, crate::storage::maintenance_v2::GcError> {
+        crate::storage::maintenance_v2::run_gc_pass(
+            self.catalog.as_ref(),
+            self.blobs.as_ref(),
+            now,
+        )
+        .await
+    }
+
     async fn due(&self, now: i64) -> MaintenanceResult<Vec<PendingDeletion>> {
         let max_jobs = self.limits.max_jobs;
         self.catalog
