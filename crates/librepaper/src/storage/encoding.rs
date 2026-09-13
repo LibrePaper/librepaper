@@ -125,7 +125,11 @@ pub const MAX_TREE_FILES: usize = 16_384;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PhysicalLocator {
     pub object_id: ObjectId,
-    pub digest: [u8; 32],
+    /// Digest of the exact encoded bytes stored under the object key.
+    pub object_digest: [u8; 32],
+    /// Digest of the logical/uncompressed value, when the object represents
+    /// one (for example a compressed source chunk).
+    pub logical_digest: Option<[u8; 32]>,
     pub byte_length: u64,
     pub encoding_version: u16,
 }
@@ -144,12 +148,15 @@ impl SourceRecipeEnvelope {
             || self.recipe.version != RECIPE_VERSION
             || self.chunk_locators.len() != self.recipe.chunks.len()
             || self.recipe_locator.encoding_version == 0
+            || self.recipe_locator.logical_digest != Some(self.recipe.file_digest)
             || self.chunk_locators.iter().any(|locator| locator.encoding_version == 0)
         {
             return Err(EncodingError::InvalidRecipe("invalid source recipe envelope".into()));
         }
         for (reference, locator) in self.recipe.chunks.iter().zip(&self.chunk_locators) {
-            if reference.digest != locator.digest || reference.length as u64 != locator.byte_length {
+            if locator.logical_digest != Some(reference.digest)
+                || reference.length as u64 != locator.byte_length
+            {
                 return Err(EncodingError::Integrity("recipe locator does not match logical chunk".into()));
             }
         }
@@ -1242,7 +1249,8 @@ mod tests {
         let digest = [7u8; 32];
         let recipe = PhysicalLocator {
             object_id: ObjectId::parse("0123456789abcdef0123456789abcdef").expect("object id"),
-            digest,
+            object_digest: [8u8; 32],
+            logical_digest: Some(digest),
             byte_length: 8,
             encoding_version: 1,
         };
