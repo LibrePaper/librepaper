@@ -3357,7 +3357,7 @@ mod stage_heartbeat_tests {
 mod journal_commit_race_tests {
     use super::*;
     use crate::storage::blob::{write_v2_object_with_id, FsStore};
-    use crate::storage::journal::{DocumentJournal, DocumentSegment, JournalRecord, Segment, V2JournalRuntime};
+    use crate::storage::journal::{append_segments, DocumentJournal, DocumentSegment, JournalAppendRequest, JournalDependency, JournalDependencyHint, JournalRecord, Segment, V2JournalRuntime};
 
     #[tokio::test]
     async fn journal_commit_accepts_verified_pre_settlement_and_cas_roots() {
@@ -3636,5 +3636,163 @@ mod journal_commit_race_tests {
         assert_eq!(rows.0, 1, "the blocked first receipt remains for a later pass");
         assert_eq!(rows.1, 0, "the last selected receipt is unrooted");
         assert_eq!(rows.2, 0, "the last selected receipt is the one deleted");
+    }
+
+    #[tokio::test]
+    async fn journal_large_dependency_closures_survive_ack_and_compaction() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("v2 catalog"));
+        let document_id = "journal-large-closure";
+        let account_id = "journal-large-account";
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at) VALUES(?1,'registered','journal-large',?1,'journal-large','Journal Large','journal-large@example.test','active','session','test',1,1)",
+                    [account_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,'journal-large',?2,'owned','Journal Large','journal-large','active',1,1,'markdown','index.md')",
+                    params![document_id, account_id],
+                )?;
+                for index in 0..4_608_u32 {
+                    let object_id = format!("{:032x}", index + 1);
+                    let kind = if index < 512 { "asset" } else { "source_chunk" };
+                    let digest = if index < 512 {
+                        format!("{:064x}", index + 1)
+                    } else {
+                        "b".repeat(64)
+                    };
+                    connection.execute(
+                        "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,created_at,live_root,publication_root) VALUES(?1,?2,?3,?4,'available',?5,1,1,0,1,0,0)",
+                        params![document_id, object_id, format!("v2/documents/{document_id}/objects/{object_id}"), kind, digest],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("large dependency fixture");
+        let object_root = tempfile::tempdir().expect("object root");
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+        let journal = Arc::new(V2JournalCatalogAdapter::with_limits_and_quota(
+            Arc::clone(&catalog),
+            PersistenceLimits::default(),
+            i64::MAX,
+            i64::MAX,
+        ));
+        let assets = (0..512_u32)
+            .map(|index| JournalDependency {
+                object_id: ObjectId::parse(format!("{:032x}", index + 1)).expect("asset id"),
+                kind: "asset".into(),
+                digest: format!("{:064x}", index + 1),
+                byte_length: 1,
+            })
+            .collect::<Vec<_>>();
+        let sources = (512..4_608_u32)
+            .map(|index| JournalDependency {
+                object_id: ObjectId::parse(format!("{:032x}", index + 1)).expect("source id"),
+                kind: "source_chunk".into(),
+                digest: "b".repeat(64),
+                byte_length: 1,
+            })
+            .collect::<Vec<_>>();
+        let first = Segment::new(vec![JournalRecord::new(
+            document_id,
+            1,
+            "large-assets",
+            0,
+            b"asset closure".to_vec(),
+        )
+        .expect("asset record")])
+        .expect("asset segment");
+        let first_request = JournalAppendRequest {
+            document_id: document_id.into(),
+            actor_key: "room".into(),
+            request_key: "large-assets".into(),
+            expected_source_generation: 0,
+            epoch: 0,
+            first_sequence: 1,
+            last_sequence: 1,
+            parts: Vec::new(),
+            dependencies: assets.clone(),
+            dependency_hints: Vec::new(),
+        };
+        append_segments(journal.as_ref(), Arc::clone(&blobs), first_request, &[first])
+            .await
+            .expect("512 asset dependencies acknowledged");
+
+        let second = Segment::new(vec![JournalRecord::new(
+            document_id,
+            2,
+            "large-sources",
+            0,
+            b"source closure".to_vec(),
+        )
+        .expect("source record")])
+        .expect("source segment");
+        let second_request = JournalAppendRequest {
+            document_id: document_id.into(),
+            actor_key: "room".into(),
+            request_key: "large-sources".into(),
+            expected_source_generation: 1,
+            epoch: 0,
+            first_sequence: 2,
+            last_sequence: 2,
+            parts: Vec::new(),
+            dependencies: sources,
+            dependency_hints: Vec::new(),
+        };
+        append_segments(journal.as_ref(), Arc::clone(&blobs), second_request, &[second])
+            .await
+            .expect("4096 source dependencies acknowledged");
+        let source_roots_before_compaction: i64 = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM objects WHERE document_id=?1 AND kind='source_chunk' AND live_root=1",
+                        [document_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("source closure roots");
+        assert_eq!(source_roots_before_compaction, 4_096);
+        let asset_hints = assets
+            .iter()
+            .map(|dependency| JournalDependencyHint {
+                kind: "asset".into(),
+                digest: dependency.digest.clone(),
+                byte_length: dependency.byte_length,
+            })
+            .collect::<Vec<_>>();
+        let runtime = V2JournalRuntime::with_persistence(
+            Arc::clone(&journal),
+            Arc::clone(&blobs),
+            PersistenceLimits::default(),
+        )
+        .expect("large closure runtime");
+        runtime
+            .compact_with_dependencies(
+                document_id,
+                0,
+                2,
+                b"large compacted base".to_vec(),
+                "application/vnd.librepaper.journal-base",
+                asset_hints,
+            )
+            .await
+            .expect("asset dependencies survive compaction");
+        let rooted: (i64, i64, i64) = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT
+                           (SELECT count(*) FROM objects WHERE document_id=?1 AND kind='asset' AND live_root=1),
+                           (SELECT count(*) FROM objects WHERE document_id=?1 AND kind='source_chunk' AND live_root=1),
+                           (SELECT count(*) FROM operations WHERE document_id=?1 AND state='prepared')",
+                        [document_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("large closure state");
+        assert_eq!(rooted, (512, 0, 0));
     }
 }
