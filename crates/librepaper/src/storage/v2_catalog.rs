@@ -25,7 +25,8 @@ use crate::storage::journal::{
 };
 use crate::storage::maintenance_v2::{
     GcCandidate, PreparedAllocation, PreparedKind, PreparedOperation, V2GcCatalog,
-    V2RecoveryCatalog, READ_LEASE_MS, STAGE_HEARTBEAT_DUE_MS, STAGE_HEARTBEAT_PAGE_SIZE,
+    V2RecoveryCatalog, READ_LEASE_MS, STAGE_HEARTBEAT_DUE_MS,
+    STAGE_HEARTBEAT_MAX_PAGES_PER_PASS, STAGE_HEARTBEAT_PAGE_SIZE,
 };
 use crate::storage::catalog::Catalog;
 
@@ -709,11 +710,15 @@ fn journal_tx<T>(catalog: &Catalog, operation: impl FnOnce(&rusqlite::Transactio
 #[derive(Clone)]
 pub struct V2GcCatalogAdapter {
     pub catalog: Arc<Catalog>,
+    heartbeat_cursor: Arc<Mutex<Option<StageLeaseCursor>>>,
 }
 
 impl V2GcCatalogAdapter {
     pub fn new(catalog: Arc<Catalog>) -> Self {
-        Self { catalog }
+        Self {
+            catalog,
+            heartbeat_cursor: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
@@ -924,22 +929,23 @@ async fn heartbeat_stage_leases_pages(
     catalog: &Arc<Catalog>,
     now: i64,
     requested_limit: usize,
-) -> Result<usize, String> {
+    mut cursor: Option<StageLeaseCursor>,
+) -> Result<(usize, Option<StageLeaseCursor>), String> {
     if requested_limit == 0 {
         return Err("invalid stage-lease heartbeat limit".into());
     }
     let page_size = requested_limit.min(STAGE_HEARTBEAT_PAGE_SIZE);
-    let mut cursor = None;
     let mut renewed = 0usize;
-    loop {
+    for _ in 0..STAGE_HEARTBEAT_MAX_PAGES_PER_PASS {
         let page = heartbeat_stage_leases_page(catalog, now, cursor, page_size).await?;
         renewed = renewed.saturating_add(page.renewed);
         cursor = page.next;
         if cursor.is_none() {
-            return Ok(renewed);
+            return Ok((renewed, None));
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+    Ok((renewed, cursor))
 }
 
 async fn bounded_catalog_call<T, F, Fut>(
@@ -1057,7 +1063,17 @@ fn journal_compaction_admission_bytes(admission: &JournalCompactionAdmission) ->
 #[async_trait]
 impl V2GcCatalog for V2GcCatalogAdapter {
     async fn heartbeat_stage_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
-        heartbeat_stage_leases_pages(&self.catalog, now, limit).await
+        let cursor = self
+            .heartbeat_cursor
+            .lock()
+            .map_err(|_| "stage-lease heartbeat cursor is poisoned".to_owned())?
+            .clone();
+        let (renewed, next) = heartbeat_stage_leases_pages(&self.catalog, now, limit, cursor).await?;
+        *self
+            .heartbeat_cursor
+            .lock()
+            .map_err(|_| "stage-lease heartbeat cursor is poisoned".to_owned())? = next;
+        Ok(renewed)
     }
     async fn expire_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
         bounded_catalog_call(self.catalog.clone(), 64, move |catalog| async move {
@@ -3487,9 +3503,10 @@ mod stage_heartbeat_tests {
                     params![document_id, object_id, operation_id, operation_id, now - 100_000, now + 70_000],
                 )?;
 
-                // Several maximum-size publication bundles can exceed the
-                // old 64-page heartbeat prefix. The production cursor must
-                // drain every due lease before the scheduler pass completes.
+                // Several maximum-size publication bundles exceed one
+                // bounded heartbeat pass. The adapter must retain its
+                // keyset cursor so the next scheduler tick continues here
+                // rather than restarting at the first lease.
                 let many = STAGE_HEARTBEAT_PAGE_SIZE * 65 + 1;
                 let account_id = "heartbeat-account-many";
                 let document_id = "heartbeat-document-many";
@@ -3522,10 +3539,16 @@ mod stage_heartbeat_tests {
             .expect("heartbeat fixture");
 
         let adapter = V2GcCatalogAdapter::new(Arc::clone(&catalog));
-        let renewed = V2GcCatalog::heartbeat_stage_leases(&adapter, now, STAGE_HEARTBEAT_PAGE_SIZE)
+        let renewed_first = V2GcCatalog::heartbeat_stage_leases(&adapter, now, STAGE_HEARTBEAT_PAGE_SIZE)
             .await
-            .expect("all bounded pages renew");
-        assert_eq!(renewed, 600 + STAGE_HEARTBEAT_PAGE_SIZE * 65 + 1);
+            .expect("first bounded heartbeat pass renews");
+        let renewed_second = V2GcCatalog::heartbeat_stage_leases(&adapter, now, STAGE_HEARTBEAT_PAGE_SIZE)
+            .await
+            .expect("second bounded heartbeat pass continues cursor");
+        assert_eq!(
+            renewed_first + renewed_second,
+            600 + STAGE_HEARTBEAT_PAGE_SIZE * 65 + 1
+        );
 
         let values: (i64, i64, i64) = catalog
             .with_connection(|connection| {

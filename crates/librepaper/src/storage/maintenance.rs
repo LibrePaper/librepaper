@@ -415,6 +415,7 @@ pub struct DeletionWorker {
     blobs: Arc<dyn BlobStore>,
     limits: DeletionLimits,
     journal_gate: Arc<tokio::sync::Mutex<()>>,
+    v2_catalog: crate::storage::v2_catalog::V2GcCatalogAdapter,
 }
 
 impl DeletionWorker {
@@ -428,6 +429,7 @@ impl DeletionWorker {
         }
         Ok(Self {
             journal_gate: catalog.journal_gate.clone(),
+            v2_catalog: crate::storage::v2_catalog::V2GcCatalogAdapter::new(catalog.clone()),
             catalog,
             blobs,
             limits,
@@ -465,9 +467,8 @@ impl DeletionWorker {
             })
             .await
             .map_err(|error| crate::storage::maintenance_v2::GcError::Catalog(error.to_string()))?;
-        let adapter = crate::storage::v2_catalog::V2GcCatalogAdapter::new(self.catalog.clone());
         let report = crate::storage::maintenance_v2::run_gc_pass(
-            &adapter,
+            &self.v2_catalog,
             self.blobs.as_ref(),
             now,
         )

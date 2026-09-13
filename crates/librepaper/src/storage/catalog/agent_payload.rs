@@ -202,11 +202,26 @@ impl Catalog {
                     && stage_lease.as_ref().is_some_and(|(expires_at, generation)| {
                         *expires_at > now.0 && generation == &current_generation
                     });
-                let replay_state = if existing.1 == "prepared" && !staged {
+                // An allocated row with the exact admitted operation, digest,
+                // and reservation is still owned by the physical writer. Its
+                // stage may be temporarily unavailable to readers while the
+                // PUT is in flight, but a same-key retry must not abort that
+                // operation and race its settlement. The in-flight guard and
+                // startup recovery own the eventual physical outcome.
+                let live_allocation = existing.1 == "prepared"
+                    && existing.4.is_some_and(|deadline| deadline > now.0)
+                    && object.as_ref().is_some_and(|(_, state, digest, length, reserved, allocation)| {
+                        state == "allocated"
+                            && digest == &input.physical_digest
+                            && length.is_none()
+                            && *reserved == input.reserved_bytes
+                            && allocation.as_deref() == Some(existing.0.as_str())
+                    });
+                let replay_state = if existing.1 == "prepared" && !staged && !live_allocation {
                     // An expired stage is no longer resumable.  Fence the
                     // natural-key operation before returning its terminal
-                    // replay; any still-allocated object remains for the
-                    // physical writer/recovery guard to settle.
+                    // replay. A matching allocated operation is handled by
+                    // the live-allocation branch above instead.
                     tx.execute(
                         r#"UPDATE operations SET state='aborted',result_json='{"version":2,"expired":true}',plan_json='{}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE id=?3 AND state='prepared'"#,
                         params![now.0, now.0.saturating_add(AGENT_PAYLOAD_MAX_DEADLINE_MS), existing.0.as_str()],
@@ -214,6 +229,8 @@ impl Catalog {
                     "aborted".to_owned()
                 } else if staged {
                     "staged".to_owned()
+                } else if live_allocation {
+                    "prepared".to_owned()
                 } else {
                     existing.1.clone()
                 };
@@ -561,11 +578,23 @@ mod tests {
         assert!(!first.replay);
         assert!(replay.replay);
         assert_eq!(first.operation_id, replay.operation_id);
+        assert_eq!(replay.state, "prepared");
         let lease_count: i64 = catalog.with_connection(|db| db.query_row(
             "SELECT count(*) FROM object_leases WHERE operation_id=?1 AND purpose='stage'",
             params![first.operation_id.as_str()], |row| row.get(0),
         ).map_err(CatalogError::from)) .expect("lease count");
         assert_eq!(lease_count, 1);
+        catalog
+            .settle_v2_object(&first.document_id, &first.object_id, 128, UnixMillis(3))
+            .expect("in-flight object settles after replay");
+        catalog
+            .finish_agent_payload(
+                &first.operation_id,
+                &authority(),
+                r#"{"version":2}"#,
+                UnixMillis(3),
+            )
+            .expect("settled replay finishes");
     }
 
     #[test]
