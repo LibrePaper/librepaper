@@ -1130,122 +1130,12 @@ impl Catalog {
                     example: matches!(row.get::<_, String>(6)?.as_str(), "example"),
                     owner_key: String::new(), owner_id: row.get(7)?, status: row.get(8)?,
                     size: row.get(9)?, counted_size: row.get::<_, i64>(9)?.checked_add(row.get(10)?).ok_or_else(|| rusqlite::Error::InvalidQuery)?,
-                    maintenance_reserved: 0, last_auto_checkpoint_at: 0,
+                    maintenance_reserved: 0, comment_seq: 0, last_auto_checkpoint_at: 0,
+                    pending_publication: None, last_publication_id: String::new(),
                     source_format: row.get(11)?, main: row.get(12)?,
                 });
             }
             Ok(documents)
         });
-        let branch_limit = i64::from(limit.saturating_mul(4).min(800));
-        self.with_connection(|connection| {
-            let mut slugs = HashSet::new();
-            let cursor_sql = " AND (?2 IS NULL OR d.updated_at < ?2 OR (d.updated_at = ?2 AND d.slug < ?3))";
-            if let Some(account_id) = account_id {
-                let sql = format!(
-                    "SELECT d.slug FROM documents d WHERE d.status='active' AND d.pending_publication IS NULL AND d.owner_id=?1{cursor_sql} ORDER BY d.updated_at DESC,d.slug DESC LIMIT ?4"
-                );
-                let mut statement = connection.prepare(&sql).map_err(CatalogError::from)?;
-                let mut rows = statement
-                    .query(params![account_id, cursor.map(|c| c.0), cursor.map(|c| c.1), branch_limit])
-                    .map_err(CatalogError::from)?;
-                while let Some(row) = rows.next().map_err(CatalogError::from)? {
-                    slugs.insert(row.get::<_, String>(0).map_err(CatalogError::from)?);
-                }
-                let sql = format!(
-                    "SELECT d.slug FROM documents d
-                     CROSS JOIN grants g ON g.slug=d.slug AND g.account_id=?1
-                     WHERE d.status='active' AND d.pending_publication IS NULL{cursor_sql}
-                     ORDER BY d.updated_at DESC,d.slug DESC LIMIT ?4"
-                );
-                let mut statement = connection.prepare(&sql).map_err(CatalogError::from)?;
-                let mut rows = statement
-                    .query(params![account_id, cursor.map(|c| c.0), cursor.map(|c| c.1), branch_limit])
-                    .map_err(CatalogError::from)?;
-                while let Some(row) = rows.next().map_err(CatalogError::from)? {
-                    slugs.insert(row.get::<_, String>(0).map_err(CatalogError::from)?);
-                }
-                let sql = format!(
-                    "SELECT d.slug FROM documents d
-                     CROSS JOIN guests ge ON ge.slug=d.slug AND ge.account_id=?1
-                     CROSS JOIN links l ON l.slug=d.slug AND l.hash=ge.link_hash
-                     WHERE d.status='active' AND d.pending_publication IS NULL
-                       AND (l.until='' OR (julianday(l.until) IS NOT NULL AND julianday(l.until)>julianday('now'))){cursor_sql}
-                     ORDER BY d.updated_at DESC,d.slug DESC LIMIT ?4"
-                );
-                let mut statement = connection.prepare(&sql).map_err(CatalogError::from)?;
-                let mut rows = statement
-                    .query(params![account_id, cursor.map(|c| c.0), cursor.map(|c| c.1), branch_limit])
-                    .map_err(CatalogError::from)?;
-                while let Some(row) = rows.next().map_err(CatalogError::from)? {
-                    slugs.insert(row.get::<_, String>(0).map_err(CatalogError::from)?);
-                }
-            }
-            if let Some(owner_key) = owner_key {
-                let sql = format!(
-                    "SELECT d.slug FROM documents d WHERE d.status='active' AND d.pending_publication IS NULL AND d.owner_id IS NULL AND d.owner_key=?1{cursor_sql} ORDER BY d.updated_at DESC,d.slug DESC LIMIT ?4"
-                );
-                let mut statement = connection.prepare(&sql).map_err(CatalogError::from)?;
-                let mut rows = statement
-                    .query(params![owner_key, cursor.map(|c| c.0), cursor.map(|c| c.1), branch_limit])
-                    .map_err(CatalogError::from)?;
-                while let Some(row) = rows.next().map_err(CatalogError::from)? {
-                    slugs.insert(row.get::<_, String>(0).map_err(CatalogError::from)?);
-                }
-            }
-            if include_examples {
-                let sql = format!(
-                    "SELECT d.slug FROM documents d INDEXED BY documents_active_example_updated
-                     WHERE d.status='active' AND d.pending_publication IS NULL
-                       AND d.example=1{cursor_sql}
-                     ORDER BY d.updated_at DESC,d.slug DESC LIMIT ?4"
-                );
-                let mut statement = connection.prepare(&sql).map_err(CatalogError::from)?;
-                let mut rows = statement
-                    .query(params!["", cursor.map(|c| c.0), cursor.map(|c| c.1), branch_limit])
-                    .map_err(CatalogError::from)?;
-                while let Some(row) = rows.next().map_err(CatalogError::from)? {
-                    slugs.insert(row.get::<_, String>(0).map_err(CatalogError::from)?);
-                }
-                // A pre-contract seed may have marked an example only by its
-                // reserved owner key. Keep that compatibility form, but as a
-                // separate key-range branch so it cannot turn the normal
-                // example query into an OR scan or temporary sort.
-                let sql = format!(
-                    "SELECT d.slug FROM documents d INDEXED BY documents_active_owner_key_updated
-                     WHERE d.status='active' AND d.pending_publication IS NULL
-                       AND d.owner_id IS NULL AND d.owner_key >= 'example:' AND d.owner_key < 'example;'{cursor_sql}
-                     ORDER BY d.updated_at DESC,d.slug DESC LIMIT ?4"
-                );
-                let mut statement = connection.prepare(&sql).map_err(CatalogError::from)?;
-                let mut rows = statement
-                    .query(params!["", cursor.map(|c| c.0), cursor.map(|c| c.1), branch_limit])
-                    .map_err(CatalogError::from)?;
-                while let Some(row) = rows.next().map_err(CatalogError::from)? {
-                    slugs.insert(row.get::<_, String>(0).map_err(CatalogError::from)?);
-                }
-            }
-            let mut documents = Vec::with_capacity(slugs.len());
-            for slug in slugs {
-                if let Some(document) = connection
-                    .query_row(
-                        "SELECT slug, storage_id, title, sha, created_at, published_at,
-                                updated_at, example, owner_key, owner_id, status, size,
-                                counted_size, maintenance_reserved, comment_seq,
-                                last_auto_checkpoint_at, pending_publication,
-                                last_publication_id, source_format, main
-                         FROM documents WHERE slug=?1",
-                        [&slug],
-                        Self::read_document,
-                    )
-                    .optional()
-                    .map_err(CatalogError::from)?
-                {
-                    documents.push(document);
-                }
-            }
-            documents.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| b.slug.cmp(&a.slug)));
-            documents.truncate(limit as usize);
-            Ok(documents)
-        })
     }
 }

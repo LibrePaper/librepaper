@@ -74,12 +74,12 @@ impl Catalog {
         self.immediate(|tx| {
             let changed = tx.execute(
                 "UPDATE operations SET state='aborted',result_json=?4,completed_at=?5,
-                    receipt_expires_at=?5,updated_at=?5
+                    receipt_expires_at=?6,updated_at=?5
                  WHERE document_id=(SELECT id FROM documents WHERE slug=?1)
                    AND conversation_id=?2 AND execution_epoch=?3 AND kind='agent_execution'
                    AND state='prepared'",
                 params![slug, conversation_id, execution_epoch,
-                    r#"{"version":2,"reason":"revoked"}"#, unix_millis()],
+                    r#"{"version":2,"reason":"revoked"}"#, unix_millis(), unix_millis().saturating_add(3_600_000)],
             )?;
             Ok(changed == 1)
         })
@@ -99,7 +99,8 @@ impl Catalog {
                 "UPDATE operations SET work_expires_at=?4,updated_at=?5
                  WHERE document_id=(SELECT id FROM documents WHERE slug=?1)
                    AND conversation_id=?2 AND execution_epoch=?3 AND kind='agent_execution'
-                   AND state='prepared' AND work_expires_at>?5",
+                   AND state='prepared' AND work_expires_at>?5
+                   AND writer_generation=(SELECT writer_generation FROM server_state WHERE id=1)",
                 params![slug, conversation_id, execution_epoch, expiry, now],
             )? == 1)
         })?;
@@ -118,7 +119,8 @@ impl Catalog {
             "SELECT EXISTS(
                 SELECT 1 FROM operations o JOIN documents d ON d.id=o.document_id
                  WHERE d.slug=?1 AND o.kind='agent_execution' AND o.execution_epoch=?2
-                   AND o.state='prepared' AND o.work_expires_at>?3)",
+                   AND o.state='prepared' AND o.work_expires_at>?3
+                   AND o.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1))",
             params![slug, execution_epoch, unix_millis()],
             |row| row.get(0),
         )
@@ -137,7 +139,8 @@ impl Catalog {
                 SELECT 1 FROM operations o JOIN documents d ON d.id=o.document_id
                  WHERE d.slug=?1 AND o.conversation_id=?2 AND o.execution_epoch=?3
                    AND o.kind='agent_execution' AND o.state='prepared'
-                   AND o.work_expires_at>?4)",
+                   AND o.work_expires_at>?4
+                   AND o.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1))",
             params![slug, conversation_id, execution_epoch, unix_millis()],
             |row| row.get(0),
         )

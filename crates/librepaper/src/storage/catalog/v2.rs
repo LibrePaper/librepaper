@@ -333,6 +333,42 @@ fn checked_add(a: i64, b: i64, label: &str) -> CatalogResult<i64> {
 }
 
 impl Catalog {
+    /// Bind the complete immutable publication bundle to a prepared display
+    /// operation. Activation accepts only this proof, so an acknowledged
+    /// manifest cannot strand its HTML or asset siblings as unrooted bytes.
+    pub fn bind_v2_publication_bundle(
+        &self,
+        document_id: &DocumentId,
+        operation_id: &OperationId,
+        object_ids: &[ObjectId],
+        now: UnixMillis,
+    ) -> CatalogResult<()> {
+        if object_ids.is_empty() || object_ids.len() > 16_384 {
+            return Err(CatalogError::Invalid("publication bundle is empty or too large".into()));
+        }
+        let distinct: HashSet<&ObjectId> = object_ids.iter().collect();
+        if distinct.len() != object_ids.len() { return Err(CatalogError::Invalid("publication bundle contains duplicate objects".into())); }
+        self.immediate(|tx| {
+            let (state, kind, plan): (String, String, String) = tx.query_row(
+                "SELECT state,kind,plan_json FROM operations WHERE id=?1 AND document_id=?2",
+                params![operation_id.as_str(), document_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).map_err(CatalogError::from)?;
+            if state != "prepared" || kind != OperationKind::DisplayPublish.as_str() {
+                return Err(CatalogError::Conflict("publication operation is not prepared".into()));
+            }
+            let mut value: serde_json::Value = serde_json::from_str(&plan)
+                .map_err(|e| CatalogError::Invalid(format!("publication plan: {e}")))?;
+            value["bundle_object_ids"] = serde_json::Value::Array(
+                object_ids.iter().map(|id| serde_json::Value::String(id.to_string())).collect(),
+            );
+            let encoded = serde_json::to_string(&value).map_err(|e| CatalogError::Invalid(format!("publication plan: {e}")))?;
+            validate_json(&encoded, "publication plan", 65_536)?;
+            tx.execute("UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2) WHERE id=?3 AND state='prepared'", params![encoded, now.0, operation_id.as_str()]).map_err(CatalogError::from)?;
+            Ok(())
+        })
+    }
+
     pub fn object_by_id(&self, document_id: &DocumentId, object_id: &ObjectId) -> CatalogResult<Option<V2Object>> {
         self.with_connection(|connection| {
             connection.query_row("SELECT document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,allocation_operation_id FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),object_id.as_str()], |row| Ok(V2Object { document_id:DocumentId::new(row.get::<_,String>(0)?).map_err(|_| rusqlite::Error::InvalidQuery)?, id:ObjectId::new(row.get::<_,String>(1)?).map_err(|_| rusqlite::Error::InvalidQuery)?, storage_key:row.get(2)?,kind:row.get(3)?,state:row.get(4)?,digest:row.get(5)?,byte_length:row.get(6)?,reserved_bytes:row.get(7)?,allocation_operation_id:row.get::<_,Option<String>>(8)?.map(|id| OperationId::new(id).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()? })).optional().map_err(CatalogError::from)
@@ -626,6 +662,69 @@ impl Catalog {
         })
     }
 
+    /// Commit a source publication and its complete verified closure in the
+    /// same transaction as the prepared operation receipt. The operation plan
+    /// carries the exact object IDs produced by manifest verification; the
+    /// closure is compared byte-for-byte with the caller's set under the
+    /// SQLite write lock, so a late writer cannot acknowledge a different
+    /// tree or source generation.
+    pub fn commit_v2_checkpoint_for_operation(
+        &self,
+        operation_id: &OperationId,
+        checkpoint: &CheckpointCommit,
+        result_json: &str,
+    ) -> CatalogResult<i64> {
+        validate_json(result_json, "checkpoint result", 65_536)?;
+        validate_digest(&checkpoint.tree_digest, "tree digest")?;
+        if checkpoint.object_ids.is_empty() || checkpoint.object_ids.len() > MAX_CHECKPOINT_OBJECTS {
+            return Err(CatalogError::Invalid("invalid checkpoint closure".into()));
+        }
+        let distinct: HashSet<&ObjectId> = checkpoint.object_ids.iter().collect();
+        if distinct.len() != checkpoint.object_ids.len() || !checkpoint.object_ids.iter().any(|id| id == &checkpoint.tree_object_id) {
+            return Err(CatalogError::Invalid("checkpoint closure must be distinct and include its tree".into()));
+        }
+        self.immediate(|tx| {
+            let (state, kind, generation, expected_generation, plan_json): (String,String,String,Option<i64>,String) = tx.query_row(
+                "SELECT state,kind,writer_generation,expected_document_generation,plan_json
+                 FROM operations WHERE id=?1 AND document_id=?2",
+                params![operation_id.as_str(), checkpoint.document_id.as_str()],
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+            ).map_err(CatalogError::from)?;
+            if state != "prepared" || !matches!(kind.as_str(), "source_publish" | "checkpoint") {
+                return Err(CatalogError::Conflict("source checkpoint operation is not prepared".into()));
+            }
+            let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
+            if generation != current_generation { return Err(CatalogError::Conflict("source operation belongs to an obsolete writer generation".into())); }
+            let (source_generation, next, doc_refs): (i64,i64,i64) = tx.query_row(
+                "SELECT source_generation,next_checkpoint_seq,checkpoint_ref_count FROM documents WHERE id=?1 AND status<>'deleting'",
+                [checkpoint.document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+            ).map_err(CatalogError::from)?;
+            if expected_generation != Some(source_generation) { return Err(CatalogError::Conflict("source generation changed".into())); }
+            let closure = serde_json::from_str::<serde_json::Value>(&plan_json).ok()
+                .and_then(|value| value.get("closure_object_ids").cloned())
+                .and_then(|value| value.as_array().cloned())
+                .ok_or_else(|| CatalogError::Invalid("source operation has no verified closure proof".into()))?;
+            let planned: Vec<String> = closure.iter().map(|value| value.as_str().map(str::to_owned).ok_or_else(|| CatalogError::Invalid("closure proof contains a non-text id".into()))).collect::<CatalogResult<_>>()?;
+            let actual: Vec<String> = checkpoint.object_ids.iter().map(ToString::to_string).collect();
+            if planned != actual { return Err(CatalogError::Conflict("source closure changed after manifest verification".into())); }
+            let tree_kind: String = tx.query_row("SELECT kind FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![checkpoint.document_id.as_str(),checkpoint.tree_object_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
+            if tree_kind != ObjectKind::SourceTree.as_str() { return Err(CatalogError::Invalid("checkpoint tree must be a source_tree object".into())); }
+            for object_id in &checkpoint.object_ids {
+                let available: i64 = tx.query_row("SELECT count(*) FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![checkpoint.document_id.as_str(),object_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
+                if available != 1 { return Err(CatalogError::Conflict("checkpoint closure contains an unavailable object".into())); }
+            }
+            let count = i64::try_from(checkpoint.object_ids.len()).map_err(|_| CatalogError::Invalid("checkpoint closure too large".into()))?;
+            if checked_add(doc_refs,count,"document checkpoint references")? > MAX_DOCUMENT_CHECKPOINT_REFS { return Err(CatalogError::refused(super::CatalogRefusal::Other,"checkpoint_reference_limit")); }
+            tx.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,checkpoint.author_account_id,checkpoint.author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,checkpoint.journal_epoch,checkpoint.journal_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|value|value.0)]).map_err(CatalogError::from)?;
+            for object_id in &checkpoint.object_ids { tx.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?; }
+            tx.execute("UPDATE documents SET next_checkpoint_seq=next_checkpoint_seq+1,source_generation=source_generation+1,checkpoint_ref_count=checkpoint_ref_count+?1,last_checkpoint_at=?2,current_checkpoint_id=CASE WHEN ?3 THEN ?4 ELSE current_checkpoint_id END,updated_at=max(updated_at,?2) WHERE id=?5",params![count,checkpoint.now.0,checkpoint.make_current,checkpoint.id.as_str(),checkpoint.document_id.as_str()]).map_err(CatalogError::from)?;
+            let receipt_expires=checkpoint.now.0.checked_add(7*24*60*60*1_000).ok_or_else(||CatalogError::Invalid("checkpoint receipt expiry overflow".into()))?;
+            tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'",params![result_json,checkpoint.now.0,receipt_expires,operation_id.as_str()]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count+?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1",params![count,checkpoint.now.0]).map_err(CatalogError::from)?;
+            Ok(next)
+        })
+    }
+
     /// Delete one retained checkpoint and its flattened dependency edges.
     /// The current checkpoint, protected annotations, and active roots remain
     /// ineligible; byte counters are decremented by the exact edge count.
@@ -681,17 +780,41 @@ impl Catalog {
         validate_json(result_json, "publication result", 65_536)?;
         if publication_id.is_empty() { return Err(CatalogError::Invalid("publication id is empty".into())); }
         self.immediate(|tx| {
-            let (state,kind,generation): (String,String,String) = tx.query_row("SELECT state,kind,writer_generation FROM operations WHERE id=?1 AND document_id=?2", params![operation_id.as_str(),document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(CatalogError::from)?;
+            let (state,kind,generation,expected_generation,plan_json): (String,String,String,Option<i64>,String) = tx.query_row("SELECT state,kind,writer_generation,expected_document_generation,plan_json FROM operations WHERE id=?1 AND document_id=?2", params![operation_id.as_str(),document_id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(CatalogError::from)?;
             if state != "prepared" || kind != OperationKind::DisplayPublish.as_str() { return Err(CatalogError::Conflict("publication operation is not prepared".into())); }
             let current_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
             if generation != current_generation { return Err(CatalogError::Conflict("publication belongs to an obsolete writer generation".into())); }
+            let source_generation: i64 = tx.query_row("SELECT source_generation FROM documents WHERE id=?1", [document_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
+            if expected_generation != Some(source_generation) { return Err(CatalogError::Conflict("publication source generation changed".into())); }
             let current: Option<String> = tx.query_row("SELECT publication_id FROM documents WHERE id=?1", [document_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
             if current.as_deref() != expected_publication_id { return Err(CatalogError::Conflict("publication head changed".into())); }
-            let old_object: Option<String> = tx.query_row("SELECT publication_object_id FROM documents WHERE id=?1", [document_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
-            let available: i64 = tx.query_row("SELECT count(*) FROM objects WHERE document_id=?1 AND id=?2 AND kind='publication_manifest' AND state='available'", params![document_id.as_str(),manifest_object_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
-            if available != 1 { return Err(CatalogError::Conflict("publication manifest is unavailable".into())); }
-            if let Some(old) = old_object { tx.execute("UPDATE objects SET publication_root=0,gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END WHERE document_id=?2 AND id=?3", params![now.0.saturating_add(900_000),document_id.as_str(),old]).map_err(CatalogError::from)?; }
-            tx.execute("UPDATE objects SET publication_root=1,gc_after=NULL WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),manifest_object_id.as_str()]).map_err(CatalogError::from)?;
+            let bundle = serde_json::from_str::<serde_json::Value>(&plan_json)
+                .ok()
+                .and_then(|plan| plan.get("bundle_object_ids").cloned())
+                .and_then(|value| value.as_array().cloned())
+                .ok_or_else(|| CatalogError::Invalid("publication plan has no verified bundle closure".into()))?;
+            let mut bundle_ids = Vec::with_capacity(bundle.len());
+            for value in bundle {
+                let id = value.as_str().ok_or_else(|| CatalogError::Invalid("publication bundle id is not text".into()))?;
+                bundle_ids.push(ObjectId::new(id.to_string()).map_err(|e| CatalogError::Invalid(e.to_string()))?);
+            }
+            if bundle_ids.is_empty() || !bundle_ids.iter().any(|id| id == manifest_object_id) {
+                return Err(CatalogError::Invalid("publication bundle must include its manifest".into()));
+            }
+            let distinct: HashSet<&ObjectId> = bundle_ids.iter().collect();
+            if distinct.len() != bundle_ids.len() { return Err(CatalogError::Invalid("publication bundle contains duplicate objects".into())); }
+            for object_id in &bundle_ids {
+                let available: Option<String> = tx.query_row("SELECT kind FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),object_id.as_str()], |r| r.get(0)).optional().map_err(CatalogError::from)?;
+                let Some(kind) = available else { return Err(CatalogError::Conflict("publication bundle contains an unavailable object".into())); };
+                if !matches!(kind.as_str(), "publication_manifest" | "publication_html" | "publication_asset") {
+                    return Err(CatalogError::Invalid("publication bundle contains a non-publication object".into()));
+                }
+            }
+            let grace = now.0.checked_add(900_000).ok_or_else(|| CatalogError::Invalid("publication grace overflow".into()))?;
+            tx.execute("UPDATE objects SET publication_root=0,gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END WHERE document_id=?2 AND publication_root=1", params![grace,document_id.as_str()]).map_err(CatalogError::from)?;
+            for object_id in &bundle_ids {
+                tx.execute("UPDATE objects SET publication_root=1,gc_after=NULL WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?;
+            }
             tx.execute("UPDATE documents SET publication_id=?1,publication_object_id=?2,published_at=?3,updated_at=max(updated_at,?3) WHERE id=?4", params![publication_id,manifest_object_id.as_str(),now.0,document_id.as_str()]).map_err(CatalogError::from)?;
             let receipt_expires = now.0.checked_add(7 * 24 * 60 * 60 * 1_000)
                 .ok_or_else(|| CatalogError::Invalid("publication receipt expiry overflow".into()))?;
