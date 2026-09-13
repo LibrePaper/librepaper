@@ -978,7 +978,6 @@ pub fn enqueue_journal_retirement(
 }
 
 #[cfg(test)]
-#[cfg(test)]
 pub struct JournalRetirementWorker {
     catalog: Arc<Catalog>,
     blobs: Arc<dyn BlobStore>,
@@ -986,7 +985,6 @@ pub struct JournalRetirementWorker {
     retirement_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
-#[cfg(test)]
 #[cfg(test)]
 impl JournalRetirementWorker {
     pub fn new(
