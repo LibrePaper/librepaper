@@ -21,9 +21,7 @@ fn checkpoint_time_ms(value: &str) -> CatalogResult<i64> {
     }
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
         .ok()
-        .and_then(|value| {
-            i64::try_from(value.unix_timestamp_nanos() / 1_000_000).ok()
-        })
+        .and_then(|value| i64::try_from(value.unix_timestamp_nanos() / 1_000_000).ok())
         .ok_or_else(|| CatalogError::Invalid("checkpoint timestamp is invalid".into()))
 }
 
@@ -41,6 +39,68 @@ const CHECKPOINT_SELECT: &str = "SELECT d.slug,c.id,c.seq,c.journal_sequence,c.t
      JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active'";
 
 impl Catalog {
+    /// Prepare the source-writer row used by an MCP checkpoint before the
+    /// physical closure is encoded.  The checkpoint writer reuses this row in
+    /// its final transaction, so the source operation, closure, head, and
+    /// receipt share one operation identity instead of opening a second
+    /// document writer.
+    pub(crate) fn prepare_agent_checkpoint(
+        &self,
+        document_id: &DocumentId,
+        actor: MutationAuthority<'_>,
+        request: &AgentCheckpointCommit,
+        source_generation: i64,
+    ) -> CatalogResult<V2Operation> {
+        let actor_key = if !actor.account_id.is_empty() {
+            format!("account:{}", actor.account_id)
+        } else if !actor.link_hash.is_empty() {
+            format!("link:{}", actor.link_hash)
+        } else {
+            return Err(CatalogError::refused(
+                CatalogRefusal::ActorRights,
+                "checkpoint actor is missing",
+            ));
+        };
+        let authority = serde_json::json!({
+            "account_id": actor.account_id,
+            "session_generation": actor.generation,
+            "link_hash": actor.link_hash,
+            "policy_editor": actor.policy_editor,
+            "automation": actor.automation,
+            "execution_epoch": actor.execution_epoch,
+        });
+        let plan_json = serde_json::json!({
+            "version": 2,
+            "effect": "checkpoint",
+            "before_tree": request.source_revision,
+            "after_tree": request.source_revision,
+            "authority": authority,
+        })
+        .to_string();
+        let now = UnixMillis::new(super::unix_millis())?;
+        let expires = UnixMillis::new(
+            now.0
+                .checked_add(120_000)
+                .ok_or_else(|| CatalogError::Invalid("checkpoint deadline overflow".into()))?,
+        )?;
+        self.prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(document_id.clone()),
+                actor_key,
+                request_key: request.request_id.clone(),
+                kind: OperationKind::AgentApply,
+                request_digest: request.digest.clone(),
+                plan_json,
+                expected_document_generation: Some(source_generation),
+                conversation_id: None,
+                execution_epoch: (!actor.execution_epoch.is_empty())
+                    .then(|| actor.execution_epoch.to_owned()),
+                work_expires_at: Some(expires),
+            },
+            now,
+        )
+    }
+
     /// Record an actor-scoped receipt for an already retained checkpoint.
     /// This does not insert a second checkpoint or resolve objects by digest.
     pub(crate) fn commit_retained_agent_checkpoint(
@@ -52,15 +112,25 @@ impl Catalog {
     ) -> CatalogResult<String> {
         let issued = crate::util::request_key_timestamp(&request.request_id)
             .ok_or_else(|| CatalogError::Invalid("invalid checkpoint request key".into()))?;
-        if request.digest.len() != 64 || !request.digest.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
-            return Err(CatalogError::Invalid("invalid checkpoint request digest".into()));
+        if request.digest.len() != 64
+            || !request
+                .digest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(CatalogError::Invalid(
+                "invalid checkpoint request digest".into(),
+            ));
         }
         let actor_key = if !actor.account_id.is_empty() {
             format!("account:{}", actor.account_id)
         } else if !actor.link_hash.is_empty() {
             format!("link:{}", actor.link_hash)
         } else {
-            return Err(CatalogError::refused(CatalogRefusal::ActorRights, "checkpoint actor is missing"));
+            return Err(CatalogError::refused(
+                CatalogRefusal::ActorRights,
+                "checkpoint actor is missing",
+            ));
         };
         self.immediate(|tx| {
             if !Self::mutation_authorized_in_tx(tx, slug, actor, "editor")? {

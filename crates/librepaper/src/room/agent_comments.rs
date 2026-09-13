@@ -57,7 +57,12 @@ impl Room {
             let owned = super::catalog::OwnedAuthority::new(&actor);
             catalog
                 .execute_catalog(4096, move |catalog| {
-                    catalog.commit_retained_agent_checkpoint(&point.slug, &point.sha, owned.borrow(), &commit)
+                    catalog.commit_retained_agent_checkpoint(
+                        &point.slug,
+                        &point.sha,
+                        owned.borrow(),
+                        &commit,
+                    )
                 })
                 .await
                 .map_err(|error| error.to_string())?;
@@ -73,6 +78,72 @@ impl Room {
                 return Err("source tree changed".into());
             }
         }
+        let document_id = crate::storage::catalog::DocumentId::new(self.storage_id.clone())
+            .map_err(|error| error.to_string())?;
+        let source_generation = catalog
+            .execute_catalog(256, {
+                let document_id = document_id.clone();
+                move |catalog| catalog.v2_document_source_generation(&document_id)
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let prepared = {
+            let document_id = document_id.clone();
+            let request = commit.clone();
+            let account_id = authority.account_id.clone();
+            let owner_key = authority.owner_key.clone();
+            let generation = authority.generation.clone();
+            let link_hash = authority.link_hash.clone();
+            let execution_epoch = authority.execution_epoch.clone();
+            let policy_editor = authority.policy_editor;
+            let automation = authority.automation;
+            catalog
+                .execute_catalog(1024, move |catalog| {
+                    let actor = crate::storage::catalog::MutationAuthority {
+                        account_id: &account_id,
+                        owner_key: &owner_key,
+                        generation: &generation,
+                        link_hash: &link_hash,
+                        policy_editor,
+                        automation,
+                        unowned_publisher: false,
+                        execution_epoch: &execution_epoch,
+                        agent_checkpoint: None,
+                    };
+                    catalog.prepare_agent_checkpoint(
+                        &document_id,
+                        actor,
+                        &request,
+                        source_generation,
+                    )
+                })
+                .await
+                .map_err(|error| error.to_string())?
+        };
+        if prepared.state == "committed" {
+            let actor_key = format!("account:{}", authority.account_id);
+            let operation = catalog
+                .execute_catalog(512, {
+                    let storage_id = self.storage_id.clone();
+                    let request_id = commit.request_id.clone();
+                    let actor_key = actor_key.clone();
+                    move |catalog| catalog.operation_for_actor(&storage_id, &request_id, &actor_key)
+                })
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "checkpoint receipt is missing".to_string())?;
+            let receipt: serde_json::Value = serde_json::from_str(&operation.result)
+                .map_err(|_| "checkpoint receipt is invalid".to_string())?;
+            return receipt
+                .get("checkpoint_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| "checkpoint receipt has no identity".to_string());
+        }
+        if prepared.state != "prepared" {
+            return Err("checkpoint operation is not resumable".into());
+        }
         let checkpoint = self
             .checkpoint_now_with_authority(
                 "cli",
@@ -81,21 +152,7 @@ impl Room {
             )
             .await
             .map_err(|e| e.to_string())?;
-        let checkpoint = checkpoint.ok_or("checkpoint did not produce an identity")?;
-        // An automatic checkpoint may have won the content race after our
-        // initial lookup. This also records an idempotent receipt for that
-        // existing checkpoint; new insertions already recorded it atomically.
-        let point = read_checkpoint_by_content_sha(catalog, &self.slug, revision)
-            .await?
-            .ok_or("checkpoint descriptor unavailable")?;
-        let owned = super::catalog::OwnedAuthority::new(&actor);
-        catalog
-            .execute_catalog(4096, move |catalog| {
-                catalog.insert_checkpoints_atomic_with_authority(&[point], Some(owned.borrow()))
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(checkpoint)
+        checkpoint.ok_or_else(|| "checkpoint did not produce an identity".to_string())
     }
 
     pub(crate) async fn agent_comment(&self, id: &str) -> Option<Comment> {

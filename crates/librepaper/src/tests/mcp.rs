@@ -396,7 +396,23 @@ async fn mcp_accept_and_checkpoint_replay_retained_effects() {
         after["results"][1]["thread"]["outcome"], "accepted",
         "{after}"
     );
-    let checkpoint = json!({"action":"checkpoint","view_id":after["view_id"],"operation":{"epoch":after["operation_epoch"],"id":operation_key("checkpoint-once")}});
+    // Leave the accepted view dirty before asking MCP to checkpoint it. This
+    // exercises first admission of the agent checkpoint operation; the retry
+    // below must replay its single durable receipt rather than insert a
+    // second checkpoint or source-writer operation.
+    let room = server.instance.rooms.get(&slug).await;
+    room.set_source("# Intro\n\nAccepted text\n\nA live MCP edit\n", "markdown")
+        .await
+        .expect("live source edit");
+    let live = tool(
+        &server.url,
+        &slug,
+        &key,
+        "document_read",
+        json!({"queries":[{"kind":"source"}]}),
+    )
+    .await;
+    let checkpoint = json!({"action":"checkpoint","view_id":live["view_id"],"operation":{"epoch":live["operation_epoch"],"id":operation_key("checkpoint-once")}});
     let first = tool(
         &server.url,
         &slug,
