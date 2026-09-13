@@ -601,19 +601,12 @@ async fn editor_link_revocation_refuses_stage_and_activation() {
         .0,
         403 | 404
     ));
-    let document = server
-        .instance
-        .store
-        .catalog
-        .as_ref()
-        .unwrap()
-        .document(&slug)
-        .unwrap()
-        .unwrap();
-    assert!(
-        document.publication_id.is_none(),
-        "revoked editor activation changed the live publication head"
-    );
+    let publication_id: Option<String> = server.instance.store.catalog.as_ref().unwrap()
+        .with_connection(|connection| {
+            Ok(connection.query_row("SELECT publication_id FROM documents WHERE slug=?1", [&slug], |row| row.get(0))?)
+        }).unwrap();
+    assert!(publication_id.is_none(), "revoked editor activation changed the live publication head");
+
 }
 
 #[tokio::test]

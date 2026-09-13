@@ -644,7 +644,7 @@ pub async fn restore_backup(
                     return Err(BackupV2Error::Corrupt("object inventory is not strictly ordered".into()));
                 }
                 previous_cursor = Some(cursor);
-                restore_object_entry(&backup, &target, &object).await?;
+                restore_object_entry(backup, &target, &object).await?;
                 report.objects_restored = report.objects_restored.saturating_add(1);
                 report.bytes_restored = report.bytes_restored.saturating_add(object.byte_length);
             }
@@ -682,7 +682,7 @@ fn validate_object_entry(object: &BackupObjectEntry, backup_id: &str) -> Result<
 }
 
 async fn restore_object_entry(
-    backup: &Arc<dyn BlobStore>,
+    backup: &dyn BlobStore,
     target: &Arc<dyn BlobStore>,
     object: &BackupObjectEntry,
 ) -> Result<(), BackupV2Error> {
