@@ -13,6 +13,7 @@ use crate::storage::blob::{parse_v2_object_key, BlobStore};
 
 pub const BACKUP_FORMAT_V2: u16 = 2;
 pub const BACKUP_OBJECT_LIMIT: usize = 1_000_000;
+pub const MAX_CATALOG_SNAPSHOT_BYTES: usize = 512 * 1024 * 1024;
 pub const BACKUP_PREFIX_V2: &str = "recovery/v2";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -191,6 +192,10 @@ pub async fn create_backup(
         return Err(BackupV2Error::Invalid("invalid backup identity or time".into()));
     }
     let snapshot = catalog.prepare_backup(now).await.map_err(BackupV2Error::Catalog)?;
+    if snapshot.catalog_bytes.len() > MAX_CATALOG_SNAPSHOT_BYTES {
+        let _ = catalog.abort_backup(&snapshot.operation_id).await;
+        return Err(BackupV2Error::Invalid("catalog snapshot exceeds backup bound".into()));
+    }
     let mut manifest = BackupManifestV2 {
         format_version: BACKUP_FORMAT_V2,
         operation_id: snapshot.operation_id.clone(),
