@@ -548,7 +548,22 @@ pub struct Catalog {
     link_sealing_keys: RwLock<Vec<(String, [u8; 32])>>,
     /// Unacknowledged room edits are process-local and disappear on restart;
     /// keeping them here avoids creating a TEMP SQL table at runtime.
-    pub(crate) room_reservations: Mutex<HashMap<String, (i64, i64, i64)>>,
+    pub(crate) room_reservations: Mutex<AdmissionReservations>,
+}
+
+#[derive(Default)]
+pub(crate) struct AdmissionReservations {
+    pub documents: HashMap<String, RoomReservationEntry>,
+    pub owner_bytes: HashMap<String, i64>,
+    pub deployment_bytes: i64,
+}
+
+#[derive(Clone)]
+pub(crate) struct RoomReservationEntry {
+    pub owner_id: String,
+    pub pending_bytes: i64,
+    pub writing_bytes: i64,
+    pub generation: i64,
 }
 
 impl fmt::Debug for Catalog {
@@ -671,7 +686,7 @@ impl Catalog {
             #[cfg(test)]
             connection_operations: std::sync::atomic::AtomicUsize::new(0),
             link_sealing_keys: RwLock::new(Vec::new()),
-            room_reservations: Mutex::new(HashMap::new()),
+            room_reservations: Mutex::new(AdmissionReservations::default()),
         })
     }
 

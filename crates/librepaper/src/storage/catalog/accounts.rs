@@ -1404,10 +1404,10 @@ impl Catalog {
             )
             .map_err(CatalogError::from)?;
             tx.execute(
-                "UPDATE operations SET state='aborted', result_json='{"version":1,"reason":"account_erasure"}', completed_at=?2, receipt_expires_at=?2, updated_at=max(updated_at,?2)
+                "UPDATE operations SET state='aborted', result_json=?2, completed_at=?3, receipt_expires_at=?3, updated_at=max(updated_at,?3)
                  WHERE state='prepared' AND document_id IN
                    (SELECT id FROM documents WHERE owner_id=?1 AND status='deleting')",
-                params![id, super::unix_millis()],
+                params![id, r#"{"version":1,"reason":"account_erasure"}"#, super::unix_millis()],
             ).map_err(CatalogError::from)?;
             Ok(())
         })

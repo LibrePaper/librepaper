@@ -333,6 +333,47 @@ fn checked_add(a: i64, b: i64, label: &str) -> CatalogResult<i64> {
 }
 
 impl Catalog {
+    pub fn object_by_id(&self, document_id: &DocumentId, object_id: &ObjectId) -> CatalogResult<Option<V2Object>> {
+        self.with_connection(|connection| {
+            connection.query_row("SELECT document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,allocation_operation_id FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![document_id.as_str(),object_id.as_str()], |row| Ok(V2Object { document_id:DocumentId::new(row.get::<_,String>(0)?).map_err(|_| rusqlite::Error::InvalidQuery)?, id:ObjectId::new(row.get::<_,String>(1)?).map_err(|_| rusqlite::Error::InvalidQuery)?, storage_key:row.get(2)?,kind:row.get(3)?,state:row.get(4)?,digest:row.get(5)?,byte_length:row.get(6)?,reserved_bytes:row.get(7)?,allocation_operation_id:row.get::<_,Option<String>>(8)?.map(|id| OperationId::new(id).map_err(|_| rusqlite::Error::InvalidQuery)).transpose()? })).optional().map_err(CatalogError::from)
+        })
+    }
+
+    pub fn objects_by_ids(&self, document_id: &DocumentId, object_ids: &[ObjectId]) -> CatalogResult<Vec<V2Object>> {
+        if object_ids.len() > MAX_CHECKPOINT_OBJECTS { return Err(CatalogError::Invalid("object set exceeds v2 closure limit".into())); }
+        let mut result = Vec::with_capacity(object_ids.len());
+        for object_id in object_ids {
+            result.push(self.object_by_id(document_id, object_id)?.ok_or(CatalogError::NotFound)?);
+        }
+        Ok(result)
+    }
+
+    pub fn checkpoint_tree_object(&self, slug: &str, checkpoint_id: &str) -> CatalogResult<Option<V2Object>> {
+        let row: Option<(String,String)> = self.with_connection(|connection| {
+            connection.query_row("SELECT c.document_id,c.tree_object_id FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.slug=?1 AND c.id=?2", params![slug,checkpoint_id], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(CatalogError::from)
+        })?;
+        let Some((document_id,object_id)) = row else { return Ok(None); };
+        self.object_by_id(&DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?, &ObjectId::new(object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?)
+    }
+
+    pub fn current_tree_object(&self, slug: &str) -> CatalogResult<Option<V2Object>> {
+        let row: Option<(String,String)> = self.with_connection(|connection| connection.query_row("SELECT d.id,c.tree_object_id FROM documents d JOIN checkpoints c ON c.document_id=d.id AND c.id=d.current_checkpoint_id WHERE d.slug=?1", [slug], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(CatalogError::from))?;
+        let Some((document_id,object_id)) = row else { return Ok(None); };
+        self.object_by_id(&DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?, &ObjectId::new(object_id).map_err(|e| CatalogError::Invalid(e.to_string()))?)
+    }
+
+    pub fn acquire_v2_read_set(&self, document_id: &DocumentId, object_ids: &[ObjectId], holder_id: &str, writer_generation: &str, expires_at: UnixMillis, now: UnixMillis) -> CatalogResult<Vec<V2Object>> {
+        if object_ids.is_empty() || object_ids.len() > MAX_CHECKPOINT_OBJECTS { return Err(CatalogError::Invalid("invalid read set".into())); }
+        let _objects = self.objects_by_ids(document_id, object_ids)?;
+        self.immediate(|tx| {
+            for object_id in object_ids {
+                tx.execute("INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,?3,'read',NULL,?4,?5,?6)", params![document_id.as_str(),object_id.as_str(),holder_id,writer_generation,now.0,expires_at.0]).map_err(CatalogError::from)?;
+            }
+            Ok(())
+        })?;
+        Ok(_objects)
+    }
+
     pub fn cost_state_json(&self) -> CatalogResult<String> {
         self.with_connection(|connection| {
             connection.query_row("SELECT cost_json FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)
@@ -446,6 +487,7 @@ impl Catalog {
         {
             return Err(CatalogError::Invalid("invalid object allocation".into()));
         }
+        let _admission_guard = self.room_reservations.lock().map_err(|_| CatalogError::Busy)?;
         self.immediate(|tx| {
             let owner_id: String = tx.query_row("SELECT owner_id FROM documents WHERE id=?1 AND status <> 'deleting'", [allocation.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
             let prepared: i64 = tx.query_row("SELECT count(*) FROM operations WHERE id=?1 AND document_id=?2 AND state='prepared'", params![allocation.operation_id.as_str(), allocation.document_id.as_str()], |row| row.get(0)).map_err(CatalogError::from)?;
@@ -456,9 +498,11 @@ impl Catalog {
             let new_doc_reserved = checked_add(doc_reserved, allocation.reserved_bytes, "document reserved")?;
             let new_owner_reserved = checked_add(owner_reserved, allocation.reserved_bytes, "owner reserved")?;
             let new_server_reserved = checked_add(server_reserved, allocation.reserved_bytes, "deployment reserved")?;
+            let process_owner = _admission_guard.owner_bytes.get(&owner_id).copied().unwrap_or(0);
+            let process_total = _admission_guard.deployment_bytes;
             if limits.owner_bytes < 0 || limits.deployment_bytes < 0
-                || new_owner_reserved.checked_add(owner_stored).ok_or_else(|| CatalogError::Invalid("owner accounting overflow".into()))? > limits.owner_bytes
-                || new_server_reserved.checked_add(server_stored).ok_or_else(|| CatalogError::Invalid("deployment accounting overflow".into()))? > limits.deployment_bytes
+                || owner_stored.checked_add(new_owner_reserved).and_then(|v| v.checked_add(process_owner)).ok_or_else(|| CatalogError::Invalid("owner accounting overflow".into()))? > limits.owner_bytes
+                || server_stored.checked_add(new_server_reserved).and_then(|v| v.checked_add(process_total)).ok_or_else(|| CatalogError::Invalid("deployment accounting overflow".into()))? > limits.deployment_bytes
             {
                 return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "object allocation exceeds configured byte limit"));
             }
