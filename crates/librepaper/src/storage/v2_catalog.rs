@@ -1981,6 +1981,9 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             let (epoch, sequence, generation, writer_generation, owner_id, owner_stored, owner_reserved, server_stored, server_reserved): (i64,i64,i64,String,String,i64,i64,i64,i64) = tx.query_row("SELECT d.journal_epoch,d.journal_sequence,d.source_generation,s.writer_generation,d.owner_id,a.stored_bytes,a.reserved_bytes,s.stored_bytes,s.reserved_bytes FROM documents d JOIN accounts a ON a.id=d.owner_id AND a.status='active' CROSS JOIN server_state s WHERE d.id=?1 AND d.status='active'", [&document_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?))).map_err(crate::storage::catalog::CatalogError::from)?;
             if u64::try_from(epoch).ok() != Some(expected_epoch) || u64::try_from(sequence).ok() != Some(expected_sequence) { return Err(crate::storage::catalog::CatalogError::Conflict("journal compaction head changed".into())); }
             let resolved_dependencies = resolve_journal_dependencies(tx, &document_id, &dependencies)?;
+            if resolved_dependencies.len() > 512 {
+                return Err(crate::storage::catalog::CatalogError::Invalid("journal dependency closure exceeds 512 objects".into()));
+            }
             let bytes_i64 = i64::try_from(byte_length).map_err(|_| crate::storage::catalog::CatalogError::Invalid("journal base is too large".into()))?;
             let owner_ram = reservations.owner_bytes.get(&owner_id).copied().unwrap_or(0);
             let owner_after = owner_stored.checked_add(owner_reserved).and_then(|value| value.checked_add(owner_ram)).and_then(|value| value.checked_add(bytes_i64)).ok_or_else(|| crate::storage::catalog::CatalogError::Invalid("owner quota accounting overflow".into()))?;
