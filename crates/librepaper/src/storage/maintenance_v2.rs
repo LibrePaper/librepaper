@@ -134,6 +134,17 @@ pub trait V2GcCatalog: Send + Sync {
         let _ = limit;
         Ok(0)
     }
+    /// Reconcile physical PUTs whose caller was cancelled or whose PUT
+    /// returned an error.  Implementations must probe the object store before
+    /// releasing an allocation: an unknown PUT outcome remains charged.
+    async fn reconcile_failed_inflight(
+        &self,
+        blobs: &dyn BlobStore,
+        limit: usize,
+    ) -> Result<usize, String> {
+        let _ = (blobs, limit);
+        Ok(0)
+    }
     async fn claim_gc(&self, now: i64, limit: usize) -> Result<Vec<GcCandidate>, String>;
     async fn settle_gc(
         &self,
@@ -305,10 +316,15 @@ pub async fn run_gc_pass(
         .expire_prepared_operations(now, GC_PAGE_SIZE)
         .await
         .map_err(GcError::Catalog)?;
-    let inflight_settled = catalog
+    let failed_inflight_settled = catalog
+        .reconcile_failed_inflight(blobs, GC_PAGE_SIZE)
+        .await
+        .map_err(GcError::Catalog)?;
+    let completed_inflight_settled = catalog
         .settle_completed_inflight(GC_PAGE_SIZE)
         .await
         .map_err(GcError::Catalog)?;
+    let inflight_settled = failed_inflight_settled.saturating_add(completed_inflight_settled);
     let candidates = catalog
         .claim_gc(now, GC_PAGE_SIZE)
         .await

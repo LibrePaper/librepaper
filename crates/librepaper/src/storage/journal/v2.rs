@@ -864,6 +864,8 @@ async fn guarded_write_v2_object(
             "journal allocation already has a physical write in flight".into(),
         ));
     }
+    let object_key_for_task = object_key.clone();
+    let document_id_for_task = document_id.clone();
     tokio::spawn(async move {
         let result = write_v2_object_with_id(
             blobs.as_ref(),
@@ -876,12 +878,25 @@ async fn guarded_write_v2_object(
         if let Ok(written) = &result {
             crate::storage::v2_catalog::complete_physical_guard(namespace, &document_id, written);
         } else {
-            crate::storage::v2_catalog::remove_physical_guard(namespace, &document_id, &object_key);
+            crate::storage::v2_catalog::fail_physical_guard(
+                namespace,
+                &document_id,
+                &object_key,
+                result.as_ref().err().map(ToString::to_string).as_deref().unwrap_or("journal PUT failed"),
+            );
         }
         result
     })
     .await
-    .map_err(|error| JournalError::Storage(format!("guarded journal PUT task failed: {error}")))?
+    .map_err(|error| {
+        crate::storage::v2_catalog::fail_physical_guard(
+            namespace,
+            &document_id_for_task,
+            &object_key_for_task,
+            &format!("guarded journal PUT task failed: {error}"),
+        );
+        JournalError::Storage(format!("guarded journal PUT task failed: {error}"))
+    })?
     .map_err(|error| match error {
         BlobError::Conflict => JournalError::Conflict("journal allocation id reused".into()),
         other => JournalError::Storage(other.to_string()),

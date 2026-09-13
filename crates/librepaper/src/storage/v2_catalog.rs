@@ -41,6 +41,7 @@ struct InflightPut {
     expected_digest: String,
     managed: bool,
     written: Option<WrittenObject>,
+    failure: Option<String>,
 }
 
 static INFLIGHT_PUTS: OnceLock<Mutex<HashMap<(usize, String, String), InflightPut>>> = OnceLock::new();
@@ -71,6 +72,7 @@ fn register_inflight(
         expected_digest: expected_digest.to_owned(),
         managed,
         written: None,
+        failure: None,
     };
     let mut guards = inflight_puts()
         .lock()
@@ -96,6 +98,25 @@ pub(crate) fn complete_physical_guard(namespace: usize, document_id: &str, writt
     {
         record.written = Some(written.clone());
     }
+}
+
+fn fail_inflight(namespace: usize, document_id: &str, object_id: &str, error: String) {
+    if let Some(record) = inflight_puts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_mut(&(namespace, document_id.to_owned(), object_id.to_owned()))
+    {
+        record.failure = Some(error);
+    }
+}
+
+pub(crate) fn fail_physical_guard(
+    namespace: usize,
+    document_id: &str,
+    object_id: &str,
+    error: &str,
+) {
+    fail_inflight(namespace, document_id, object_id, error.to_owned());
 }
 
 fn complete_inflight(namespace: usize, written: WrittenObject, document_id: &str) {
@@ -129,6 +150,29 @@ fn completed_inflight(namespace: usize, limit: usize) -> Vec<InflightPut> {
         .take(limit)
         .cloned()
         .collect()
+}
+
+fn failed_inflight(namespace: usize, limit: usize) -> Vec<InflightPut> {
+    inflight_puts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+        .filter(|record| {
+            record.namespace == namespace && record.failure.is_some() && record.written.is_none()
+        })
+        .take(limit)
+        .cloned()
+        .collect()
+}
+
+fn set_failed_record_written(record: &InflightPut, written: WrittenObject) {
+    if let Some(current) = inflight_puts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_mut(&(record.namespace, record.document_id.clone(), record.object_id.clone()))
+    {
+        current.written = Some(written);
+    }
 }
 
 async fn settle_completed_record(catalog: &Catalog, record: InflightPut) -> Result<(), String> {
@@ -319,7 +363,104 @@ fn journal_ref(row: &rusqlite::Row<'_>) -> rusqlite::Result<JournalObjectRef> {
         last_sequence: row.get::<_, i64>(4)? as u64,
         digest: row.get(5)?,
         byte_length: row.get::<_, i64>(6)? as u64,
-    })
+        })
+}
+
+/// Release an allocation after the object store has explicitly confirmed the
+/// key is absent.  The object and its operation are re-read in the same
+/// immediate transaction so a late callback cannot refund a reused identity.
+fn abort_failed_allocation(catalog: &Catalog, record: &InflightPut) -> Result<(), String> {
+    catalog
+        .with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let row: Option<(String, i64, String, Option<String>, Option<String>)> = transaction
+                .query_row(
+                    "SELECT o.state,o.reserved_bytes,o.kind,o.allocation_operation_id,op.state
+                       FROM objects o
+                       LEFT JOIN operations op
+                         ON op.id=o.allocation_operation_id AND op.document_id=o.document_id
+                      WHERE o.document_id=?1 AND o.id=?2",
+                    params![record.document_id, record.object_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                )
+                .optional()
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let Some((state, reserved, kind, operation_id, operation_state)) = row else {
+                transaction
+                    .commit()
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                return Ok(());
+            };
+            if state != "allocated" {
+                return Err(crate::storage::catalog::CatalogError::Conflict(
+                    "failed PUT allocation is no longer allocated".into(),
+                ));
+            }
+            let operation_id = operation_id.ok_or_else(|| {
+                crate::storage::catalog::CatalogError::Conflict(
+                    "failed PUT allocation has no operation owner".into(),
+                )
+            })?;
+            if record.managed && operation_id != record.operation_id {
+                return Err(crate::storage::catalog::CatalogError::Conflict(
+                    "failed PUT allocation owner changed".into(),
+                ));
+            }
+            if operation_state.as_deref() == Some("committed") {
+                return Err(crate::storage::catalog::CatalogError::Conflict(
+                    "committed allocation cannot be refunded after failed PUT".into(),
+                ));
+            }
+            transaction
+                .execute(
+                    "DELETE FROM objects WHERE document_id=?1 AND id=?2
+                       AND allocation_operation_id=?3 AND state='allocated'",
+                    params![record.document_id, record.object_id, operation_id],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            transaction
+                .execute(
+                    "UPDATE documents SET reserved_bytes=reserved_bytes-?1,
+                       agent_payload_bytes=CASE WHEN ?2='agent_payload'
+                         THEN agent_payload_bytes-?1 ELSE agent_payload_bytes END,
+                       agent_payload_count=CASE WHEN ?2='agent_payload'
+                         THEN agent_payload_count-1 ELSE agent_payload_count END
+                     WHERE id=?3",
+                    params![reserved, kind, record.document_id],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            let owner: String = transaction
+                .query_row(
+                    "SELECT owner_id FROM documents WHERE id=?1",
+                    [record.document_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            transaction
+                .execute(
+                    "UPDATE accounts SET reserved_bytes=reserved_bytes-?1 WHERE id=?2",
+                    params![reserved, owner],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            transaction
+                .execute(
+                    "UPDATE server_state SET reserved_bytes=reserved_bytes-?1,
+                       agent_payload_bytes=CASE WHEN ?2='agent_payload'
+                         THEN agent_payload_bytes-?1 ELSE agent_payload_bytes END,
+                       agent_payload_count=CASE WHEN ?2='agent_payload'
+                         THEN agent_payload_count-1 ELSE agent_payload_count END,
+                       catalog_revision=catalog_revision+1,updated_at=?3 WHERE id=1",
+                    params![reserved, kind, now_millis()],
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            transaction
+                .commit()
+                .map_err(crate::storage::catalog::CatalogError::from)?;
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
 }
 
 fn journal_tx<T>(catalog: &Catalog, operation: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::storage::catalog::CatalogResult<T>) -> crate::storage::catalog::CatalogResult<T> {
@@ -350,6 +491,7 @@ impl V2GcCatalogAdapter {
 
 #[derive(Clone, Debug)]
 struct StageLeaseCursor {
+    expires_at: i64,
     document_id: String,
     object_id: String,
     holder_id: String,
@@ -374,6 +516,7 @@ async fn heartbeat_stage_leases_page(
     }
     let upper = now.saturating_add(STAGE_HEARTBEAT_DUE_MS);
     let renewal_limit = now.saturating_add(READ_LEASE_MS);
+    let cursor_expires = cursor.as_ref().map(|value| value.expires_at);
     let cursor_document = cursor.as_ref().map(|value| value.document_id.clone());
     let cursor_object = cursor.as_ref().map(|value| value.object_id.clone());
     let cursor_holder = cursor.as_ref().map(|value| value.holder_id.clone());
@@ -385,7 +528,7 @@ async fn heartbeat_stage_leases_page(
                     .map_err(crate::storage::catalog::CatalogError::from)?;
                 let mut statement = transaction
                     .prepare(
-                        "SELECT lease.document_id,lease.object_id,lease.holder_id,
+                        "SELECT lease.expires_at,lease.document_id,lease.object_id,lease.holder_id,
                                 lease.operation_id,candidate.work_expires_at
                          FROM object_leases lease
                          JOIN operations candidate
@@ -408,13 +551,15 @@ async fn heartbeat_stage_leases_page(
                            AND d.status='active' AND a.status='active'
                            AND MIN(?3,candidate.work_expires_at)>lease.expires_at
                            AND (
-                               ?4 IS NULL OR lease.document_id>?4
-                               OR (lease.document_id=?4 AND lease.object_id>?5)
-                               OR (lease.document_id=?4 AND lease.object_id=?5
-                                   AND lease.holder_id>?6)
+                               ?4 IS NULL OR lease.expires_at>?4
+                               OR (lease.expires_at=?4 AND lease.document_id>?5)
+                               OR (lease.expires_at=?4 AND lease.document_id=?5
+                                   AND lease.object_id>?6)
+                               OR (lease.expires_at=?4 AND lease.document_id=?5
+                                   AND lease.object_id=?6 AND lease.holder_id>?7)
                            )
-                         ORDER BY lease.document_id,lease.object_id,lease.holder_id
-                         LIMIT ?7",
+                         ORDER BY lease.expires_at,lease.document_id,lease.object_id,lease.holder_id
+                         LIMIT ?8",
                     )
                     .map_err(crate::storage::catalog::CatalogError::from)?;
                 let rows = statement
@@ -423,6 +568,7 @@ async fn heartbeat_stage_leases_page(
                             now,
                             upper,
                             renewal_limit,
+                            cursor_expires,
                             cursor_document.as_deref(),
                             cursor_object.as_deref(),
                             cursor_holder.as_deref(),
@@ -430,11 +576,12 @@ async fn heartbeat_stage_leases_page(
                         ],
                         |row| {
                             Ok((
-                                row.get::<_, String>(0)?,
+                                row.get::<_, i64>(0)?,
                                 row.get::<_, String>(1)?,
                                 row.get::<_, String>(2)?,
                                 row.get::<_, String>(3)?,
-                                row.get::<_, i64>(4)?,
+                                row.get::<_, String>(4)?,
+                                row.get::<_, i64>(5)?,
                             ))
                         },
                     )
@@ -443,13 +590,68 @@ async fn heartbeat_stage_leases_page(
                     .collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(crate::storage::catalog::CatalogError::from)?;
                 drop(statement);
-                let next = rows.last().map(|row| StageLeaseCursor {
-                    document_id: row.0.clone(),
-                    object_id: row.1.clone(),
-                    holder_id: row.2.clone(),
-                });
+                let has_more = if rows.len() == limit {
+                    if let Some(row) = rows.last() {
+                        transaction
+                            .query_row(
+                                "SELECT EXISTS(
+                                   SELECT 1
+                                     FROM object_leases lease
+                                     JOIN operations candidate
+                                       ON candidate.id=lease.operation_id
+                                      AND candidate.document_id=lease.document_id
+                                     JOIN documents d ON d.id=lease.document_id
+                                     JOIN accounts a ON a.id=d.owner_id
+                                     JOIN objects o
+                                       ON o.document_id=lease.document_id AND o.id=lease.object_id
+                                    WHERE lease.purpose='stage'
+                                      AND lease.expires_at>?1 AND lease.expires_at<=?2
+                                      AND candidate.kind='display_publish'
+                                      AND candidate.state='prepared'
+                                      AND candidate.writer_generation=(
+                                          SELECT writer_generation FROM server_state WHERE id=1)
+                                      AND candidate.work_expires_at>?1
+                                      AND lease.writer_generation=candidate.writer_generation
+                                      AND o.state IN ('allocated','available')
+                                      AND d.status='active' AND a.status='active'
+                                      AND MIN(?3,candidate.work_expires_at)>lease.expires_at
+                                      AND (lease.expires_at>?4
+                                        OR (lease.expires_at=?4 AND lease.document_id>?5)
+                                        OR (lease.expires_at=?4 AND lease.document_id=?5
+                                            AND lease.object_id>?6)
+                                        OR (lease.expires_at=?4 AND lease.document_id=?5
+                                            AND lease.object_id=?6 AND lease.holder_id>?7))
+                                    LIMIT 1)",
+                                params![
+                                    now,
+                                    upper,
+                                    renewal_limit,
+                                    row.0,
+                                    row.1,
+                                    row.2,
+                                    row.3,
+                                ],
+                                |value| value.get(0),
+                            )
+                            .map_err(crate::storage::catalog::CatalogError::from)?
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                let next = if has_more {
+                    rows.last().map(|row| StageLeaseCursor {
+                        expires_at: row.0,
+                        document_id: row.1.clone(),
+                        object_id: row.2.clone(),
+                        holder_id: row.3.clone(),
+                    })
+                } else {
+                    None
+                };
                 let mut renewed = 0usize;
-                for (document_id, object_id, holder_id, operation_id, work_expires_at) in rows {
+                for (original_expires_at, document_id, object_id, holder_id, operation_id, work_expires_at) in rows {
                     let expires_at = renewal_limit.min(work_expires_at);
                     let changed = transaction
                         .execute(
@@ -459,15 +661,14 @@ async fn heartbeat_stage_leases_page(
                                 AND purpose='stage' AND operation_id=?5
                                 AND writer_generation=(SELECT writer_generation FROM operations
                                     WHERE id=?5 AND document_id=?2)
-                                AND expires_at>?6 AND expires_at<=?7 AND expires_at<?1",
+                                AND expires_at=?6 AND expires_at<?1",
                             params![
                                 expires_at,
                                 document_id,
                                 object_id,
                                 holder_id,
                                 operation_id,
-                                now,
-                                upper,
+                                original_expires_at,
                             ],
                         )
                         .map_err(crate::storage::catalog::CatalogError::from)?;
@@ -503,7 +704,7 @@ async fn heartbeat_stage_leases_pages(
         }
         tokio::task::yield_now().await;
     }
-    Err("stage-lease heartbeat capacity exceeded; publication must be admitted in smaller bundles".into())
+    Err("stage-lease heartbeat capacity exceeded during bounded maintenance pass".into())
 }
 
 async fn blocking_catalog_call<T, F, Fut>(catalog: Arc<Catalog>, operation: F) -> Result<T, String>
@@ -538,6 +739,79 @@ impl V2GcCatalog for V2GcCatalogAdapter {
         blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
             <Catalog as V2GcCatalog>::settle_completed_inflight(catalog.as_ref(), limit).await
         }).await
+    }
+    async fn reconcile_failed_inflight(
+        &self,
+        blobs: &dyn BlobStore,
+        limit: usize,
+    ) -> Result<usize, String> {
+        let namespace = Arc::as_ptr(&self.catalog) as usize;
+        let records = failed_inflight(namespace, limit.min(256));
+        let mut settled = 0usize;
+        for record in records {
+            let object_id = match ObjectId::parse(record.object_id.clone()) {
+                Ok(object_id) => object_id,
+                Err(_) => continue,
+            };
+            let storage_key = match crate::storage::blob::v2_object_key(
+                &record.document_id,
+                &object_id,
+            ) {
+                Ok(storage_key) => storage_key,
+                Err(_) => continue,
+            };
+            match blobs.get(&storage_key).await {
+                Ok(body) => {
+                    let digest = hex::encode(Sha256::digest(&body));
+                    if record.managed
+                        && (digest != record.expected_digest
+                            || i64::try_from(body.len()).ok() > Some(record.reserved))
+                    {
+                        // A body under an immutable allocation key that does
+                        // not match its admission is evidence of a poisoned
+                        // or conflicting store. Keep the charge for repair.
+                        continue;
+                    }
+                    let written = WrittenObject {
+                        object_id,
+                        storage_key,
+                        digest,
+                        byte_length: body.len() as u64,
+                    };
+                    set_failed_record_written(&record, written);
+                    let settle_record = record.clone();
+                    let catalog = Arc::clone(&self.catalog);
+                    if blocking_catalog_call(catalog, move |catalog| async move {
+                        settle_completed_record(catalog.as_ref(), settle_record).await
+                    })
+                    .await
+                    .is_ok()
+                    {
+                        remove_inflight(namespace, &record.document_id, &record.object_id);
+                        settled = settled.saturating_add(1);
+                    }
+                }
+                Err(crate::storage::blob::BlobError::NotFound) => {
+                    let cleanup_record = record.clone();
+                    let catalog = Arc::clone(&self.catalog);
+                    if blocking_catalog_call(catalog, move |catalog| async move {
+                        abort_failed_allocation(catalog.as_ref(), &cleanup_record)
+                    })
+                    .await
+                    .is_ok()
+                    {
+                        remove_inflight(namespace, &record.document_id, &record.object_id);
+                        settled = settled.saturating_add(1);
+                    }
+                }
+                Err(_) => {
+                    // The outcome of the PUT, and now of the probe, is
+                    // unknown. Keep both the guard and the reservation for a
+                    // later bounded pass or startup recovery.
+                }
+            }
+        }
+        Ok(settled)
     }
     async fn claim_gc(&self, now: i64, limit: usize) -> Result<Vec<GcCandidate>, String> {
         blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
@@ -1478,17 +1752,34 @@ impl V2ObjectWriter {
             if let Ok(written) = &result {
                 complete_inflight(namespace, written.clone(), &guarded_document);
             } else {
-                remove_physical_guard(namespace, &guarded_document, &guarded_object_for_task);
+                fail_inflight(
+                    namespace,
+                    &guarded_document,
+                    &guarded_object_for_task,
+                    result
+                        .as_ref()
+                        .err()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "physical PUT failed".into()),
+                );
             }
             result
         })
         .await
         .map_err(|error| {
-            remove_inflight(namespace, document_id, &guarded_object);
+            fail_inflight(
+                namespace,
+                document_id,
+                &guarded_object,
+                format!("physical object task failed: {error}"),
+            );
             format!("physical object task failed: {error}")
         })?
         .map_err(|error| {
-            remove_inflight(namespace, document_id, &guarded_object);
+            // Keep the guard until a maintenance probe confirms that the
+            // immutable key is absent or verifies the bytes that did land.
+            // A PUT error alone does not establish either fact.
+            fail_inflight(namespace, document_id, &guarded_object, error.to_string());
             error.to_string()
         });
         let written = match physical_result {
@@ -1573,25 +1864,60 @@ mod aborted_inflight_tests {
     use crate::storage::blob::{BlobInfo, BlobVersion, FsStore};
     use crate::storage::maintenance_v2::run_gc_pass;
     use std::time::Duration;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::Notify;
+
+    #[derive(Clone, Copy)]
+    enum FailureMode {
+        Success,
+        BeforeWrite,
+        AfterWrite,
+    }
 
     struct DelayedStore {
         inner: Arc<FsStore>,
         started: Arc<Notify>,
         release: Arc<Notify>,
         finished: Arc<Notify>,
+        failure_mode: FailureMode,
+        probe_failures: Arc<AtomicUsize>,
+        put_entered: Arc<AtomicBool>,
     }
 
     #[async_trait::async_trait]
     impl BlobStore for DelayedStore {
         async fn get(&self, key: &str) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            if self.put_entered.load(Ordering::Acquire)
+                && self
+                .probe_failures
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count > 0).then_some(count - 1)
+                })
+                .is_ok()
+            {
+                return Err(crate::storage::blob::BlobError::Other(
+                    "simulated uncertain probe".into(),
+                ));
+            }
             self.inner.get(key).await
         }
 
         async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> crate::storage::blob::BlobResult<()> {
+            self.put_entered.store(true, Ordering::Release);
             self.started.notify_one();
             self.release.notified().await;
-            let result = self.inner.put(key, body, content_type).await;
+            let result = match self.failure_mode {
+                FailureMode::Success => self.inner.put(key, body, content_type).await,
+                FailureMode::BeforeWrite => Err(crate::storage::blob::BlobError::Other(
+                    "simulated failed PUT before write".into(),
+                )),
+                FailureMode::AfterWrite => {
+                    let _ = self.inner.put(key, body, content_type).await;
+                    Err(crate::storage::blob::BlobError::Other(
+                        "simulated uncertain PUT result".into(),
+                    ))
+                }
+            };
             self.finished.notify_one();
             result
         }
@@ -1615,6 +1941,173 @@ mod aborted_inflight_tests {
         fn describe(&self) -> String {
             "delayed-test-store".into()
         }
+    }
+
+    fn insert_failed_put_fixture(
+        catalog: &Catalog,
+        document_id: &str,
+        account_id: &str,
+        operation_id: &str,
+        object_id: &ObjectId,
+        body: &[u8],
+    ) -> crate::storage::catalog::CatalogResult<()> {
+        let digest = hex::encode(Sha256::digest(body));
+        let storage_key = crate::storage::blob::v2_object_key(document_id, object_id)
+            .map_err(|error| crate::storage::catalog::CatalogError::Invalid(error.to_string()))?;
+        catalog.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at) VALUES(?1,'registered','failed-put',?1,'failed-put','Failed Put','failed-put@example.test','active','generation','test',1,1)",
+                [account_id],
+            )?;
+            connection.execute(
+                "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,'failed-put',?2,'owned','Failed Put','failed-put','active',1,1,'markdown','index.md')",
+                params![document_id, account_id],
+            )?;
+            let writer_generation: String = connection.query_row(
+                "SELECT writer_generation FROM server_state WHERE id=1",
+                [],
+                |row| row.get(0),
+            )?;
+            connection.execute(
+                "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,'failed-put','failed-put-request','journal_append',?3,'prepared',?4,0,'{\"version\":1}',1,1,9999999999999)",
+                params![operation_id, document_id, digest, writer_generation],
+            )?;
+            connection.execute(
+                "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,journal_epoch,first_sequence,last_sequence) VALUES(?1,?2,?3,'journal_segment','allocated',?4,1,NULL,?5,?6,1,0,1,1)",
+                params![document_id, object_id.as_str(), storage_key, digest, body.len() as i64, operation_id],
+            )?;
+            connection.execute(
+                "UPDATE documents SET reserved_bytes=?1 WHERE id=?2",
+                params![body.len() as i64, document_id],
+            )?;
+            connection.execute(
+                "UPDATE accounts SET reserved_bytes=?1 WHERE id=?2",
+                params![body.len() as i64, account_id],
+            )?;
+            connection.execute(
+                "UPDATE server_state SET reserved_bytes=?1 WHERE id=1",
+                [body.len() as i64],
+            )?;
+            Ok(())
+        })
+    }
+
+    async fn run_cancelled_failed_put(mode: FailureMode, expect_available: bool) {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("v2 catalog"));
+        let document_id = "failed-put-document";
+        let account_id = "failed-put-account";
+        let operation_id = "failed-put-operation";
+        let object_id = ObjectId::parse("abcdefabcdefabcdefabcdefabcdefab").expect("object id");
+        let body = b"cancelled failed physical payload".to_vec();
+        insert_failed_put_fixture(
+            catalog.as_ref(),
+            document_id,
+            account_id,
+            operation_id,
+            &object_id,
+            &body,
+        )
+        .expect("admitted allocation");
+
+        let root = tempfile::tempdir().expect("object root");
+        let inner = Arc::new(FsStore::new(root.path(), false));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let finished = Arc::new(Notify::new());
+        let probe_failures = Arc::new(AtomicUsize::new(if expect_available { 1 } else { 0 }));
+        let put_entered = Arc::new(AtomicBool::new(false));
+        let blobs: Arc<dyn BlobStore> = Arc::new(DelayedStore {
+            inner: Arc::clone(&inner),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            finished: Arc::clone(&finished),
+            failure_mode: mode,
+            probe_failures,
+            put_entered,
+        });
+        let namespace = Arc::as_ptr(&catalog) as usize;
+        let writer = V2ObjectWriter::new(Arc::clone(&catalog), Arc::clone(&blobs));
+        let delayed_body = body.clone();
+        let delayed_object = object_id.clone();
+        let delayed_document = document_id.to_owned();
+        let mut put_task = tokio::spawn(async move {
+            writer
+                .write_allocated(
+                    &delayed_document,
+                    delayed_object,
+                    delayed_body,
+                    "application/octet-stream",
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                _ = started.notified() => Ok::<(), String>(()),
+                result = &mut put_task => Err(format!("writer exited before failed PUT: {result:?}")),
+            }
+        })
+        .await
+        .expect("failed PUT did not start")
+        .expect("failed PUT admission failed");
+        put_task.abort();
+        catalog
+            .with_connection(|connection| {
+                let now = now_millis();
+                connection.execute(
+                    "UPDATE operations SET state='aborted',result_json='{\"version\":1,\"aborted\":true}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE id=?3",
+                    params![now, now.saturating_add(RECEIPT_RETENTION_MS), operation_id],
+                )?;
+                Ok(())
+            })
+            .expect("cancel operation");
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), finished.notified())
+            .await
+            .expect("failed PUT did not finish");
+
+        let adapter = V2GcCatalogAdapter::new(Arc::clone(&catalog));
+        let report = run_gc_pass(&adapter, blobs.as_ref(), now_millis())
+            .await
+            .expect("online failed PUT recovery");
+        if expect_available {
+            assert_eq!(report.inflight_settled, 0, "ambiguous probe remains charged");
+            let retry_report = run_gc_pass(&adapter, blobs.as_ref(), now_millis())
+                .await
+                .expect("online failed PUT retry");
+            assert_eq!(retry_report.inflight_settled, 1);
+        } else {
+            assert_eq!(report.inflight_settled, 1);
+        }
+        assert!(!inflight_active(namespace, document_id, object_id.as_str()));
+        let state: Option<(String, i64, i64, i64)> = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT o.state,o.byte_length,d.stored_bytes,d.reserved_bytes FROM objects o JOIN documents d ON d.id=o.document_id WHERE o.document_id=?1 AND o.id=?2",
+                        params![document_id, object_id.as_str()],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .optional()
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("failed PUT state");
+        if expect_available {
+            assert_eq!(state, Some(("available".into(), body.len() as i64, body.len() as i64, 0)));
+            let key = crate::storage::blob::v2_object_key(document_id, &object_id).expect("key");
+            assert_eq!(blobs.get(&key).await.expect("uncertain PUT body"), body);
+        } else {
+            assert!(state.is_none(), "confirmed absent PUT must release allocation");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_failed_put_releases_only_after_absence_probe() {
+        run_cancelled_failed_put(FailureMode::BeforeWrite, false).await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_uncertain_put_settles_verified_body() {
+        run_cancelled_failed_put(FailureMode::AfterWrite, true).await;
     }
 
     #[tokio::test]
@@ -1669,6 +2162,9 @@ mod aborted_inflight_tests {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
             finished: Arc::clone(&finished),
+            failure_mode: FailureMode::Success,
+            probe_failures: Arc::new(AtomicUsize::new(0)),
+            put_entered: Arc::new(AtomicBool::new(false)),
         });
         let namespace = Arc::as_ptr(&catalog) as usize;
         let writer = V2ObjectWriter::new(Arc::clone(&catalog), Arc::clone(&blobs));
@@ -1720,7 +2216,15 @@ mod aborted_inflight_tests {
             .await
             .expect("aborted write is reclaimed");
         assert_eq!(report.inflight_settled, 1);
-        assert_eq!(report.objects_deleted, 1);
+        assert_eq!(report.objects_deleted, 0, "newly settled aborted bytes observe their grace period");
+        let deletion_report = run_gc_pass(
+            &adapter,
+            blobs.as_ref(),
+            now_millis().saturating_add(GC_RETRY_MS + 1),
+        )
+        .await
+        .expect("settled aborted write is eventually deleted");
+        assert_eq!(deletion_report.objects_deleted, 1);
         assert!(!inflight_active(namespace, document_id, object_id.as_str()));
         let counters: (i64, i64, i64) = catalog
             .with_connection(|connection| {
@@ -1824,7 +2328,7 @@ mod stage_heartbeat_tests {
                 )?;
                 connection.execute(
                     "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,?3,'stage',?4,'old-generation',?5,?6)",
-                    params![document_id, object_id, operation_id, now - 100_000, now + 70_000],
+                    params![document_id, object_id, operation_id, operation_id, now - 100_000, now + 70_000],
                 )?;
                 Ok(())
             })
