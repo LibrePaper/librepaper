@@ -60,6 +60,7 @@ pub use pressure::HardPressurePlan;
 pub(crate) use publication::{publication_actor_key, PublicationWork};
 pub use read_objects::{
     CheckpointReadLease, CheckpointReadSet, ObjectReadLease, PublicationReadLease,
+    SourceAssetReadLease,
 };
 pub use retention::RetentionPass;
 pub use room_edits::RoomEditReservation;

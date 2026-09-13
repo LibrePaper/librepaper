@@ -194,24 +194,45 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, None).await;
-        // This legacy path addresses the editable project's input-asset
-        // namespace. Public display assets are served only through the
-        // publication manifest route below; a guessed source digest must not
-        // grant a reader access to it.
+        // The catalogue repeats the live editor check inside the lease
+        // transaction.  Route-level Viewer state is only an early rejection;
+        // it is never permission to construct a mutable storage key.
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
-        let storage_id = if entry.storage_id.is_empty() {
-            slug
-        } else {
-            entry.storage_id.as_str()
+        let Some(catalog) = self.store.catalog.clone() else {
+            return plain(503, "local catalogue unavailable");
         };
-        let key = crate::storage::blob::asset_key(storage_id, sha);
-        crate::server::cost::blob_response(
+        let actor = crate::document::store::MutationActor {
+            account_id: who.id.id.clone(),
+            owner_key: who.key.clone(),
+            session_generation: who.id.session_generation.clone(),
+            link_hash: who.link.clone(),
+            policy_editor: self.publishers.allows(&who.id.handle),
+            automation: who.automation,
+            unowned_publisher: false,
+        };
+        let lease = match catalog
+            .execute_catalog(4096 + slug.len() + sha.len(), {
+                let slug = slug.to_owned();
+                let sha = sha.to_owned();
+                move |catalog| {
+                    catalog.acquire_source_asset_read(&slug, &sha, &actor, crate::storage::catalog::unix_millis())
+                }
+            })
+            .await
+        {
+            Ok(lease) => lease,
+            Err(crate::storage::catalog::CatalogExecError::Catalog(
+                crate::storage::catalog::CatalogError::NotFound
+                | crate::storage::catalog::CatalogError::Refused(_, _),
+            )) => return plain(404, "not found"),
+            Err(_) => return plain(503, "catalogue temporarily unavailable"),
+        };
+        crate::server::cost::leased_blob_response(
             &self.cost,
             self.store.blobs.clone(),
-            key,
-            sha,
+            lease,
             headers,
             false,
         )

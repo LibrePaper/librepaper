@@ -995,6 +995,235 @@ pub(super) async fn blob_response(
     response
 }
 
+struct SourceAssetHeartbeat {
+    lease: Arc<tokio::sync::Mutex<crate::storage::catalog::SourceAssetReadLease>>,
+    lost: Arc<std::sync::atomic::AtomicBool>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl SourceAssetHeartbeat {
+    fn start(lease: crate::storage::catalog::SourceAssetReadLease) -> Self {
+        let lease = Arc::new(tokio::sync::Mutex::new(lease));
+        let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_lease = lease.clone();
+        let task_lost = lost.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let mut lease = task_lease.lock().await;
+                if lease
+                    .renew(crate::storage::catalog::unix_millis())
+                    .await
+                    .is_err()
+                {
+                    task_lost.store(true, std::sync::atomic::Ordering::Release);
+                    return;
+                }
+            }
+        });
+        Self {
+            lease,
+            lost,
+            task: Some(task),
+        }
+    }
+
+    async fn recheck(&self) -> Result<(), crate::storage::catalog::CatalogExecError> {
+        if self.lost.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(crate::storage::catalog::CatalogExecError::Catalog(
+                crate::storage::catalog::CatalogError::Conflict(
+                    "source asset read lease was lost".into(),
+                ),
+            ));
+        }
+        let mut lease = self.lease.lock().await;
+        match lease.recheck(crate::storage::catalog::unix_millis()).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.lost.store(true, std::sync::atomic::Ordering::Release);
+                Err(error)
+            }
+        }
+    }
+
+    async fn finish(mut self) -> Result<(), crate::storage::catalog::CatalogExecError> {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        let mut lease = self.lease.lock().await;
+        lease.finish().await
+    }
+}
+
+impl Drop for SourceAssetHeartbeat {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+/// Serve a source asset while its catalogue lease remains attached to the
+/// response stream.  Source assets cannot use `blob_response`: that helper
+/// accepts a caller-shaped storage key, while this path must retain the
+/// descriptor selected by the atomic catalogue read.
+pub(super) async fn leased_blob_response(
+    meter: &Arc<CostMeter>,
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
+    lease: crate::storage::catalog::SourceAssetReadLease,
+    headers: &HeaderMap,
+    head: bool,
+) -> Reply {
+    let key = lease.object.storage_key.clone();
+    let digest = lease.object.digest.clone();
+    let expected_length = lease.object.byte_length;
+    let heartbeat = SourceAssetHeartbeat::start(lease);
+    if heartbeat.recheck().await.is_err() {
+        let _ = heartbeat.finish().await;
+        return plain(404, "not found");
+    }
+    let length = match blobs.length(&key).await {
+        Ok(length) => length,
+        Err(crate::storage::blob::BlobError::NotFound) => {
+            let _ = heartbeat.finish().await;
+            return plain(404, "not found");
+        }
+        Err(_) => {
+            let _ = heartbeat.finish().await;
+            return plain(503, "storage temporarily unavailable");
+        }
+    };
+    if expected_length != Some(length as i64) || heartbeat.recheck().await.is_err() {
+        let _ = heartbeat.finish().await;
+        return plain(503, "storage temporarily unavailable");
+    }
+    let etag = format!("\"{digest}\"");
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|tag| tag.trim() == etag || tag.trim() == "*")
+        })
+    {
+        let _ = heartbeat.finish().await;
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::NOT_MODIFIED;
+        set(&mut response, "etag", &etag);
+        return response;
+    }
+    let range = headers.get(header::RANGE).and_then(|h| h.to_str().ok());
+    let range = if headers
+        .get(header::IF_RANGE)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|value| value != etag)
+    {
+        None
+    } else {
+        range
+    };
+    let (start, end, partial) = match range {
+        None => (0, length, false),
+        Some(range) => match byte_range(range, length) {
+            Some((start, end)) => (start, end, true),
+            None => {
+                let _ = heartbeat.finish().await;
+                let mut response = plain(416, "range not satisfiable");
+                set(&mut response, "content-range", &format!("bytes */{length}"));
+                return response;
+            }
+        },
+    };
+    let reservation = if head {
+        let _ = heartbeat.finish().await;
+        None
+    } else {
+        match meter.reserve(end - start, false) {
+            Some(reservation) => Some(reservation),
+            None => {
+                let _ = heartbeat.finish().await;
+                return refusal("transfer_budget", "deployment");
+            }
+        }
+    };
+    let body = if head {
+        Body::empty()
+    } else {
+        let stream = futures_util::stream::unfold(
+            (Some(heartbeat), blobs, key, start),
+            move |(heartbeat, blobs, key, offset)| async move {
+                let Some(heartbeat) = heartbeat else {
+                    return None;
+                };
+                if offset >= end {
+                    return match heartbeat.finish().await {
+                        Ok(()) => None,
+                        Err(error) => Some((
+                            Err(std::io::Error::other(error.to_string())),
+                            (None, blobs, key, end),
+                        )),
+                    };
+                }
+                if let Err(error) = heartbeat.recheck().await {
+                    let _ = heartbeat.finish().await;
+                    return Some((
+                        Err(std::io::Error::other(error.to_string())),
+                        (None, blobs, key, end),
+                    ));
+                }
+                let next = offset.saturating_add(64 * 1024).min(end);
+                match blobs.get_range(&key, offset..next).await {
+                    Ok(bytes) => match heartbeat.recheck().await {
+                        Ok(()) => Some((
+                            Ok::<_, std::io::Error>(bytes),
+                            (Some(heartbeat), blobs, key, next),
+                        )),
+                        Err(error) => {
+                            let _ = heartbeat.finish().await;
+                            Some((
+                                Err(std::io::Error::other(error.to_string())),
+                                (None, blobs, key, end),
+                            ))
+                        }
+                    },
+                    Err(error) => {
+                        let _ = heartbeat.finish().await;
+                        Some((
+                            Err(std::io::Error::other(error.to_string())),
+                            (None, blobs, key, end),
+                        ))
+                    }
+                }
+            },
+        );
+        Body::from_stream(stream)
+    };
+    let mut response = Response::new(body);
+    *response.status_mut() = if partial {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+    set(&mut response, "content-type", "application/octet-stream");
+    set(&mut response, "content-length", &(end - start).to_string());
+    set(&mut response, "accept-ranges", "bytes");
+    set(&mut response, "etag", &etag);
+    set(&mut response, "cache-control", "private, no-store");
+    if partial {
+        set(
+            &mut response,
+            "content-range",
+            &format!("bytes {start}-{}/{length}", end - 1),
+        );
+    }
+    if let Some(reservation) = reservation {
+        attach_reservation(&mut response, reservation);
+    }
+    response
+}
+
 fn byte_range(value: &str, length: u64) -> Option<(u64, u64)> {
     if length == 0 {
         return None;
