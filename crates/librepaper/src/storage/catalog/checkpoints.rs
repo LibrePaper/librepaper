@@ -419,115 +419,11 @@ impl Catalog {
         checkpoints: &[Checkpoint],
         actor: Option<MutationAuthority<'_>>,
     ) -> CatalogResult<()> {
-        self.insert_checkpoints_atomic_with_sources(checkpoints, actor, &[])
-    }
-
-    pub fn insert_checkpoints_atomic_with_sources(
-        &self,
-        checkpoints: &[Checkpoint],
-        actor: Option<MutationAuthority<'_>>,
-        sources: &[SourceHistoryRecord],
-    ) -> CatalogResult<()> {
-        self.insert_checkpoints_atomic_with_sources_and_lease(checkpoints, actor, sources, None)
-    }
-
-    pub fn insert_checkpoints_atomic_with_sources_and_lease(
-        &self,
-        checkpoints: &[Checkpoint],
-        actor: Option<MutationAuthority<'_>>,
-        sources: &[SourceHistoryRecord],
-        lease_operation: Option<&str>,
-    ) -> CatalogResult<()> {
-        self.insert_checkpoints_atomic_with_sources_assets_and_quota(
-            checkpoints,
-            actor,
-            sources,
-            &[],
-            lease_operation,
-            -1,
-            -1,
-        )
-    }
-
-    pub fn insert_checkpoints_atomic_with_sources_and_quota(
-        &self,
-        checkpoints: &[Checkpoint],
-        actor: Option<MutationAuthority<'_>>,
-        sources: &[SourceHistoryRecord],
-        lease_operation: Option<&str>,
-        owner_limit: i64,
-        total_limit: i64,
-    ) -> CatalogResult<()> {
-        self.insert_checkpoints_atomic_with_sources_assets_and_quota(
-            checkpoints,
-            actor,
-            sources,
-            &[],
-            lease_operation,
-            owner_limit,
-            total_limit,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn insert_checkpoints_atomic_with_sources_assets_and_quota(
-        &self,
-        checkpoints: &[Checkpoint],
-        actor: Option<MutationAuthority<'_>>,
-        sources: &[SourceHistoryRecord],
-        assets: &[CheckpointAssetRef],
-        lease_operation: Option<&str>,
-        owner_limit: i64,
-        total_limit: i64,
-    ) -> CatalogResult<()> {
         if checkpoints.is_empty() {
             return Ok(());
         }
         self.immediate(|tx| {
             let first = checkpoints.first().ok_or(CatalogError::NotFound)?;
-            let document_id: String = tx
-                .query_row(
-                    "SELECT d.id FROM documents d JOIN accounts owner ON owner.id=d.owner_id AND owner.status='active' WHERE d.slug=?1 AND d.status<>'deleting'",
-                    [&first.slug],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(CatalogError::from)?
-                .ok_or(CatalogError::NotFound)?;
-            if let Some(operation) = lease_operation {
-                Self::require_active_source_history_lease_tx(tx, &document_id, operation)?;
-            }
-            if owner_limit >= 0 {
-                let used: i64 = tx
-                    .query_row(
-                        "SELECT stored_bytes + reserved_bytes FROM accounts
-                         WHERE id=(SELECT owner_id FROM documents WHERE id=?1)",
-                        [&document_id],
-                        |row| row.get(0),
-                    )
-                    .map_err(CatalogError::from)?;
-                if used > owner_limit {
-                    return Err(CatalogError::refused(
-                        CatalogRefusal::OwnerBytes,
-                        "owner storage limit is already exceeded",
-                    ));
-                }
-            }
-            if total_limit >= 0 {
-                let used: i64 = tx
-                    .query_row(
-                        "SELECT stored_bytes + reserved_bytes FROM server_state WHERE id=1",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .map_err(CatalogError::from)?;
-                if used > total_limit {
-                    return Err(CatalogError::refused(
-                        CatalogRefusal::DeploymentBytes,
-                        "deployment storage limit is already exceeded",
-                    ));
-                }
-            }
             if let Some(authority) = actor {
                 if !Self::mutation_authorized_in_tx(tx, &first.slug, authority, "editor")? {
                     return Err(CatalogError::refused(
@@ -543,19 +439,6 @@ impl Catalog {
                     ));
                 }
                 Self::insert_checkpoint_v2_tx(tx, checkpoint)?;
-            }
-            let last = checkpoints.last().ok_or(CatalogError::NotFound)?;
-            if !sources.is_empty() {
-                Self::insert_source_history_tx(tx, &document_id, &last.sha, sources)?;
-            }
-            if !assets.is_empty() {
-                Self::insert_checkpoint_assets_v2_tx(tx, &document_id, &last.sha, assets)?;
-            }
-            // Limits are checked by the physical admission operation.  Keep
-            // this compatibility boundary strict instead of reading a second
-            // quota ledger or guessing from logical checkpoint size.
-            if owner_limit >= 0 || total_limit >= 0 {
-                let _ = (owner_limit, total_limit);
             }
             Ok(())
         })
@@ -728,78 +611,6 @@ impl Catalog {
         )
         .map_err(CatalogError::from)?;
         Ok(())
-    }
-
-    fn insert_checkpoint_assets_v2_tx(
-        tx: &Transaction<'_>,
-        document_id: &str,
-        checkpoint_id: &str,
-        assets: &[CheckpointAssetRef],
-    ) -> CatalogResult<()> {
-        for asset in assets {
-            if asset.bytes < 0 {
-                return Err(CatalogError::Invalid(
-                    "negative checkpoint asset size".into(),
-                ));
-            }
-            let object_id: String = tx
-                .query_row(
-                    "SELECT id FROM objects WHERE document_id=?1 AND storage_key=?2
-                     AND state='available' AND kind IN ('asset','publication_asset')
-                     AND byte_length=?3",
-                    params![document_id, asset.object_key, asset.bytes],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(CatalogError::from)?
-                .ok_or_else(|| {
-                    CatalogError::Conflict("checkpoint asset is not available".into())
-                })?;
-            tx.execute(
-                "INSERT OR IGNORE INTO checkpoint_objects(document_id,checkpoint_id,object_id)
-                 VALUES(?1,?2,?3)",
-                params![document_id, checkpoint_id, object_id],
-            )
-            .map_err(CatalogError::from)?;
-        }
-        Ok(())
-    }
-
-    pub fn admit_checkpoint(
-        &self,
-        _slug: &str,
-        _now: i64,
-        _automatic: bool,
-    ) -> CatalogResult<bool> {
-        Err(CatalogError::Invalid(
-            "checkpoint admission is part of the v2 operation transaction".into(),
-        ))
-    }
-
-    pub fn admit_checkpoint_with_limits(
-        &self,
-        _slug: &str,
-        _now: i64,
-        _automatic: bool,
-        _owner_limit: i64,
-        _deployment_limit: i64,
-    ) -> CatalogResult<bool> {
-        Err(CatalogError::Invalid(
-            "checkpoint admission is part of the v2 operation transaction".into(),
-        ))
-    }
-
-    pub fn admit_checkpoint_token_with_limits(
-        &self,
-        _slug: &str,
-        _now: i64,
-        _automatic: bool,
-        _owner_limit: i64,
-        _deployment_limit: i64,
-    ) -> CatalogResult<Option<(String, i64)>> {
-        Err(CatalogError::Invalid(
-            "checkpoint admission is part of the v2 operation transaction".into(),
-        ))
     }
 
     pub fn checkpoint(&self, slug: &str, sha: &str) -> CatalogResult<Option<Checkpoint>> {

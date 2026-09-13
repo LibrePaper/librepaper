@@ -4,13 +4,11 @@
 //! destructive reclamation, captures one SQLite snapshot revision, copies the
 //! exact available object set, and writes its completion manifest last.
 //!
-//! The v1 backup fixture categories are covered here through their v2
-//! boundaries: authoritative catalog-row digest coverage by the streamed
+//! Tests cover authoritative catalog-row digests through the streamed
 //! catalog verifier, compacted-manifest/object closure by the inventory
 //! digest and object round trip, lifecycle-transition refusal by the prepared
 //! operation fence, and identity/secrets/source restoration by the complete
-//! restore tests. The old deployment-wide `storage_id` fixtures remain only
-//! as an explicit v1 converter module and are not a serving fallback.
+//! restore tests.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -2151,6 +2149,146 @@ pub async fn backup_cli_v2(storage: crate::storage::StorageOptions, output: Stri
     );
 }
 
+/// Verify a complete native backup before a destructive seed reset. The caller
+/// must hold the deployment writer lock throughout verification and reset.
+/// Restore into an isolated temporary deployment to reuse all object, secret,
+/// catalog, and reference checks, then compare logical catalog rows. Only this
+/// backup's own operation row differs legitimately (committed in the source,
+/// aborted in the verified restore); all data and other operations must match.
+pub(crate) async fn verify_seed_backup(
+    catalog: &Arc<Catalog>,
+    paths: &DeploymentPaths,
+    backup: &Path,
+) -> Result<(), String> {
+    let (root, backup_id) = resolve_backup_source(backup)?;
+    let backup_store = FsStore::new(root, false);
+    let manifest_bytes = backup_store
+        .get(&backup_manifest_key(&backup_id))
+        .await
+        .map_err(|error| error.to_string())?;
+    let manifest: BackupManifestV2 =
+        serde_json::from_slice(&manifest_bytes).map_err(|error| error.to_string())?;
+    manifest
+        .validate_for_backup(&backup_id)
+        .map_err(|error| error.to_string())?;
+    let temporary = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let restored = DeploymentPaths::local(temporary.path().join("verified"));
+    restore_backup(
+        &LocalV2RestoreCatalog::new(restored.clone()),
+        &backup_store,
+        Arc::new(FsStore::new(&restored.objects, false)),
+        &backup_id,
+    )
+    .await
+    .map_err(|error| format!("seed backup verification failed: {error}"))?;
+    // Secret rotations also invalidate a backup even when no catalog row changed.
+    for file in std::iter::once(&manifest.identity).chain(manifest.secrets.iter()) {
+        let current = safe_deployment_path(&paths.deployment, &file.relative)?;
+        if digest_file(&current)? != file.digest {
+            return Err("seed backup is not fresh for deployment identity or secrets".into());
+        }
+    }
+    if secret_payloads(paths)
+        .map_err(|error| error.to_string())?
+        .len()
+        != manifest.secrets.len()
+    {
+        return Err("seed backup is not fresh for deployment secrets".into());
+    }
+    let current = temporary.path().join("current.db");
+    let destination = current.clone();
+    catalog
+        .execute_catalog(512, move |catalog| {
+            catalog.write_backup_snapshot(&destination)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    let manifest_digest = hex::encode(Sha256::digest(&manifest_bytes));
+    tokio::task::spawn_blocking(move || {
+        compare_seed_catalogs(
+            &current,
+            &restored.catalog,
+            &manifest.operation_id,
+            &manifest_digest,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn compare_seed_catalogs(
+    current: &Path,
+    restored: &Path,
+    operation_id: &str,
+    manifest_digest: &str,
+) -> Result<(), String> {
+    let compare = || -> rusqlite::Result<bool> {
+        let connection = Connection::open_with_flags(current, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.execute(
+            "ATTACH DATABASE ?1 AS verified",
+            [restored.to_string_lossy().as_ref()],
+        )?;
+        let committed: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM main.operations WHERE id=?1 AND kind='backup'
+             AND state='committed' AND json_extract(result_json,'$.manifest_digest')=?2)",
+            rusqlite::params![operation_id, manifest_digest],
+            |row| row.get(0),
+        )?;
+        if !committed {
+            return Ok(false);
+        }
+        let current_version: i64 =
+            connection.query_row("PRAGMA main.user_version", [], |row| row.get(0))?;
+        let restored_version: i64 =
+            connection.query_row("PRAGMA verified.user_version", [], |row| row.get(0))?;
+        if current_version != restored_version {
+            return Ok(false);
+        }
+        let schema_matches: bool = connection.query_row(
+            "SELECT NOT EXISTS(SELECT type,name,tbl_name,sql FROM main.sqlite_schema
+             EXCEPT SELECT type,name,tbl_name,sql FROM verified.sqlite_schema)
+             AND NOT EXISTS(SELECT type,name,tbl_name,sql FROM verified.sqlite_schema
+             EXCEPT SELECT type,name,tbl_name,sql FROM main.sqlite_schema)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !schema_matches {
+            return Ok(false);
+        }
+        let mut tables = connection
+            .prepare("SELECT name FROM main.sqlite_schema WHERE type='table' ORDER BY name")?;
+        let names = tables.query_map([], |row| row.get::<_, String>(0))?;
+        for name in names {
+            let name = name?;
+            let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+            let filter = if name == "operations" {
+                " WHERE NOT(id=?1 AND kind='backup')"
+            } else {
+                ""
+            };
+            let current_rows = format!("SELECT * FROM main.{quoted}{filter}");
+            let restored_rows = format!("SELECT * FROM verified.{quoted}{filter}");
+            let sql = format!(
+                "SELECT NOT EXISTS({current_rows} EXCEPT {restored_rows}) AND NOT EXISTS({restored_rows} EXCEPT {current_rows})"
+            );
+            let same: bool = if name == "operations" {
+                connection.query_row(&sql, [operation_id], |row| row.get(0))?
+            } else {
+                connection.query_row(&sql, [], |row| row.get(0))?
+            };
+            if !same {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    if compare().map_err(|error| error.to_string())? {
+        Ok(())
+    } else {
+        Err("seed backup is not fresh for the current catalogue state".into())
+    }
+}
+
 pub async fn restore_cli_v2(backup: String, destination: String) {
     let paths = DeploymentPaths::local(&destination);
     let (backup_root, backup_id) =
@@ -2312,7 +2450,6 @@ mod tests {
                 .map(|(key, body)| crate::storage::blob::BlobInfo {
                     key: key.clone(),
                     size: body.len() as i64,
-                    version: crate::storage::blob::version_of(body),
                 })
                 .collect())
         }
@@ -3611,6 +3748,43 @@ mod tests {
             manifest.catalog_digest,
             "the completion manifest authenticates every authoritative catalog row"
         );
+
+        let backup_point = backup_root.path().join(BACKUP_PREFIX_V2).join("roundtrip");
+        verify_seed_backup(&source_catalog, &source_paths, &backup_point)
+            .await
+            .expect("the committed native backup is fresh despite its lifecycle row changing");
+        // Deliberately keep catalog_revision unchanged: row comparison must
+        // detect account and document/source metadata changes on its own.
+        for (change, undo) in [
+            (
+                "UPDATE accounts SET display_name='Changed' WHERE id='account-roundtrip'",
+                "UPDATE accounts SET display_name='Roundtrip' WHERE id='account-roundtrip'",
+            ),
+            (
+                "UPDATE documents SET main_path='changed.md' WHERE id='document-roundtrip'",
+                "UPDATE documents SET main_path='index.md' WHERE id='document-roundtrip'",
+            ),
+        ] {
+            source_catalog
+                .with_connection(|connection| {
+                    assert_eq!(connection.execute(change, [])?, 1);
+                    Ok(())
+                })
+                .expect("change current state");
+            let error = verify_seed_backup(&source_catalog, &source_paths, &backup_point)
+                .await
+                .expect_err("a changed deployment cannot use an older reset point");
+            assert!(error.contains("not fresh"), "{error}");
+            source_catalog
+                .with_connection(|connection| {
+                    assert_eq!(connection.execute(undo, [])?, 1);
+                    Ok(())
+                })
+                .expect("restore fixture state");
+        }
+        verify_seed_backup(&source_catalog, &source_paths, &backup_point)
+            .await
+            .expect("the exact catalog state remains verifiable");
 
         let restore_paths = DeploymentPaths::local(restore_root.path().to_path_buf());
         let restore_adapter = LocalV2RestoreCatalog::new(restore_paths.clone());

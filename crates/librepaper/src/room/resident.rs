@@ -263,7 +263,6 @@ mod tests {
                     slug: "probe".into(),
                     source: "alpha".into(),
                     source_format: "markdown".into(),
-                    owner: "alice".into(),
                     owner_id: "alice".into(),
                     ..Default::default()
                 },

@@ -6,10 +6,8 @@ use serde_json::json;
 use super::*;
 use crate::auth::{Policy, HOST_COOKIE_PREFIX};
 use crate::config::Configuration;
-use crate::document::store::load_index;
 use crate::room::{rate_key, Message, RoomSet};
 use crate::server::{client_address, local_path};
-use crate::storage::blob::{room_key, BlobError, FsStore};
 
 async fn rendered_publication_id(base: &str, slug: &str) -> String {
     let published = publish_display(
@@ -38,15 +36,14 @@ async fn comments_on_an_unknown_document_are_refused() {
     assert_eq!(status, 404);
     let (status, _) = get_json(&server.url, "/api/documents/no-such-doc/comments").await;
     assert_eq!(status, 404);
-    assert!(matches!(
-        server
-            .instance
-            .rooms
-            .blobs
-            .get(&room_key("no-such-doc"))
-            .await,
-        Err(BlobError::NotFound)
-    ));
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    assert!(catalog.document("no-such-doc").unwrap().is_none());
+    let annotations: i64 = catalog
+        .with_connection(|connection| {
+            Ok(connection.query_row("SELECT count(*) FROM annotations", [], |row| row.get(0))?)
+        })
+        .unwrap();
+    assert_eq!(annotations, 0);
 }
 
 // A next= that starts with two slashes is an absolute URL to a browser, and
@@ -90,20 +87,16 @@ fn forwarded_for_is_only_believed_from_configured_proxies() {
     );
 }
 
-// An index that exists but cannot be parsed is not an empty store: starting
-// empty would present every stored document as gone and let the next publish
-// overwrite the real index.
-#[tokio::test]
-async fn unreadable_index_is_not_treated_as_empty() {
+// Corrupt catalogue bytes must never be treated as an empty deployment.
+#[test]
+fn unreadable_catalog_is_not_treated_as_empty() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("index.json"), "{not json").unwrap();
-    assert!(
-        load_index(&FsStore::new(dir.path(), true)).await.is_err(),
-        "a corrupt index was accepted as an empty store"
-    );
-    let empty = tempfile::tempdir().unwrap();
-    let (entries, at) = load_index(&FsStore::new(empty.path(), true)).await.unwrap();
-    assert!(entries.is_empty() && at.is_empty());
+    let path = dir.path().join("catalog.sqlite");
+    std::fs::write(&path, b"not a SQLite database").unwrap();
+    assert!(crate::storage::catalog::Catalog::open(&path).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), b"not a SQLite database");
+    let fresh = crate::storage::catalog::Catalog::open(dir.path().join("fresh.sqlite")).unwrap();
+    assert_eq!(fresh.totals().unwrap(), (0, 0));
 }
 
 // Rule A: a cookie-authenticated request to a state-changing route must be
@@ -501,23 +494,29 @@ async fn logout_is_post_only() {
 // has to know who wrote what.
 #[tokio::test]
 async fn comment_author_is_persisted_but_never_sent_to_clients() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = std::sync::Arc::new(Configuration::default());
-    let rooms = RoomSet::new(
-        std::sync::Arc::new(FsStore::new(dir.path(), true)),
-        config.clone(),
-    );
-    let current = rooms.get("doc-1").await;
+    let server = new_test_server().await;
+    let slug = text(&publish_test_document(&server.url).await, "slug");
+    let publication_id = rendered_publication_id(&server.url, &slug).await;
+    let current = server.instance.rooms.get(&slug).await;
 
     let incoming = Message {
         kind: "comment".into(),
-        publication_id: "rendered-publication".into(),
+        publication_id,
         exact: "hello".into(),
         body: "hi".into(),
         ..Message::default()
     };
     let (result, ok) = current
-        .apply(incoming, "", "github:vincent", "", None, false)
+        .apply_command(
+            incoming.into_command().unwrap(),
+            "127.0.0.1",
+            "github:vincent",
+            "",
+            None,
+            true,
+            "github:vincent",
+            "test-session-generation",
+        )
         .await;
     assert!(ok, "comment was refused: {result}");
     // A broadcast marshals the comment directly; it must carry no author.
@@ -527,9 +526,11 @@ async fn comment_author_is_persisted_but_never_sent_to_clients() {
     );
 
     // A fresh room, as a restart would see, still knows who wrote it.
-    let reloaded = RoomSet::new(std::sync::Arc::new(FsStore::new(dir.path(), true)), config)
-        .get("doc-1")
-        .await;
+    let store = server.instance.store.clone();
+    let reopened = RoomSet::new(store.blobs.clone(), store.config.clone());
+    reopened.attach_store(store.clone());
+    super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
+    let reloaded = reopened.get(&slug).await;
     let snapshot = reloaded.snapshot().await;
     assert_eq!(snapshot.len(), 1);
     assert_eq!(

@@ -28,8 +28,7 @@ pub struct Reply {
     /// Who actually posted this reply -- a github: or visitor: key, or "" for a
     /// caller with neither -- so a delete can be restricted to it. Never
     /// serialized: a reply is marshaled directly into broadcasts, snapshots and
-    /// REST responses, none of which should carry it; `to_stored` below is the
-    /// only shape that puts it on disk, and loading reads it back.
+    /// REST responses. The catalog stores this private attribution separately.
     #[serde(default, skip_serializing)]
     pub author: String,
 }
@@ -245,50 +244,6 @@ pub struct BatchCaller<'a> {
 /// Refusal of the entire assistant pass, before any annotation is written.
 #[derive(Clone, Debug)]
 pub struct BatchRefusal(pub String);
-
-/// What lands on disk, one object per document. Author is excluded from a
-/// comment's own JSON so that nothing marshaling one for a client leaks it by
-/// accident; this is the one place that value is meant to travel.
-#[derive(Deserialize)]
-pub(super) struct RoomState_ {
-    #[serde(default)]
-    pub(super) seq: i64,
-    #[serde(default)]
-    pub(super) comments: Vec<Comment>,
-}
-
-pub(super) fn to_stored(items: &[Comment]) -> Value {
-    Value::Array(
-        items
-            .iter()
-            .map(|item| {
-                let mut stored = json!(item);
-                if !item.author.is_empty() {
-                    stored["author"] = json!(item.author);
-                }
-                if !item.via.is_empty() {
-                    stored["via"] = json!(item.via);
-                }
-                if !item.accept_request.is_empty() {
-                    stored["accept_request"] = json!(item.accept_request);
-                }
-                stored["replies"] = Value::Array(
-                    item.replies
-                        .iter()
-                        .map(|answer| {
-                            let mut reply = json!(answer);
-                            if !answer.author.is_empty() {
-                                reply["author"] = json!(answer.author);
-                            }
-                            reply
-                        })
-                        .collect(),
-                );
-                stored
-            })
-            .collect(),
-    )
-}
 
 /// What a caller is shown: every comment field a client ever sees, plus
 /// whether this particular caller may delete it.
@@ -534,34 +489,6 @@ pub(super) fn install_comment(state: &mut RoomState, updated: Comment) {
 }
 
 impl Room {
-    /// The comment list this room should hold after one comment is replaced,
-    /// for a room with no catalogue -- which has nothing narrower to write
-    /// than the whole list. Empty for a catalogue-backed room, which writes
-    /// the one changed row and never needs the copy.
-    pub(super) fn legacy_list_with(
-        &self,
-        state: &RoomState,
-        index: usize,
-        updated: &Comment,
-    ) -> Vec<Comment> {
-        if self.catalog.get().is_some() {
-            return Vec::new();
-        }
-        let mut list = state.comments.clone();
-        list[index] = updated.clone();
-        list
-    }
-
-    /// The same, for a comment being removed.
-    pub(super) fn legacy_list_without(&self, state: &RoomState, index: usize) -> Vec<Comment> {
-        if self.catalog.get().is_some() {
-            return Vec::new();
-        }
-        let mut list = state.comments.clone();
-        list.remove(index);
-        list
-    }
-
     /// Adds assistant suggestions against one immutable text snapshot. Bad or
     /// stale anchors are item results; admission and rate-limit failures are
     /// whole-pass refusals so a caller cannot use a batch to bypass caps.
@@ -696,16 +623,6 @@ impl Room {
             results.push(Value::Null);
             prepared.push((results.len() - 1, added));
         }
-        // The list the room would hold if the whole pass lands, for a room
-        // with no catalogue. A catalogue-backed room inserts one row per item
-        // and never needs the copy.
-        let mut legacy_list = if self.catalog.get().is_some() {
-            Vec::new()
-        } else {
-            let mut list = state.comments.clone();
-            list.extend(prepared.iter().map(|(_, added)| added.clone()));
-            list
-        };
         drop(state);
         if let Some(catalog) = self.catalog.get() {
             // Row by row, each acknowledged individually, with room state
@@ -748,21 +665,8 @@ impl Room {
                 state.seq = state.seq.max(stored.seq);
                 state.comments.push(stored);
             }
-        } else if !prepared.is_empty() {
-            // One conditional write for the whole pass, as before. It either
-            // takes every prepared suggestion or none of them, and a failure
-            // installs nothing, so an unrelated change made meanwhile is not
-            // overwritten by a snapshot assembled before it.
-            if let Err(error) = self
-                .persist_comments(next_seq, std::mem::take(&mut legacy_list))
-                .await
-            {
-                return Err(BatchRefusal(error));
-            }
-            for (slot, added) in prepared {
-                results[slot] = json!({"status":"created","id":added.id});
-                events.push(json!({"type":"comment","comment":added}));
-            }
+        } else {
+            return Err(BatchRefusal("durable catalog required".into()));
         }
         for event in events {
             let shared = self.comment_event_for(&event, "", false).await;
@@ -864,7 +768,7 @@ impl Room {
     /// sender. `author` is the caller's own author key, and `is_owner` says
     /// whether the caller owns the document this room belongs to; both come
     /// from the caller's identity and are never taken from the message itself.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn apply(
         &self,
         incoming: Message,
@@ -885,6 +789,7 @@ impl Room {
     /// Applies a command after the compatible wire adapter has validated its
     /// discriminator and operation-specific required fields.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub async fn apply_command(
         &self,
         command: Command,
@@ -1106,8 +1011,6 @@ impl Room {
                 let mut refined = target.clone();
                 refined.proposed = Some(proposed);
                 refined.body = body;
-                let prepared = self.legacy_list_with(&state, index, &refined);
-                let seq = state.seq;
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &refined) {
@@ -1115,7 +1018,7 @@ impl Room {
                         Err(error) => Err(error),
                     }
                 } else {
-                    self.persist_comments(seq, prepared).await
+                    Err("durable catalog required".into())
                 };
                 state = self.state.lock().await;
                 if persisted.is_err() {
@@ -1201,8 +1104,6 @@ impl Room {
                         String::new()
                     };
                 }
-                let prepared = self.legacy_list_with(&state, index, &decided);
-                let seq = state.seq;
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &decided) {
@@ -1210,7 +1111,7 @@ impl Room {
                         Err(error) => Err(error),
                     }
                 } else {
-                    self.persist_comments(seq, prepared).await
+                    Err("durable catalog required".into())
                 };
                 state = self.state.lock().await;
                 if persisted.is_err() {
@@ -1244,14 +1145,12 @@ impl Room {
                 // Removed from room state only once the row is gone, so a
                 // cancelled caller cannot hide a comment from this room that
                 // every other reader still has.
-                let prepared = self.legacy_list_without(&state, index);
-                let seq = state.seq;
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     delete_comment_row(catalog, &self.slug, &comment_id, mutation_actor.clone())
                         .await
                 } else {
-                    self.persist_comments(seq, prepared).await
+                    Err("durable catalog required".into())
                 };
                 state = self.state.lock().await;
                 if persisted.is_err() {
@@ -1298,8 +1197,6 @@ impl Room {
                 // reason as a resolve.
                 let mut anchored = state.comments[index].clone();
                 anchored.source = Some(anchor.clone());
-                let prepared = self.legacy_list_with(&state, index, &anchored);
-                let seq = state.seq;
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     match catalog_comment_row(&self.slug, &anchored) {
@@ -1307,7 +1204,7 @@ impl Room {
                         Err(error) => Err(error),
                     }
                 } else {
-                    self.persist_comments(seq, prepared).await
+                    Err("durable catalog required".into())
                 };
                 state = self.state.lock().await;
                 if persisted.is_err() {
@@ -1361,14 +1258,6 @@ impl Room {
                 // retry of the same request id matches that receipt rather
                 // than inserting the reply twice.
                 let target_id = state.comments[index].id.clone();
-                let prepared = if self.catalog.get().is_some() {
-                    Vec::new()
-                } else {
-                    let mut list = state.comments.clone();
-                    list[index].replies.push(added.clone());
-                    list
-                };
-                let seq = state.seq;
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     let row = crate::storage::catalog::Reply {
@@ -1399,9 +1288,7 @@ impl Room {
                     .await
                     .map(|created| added.created = created)
                 } else {
-                    self.persist_comments(seq, prepared)
-                        .await
-                        .map_err(WriteError::from)
+                    Err(WriteError::Storage("durable catalog required".into()))
                 };
                 state = self.state.lock().await;
                 if let Err(error) = persisted {
@@ -1476,7 +1363,7 @@ impl Room {
                 let output_anchor = match valid_quarto_output_anchor(raw_output_anchor.as_ref()) {
                     Some(anchor) => Some(anchor),
                     None if raw_output_anchor.is_some() => {
-                        return fail("that Quarto output anchor is not valid")
+                        return fail("that Quarto output anchor is not valid");
                     }
                     None => None,
                 };
@@ -1505,7 +1392,9 @@ impl Room {
                         || output_anchor.is_some()
                         || position.is_none()
                     {
-                        return fail("a point comment requires commenting motivation and a nonnegative position");
+                        return fail(
+                            "a point comment requires commenting motivation and a nonnegative position",
+                        );
                     }
                 } else if exact.is_empty() && spot.is_none() && output_anchor.is_none() {
                     return fail("select some text or part of a figure to comment on");
@@ -1625,13 +1514,6 @@ impl Room {
                     via: via.to_string(),
                     accept_request: String::new(),
                 };
-                let prepared = if self.catalog.get().is_some() {
-                    Vec::new()
-                } else {
-                    let mut list = state.comments.clone();
-                    list.push(added.clone());
-                    list
-                };
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.get() {
                     let row = match catalog_comment_row(&self.slug, &added) {
@@ -1689,9 +1571,7 @@ impl Room {
                         }
                     }
                 } else {
-                    self.persist_comments(next_seq, prepared)
-                        .await
-                        .map_err(WriteError::from)
+                    Err(WriteError::Storage("durable catalog required".into()))
                 };
                 if let Err(error) = persisted {
                     let (mut response, _) = fail(&error.client_message());

@@ -4,8 +4,8 @@
 //! uncompressed bytes.  This module only describes the physical representation
 //! beneath that identity: small files are one zstd object and larger files are
 //! a versioned recipe referring to independently compressed FastCDC chunks.
-//! Recipes contain raw digests and lengths rather than JSON or hexadecimal
-//! strings so their charged metadata is stable and bounded.
+//! Native JSON recipe envelopes bind those logical chunks to their immutable
+//! allocation IDs and exact stored-byte digests.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -87,16 +87,6 @@ pub enum Codec {
     ChunkedZstd = 2,
 }
 
-impl Codec {
-    fn from_wire(value: u8) -> Result<Self, EncodingError> {
-        match value {
-            1 => Ok(Self::WholeZstd),
-            2 => Ok(Self::ChunkedZstd),
-            _ => Err(EncodingError::UnsupportedCodec(value)),
-        }
-    }
-}
-
 /// A raw SHA-256 object digest and its uncompressed length.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ChunkRef {
@@ -170,7 +160,14 @@ impl SourceRecipeEnvelope {
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         self.validate()?;
-        serde_json::to_vec(self).map_err(|error| EncodingError::Worker(error.to_string()))
+        let bytes =
+            serde_json::to_vec(self).map_err(|error| EncodingError::Worker(error.to_string()))?;
+        if bytes.len() > MAX_RECIPE_BYTES {
+            return Err(EncodingError::InvalidInput(
+                "source recipe is too large".into(),
+            ));
+        }
+        Ok(bytes)
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncodingError> {
@@ -362,112 +359,7 @@ impl TreeEnvelope {
     }
 }
 
-impl Recipe {
-    pub fn encoded_len(&self) -> usize {
-        RECIPE_HEADER_LEN + self.chunks.len() * CHUNK_REF_LEN
-    }
-
-    pub fn digest(&self) -> [u8; 32] {
-        Sha256::digest(self.to_bytes()).into()
-    }
-
-    /// Serialize the compact little-endian recipe. The complete-file digest
-    /// and raw lengths make a recipe independently verifiable on read.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.encoded_len());
-        bytes.extend_from_slice(RECIPE_MAGIC);
-        bytes.extend_from_slice(&self.version.to_le_bytes());
-        bytes.extend_from_slice(&self.profile_id.to_le_bytes());
-        bytes.push(self.codec as u8);
-        bytes.push(0); // reserved flags, must remain zero in version 1
-        bytes.extend_from_slice(&self.uncompressed_len.to_le_bytes());
-        bytes.extend_from_slice(&self.file_digest);
-        bytes.extend_from_slice(&(self.chunks.len() as u32).to_le_bytes());
-        for chunk in &self.chunks {
-            bytes.extend_from_slice(&chunk.digest);
-            bytes.extend_from_slice(&chunk.length.to_le_bytes());
-        }
-        bytes
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncodingError> {
-        if bytes.len() < RECIPE_HEADER_LEN || bytes.len() > MAX_RECIPE_BYTES {
-            return Err(EncodingError::InvalidRecipe("invalid recipe length".into()));
-        }
-        if &bytes[..RECIPE_MAGIC.len()] != RECIPE_MAGIC {
-            return Err(EncodingError::InvalidRecipe("recipe magic mismatch".into()));
-        }
-        let mut cursor = RECIPE_MAGIC.len();
-        let version = read_u16(bytes, &mut cursor)?;
-        let profile_id = read_u16(bytes, &mut cursor)?;
-        let codec = Codec::from_wire(read_u8(bytes, &mut cursor)?)?;
-        if read_u8(bytes, &mut cursor)? != 0 {
-            return Err(EncodingError::InvalidRecipe(
-                "reserved recipe flags set".into(),
-            ));
-        }
-        let uncompressed_len = read_u64(bytes, &mut cursor)?;
-        if uncompressed_len > MAX_SOURCE_BYTES {
-            return Err(EncodingError::InvalidRecipe(
-                "recipe file exceeds decode limit".into(),
-            ));
-        }
-        let file_digest = read_array(bytes, &mut cursor)?;
-        let count = read_u32(bytes, &mut cursor)? as usize;
-        if version != RECIPE_VERSION || count > MAX_RECIPE_CHUNKS {
-            return Err(EncodingError::InvalidRecipe(
-                "unsupported recipe version or chunk count".into(),
-            ));
-        }
-        let expected = RECIPE_HEADER_LEN
-            .checked_add(
-                count
-                    .checked_mul(CHUNK_REF_LEN)
-                    .ok_or_else(|| EncodingError::InvalidRecipe("recipe size overflow".into()))?,
-            )
-            .ok_or_else(|| EncodingError::InvalidRecipe("recipe size overflow".into()))?;
-        if expected != bytes.len() {
-            return Err(EncodingError::InvalidRecipe(
-                "recipe has trailing or missing bytes".into(),
-            ));
-        }
-        let mut chunks = Vec::with_capacity(count);
-        let mut total = 0u64;
-        for _ in 0..count {
-            let digest = read_array(bytes, &mut cursor)?;
-            let length = read_u32(bytes, &mut cursor)?;
-            total = total
-                .checked_add(length as u64)
-                .ok_or_else(|| EncodingError::InvalidRecipe("recipe length overflow".into()))?;
-            chunks.push(ChunkRef { digest, length });
-        }
-        if total != uncompressed_len || (count == 0 && uncompressed_len != 0) {
-            return Err(EncodingError::InvalidRecipe(
-                "recipe lengths do not match file length".into(),
-            ));
-        }
-        if codec == Codec::WholeZstd && count != 1 {
-            return Err(EncodingError::InvalidRecipe(
-                "whole-file recipe must contain one object".into(),
-            ));
-        }
-        Ok(Self {
-            version,
-            profile_id,
-            codec,
-            uncompressed_len,
-            file_digest,
-            chunks,
-        })
-    }
-}
-
-const RECIPE_MAGIC: &[u8; 8] = b"LPREC001";
-const RECIPE_HEADER_LEN: usize = 8 + 2 + 2 + 1 + 1 + 8 + 32 + 4;
-const CHUNK_REF_LEN: usize = 32 + 4;
-
-/// A compressed object staged for publication. The key is derived from its
-/// digest and scoped by the document storage identity by the caller.
+/// A compressed object staged for publication under a fresh allocation ID.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedObject {
     /// Digest of the uncompressed object. This permits a catalogue/object
@@ -485,7 +377,6 @@ pub struct EncodedSource {
     pub file_digest: [u8; 32],
     pub uncompressed_len: u64,
     pub recipe: Recipe,
-    pub recipe_bytes: Vec<u8>,
     pub objects: Vec<EncodedObject>,
 }
 
@@ -498,26 +389,6 @@ pub struct EncodingPlan {
     pub recipe: Recipe,
 }
 
-impl EncodedSource {
-    pub fn codec(&self) -> Codec {
-        self.recipe.codec
-    }
-
-    pub fn recipe_digest(&self) -> [u8; 32] {
-        self.recipe.digest()
-    }
-
-    /// Stored bytes introduced by this encoding before catalogue metadata.
-    pub fn encoded_bytes(&self) -> usize {
-        self.recipe_bytes.len()
-            + self
-                .objects
-                .iter()
-                .map(|object| object.encoded.len())
-                .sum::<usize>()
-    }
-}
-
 /// Errors deliberately distinguish overload from corrupt durable data so a
 /// caller can defer history work without acknowledging a false checkpoint.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -525,7 +396,6 @@ pub enum EncodingError {
     InvalidProfile,
     InvalidInput(String),
     InvalidRecipe(String),
-    UnsupportedCodec(u8),
     Integrity(String),
     Overloaded,
     Worker(String),
@@ -537,7 +407,6 @@ impl fmt::Display for EncodingError {
             Self::InvalidProfile => f.write_str("invalid source encoding profile"),
             Self::InvalidInput(message) => write!(f, "invalid source input: {message}"),
             Self::InvalidRecipe(message) => write!(f, "invalid source recipe: {message}"),
-            Self::UnsupportedCodec(codec) => write!(f, "unsupported source codec {codec}"),
             Self::Integrity(message) => write!(f, "source encoding integrity failure: {message}"),
             Self::Overloaded => f.write_str("source encoding capacity is temporarily full"),
             Self::Worker(message) => write!(f, "source encoding worker failed: {message}"),
@@ -655,17 +524,10 @@ pub fn encode_source_from_plan(
             "encoding plan does not cover source".into(),
         ));
     }
-    let recipe_bytes = plan.recipe.to_bytes();
-    if recipe_bytes.len() > MAX_RECIPE_BYTES {
-        return Err(EncodingError::InvalidInput(
-            "source recipe is too large".into(),
-        ));
-    }
     Ok(EncodedSource {
         file_digest: plan.file_digest,
         uncompressed_len: plan.uncompressed_len,
         recipe: plan.recipe,
-        recipe_bytes,
         objects,
     })
 }
@@ -766,70 +628,6 @@ where
         ));
     }
     Ok(output)
-}
-
-/// Read the recipe/chunk representation. Missing or corrupt recipes and chunks
-/// are errors and are never substituted with unrelated bytes.
-#[cfg(test)]
-pub async fn read_file(
-    blobs: &dyn crate::storage::blob::BlobStore,
-    storage_id: &str,
-    file_digest: &str,
-) -> Result<Vec<u8>, EncodingError> {
-    // Admit before object I/O, not after materializing every chunk. Otherwise
-    // queued readers retain unbounded compressed inputs while awaiting CPU.
-    let permit = reconstruction_pool()
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| EncodingError::Worker("reconstruction pool is closed".into()))?;
-    let expected = decode_digest(file_digest)?;
-    let recipe_key = crate::storage::blob::content_recipe_key(storage_id, file_digest);
-    let recipe_bytes = blobs
-        .get(&recipe_key)
-        .await
-        .map_err(|error| EncodingError::Integrity(error.to_string()))?;
-    let recipe = Recipe::from_bytes(&recipe_bytes)?;
-    if recipe.file_digest != expected {
-        return Err(EncodingError::Integrity(
-            "recipe key and complete-file digest disagree".into(),
-        ));
-    }
-    let mut objects = HashMap::with_capacity(recipe.chunks.len());
-    let mut encoded_bytes = 0u64;
-    let encoded_limit = recipe
-        .uncompressed_len
-        .saturating_add((recipe.chunks.len() as u64).saturating_mul(256));
-    for reference in &recipe.chunks {
-        if objects.contains_key(&reference.digest) {
-            continue;
-        }
-        let digest = hex::encode(reference.digest);
-        let bytes = blobs
-            .get(&crate::storage::blob::content_chunk_key(
-                storage_id, &digest,
-            ))
-            .await
-            .map_err(|error| EncodingError::Integrity(error.to_string()))?;
-        encoded_bytes = encoded_bytes.saturating_add(bytes.len() as u64);
-        if bytes.len() as u64 > MAX_OBJECT_BYTES || encoded_bytes > encoded_limit {
-            return Err(EncodingError::Integrity(
-                "encoded source exceeds read budget".into(),
-            ));
-        }
-        objects.insert(reference.digest, bytes);
-    }
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        reconstruct(&recipe, |digest| {
-            objects
-                .get(digest)
-                .cloned()
-                .ok_or_else(|| EncodingError::Integrity("recipe object is missing".into()))
-        })
-    })
-    .await
-    .map_err(|error| EncodingError::Worker(error.to_string()))?
 }
 
 /// Read a v2 source recipe by its immutable recipe allocation. Every locator
@@ -946,15 +744,6 @@ pub async fn read_file_v2(
     .map_err(|error| EncodingError::Worker(error.to_string()))?
 }
 
-#[cfg(test)]
-fn decode_digest(value: &str) -> Result<[u8; 32], EncodingError> {
-    let bytes = hex::decode(value)
-        .map_err(|_| EncodingError::InvalidInput("source digest is not hexadecimal".into()))?;
-    bytes
-        .try_into()
-        .map_err(|_| EncodingError::InvalidInput("source digest must be SHA-256".into()))
-}
-
 /// Explicitly bounded native encoding admission. `try_encode` returns
 /// `Overloaded` when either worker slots or queued input bytes are exhausted;
 /// callers should report a pending/retry checkpoint state and preserve live
@@ -1054,76 +843,34 @@ impl EncodingPool {
     }
 }
 
-fn read_u8(bytes: &[u8], cursor: &mut usize) -> Result<u8, EncodingError> {
-    let byte = *bytes
-        .get(*cursor)
-        .ok_or_else(|| EncodingError::InvalidRecipe("truncated recipe".into()))?;
-    *cursor += 1;
-    Ok(byte)
-}
-
-fn read_u16(bytes: &[u8], cursor: &mut usize) -> Result<u16, EncodingError> {
-    let end = cursor
-        .checked_add(2)
-        .ok_or_else(|| EncodingError::InvalidRecipe("truncated recipe".into()))?;
-    let value = u16::from_le_bytes(
-        bytes
-            .get(*cursor..end)
-            .ok_or_else(|| EncodingError::InvalidRecipe("truncated recipe".into()))?
-            .try_into()
-            .map_err(|_| EncodingError::InvalidRecipe("truncated recipe".into()))?,
-    );
-    *cursor = end;
-    Ok(value)
-}
-
-fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, EncodingError> {
-    let end = cursor
-        .checked_add(4)
-        .ok_or_else(|| EncodingError::InvalidRecipe("truncated recipe".into()))?;
-    let value = u32::from_le_bytes(
-        bytes
-            .get(*cursor..end)
-            .ok_or_else(|| EncodingError::InvalidRecipe("truncated recipe".into()))?
-            .try_into()
-            .map_err(|_| EncodingError::InvalidRecipe("truncated recipe".into()))?,
-    );
-    *cursor = end;
-    Ok(value)
-}
-
-fn read_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, EncodingError> {
-    let end = cursor
-        .checked_add(8)
-        .ok_or_else(|| EncodingError::InvalidRecipe("truncated recipe".into()))?;
-    let value = u64::from_le_bytes(
-        bytes
-            .get(*cursor..end)
-            .ok_or_else(|| EncodingError::InvalidRecipe("truncated recipe".into()))?
-            .try_into()
-            .map_err(|_| EncodingError::InvalidRecipe("truncated recipe".into()))?,
-    );
-    *cursor = end;
-    Ok(value)
-}
-
-fn read_array(bytes: &[u8], cursor: &mut usize) -> Result<[u8; 32], EncodingError> {
-    let end = cursor
-        .checked_add(32)
-        .ok_or_else(|| EncodingError::InvalidRecipe("truncated recipe".into()))?;
-    let value = bytes
-        .get(*cursor..end)
-        .ok_or_else(|| EncodingError::InvalidRecipe("truncated recipe".into()))?
-        .try_into()
-        .map_err(|_| EncodingError::InvalidRecipe("truncated recipe".into()))?;
-    *cursor = end;
-    Ok(value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    fn native_recipe_bytes(recipe: &Recipe, objects: &HashMap<[u8; 32], Vec<u8>>) -> Vec<u8> {
+        SourceRecipeEnvelope {
+            version: SOURCE_ENVELOPE_VERSION,
+            recipe: recipe.clone(),
+            chunk_locators: recipe
+                .chunks
+                .iter()
+                .map(|chunk| {
+                    let bytes = &objects[&chunk.digest];
+                    PhysicalLocator {
+                        object_id: ObjectId::parse(hex::encode(&chunk.digest[..16])).unwrap(),
+                        object_digest: Sha256::digest(bytes).into(),
+                        logical_digest: Some(chunk.digest),
+                        logical_length: u64::from(chunk.length),
+                        byte_length: bytes.len() as u64,
+                        encoding_version: 1,
+                    }
+                })
+                .collect(),
+        }
+        .to_bytes()
+        .unwrap()
+    }
 
     fn restore(encoded: &EncodedSource) -> Vec<u8> {
         let objects: HashMap<_, _> = encoded
@@ -1144,10 +891,19 @@ mod tests {
     fn small_source_uses_whole_zstd_and_round_trips() {
         let source = b"a short source";
         let encoded = encode_source(source).expect("encode");
-        assert_eq!(encoded.codec(), Codec::WholeZstd);
+        assert_eq!(encoded.recipe.codec, Codec::WholeZstd);
         assert_eq!(restore(&encoded), source);
         assert_eq!(
-            Recipe::from_bytes(&encoded.recipe_bytes).unwrap(),
+            SourceRecipeEnvelope::from_bytes(&native_recipe_bytes(
+                &encoded.recipe,
+                &encoded
+                    .objects
+                    .iter()
+                    .map(|o| (o.digest, o.encoded.clone()))
+                    .collect()
+            ))
+            .unwrap()
+            .recipe,
             encoded.recipe
         );
     }
@@ -1159,7 +915,7 @@ mod tests {
             source.extend_from_slice(b"A paragraph with stable source boundaries.\n");
         }
         let encoded = encode_source(&source).expect("encode");
-        assert_eq!(encoded.codec(), Codec::ChunkedZstd);
+        assert_eq!(encoded.recipe.codec, Codec::ChunkedZstd);
         assert!(encoded.recipe.chunks.len() > 1);
         assert_eq!(restore(&encoded), source);
     }
@@ -1177,9 +933,16 @@ mod tests {
     #[test]
     fn tampering_with_recipe_or_object_is_rejected() {
         let encoded = encode_source(b"verify me").expect("encode");
-        let mut recipe = encoded.recipe_bytes.clone();
+        let mut recipe = native_recipe_bytes(
+            &encoded.recipe,
+            &encoded
+                .objects
+                .iter()
+                .map(|o| (o.digest, o.encoded.clone()))
+                .collect(),
+        );
         recipe[0] ^= 1;
-        assert!(Recipe::from_bytes(&recipe).is_err());
+        assert!(SourceRecipeEnvelope::from_bytes(&recipe).is_err());
         let mut objects: HashMap<_, _> = encoded
             .objects
             .iter()
@@ -1314,8 +1077,9 @@ mod tests {
                     result.physical_bytes += object.encoded.len();
                 }
                 if known_recipes.insert(encoded.file_digest) {
-                    result.recipe_bytes += encoded.recipe_bytes.len();
-                    result.physical_bytes += encoded.recipe_bytes.len();
+                    let metadata = native_recipe_bytes(&encoded.recipe, &encoded_objects).len();
+                    result.recipe_bytes += metadata;
+                    result.physical_bytes += metadata;
                 }
                 checkpoint.push(encoded);
             }

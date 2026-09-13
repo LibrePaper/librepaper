@@ -340,23 +340,7 @@ struct AgentIntent {
 #[derive(Clone, Debug, Default, Deserialize)]
 struct AgentActor {
     #[serde(default)]
-    account_id: String,
-    #[serde(default)]
-    owner_key: String,
-    #[serde(default)]
-    generation: String,
-    #[serde(default)]
-    link_hash: String,
-    #[serde(default)]
-    policy_editor: bool,
-    #[serde(default)]
-    automation: bool,
-    #[serde(default)]
-    unowned_publisher: bool,
-    #[serde(default)]
     execution_epoch: String,
-    #[serde(default)]
-    operation_scope: String,
 }
 
 fn authority_with_persisted_epoch(
@@ -629,8 +613,6 @@ pub enum AgentError {
     Invalid(String),
     Conflict(String),
     OperationKeyReused,
-    #[allow(dead_code)]
-    ExpiredEpoch,
     NotFound,
     Storage(String),
 }
@@ -643,7 +625,6 @@ impl std::fmt::Display for AgentError {
             Self::OperationKeyReused => {
                 f.write_str("operation key was reused with different content")
             }
-            Self::ExpiredEpoch => f.write_str("operation epoch has expired"),
             Self::NotFound => f.write_str("agent operation was not found"),
             Self::Storage(message) => write!(f, "agent operation storage failure: {message}"),
         }
@@ -710,22 +691,13 @@ fn marker_from_doc(doc: &yrs::Doc, request_id: &str) -> Result<Option<AgentMarke
 /// Yjs document here would turn a failed snapshot write into a false receipt:
 /// the in-memory patch and marker can outlive a rejected journal append.
 async fn room_marker(room: &Room, request_id: &str) -> Result<Option<AgentMarker>, AgentError> {
-    let raw = if let Some(journal) = room.journal.get() {
-        journal
-            .recover_latest(&room.storage_id)
-            .await
-            .map_err(|error| AgentError::Storage(error.to_string()))?
-    } else {
-        match room
-            .blobs
-            .get_versioned(&super::session_key(&room.slug))
-            .await
-        {
-            Ok((raw, _)) => Some(raw),
-            Err(super::BlobError::NotFound) => None,
-            Err(error) => return Err(AgentError::Storage(error.to_string())),
-        }
-    };
+    let journal = room.journal.get().ok_or_else(|| {
+        AgentError::Storage("native journal required for durable operation markers".into())
+    })?;
+    let raw = journal
+        .recover_latest(&room.storage_id)
+        .await
+        .map_err(|error| AgentError::Storage(error.to_string()))?;
     let Some(raw) = raw else {
         return Ok(None);
     };
@@ -787,127 +759,6 @@ async fn abort_agent_operation(
 }
 
 impl Room {
-    /// Reconcile an interrupted source operation before publishing this room
-    /// to readers.  The actor is part of the prepared intent, so this does not
-    /// depend on a still-valid view or an incoming request.  A marked effect
-    /// is committed only when that persisted actor still has the same rights;
-    /// otherwise its pre-effect backup is restored and the row is aborted.
-    pub(crate) async fn recover_pending_agent_on_load(&self) -> Result<(), AgentError> {
-        let Some(catalog) = self.catalog.get().cloned() else {
-            return Ok(());
-        };
-        let slug = self.slug.clone();
-        let document = catalog
-            .execute_catalog(slug.len() + 256, move |catalog| catalog.document(&slug))
-            .await
-            .map_err(|error| AgentError::Storage(error.to_string()))?;
-        let Some(document) = document else {
-            return Ok(());
-        };
-        let Some(request_id) = document.pending_publication.clone() else {
-            return Ok(());
-        };
-        let storage_id = document.storage_id.clone();
-        let request_id_for_lookup = request_id.clone();
-        let operation = catalog
-            .execute_catalog(storage_id.len() + request_id.len() + 256, move |catalog| {
-                catalog.pending_agent_operation(&storage_id, &request_id_for_lookup)
-            })
-            .await
-            .map_err(|error| AgentError::Storage(error.to_string()))?;
-        let Some(operation) = operation else {
-            return Err(AgentError::Storage(
-                "pending agent operation is missing".into(),
-            ));
-        };
-        if operation.kind != "agent_apply" || operation.status != "prepared" {
-            return Ok(());
-        }
-        let stored = parse_intent(&operation.intent)?;
-        let Some(key) = stored.operation.clone() else {
-            self.fence(super::FenceReason::AgentRecoveryPending);
-            return Err(AgentError::Storage(
-                "agent intent has no operation key".into(),
-            ));
-        };
-        let Some(actor) = stored.actor.clone() else {
-            self.fence(super::FenceReason::AgentRecoveryPending);
-            return Err(AgentError::Storage(
-                "agent intent has no actor binding".into(),
-            ));
-        };
-        let authority = AgentAuthority {
-            account_id: actor.account_id.clone(),
-            owner_key: actor.owner_key.clone(),
-            generation: actor.generation.clone(),
-            link_hash: actor.link_hash.clone(),
-            policy_editor: actor.policy_editor,
-            automation: actor.automation,
-            unowned_publisher: actor.unowned_publisher,
-            execution_epoch: actor.execution_epoch.clone(),
-            operation_scope: actor.operation_scope.clone(),
-        };
-        let _restore = self.restore_write.lock().await;
-        let _comment = self.comment_write.lock().await;
-        let _publication = self.publication_write.lock().await;
-        let marker = room_marker(self, &request_id).await?;
-        let Some(marker) = marker else {
-            // No marker means no durable source effect.  Release the pending
-            // slot so a failed backup/admission cannot wedge this document.
-            abort_agent_operation(self, &catalog, &request_id, "agent effect was not marked")
-                .await?;
-            return Ok(());
-        };
-        if marker.digest != operation.request_digest
-            || marker.after_tree != stored.after_tree
-            || !marker_authenticates(
-                &stored.marker_secret,
-                &operation.request_digest,
-                &marker.after_tree,
-                &marker.mac,
-            )
-        {
-            self.fence(super::FenceReason::AgentRecoveryPending);
-            return Err(AgentError::Conflict(
-                "agent marker failed recovery validation".into(),
-            ));
-        }
-        if let Err(error) = require_agent_authority(
-            &catalog,
-            self.slug.clone(),
-            request_id.clone(),
-            authority.clone(),
-        )
-        .await
-        {
-            if !matches!(error, AgentError::Conflict(_)) || stored.backup_key.is_empty() {
-                self.fence(super::FenceReason::AgentRecoveryPending);
-                return Err(error);
-            }
-            restore_agent_backup(self, &stored.backup_key).await?;
-            abort_agent_operation(self, &catalog, &request_id, "agent actor was revoked").await?;
-            return Ok(());
-        }
-        self.commit_agent_receipt(
-            &catalog,
-            &request_id,
-            &key,
-            &AppliedSource {
-                before_tree: stored.before_tree,
-                after_tree: stored.after_tree,
-                before: String::new(),
-                after: String::new(),
-            },
-            true,
-            &operation.request_digest,
-            stored.acceptance,
-            authority,
-            false,
-        )
-        .await
-        .map(|_| ())
-    }
-
     async fn validate_agent_acceptance(
         &self,
         acceptance: Option<&AgentAcceptance>,

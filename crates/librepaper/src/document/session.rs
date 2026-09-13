@@ -734,7 +734,7 @@ pub fn admit_update(doc: &Doc, update: &[u8], ceiling: usize, max_files: usize) 
     }
 }
 
-/// Everything the document holds, as one v1 update: what `sessions/<slug>`
+/// Everything the document holds, as one v1 update: what a recovery base
 /// stores and what a cold join is answered with.
 pub fn encode_state(doc: &Doc) -> Vec<u8> {
     doc.transact()

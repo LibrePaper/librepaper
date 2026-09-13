@@ -97,17 +97,10 @@ impl Server {
         }
     }
 
-    /// The end of either flow: adopt what this browser published before it
-    /// signed in, set the session cookie, drop the state cookie, and go back
+    /// The end of either flow: set the session cookie, drop the state cookie, and go back
     /// where the person started. Both providers finish here, so a session
     /// cookie is set in exactly one place.
-    pub(super) async fn sign_in(
-        &self,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-        who: &Identity,
-        next: &str,
-    ) -> Reply {
+    pub(super) async fn sign_in(&self, arrival: &Arrival, who: &Identity, next: &str) -> Reply {
         let https = arrival.is_https();
         let mut signed_who = who.clone();
         if let Some(catalog) = &self.store.catalog {
@@ -146,25 +139,6 @@ impl Server {
                 503,
                 "Could not prepare your example documents. Please try signing in again.",
             );
-        }
-        // What this browser uploaded before it signed in is now this account's:
-        // the publisher is rewritten and the quota moves with it. This is the
-        // answer to "I cleared my cookies and my documents are gone", which the
-        // README could only warn about. A document with no publisher at all is
-        // nobody's and is left alone. A failure here is not a reason to refuse
-        // the sign-in: the documents are still readable at their links, and the
-        // next sign-in adopts them.
-        let visitor = self.owner(headers, arrival, &Identity::anonymous());
-        if !visitor.is_empty() {
-            match self
-                .store
-                .adopt(&visitor, &who.handle, &who.id, &who.name)
-                .await
-            {
-                Ok(0) => {}
-                Ok(moved) => println!("adopted {moved} document(s) for {}", who.name),
-                Err(err) => eprintln!("could not adopt {}'s documents: {err}", who.name),
-            }
         }
         let mut response = redirect(&local_path(next));
         let session = sign_session(
@@ -293,7 +267,7 @@ impl Server {
                     Ok(who) => who,
                     Err(_) => return Some(plain(502, "github would not say who you are")),
                 };
-                Some(self.sign_in(headers, arrival, &who, &next).await)
+                Some(self.sign_in(arrival, &who, &next).await)
             }
             "/auth/callback/google" => {
                 if !self.google.configured() {
@@ -335,7 +309,7 @@ impl Server {
                     }
                     Err(_) => return Some(plain(502, "google would not say who you are")),
                 };
-                Some(self.sign_in(headers, arrival, &who, &next).await)
+                Some(self.sign_in(arrival, &who, &next).await)
             }
             "/auth/logout" => {
                 // A GET here would be a plain link or a browser prefetch either

@@ -143,7 +143,7 @@ impl Catalog {
             let mut changed = 0u32;
             for (document_id,id,role,digest,sealed,key_id) in rows {
                 if key_id != destination {
-                    let plaintext = keys.iter().filter(|(id, _)| key_id == "legacy" || id == &key_id)
+                    let plaintext = keys.iter().filter(|(id, _)| id == &key_id)
                         .find_map(|(_, key)|open_link_envelope(key,&document_id,&role,&digest,&sealed).ok())
                         .ok_or_else(||CatalogError::Conflict("a link cannot be opened with the persisted keyring".into()))?;
                     let replacement = seal_link_envelope(&new_key,&destination,&document_id,&role,&digest,&plaintext)?;

@@ -6,11 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::storage::blob::{
-    clear_storage, document_key, document_prefix, room_key, room_lock_key, source_key,
-    take_room_lease, version_of, BlobError, BlobStore, FsStore, RoomLock, INDEX_KEY,
-    LEASE_GUARD_SECONDS, LOCK_STALE_SECONDS,
+    clear_storage_checked, v2_object_key, version_of, BlobError, BlobStore, FsStore, ObjectId,
 };
-use crate::util::{format_unix, now_unix};
 
 #[tokio::test]
 async fn blob_store_contract() {
@@ -18,37 +15,37 @@ async fn blob_store_contract() {
     let blobs = FsStore::new(dir.path(), true);
 
     assert!(matches!(
-        blobs.get("documents/absent/x.html").await,
+        blobs.get("items/absent/x.html").await,
         Err(BlobError::NotFound)
     ));
 
     blobs
         .put(
-            &document_key("a-paper", "abc"),
+            "fixtures/body/a-paper/abc",
             b"<p>hello</p>".to_vec(),
             "text/html",
         )
         .await
         .unwrap();
     let (body, at) = blobs
-        .get_versioned(&document_key("a-paper", "abc"))
+        .get_versioned("fixtures/body/a-paper/abc")
         .await
         .unwrap();
     assert_eq!(body, b"<p>hello</p>");
     assert!(!at.is_empty(), "a stored object has no version");
 
-    // A version has the property the index depends on: it changes when the
+    // A version has the property conditional writes depend on: it changes when the
     // content does, and only then.
     blobs
         .put(
-            &document_key("a-paper", "abc"),
+            "fixtures/body/a-paper/abc",
             b"<p>hello</p>".to_vec(),
             "text/html",
         )
         .await
         .unwrap();
     let (_, again) = blobs
-        .get_versioned(&document_key("a-paper", "abc"))
+        .get_versioned("fixtures/body/a-paper/abc")
         .await
         .unwrap();
     assert_eq!(again, at, "rewriting the same bytes changed the version");
@@ -56,72 +53,71 @@ async fn blob_store_contract() {
     // Listing is by prefix, and says nothing about what is outside it.
     blobs
         .put(
-            &source_key("a-paper", "sha1"),
+            "fixtures/source/a-paper/sha1",
             b"# hello".to_vec(),
             "text/plain",
         )
         .await
         .unwrap();
-    let found = blobs.list(&document_prefix("a-paper")).await.unwrap();
+    let found = blobs.list("fixtures/body/a-paper/").await.unwrap();
     assert!(
         found
             .iter()
-            .any(|item| item.key == document_key("a-paper", "abc")),
+            .any(|item| item.key == "fixtures/body/a-paper/abc"),
         "{found:?}"
     );
 
     // Prefixes keep their ordinary string semantics, including a partial last
     // path component. The optimized walk may start below the store root, but
-    // it must not turn `documents/a-paper` into an exact-directory match.
+    // it must not turn `items/a-paper` into an exact-directory match.
     blobs
-        .put("documents/a-paper-copy/one", b"copy".to_vec(), "")
+        .put("items/a-paper-copy/one", b"copy".to_vec(), "")
         .await
         .unwrap();
     blobs
-        .put("documents/a-pap/one", b"other".to_vec(), "")
+        .put("items/a-pap/one", b"other".to_vec(), "")
         .await
         .unwrap();
-    let partial = blobs.list("documents/a-paper").await.unwrap();
+    let partial = blobs.list("items/a-paper").await.unwrap();
     assert_eq!(
         partial
             .iter()
             .map(|item| item.key.as_str())
             .collect::<Vec<_>>(),
-        vec!["documents/a-paper-copy/one"]
+        vec!["items/a-paper-copy/one"]
     );
-    let first = blobs.list_page("documents/", None, 2).await.unwrap();
+    let first = blobs.list_page("items/", None, 2).await.unwrap();
     assert_eq!(first.len(), 2);
     assert!(first[0].key < first[1].key);
     let second = blobs
-        .list_page("documents/", Some(&first[1].key), 2)
+        .list_page("items/", Some(&first[1].key), 2)
         .await
         .unwrap();
     assert!(second.iter().all(|item| item.key > first[1].key));
 
     // A trailing separator scopes the walk to that subtree. Empty and absent
     // prefixes remain useful for maintenance and are ordinary empty listings.
-    let subtree = blobs.list("documents/a-paper/").await.unwrap();
+    let subtree = blobs.list("items/a-paper/").await.unwrap();
     assert!(subtree.is_empty());
     assert!(blobs.list("missing/").await.unwrap().is_empty());
     assert!(blobs.list("/").await.unwrap().is_empty());
     assert!(blobs.list("../").await.unwrap().is_empty());
     assert!(blobs.list("").await.unwrap().len() >= 4);
 
-    // A legacy object whose name is also a prefix is a file, not a directory;
+    // An object whose name is also a prefix is a file, not a directory;
     // probing its slash-qualified descendants is an empty prefix query.
-    blobs.put("legacy", b"old".to_vec(), "").await.unwrap();
-    assert!(blobs.list("legacy/").await.unwrap().is_empty());
+    blobs.put("standalone", b"old".to_vec(), "").await.unwrap();
+    assert!(blobs.list("standalone/").await.unwrap().is_empty());
 
     // Deleting something that is not there is the outcome asked for, not an
     // error: callers delete a source that may never have existed.
     blobs
-        .delete(&[source_key("never-published", "sha1")])
+        .delete(&["fixtures/absent/sha1".to_string()])
         .await
         .unwrap();
 }
 
-// The compare-and-swap the index rides on. Everything else in the store is a
-// plain write; this is the one operation whose failure loses a document.
+// A conditional write preserves the existing object when its version mismatches.
 #[tokio::test]
 async fn swap_is_conditional() {
     let dir = tempfile::tempdir().unwrap();
@@ -129,32 +125,34 @@ async fn swap_is_conditional() {
 
     // The empty version means "only if it does not exist".
     let first = blobs
-        .swap(INDEX_KEY, br#"{"a":1}"#.to_vec(), "")
+        .swap("conditional/object", br#"{"a":1}"#.to_vec(), "")
         .await
         .unwrap();
     assert!(matches!(
-        blobs.swap(INDEX_KEY, br#"{"b":2}"#.to_vec(), "").await,
+        blobs
+            .swap("conditional/object", br#"{"b":2}"#.to_vec(), "")
+            .await,
         Err(BlobError::Conflict)
     ));
 
     // The wrong version is refused, and leaves the object alone.
     assert!(matches!(
         blobs
-            .swap(INDEX_KEY, br#"{"c":3}"#.to_vec(), "\"nonsense\"")
+            .swap("conditional/object", br#"{"c":3}"#.to_vec(), "\"nonsense\"")
             .await,
         Err(BlobError::Conflict)
     ));
-    let (body, _) = blobs.get_versioned(INDEX_KEY).await.unwrap();
+    let (body, _) = blobs.get_versioned("conditional/object").await.unwrap();
     assert_eq!(body, br#"{"a":1}"#, "a refused write changed the object");
 
     // And the right one goes through.
     blobs
-        .swap(INDEX_KEY, br#"{"d":4}"#.to_vec(), &first)
+        .swap("conditional/object", br#"{"d":4}"#.to_vec(), &first)
         .await
         .expect("a write against the current version was refused");
 }
 
-// Two writers racing for the index must not both believe they won, whichever
+// Two writers racing for one object must not both believe they won, whichever
 // of them the runtime happens to schedule first.
 #[tokio::test]
 async fn swap_under_contention() {
@@ -163,7 +161,10 @@ async fn swap_under_contention() {
     // The starting bytes are distinct from every racer's, so a racer that
     // happened to write the same content -- and so leave the version
     // unchanged -- cannot make a second writer look like a winner.
-    let at = blobs.swap(INDEX_KEY, b"start".to_vec(), "").await.unwrap();
+    let at = blobs
+        .swap("conditional/object", b"start".to_vec(), "")
+        .await
+        .unwrap();
 
     let mut racers = Vec::new();
     for n in 0..8 {
@@ -171,7 +172,7 @@ async fn swap_under_contention() {
         let at = at.clone();
         racers.push(tokio::spawn(async move {
             blobs
-                .swap(INDEX_KEY, format!("racer {n}").into_bytes(), &at)
+                .swap("conditional/object", format!("racer {n}").into_bytes(), &at)
                 .await
                 .is_ok()
         }));
@@ -218,25 +219,27 @@ async fn puts_under_contention_leave_one_complete_value() {
 async fn clearing_leaves_what_is_not_ours() {
     let dir = tempfile::tempdir().unwrap();
     let blobs = FsStore::new(dir.path(), true);
-    for key in [
-        INDEX_KEY.to_string(),
-        document_key("a", "1"),
-        source_key("a", "1"),
-        room_key("a"),
-    ] {
-        blobs.put(&key, b"ours".to_vec(), "").await.unwrap();
+    let keys = [
+        "0123456789abcdef0123456789abcdef",
+        "fedcba9876543210fedcba9876543210",
+    ]
+    .map(|id| v2_object_key("native-document", &ObjectId::parse(id).unwrap()).unwrap());
+    for key in &keys {
+        blobs.put(key, b"ours".to_vec(), "").await.unwrap();
     }
     blobs
         .put("someone-elses/backup.tar", b"theirs".to_vec(), "")
         .await
         .unwrap();
 
-    clear_storage(&blobs).await;
+    clear_storage_checked(&blobs).await.unwrap();
 
-    assert!(
-        matches!(blobs.get(INDEX_KEY).await, Err(BlobError::NotFound)),
-        "the index survived a clear"
-    );
+    for key in &keys {
+        assert!(
+            matches!(blobs.get(key).await, Err(BlobError::NotFound)),
+            "native object survived a clear: {key}"
+        );
+    }
     assert_eq!(
         blobs.get("someone-elses/backup.tar").await.unwrap(),
         b"theirs",
@@ -311,88 +314,6 @@ async fn filesystem_reads_do_not_block_tokio() {
     assert_eq!(body, b"ready");
     assert!(started.elapsed() < Duration::from_secs(2));
 }
-/* ----------------------------------------------------------- room leases */
-
-// Two servers on one bucket must not both write the same room: the in-memory
-// copy is authoritative while anyone is connected, so the second would save
-// over the first's document without either noticing.
-#[tokio::test]
-async fn a_room_is_held_by_one_server() {
-    let dir = tempfile::tempdir().unwrap();
-    let blobs = FsStore::new(dir.path(), true);
-    let first = take_room_lease(&blobs, "a-paper", "server-one", None).await;
-    assert!(first.held, "the first server could not take the lease");
-    let second = take_room_lease(&blobs, "a-paper", "server-two", None).await;
-    assert!(!second.held, "a second server took a lease the first holds");
-    assert_eq!(
-        second.holder, "server-one",
-        "the refusal named the wrong holder"
-    );
-    // The holder may say so again: renewing is not contention, and keeps the
-    // epoch, because the lease has not changed hands.
-    let renewed = take_room_lease(&blobs, "a-paper", "server-one", Some(first.epoch)).await;
-    assert!(renewed.held, "the holder could not renew its own lease");
-    assert_eq!(renewed.epoch, first.epoch, "renewing raised the epoch");
-}
-
-// A lease whose holder is gone is taken over -- and taking it over raises the
-// epoch, which is what fences the old holder out.
-#[tokio::test]
-async fn a_stale_lease_is_taken_over_and_raises_the_epoch() {
-    let dir = tempfile::tempdir().unwrap();
-    let blobs = FsStore::new(dir.path(), true);
-    let old = RoomLock {
-        holder: "server-that-died".into(),
-        taken: format_unix(now_unix() - 2 * LOCK_STALE_SECONDS),
-        epoch: 7,
-    };
-    blobs
-        .put(
-            &room_lock_key("a-paper"),
-            serde_json::to_vec(&old).unwrap(),
-            "",
-        )
-        .await
-        .unwrap();
-    let taken = take_room_lease(&blobs, "a-paper", "server-two", None).await;
-    assert!(
-        taken.held,
-        "a lease whose holder is long gone was not taken over"
-    );
-    assert_eq!(taken.epoch, 8, "taking over did not raise the epoch");
-
-    // The server that died coming back is the case the epoch exists for: its
-    // renewal asserts the epoch it remembers, and is refused.
-    let stale = take_room_lease(&blobs, "a-paper", "server-that-died", Some(7)).await;
-    assert!(
-        !stale.held,
-        "a former holder renewed a lease that had moved on without it"
-    );
-    assert_eq!(stale.epoch, 8);
-}
-
-// A lease is not a promise about the future: it is only good until a guard's
-// width before it could be taken, so a holder stops writing strictly before
-// anybody else could start.
-#[test]
-fn a_lease_stops_being_safe_before_it_can_be_taken() {
-    let lease = crate::storage::blob::Lease {
-        held: true,
-        holder: "server-one".into(),
-        epoch: 1,
-        taken_at: 1_000,
-        verified: true,
-    };
-    assert_eq!(
-        lease.safe_until(),
-        1_000 + LOCK_STALE_SECONDS - LEASE_GUARD_SECONDS
-    );
-    assert!(
-        lease.safe_until() < 1_000 + LOCK_STALE_SECONDS,
-        "a holder trusts its lease right up to the moment it can be taken"
-    );
-}
-
 #[test]
 fn a_version_is_the_digest_of_the_bytes() {
     assert_eq!(version_of(b"a"), version_of(b"a"));

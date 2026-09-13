@@ -105,25 +105,34 @@ fn policies_match_the_handle_not_the_name() {
     assert_eq!(unnamed.handle, "jean@example.org");
 }
 
-// A bare stored id means GitHub, and a Google sub that happens to be the same
-// decimal string is a different person.
+// Provider namespaces distinguish identities even when numeric subjects match.
 #[test]
-fn stored_ids_are_qualified_as_github() {
+fn ownership_requires_the_exact_catalog_account_id() {
     use crate::document::store::IndexEntry;
     let mut entry = IndexEntry {
         publisher: "vincent".into(),
-        publisher_id: "583231".into(),
+        publisher_id: "github:583231".into(),
         ..IndexEntry::default()
     };
     assert!(
         entry.owned_by("", "github:583231"),
-        "a bare stored id did not match its qualified caller"
+        "the qualified account identity did not match"
     );
     assert!(
         !entry.owned_by("", "google:583231"),
         "a Google sub matched a GitHub id with the same number"
     );
     assert!(!entry.owned_by("", ""), "an anonymous caller owned it");
+    entry.publisher_id = "583231".into();
+    assert!(
+        !entry.owned_by("vincent", "github:583231"),
+        "an unqualified stored identity was accepted"
+    );
+    entry.publisher_id.clear();
+    assert!(
+        !entry.owned_by("vincent", ""),
+        "a display handle granted ownership"
+    );
 
     // A newly written id is already qualified, and reads back unchanged.
     entry.publisher_id = "google:583231".into();

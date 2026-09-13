@@ -8,13 +8,10 @@
 //!
 //! Where a test needs a real Yjs peer it runs one, through `tests::yjs`.
 
-use std::sync::Arc;
-
 use serde_json::{json, Value};
 
 use super::*;
 use crate::config::{Configuration, SessionLimit};
-use crate::storage::blob::{BlobStore, FsStore};
 use crate::tests::edit::{publish_with_source, TEST_MARKDOWN};
 use crate::tests::yjs::{browser_available, Browser};
 
@@ -403,11 +400,6 @@ async fn concurrent_updates_cannot_pass_the_size_limit() {
 async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
     let (_dir, store, original_rooms) = super::room::fixture(Configuration::default()).await;
     drop(original_rooms);
-    store
-        .blobs
-        .delete(&[crate::storage::blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = super::room::HookStore::new(store.blobs.clone());
     let rooms = crate::room::RoomSet::new(hooked.clone(), store.config.clone());
     rooms.attach_store(store.clone());
@@ -1220,11 +1212,6 @@ async fn a_second_process_over_the_same_storage_does_not_write() {
 async fn a_former_writer_generation_cannot_publish_after_being_fenced() {
     let (_dir, store, original_rooms) = super::room::fixture(Configuration::default()).await;
     drop(original_rooms);
-    store
-        .blobs
-        .delete(&[crate::storage::blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = super::room::HookStore::new(store.blobs.clone());
     let rooms = crate::room::RoomSet::new(hooked.clone(), store.config.clone());
     rooms.attach_store(store.clone());
@@ -1267,61 +1254,8 @@ async fn a_former_writer_generation_cannot_publish_after_being_fenced() {
     assert!(catalog.audit_v2_counters().unwrap());
 }
 
-/// Quota admission is decided against the index it is committed against. Two
-/// stores over one bucket, a ceiling with room for one document: the second
-/// one's decision is made again against the index the first one wrote, so they
-/// cannot both spend the last of the quota.
-#[tokio::test]
-async fn deployment_quota_admission_is_serialised_across_documents() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path(), true));
-    // Room for one of these documents and not two.
-    let config = Arc::new(Configuration {
-        storage: crate::config::StorageLimit {
-            total: 40,
-            per_owner: 40,
-            documents_per_owner: 50,
-            uploads_per_hour: 50,
-        },
-        ..Configuration::default()
-    });
-    let first = crate::document::store::Store::open(blobs.clone(), config.clone())
-        .await
-        .unwrap();
-    let second = crate::document::store::Store::open(blobs.clone(), config.clone())
-        .await
-        .unwrap();
-    // Both read the same empty index, so both believe the whole quota is free.
-    let publication = |slug: &str| crate::document::store::Publication {
-        slug: slug.to_string(),
-        title: slug.to_string(),
-        source: "x".repeat(30),
-        source_format: "html".into(),
-        ..Default::default()
-    };
-
-    assert!(
-        first.put(publication("first")).await.is_ok(),
-        "the first document did not fit an empty deployment"
-    );
-    let refused = second.put(publication("second")).await;
-    assert!(
-        matches!(refused, Err(crate::document::store::PutError::Quota { .. })),
-        "two stores over one bucket both spent the last of the quota: {:?}",
-        refused.map(|entry| entry.slug)
-    );
-
-    // And the index says one document, not two.
-    let (entries, _) = crate::document::store::load_index(blobs.as_ref())
-        .await
-        .unwrap();
-    assert_eq!(
-        entries.len(),
-        1,
-        "the refused document was left in the index: {:?}",
-        entries.keys().collect::<Vec<_>>()
-    );
-}
+// Cross-Store physical quota admission is covered by
+// tests::store::catalog_concurrent_admission_is_atomic.
 
 #[test]
 fn browser_rendering_digest_matches_rust_tree_bytes() {

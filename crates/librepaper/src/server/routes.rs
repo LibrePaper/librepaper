@@ -322,38 +322,22 @@ pub(super) async fn dispatch(
             .get("after_updated")
             .zip(listing_query.get("after_slug"))
             .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
-        let entries = if server.store.catalog.is_some() {
-            match server
-                .store
-                .visible_page_with_options(
-                    (!who.id.is_empty()).then_some(who.id.as_str()),
-                    (!who.key.is_empty()).then_some(who.key.as_str()),
-                    listing_cursor,
-                    listing_limit,
-                    server.listing,
-                )
-                .await
-            {
-                Ok(entries) => entries,
-                Err(error) => {
-                    eprintln!("could not query document listing: {error}");
-                    return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
-                }
+        let entries = match server
+            .store
+            .visible_page_with_options(
+                (!who.id.is_empty()).then_some(who.id.as_str()),
+                (!who.key.is_empty()).then_some(who.key.as_str()),
+                listing_cursor,
+                listing_limit,
+                server.listing,
+            )
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                eprintln!("could not query document listing: {error}");
+                return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
             }
-        } else {
-            let mut entries = server.visible(server.store.list().await, &who);
-            entries.sort_by(|a, b| {
-                b.updated_at
-                    .cmp(&a.updated_at)
-                    .then_with(|| b.slug.cmp(&a.slug))
-            });
-            if let Some((updated, slug)) = listing_cursor {
-                entries.retain(|entry| {
-                    (entry.updated_at.as_str(), entry.slug.as_str()) < (updated, slug)
-                });
-            }
-            entries.truncate(listing_limit as usize);
-            entries
         };
         let documents: Vec<Value> = entries
             .iter()

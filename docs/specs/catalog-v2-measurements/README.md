@@ -1,6 +1,8 @@
 # Catalog v2 SQL measurements — 2026-09-13
 
-These measurements cover the SQL matrix in specification section 24. They do **not** establish completion of the migration or acceptance of its runtime protocols. The physical journal comparison below is a separate runtime observation. The seeded root/physical-inventory audit described below also passes.
+These are historical measurements from the named 2026-09-13 fixtures and commits. They are retained as evidence of those runs, not measurements of the current implementation.
+
+These measurements cover the SQL matrix in specification section 24. They do **not** establish current runtime performance or validate all transaction protocols. The seeded root/physical-inventory audit described below also passes.
 
 The runner creates disposable catalogs from the normative DDL, enables foreign keys and WAL with `synchronous=FULL`, and validates reference counters, foreign keys and SQLite integrity before recording each case. No application database was opened. Builds and tests were paused during the measurements. Hardware: AMD Ryzen AI 7 PRO 450, 16 logical CPUs; Linux 6.18.45; Python 3.14.6; SQLite 3.53.1. Storage latency is part of the wall times; these are single observations, not controlled repeated trials.
 
@@ -34,19 +36,6 @@ The largest deployment case used 2,100,101,120 catalog bytes and sampled 89,519,
 Quota and reference admission probes address the document and owner primary keys and the one-row server singleton. SQLite may describe the singleton access as `SCAN s`; it is one row, not a history or owner scan. GC candidate selection uses `objects_gc`; the live-root probe uses the covering `objects_live_roots` index. The latter has no matching roots in these synthetic fixtures, so it verifies plan selection, not populated-root traversal performance. JSON reports include wall times, query plans, and approximate SQLite VM-step intervals.
 
 The first five cases are preserved in `catalog-v2-sql-matrix-20260913.json`, an intentionally interrupted multi-case run. Those five cases finished and were serialized; the file is not a complete matrix report and predates the runner's completion/time/schema-hash fields. The six separately completed reports supply the remaining cases. This directory contains all eleven requested SQL cases; it does not turn the interrupted report into a complete execution or invent missing metadata.
-
-## Physical journal comparison
-
-The [physical trace report](catalog-v2-physical-journal-20260913.json) records one passing debug-build run of `spec24_per_document_journal_comparison_trace`. It interleaves 50 full-state updates for each of 100 documents (plus one fixture document), writes to real temporary FsStore directories with durable writes enabled, and compares final source text and CRDT state vectors after recovery.
-
-| Measurement | Per-document v2 | Mixed coordinator baseline |
-|---|---:|---:|
-| Physical segments | 5,000 | 40 |
-| Physical bytes | 1,987,599 | 1,962,999 |
-| Write wall time | 6,387 ms | 301 ms |
-| Recovery wall time | 398 ms | 65 ms |
-
-The v2 path includes SQLite admission and publication for each document update. The baseline batches through the bounded mixed coordinator and FsStore; it is not the complete old runtime. Its recovery extracts the last full-state record per document, while v2 follows its catalogued chain. This comparison exposes the cost of separate durable objects and must not be described as an apples-to-apples throughput benchmark. The test configures durable writes but does not count fsync syscalls. These results do not establish release performance acceptance or replace the independent randomized root audit.
 
 ## Seeded physical inventory audit
 

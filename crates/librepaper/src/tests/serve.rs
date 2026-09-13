@@ -336,9 +336,9 @@ async fn listing_and_delete() {
     .await;
     assert_eq!(status, 200, "delete returned {status} {deleted}");
     assert_eq!(deleted["deleted"], slug);
-    // There are no stored versions any more, so none is counted as removed;
-    // what goes is the document, its history and its comments.
-    assert!(deleted["versions_removed"].as_u64().unwrap_or_default() >= 1);
+    // Physical reclamation is bounded and may be deferred by live leases.
+    assert!(deleted["objects_removed"].is_u64());
+    assert!(deleted.get("versions_removed").is_none());
     let (status, _) = get_json(&server.url, &format!("/api/documents/{slug}")).await;
     assert_eq!(status, 404, "document still present after delete");
 }

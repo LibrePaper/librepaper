@@ -45,7 +45,6 @@ pub(super) fn failure(error: agent::AgentError) -> Failure {
         agent::AgentError::Invalid(_) => "invalid_params",
         agent::AgentError::Conflict(_) => "conflict",
         agent::AgentError::OperationKeyReused => "operation_key_reused",
-        agent::AgentError::ExpiredEpoch => "expired_epoch",
         agent::AgentError::NotFound => "not_found",
         agent::AgentError::Storage(_) => "outcome_unknown",
     };
@@ -613,7 +612,10 @@ impl Server {
             ));
         }
         if comment.revision != view.snapshot.source_revision {
-            return Err(Failure::new("conflict","suggestion belongs to another source tree; capture and propose against the current passage"));
+            return Err(Failure::new(
+                "conflict",
+                "suggestion belongs to another source tree; capture and propose against the current passage",
+            ));
         }
         let anchor = comment
             .source

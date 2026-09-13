@@ -80,11 +80,9 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
     Ok(crate::util::format_unix(crate::util::now_unix() + seconds))
 }
 
-/// Which provider a stored id belongs to, read off its prefix; a bare id from
-/// before providers existed is GitHub's, as `stored_id` says.
+/// The provider namespace of a catalog account identity.
 pub(super) fn provider_of(id: &str) -> String {
-    stored_id(id)
-        .split_once(':')
+    id.split_once(':')
         .map(|(provider, _)| provider.to_string())
         .unwrap_or_default()
 }

@@ -328,12 +328,9 @@ fn seeded_regions_name_an_image_that_exists() {
     }
 }
 
-// A room lock says a live server is writing that room. `make deploy` seeds and
-// then serves, as two processes, so a lock the seeding left behind would meet
-// the server as somebody else's and make every seeded document read-only for
-// as long as it stayed fresh.
+// A fresh server can open seeded documents with native writer authority.
 #[tokio::test]
-async fn seeding_leaves_no_room_locks_behind() {
+async fn seeded_rooms_reopen_with_native_writer_authority() {
     let source = tempfile::tempdir().unwrap();
     let file = source.path().join("example.html");
     std::fs::write(
@@ -366,14 +363,6 @@ async fn seeding_leaves_no_room_locks_behind() {
         catalog.clone(),
     )
     .await;
-
-    let left = crate::storage::blob::BlobStore::list(blobs.as_ref(), "rooms/")
-        .await
-        .unwrap()
-        .into_iter()
-        .filter(|object| object.key.ends_with(".lock"))
-        .count();
-    assert_eq!(left, 0, "seeding left {left} room lock(s) behind");
 
     // And the server that starts next can write those rooms.
     let store = seed_store(blobs, config, catalog).await;

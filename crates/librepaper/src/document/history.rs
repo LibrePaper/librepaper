@@ -1,27 +1,15 @@
 //! The manifest: what a document used to say, and when.
 //!
-//! A checkpoint is the document's whole directory at one moment -- every path
-//! and the digest of what was at it -- named by the sha256 of that tree.
-//! `history/<slug>/<sha>` holds the tree, `history/<slug>/blobs/<sha>` holds
-//! one text apiece, and `history/<slug>/index.json` holds this list, oldest
-//! first. Restoring to Tuesday restores every chapter and the bibliography
-//! together; a chapter and the file that includes it can never be recorded out
-//! of step.
-//!
-//! Nothing here is ever rewritten: a checkpoint is appended, and the only
-//! removals are `destroy`, expiry, and the two ceilings that shed the oldest.
-//! That includes the checkpoints taken when a document was one text: such an
-//! entry has no `tree`, its object is the source bytes rather than a tree, and
-//! it is read below as a tree of one file. The timeline is therefore
-//! continuous across the change, and a rollback finds every old checkpoint
-//! exactly as it left it.
+//! Each checkpoint is a distinct event whose canonical tree describes the
+//! whole document directory. The catalog retains its immutable object closure
+//! and supplies the timeline; reading a tree holds a lease over that closure.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::storage::blob::{history_index_key, BlobError, BlobStore, BlobVersion};
+use crate::storage::blob::BlobStore;
 
 /// One entry in the manifest. The field names are wire format: the manifest
 /// is served to the browser as it stands.
@@ -251,7 +239,6 @@ impl Manifest {
     /// representation used by the history API.  Rows are sorted by `seq`
     /// before they become a manifest; callers may therefore pass a bounded
     /// page or the complete result without relying on database row order.
-    #[allow(dead_code)]
     pub fn from_catalog_rows(
         mut rows: Vec<crate::storage::catalog::Checkpoint>,
     ) -> Result<Self, String> {
@@ -269,7 +256,6 @@ impl Manifest {
         Ok(Self { checkpoints })
     }
 
-    #[allow(dead_code)]
     fn from_catalog_row(
         row: crate::storage::catalog::Checkpoint,
         changed: Vec<String>,
@@ -292,128 +278,6 @@ impl Manifest {
             seq: row.seq,
             original_parent: row.parent,
             ancestry_gap: false,
-        }
-    }
-
-    /// Convert this timeline entry to the catalogue's normalized row shape.
-    /// `seq` and `durable_seq` are supplied by the journal coordinator because
-    /// they are not properties of an immutable checkpoint object.
-    #[allow(dead_code)]
-    pub fn catalog_row(
-        slug: &str,
-        point: &Checkpoint,
-        seq: i64,
-        durable_seq: i64,
-    ) -> Result<crate::storage::catalog::Checkpoint, String> {
-        // `-1` asks the catalogue transaction to allocate the next sequence;
-        // persisted rows themselves are always non-negative.
-        if seq < -1 || durable_seq < 0 {
-            return Err(
-                "seq must be -1 or non-negative, and durable_seq must be non-negative".into(),
-            );
-        }
-        let changed = if point.changed.is_empty() {
-            Some("[]".to_string())
-        } else {
-            Some(
-                serde_json::to_string(&point.changed)
-                    .map_err(|err| format!("could not encode changed metadata: {err}"))?,
-            )
-        };
-        Ok(crate::storage::catalog::Checkpoint {
-            slug: slug.to_string(),
-            sha: point.sha.clone(),
-            seq,
-            durable_seq,
-            tree_sha: point.content_sha().to_string(),
-            parent: point.parent.clone(),
-            at: point.at.clone(),
-            by: point.by.clone(),
-            by_account: point.by_account.clone(),
-            why: point.why.clone(),
-            source_format: point.source_format.clone(),
-            size: point.size,
-            label: point.label.clone(),
-            git_commit: point.commit.clone(),
-            dirty: point.dirty,
-            changed,
-        })
-    }
-
-    /// What every checkpoint of this document costs, which is the half of the
-    /// index entry's `size` that is not the session state.
-    pub fn bytes(&self) -> i64 {
-        self.checkpoints.iter().map(|point| point.size).sum()
-    }
-
-    /// Sheds the oldest checkpoints until `keep` says to stop. The newest is
-    /// never shed -- shedding it would lose the document -- and an unlabelled
-    /// one always goes before a labelled one, whatever their ages, because a
-    /// label is somebody saying this moment matters.
-    ///
-    /// Returns the SHAs dropped, for the caller to delete.
-    #[allow(dead_code)]
-    pub fn shed(&mut self, keep: impl FnMut(&Manifest) -> bool) -> Vec<String> {
-        self.shed_protected("", keep)
-    }
-
-    /// Sheds history while retaining the selected source, even when it is old
-    /// and unlabelled. A restore has selected that point, so pruning it before
-    /// its tree and assets are read would make the operation fail halfway.
-    pub fn shed_protected(
-        &mut self,
-        protected: &str,
-        mut keep: impl FnMut(&Manifest) -> bool,
-    ) -> Vec<String> {
-        let mut dropped = Vec::new();
-        while !keep(self) && self.checkpoints.len() > 1 {
-            let oldest_unlabelled = self.checkpoints[..self.checkpoints.len() - 1]
-                .iter()
-                .position(|point| point.label.is_empty() && point.sha != protected);
-            // Every checkpoint labelled: the oldest goes.
-            let index = oldest_unlabelled.or_else(|| {
-                self.checkpoints[..self.checkpoints.len() - 1]
-                    .iter()
-                    .position(|point| point.sha != protected)
-            });
-            let Some(index) = index else {
-                // The only shed candidate is the selected restore source.
-                // Leave it in place; a later checkpoint can shed it after
-                // the restore has completed.
-                break;
-            };
-            let gone = self.checkpoints.remove(index);
-            // The chain stays linear: whoever pointed at the dropped entry now
-            // points where it did.
-            for point in self.checkpoints.iter_mut() {
-                if point.parent == gone.sha {
-                    point.parent = gone.parent.clone();
-                }
-            }
-            dropped.push(gone.sha);
-        }
-        dropped
-    }
-}
-
-/// Reads a document's manifest, with the version it was read at. No manifest
-/// is an empty one, which is how a document with no history yet reads; a
-/// manifest that exists and cannot be parsed is an error, because carrying on
-/// would write a near-empty one over a real history.
-pub async fn load_versioned(
-    blobs: &dyn BlobStore,
-    slug: &str,
-) -> Result<(Manifest, BlobVersion), String> {
-    match blobs.get_versioned(&history_index_key(slug)).await {
-        Err(BlobError::NotFound) => Ok((Manifest::default(), BlobVersion::new())),
-        Err(err) => Err(err.to_string()),
-        Ok((raw, at)) => {
-            let manifest = serde_json::from_slice(&raw).map_err(|err| {
-                format!(
-                    "the history of {slug} is not readable ({err}); move it aside to start empty"
-                )
-            })?;
-            Ok((manifest, at))
         }
     }
 }
@@ -505,10 +369,4 @@ pub(crate) async fn load_tree_envelope_from_set(
     let tree = serde_json::from_slice(&logical)
         .map_err(|error| format!("invalid logical checkpoint tree: {error}"))?;
     Ok((tree, envelope))
-}
-
-/// The manifest alone, for the callers that are only reading it.
-#[allow(dead_code)] // the tests and the timeline read the manifest alone
-pub async fn load(blobs: &dyn BlobStore, slug: &str) -> Result<Manifest, String> {
-    Ok(load_versioned(blobs, slug).await?.0)
 }

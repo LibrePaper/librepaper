@@ -262,18 +262,7 @@ impl Server {
         // with another publisher's document simply becomes a new document of
         // your own.
         let existing = match self.store.get_result(&base).await {
-            Ok(existing) => match existing {
-                Some(existing) => Some(existing),
-                None => match self.store.pending_publication_result(&base).await {
-                    Ok(pending) => pending,
-                    Err(error) => {
-                        return write_json(
-                            503,
-                            &json!({"error": error.to_string(), "retryable": true}),
-                        )
-                    }
-                },
-            },
+            Ok(existing) => existing,
             Err(error) => {
                 return write_json(
                     503,
@@ -362,9 +351,7 @@ impl Server {
                     source: parsed.source.clone(),
                     source_format: parsed.source_format.clone(),
                     main: main.clone(),
-                    owner: who.key.clone(),
                     owner_id: who.id.clone(),
-                    owner_name: who.name.clone(),
                 },
                 parsed.files.clone(),
                 actor,
@@ -382,123 +369,21 @@ impl Server {
                 return write_json(500, &json!({"error": "could not store the document"}))
             }
         };
-        if self.store.catalog.is_some() {
-            let share_url = match self.mint_read_link(&key, &who).await {
-                Ok(url) => Value::String(url),
-                Err(error) => {
-                    eprintln!("warning: could not mint the read link of {key}: {error:?}");
-                    Value::Null
-                }
-            };
-            return write_json(
-                201,
-                &json!({
-                    "slug": entry.slug,
-                    "title": entry.title,
-                    "sha": entry.sha,
-                    "created_at": entry.created_at,
-                    "updated_at": entry.updated_at,
-                    "url": format!("/docs/{}", entry.slug),
-                    "share_url": share_url,
-                }),
-            );
-        }
-        // The document itself is the session, and the session's first
-        // checkpoint is the source it was published with. Written here rather
-        // than by the store, because it is the room that owns the document.
-        let room = match self.rooms.try_get(&key).await {
-            Ok(room) => room,
-            Err(error) => {
-                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-            }
-        };
-        let mut publication_token = match room.reserve_publication_checkpoint() {
-            Ok(token) => token,
-            Err(err) => {
-                if let Err(cleanup) = self.delete_document(&key).await {
-                    eprintln!("warning: could not undo refused creation of {key}: {cleanup}");
-                }
-                return write_json(429, &json!({"error": err, "retryable": true}));
-            }
-        };
-        // A refused source write is the end of this publication. Registering
-        // a document whose text only ever failed to land would leave an
-        // index entry pointing at nothing -- the room is read-only, or the
-        // source is past a ceiling -- so the creation is undone here rather
-        // than at the checkpoint below, which would never be reached with
-        // anything worth writing.
-        if let Err(error) = room
-            .set_main_file(&parsed.source, &parsed.source_format, &parsed.main)
-            .await
-        {
-            if let Err(cleanup) = self.delete_document(&key).await {
-                eprintln!("warning: could not undo refused creation of {key}: {cleanup}");
-            }
-            return refused(&format!("could not write the source of {key}"), &error);
-        }
-        // The rest of the directory, if a whole one was published. The texts
-        // go into the shared document beside the main file; the figures go to
-        // the store under their digests and are named in it. The preflight
-        // above already ruled out every refusal this can still hit, so a
-        // failure here is a storage fault, not a bad upload -- and a creation
-        // whose source only ever made it into RAM is not a creation that
-        // happened, so it is undone the way the delete route removes a
-        // document rather than answered with 201.
-        if !parsed.files.is_empty() {
-            if let Err(error) = self.fill_directory(&room, &parsed).await {
-                eprintln!("warning: could not store every file of {key}: {error}");
-                if let Err(err) = self.delete_document(&key).await {
-                    eprintln!("warning: could not undo the creation of {key}: {err}");
-                }
-                return refused(&format!("could not store every file of {key}"), &error);
-            }
-        }
-        // The checkpoint names itself, and what it is named is the digest of
-        // the tree rather than of the source: a document is a directory, so
-        // what the index points at is the directory this document was at. A
-        // creation is successful only once this has landed durably -- until
-        // then the only copy of the source is in RAM, and a response saying
-        // otherwise would describe a document a crash could still make
-        // disappear. So a failure here undoes the creation instead of
-        // answering with the SHA `put` wrote before the tree existed.
-        let sha = match room
-            .checkpoint_publication_now("cli", &entry.publisher, &mut publication_token)
-            .await
-        {
-            Ok(Some(sha)) => sha,
-            Ok(None) => entry.sha.clone(),
-            Err(error) => {
-                eprintln!("warning: could not checkpoint {key}: {error}");
-                if let Err(err) = self.delete_document(&key).await {
-                    eprintln!("warning: could not undo the creation of {key}: {err}");
-                }
-                return refused(
-                    &format!("could not checkpoint the creation of {key}"),
-                    &error,
-                );
-            }
-        };
-        publication_token.commit();
-        // A document only its owner can open is not published in any useful
-        // sense, so the upload mints the read link and hands it back beside
-        // the bare URL: what `librepaper publish` prints is the thing to send.
-        // It has no expiry, because it stands where the URL itself used to
-        // stand, and that never expired; the owner shortens, rotates or
-        // revokes it from the share dialog like any other link. A failure
-        // to record it is not a failure to publish -- the document is there
-        // and the dialog can mint one -- so it is reported and not fatal.
         let share_url = match self.mint_read_link(&key, &who).await {
             Ok(url) => Value::String(url),
-            Err(err) => {
-                eprintln!("warning: could not mint the read link of {key}: {err:?}");
+            Err(error) => {
+                eprintln!("warning: could not mint the read link of {key}: {error:?}");
                 Value::Null
             }
         };
         write_json(
             201,
             &json!({
-                "slug": entry.slug, "title": entry.title, "sha": sha,
-                "created_at": entry.created_at, "updated_at": entry.updated_at,
+                "slug": entry.slug,
+                "title": entry.title,
+                "sha": entry.sha,
+                "created_at": entry.created_at,
+                "updated_at": entry.updated_at,
                 "url": format!("/docs/{}", entry.slug),
                 "share_url": share_url,
             }),
@@ -605,7 +490,6 @@ impl Server {
         // standalone publication budget token cannot represent a replacement
         // closure and would reject every catalog-backed upload before that
         // admission runs.
-        let mut publication_token = crate::room::PublicationCheckpointToken::none();
 
         let mut wanted: std::collections::HashSet<String> =
             parsed.files.iter().map(|(path, _)| path.clone()).collect();
@@ -759,10 +643,9 @@ impl Server {
                 .unwrap_or_else(|_| crate::document::session::encode_state(&state.session.doc))
         };
         let sha = match room
-            .checkpoint_publication_now_locked_as_actor(
+            .checkpoint_now_with_authority_locked(
                 "cli",
                 crate::room::Attribution::account(&who.id, &who.key),
-                &mut publication_token,
                 crate::storage::catalog::MutationAuthority {
                     account_id: &who.id,
                     owner_key: &who.key,
@@ -794,7 +677,6 @@ impl Server {
                 ));
             }
         };
-        publication_token.commit();
         if let Some(rate) = source_rate.as_mut() {
             rate.commit();
         }
@@ -809,8 +691,11 @@ impl Server {
             .map_err(|error| write_json(409, &json!({"error": error})))?;
         let mut entry = self
             .store
-            .get(&existing.slug)
+            .get_result(&existing.slug)
             .await
+            .map_err(|error| {
+                write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+            })?
             .unwrap_or_else(|| existing.clone());
         entry.sha = sha;
         // Comments survive the edit; they re-anchor in the reader. Everyone
@@ -1233,44 +1118,6 @@ impl Server {
         Ok(())
     }
 
-    /// Puts the rest of a published directory where it belongs: every text
-    /// into the shared document, every figure into the store with its name
-    /// written beside its digest.
-    ///
-    /// The main file is already in the session -- `set_source` put it there --
-    /// so this adds the others and names none of them the document.
-    /// `preflight_directory` has already ruled out every refusal this can
-    /// still hit, so a failure here is a storage fault: the caller decides
-    /// whether that leaves an inconsistent document worth undoing.
-    pub(super) async fn fill_directory(
-        &self,
-        room: &Room,
-        parsed: &Upload,
-    ) -> Result<(), WriteError> {
-        for (path, bytes) in &parsed.files {
-            match crate::document::paths::check(&self.config.paths(), path) {
-                Ok(crate::document::paths::Kind::Text) => {
-                    let body = std::str::from_utf8(bytes)
-                        .map_err(|_| WriteError::Invalid(format!("{path} is not valid UTF-8")))?;
-                    // Every one of these is a refusal the caller stops on: a
-                    // directory half in the document is not a publication.
-                    room.add_text(path, body).await?;
-                }
-                Ok(crate::document::paths::Kind::Asset) => {
-                    let (sha, _) = room
-                        .put_asset(
-                            bytes.clone(),
-                            (self.config.max_asset, self.config.max_assets),
-                        )
-                        .await?;
-                    room.name_asset(path, &sha).await?;
-                }
-                Err(why) => return Err(WriteError::Invalid(why)),
-            }
-        }
-        Ok(())
-    }
-
     pub(super) async fn handle_state(
         &self,
         headers: &HeaderMap,
@@ -1487,7 +1334,7 @@ impl Server {
         match self.delete_document(slug).await {
             Ok(removed) => write_json(
                 200,
-                &json!({"deleted": slug, "title": entry.title, "versions_removed": removed}),
+                &json!({"deleted": slug, "title": entry.title, "objects_removed": removed}),
             ),
             Err(error) => {
                 eprintln!("could not remove {slug}: {error}");

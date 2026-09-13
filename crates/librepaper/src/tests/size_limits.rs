@@ -246,7 +246,6 @@ mod room_fixture {
                     main: "main.md".into(),
                     source: source.into(),
                     source_format: "markdown".into(),
-                    owner: "alice".into(),
                     ..Default::default()
                 },
                 store::MutationActor {
@@ -546,41 +545,6 @@ async fn waiting_producers_are_bounded_and_cancellation_releases_a_place() {
     );
 }
 
-/// `Q` counts a sealed round until its operation settles, not until it left
-/// the queue. Before this, sealing released the bytes before a single object
-/// had been written, so a burst could queue a second full round on top of one
-/// still in object I/O.
-#[test]
-fn the_queue_budget_holds_a_sealed_round_until_it_settles() {
-    use crate::storage::journal::{CoordinatorLimits, JournalCoordinator, JournalRecord};
-    let limits = CoordinatorLimits {
-        max_queued_bytes: 8192,
-        max_queued_records: 8,
-        max_segment_bytes: 8192,
-        max_records_per_segment: 8,
-    };
-    let mut coordinator = JournalCoordinator::new(limits).expect("the coordinator opens");
-    coordinator
-        .enqueue(JournalRecord::new("doc-1", 1, "retry-1", 0, vec![1u8; 6000]).expect("a record"))
-        .expect("the first record is queued");
-    let segments = coordinator.seal(true).expect("the round seals");
-    let executing = coordinator.begin_executing(&segments);
-    assert_eq!(coordinator.queued_bytes(), 0);
-    assert_eq!(coordinator.executing_bytes(), 6000);
-
-    let refused = coordinator
-        .enqueue(JournalRecord::new("doc-2", 1, "retry-2", 0, vec![2u8; 6000]).expect("a record"))
-        .expect_err("a second round cannot be queued on top of one still executing");
-    assert!(refused.is_temporary(), "{refused}");
-    assert!(!refused.is_permanent(), "{refused}");
-
-    drop(executing);
-    assert_eq!(coordinator.executing_bytes(), 0);
-    coordinator
-        .enqueue(JournalRecord::new("doc-2", 1, "retry-2", 0, vec![2u8; 6000]).expect("a record"))
-        .expect("and fits once the first round has settled");
-}
-
 /// Two large rooms saving at once stay inside `M`: the budget's own peak
 /// counter, not a process-memory sample, is the evidence.
 #[tokio::test]
@@ -811,16 +775,6 @@ async fn boundary_source_survives_a_restart(config: Configuration, slug: &str, c
         crate::room::Applied::Refuse(_)
     ));
 
-    fixture
-        .blobs
-        .delete(&[crate::storage::blob::session_key(slug)])
-        .await
-        .expect("the session object is removed");
-    fixture
-        .blobs
-        .delete(&[crate::storage::blob::room_lock_key(slug)])
-        .await
-        .expect("the room lock is removed");
     let restarted = room_fixture::reopen(&fixture).await;
     assert_eq!(restarted.get(slug).await.source().await, body);
 }
@@ -868,11 +822,6 @@ async fn internal_encoded_size_refusal_preserves_editability_and_pending_work() 
         .await
         .unwrap();
     room.persist().await.expect("the room remains saveable");
-    fixture
-        .blobs
-        .delete(&[crate::storage::blob::room_lock_key("internal-limit")])
-        .await
-        .unwrap();
     let restarted = room_fixture::reopen(&fixture).await;
     let reopened = restarted.get("internal-limit").await;
     assert!(!reopened.read_only());

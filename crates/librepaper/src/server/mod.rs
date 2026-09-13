@@ -24,10 +24,10 @@ use sha2::{Digest, Sha256};
 use crate::auth::pseudonym::pseudonym_for;
 use crate::auth::{
     cookie_name, normalized, now_unix, pkce_verifier, random_token, read_device, read_session,
-    read_visitor, sign_device, sign_session, sign_visitor, stored_id, Accounts, DeviceOutcome,
-    GithubAccounts, GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache,
-    DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB,
-    PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
+    read_visitor, sign_device, sign_session, sign_visitor, Accounts, DeviceOutcome, GithubAccounts,
+    GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache, DEVICE_POLL_INTERVAL,
+    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE,
+    SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
 use crate::config::Configuration;
 use crate::document::render::{title_from_html, title_from_markdown};
@@ -37,7 +37,7 @@ use crate::document::store::{
 };
 use crate::room::{
     decode_update, encode_update, AcceptError, Accepted, Applied, Command, Message as RoomMessage,
-    Outgoing, Room, RoomSet, Sender, WriteError,
+    Outgoing, Room, RoomSet, Sender,
 };
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
@@ -851,27 +851,6 @@ impl Server {
                 Some((503, "authentication service temporarily unavailable"))
             }
         }
-    }
-
-    /// Narrows a listing to what one caller should see: the reserved examples
-    /// unless the front page is off, the documents that predate ownership,
-    /// their own uploads, everything shared with them by name, and everything
-    /// they are a recorded guest of.
-    ///
-    /// A document shared by a link nobody has opened yet is not here, and
-    /// cannot be: the link lives in one browser rather than on an account, so
-    /// that browser's own list is where it belongs until somebody signed in
-    /// actually uses it, at which point they are a guest and this is exactly
-    /// where it belongs.
-    pub fn visible(&self, entries: Vec<IndexEntry>, who: &Caller) -> Vec<IndexEntry> {
-        entries
-            .into_iter()
-            .filter(|entry| {
-                (entry.example && self.listing)
-                    || entry.owned_by(&who.key, &who.id)
-                    || entry.guests.iter().any(|guest| guest.id == who.id)
-            })
-            .collect()
     }
 
     /// One row of a listing: what the document is, and what this caller holds

@@ -157,7 +157,7 @@ pub struct Segment {
 }
 
 /// Exact encoded size of the first journal segment for a full-state payload.
-/// Admission uses this before object I/O; it mirrors `JournalRuntime::append`'s
+/// Admission uses this before object I/O; it mirrors `V2JournalRuntime`'s append
 /// chunking and framing, including storage/retry identities and digests.
 pub fn initial_segment_bytes(storage_id: &str, payload: &[u8]) -> JournalResult<usize> {
     let retry_id = format!("room-{storage_id}-0-1");
@@ -239,17 +239,6 @@ impl Segment {
     }
 
     pub fn decode(bytes: &[u8]) -> JournalResult<Self> {
-        Self::decode_filtered(bytes, None)
-    }
-
-    /// Decode framing and integrity for the whole segment while retaining
-    /// payloads for one document only. Shared segments therefore do not
-    /// allocate unrelated users' snapshots during recovery.
-    pub fn decode_for(bytes: &[u8], storage_id: &str) -> JournalResult<Self> {
-        Self::decode_filtered(bytes, Some(storage_id))
-    }
-
-    pub(super) fn decode_filtered(bytes: &[u8], filter: Option<&str>) -> JournalResult<Self> {
         if bytes.len() > MAX_SEGMENT_BYTES {
             return Err(JournalError::Limit("segment is too large".into()));
         }
@@ -302,25 +291,12 @@ impl Segment {
                 chunk_digest,
             };
             record.validate()?;
-            if filter.is_none_or(|storage_id| storage_id == record.storage_id) {
-                records.push(record);
-            }
+            records.push(record);
         }
         if !cursor.is_empty() {
             return Err(JournalError::Corrupt("trailing segment bytes".into()));
         }
-        if records.is_empty() && filter.is_some() {
-            Ok(Self { records })
-        } else {
-            Self::new(records)
-        }
-    }
-
-    pub fn records_for(&self, storage_id: &str, above_sequence: u64) -> Vec<&JournalRecord> {
-        self.records
-            .iter()
-            .filter(|record| record.storage_id == storage_id && record.sequence > above_sequence)
-            .collect()
+        Self::new(records)
     }
 }
 

@@ -402,32 +402,47 @@ async fn uncached_compatibility_room_cannot_accept_edits() {
 
 #[tokio::test]
 async fn canceled_load_releases_admission_slot() {
-    let dir = tempfile::tempdir().unwrap();
-    let hooked = HookStore::new(Arc::new(blob::FsStore::new(dir.path(), true)));
     let mut config = Configuration::default();
     config.session.rooms_max = 1;
-    let rooms = Arc::new(RoomSet::new(hooked.clone(), Arc::new(config)));
-    *hooked.pause.lock().unwrap() = Some(("get_versioned".into(), blob::room_lock_key("first")));
+    let (_dir, store, _rooms) = fixture(config).await;
+    store
+        .put_as_actor(
+            store::Publication {
+                slug: "second".into(),
+                title: "Second".into(),
+                source: "second source".into(),
+                source_format: "markdown".into(),
+                ..Default::default()
+            },
+            super::room::fixture_actor(),
+        )
+        .await
+        .unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    let rooms = Arc::new(RoomSet::new(hooked.clone(), store.config.clone()));
+    rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
+    // Stop after admission, while native source bytes are being read.
+    *hooked.pause.lock().unwrap() = Some(("get".into(), object_write_prefix(&store, "probe")));
     let load = tokio::spawn({
         let rooms = rooms.clone();
-        async move { rooms.try_get("first").await }
+        async move { rooms.try_get("probe").await }
     });
     tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
     load.abort();
     assert!(matches!(load.await, Err(error) if error.is_cancelled()));
-    assert!(rooms.try_get("second").await.is_ok());
+    let second = rooms
+        .try_get("second")
+        .await
+        .expect("cancellation frees the only admission slot");
+    assert_eq!(second.source().await, "second source");
 }
 
 #[tokio::test]
 async fn delete_fences_a_room_still_loading() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = Arc::new(RoomSet::new(
         hooked.clone(),
@@ -462,11 +477,6 @@ async fn delete_fences_a_room_still_loading() {
 #[tokio::test]
 async fn session_read_failure_opens_read_only() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     *hooked.fail.lock().unwrap() = Some(
         object_write_prefix(&store, "probe")
@@ -526,7 +536,6 @@ async fn accumulated_update_quota(journaled: bool) {
                 slug: "quota-edit".into(),
                 source: "A".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 owner_id: "acct-1".into(),
                 ..Default::default()
             },

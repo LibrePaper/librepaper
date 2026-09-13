@@ -1,25 +1,18 @@
 //! Bounded, request-coalescing reads for checkpoint objects.
 //!
-//! A checkpoint tree and a text body are content addressed and immutable. The
-//! manifest entry around them is not: labels can change, pruning can remove a
-//! point, and a pre-directory point gets its path from the live document. This
-//! module therefore caches only raw tree/body objects. Callers still authorize
-//! the request and check manifest membership before using the cache.
+//! Checkpoint source objects are immutable and addressed by allocation ID.
+//! This module caches raw objects and verified text reconstructions; callers
+//! authorize requests, and native checkpoint reads acquire the complete SQL
+//! object closure before consulting cached data.
 
 use sha2::Digest;
 use std::collections::HashMap;
-#[cfg(test)]
-use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
-#[cfg(test)]
-use futures_util::future::join_all;
 use tokio::sync::{watch, Semaphore};
 
 use crate::document::history::{Checkpoint, Tree};
-#[cfg(test)]
-use crate::storage::blob::{blob_key, checkpoint_key};
 use crate::storage::blob::{BlobError, BlobResult, BlobStore};
 
 /// A bounded cache for immutable checkpoint objects.
@@ -159,7 +152,7 @@ impl CheckpointCache {
 
     /// Resolve and cache a derived immutable object under a private key.
     /// Source-history files use this path so recipe/chunk reconstruction is
-    /// request-coalesced and byte bounded like legacy bodies.
+    /// request-coalesced and byte bounded.
     async fn get_loaded<F, Fut>(&self, key: &str, loader: F) -> BlobResult<Arc<Vec<u8>>>
     where
         F: FnOnce() -> Fut,
@@ -314,114 +307,6 @@ impl CheckpointCache {
         Ok((tree, bodies))
     }
 
-    /// Reads a checkpoint's tree and all its text bodies. Authorization and
-    /// manifest membership remain the caller's responsibility.
-    ///
-    #[cfg(test)]
-    pub async fn load_checkpoint(
-        &self,
-        blobs: &dyn BlobStore,
-        slug: &str,
-        point: &Checkpoint,
-        path: &str,
-        id: &str,
-    ) -> Result<(Tree, HashMap<String, String>), String> {
-        self.load_checkpoint_with_native_digests(blobs, slug, point, path, id, &HashSet::new())
-            .await
-    }
-
-    /// As [`load_checkpoint`], with the committed source-history digests
-    /// supplied by the caller's catalogue lease.
-    #[cfg(test)]
-    pub async fn load_checkpoint_with_native_digests(
-        &self,
-        blobs: &dyn BlobStore,
-        slug: &str,
-        point: &Checkpoint,
-        path: &str,
-        id: &str,
-        native_digests: &HashSet<String>,
-    ) -> Result<(Tree, HashMap<String, String>), String> {
-        let raw = self
-            .get(blobs, &checkpoint_key(slug, &point.sha))
-            .await
-            .map_err(|err| err.to_string())?;
-        let tree = if point.tree {
-            let tree: Tree = serde_json::from_slice(raw.as_slice()).map_err(|err| {
-                format!(
-                    "the checkpoint {} of {slug} is not readable ({err})",
-                    point.sha
-                )
-            })?;
-            if !point.tree_sha.is_empty()
-                && hex::encode(sha2::Sha256::digest(raw.as_slice())) != point.tree_sha
-            {
-                return Err(format!(
-                    "the checkpoint {} of {slug} has a tree digest that does not match its catalogue row",
-                    point.sha
-                ));
-            }
-            tree
-        } else {
-            Tree::of_one_file(path, id, &point.sha, raw.len() as i64)
-        };
-
-        let mut seen = HashSet::new();
-        let digests: Vec<String> = tree
-            .files
-            .values()
-            .filter(|entry| entry.kind == "text")
-            .map(|entry| entry.sha.clone())
-            .filter(|sha| seen.insert(sha.clone()))
-            .collect();
-
-        if !point.tree {
-            let mut bodies = HashMap::new();
-            bodies.insert(point.sha.clone(), decode_text(raw.as_slice())?);
-            return Ok((tree, bodies));
-        }
-
-        let reads = digests.into_iter().map(|sha| async move {
-            let raw = if sha.len() == 64 && hex::decode(&sha).is_ok() {
-                let cache_key = format!("source:{slug}:{sha}");
-                let _ = native_digests;
-                self.get_loaded(&cache_key, || async {
-                    let read = crate::storage::encoding::read_file(blobs, slug, &sha).await;
-                    read.map_err(|error| BlobError::Other(error.to_string()))
-                })
-                .await
-                .map_err(|error| error.to_string())?
-                .as_ref()
-                .clone()
-            } else {
-                self.get(blobs, &blob_key(slug, &sha))
-                    .await
-                    .map_err(|err| err.to_string())?
-                    .as_ref()
-                    .clone()
-            };
-            Ok::<_, String>((sha, decode_text(raw.as_slice())?))
-        });
-        let mut bodies = HashMap::new();
-        for result in join_all(reads).await {
-            let (sha, body) = result?;
-            bodies.insert(sha, body);
-        }
-        Ok((tree, bodies))
-    }
-
-    /// Removes one cached object and prevents an in-flight read from inserting
-    /// its result after invalidation. Existing waiters receive a retryable
-    /// cancellation error rather than stale bytes.
-    pub async fn invalidate(&self, key: &str) {
-        let mut state = self.state.lock().expect("checkpoint cache poisoned");
-        state.generation = state.generation.wrapping_add(1);
-        if let Some(value) = state.values.remove(key) {
-            state.bytes = state.bytes.saturating_sub(value.body.len());
-        }
-        cancel_inflight(&mut state, |candidate| candidate == key);
-    }
-
     /// Invalidates all cached and in-flight objects under a storage prefix.
     pub async fn invalidate_prefix(&self, prefix: &str) {
         let mut state = self.state.lock().expect("checkpoint cache poisoned");
@@ -509,6 +394,7 @@ mod tests {
     use super::*;
     use crate::storage::blob::{BlobInfo, BlobVersion, FsStore};
     use async_trait::async_trait;
+    use futures_util::future::join_all;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::tempdir;
     use tokio::sync::Notify;
@@ -756,7 +642,7 @@ mod tests {
         let owner =
             tokio::spawn(async move { owner_cache.get(owner_store.as_ref(), "purged").await });
         entered.await;
-        cache.invalidate("purged").await;
+        cache.invalidate_prefix("purged").await;
         gate.released.store(true, Ordering::Relaxed);
         gate.wake.notify_waiters();
         assert!(owner.await.unwrap().is_ok());
@@ -766,86 +652,85 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn modern_checkpoints_reuse_shared_texts_and_cached_trees() {
+    async fn native_checkpoints_reuse_cached_text_reconstructions() {
+        use crate::document::store::{MutationActor, Publication, Store};
+        use crate::storage::catalog::{Account, Catalog};
+
         let dir = tempdir().unwrap();
-        let store = CountingStore {
-            inner: FsStore::new(dir.path(), true),
+        let blobs = Arc::new(CountingStore {
+            inner: FsStore::new(dir.path().join("objects"), false),
             gets: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
             gate: None,
-        };
-        let mut tree = Tree {
-            main: "a.md".into(),
-            ..Tree::default()
-        };
-        for (path, body) in [("a.md", "shared"), ("b.md", "shared"), ("c.md", "other")] {
-            let sha = crate::document::store::digest_of(body);
-            let encoded = crate::storage::encoding::encode_source(body.as_bytes()).unwrap();
-            store
-                .put(
-                    &crate::storage::blob::content_recipe_key("doc", &sha),
-                    encoded.recipe_bytes,
-                    "application/octet-stream",
-                )
+        });
+        let catalog = Arc::new(Catalog::open(dir.path().join("catalog.db")).unwrap());
+        catalog
+            .upsert_account(&Account {
+                id: "github:cache".into(),
+                provider: "github".into(),
+                handle: "cache".into(),
+                name: "Cache".into(),
+                email: "cache@example.test".into(),
+                first_seen: "2026-01-01T00:00:00.000Z".into(),
+                last_seen: "2026-01-01T00:00:00.000Z".into(),
+                plan: "free".into(),
+                status: "active".into(),
+                session_generation: "cache-session".into(),
+                erasure_cursor: None,
+            })
+            .unwrap();
+        let store =
+            Store::open_with_catalog(blobs.clone(), Arc::new(Default::default()), catalog.clone())
                 .await
                 .unwrap();
-            for object in encoded.objects {
-                store
-                    .put(
-                        &crate::storage::blob::content_chunk_key(
-                            "doc",
-                            &hex::encode(object.digest),
-                        ),
-                        object.encoded,
-                        "application/octet-stream",
-                    )
-                    .await
-                    .unwrap();
-            }
-            tree.files.insert(
-                path.into(),
-                crate::document::history::TreeEntry {
-                    kind: "text".into(),
-                    sha,
-                    size: body.len() as i64,
+        store
+            .put_directory_as_actor(
+                Publication {
+                    slug: "doc".into(),
+                    title: "Cache".into(),
+                    main: "a.md".into(),
+                    source: "shared".into(),
+                    source_format: "markdown".into(),
                     ..Default::default()
                 },
-            );
-        }
-        let point = Checkpoint {
-            sha: tree.digest(),
-            tree: true,
-            ..Default::default()
-        };
-        store
-            .put(
-                &checkpoint_key("doc", &point.sha),
-                tree.to_bytes(),
-                "application/json",
+                vec![
+                    ("b.md".into(), b"shared".to_vec()),
+                    ("c.md".into(), b"other".to_vec()),
+                ],
+                MutationActor {
+                    account_id: "github:cache".into(),
+                    owner_key: "cache".into(),
+                    session_generation: "cache-session".into(),
+                    link_hash: String::new(),
+                    policy_editor: true,
+                    automation: false,
+                    unowned_publisher: false,
+                },
             )
             .await
             .unwrap();
+        let rows = catalog.checkpoints("doc", None, 100).unwrap();
+        let manifest = crate::document::history::Manifest::from_catalog_rows(rows).unwrap();
+        let point = manifest.latest().unwrap();
         let cache = CheckpointCache::default();
+        blobs.gets.store(0, Ordering::Relaxed);
         let first = cache
-            .load_checkpoint(&store, "doc", &point, "", "")
+            .load_checkpoint_v2(blobs.as_ref(), &catalog, "doc", point)
             .await
             .unwrap();
-        assert_eq!(first.0, tree);
+        assert_eq!(first.0.files.len(), 3);
         assert_eq!(first.1.len(), 2);
-        assert_eq!(
-            store.gets.load(Ordering::Relaxed),
-            5,
-            "one tree plus a recipe and body for each distinct text"
-        );
+        let reads = blobs.gets.load(Ordering::Relaxed);
+        assert!(reads > 1, "cold read reconstructs source recipes");
         let second = cache
-            .load_checkpoint(&store, "doc", &point, "", "")
+            .load_checkpoint_v2(blobs.as_ref(), &catalog, "doc", point)
             .await
             .unwrap();
         assert_eq!(first, second);
         assert_eq!(
-            store.gets.load(Ordering::Relaxed),
-            5,
-            "a warm read needs no storage requests"
+            blobs.gets.load(Ordering::Relaxed),
+            reads + 1,
+            "warm native reads verify the tree but reuse source reconstructions"
         );
     }
 }

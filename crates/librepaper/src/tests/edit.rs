@@ -1,5 +1,4 @@
 use serde_json::{json, Value};
-use sha2::Digest;
 
 use super::*;
 use crate::config::{Configuration, SessionLimit};
@@ -138,14 +137,20 @@ async fn a_document_is_charged_for_its_source_and_its_history() {
         assert_eq!(stored, ledger_bytes);
         assert!(catalog.audit_v2_counters().unwrap());
     }
-    // Nothing derived is stored: no page, and no second copy of the source.
-    for prefix in [
-        crate::storage::blob::document_prefix(&slug),
-        crate::storage::blob::source_prefix(&slug),
-    ] {
-        let found = server.instance.store.blobs.list(&prefix).await.unwrap();
-        assert!(found.is_empty(), "{prefix} still holds {found:?}");
-    }
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let derived: i64 = catalog
+        .with_connection(|db| {
+            Ok(db.query_row(
+                "SELECT COUNT(*) FROM objects WHERE document_id=?1 AND kind LIKE 'publication_%'",
+                [&entry.storage_id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        derived, 0,
+        "source publication must not allocate rendered objects"
+    );
 }
 
 // A reader sees the explicit publication, never the editable source tree.
@@ -361,28 +366,27 @@ async fn an_html_document_is_stored_once() {
         "one encoded source, with no rendered duplicate"
     );
     assert!(catalog.audit_v2_counters().unwrap());
-    let source_digest = hex::encode(sha2::Sha256::digest(page.as_bytes()));
-    assert!(
-        server
-            .instance
-            .store
-            .blobs
-            .get(&crate::storage::blob::blob_key(
-                &entry.storage_id,
-                &source_digest
-            ))
-            .await
-            .is_err(),
-        "the legacy whole-file blob must not duplicate the encoded source"
-    );
-    let found = server
+    let objects = server
         .instance
         .store
         .blobs
-        .list(&crate::storage::blob::document_prefix(&slug))
+        .list(&format!("v2/documents/{}/objects/", entry.storage_id))
         .await
         .unwrap();
-    assert!(found.is_empty(), "a rendered page was stored: {found:?}");
+    let ledger_objects: i64 = catalog
+        .with_connection(|db| {
+            Ok(db.query_row(
+                "SELECT COUNT(*) FROM objects WHERE document_id=?1",
+                [&entry.storage_id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        objects.len() as i64,
+        ledger_objects,
+        "every physical source allocation is catalogued"
+    );
     // And it still opens in the editor, from the document.
     let (status, payload) = get_source_as(&session_as(TEST_PUBLISHER), &server.url, &slug).await;
     assert_eq!(status, 200, "{payload}");

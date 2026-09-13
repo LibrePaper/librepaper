@@ -1,46 +1,19 @@
-//! The document store: the index of what exists, and the bytes of each
-//! version.
-//!
-//! Where those bytes live is not its business -- see blob.rs. What is here is
-//! the interesting half: who owns a document, what a deployment will hold, and
-//! the compare-and-swap that keeps the index honest when two writes race.
-//!
-//! **Coherence model.** Each `Store` keeps its own copy of the index in
-//! memory and consults only that copy on an ordinary read. A single active
-//! writer per deployment is what this is built for, and there the in-memory
-//! copy is always current, because nothing else ever moves the index out
-//! from under it. A second instance sharing the same storage -- two live
-//! HTTP servers behind one bucket -- does not see the first instance's
-//! writes as they happen; it *converges*, not instantly, at two specific
-//! moments: a write of its own that loses the compare-and-swap reloads the
-//! winning index and retries once, and a `get` that misses reloads before
-//! answering not-found, so a document created elsewhere becomes visible.
-//! Between those moments a second instance can still authorize a read or a
-//! grant against an index the first has already moved past. That is a
-//! deliberate trade -- correctness on every write and on every miss, without
-//! putting a storage round trip on every hit -- and it means anything that
-//! must observe a revocation the instant it lands belongs on the instance
-//! that made it, not on this best-effort convergence.
+//! Catalogue-backed document metadata, source reads, and mutations.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 
-use crate::auth::stored_id;
 use crate::config::Configuration;
-use crate::storage::blob::{
-    document_key, document_prefix, examples_key, room_key, room_lock_key, source_key,
-    source_prefix, BlobError, BlobStore, BlobVersion, ObjectId as BlobObjectId, INDEX_KEY,
-};
+use crate::storage::blob::{BlobError, BlobStore, ObjectId as BlobObjectId};
 use crate::storage::catalog::{
-    Account, Catalog, CatalogError, CheckpointCommit, CheckpointId, DocumentId, ObjectId,
-    ObjectKind, OperationKind, SourceFormat, UnixMillis, V2AdmissionLimits, V2ObjectAllocation,
+    Catalog, CatalogError, CheckpointCommit, CheckpointId, DocumentId, ObjectId, ObjectKind,
+    OperationKind, SourceFormat, UnixMillis, V2AdmissionLimits, V2ObjectAllocation,
     V2OperationInput, V2SourceAdmissionInput,
 };
-use crate::util::{now_unix, parse_timestamp, timestamp};
+use crate::util::{parse_timestamp, timestamp};
 
 const MAX_LINKS_PER_RESULT: i64 = 16;
 const MAX_GUESTS_PER_RESULT: i64 = 256;
@@ -63,8 +36,7 @@ fn source_encoding_pool() -> &'static crate::storage::encoding::EncodingPool {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct IndexEntry {
     pub slug: String,
-    /// Immutable catalogue identity. Older JSON entries have no identity and
-    /// continue to use their slug as the object prefix until republished.
+    /// Immutable catalogue identity, separate from the mutable public slug.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub storage_id: String,
     pub title: String,
@@ -151,10 +123,8 @@ pub struct Guest {
 /// One link that carries a role. `hash` is the SHA-256 of the key in hex, and
 /// `until` is an expiry -- empty for none -- past which the link answers as no
 /// link at all. `key` is the key itself, kept so the owner can copy the link
-/// again rather than only ever seeing it once; a link written before this
-/// field existed has an empty one and cannot be shown again, which is what
-/// "legacy link, reset to get a new one" means. `label` is the owner's memo
-/// for the link, and still deserialises labels written by older versions.
+/// again rather than only ever seeing it once. Listings deliberately leave
+/// `key` empty to avoid exposing credentials. `label` is the owner's memo.
 /// `budget` is the number of comment actions this link may make in one clock
 /// hour; absent uses the deployment's ordinary numeric comment limit.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,21 +174,7 @@ pub struct Ceiling {
 }
 
 impl IndexEntry {
-    /// Whether a caller -- named by their owner key (see `Server::owner`) and,
-    /// when signed in, their GitHub numeric id -- may replace or delete this
-    /// document. An entry with no publisher grants ownership to nobody.
-    /// An entry carrying a publisher id compares against the
-    /// id instead of the key, since the id survives an account being renamed
-    /// and the key would not; a legacy entry, or one owned by a visitor: key,
-    /// has no publisher id and falls back to comparing the key.
-    ///
-    /// A publisher id written before providers existed is a bare number and
-    /// means a GitHub account, so it is qualified before the comparison rather
-    /// than the index being rewritten. That is also what keeps a Google `sub`
-    /// out of a GitHub id's namespace: the two are both decimal strings, and
-    /// only the prefix tells them apart.
-    /// What to show for the owner: the recorded name, or the handle for an
-    /// entry from before names were recorded, which is a GitHub login.
+    /// The owner's display name, with the account handle as a fallback.
     pub fn owner_name(&self) -> &str {
         if self.publisher_name.is_empty() {
             &self.publisher
@@ -227,17 +183,9 @@ impl IndexEntry {
         }
     }
 
-    pub fn owned_by(&self, owner_key: &str, caller_id: &str) -> bool {
-        if !self.publisher_id.is_empty() {
-            !caller_id.is_empty() && caller_id == stored_id(&self.publisher_id)
-        } else if self.publisher.is_empty() {
-            // An absent credential is not an ownership credential. Seeded
-            // examples and pre-identity legacy rows may be readable, but a
-            // cookie-less caller must never acquire their mutation rights.
-            false
-        } else {
-            self.publisher == owner_key.to_lowercase()
-        }
+    /// Ownership compares the exact immutable account identity from the catalog.
+    pub fn owned_by(&self, _owner_key: &str, caller_id: &str) -> bool {
+        !self.publisher_id.is_empty() && !caller_id.is_empty() && caller_id == self.publisher_id
     }
 
     /// The highest role a caller holds on this document. One function, asked
@@ -417,65 +365,8 @@ pub struct Store {
     /// Where the bytes are. The store does not care what holds them.
     pub blobs: Arc<dyn BlobStore>,
     pub config: Arc<Configuration>,
-    pub state: Mutex<StoreState>,
-    /// The authoritative catalogue for new deployments. `None` is retained
-    /// only for the small compatibility surface used by legacy fixtures.
+    /// The authoritative catalogue. Operations fail closed when absent.
     pub catalog: Option<Arc<Catalog>>,
-}
-
-pub struct StoreState {
-    pub entries: HashMap<String, IndexEntry>,
-    /// The version of index.json these entries were read from, so a write can
-    /// say what it expects to be replacing. Empty means "there was no index",
-    /// which is how a fresh store starts.
-    pub index_version: BlobVersion,
-    /// When the index was last re-read from storage because a lookup missed.
-    /// A miss is the one read that goes to storage, and a stranger guessing
-    /// slugs would otherwise turn every 404 into a download of the whole
-    /// index; this is what keeps that to one download per `REFRESH_EVERY`.
-    pub refreshed_at: Option<std::time::Instant>,
-}
-
-/// The least time between two reloads of the index prompted by misses. Long
-/// enough that a scan of made-up slugs costs the bucket one read per window
-/// rather than one per request; short enough that a document created on
-/// another instance shows up here within the time it takes to paste its link.
-pub const REFRESH_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Reads index.json, with the version it was read at. No index yet is an
-/// empty store, which is how a fresh one starts. An index that exists but
-/// cannot be parsed is a different thing entirely, and an error rather than an
-/// empty map: carrying on would present every stored document as gone, and
-/// the next publish would overwrite the real index with a near-empty one.
-pub async fn load_index(
-    blobs: &dyn BlobStore,
-) -> Result<(HashMap<String, IndexEntry>, BlobVersion), String> {
-    match blobs.get_versioned(INDEX_KEY).await {
-        Err(BlobError::NotFound) => Ok((HashMap::new(), String::new())),
-        Err(err) => Err(format!(
-            "could not read the index from {}: {err}",
-            blobs.describe()
-        )),
-        Ok((raw, at)) => {
-            let mut entries: HashMap<String, IndexEntry> =
-                serde_json::from_slice(&raw).map_err(|err| {
-                    format!(
-                        "the index in {} is not readable ({err}); move it aside to start empty",
-                        blobs.describe()
-                    )
-                })?;
-            // `unowned` was introduced after the JSON index format.  It is
-            // intentionally not serialized, so infer it for old entries
-            // rather than making a public, ownerless document look private
-            // after a restart.
-            for entry in entries.values_mut() {
-                if entry.publisher.is_empty() && !entry.example {
-                    entry.unowned = true;
-                }
-            }
-            Ok((entries, at))
-        }
-    }
 }
 
 /// A document as it is created. There is one version of it from here on, and
@@ -493,9 +384,7 @@ pub struct Publication {
     /// The path of the main file. A publish of one file is a directory of one
     /// file, and this is what it is called in it.
     pub main: String,
-    pub owner: String,
     pub owner_id: String,
-    pub owner_name: String,
 }
 
 /// What `put` returns when a storage rule refuses an upload: the HTTP status
@@ -606,7 +495,7 @@ const STORE_JOB_BYTES: usize = 512;
 impl Store {
     pub async fn begin_delete(&self, slug: &str) -> Result<Option<String>, String> {
         let Some(catalog) = &self.catalog else {
-            return Ok(None);
+            return Err("store requires the local catalogue".into());
         };
         let slug = slug.to_string();
         catalog
@@ -618,28 +507,7 @@ impl Store {
             .map_err(|err| err.to_string())
     }
 
-    #[cfg(test)]
-    pub async fn open(
-        blobs: Arc<dyn BlobStore>,
-        config: Arc<Configuration>,
-    ) -> Result<Store, String> {
-        let (entries, index_version) = load_index(blobs.as_ref()).await?;
-        Ok(Store {
-            blobs,
-            config,
-            state: Mutex::new(StoreState {
-                entries,
-                index_version,
-                refreshed_at: None,
-            }),
-            catalog: None,
-        })
-    }
-
-    /// Open a store backed by the transactional catalogue. The old
-    /// `open` constructor intentionally remains available for isolated tests
-    /// and old callers, but production startup uses this constructor so no
-    /// whole-file JSON index is read or written.
+    /// Open a store backed by the authoritative transactional catalogue.
     pub async fn open_with_catalog(
         blobs: Arc<dyn BlobStore>,
         config: Arc<Configuration>,
@@ -650,85 +518,31 @@ impl Store {
         Ok(Store {
             blobs,
             config,
-            state: Mutex::new(StoreState {
-                entries: HashMap::new(),
-                index_version: String::new(),
-                refreshed_at: None,
-            }),
             catalog: Some(catalog),
         })
     }
 
-    /// A document by slug, or nothing if this deployment has none by that
-    /// name. A miss is retried once against storage before it is trusted: on
-    /// a single-writer deployment the extra check costs one round trip that
-    /// always confirms the miss, but on a shared bucket it is what makes a
-    /// document another instance just created visible here without every hit
-    /// -- the overwhelming majority of calls -- paying for a reload it does
-    /// not need.
-    #[allow(dead_code)]
+    /// Read current document metadata by slug.
+    #[cfg(test)]
     pub async fn get(&self, slug: &str) -> Option<IndexEntry> {
         if let Some(catalog) = &self.catalog {
             return load_catalog_entry(catalog, slug, true).await.ok().flatten();
         }
-        {
-            let mut state = self.state.lock().await;
-            if let Some(entry) = state.entries.get(slug).cloned() {
-                return Some(entry);
-            }
-            // A miss that follows another miss closely is answered from
-            // memory: the index was re-read moments ago, and a burst of
-            // guessed slugs must not become a burst of downloads.
-            let now = std::time::Instant::now();
-            if state
-                .refreshed_at
-                .is_some_and(|at| now.duration_since(at) < REFRESH_EVERY)
-            {
-                return None;
-            }
-            state.refreshed_at = Some(now);
-        }
-        if self.refresh().await.is_err() {
-            return None;
-        }
-        self.state.lock().await.entries.get(slug).cloned()
+        None
     }
 
-    /// Authoritative lookup for HTTP paths.  Unlike the compatibility
-    /// `get`, catalogue failures are returned to the caller instead of being
-    /// flattened into a misleading 404.
+    /// Read document metadata and propagate catalogue failures.
     pub async fn get_result(&self, slug: &str) -> Result<Option<IndexEntry>, CatalogError> {
         if let Some(catalog) = &self.catalog {
             return load_catalog_entry(catalog, slug, true).await;
         }
-        Ok(self.get(slug).await)
-    }
-
-    /// Return a publication still being staged. This is intentionally kept
-    /// out of ordinary reads and listings, but lets an exact retry reconcile
-    /// an unknown-commit request instead of inventing a new slug.
-    #[allow(dead_code)]
-    pub async fn pending_publication(&self, slug: &str) -> Option<IndexEntry> {
-        self.pending_publication_result(slug).await.ok().flatten()
-    }
-
-    pub async fn pending_publication_result(
-        &self,
-        slug: &str,
-    ) -> Result<Option<IndexEntry>, CatalogError> {
-        let Some(catalog) = self.catalog.as_ref() else {
-            return Ok(None);
-        };
-        let Some(document) = document_row(catalog, slug).await? else {
-            return Ok(None);
-        };
-        Ok(document
-            .pending_publication
-            .is_some()
-            .then(|| IndexEntry::from_catalog(document)))
+        Err(CatalogError::Invalid(
+            "store requires the local catalogue".into(),
+        ))
     }
 
     /// Every document, newest first, as the listing endpoint wants.
+    #[cfg(test)]
     pub async fn list(&self) -> Vec<IndexEntry> {
         if let Some(catalog) = &self.catalog {
             let mut entries: Vec<_> = catalog_entries(catalog)
@@ -739,10 +553,7 @@ impl Store {
             entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
             return entries;
         }
-        let state = self.state.lock().await;
-        let mut documents: Vec<IndexEntry> = state.entries.values().cloned().collect();
-        documents.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        documents
+        Vec::new()
     }
 
     pub async fn list_result(&self) -> Result<Vec<IndexEntry>, CatalogError> {
@@ -751,22 +562,9 @@ impl Store {
             entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
             return Ok(entries);
         }
-        Ok(self.list().await)
-    }
-
-    /// One bounded, authorization-aware catalogue page. Unlike the legacy
-    /// compatibility helpers this never turns a busy/corrupt catalogue into
-    /// an empty successful response.
-    #[allow(dead_code)]
-    pub async fn visible_page(
-        &self,
-        account_id: Option<&str>,
-        owner_key: Option<&str>,
-        cursor: Option<(&str, &str)>,
-        limit: u32,
-    ) -> Result<Vec<IndexEntry>, CatalogError> {
-        self.visible_page_with_options(account_id, owner_key, cursor, limit, true)
-            .await
+        Err(CatalogError::Invalid(
+            "store requires the local catalogue".into(),
+        ))
     }
 
     pub async fn visible_page_with_options(
@@ -824,10 +622,7 @@ impl Store {
         }
     }
 
-    /// The stored source of a document: the source of the version the index
-    /// names, and no other. A document published before sources were versioned
-    /// has one unversioned key instead, which is read when there is nothing
-    /// under the digest.
+    /// Read the current source from its verified, leased immutable object closure.
     pub async fn read_source(&self, slug: &str) -> Result<Vec<u8>, BlobError> {
         if let Some(catalog) = &self.catalog {
             let owner = catalog.clone();
@@ -935,224 +730,9 @@ impl Store {
                 (Ok(_), None) => Err(BlobError::Other("checkpoint read lease was lost".into())),
             };
         }
-        let (digest, identity) = {
-            let state = self.state.lock().await;
-            match state.entries.get(slug) {
-                Some(entry) => (entry.sha.clone(), slug.to_string()),
-                None => return Err(BlobError::NotFound),
-            }
-        };
-        self.blobs.get(&source_key(&identity, &digest)).await
-    }
-
-    pub async fn read(&self, slug: &str, digest: &str) -> Result<Vec<u8>, BlobError> {
-        let identity = match &self.catalog {
-            Some(catalog) => document_row(catalog, slug)
-                .await
-                .map_err(|error| BlobError::Other(error.to_string()))?
-                .map(|document| document.storage_id)
-                .filter(|identity| !identity.is_empty())
-                .unwrap_or_else(|| slug.to_string()),
-            None => slug.to_string(),
-        };
-        self.blobs.get(&document_key(&identity, digest)).await
-    }
-
-    /// Names a document in the index. It writes no bytes of the document
-    /// itself: the source becomes the first checkpoint, which the room writes,
-    /// and from then on the document is the session. What is decided here is
-    /// the half that has always been decided here -- whether this deployment
-    /// will hold another document, and whose it is.
-    ///
-    /// Admission and the index mutation happen under the same lock, so two
-    /// uploads racing for the last of a quota cannot both be admitted.
-    pub async fn put(&self, v: Publication) -> Result<IndexEntry, PutError> {
-        if self.catalog.is_some() {
-            return Err(PutError::Authorization {
-                status: 401,
-                message: "catalog publication requires an authenticated mutation actor",
-            });
-        }
-        let size = v.source.len() as i64;
-        let mut state = self.state.lock().await;
-        let admission_owner = v.owner.clone();
-        let admission_owner_id = v.owner_id.clone();
-        self.admit(
-            &state,
-            &v.slug,
-            &admission_owner,
-            &admission_owner_id,
-            size,
-            now_unix(),
-        )?;
-        let now = timestamp();
-        let mut created = now.clone();
-        let mut example = false;
-        let (mut owner, mut owner_id, mut owner_name) = (v.owner, v.owner_id, v.owner_name);
-        if let Some(existing) = state.entries.get(&v.slug) {
-            created = existing.created_at.clone();
-            // A replacement keeps what the document already is: an example
-            // stays an example, and its publisher -- and publisher id -- do not
-            // change hands. A document with no publisher belongs to no one in
-            // particular and stays that way: the first person to save it must
-            // not become its owner, or everyone else loses the document they
-            // were editing.
-            example = existing.example;
-            owner = existing.publisher.clone();
-            owner_id = existing.publisher_id.clone();
-            owner_name = existing.publisher_name.clone();
-        }
-        if state.entries.values().any(|entry| {
-            entry.slug != v.slug
-                && entry.publisher_id == owner_id
-                && (!owner_id.is_empty() || entry.publisher == owner.to_lowercase())
-                && entry.title.trim().to_lowercase() == v.title.trim().to_lowercase()
-        }) {
-            return Err(PutError::Authorization {
-                status: 409,
-                message: "A project with this name already exists. Choose a different name.",
-            });
-        }
-        // Who a document is shared with is not changed by its text changing.
-        let shared = state.entries.get(&v.slug).cloned().unwrap_or_default();
-        let entry = IndexEntry {
-            slug: v.slug.clone(),
-            storage_id: state
-                .entries
-                .get(&v.slug)
-                .map(|existing| existing.storage_id.clone())
-                .filter(|id| !id.is_empty())
-                // The JSON/index compatibility path historically addressed
-                // every room object by its slug.  Keep that identity stable
-                // for the legacy store; catalogue-backed documents get an
-                // independently allocated storage_id in put_catalog.
-                .unwrap_or_else(|| v.slug.clone()),
-            title: v.title,
-            // The digest of the source, which is the checkpoint the room is
-            // about to write. From here the index's `sha` names the newest
-            // checkpoint rather than an HTML object.
-            sha: digest_of(&v.source),
-            size,
-            created_at: created,
-            updated_at: now,
-            example,
-            unowned: owner.is_empty(),
-            publisher: owner.to_lowercase(),
-            publisher_id: owner_id,
-            publisher_name: owner_name,
-            source_format: v.source_format,
-            main: v.main,
-            links: shared.links,
-            guests: shared.guests,
-            bookmark_link_hash: None,
-        };
-        let previous = state.entries.insert(v.slug.clone(), entry.clone());
-        // `put` returns through `put_catalog` above whenever a catalogue
-        // exists, so everything from here on is the legacy JSON-index path
-        // and never touches the catalogue at all.
-        let mut written = self.save_locked(&mut state).await;
-        // Another process moved the index between our reading it and our
-        // writing it. The quota was decided against an index that no longer
-        // exists, so it is decided again against the one that does -- which is
-        // what stops two deployments sharing a bucket from both admitting the
-        // last of a quota. One retry: a second conflict means the index is
-        // busier than this write is worth.
-        if matches!(written, Err(BlobError::Conflict)) {
-            let stored = match self.reload_locked(&mut state, &v.slug).await {
-                Ok(stored) => stored,
-                Err(err) => {
-                    // The reload itself failed, so there is no fresher answer
-                    // for what storage actually holds. Fall back to what
-                    // this instance had before attempting the replacement,
-                    // rather than a bare removal that would delete a
-                    // document that was never actually gone.
-                    match previous.clone() {
-                        Some(previous) => {
-                            state.entries.insert(v.slug.clone(), previous);
-                        }
-                        None => {
-                            state.entries.remove(&v.slug);
-                        }
-                    }
-                    return Err(PutError::Storage(err));
-                }
-            };
-            // `admit` must see this exactly as storage does: a replacement
-            // when storage still has a row for this slug, a creation when it
-            // does not. Removing the slug unconditionally -- as this used to
-            // do -- turned every replacement retried here into a brand-new
-            // document, asking for a free document-count slot the document
-            // already occupied.
-            let mut reference = state.entries.clone();
-            match &stored {
-                Some(stored) => {
-                    reference.insert(v.slug.clone(), stored.clone());
-                }
-                None => {
-                    reference.remove(&v.slug);
-                }
-            }
-            let fresh = StoreState {
-                entries: reference,
-                index_version: state.index_version.clone(),
-                refreshed_at: state.refreshed_at,
-            };
-            if let Err(refused) = self.admit(
-                &fresh,
-                &v.slug,
-                &admission_owner,
-                &admission_owner_id,
-                size,
-                now_unix(),
-            ) {
-                // Memory must equal the index just reloaded: the entry
-                // storage actually has for this slug, or nothing if it never
-                // had one. Saving here -- as this used to do -- would
-                // overwrite that just-read index with a copy missing this
-                // slug, deleting a document the refused write only ever
-                // meant to replace.
-                match stored {
-                    Some(stored) => {
-                        state.entries.insert(v.slug.clone(), stored);
-                    }
-                    None => {
-                        state.entries.remove(&v.slug);
-                    }
-                }
-                return Err(refused);
-            }
-            if fresh.entries.values().any(|other| {
-                other.slug != entry.slug
-                    && other.publisher_id == entry.publisher_id
-                    && (!entry.publisher_id.is_empty() || other.publisher == entry.publisher)
-                    && other.title.trim().to_lowercase() == entry.title.trim().to_lowercase()
-            }) {
-                match stored {
-                    Some(stored) => {
-                        state.entries.insert(v.slug.clone(), stored);
-                    }
-                    None => {
-                        state.entries.remove(&v.slug);
-                    }
-                }
-                return Err(PutError::Authorization {
-                    status: 409,
-                    message: "A project with this name already exists. Choose a different name.",
-                });
-            }
-            written = self.save_locked(&mut state).await;
-        }
-        if let Err(err) = written {
-            // The index naming the document is not durable, so the document
-            // does not exist as far as any later run is concerned. Undo the
-            // in-memory half rather than report a success that will vanish.
-            match previous {
-                Some(previous) => state.entries.insert(v.slug.clone(), previous),
-                None => state.entries.remove(&v.slug),
-            };
-            return Err(PutError::Storage(err.to_string()));
-        }
-        Ok(entry)
+        Err(BlobError::Other(
+            "store requires the local catalogue".into(),
+        ))
     }
 
     /// Publish a catalogue-backed source with authority captured at the
@@ -1163,11 +743,7 @@ impl Store {
         v: Publication,
         actor: MutationActor,
     ) -> Result<IndexEntry, PutError> {
-        if self.catalog.is_some() {
-            self.put_catalog(v, actor).await
-        } else {
-            self.put(v).await
-        }
+        self.put_catalog(v, actor).await
     }
 
     /// Publish a complete source directory through the catalogue's immutable
@@ -1179,11 +755,7 @@ impl Store {
         files: Vec<(String, Vec<u8>)>,
         actor: MutationActor,
     ) -> Result<IndexEntry, PutError> {
-        if self.catalog.is_some() {
-            self.put_catalog_files(v, files, actor).await
-        } else {
-            self.put(v).await
-        }
+        self.put_catalog_files(v, files, actor).await
     }
 
     async fn put_catalog(
@@ -1203,7 +775,7 @@ impl Store {
         let catalog = self
             .catalog
             .as_ref()
-            .expect("put_catalog requires a catalogue");
+            .ok_or_else(|| PutError::Storage("store requires the local catalogue".into()))?;
         let existing = document_row(catalog, &v.slug)
             .await
             .map_err(|error| PutError::Storage(error.to_string()))?;
@@ -1879,149 +1451,7 @@ impl Store {
             .map_err(|error| PutError::Storage(error.to_string()))?
             .ok_or_else(|| PutError::Storage("catalogue document disappeared".into()))?;
         let entry = IndexEntry::from_catalog(document);
-        self.state
-            .lock()
-            .await
-            .entries
-            .insert(v.slug, entry.clone());
         Ok(entry)
-    }
-
-    /// Records what a document's session and history now cost, and -- when a
-    /// checkpoint has just been taken -- the checkpoint the index names. This
-    /// is the third step of a checkpoint, between the state and the manifest.
-    ///
-    /// A checkpoint is never refused for a quota, because refusing it would
-    /// lose work; `room_for` below is what the room sheds against instead. So
-    /// this records rather than admits.
-    pub async fn record_history(
-        &self,
-        slug: &str,
-        sha: Option<&str>,
-        size: i64,
-        format: &str,
-        main: &str,
-    ) -> Result<(), String> {
-        if let Some(catalog) = &self.catalog {
-            // Ordinary session/asset persistence is already covered by the
-            // exact object ledger.  It must not rewrite the document's
-            // measured size or totals while a checkpoint is being prepared;
-            // only a checkpoint head (identified by `sha`) reconciles the
-            // aggregate row.
-            if sha.is_none() {
-                return Ok(());
-            }
-            if document_row(catalog, slug)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|document| document.pending_publication)
-                .is_some()
-            {
-                let (slug, sha, format, main) = (
-                    slug.to_string(),
-                    sha.map(str::to_owned),
-                    format.to_string(),
-                    main.to_string(),
-                );
-                catalog
-                    .execute_catalog(STORE_JOB_BYTES + slug.len(), move |catalog| {
-                        catalog.stage_publication_measurement(
-                            &slug,
-                            sha.as_deref(),
-                            size,
-                            &format,
-                            &main,
-                        )
-                    })
-                    .await
-                    .map_err(|err| err.to_string())?;
-                return Ok(());
-            }
-            let updated_at = sha.map(|_| timestamp());
-            let document = {
-                let (owned_slug, sha, format, main) = (
-                    slug.to_string(),
-                    sha.map(str::to_owned),
-                    format.to_string(),
-                    main.to_string(),
-                );
-                catalog
-                    .execute_catalog(STORE_JOB_BYTES + owned_slug.len(), move |catalog| {
-                        catalog.record_document_measurement(
-                            &owned_slug,
-                            size,
-                            sha.as_deref(),
-                            updated_at.as_deref(),
-                            &format,
-                            &main,
-                        )
-                    })
-                    .await
-                    .map_err(|err| err.to_string())?
-            };
-            self.state
-                .lock()
-                .await
-                .entries
-                .insert(slug.to_string(), IndexEntry::from_catalog(document));
-            return Ok(());
-        }
-        let mut state = self.state.lock().await;
-        let mut retried = false;
-        loop {
-            let Some(entry) = state.entries.get(slug).cloned() else {
-                return Ok(());
-            };
-            let mut updated = entry.clone();
-            updated.size = size;
-            // The room is the authority on what the document is written in: a
-            // migrated document whose source was gone opens as the page it was
-            // published as, and the index has to say so or the browser fetches a
-            // renderer for a format the document is not in.
-            if !format.is_empty() {
-                updated.source_format = format.to_string();
-            }
-            // Which file is the main one lives in the shared document, where an
-            // editor changes it; the index keeps a copy because the landing page
-            // and the routes read the entry and never open the session.
-            if !main.is_empty() {
-                updated.main = main.to_string();
-            }
-            if let Some(sha) = sha {
-                updated.sha = sha.to_string();
-                updated.updated_at = timestamp();
-            }
-            if updated.size == entry.size
-                && updated.sha == entry.sha
-                && updated.source_format == entry.source_format
-                && updated.main == entry.main
-            {
-                return Ok(());
-            }
-            state.entries.insert(slug.to_string(), updated);
-            match self.save_locked(&mut state).await {
-                Ok(()) => return Ok(()),
-                Err(BlobError::Conflict) if !retried => {
-                    // Another instance moved the index first -- most likely
-                    // its own checkpoint for a different document. Reload
-                    // what it left and recompute this update against that,
-                    // once, rather than dropping a size or a checkpoint sha
-                    // that will make the next quota decision, or the next
-                    // reader, wrong until someone notices.
-                    state.entries.insert(slug.to_string(), entry);
-                    self.refresh_locked(&mut state).await?;
-                    retried = true;
-                }
-                Err(err) => {
-                    // The index did not move, so neither does the copy of it in
-                    // memory: a size recorded here and nowhere else would make the
-                    // next quota decision from a number no later run can see.
-                    state.entries.insert(slug.to_string(), entry);
-                    return Err(err.to_string());
-                }
-            }
-        }
     }
 
     /// Reject a conflicting name before a replacement upload writes content.
@@ -2036,22 +1466,7 @@ impl Store {
                 .await
                 .map_err(|err| err.to_string());
         }
-        let state = self.state.lock().await;
-        let Some(entry) = state.entries.get(slug) else {
-            return Ok(());
-        };
-        if title.is_empty() || title == entry.title {
-            return Ok(());
-        }
-        if state.entries.values().any(|other| {
-            other.slug != slug
-                && other.publisher_id == entry.publisher_id
-                && (!entry.publisher_id.is_empty() || other.publisher == entry.publisher)
-                && other.title.trim().to_lowercase() == title.trim().to_lowercase()
-        }) {
-            return Err("A project with this name already exists. Choose a different name.".into());
-        }
-        Ok(())
+        Err("store requires the local catalogue".into())
     }
 
     /// Renames a document. A publish onto an existing slug is an edit into its
@@ -2070,69 +1485,18 @@ impl Store {
             }
             document.title = title.to_string();
             document.updated_at = timestamp();
-            let document = catalog
+            catalog
                 .execute_catalog(STORE_JOB_BYTES + document.slug.len(), move |catalog| {
                     catalog.update_document(&document)
                 })
                 .await
                 .map_err(|err| err.to_string())?;
-            self.state
-                .lock()
-                .await
-                .entries
-                .insert(slug.to_string(), IndexEntry::from_catalog(document));
             return Ok(());
         }
-        let mut state = self.state.lock().await;
-        let mut retried = false;
-        loop {
-            let Some(entry) = state.entries.get(slug).cloned() else {
-                return Ok(());
-            };
-            if entry.title == title || title.is_empty() {
-                return Ok(());
-            }
-            if state.entries.values().any(|other| {
-                other.slug != slug
-                    && other.publisher_id == entry.publisher_id
-                    && (!entry.publisher_id.is_empty() || other.publisher == entry.publisher)
-                    && other.title.trim().to_lowercase() == title.trim().to_lowercase()
-            }) {
-                return Err(
-                    "A project with this name already exists. Choose a different name.".into(),
-                );
-            }
-            let mut updated = entry.clone();
-            updated.title = title.to_string();
-            updated.updated_at = timestamp();
-            state.entries.insert(slug.to_string(), updated);
-            match self.save_locked(&mut state).await {
-                Ok(()) => return Ok(()),
-                Err(BlobError::Conflict) if !retried => {
-                    state.entries.insert(slug.to_string(), entry);
-                    self.refresh_locked(&mut state).await?;
-                    retried = true;
-                }
-                Err(err) => {
-                    state.entries.insert(slug.to_string(), entry);
-                    return Err(err.to_string());
-                }
-            }
-        }
+        Err("store requires the local catalogue".into())
     }
 
-    /// Rewrites one entry -- whom it is shared with, who owns it -- under the
-    /// same lock every other index write takes. The change is applied to a
-    /// copy, so a refused write leaves the entry exactly as it was, and the
-    /// closure may refuse it itself, which is how a grant the deployment's
-    /// switches forbid is turned away without anything being written.
-    ///
-    /// `change` may run twice: once against the entry this instance had, and
-    /// -- only if that save loses the compare-and-swap to a write from
-    /// another instance -- once more against the entry the winner left
-    /// behind. It must therefore be a plain function of the entry it is
-    /// given, not of anything captured that a second run would repeat, which
-    /// every caller in this codebase already is.
+    /// Update access metadata through the catalogue transaction boundary.
     pub async fn modify<F>(&self, slug: &str, change: F) -> Result<IndexEntry, ModifyError>
     where
         F: Fn(&mut IndexEntry) -> Result<(), String>,
@@ -2152,43 +1516,11 @@ impl Store {
                 .await
                 .map_err(|err| ModifyError::Storage(err.to_string()))?
                 .ok_or(ModifyError::NotFound)?;
-            self.state
-                .lock()
-                .await
-                .entries
-                .insert(slug.to_string(), refreshed.clone());
             return Ok(refreshed);
         }
-        let mut state = self.state.lock().await;
-        let mut retried = false;
-        loop {
-            let Some(entry) = state.entries.get(slug).cloned() else {
-                return Err(ModifyError::NotFound);
-            };
-            let mut updated = entry.clone();
-            change(&mut updated).map_err(ModifyError::Refused)?;
-            state.entries.insert(slug.to_string(), updated.clone());
-            match self.save_locked(&mut state).await {
-                Ok(()) => return Ok(updated),
-                Err(BlobError::Conflict) if !retried => {
-                    // Another instance moved the index first -- maybe with
-                    // exactly the revocation or grant this call is racing.
-                    // Reload what it left and retry this edit against that,
-                    // once, instead of reporting a conflict the caller has no
-                    // way to act on and leaving this instance's index stale
-                    // for every read after this one too.
-                    state.entries.insert(slug.to_string(), entry);
-                    if let Err(err) = self.refresh_locked(&mut state).await {
-                        return Err(ModifyError::Storage(err));
-                    }
-                    retried = true;
-                }
-                Err(err) => {
-                    state.entries.insert(slug.to_string(), entry);
-                    return Err(ModifyError::Storage(err.to_string()));
-                }
-            }
-        }
+        Err(ModifyError::Storage(
+            "store requires the local catalogue".into(),
+        ))
     }
 
     pub async fn modify_as_owner<F>(
@@ -2201,7 +1533,9 @@ impl Store {
         F: Fn(&mut IndexEntry) -> Result<(), String>,
     {
         let Some(catalog) = &self.catalog else {
-            return self.modify(slug, change).await;
+            return Err(ModifyError::Storage(
+                "store requires the local catalogue".into(),
+            ));
         };
         let Some(mut entry) = load_catalog_entry(catalog, slug, true)
             .await
@@ -2217,255 +1551,13 @@ impl Store {
             .await
             .map_err(|err| ModifyError::Storage(err.to_string()))?
             .ok_or(ModifyError::NotFound)?;
-        self.state
-            .lock()
-            .await
-            .entries
-            .insert(slug.to_string(), entry.clone());
         Ok(entry)
     }
 
-    /// Hands a visitor's documents to the account that has just signed in:
-    /// every entry whose publisher is that visitor key is rewritten to the
-    /// login and the numeric id, and the quota moves with them, since the
-    /// quota is counted by publisher. A document with no publisher at all is
-    /// nobody's to adopt and stays as it is. Returns how many moved.
-    pub async fn adopt(
-        &self,
-        visitor_key: &str,
-        login: &str,
-        id: &str,
-        name: &str,
-    ) -> Result<usize, String> {
-        if visitor_key.is_empty() || login.is_empty() {
-            return Ok(0);
-        }
-        if let Some(catalog) = &self.catalog {
-            let provider = id.split_once(':').map(|part| part.0).unwrap_or("github");
-            let account = Account {
-                id: id.to_string(),
-                provider: provider.into(),
-                handle: login.to_lowercase(),
-                name: name.to_string(),
-                email: String::new(),
-                first_seen: timestamp(),
-                last_seen: timestamp(),
-                plan: "default".into(),
-                status: "active".into(),
-                session_generation: if cfg!(test) {
-                    "test-session-generation".into()
-                } else {
-                    random_storage_id()
-                },
-                erasure_cursor: None,
-            };
-            let visitor = visitor_key.to_string();
-            let new_owner = id.to_string();
-            let per_owner = self.config.storage.per_owner;
-            // The account row and every transfer it authorises run in one job.
-            // Each transfer is still its own transaction, exactly as before;
-            // what the job removes is the runtime worker parked on the
-            // connection once per document in the deployment.
-            let moved = catalog
-                .execute_catalog(STORE_JOB_BYTES + account.id.len(), move |catalog| {
-                    catalog.upsert_account(&account)?;
-                    let mut moved = 0;
-                    let mut cursor: Option<(String, String)> = None;
-                    loop {
-                        let page = catalog.documents_page(
-                            cursor
-                                .as_ref()
-                                .map(|(updated, slug)| (updated.as_str(), slug.as_str())),
-                            CATALOG_PAGE_SIZE,
-                        )?;
-                        if page.is_empty() {
-                            break;
-                        }
-                        for document in &page {
-                            if document.owner_id.is_none() && document.owner_key == visitor {
-                                catalog.transfer_ownership(
-                                    &document.slug,
-                                    &new_owner,
-                                    per_owner,
-                                )?;
-                                moved += 1;
-                            }
-                        }
-                        cursor = page
-                            .last()
-                            .map(|document| (document.updated_at.clone(), document.slug.clone()));
-                    }
-                    Ok(moved)
-                })
-                .await
-                .map_err(|err| err.to_string())?;
-            let entries = catalog_entries(catalog)
-                .await
-                .map_err(|err| err.to_string())?;
-            let mut state = self.state.lock().await;
-            for (slug, entry) in entries {
-                state.entries.insert(slug, entry);
-            }
-            return Ok(moved);
-        }
-        let mut state = self.state.lock().await;
-        let mut retried = false;
-        loop {
-            let mine: Vec<String> = state
-                .entries
-                .values()
-                .filter(|entry| !entry.publisher.is_empty() && entry.publisher == visitor_key)
-                .map(|entry| entry.slug.clone())
-                .collect();
-            if mine.is_empty() {
-                return Ok(0);
-            }
-            let before = state.entries.clone();
-            for slug in &mine {
-                if let Some(entry) = state.entries.get_mut(slug) {
-                    entry.publisher = login.to_lowercase();
-                    entry.publisher_id = id.to_string();
-                    entry.publisher_name = name.to_string();
-                }
-            }
-            match self.save_locked(&mut state).await {
-                Ok(()) => return Ok(mine.len()),
-                Err(BlobError::Conflict) if !retried => {
-                    // Reload and recompute which documents are still the
-                    // visitor's to adopt: another instance may have already
-                    // moved some of them, or none, and the answer has to come
-                    // from what is actually stored, not from this instance's
-                    // now-stale guess.
-                    state.entries = before;
-                    self.refresh_locked(&mut state).await?;
-                    retried = true;
-                }
-                Err(err) => {
-                    state.entries = before;
-                    return Err(err.to_string());
-                }
-            }
-        }
-    }
-
-    /// How many bytes this document may occupy before it carries its owner or
-    /// the deployment over a ceiling. `None` for a document with no index
-    /// entry, which has no owner to charge and no ceiling to reach.
-    pub async fn room_for(&self, slug: &str) -> Option<i64> {
-        // `state.entries` is only a compatibility cache in catalogue mode: it
-        // starts empty in `open_with_catalog` and gains a slug only once
-        // something else has already looked it up. Answering from that cache
-        // alone means a document untouched since startup reads as "no
-        // ceiling" instead of the ceiling it actually has, and even a cached
-        // document's ceiling is computed against whatever fraction of the
-        // deployment happens to be cached rather than the whole of it. The
-        // catalogue, when there is one, is asked directly instead.
-        if let Some(catalog) = &self.catalog {
-            let limits = self.config.storage;
-            let slug = slug.to_string();
-            return catalog
-                .execute_catalog(STORE_JOB_BYTES + slug.len(), move |catalog| {
-                    catalog.physical_room_for(&slug, limits.per_owner, limits.total)
-                })
-                .await
-                .ok()?;
-        }
-        let state = self.state.lock().await;
-        let entry = state.entries.get(slug)?;
-        let owner = entry.publisher.clone();
-        let (mut total, mut mine) = (0i64, 0i64);
-        for (key, other) in &state.entries {
-            if key == slug {
-                continue;
-            }
-            total += other.size;
-            if other.publisher == owner {
-                mine += other.size;
-            }
-        }
-        let limits = self.config.storage;
-        Some((limits.total - total).min(limits.per_owner - mine).max(0))
-    }
-
-    /// Enforces the storage ceilings a write must clear, under the lock that
-    /// makes its index entry. `owner` is the caller's owner key exactly as
-    /// `Server::owner` returns it -- a GitHub login, a visitor key, or "" for
-    /// the one bucket every unidentified caller shares.
-    fn admit(
-        &self,
-        state: &StoreState,
-        slug: &str,
-        owner: &str,
-        owner_id: &str,
-        size: i64,
-        now: i64,
-    ) -> Result<(), PutError> {
-        let existing = state.entries.get(slug);
-        let replacing = existing.is_some();
-        let previous_size = existing.map(|e| e.size).unwrap_or(0);
-
-        let (mut total_bytes, mut owner_bytes) = (0i64, 0i64);
-        let mut owner_documents = 0usize;
-        let mut owner_uploads_this_hour = 0usize;
-        let cutoff = now - 3600;
-        for (key, entry) in &state.entries {
-            total_bytes += entry.size;
-            let same_owner = if !owner_id.is_empty() {
-                entry.publisher_id == owner_id
-            } else {
-                entry.publisher == owner
-            };
-            if !same_owner {
-                continue;
-            }
-            owner_bytes += entry.size;
-            // The document being replaced is not a new document, and is not
-            // counted again against the count it already counts toward.
-            if key != slug {
-                owner_documents += 1;
-            }
-            if parse_timestamp(&entry.updated_at).is_some_and(|updated| updated > cutoff) {
-                owner_uploads_this_hour += 1;
-            }
-        }
-        total_bytes += size - previous_size;
-        owner_bytes += size - previous_size;
-
-        let limits = self.config.storage;
-        if total_bytes > limits.total {
-            return Err(PutError::Quota {
-                status: 507,
-                message: "this deployment has no room left",
-            });
-        }
-        if owner_bytes > limits.per_owner {
-            return Err(PutError::Quota {
-                status: 507,
-                message: "your storage quota is used up; delete a document first",
-            });
-        }
-        if !replacing && owner_documents >= limits.documents_per_owner {
-            return Err(PutError::Quota {
-                status: 507,
-                message: "you have reached the document limit; delete one first",
-            });
-        }
-        if owner_uploads_this_hour >= limits.uploads_per_hour {
-            return Err(PutError::Quota {
-                status: 429,
-                message: "too many uploads this hour; try later",
-            });
-        }
-        Ok(())
-    }
-
-    /// Deletes every stored version of a document and its index entry,
-    /// returning how many versions went. The index entry goes last: until it
-    /// does the document is still listed, which is a better half-state than a
-    /// listing pointing at nothing.
+    /// Begin deletion and collect eligible canonical objects through the bounded worker.
     pub async fn remove(&self, slug: &str) -> Result<usize, String> {
         if let Some(catalog) = &self.catalog {
-            let document = document_row(catalog, slug)
+            let _document = document_row(catalog, slug)
                 .await
                 .map_err(|err| err.to_string())?
                 .ok_or_else(|| format!("document {slug} was not found"))?;
@@ -2477,57 +1569,6 @@ impl Store {
                     })
                     .await
                     .map_err(|err| err.to_string())?;
-            }
-            let mut keys: Vec<(String, i64)> = Vec::new();
-            for prefix in
-                crate::storage::maintenance::document_object_prefixes(slug, &document.storage_id)
-            {
-                let found = self
-                    .blobs
-                    .list(&prefix)
-                    .await
-                    .map_err(|err| format!("could not enumerate document objects: {err}"))?;
-                keys.extend(found.into_iter().map(|object| (object.key, object.size)));
-            }
-            keys.extend(
-                [
-                    examples_key(slug),
-                    room_key(slug),
-                    room_lock_key(slug),
-                    crate::storage::blob::session_key(slug),
-                    crate::storage::blob::history_index_key(slug),
-                    format!("chat/{slug}.json"),
-                    format!("documents/{slug}"),
-                ]
-                .into_iter()
-                .map(|key| (key, 0)),
-            );
-            keys.sort_by(|left, right| left.0.cmp(&right.0));
-            keys.dedup_by(|left, right| left.0 == right.0);
-            // These are compatibility sidecars, outside the canonical v2
-            // object graph. Their names come only from exact document-owned
-            // prefixes and fixed keys, so they can be removed directly after
-            // the document has entered the deleting state. Canonical v2
-            // objects are deliberately absent from this list and are handled
-            // by the object-row collector below.
-            let mut removed = 0;
-            for (key, _) in &keys {
-                let outcome = self
-                    .blobs
-                    .delete_each(std::slice::from_ref(key))
-                    .await
-                    .map_err(|err| format!("could not reclaim document sidecars: {err}"))?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| "storage returned no sidecar deletion result".to_string())?;
-                if outcome.confirmed() {
-                    removed += 1;
-                } else {
-                    return Err(format!(
-                        "could not confirm document sidecar deletion: {}",
-                        outcome.why()
-                    ));
-                }
             }
             // Canonical v2 journal bases and segments are catalogue objects.
             // They are rooted by the document row until begin_delete clears
@@ -2541,7 +1582,7 @@ impl Store {
                 crate::storage::maintenance::DeletionLimits::default(),
             )
             .map_err(|err| err.to_string())?;
-            gc_worker
+            let report = gc_worker
                 .run_v2_once(crate::util::now_millis())
                 .await
                 .map_err(|err| format!("could not run v2 document cleanup: {err}"))?;
@@ -2565,165 +1606,9 @@ impl Store {
                     Err(err) => return Err(err.to_string()),
                 }
             }
-            self.state.lock().await.entries.remove(slug);
-            return Ok(removed);
+            return Ok(report.objects_deleted as usize);
         }
-        let mut removed = 0;
-        if let Ok(found) = self.blobs.list(&document_prefix(slug)).await {
-            let keys: Vec<String> = found.into_iter().map(|o| o.key).collect();
-            if !keys.is_empty() && self.blobs.delete(&keys).await.is_ok() {
-                removed = keys.len();
-            }
-        }
-        // The sources are not versions of the document, so they are not
-        // counted among them; they go with it all the same.
-        if let Ok(found) = self.blobs.list(&source_prefix(slug)).await {
-            let sources: Vec<String> = found.into_iter().map(|o| o.key).collect();
-            if !sources.is_empty() {
-                let _ = self.blobs.delete(&sources).await;
-            }
-        }
-        // The history and the live document go with the document, which is
-        // what destroy has promised in the README since before there was a
-        // history to delete.
-        if let Ok(found) = self
-            .blobs
-            .list(&crate::storage::blob::history_prefix(slug))
-            .await
-        {
-            let keys: Vec<String> = found.into_iter().map(|o| o.key).collect();
-            if !keys.is_empty() {
-                let _ = self.blobs.delete(&keys).await;
-            }
-        }
-        let _ = self
-            .blobs
-            .delete(&[
-                examples_key(slug),
-                room_key(slug),
-                room_lock_key(slug),
-                crate::storage::blob::session_key(slug),
-                crate::storage::blob::history_index_key(slug),
-                format!("chat/{slug}.json"),
-            ])
-            .await;
-
-        let mut state = self.state.lock().await;
-        let mut retried = false;
-        loop {
-            state.entries.remove(slug);
-            match self.save_locked(&mut state).await {
-                Ok(()) => return Ok(removed),
-                Err(BlobError::Conflict) if !retried => {
-                    // Removing an already-removed slug is still the outcome
-                    // asked for, so there is nothing to reapply here beyond
-                    // reloading and removing again against what is current.
-                    self.refresh_locked(&mut state).await?;
-                    retried = true;
-                }
-                Err(err) => return Err(err.to_string()),
-            }
-        }
-    }
-
-    /// Writes the index, and only over the version these entries were read
-    /// from. On a single-writer deployment the mutex already guarantees that,
-    /// and the check costs a comparison; on a bucket two processes can reach,
-    /// it is what stops one of them overwriting the other's documents. A
-    /// conflict is reported rather than retried, because what to do about it
-    /// is the caller's decision.
-    ///
-    /// Only ever called in legacy JSON-index mode: every catalogue-backed
-    /// caller returns before reaching this, so there is no catalogue branch
-    /// here to keep in sync with the catalogue schema.
-    pub async fn save_locked(&self, state: &mut StoreState) -> Result<(), BlobError> {
-        let raw =
-            serde_json::to_vec(&state.entries).map_err(|err| BlobError::Other(err.to_string()))?;
-        let at = self
-            .blobs
-            .swap(INDEX_KEY, raw, &state.index_version)
-            .await?;
-        state.index_version = at;
-        Ok(())
-    }
-
-    /// Re-reads the index into these entries, keeping this process's own
-    /// pending change to `slug`. Called when a write loses the
-    /// compare-and-swap: another process moved the index, so the quota
-    /// decision that was made against the old one has to be made again against
-    /// the new one. That is what serializes admission deployment-wide -- a
-    /// decision is only ever committed against the index it was made from.
-    ///
-    /// Returns whatever storage actually had for `slug` before this process's
-    /// own in-flight change was laid back over it, so a caller that ends up
-    /// refusing that change can restore exactly what was there rather than
-    /// guessing -- or, worse, assuming there was nothing.
-    async fn reload_locked(
-        &self,
-        state: &mut StoreState,
-        slug: &str,
-    ) -> Result<Option<IndexEntry>, String> {
-        let (entries, at) = load_index(self.blobs.as_ref()).await?;
-        let stored = entries.get(slug).cloned();
-        let mine = state.entries.get(slug).cloned();
-        state.entries = entries;
-        state.index_version = at;
-        if let Some(mine) = mine {
-            state.entries.insert(slug.to_string(), mine);
-        } else {
-            state.entries.remove(slug);
-        }
-        Ok(stored)
-    }
-
-    /// Reloads the index from storage into `state`, unconditionally. Unlike
-    /// `reload_locked`, which keeps this process's own not-yet-durable value
-    /// for the one document it was admitting, this discards everything held
-    /// in memory: it is what every other losing write retries against, since
-    /// the value to redo the edit on is whatever the winner actually left,
-    /// not this instance's guess at it.
-    async fn refresh_locked(&self, state: &mut StoreState) -> Result<(), String> {
-        let (entries, at) = load_index(self.blobs.as_ref()).await?;
-        state.entries = entries;
-        state.index_version = at;
-        Ok(())
-    }
-
-    /// Reloads the index if the copy in storage has moved past the one this
-    /// process is holding, and does nothing at all -- not even a parse -- if
-    /// it has not. `get` calls this on a miss, which is the read-side half of
-    /// catching up with another instance sharing the same storage: a document
-    /// published there becomes visible here, at the cost of one read that, on
-    /// the single-writer deployment this store is built for, always confirms
-    /// there was nothing to catch up on.
-    pub async fn refresh(&self) -> Result<(), String> {
-        let mut state = self.state.lock().await;
-        match self.blobs.get_versioned(INDEX_KEY).await {
-            Ok((raw, at)) => {
-                if at == state.index_version {
-                    return Ok(());
-                }
-                let entries: HashMap<String, IndexEntry> =
-                    serde_json::from_slice(&raw).map_err(|err| {
-                        format!(
-                            "the index in {} is not readable ({err}); move it aside to start empty",
-                            self.blobs.describe()
-                        )
-                    })?;
-                state.entries = entries;
-                state.index_version = at;
-                Ok(())
-            }
-            // No index in storage is not news this process should act on:
-            // either there never was one, and memory is already empty, or it
-            // went missing under a running deployment, and forgetting every
-            // document here would only make that worse. What is held stays.
-            Err(BlobError::NotFound) => Ok(()),
-            Err(err) => Err(format!(
-                "could not read the index from {}: {err}",
-                self.blobs.describe()
-            )),
-        }
+        Err("store requires the local catalogue".into())
     }
 }
 

@@ -621,11 +621,7 @@ fn operation_authorized_in_tx(
     } else {
         owner_key.to_owned()
     };
-    let legacy_account_actor = !account_id.is_empty()
-        && authorization.get("session_generation").is_none()
-        && actor_key == account_id;
-
-    if expected_actor != actor_key && !legacy_account_actor {
+    if expected_actor != actor_key {
         return Err(CatalogError::refused(
             CatalogRefusal::ActorRights,
             "operation actor proof changed",
@@ -4082,5 +4078,27 @@ impl Catalog {
             tx.execute("UPDATE operations SET state=?1,result_json=?2,completed_at=?3,receipt_expires_at=?4,updated_at=max(updated_at,?3) WHERE id=?5 AND state='prepared'", params![final_state,result_json,now.0,receipt_expires,operation_id.as_str()]).map_err(CatalogError::from)?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod actor_proof_tests {
+    use super::*;
+
+    #[test]
+    fn operation_proof_rejects_unprefixed_account_identity() {
+        let catalog = Catalog::open_in_memory().unwrap();
+        let error = catalog
+            .immediate(|tx| {
+                operation_authorized_in_tx(
+                    tx,
+                    "doc",
+                    "owner",
+                    r#"{"authority":{"account_id":"owner","generation":"session"}}"#,
+                    "editor",
+                )
+            })
+            .unwrap_err();
+        assert_eq!(error.refusal(), CatalogRefusal::ActorRights);
     }
 }

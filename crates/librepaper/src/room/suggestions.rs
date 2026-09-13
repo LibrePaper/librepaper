@@ -254,17 +254,7 @@ impl Room {
     /// `request_id` is the caller's idempotency token: retrying the request
     /// that already accepted this comment answers with what happened the
     /// first time rather than reapplying the edit.
-    #[allow(dead_code)]
-    pub async fn accept_suggestion(
-        &self,
-        comment_id: &str,
-        request_id: &str,
-        by: impl Into<Attribution>,
-    ) -> Result<Accepted, AcceptError> {
-        self.accept_suggestion_authorized(comment_id, request_id, by, "", "")
-            .await
-    }
-
+    #[cfg(test)]
     pub async fn accept_suggestion_authorized(
         &self,
         comment_id: &str,
@@ -947,11 +937,8 @@ impl Room {
                 }
             }
         }
-        // The outcome is prepared on a copy under state. Where the acceptance
-        // has no catalogue receipt of its own, the list it produces is what
-        // gets persisted -- with state released -- and installing it is that
-        // write's last phase. Where the receipt above is already the durable
-        // record, only the in-memory copy is left to update.
+        // The catalog receipt above is durable; install its outcome into
+        // the resident comment cache.
         let prepared = {
             let state = self.state.lock().await;
             state
@@ -965,21 +952,12 @@ impl Room {
                     done.resolved_in = sha.clone();
                     done.outcome = "accepted".to_string();
                     done.accept_request = request_id.to_string();
-                    let mut list = state.comments.clone();
-                    list[index] = done.clone();
-                    (done, list, state.seq)
+                    done
                 })
         };
-        if let Some((done, list, seq)) = prepared {
-            if self.catalog.get().is_none() || request_id.is_empty() {
-                let _comment_writer = self.comment_write.lock().await;
-                self.persist_comments(seq, list)
-                    .await
-                    .map_err(AcceptError::Failed)?;
-            } else {
-                let mut state = self.state.lock().await;
-                install_comment(&mut state, done);
-            }
+        if let Some(done) = prepared {
+            let mut state = self.state.lock().await;
+            install_comment(&mut state, done);
         }
 
         Ok(Accepted::Applied {
@@ -994,11 +972,7 @@ impl Room {
     /// that a reject also records the outcome and always resolves (rather
     /// than toggling), and that an accepted suggestion refuses it, because
     /// the text it proposed is already in the document.
-    #[allow(dead_code)]
-    pub async fn reject_suggestion(&self, comment_id: &str) -> Result<Value, String> {
-        self.reject_suggestion_authorized(comment_id, "", "").await
-    }
-
+    #[cfg(test)]
     pub async fn reject_suggestion_authorized(
         &self,
         comment_id: &str,
@@ -1065,8 +1039,6 @@ impl Room {
         rejected.resolved_at = Some(timestamp());
         rejected.resolved_in = current;
         rejected.outcome = "rejected".to_string();
-        let prepared = self.legacy_list_with(&state, index, &rejected);
-        let seq = state.seq;
         drop(state);
         let persisted = if let Some(catalog) = self.catalog.get() {
             match catalog_comment_row(&self.slug, &rejected) {
@@ -1074,7 +1046,7 @@ impl Room {
                 Err(error) => Err(error),
             }
         } else {
-            self.persist_comments(seq, prepared).await
+            Err("durable catalog required".into())
         };
         if persisted.is_err() {
             return Err("could not save that comment; try again".into());

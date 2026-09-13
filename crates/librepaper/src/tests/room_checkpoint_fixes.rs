@@ -6,7 +6,6 @@ use super::room::{
 use crate::config::Configuration;
 use crate::document::session;
 use crate::room::{self, Outgoing};
-use crate::storage::blob;
 use std::time::Duration;
 
 #[tokio::test]
@@ -148,11 +147,6 @@ async fn unchanged_checkpoint_keeps_current_event_with_stale_manifest() {
 #[tokio::test]
 async fn checkpoint_tree_and_session_generation_do_not_cross() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = crate::room::RoomSet::new(
         hooked.clone(),

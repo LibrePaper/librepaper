@@ -1,10 +1,6 @@
-**Catalog v2: migration to twelve tables**
+**Catalog v2: native twelve-table storage contract**
 
-Status: proposed implementation specification. Date: 2026-09-12. This document supersedes the table-preserving recommendations in `docs/sql-schema-review.md` where they conflict. The objective is a substantially simpler storage model for unreleased software, accepting explicit breaking changes. It is not a request to implement forty-seven logical tables inside JSON columns.
-
-Revision: incorporates the subsequent schema review. Twelve tables remain the target; the changes add enforceable local constraints, bounded accounting/reference counters, and explicit transaction contracts rather than more tables.
-
-The accompanying [catalog-v2.sql](catalog-v2.sql) is the normative proposed DDL. It is deliberately outside the application's migrations directory. This specification, that DDL, and the acceptance scenarios together define the implementation target. The existing application has not been migrated by writing these files.
+This document describes the native catalogue schema and its transaction invariants. The application uses [schema.sql](../../crates/librepaper/src/storage/catalog/schema.sql) as its fresh database baseline; [catalog-v2.sql](catalog-v2.sql) is the reviewed schema mirror. Acceptance scenarios describe required behavior, not a claim that every performance target has been measured.
 
 **1. Outcome and boundaries**
 
@@ -27,9 +23,9 @@ The completed application shall have exactly twelve persistent application table
 
 SQLite internal tables are excluded from this count. There shall be no extra durable tables for source encodings, journal coverage, retention candidates, rate buckets, key rotation metadata, cancellation flags, or derived result formats. There shall be no generic entities/attributes table, generic graph engine, persisted workflow DAG, or unrestricted key/value store. Ordinary views are permitted only when they express a named reusable query and are declared centrally; none is required by the baseline.
 
-Retain the real product: source editing, collaboration, immutable history, explicit rendered publication, all five source formats, sharing, suggestions, agent workflows, ownership transfer, account erasure, local deployment, and recoverable backups. Retain compression and within-document content reuse. The production storage implementation currently present is `FsStore`; the migration must first work with its actual durability and task-lifetime behavior. Support for an arbitrary future remote blob adapter is not a prerequisite and must not be claimed without validating its I/O settlement contract.
+Retain the real product: source editing, collaboration, immutable history, explicit rendered publication, all five source formats, sharing, suggestions, agent workflows, ownership transfer, account erasure, local deployment, and recoverable backups. Retain compression and within-document content reuse. The production storage implementation currently present is `FsStore`; the implementation must respect its actual durability and task-lifetime behavior. Support for an arbitrary future remote blob adapter is not a prerequisite and must not be claimed without validating its I/O settlement contract.
 
-Do not introduce distributed SQL, multiple active deployment writers, cross-document deduplication, multiple provider identities per account, organizations, or a configurable workflow platform during this migration.
+Do not introduce distributed SQL, multiple active deployment writers, cross-document deduplication, multiple provider identities per account, organizations, or a configurable workflow platform in this storage model.
 
 **2. Deliberate behavior changes**
 
@@ -51,7 +47,7 @@ These changes are part of the design, rather than accidental losses discovered d
 | Old publications | Preserve current rendered publication. Historical publication IDs remain provenance, not a guarantee that old rendered bundles stay downloadable |
 | Historical parents | Preserve original event parent identifiers; indicate missing ancestors at read time rather than rewrite retained ancestry |
 | Source mutation contention | One in-flight source writer per document. Competing mutations receive a typed busy/conflict response; display staging and ordinary annotation writes remain independent |
-| Existing databases | No in-place rewrite of a live v1 database. Fresh v2 root or offline conversion into a separate root |
+| Existing databases | No in-place rewrite of a live v1 database. Distinct empty root required; unsupported databases are rejected |
 
 All protocol/manual/UI changes necessary to communicate these decisions are implementation work, not follow-up suggestions. In particular, update `docs/protocol/publication.md`, quota pages, preview/apply wording, and CLI error handling.
 
@@ -59,7 +55,7 @@ All protocol/manual/UI changes necessary to communicate these decisions are impl
 
 `documents.id` is the old immutable `storage_id`, when converting. `slug` is a unique public address. Every relational document reference uses `document_id`; SQL shall never join through a slug to reach object ownership. Object paths must not depend on a mutable slug. Slug changes are permitted by the model; adding a rename endpoint is outside scope.
 
-New object and operation IDs are random 128-bit identifiers encoded as lowercase hexadecimal. Checkpoint IDs identify events, not content. New checkpoint events use random IDs; the converter may preserve nonempty legacy event IDs. Existing API validators that assume every revision/event ID has 64 characters must be changed. Digests are lowercase SHA-256 hex; the application validates shape in addition to SQL length checks. Cross-document references use composite foreign keys and fail even when two documents happen to reuse an event or object ID.
+New object and operation IDs are random 128-bit identifiers encoded as lowercase hexadecimal. Checkpoint IDs identify events, not content. Checkpoint events use random IDs. Existing API validators that assume every revision/event ID has 64 characters must be changed. Digests are lowercase SHA-256 hex; the application validates shape in addition to SQL length checks. Cross-document references use composite foreign keys and fail even when two documents happen to reuse an event or object ID.
 
 Use Unix milliseconds in all SQL time columns. Wire responses continue to use RFC3339 where appropriate, with conversion in one utility module. NULL means absent. Empty strings and `-1` shall not mean “no expiry,” “no parent,” “no publication,” or “allocate sequence” in persisted state. Empty body/label display values remain legitimate where specified. Logical sequence allocation is independent of clocks.
 
@@ -102,7 +98,7 @@ An account is one of:
 
 This is a narrow ownership model, not a universal principals abstraction. Account kind never grants a visitor permission. Open publishing is an explicit document mode plus deployment policy. Requests cannot claim an owner identity by sending the system account ID or a historical sentinel such as `unowned`.
 
-Registered provider and subject are stored separately with a unique pair. Existing provider-qualified account IDs may remain the internal account IDs during conversion. Handle and display name are mutable labels. Email is nullable and is never an identity merge key. Linking multiple providers to one account is outside v2.
+Registered provider and subject are stored separately with a unique pair. Provider-qualified account IDs are internal account IDs. Handle and display name are mutable labels. Email is nullable and is never an identity merge key. Linking multiple providers to one account is outside v2.
 
 `preferences_json` contains the simplified defaults, display timezone, warning preferences, and other small account settings. `preferences_revision` provides optimistic concurrency. Per-document overrides move to the document that owns them. Large per-document maps must not accumulate in account preferences.
 
@@ -132,9 +128,9 @@ There is no `pending_publication` JSON blob on the document. Prepared work is in
 
 **6. Sharing and attribution**
 
-Keep the existing role ladder: reader < commenter < editor < owner. Ownership exists only on documents. Grants and links cannot grant owner. Collapse multiple legacy grant rows to their strongest effective role during conversion. Removing a v2 grant removes that one effective grant; no hidden lower role remains.
+Keep the existing role ladder: reader < commenter < editor < owner. Ownership exists only on documents. Grants and links cannot grant owner. Removing a v2 grant removes that one effective grant; no hidden lower role remains.
 
-Links have stable IDs, but v2 retains one link per role/document through a unique constraint. This preserves the existing share UI rather than introducing multi-invitation behavior as part of a database migration. Rotating a token increments `credential_generation`, changes hash/sealed token atomically, and invalidates bookmarks bound to the old generation. Do not change link ID for a mere label edit.
+Links have stable IDs, but v2 retains one link per role/document through a unique constraint. This preserves the existing share UI rather than introducing multi-invitation behavior as part of the storage model. Rotating a token increments `credential_generation`, changes hash/sealed token atomically, and invalidates bookmarks bound to the old generation. Do not change link ID for a mere label edit.
 
 Keep digest uniqueness and authenticated encryption with document ID, role, and token digest bound into associated data. `sealing_key_id` names metadata in the bounded external-keyring configuration reflected in `server_state`; it is not a SQL secret. Current display capabilities continue to recheck live account/link authority on every request, including cached/conditional responses.
 
@@ -239,7 +235,7 @@ Before replacing a 10 MiB live object with a new 12 MiB version, the application
 
 User hard quota and deployment object quota are tested from the maintained counters plus bounded live-edit reservations. The admission transaction must not union reference tables, scan historical objects, enumerate all accounts, classify paths, or fall back to “unknown accounting.” Full reconstruction exists only in an explicit verifier/reconciler, never in ordinary admission.
 
-Hard byte limits are resolved from typed deployment configuration and `accounts.plan`; v2 does not support a customer-controlled hard-quota override in preferences JSON. Account preferences contain soft/user policy choices only. Commit-time admission resolves the current owner/plan under the shared admission boundary and uses a consistent configuration snapshot. If configuration hot reload is supported, fence the policy generation through that boundary so a stale request cannot commit under a replaced limit. A future administrator-owned per-account hard override would require a typed nullable SQL column and explicit authorization; it is not part of this migration.
+Hard byte limits are resolved from typed deployment configuration and `accounts.plan`; v2 does not support a customer-controlled hard-quota override in preferences JSON. Account preferences contain soft/user policy choices only. Commit-time admission resolves the current owner/plan under the shared admission boundary and uses a consistent configuration snapshot. If configuration hot reload is supported, fence the policy generation through that boundary so a stale request cannot commit under a replaced limit. A future administrator-owned per-account hard override would require a typed nullable SQL column and explicit authorization; it is outside the current storage contract.
 
 Stop attributing each SQL field, JSON character, index, or page to account storage. Keep deployment catalog-file/WAL size metrics and a configured catalog limit, plus row/payload limits. Catalog pressure rejects new metadata growth while preserving reads, deletions, and bounded recovery work. Keep the existing filesystem maintenance floor and reserve a bounded cleanup margin; a full quota must not prevent deletion receipts and checkpoint-reference removal.
 
@@ -336,7 +332,7 @@ Retain current bounded journal record framing initially, including retry IDs, fr
 
 Append reads the document's next sequence and generation, prepares one bounded source writer, writes the segment set, and atomically marks its complete object set live while advancing durable sequence/source generation. Any referenced asset/recipe dependencies become live roots in that transaction. Increment the singleton catalog revision for backup diagnostics, but do not use it as a global compare-and-swap that makes independent documents conflict.
 
-Compaction captures state at durable sequence S under the per-document writer gate, writes a new immutable base, and then compares the captured generation. On success it advances epoch, installs the base, marks its complete source dependencies live, and retires old base/segments through S. The simplest first implementation blocks new durable appends for that document during this bounded operation; other documents continue. Buffered edits remain bounded and unacknowledged until appended. Do not implement tail rebasing during this migration.
+Compaction captures state at durable sequence S under the per-document writer gate, writes a new immutable base, and then compares the captured generation. On success it advances epoch, installs the base, marks its complete source dependencies live, and retires old base/segments through S. The simplest first implementation blocks new durable appends for that document during this bounded operation; other documents continue. Buffered edits remain bounded and unacknowledged until appended. Tail rebasing is outside this contract.
 
 A checkpoint may describe a source tree but not all CRDT/room state necessary for replay. Never delete journal segments merely because `MAX(checkpoint.sequence)` is newer. Only an independently verified journal base covering the full state allows old journal coverage to retire.
 
@@ -344,7 +340,7 @@ After compaction, a root reconciliation clears obsolete live-root flags for depe
 
 Recovery opens the catalog after obtaining the exclusive deployment writer lock, establishes a fresh writer generation, settles prepared operations, then reconstructs each room from its active base and consecutive live segments. Validate document identity, epochs, sequence coverage, complete fragments, lengths, and digests. A missing acknowledged range is a recovery error. Never silently initialize an empty room on corruption.
 
-Reuse the existing process-lifetime `fs2` lock at `DeploymentPaths.writer_lock`, currently `<deployment>/state/writer.lock` in `config.rs`. The server/CLI already use this deployment lock. The new converter and any administrative repair tools must use the same path and ownership protocol; that participation is a v2 requirement, not a claim that those tools already exist. Do not introduce a separate `catalog.lock`. A lock file's existence is not evidence of a live writer; the OS lock is. Take it before opening for mutation and hold it until all catalog/object tasks have joined. A generation string alone does not prevent a second process from writing files.
+Reuse the existing process-lifetime `fs2` lock at `DeploymentPaths.writer_lock`, currently `<deployment>/state/writer.lock` in `config.rs`. The server/CLI already use this deployment lock. Administrative tools use the same path and ownership protocol. Do not introduce a separate `catalog.lock`. A lock file's existence is not evidence of a live writer; the OS lock is. Take it before opening for mutation and hold it until all catalog/object tasks have joined. A generation string alone does not prevent a second process from writing files.
 
 Recovery must make an explicit decision for each prepared kind:
 
@@ -383,7 +379,7 @@ Read leases default to 120 seconds and heartbeat every 30 seconds; configurable 
 
 Lease acquisition is a typed immediate transaction, not an unguarded INSERT. For reads/reuse, insert conditionally from the matching available object and require one affected row; for a new write, require the allocated object to name this same prepared allocation operation. Recheck operation scope/generation/deadline and document authorization as applicable. GC's claim and these state checks run under the same SQLite write serialization, so either the lease precedes the claim or acquisition fails. No async I/O may intervene between checking state and inserting protection. The FK alone establishes object existence, not availability; direct SQL lease inserts are intentionally not the product API.
 
-The absence of a lease after its deadline does not prove an allocated PUT has stopped. For local `FsStore`, wait for the actual guarded blocking task, or after restart rely on the exclusive process lock plus reconciliation of uniquely named temporary/final files. A physical allocation with an uncertain write outcome stays reserved and its operation is not purged until settled. For a future remote backend, a negative HEAD alone is insufficient if a timed-out PUT could still finish later; such an adapter must provide a settlement strategy or retain/quarantine the allocation. The migration may not hide this race behind a TTL.
+The absence of a lease after its deadline does not prove an allocated PUT has stopped. For local `FsStore`, wait for the actual guarded blocking task, or after restart rely on the exclusive process lock plus reconciliation of uniquely named temporary/final files. A physical allocation with an uncertain write outcome stays reserved and its operation is not purged until settled. For a future remote backend, a negative HEAD alone is insufficient if a timed-out PUT could still finish later; such an adapter must provide a settlement strategy or retain/quarantine the allocation. A TTL cannot establish that a physical write has settled.
 
 Checkpoint deletion and document deletion are intentionally distinct. Deleting a document first sets deleting state, withdraws access, aborts/revokes admissible new work, stops room writers, waits for in-flight I/O settlement, clears publication/live pointers and roots, removes annotation protection/checkpoints in pages, and queues all its objects. The document/owner counters and slug reservation remain until every object/allocation is physically settled. The final transaction removes scoped operations/leases and remaining relational children, decrements document counts, then deletes the document. Restrictive object/checkpoint/operation FKs make premature teardown fail.
 
@@ -393,7 +389,7 @@ Default balanced retention keeps the current checkpoint, all labeled checkpoints
 
 Manual mode disables automatic history deletion. Custom settings are limited to `routine_count` and `max_age_ms` in the document retention payload, each nullable to disable that bound. Account preferences provide defaults for documents without overrides. Remove tier arrays, account-wide graph-budget eviction, pressure-specific ordering, exact persistent previews, and automatic override of protected milestones.
 
-There is an independent maximum of 4,096 checkpoints/document and 1,000 labeled/protected checkpoints/document, subject also to the cumulative reference ceilings in section 9. These maxima cannot all be reached simultaneously for large closures. When a new protected checkpoint would violate a bound, reject the change with a clear limit error; do not evict a protected point. The importer detects violations before conversion and requires explicit remediation. A configured limit can be raised only within the stated implementation ceiling; exceeding that ceiling requires a reviewed schema/spec change and validation, never silent loss or an importer bypass.
+There is an independent maximum of 4,096 checkpoints/document and 1,000 labeled/protected checkpoints/document, subject also to the cumulative reference ceilings in section 9. These maxima cannot all be reached simultaneously for large closures. When a new protected checkpoint would violate a bound, reject the change with a clear limit error; do not evict a protected point. A configured limit can be raised only within the stated implementation ceiling; exceeding that ceiling requires a reviewed schema/spec change and validation, never silent loss.
 
 A worker selects due active documents using `retention_due_at`, loads at most that bounded document's checkpoint metadata and protection pointers, and calculates the current policy result. Newly eligible checkpoints receive `eligible_after = now + 24 hours`. No separate candidate list is persisted. Points that become protected or fall inside the policy lose eligibility. A policy revision restarts grace for newly eligible points and clears obsolete eligibility; it cannot retroactively skip grace. Track the last evaluated account/document policy revisions in the small retention payload so restart can detect a changed policy.
 
@@ -405,7 +401,7 @@ Manual deletion accepts explicit checkpoint IDs, at most 128, with normal author
 
 `erase_account` changes the account to erasing and rotates its session generation in the first transaction. New mutation attribution to that account is thereafter refused or scrubbed at commit. Its typed plan contains only the current stage and stable cursor. Existing stages become: owned document teardown, grants/bookmarks, annotations/replies, checkpoint attribution, account-scoped operations, final verification.
 
-Use author-leading indexes to process at most 250 attribution rows per transaction. Delete authored annotations/replies according to current behavior; clear account ID and replace display attribution with `Deleted user` on retained checkpoints. Scrub private attribution inside still-retained operation result/plan payloads according to their known types, or expire them after their effects settle. Never scan arbitrary JSON for accidental string matches. Immutable object formats should avoid embedding account identifiers; handle already embedded v1 attribution explicitly during conversion.
+Use author-leading indexes to process at most 250 attribution rows per transaction. Delete authored annotations/replies according to current behavior; clear account ID and replace display attribution with `Deleted user` on retained checkpoints. Scrub private attribution inside still-retained operation result/plan payloads according to their known types, or expire them after their effects settle. Never scan arbitrary JSON for accidental string matches. Immutable object formats avoid embedding account identifiers.
 
 At final account deletion require zero owned documents/charges, no remaining restrictive attribution FKs, and no prepared scoped work. Delete its own internal erasure row and terminal scoped rows as part of finalization. Other users' stale bookmarks are non-authoritative and may be lazily pruned; they contain document/link identifiers, not erased profile data.
 
@@ -423,139 +419,23 @@ Write the completion manifest last. It identifies catalog schema/format version,
 
 Restore into a new root, acquire exclusive ownership, verify every manifest entry, run integrity and foreign-key checks, and audit root closure/counters before marking it usable. Bump writer generation and reconcile prepared operations before serving traffic. Old execution leases are invalidated. A retained snapshot may contain old available objects no longer current; that is safe extra retention, not evidence to drop a current root.
 
-Use a new backup format number for the changed catalog/object envelopes. Do not teach the normal v2 restore path to guess between incompatible v1/v2 schemas. v1 backups can be restored by the v1 tool and then passed through the offline converter.
+Use a new backup format number for the changed catalog/object envelopes. Do not teach the normal v2 restore path to guess between incompatible v1/v2 schemas. Unsupported backup formats are rejected without modification.
 
-**19. Complete old-to-new mapping**
+**19. Fresh catalogue baseline**
 
-This inventory includes all 45 baseline tables and the two persistent runtime tables. “Remove” means remove the old runtime SQL and its compatibility model, not merely stop creating the old table.
+A new deployment creates the twelve-table schema in one transaction, initializes its deployment identity and cryptographic metadata, and records schema version 2. Application startup uses the embedded schema, never a DDL file located opportunistically in the working directory.
 
-| v1 table | v2 destination and conversion rule |
-|---|---|
-| `accounts` | `accounts`; map profile/provider identity, timestamps, status, quota preferences; rotate sessions at cutover |
-| `documents` | `documents`; storage ID becomes PK; map ownership, title key, source/publication state; counters rebuilt from objects |
-| `grants` | `grants`; collapse each account/document to strongest role |
-| `links` | `links`; assign stable IDs; preserve valid credential bytes/hash through verified resealing |
-| `guests` | Account bookmark items with matching link ID/generation; omit revoked/nonexistent links |
-| `totals` | Remove; recompute document/account/server counters from target objects |
-| `checkpoints` | `checkpoints`; preserve event ID/order/content; build a complete physical closure |
-| `comments` | `annotations`; explicit kind, selector/context envelope, suggestion state, resolution/protection |
-| `replies` | `replies`; map author identity and parent annotation |
-| `pending_deletes` | Set matching target object to deleting only after final target liveness analysis; never import a deletion instruction against a retained root |
-| `catalog_operations` | Settle v1 preparations before import; old external receipts expire at cutover; do not import arbitrary legacy intent blobs |
-| `journal_state` | New server generation/revision and reconstructed per-document base/sequence; no old deployment journal CAS |
-| `journal_preparations` | Settle with v1 recovery; remove resolved plans; uncertain acknowledged effects block conversion |
-| `journal_segments` | Replay v1 data into a verified v2 base for each document, or explicitly re-encode per-document segments; no copied shared segment ownership |
-| `journal_retirements` | Reconcile source before import; source root is preserved for rollback, not physically cleaned by the converter |
-| `account_activity` | Account `last_active_at` |
-| `erasure_batches` | Finish v1 erasure before normal import; an explicitly supported resume adapter may instead translate the finite stage/cursor after validation |
-| `maintenance_jobs` | Settle or abandon source-only jobs after source quiescence; do not copy accounting reservations as historical charges |
-| `checkpoint_budgets` | Remove; new in-memory checkpoint rate buckets |
-| `journal_segment_coverage` | Used only by v1 replay to reconstruct each document; removed in target |
-| `journal_bases` | Replay source bases into new per-document v2 bases |
-| `journal_manifest_shards` | Input to v1 recovery only; removed |
-| `link_keyring` | Verified bounded key descriptors and one explicit active key in server singleton |
-| `link_key_rotations` | Finish/resolve before conversion; fresh v2 rotations use one typed operation |
-| `object_accounting` | Input evidence for source verification; target object inventory is rebuilt from verified retained bytes |
-| `object_reservations` | Source work must settle; new converter allocations receive new target reservations |
-| `deletion_discovery` | Finish source document teardown or explicitly exclude it; target deletion uses complete object inventory |
-| `upload_buckets` | Remove; new in-memory upload buckets |
-| `journal_readers` | Source readers stop under exclusive conversion lock; no live lease imported |
-| `document_results_metadata` | Remove; derive from canonical source format |
-| `account_examples` | Account onboarding slots; preserve completed/deleted semantics |
-| `agent_objects` | Expire at cutover; new staging uses protected agent_payload objects |
-| `agent_cancellations` | Old v1 request namespace is invalid after cutover; do not carry fences into a new admissible request namespace |
-| `agent_execution_leases` | Invalidate at cutover; new execution operations must be issued |
-| `account_quota_preferences` | Account preference payload/revision; map supported simple policy, report discarded policy features |
-| `source_history_encodings` | Decode/verify recipes; write v2 immutable recipe locators; remove SQL mapping table |
-| `source_history_objects` | Verified physical chunk input; target objects plus flattened checkpoint references |
-| `source_history_checkpoint_files` | Input to validation; recompute complete target closure from actual manifests/bytes |
-| `source_history_write_leases` | Source writers/readers must stop and settle; target converter creates fresh temporary protection |
-| `quota_retention_jobs` | Remove terminal/planned work; v2 recalculates eligibility and starts fresh grace |
-| `quota_retention_candidates` | Remove; no candidate import |
-| `checkpoint_retention` | Preserve original event ancestry/protection semantics; clear grace and recalculate with a fresh window |
-| `document_retention_policy` | `documents.retention_mode`, revision, simple policy payload |
-| `checkpoint_asset_refs` | Verify against actual checkpoint tree; flatten into checkpoint_objects |
-| `checkpoint_asset_sets` | Remove; closure completeness is mandatory |
-| Runtime `source_history_gc_encoding_state` | Remove; target object-row GC deadlines are the work queue |
-| Runtime `cost_state` | Validated server singleton cost payload; preserve remaining transfer budget conservatively |
+**20. Unsupported storage versions**
 
-The old TEMP room reservation table/view disappears with the old connection. Process-local coordinator reservations start empty only after pending source work has been drained or explicitly abandoned before cutover.
+The server accepts its supported native schema only. Older or newer schemas are rejected without modifying them. There is no v1 converter, automatic upgrade, JSON-index fallback, or backward-compatible object namespace. Existing unsupported roots are not reinterpreted as empty deployments. A fresh deployment requires a distinct empty data root.
 
-**20. Migration strategy and tooling**
+**21. Runtime authority**
 
-Use schema version 2 even though software is unreleased. Keep the historical v1 SQL only as converter/test input outside the production migration list. A fresh v2 catalog is created from the new baseline in one transaction and initialized with deployment-specific singleton identity/key metadata. Set `PRAGMA user_version=2` in that same transaction. Opening a v1 catalog with the v2 server fails with an actionable conversion/new-root message; do not silently reinterpret version 1 or auto-delete it. Opening a newer version also fails.
+Document metadata and physical object ownership come from the catalogue. Native object identifiers, typed transactions, immutable source closures, per-document journals, and bounded garbage collection are the only persistence paths. Runtime code does not read or write legacy shared journal manifests, JSON indexes, or document sidecars.
 
-At implementation time install the reviewed DDL as `crates/librepaper/migrations/0002_catalog.sql` and use version 2 as the fresh-install baseline. The startup version-1 rejection must happen before the ordinary migration loop; simply appending this CREATE TABLE script to the old loop would collide with existing tables. Versions after 2 may use normal incremental migrations. The spec artifact itself must not be loaded opportunistically from a working directory at runtime.
+**22. Backup and deployment validation**
 
-The standalone DDL intentionally does not set `user_version` or insert placeholder deployment secrets/identity. Loading it alone is not initialization and leaves `user_version` unchanged. The initializer must begin one transaction, execute the DDL, insert the fully specified `server_state` singleton, set `user_version=2`, and commit. Any failure rolls back all of those steps. The validator exercises this contract; a catalog reporting version 2 but missing its singleton must be rejected on opening, not silently initialized as another deployment.
-
-The default development workflow may create a fresh root and reseed examples. No persistent user data is deleted automatically. For development data worth retaining, implement a separate one-shot tool under `tools/catalog-v1-import/`, outside the normal server startup path. It has `--source-data`, `--target-data`, `--dry-run`, and `--resume` arguments. A required explicit active link-key selection is accepted only when source key metadata is ambiguous; the tool must never pick a key by lexicographic/timestamp luck.
-
-The converter operates offline and never mutates the source. Source must have been cleanly stopped with v1 recovery/erasure finished. It acquires the source deployment writer lock as well as an exclusive target lock. It rejects overlapping source/target paths, nonempty unrecognized targets, symlink escapes, source versions other than its explicitly supported v1 shape, or target identity inconsistent with a resume manifest. The old schema version alone is insufficient to identify evolving unreleased v1 files: inspect required columns and record a source schema fingerprint.
-
-Conversion phases:
-
-1. **Inspect.** Read-only schema/integrity/FK validation; enumerate owners/documents/checkpoints/current publications; verify available source keyring. Report invalid timestamps, unknown formats, title conflicts, missing roots, unsupported selectors, unresolved work, and all proposed policy/session changes. A dry run writes no target and does not claim full byte verification unless it actually reads the bytes.
-2. **Freeze and inventory.** With source offline and locked, snapshot/catalog-hash the source and produce an external conversion manifest. Record source identity, schema fingerprint, converter version, target identity, per-document cursor, planned byte demand, and errors. Do not store migration progress as a thirteenth target table.
-3. **Initialize target.** Create the exact v2 schema, initialize singleton/key metadata and owner rows, then creating documents with NULL heads. Import static sharing/profile data in bounded transactions. Use fresh session generations; force clients/runners to reconnect and reauthenticate.
-4. **Recover live documents.** Run the read-only v1 journal/base decoder to reconstruct acknowledged source state. Verify sequence coverage and fragment checksums. Write a self-contained v2 per-document base and dependency closure. Do not call the v1 deletion workers on the source. A missing committed range blocks that document and completion of the default all-data conversion.
-5. **Convert retained checkpoints.** Read actual trees, source recipes/chunks, and assets; verify logical content; assign new physical object IDs; rewrite locator envelopes while preserving user file bytes and event order. Compute target logical digests under the explicit v2 logical encoding. Maintain an external old-identity-to-new-identity map for conversion, translating live annotation protection as needed. Preserve original historical revision text when it is merely provenance. Never assume that a source ledger row proves an object's existence or length.
-6. **Convert current publications.** Preserve rendered HTML/assets byte-for-byte except for necessary format envelope changes; retain public publication event IDs where possible. Establish the complete publication-root set. Old superseded rendered bundles need not be imported unless required by an explicitly supported retained root. The source copy retains them for rollback.
-7. **Convert annotations and settings.** Map selectors, attributions, suggestions, original parent identities, bookmarks, and onboarding. A resolved suggestion whose acceptance receipt is intentionally not imported retains its accepted state and historical operation ID. Recalculate retention eligibility from the new simple policy with fresh grace. Unknown unsupported policy fields are reported and preserved in the conversion report; they do not silently influence v2 execution.
-8. **Reconcile and verify.** Every target object has measured bytes; no unresolved converter allocation remains. Recompute counters and document counts. Check FKs, integrity, head pointers, exact checkpoint closures, live/publication dependencies, readability, and all acceptance inventory comparisons. No object in deleting state may be a retained root.
-9. **Complete.** Write and fsync a conversion completion manifest containing source/target identities, object counts/bytes, document/checkpoint/annotation counts, exclusions if explicitly requested, and verification results. Only a complete conversion may be selected as the new deployment root.
-
-Resume uses deterministic mappings recorded in the external manifest and checksummed per-document progress files. Never assume an operation succeeded merely because a progress cursor advanced. Verify target SQL commits and physical digests before skipping a completed item. Converter objects use unique keys and the target allocation protocol; repeated conversion must neither duplicate logical checkpoints nor double-count storage. Source data remains the authority until final completion.
-
-A partial import is not the default. An explicit document allowlist may produce a deliberately partial new deployment, but the completion report must list excluded documents and dependencies. A normal failed conversion leaves the source usable by its old binary and the target marked incomplete.
-
-Cutover stops v1, verifies target completion, selects the new data root/config, starts v2, and checks health/sample reads. Keep the original binary/root and a verified backup until acceptance is complete. Before any v2 mutations, rollback is selecting the old root. After v2 mutations, selecting the old root loses those new effects; there is no automatic reverse migration. Export/reconcile new content explicitly if rollback after writes is required. Breaking schema compatibility does not authorize silently discarding new data.
-
-**21. Required code changes and deletion targets**
-
-| Area | Required work |
-|---|---|
-| `storage/catalog/mod.rs` | Fresh v2 DDL/version guard; typed row IDs/times; one mutation boundary; no public arbitrary production connection writes |
-| `storage/catalog/accounts.rs` | Counter-based quota admission; simplified preferences/ownership/erasure; delete union/dedup/path-classification and serialized-field billing evaluators |
-| `storage/catalog/documents.rs` | Internal ID queries, title key, explicit heads, source-format derivation, removal of pending-publication/derived metadata paths |
-| `storage/catalog/access.rs` | Single effective grants, stable link IDs/generation, bookmarks, singleton key metadata, typed rotation operation |
-| `storage/catalog/checkpoints.rs` | Event identities, nonreused sequence allocation, complete closure commits, simple protected retention |
-| `storage/catalog/comments.rs`, `agent_annotations.rs` | Typed selector/context envelopes, author FKs, suggestion/protection transaction contracts |
-| `storage/catalog/operations.rs` | Canonical allocation/settlement/activation/deletion APIs and finite operation enum; bounded receipt cleanup |
-| `storage/catalog/agent_source.rs` | Route agent source effects through the same allocation/activation boundary; no separate receipt, accounting or source-authority path |
-| `storage/catalog/journal.rs` | Replace deployment-journal SQL entry points with document-scoped operation/object/head methods; remove old journal table queries |
-| `storage/catalog/source_history.rs`, `asset_history.rs` | Remove old SQL graph and copy-of-size model; retain codec/conversion helpers and closure construction under an appropriate name |
-| `storage/catalog/retention.rs`, `pressure.rs` | Replace persistent job/candidate/pressure eviction code; keep bounded per-document policy and metadata-pressure admission |
-| `storage/catalog/agent_objects.rs`, `agent_cancel.rs`, `agent_lease.rs` | Object-backed staging, single operation receipts/cancellation, execution epoch rows |
-| `storage/catalog/room_edits.rs`, `execution.rs` | Shared in-memory reservation/admission boundary, cancellation-safe lifetime, no stale owner totals |
-| `storage/journal/{store,coordinator,runtime,recovery,segment}.rs` | Per-document segments/bases, SQL-authoritative heads, complete fragment recovery, no shared coverage/manifests |
-| `storage/maintenance.rs` | Object-row GC, explicit erasure, bounded retry/lease/receipt cleanup; remove prefix discovery from normal deletion |
-| `storage/blob.rs` | Immutable registered-key writes and tracked completion; preserve filesystem fsync/free-space guards; no ordinary mutable application object paths |
-| `storage/backup.rs` | v2 snapshot/manifest protocol, GC freeze, FK/root/counter checks, new format number |
-| `document/{store,history,quota,session}.rs` and `room/*` | Remove catalog-optional/legacy persistence model; adapt revision/protection/root semantics; durable acknowledgement only after catalog commit |
-| `server/{publication,publication_http,quota,sharing,onboarding,cost,serve}.rs` | Revised publication/retry API, quota display, bookmarks, singleton cost, bounded workers |
-| `cli/*`, server MCP, web callers | v2 request IDs, changed quota/retention responses, source busy handling, selector/revision adapters |
-| `seed/mod.rs`, fixtures, browser test setup | Create only v2 data; remove old raw SQL/JSON persistence assumptions |
-| `tools/catalog-v1-import/` | Isolated read-only v1 decoders and offline converter; no v1 production write path |
-| Protocol/manual/cost/scaling documents | Rewrite behavior claims and regenerate changed measurements |
-
-It is acceptable to retain module filenames temporarily while changing internals. It is not acceptable to leave unused old SQL methods, compatibility fallback branches, old object-path writes, or runtime DDL “for later.” At completion, search production source for every removed table name and account for any remaining occurrence. Legacy names should exist only in historical review/spec text, converter code, and converter fixtures.
-
-**22. Delivery phases and gates**
-
-Implement in dependency order. Intermediate commits may use feature-gated v2 test fixtures, but the completed product shall not have dual writers or two active accounting models.
-
-| Phase | Deliverable | Gate before next phase |
-|---|---|---|
-| A | DDL, ID/time/payload types, schema initialization, direct constraint tests | Exactly twelve persistent tables, zero triggers; invalid-row/FK/uniqueness tests pass |
-| B | Canonical objects, reservations, counters, writer task lifetime, lease/GC state transitions | Quota/replacement/cancellation/delete race tests and counter recomputation agree |
-| C | Document/checkpoint manifests, flattened closures, source and publication activation | All five formats round-trip, sharing and suggestion atomicity work |
-| D | Per-document journal/base recovery and compaction | Crash matrix proves no acknowledged update loss; shared-segment code gone |
-| E | Simplified retention, accounts/erasure, operations/agent staging/retry/key rotation | Policy/race/expiry/security contracts pass; no durable candidate/rate tables |
-| F | Backup/restore and converter | Complete source-to-target fixture conversion, interrupted resume, rollback rehearsal |
-| G | CLI/web/protocol update, delete v1 runtime paths, performance and size measurements | No stale schema consumers; full test suite and targeted end-to-end flows pass |
-
-Do not run a user data conversion or cutover merely because the spec or fresh-schema tests pass. Those are separate implementation/deployment actions. This specification authorizes no actual deletion of existing roots.
+Backup and restore operate on the supported native schema and its verified object inventory. A restored deployment must pass integrity, foreign-key, root-closure, and counter checks before serving requests. Tests use native catalogue fixtures; historical storage implementations are not maintained as alternate test backends.
 
 **23. Acceptance tests**
 
@@ -579,7 +459,6 @@ Tests must assert behavior and invariants, not simply reproduce SQL strings. Exi
 | Retention | Latest/labeled/unresolved references protected; deterministic routine count/age; grace survives restart; policy change restarts correct grace; advisory preview can differ safely; hard quota rejects rather than overriding protected points |
 | Erasure | One prepared erasure per account/document even with different request keys; authorized second request reuses progress; cursor resume; reused display handle not treated as account identity; parent annotation thread behavior; late attribution cannot reappear; final deletion waits for physical charge and restrictive references |
 | Backup | Writes during copy do not invalidate snapshot; in-flight deletes settle before snapshot; missing object fails completion; incomplete backup not advertised; restore invalidates old epochs and preserves acknowledged journal state |
-| Conversion | All v1 tables accounted for; missing runtime tables handled; malformed v1 data reported; recipes/chunks revalidated; restore event distinct from tree digest; current publication and annotations preserved; resumable conversion idempotent; source root unchanged |
 
 The current catalog test command is `cargo test --offline -p librepaper --lib storage::catalog::`; it passed 70 tests during the preceding review. That historical result is not validation of the v2 implementation. Once implemented, run the full applicable Rust suite plus focused publication, room/journal, agent, backup, erasure, quota, and browser/CLI tests. Run the project's configured quality checks and update fixtures that intentionally encode changed behavior.
 
@@ -607,13 +486,13 @@ Required structural properties:
 - Terminal operations and stage/reader leases converge to configured retention bounds after idle maintenance; continuous traffic is not required to trigger cleanup.
 - No mutex/SQL transaction spans filesystem network-like I/O, encoding, hashing a large object, or copying backup payloads.
 
-Compare per-document journaling against the current mixed-document batching using the same edit trace. Report increased object count and fsync/write overhead, along with reduced recovery/ownership complexity. Keep per-document batching/debounce and existing size limits; do not reintroduce shared segments merely to improve one benchmark without revisiting the design decision.
+Measure native per-document journaling through the production flush and compaction policy. Record object counts, physical bytes, SQLite durability settings, filesystem synchronization, and recovery work. Time correctness verification separately. The removed mixed-coordinator trace did not provide equivalent durability or recovery work and is not current performance evidence.
 
 A final invariant audit independently reconstructs counters and every durable root closure from SQL/manifests after randomized write/retain/delete/restart sequences. It must find no missing referenced object, no negative/double charge, and no deleting object reachable from a current root. The object inventory and the actual filesystem may contain temporary guarded files during active writes, but completed idle reconciliation must account for or reclaim all private leftovers.
 
-**25. Definition of done**
+**25. Runtime invariants**
 
-The migration is complete when the application creates and operates only the twelve-table schema; all required product paths use it; no old accounting/graph/journal compatibility system remains active; the offline converter and backup/restore have verified completion semantics; documentation reflects the deliberate behavior changes; and the acceptance/performance evidence is recorded.
+The application creates and operates only the twelve-table schema. Product paths use its typed transactions and canonical object graph. Native backup/restore require verified completion semantics. Acceptance and performance evidence must identify the code and workload measured.
 
 The success criterion is fewer independent facts and fewer recovery algorithms. The table count is an enforceable boundary, but a large JSON payload or an overgeneralized operations dispatcher that recreates the old subsystems fails the design even if the database contains twelve tables.
 
@@ -623,4 +502,4 @@ The revised DDL was executed in an isolated database using SQLite 3.51.2: twelve
 
 The validator also confirms **four SQL-permitted boundary cases**: incomplete checkpoint closure, closure edges to allocated/deleting objects, and a lease on a deleting object. These require prevention through the typed transaction API; the probes deliberately do not label them as schema-enforced guarantees. Tests of cached counter ceilings likewise do not establish counter equality to underlying rows; that remains an implementation transaction/audit obligation.
 
-Reproduce with `python3 docs/specs/validate-catalog-v2.py` on a suitable SQLite build, or `uv run --no-project --python 3.14 docs/specs/validate-catalog-v2.py`. The script opens only an in-memory database. These checks establish that the proposed SQL is executable and rejects the tested invalid states; they do not validate the unimplemented application protocols, converter, or performance claims.
+Reproduce with `python3 docs/specs/validate-catalog-v2.py` on a suitable SQLite build, or `uv run --no-project --python 3.14 docs/specs/validate-catalog-v2.py`. The script opens only an in-memory database. These checks establish that the schema SQL is executable and rejects the tested invalid states; they do not validate the application protocols or performance claims.

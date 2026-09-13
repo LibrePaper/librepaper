@@ -7,16 +7,22 @@ async fn main_http_harness_uses_file_catalog_and_initialized_journal() {
     let server = new_test_server().await;
     assert!(server.instance.store.catalog.is_some());
     assert!(server.dir.path().join("catalog.sqlite").is_file());
-    let state = server
+    let (deployment_id, writer_generation): (String, String) = server
         .instance
         .store
         .catalog
         .as_ref()
         .unwrap()
-        .journal_state()
+        .with_connection(|connection| {
+            Ok(connection.query_row(
+                "SELECT deployment_id,writer_generation FROM server_state WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
         .unwrap();
-    assert!(!state.deployment_id.is_empty());
-    assert!(!state.writer_generation.is_empty());
+    assert!(!deployment_id.is_empty());
+    assert!(!writer_generation.is_empty());
 }
 
 use crate::config::Configuration;
@@ -65,14 +71,6 @@ fn incompressible_source(bytes: usize) -> String {
     source
 }
 
-/// A blob store and a `Configuration`, shared by two `Store`s the way two
-/// server instances behind shared storage would each open their own.
-fn shared_blobs() -> (tempfile::TempDir, Arc<dyn BlobStore>, Arc<Configuration>) {
-    let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
-    (dir, blobs, Arc::new(Configuration::default()))
-}
-
 async fn publish(store: &store::Store, slug: &str, title: &str) {
     store
         .put_as_actor(
@@ -81,7 +79,7 @@ async fn publish(store: &store::Store, slug: &str, title: &str) {
                 title: title.into(),
                 source: "A".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
+                owner_id: "github:alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -90,69 +88,26 @@ async fn publish(store: &store::Store, slug: &str, title: &str) {
         .unwrap();
 }
 
-/// R02: this is `review_index_conflict_stays_stale` inverted. Two stores each
-/// open on "probe" already published; the first names the owner, and
-/// the second's own `modify` must succeed on its first call -- by reloading
-/// and retrying once internally, not by the caller retrying -- after which
-/// `get` on the second store must report the name the first store set, not
-/// the stale value it started with.
-#[tokio::test]
-async fn index_conflict_retries_and_converges() {
-    let (_dir, blobs, config) = shared_blobs();
-    let first = store::Store::open(blobs.clone(), config.clone())
-        .await
-        .unwrap();
-    publish(&first, "probe", "T").await;
-    let second = store::Store::open(blobs.clone(), config.clone())
-        .await
-        .unwrap();
-
-    first
-        .modify("probe", |e| {
-            e.publisher_name = "Alice".into();
-            Ok(())
-        })
-        .await
-        .unwrap();
-
-    let updated = second
-        .modify("probe", |e| {
-            e.title = "x".into();
-            Ok(())
-        })
-        .await
-        .unwrap();
-    assert_eq!(updated.title, "x");
-    assert_eq!(second.get("probe").await.unwrap().publisher_name, "Alice");
-}
-
-/// R02: a document published on one instance becomes visible on another
-/// without that second instance having been told to reload -- `get`'s miss
-/// path does it. `second` is opened before `first` ever publishes "fresh",
-/// so its in-memory index starts out with no knowledge that it will exist.
+/// Catalogue reads observe another Store's publication immediately.
 #[tokio::test]
 async fn put_on_first_store_visible_on_second() {
-    let (_dir, blobs, config) = shared_blobs();
-    let first = store::Store::open(blobs.clone(), config.clone())
+    let dir = tempfile::tempdir().unwrap();
+    let (blobs, catalog) = local_catalog_store(&dir);
+    let config = Arc::new(Configuration::default());
+    let first = store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
         .await
         .unwrap();
-    let second = store::Store::open(blobs.clone(), config.clone())
+    let second = store::Store::open_with_catalog(blobs, config, catalog)
         .await
         .unwrap();
-    assert!(second.get("fresh").await.is_none());
-
+    assert!(second.get_result("fresh").await.unwrap().is_none());
     publish(&first, "fresh", "Fresh").await;
-
-    // A miss right after a miss is answered from memory -- the reload is
-    // throttled to one per `REFRESH_EVERY`, so a scan of guessed slugs does
-    // not become a scan of the bucket -- and this second miss falls inside
-    // that window. Past the window, or on an explicit refresh, the document
-    // is there.
-    assert!(second.get("fresh").await.is_none());
-    second.refresh().await.unwrap();
-    let seen = second.get("fresh").await;
-    assert!(seen.is_some());
-    assert_eq!(seen.unwrap().title, "Fresh");
+    let seen = second
+        .get_result("fresh")
+        .await
+        .unwrap()
+        .expect("publication is immediately visible");
+    assert_eq!(seen.title, "Fresh");
 }
 
 /// New deployments keep document metadata in SQLite and survive a Store
@@ -178,7 +133,6 @@ async fn catalog_store_round_trips_documents_without_index_json() {
                 title: "Catalogued".into(),
                 source: "# hello".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -216,9 +170,7 @@ async fn catalog_account_owner_is_never_owned_by_anonymous_callers() {
                 title: "Private".into(),
                 source: "secret".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 owner_id: "github:123".into(),
-                owner_name: "Alice".into(),
                 ..Default::default()
             },
             store::MutationActor {
@@ -238,38 +190,6 @@ async fn catalog_account_owner_is_never_owned_by_anonymous_callers() {
     assert!(!entry.owned_by("", ""));
     assert!(!entry.owned_by("visitor:anything", ""));
     assert!(entry.owned_by("", "github:123"));
-}
-
-/// R02: a `record_history` write that loses the compare-and-swap -- because
-/// another instance moved the index in between -- reloads and retries once
-/// rather than dropping the checkpoint's size and sha on the floor, and the
-/// retry lands on top of whatever the winner left, not over it.
-#[tokio::test]
-async fn record_history_conflict_retries_and_lands() {
-    let (_dir, blobs, config) = shared_blobs();
-    let first = store::Store::open(blobs.clone(), config.clone())
-        .await
-        .unwrap();
-    publish(&first, "probe", "T").await;
-    let second = store::Store::open(blobs.clone(), config.clone())
-        .await
-        .unwrap();
-
-    // Moves the index out from under `second`'s copy, so its own write below
-    // is guaranteed to lose the compare-and-swap at least once.
-    first.rename("probe", "Renamed").await.unwrap();
-
-    second
-        .record_history("probe", Some("deadbeef"), 42, "markdown", "main.md")
-        .await
-        .unwrap();
-
-    let entry = second.get("probe").await.unwrap();
-    assert_eq!(entry.sha, "deadbeef");
-    assert_eq!(entry.size, 42);
-    // The retry rebased onto the fresh index rather than clobbering it: the
-    // rename `first` made is still there.
-    assert_eq!(entry.title, "Renamed");
 }
 
 fn local_catalog_store(
@@ -303,7 +223,6 @@ async fn catalog_source_receipt_retries_after_reopen() {
             store::Publication {
                 slug: "receipt".into(),
                 source: "source".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -410,12 +329,10 @@ async fn catalog_source_receipt_retries_after_reopen() {
         .unwrap();
     assert_eq!(kind, "source_publish");
     assert_eq!(state, "committed");
-    assert!(reopened_catalog
-        .document("receipt")
-        .unwrap()
-        .unwrap()
-        .pending_publication
-        .is_none());
+    let prepared_count: i64 = reopened_catalog.with_connection(|connection| {
+        connection.query_row("SELECT count(*) FROM operations WHERE document_id=(SELECT id FROM documents WHERE slug=?1) AND state='prepared'", ["receipt"], |row| row.get(0)).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
+    assert_eq!(prepared_count, 0);
 }
 
 /// Removing one physical source chunk must never make startup invent a
@@ -433,7 +350,6 @@ async fn catalog_reopen_keeps_native_source_checkpoint_when_chunk_missing() {
             store::Publication {
                 slug: "native-missing".into(),
                 source: "native source history\n".repeat(4096),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -470,7 +386,10 @@ async fn catalog_reopen_keeps_native_source_checkpoint_when_chunk_missing() {
         .unwrap()
         .unwrap();
     assert_eq!(reopened_document.sha, document.sha);
-    assert!(reopened_document.pending_publication.is_none());
+    let prepared_count: i64 = reopened_catalog.with_connection(|connection| {
+        connection.query_row("SELECT count(*) FROM operations WHERE document_id=(SELECT id FROM documents WHERE slug=?1) AND state='prepared'", ["native-missing"], |row| row.get(0)).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
+    assert_eq!(prepared_count, 0);
 }
 
 /// A second typed source operation replaces the current source checkpoint
@@ -488,7 +407,6 @@ async fn catalog_source_replacement_commits_a_new_head() {
             store::Publication {
                 slug: "replace-receipt".into(),
                 source: "old".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -500,7 +418,6 @@ async fn catalog_source_replacement_commits_a_new_head() {
             store::Publication {
                 slug: "replace-receipt".into(),
                 source: "new".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -548,7 +465,6 @@ async fn catalog_source_write_failure_keeps_previous_head_visible() {
             store::Publication {
                 slug: "faulted-replacement".into(),
                 source: "previous source".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -563,7 +479,6 @@ async fn catalog_source_write_failure_keeps_previous_head_visible() {
             store::Publication {
                 slug: "faulted-replacement".into(),
                 source: "replacement source".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -594,7 +509,10 @@ async fn catalog_concurrent_admission_is_atomic() {
     let source = incompressible_source(2_200_000);
     let physical = crate::storage::encoding::encode_source(source.as_bytes())
         .unwrap()
-        .encoded_bytes();
+        .objects
+        .iter()
+        .map(|object| object.encoded.len())
+        .sum::<usize>();
     assert!(physical > limits.storage.total as usize / 2);
     assert!(physical < limits.storage.total as usize);
     let config = Arc::new(limits);
@@ -616,7 +534,6 @@ async fn catalog_concurrent_admission_is_atomic() {
             slug: "left".into(),
             title: "left".into(),
             source: source.clone(),
-            owner: "alice".into(),
             ..Default::default()
         },
         catalog_fixture_actor(),
@@ -626,7 +543,6 @@ async fn catalog_concurrent_admission_is_atomic() {
             slug: "right".into(),
             title: "right".into(),
             source,
-            owner: "alice".into(),
             ..Default::default()
         },
         catalog_fixture_actor(),
@@ -667,7 +583,6 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
             store::Publication {
                 slug: "replace".into(),
                 source: "1234".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -679,7 +594,6 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
             store::Publication {
                 slug: "replace".into(),
                 source: "12345678".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -699,7 +613,6 @@ async fn catalog_replacement_preserves_accounting_on_quota_failure() {
             store::Publication {
                 slug: "replace".into(),
                 source: incompressible_source(300_000),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -738,7 +651,6 @@ async fn catalog_removal_worker_resumes_after_reopen() {
             store::Publication {
                 slug: "remove-me".into(),
                 source: "hello".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -810,7 +722,6 @@ async fn room_for_charges_uncached_catalog_documents() {
                 slug: "first".into(),
                 title: "first".into(),
                 source: "abcd".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -823,7 +734,6 @@ async fn room_for_charges_uncached_catalog_documents() {
                 slug: "second".into(),
                 title: "second".into(),
                 source: "abcdef".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_fixture_actor(),
@@ -837,8 +747,15 @@ async fn room_for_charges_uncached_catalog_documents() {
         .await
         .unwrap();
     let room = fresh
-        .room_for("first")
-        .await
+        .catalog
+        .as_ref()
+        .unwrap()
+        .physical_room_for(
+            "first",
+            fresh.config.storage.per_owner,
+            fresh.config.storage.total,
+        )
+        .unwrap()
         .expect("first is a document the catalogue actually has");
     // Existing physical bytes remain charged while a new allocation is
     // admitted. The room for "first" therefore subtracts both documents'
@@ -941,7 +858,6 @@ async fn concurrent_publications_cannot_claim_the_same_project_name() {
         slug: slug.into(),
         title: "Same project".into(),
         source: "source".into(),
-        owner: "alice".into(),
         ..Default::default()
     };
     let (left, right) = tokio::join!(

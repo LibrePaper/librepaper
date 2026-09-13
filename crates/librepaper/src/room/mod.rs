@@ -9,7 +9,7 @@
 //! created mean what the spec says. resolved is ours; the spec has no notion
 //! of it, and permits extra properties.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -22,12 +22,9 @@ use tokio::sync::{Mutex, RwLock};
 use yrs::Transact;
 
 use crate::config::{Configuration, CHECKPOINT_DEFER_SECONDS};
-use crate::document::history::{self, Checkpoint, Manifest};
+use crate::document::history::{Checkpoint, Manifest};
 use crate::document::session;
-use crate::storage::blob::{
-    checkpoint_key, room_key, session_key, take_room_lease, BlobError, BlobStore, BlobVersion,
-    Lease,
-};
+use crate::storage::blob::BlobStore;
 use crate::util::{clean, new_id};
 use crate::util::{now_unix, parse_timestamp, timestamp};
 
@@ -36,7 +33,6 @@ pub(crate) mod agent_comments;
 mod agent_view;
 mod catalog;
 mod checkpoint;
-pub(crate) use checkpoint::PublicationCheckpointToken;
 mod command;
 mod comments;
 pub(crate) mod error;
@@ -318,14 +314,6 @@ pub struct RoomState {
     /// When a socket was last attached or detached, which is what says an idle
     /// room may be evicted.
     pub touched: i64,
-    /// The versions this server last saw of the three objects a room owns.
-    /// Every write of them is conditional on these, so a write that loses is
-    /// proof that another process owns the room -- which is what makes the
-    /// lease enforced rather than advisory. Empty means "there was nothing
-    /// there", which is how a document with no session or no comments starts.
-    pub session_version: BlobVersion,
-    pub manifest_version: BlobVersion,
-    pub comments_version: BlobVersion,
 }
 
 pub struct Room {
@@ -337,15 +325,14 @@ pub struct Room {
     checkpoint_cache: Arc<crate::document::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     /// True when another server holds this room's lock: it can be read and
-    /// served, but nothing here may write over what that server is doing. Set
-    /// when the room is loaded, and again if a renewal ever finds the lock in
-    /// somebody else's hands.
+    /// served, but nothing here may write over what that server is doing.
+    /// Startup and later corruption/lifecycle checks can fence the room.
     read_only: std::sync::atomic::AtomicBool,
-    /// Why `read_only` is set, so a refusal can say whether the lease moved,
+    /// Why `read_only` is set, so a refusal can say whether the writer lock is unavailable,
     /// the document is gone, or this server could not read what it would be
     /// writing over. Only meaningful while `read_only` is true; it is a
     /// companion to that flag and never a substitute for the durable
-    /// catalogue and lease checks a write still makes.
+    /// catalogue generation checks a write still makes.
     fence_reason: std::sync::atomic::AtomicU8,
     /// How many checkpoints of this room are between their first write and
     /// their last. The blob sweep at the end of a checkpoint deletes what no
@@ -353,19 +340,12 @@ pub struct Room {
     /// blobs nothing names yet; the sweep runs only when it is the sole
     /// checkpoint in flight, so it can never collect those.
     checkpointing: std::sync::atomic::AtomicUsize,
-    /// This server's name in the lease, and the lease it holds. A lease is
-    /// takeable again once it has gone stale, so holding a room in memory for
-    /// longer than that without renewing would let a second server take it and
-    /// leave both writing the whole document over each other.
-    holder: String,
-    lease: Mutex<Lease>,
     /// The index, for the half of a checkpoint that is bookkeeping: the size a
     /// document's history counts against its owner's quota, and the digest of
     /// the newest checkpoint. Set once, after the store exists, because the
     /// store and the rooms are made in that order.
     store: Arc<std::sync::OnceLock<Arc<crate::document::store::Store>>>,
-    /// The authoritative local catalogue.  Legacy test fixtures may omit it;
-    /// production rooms are always attached to the catalogue by `Store`.
+    /// The authoritative local catalogue. Unattached rooms are read-only.
     catalog: Arc<std::sync::OnceLock<Arc<crate::storage::catalog::Catalog>>>,
     /// The local durable edit journal. Legacy fixtures leave this unset;
     /// production catalog-backed rooms receive it from `serve`.
@@ -399,12 +379,7 @@ pub struct Room {
     manifest_write: Mutex<()>,
     /// Serializes writers of the room's comment list.
     ///
-    /// A room with no catalogue has nothing narrower to persist than the whole
-    /// list, so a comment mutation prepares the list it wants under state,
-    /// writes it with state released, and installs it afterwards. Two writers
-    /// overlapping in that window would each write a list missing the other's
-    /// change, and the loser's conditional write would fence the room instead
-    /// of merging. This gate is what keeps them apart.
+    /// Serializes preparation and installation around catalog writes.
     ///
     /// It is deliberately not `restore_write`: source edits and socket traffic
     /// never take it, and a comment should not wait behind a whole restore.
@@ -566,7 +541,6 @@ pub(crate) fn before_acceptance_receipt_gate(
 pub struct RoomSet {
     /// Who this server is, in the lock objects it takes. A name rather than a
     /// pid, because a pid means nothing to whoever reads the refusal.
-    holder: String,
     /// Comments live wherever the documents do. On a bucket that makes the
     /// server genuinely stateless.
     pub blobs: Arc<dyn BlobStore>,
@@ -576,8 +550,8 @@ pub struct RoomSet {
     /// Serialize capacity decisions, not cached lookups. Never acquire this
     /// while retaining a room state or registry guard.
     admission: Mutex<()>,
-    /// One slot per slug currently being loaded, so a cold room's lease
-    /// acquisition and storage reads happen with no lock held on `rooms` --
+    /// One slot per slug currently being loaded, so a cold room's catalog
+    /// and storage reads happen with no lock held on `rooms` --
     /// a slow load must not stall every other document's lookup, only
     /// concurrent callers of the same slug (R35). Removed once the load it
     /// was made for finishes, successfully or not.
@@ -585,10 +559,7 @@ pub struct RoomSet {
     store: Arc<std::sync::OnceLock<Arc<crate::document::store::Store>>>,
     catalog: Arc<std::sync::OnceLock<Arc<crate::storage::catalog::Catalog>>>,
     journal: Arc<std::sync::OnceLock<Arc<dyn crate::storage::journal::DocumentJournal>>>,
-    /// A local deployment has one writer, held for the lifetime of the
-    /// process.  Remote stores use the per-room fenced lease below instead;
-    /// keeping this separate prevents a local cold-open from manufacturing a
-    /// blob lease that can outlive the deployment lock.
+    /// The native deployment has one writer, held for the server lifetime.
     deployment_lock: Arc<std::sync::OnceLock<Option<std::fs::File>>>,
 }
 
@@ -616,23 +587,6 @@ impl std::fmt::Display for RoomAdmissionError {
 }
 
 impl std::error::Error for RoomAdmissionError {}
-
-/// Names this process in a room lock: the machine it runs on and its pid,
-/// which is enough to tell two of them apart and to tell a restart from a
-/// second server.
-fn this_server() -> String {
-    let host = std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "server".to_string());
-    // The random tail is what makes two of these distinguishable when a pid
-    // cannot tell them apart -- a second `RoomSet` in one process, or a pid
-    // reused after a restart. A holder that another holder can be mistaken for
-    // is a lease that renews when it should have been refused.
-    let token = hex::encode(crate::auth::random_bytes(4));
-    format!("{host}/{}/{token}", std::process::id())
-}
 
 impl RoomSet {
     /// Remove an erased account's authored review rows from every resident
@@ -682,7 +636,6 @@ impl RoomSet {
     }
     pub fn new(blobs: Arc<dyn BlobStore>, config: Arc<Configuration>) -> RoomSet {
         RoomSet {
-            holder: this_server(),
             blobs,
             checkpoint_cache: Arc::new(
                 crate::document::checkpoint_cache::CheckpointCache::default(),
@@ -705,19 +658,9 @@ impl RoomSet {
         let _ = self.deployment_lock.set(Some(lock));
     }
 
-    /// Mark this deployment as a local reader when another process already
-    /// owns its writer lock.  This is useful to callers that acquire the lock
-    /// before building a `RoomSet` and want to retain the failed claim.
-    /// `serve` itself never calls this -- it exits rather than start a second
-    /// writer over the same directory -- but the test harness's `server_over`
-    /// does, to model exactly the second-process-over-one-bucket
-    /// configuration `a_second_process_over_the_same_storage_does_not_write`
-    /// (tests/history.rs) exercises: every room this deployment opens comes
-    /// up read-only, per the `deployment_lock.get()` check below, instead of
-    /// each taking its own per-room fenced lease. Its only caller is
-    /// `#[cfg(test)]` code, so a non-test build of the library sees it as
-    /// unused; the allow below is for that build, not because it is
-    /// unreachable within this crate.
+    /// Retain a failed deployment writer claim so all rooms open read-only.
+    /// Production startup exits on a failed claim; embedded callers can
+    /// represent a reader explicitly through this boundary.
     #[allow(dead_code)]
     pub fn attach_deployment_lock_unavailable(&self) {
         let _ = self.deployment_lock.set(None);
@@ -831,7 +774,7 @@ impl RoomSet {
         if let Some(existing) = self.rooms.lock().await.get(slug) {
             return existing.clone();
         }
-        // A cache miss gets its own slot, one per slug, so a slow lease
+        // A cache miss gets its own slot, one per slug, so slow storage
         // acquisition or storage read for this document is never made behind
         // the map lock -- a warm room's lookup, and another slug's cold load,
         // both proceed while this one is still in flight (R35). Two callers
@@ -855,39 +798,10 @@ impl RoomSet {
         if let Some(room) = loaded.as_ref() {
             return room.clone();
         }
-        // Taken before anything is read, so a second server writing the same
-        // bucket finds out it is second rather than interleaving its writes
-        // with the first one's.  The serve command also holds the deployment
-        // writer lock; this per-room lease keeps the test/embedded Server
-        // constructor honest when it is used without that outer command.
-        // A local filesystem is owned by this process/deployment and has no
-        // second writer behind a remote object store.  Avoid creating a
-        // blob-backed lock during a cold open; stale lock files are otherwise
-        // indistinguishable from a live remote lease after a restart.
-        let lease = if self.blobs.is_local() {
-            if let Some(lock) = self.deployment_lock.get() {
-                crate::storage::blob::Lease {
-                    held: lock.is_some(),
-                    verified: true,
-                    ..Default::default()
-                }
-            } else {
-                // Compatibility/embedded callers may not have a deployment
-                // command to pass its process-wide lock.  Retain the fenced
-                // room lease for that API; production `serve` always attaches
-                // its deployment lock before any room can be opened.
-                take_room_lease(self.blobs.as_ref(), slug, &self.holder, None).await
-            }
-        } else {
-            take_room_lease(self.blobs.as_ref(), slug, &self.holder, None).await
-        };
-        if !lease.held {
-            eprintln!(
-                "warning: the lease on {slug} is held by {} at epoch {}; this server serves it \
-                 read-only",
-                lease.holder, lease.epoch
-            );
-        }
+        // Production startup owns the deployment writer lock before rooms
+        // open. Embedded catalog fixtures can omit the OS lock, while an
+        // explicitly failed writer claim always opens read-only.
+        let writer_unavailable = self.deployment_lock.get().is_some_and(Option::is_none);
         let mut catalog_read_failed = false;
         let catalog_document = match self.catalog.get() {
             Some(catalog) => match read_catalog_document(catalog, slug).await {
@@ -937,7 +851,7 @@ impl RoomSet {
             checkpoint_cache: self.checkpoint_cache.clone(),
             config: self.config.clone(),
             read_only: std::sync::atomic::AtomicBool::new(
-                !lease.held || deleting || catalog_read_failed,
+                writer_unavailable || deleting || catalog_read_failed,
             ),
             fence_reason: std::sync::atomic::AtomicU8::new(if deleting {
                 FenceReason::Deleted as u8
@@ -947,8 +861,6 @@ impl RoomSet {
                 FenceReason::HeldElsewhere as u8
             }),
             checkpointing: std::sync::atomic::AtomicUsize::new(0),
-            holder: self.holder.clone(),
-            lease: Mutex::new(lease),
             store: self.store.clone(),
             catalog: self.catalog.clone(),
             journal: self.journal.clone(),
@@ -988,23 +900,9 @@ impl RoomSet {
                 },
                 manifest: Measured::new(Manifest::default()),
                 touched: now_unix(),
-                session_version: BlobVersion::new(),
-                manifest_version: BlobVersion::new(),
-                comments_version: BlobVersion::new(),
             }),
         });
         room.load().await;
-        // Reconcile prepared agent source operations before this room can be
-        // returned to query, socket, or checkpoint callers. The prepared
-        // intent carries its authenticated actor and a durable pre-effect
-        // backup, so restart does not rely on an expired MCP view.
-        if let Err(error) = room.recover_pending_agent_on_load().await {
-            eprintln!(
-                "warning: could not reconcile pending agent operation for {}: {error}",
-                slug
-            );
-            room.fence(FenceReason::AgentRecoveryPending);
-        }
         let room_bytes = room.resident_bytes().await;
         let _admission = self.admission.lock().await;
         if room_bytes <= self.config.session.rooms_bytes_max {
@@ -1091,7 +989,10 @@ impl RoomSet {
         // while an old room/session/checkpoint is still reachable.
         let object_identity = storage_id.unwrap_or(&room.storage_id);
         self.checkpoint_cache
-            .invalidate_prefix(&crate::storage::blob::history_prefix(object_identity))
+            .invalidate_prefix(&format!("v2/documents/{object_identity}/objects/"))
+            .await;
+        self.checkpoint_cache
+            .invalidate_prefix(&format!("decoded:{object_identity}:"))
             .await;
         self.rooms.lock().await.remove(slug);
     }
@@ -1272,7 +1173,7 @@ impl RoomSet {
 
     /// How many documents this server is holding in memory, which is the
     /// number the ceiling is on.
-    #[allow(dead_code)] // asked by the tests that check the ceiling holds
+    #[cfg(test)]
     pub async fn open_count(&self) -> usize {
         self.rooms.lock().await.len()
     }
@@ -1389,7 +1290,7 @@ impl Room {
             let mut records = match revisions::records(&state.session.doc) {
                 Ok(records) => records,
                 Err(error) => {
-                    return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id})
+                    return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id});
                 }
             };
             let Some(record_index) = records.iter().position(|record| record.id == revision_id)
@@ -1556,59 +1457,28 @@ impl Room {
                     self.fence(FenceReason::UnreadableState);
                 }
             }
-        } else if let Ok((raw, at)) = self.blobs.get_versioned(&room_key(&self.slug)).await {
-            // Read with its version, because legacy fixture writes are
-            // conditional on the version this server last saw.
-            if let Ok(stored) = serde_json::from_slice::<RoomState_>(&raw) {
-                let mut state = self.state.lock().await;
-                state.seq = stored.seq;
-                *state.comments = stored.comments;
-                state.comments.sort_by_key(|item| item.seq);
-                state.comments_version = at;
-            }
+        } else {
+            self.fence(FenceReason::UnreadableState);
         }
         self.load_session().await;
     }
 
-    /// Brings the document back: the persisted session state if there is one,
-    /// and otherwise the source the document was published with, which is the
-    /// one time a session is ever seeded.
-    ///
-    /// This is also the whole of the migration. A document stored the old way
-    /// has no `sessions/<slug>` and does have a source -- or, published as
-    /// HTML, has the page itself -- and is seeded from it the first time
-    /// anybody opens it. Nothing is rewritten until then, so a deployment that
-    /// is rolled back loses nothing.
+    /// Recover native journal state, or the current catalog checkpoint when
+    /// no journal state exists. Unattached rooms have no durable source.
     async fn load_session(&self) {
-        let (manifest, manifest_at) = if let Some(catalog) = self.catalog.get() {
-            match load_catalog_manifest(catalog, &self.slug).await {
-                Ok(manifest) => (manifest, BlobVersion::new()),
-                Err(err) => {
-                    eprintln!(
-                        "warning: the catalogue history of {} is unreadable ({err}); this room opens read-only",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    (Manifest::default(), BlobVersion::new())
-                }
-            }
-        } else {
-            match history::load_versioned(self.blobs.as_ref(), &self.slug).await {
-                Ok(pair) => pair,
-                Err(err) => {
-                    // No manifest is an empty one; a manifest that exists and
-                    // cannot be parsed is not the same thing, and defaulting it
-                    // here would let the next checkpoint write a near-empty
-                    // history over a real one this server merely could not read.
-                    // The room opens read-only until somebody looks at the
-                    // object by hand.
-                    eprintln!(
-                    "warning: the history of {} is unreadable ({err}); this room opens read-only",
+        let Some(catalog) = self.catalog.get() else {
+            self.fence(FenceReason::UnreadableState);
+            return;
+        };
+        let manifest = match load_catalog_manifest(catalog, &self.slug).await {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                eprintln!(
+                    "warning: unreadable catalog history for {}: {error}",
                     self.slug
                 );
-                    self.fence(FenceReason::UnreadableState);
-                    (Manifest::default(), BlobVersion::new())
-                }
+                self.fence(FenceReason::UnreadableState);
+                return;
             }
         };
         let entry = match self.store.get() {
@@ -1653,7 +1523,7 @@ impl Room {
         };
         let stored = if let Some(journal) = self.journal.get() {
             match journal.recover_latest(&self.storage_id).await {
-                Ok(raw) => raw.map(|body| (body, BlobVersion::new())),
+                Ok(raw) => raw,
                 Err(err) => {
                     // A catalogue-backed deployment must not seed over an
                     // unreadable journal: doing so would fork the live
@@ -1670,25 +1540,7 @@ impl Room {
                 }
             }
         } else {
-            match self.blobs.get_versioned(&session_key(&self.slug)).await {
-                Ok((raw, at)) => Some((raw, at)),
-                Err(BlobError::NotFound) => None,
-                Err(err) => {
-                    // Storage that cannot be read is not storage to seed over:
-                    // a session seeded from the published source on top of a
-                    // state that is merely unreachable would show the
-                    // document twice.
-                    eprintln!(
-                        "warning: could not read the session for {}: {err}",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    let mut state = self.state.lock().await;
-                    *state.manifest = manifest;
-                    state.session.format = format;
-                    return;
-                }
-            }
+            None
         };
 
         // A catalog checkpoint is the authoritative cold-start source when
@@ -1795,15 +1647,8 @@ impl Room {
 
         let mut state = self.state.lock().await;
         *state.manifest = manifest;
-        state.manifest_version = manifest_at;
         state.session.format = format;
-        let state_checkpoint = checkpoint_point.as_ref().cloned().or_else(|| {
-            self.catalog
-                .get()
-                .is_none()
-                .then(|| state.manifest.latest().cloned())
-                .flatten()
-        });
+        let state_checkpoint = checkpoint_point.as_ref().cloned();
         if let Some(point) = state_checkpoint {
             state.session.last_checkpoint = point.sha.clone();
             state.session.last_checkpoint_at = parse_timestamp(&point.at).unwrap_or(0);
@@ -1817,7 +1662,7 @@ impl Room {
             .map(|entry| entry.main.clone())
             .unwrap_or_default();
         match stored {
-            Some((raw, at)) => {
+            Some(raw) => {
                 // Decoded onto a fresh document first, and installed only if
                 // it actually applies: a session that half-applies onto the
                 // live document is worse than one left alone, since the live
@@ -1826,7 +1671,6 @@ impl Room {
                 let candidate = session::new_doc();
                 if session::apply_update(&candidate, &raw).is_ok() {
                     state.session.doc = candidate;
-                    state.session_version = at;
                     // A recovered session may contain edits newer than the
                     // newest checkpoint. Mark that relationship explicitly so
                     // the hourly scheduler can checkpoint it after restart;
@@ -1840,47 +1684,8 @@ impl Room {
                     state.session.checkpoint_generation = 0;
                     state.session.pending_checkpoint_since = now_unix();
                 } else {
-                    eprintln!(
-                        "warning: the session for {} is unreadable; preserving it and trying to \
-                         recover from its history",
-                        self.slug
-                    );
-                    // The corrupt object is diagnosable evidence and must
-                    // never be overwritten by whatever recovery does next, so
-                    // it is copied aside before anything else touches it.
-                    let sibling = format!("{}.unreadable-{}", session_key(&self.slug), now_unix());
-                    if let Err(err) = self
-                        .blobs
-                        .put(&sibling, raw.clone(), "application/octet-stream")
-                        .await
-                    {
-                        eprintln!(
-                            "warning: could not preserve the unreadable session for {} ({err})",
-                            self.slug
-                        );
-                    }
-                    match self
-                        .rebuild_from_checkpoint(&state.session.doc, &state.manifest, &named)
-                        .await
-                    {
-                        Ok(()) => {
-                            // Recovered onto the document in memory, from the
-                            // last checkpoint's own tree; storage still has
-                            // the corrupt object, so this is dirty until the
-                            // next persist writes the recovered state over it.
-                            state.session.mark_dirty(now_unix());
-                            state.session.generation += 1;
-                            state.session_version = at;
-                        }
-                        Err(err) => {
-                            eprintln!(
-                                "warning: could not recover {} from its history either ({err}); \
-                                 this room opens read-only",
-                                self.slug
-                            );
-                            self.fence(FenceReason::UnreadableState);
-                        }
-                    }
+                    eprintln!("warning: unreadable native journal state for {}", self.slug);
+                    self.fence(FenceReason::UnreadableState);
                 }
             }
             None => {
@@ -1937,28 +1742,9 @@ impl Room {
     /// its size, and a checkpoint has to record what the document costs -- so
     /// the answer is read from where the bytes are, which is the store.
     ///
-    /// Legacy rooms use one blob listing. Catalogue rooms resolve their
-    /// current physical assets through one bounded v2 query and fence on a
+    /// Rooms resolve their current physical assets through one bounded v2 query and fence on a
     /// missing or unreadable asset instead of deriving an under-sized tree.
     async fn load_asset_sizes(&self) {
-        if self.catalog.get().is_none() {
-            if let Ok(found) = self
-                .blobs
-                .list(&crate::storage::blob::asset_prefix(&self.storage_id))
-                .await
-            {
-                let mut state = self.state.lock().await;
-                for object in found {
-                    if let Some(sha) = object.key.rsplit('/').next() {
-                        state
-                            .session
-                            .asset_sizes
-                            .insert(sha.to_string(), object.size);
-                    }
-                }
-            }
-            return;
-        }
         let Some(catalog) = self.catalog.get() else {
             return;
         };
@@ -2013,55 +1799,20 @@ impl Room {
     ) -> Option<(String, String)> {
         let store = self.store.get()?;
         let entry = entry?;
-        let source = if entry.source_format.is_empty() || entry.source_format == "html" {
-            None
-        } else {
-            match store.read_source(&self.slug).await {
-                Ok(source) => Some(source),
-                Err(BlobError::NotFound) => None,
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not read published source for {}: {error}",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    return None;
-                }
-            }
-        };
-        if let Some(raw) = source {
-            return Some((
+        match store.read_source(&self.slug).await {
+            Ok(raw) => Some((
                 String::from_utf8_lossy(&raw).to_string(),
                 entry.source_format.clone(),
-            ));
-        }
-        // Nothing under the old keys either. That is the ordinary state of a
-        // document that has just been created -- the index entry exists and
-        // the session is about to be seeded by whoever created it -- so it is
-        // not worth a word. Only a document that had a source and lost it
-        // falls through to its page, and that is worth saying.
-        let page = match store.read(&self.slug, &entry.sha).await {
-            Ok(page) => page,
-            Err(BlobError::NotFound) => return None,
+            )),
             Err(error) => {
                 eprintln!(
-                    "warning: could not read published page for {}: {error}",
+                    "warning: could not read published source for {}: {error}",
                     self.slug
                 );
                 self.fence(FenceReason::UnreadableState);
-                return None;
+                None
             }
-        };
-        if !entry.source_format.is_empty() && entry.source_format != "html" {
-            eprintln!(
-                "warning: {} has no stored {} source; it opens as the page it was published as",
-                self.slug, entry.source_format
-            );
         }
-        Some((
-            String::from_utf8_lossy(&page).to_string(),
-            "html".to_string(),
-        ))
     }
 
     /// Whether another server holds this room, as of the last time we asked.
@@ -2077,7 +1828,7 @@ impl Room {
 
     /// Stops this server writing the room, recording why. The first reason
     /// wins: a room fenced because its state could not be read stays that way
-    /// even if a later lease renewal also fails, because that is the reason an
+    /// even if a later write also fails, because that is the reason an
     /// operator has to act on.
     fn fence(&self, reason: FenceReason) {
         // Deletion is the exception: it is final and outranks whatever
@@ -2095,197 +1846,10 @@ impl Room {
         ))
     }
 
-    /// Says whether this server may still write the room, renewing the lease
-    /// when it is old enough to be worth saying so again. Renewal is on the
-    /// write path rather than on a timer: a room nobody is writing does not
-    /// need holding, and a room being written is asked about often enough.
-    ///
-    /// Two things make this a lease rather than a claim. A renewal asserts the
-    /// epoch this server believes it holds, so a server that was fenced out
-    /// while it was stalled finds out instead of writing over the new holder.
-    /// And past `Lease::safe_until` -- a guard's width before the lease could
-    /// be taken from us -- writing is refused unless a renewal succeeds first,
-    /// so a holder stops strictly before anybody else could start, without
-    /// having to trust its own idea of the time against theirs.
-    ///
-    /// Losing the lease makes the room read-only for good. The other server's
-    /// copy is the live one, and continuing to write ours would put half of
-    /// each thread in the stored list.
+    /// Native mutations enforce catalog generation and operation authority.
+    /// Preserve the room's startup, corruption, and lifecycle fences too.
     async fn hold(&self) -> bool {
-        if self.read_only() {
-            return false;
-        }
-        if self.catalog.get().is_some() || self.blobs.is_local() {
-            return true;
-        }
-        let mut lease = self.lease.lock().await;
-        // Verify the lease on every durable write.  A holder can be fenced
-        // while its lease still looks fresh locally; trusting the cached
-        // interval would let a stalled writer publish after takeover.
-        let renewed = take_room_lease(
-            self.blobs.as_ref(),
-            &self.slug,
-            &self.holder,
-            Some(lease.epoch),
-        )
-        .await;
-        if !renewed.held {
-            eprintln!(
-                "warning: the lease on {} is held by {} at epoch {}; this server is read-only \
-                 for it from now on",
-                self.slug, renewed.holder, renewed.epoch
-            );
-            self.fence(FenceReason::HeldElsewhere);
-            return false;
-        }
-        if renewed.verified {
-            *lease = renewed;
-        } else {
-            // A storage error kept this renewal from confirming anything:
-            // `renewed.held` is a provisional "nothing has shown we lost it",
-            // not a fresh proof that we still have it. Adopting its `taken_at`
-            // would push `safe_until` out on the strength of that, so the
-            // previous, actually verified `taken_at` is kept instead -- the
-            // safe interval keeps counting down, and writing here stops at
-            // its end unless a later renewal is verified before then (R24).
-            eprintln!(
-                "warning: could not verify the lease on {} against storage; its safe interval \
-                 keeps counting down from the last renewal storage actually confirmed",
-                self.slug
-            );
-            if now_unix() >= lease.safe_until() {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Writes an object this room owns, and only over the version this server
-    /// last saw. This is the enforcement behind the lease: a write that loses
-    /// the compare-and-swap is proof that another process owns the room, and
-    /// this one stops writing rather than finding out later. `version` is
-    /// updated in place on success.
-    async fn write_owned(
-        &self,
-        key: &str,
-        body: Vec<u8>,
-        version: &mut BlobVersion,
-    ) -> Result<(), String> {
-        let change = ObjectChange {
-            slug: self.slug.clone(),
-            storage_id: self.storage_id.clone(),
-            operation_id: crate::util::new_id(),
-            object_key: key.to_string(),
-            kind: "mutable".into(),
-        };
-        let reservation = match self.catalog.get() {
-            Some(catalog) => Some(
-                reserve_object_change(
-                    catalog,
-                    change,
-                    body.len() as i64,
-                    self.config.storage.per_owner,
-                    self.config.storage.total,
-                    None,
-                )
-                .await
-                .map_err(|error| error.to_string())?,
-            ),
-            None => None,
-        };
-        match self.blobs.swap(key, body, version).await {
-            Ok(at) => {
-                if let Some(reservation) = reservation {
-                    reservation
-                        .commit(at.clone())
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
-                *version = at;
-                Ok(())
-            }
-            Err(BlobError::Conflict) => {
-                if let Some(reservation) = reservation {
-                    reservation.abort().await;
-                }
-                eprintln!(
-                    "warning: {key} was written by another server; this one is read-only for {} \
-                     from now on",
-                    self.slug
-                );
-                self.fence(FenceReason::HeldElsewhere);
-                Err("this room is written by another server".into())
-            }
-            Err(err) => {
-                if let Some(reservation) = reservation {
-                    reservation.abort().await;
-                }
-                Err(err.to_string())
-            }
-        }
-    }
-
-    async fn put_accounted(
-        &self,
-        key: &str,
-        body: Vec<u8>,
-        kind: &str,
-        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-    ) -> Result<(), WriteError> {
-        self.put_accounted_with_type(key, body, "application/octet-stream", kind, actor)
-            .await
-    }
-
-    async fn put_accounted_with_type(
-        &self,
-        key: &str,
-        body: Vec<u8>,
-        content_type: &str,
-        kind: &str,
-        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-    ) -> Result<(), WriteError> {
-        let change = ObjectChange {
-            slug: self.slug.clone(),
-            storage_id: self.storage_id.clone(),
-            operation_id: crate::util::new_id(),
-            object_key: key.to_string(),
-            kind: kind.to_string(),
-        };
-        // The catalogue is where a quota, a lost right or a busy deployment
-        // is decided; keep those distinctions rather than flattening them
-        // into prose a caller would have to read back.
-        let reservation = match self.catalog.get() {
-            Some(catalog) => Some(
-                reserve_object_change(
-                    catalog,
-                    change,
-                    body.len() as i64,
-                    self.config.storage.per_owner,
-                    self.config.storage.total,
-                    actor.as_ref().map(OwnedAuthority::new),
-                )
-                .await
-                .map_err(WriteError::from)?,
-            ),
-            None => None,
-        };
-        match self.blobs.put(key, body, content_type).await {
-            Ok(()) => {
-                if let Some(reservation) = reservation {
-                    reservation
-                        .commit(String::new())
-                        .await
-                        .map_err(WriteError::from)?;
-                }
-                Ok(())
-            }
-            Err(error) => {
-                if let Some(reservation) = reservation {
-                    reservation.abort().await;
-                }
-                Err(WriteError::Storage(error.to_string()))
-            }
-        }
+        !self.read_only() && self.catalog.get().is_some()
     }
 
     /// Adds one prepared comment to the room and persists the list, for the
@@ -2305,49 +1869,22 @@ impl Room {
         self.persist_seed_comments(seq, comments).await
     }
 
-    /// Persists one prepared comment list with room state released, and
-    /// installs it only once storage has taken it: the whole JSON blob for a
-    /// room with no catalogue (there is nothing narrower to write), or a
-    /// row-by-row reconciliation via `save_catalog_comments` for a
-    /// catalogue-backed one -- every ordinary comment mutation on a
-    /// catalogue-backed room instead updates its one changed row directly and
-    /// never comes here.
-    ///
-    /// The caller holds `comment_write` and prepared `comments` from the list
-    /// the room held under state, so what is written differs from that list by
-    /// exactly the caller's own change and by nothing else. The legacy blob is
-    /// written conditionally on the version observed under state; losing that
-    /// compare-and-swap is proof another process owns the room, which fences
-    /// it here as everywhere else. On any failure nothing is installed, so a
-    /// failed write leaves room state as it was rather than putting an older
-    /// snapshot back over somebody else's change.
-    pub(super) async fn persist_comments(
-        &self,
-        seq: i64,
-        comments: Vec<Comment>,
-    ) -> Result<(), String> {
-        self.persist_comments_inner(seq, comments, false).await
-    }
-
+    /// Persist a seed comment list through the catalog and install it only
+    /// after the durable reconciliation succeeds. Ordinary comment mutations
+    /// use authenticated typed operations instead.
     async fn persist_seed_comments(&self, seq: i64, comments: Vec<Comment>) -> Result<(), String> {
-        self.persist_comments_inner(seq, comments, true).await
+        self.persist_comments_inner(seq, comments).await
     }
 
     async fn persist_comments_inner(
         &self,
         seq: i64,
         mut comments: Vec<Comment>,
-        allow_seed_catalog: bool,
     ) -> Result<(), String> {
         if !self.hold().await {
             return Err("this room is held by another server".into());
         }
         if let Some(catalog) = self.catalog.get() {
-            if !allow_seed_catalog {
-                return Err(
-                    "catalog-backed comments must use an authenticated typed mutation".into(),
-                );
-            }
             let mut seq = seq;
             save_catalog_comments(catalog, &self.slug, &mut seq, &mut comments).await?;
             let mut state = self.state.lock().await;
@@ -2355,28 +1892,11 @@ impl Room {
             *state.comments = comments;
             return Ok(());
         }
-        let expected = self.state.lock().await.comments_version.clone();
-        let raw = json!({"seq": seq, "comments": to_stored(&comments)});
-        let body = serde_json::to_vec(&raw).map_err(|err| err.to_string())?;
-        let mut version = expected.clone();
-        self.write_owned(&room_key(&self.slug), body, &mut version)
-            .await?;
-        let mut state = self.state.lock().await;
-        if state.comments_version != expected {
-            // The gate keeps other comment writers out of this window, so the
-            // only way the fence moves is a reload, and what a reload installed
-            // is the durable list. Report the write rather than putting a list
-            // assembled before it back over the top.
-            return Err("this room's comments were reloaded during that write".into());
-        }
-        state.comments_version = version;
-        *state.comments = comments;
-        state.seq = state.seq.max(seq);
-        Ok(())
+        Err("durable catalog required for comments".into())
     }
 
     /// Every comment, for seeding and for the tests that read a room back.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn snapshot(&self) -> Vec<Comment> {
         self.state.lock().await.comments.clone()
     }
@@ -2654,7 +2174,7 @@ impl Room {
         let by = by.into();
         let _publication_writer = self.publication_write.lock().await;
         if self.read_only() {
-            // Another server holds this room's lease. Applying and relaying
+            // A fenced room cannot persist changes. Applying and relaying
             // the update anyway would show every other peer a document this
             // server cannot persist, and diverge from whatever the actual
             // holder is doing -- so it is refused before anything is touched,
@@ -2733,12 +2253,12 @@ impl Room {
                 session::DecodedAdmission::TooLarge => {
                     return Applied::Refuse(WriteError::Document(
                         crate::room::error::DocumentLimit::Size,
-                    ))
+                    ));
                 }
                 session::DecodedAdmission::TooMany => {
                     return Applied::Refuse(WriteError::Document(
                         crate::room::error::DocumentLimit::Files,
-                    ))
+                    ));
                 }
                 session::DecodedAdmission::Fits(decoded) => decoded,
             };
@@ -2782,12 +2302,12 @@ impl Room {
                             {
                                 Ok(permit) => Some(permit),
                                 Err(error) if error.is_temporary() => {
-                                    return Applied::Refuse(WriteError::ServerBusy)
+                                    return Applied::Refuse(WriteError::ServerBusy);
                                 }
                                 Err(_) => {
                                     return Applied::Refuse(WriteError::Document(
                                         crate::room::error::DocumentLimit::Encoded,
-                                    ))
+                                    ));
                                 }
                             }
                         }
@@ -2959,26 +2479,18 @@ impl Room {
         Applied::Relay
     }
 
-    /// Writes `sessions/<slug>` when the document has changed, and only then
+    /// Appends native journal state when the document has changed, and only then
     /// tells the sockets their updates are durable. Relaying an update is not
     /// an acknowledgment: nothing here says "saved" until storage has said so.
     pub async fn persist(&self) -> Result<bool, WriteError> {
         if self.write_session(true, true).await?.is_none() {
             return Ok(false);
         }
-        let (format, main) = {
-            let state = self.state.lock().await;
-            (
-                state.session.format.clone(),
-                session::main_path(&state.session.doc),
-            )
-        };
-        self.record_size_now(None, &format, &main).await;
         Ok(true)
     }
 
     /// Snapshot under the write gate: checkpoints and timer saves cannot write
-    /// snapshots out of order or use the same ETag. Ordinary edits use only
+    /// snapshots out of order or reuse a journal cursor. Ordinary edits use only
     /// state, so they can proceed during storage I/O.
     async fn write_session(
         &self,
@@ -3006,7 +2518,12 @@ impl Room {
         if !self.hold().await {
             return Err(self.fenced());
         }
-        let (body, generation, durable, mut version, dependencies) = {
+        if self.catalog.get().is_none() || self.journal.get().is_none() {
+            return Err(WriteError::Storage(
+                "durable catalog and native journal required".into(),
+            ));
+        }
+        let (body, generation, durable, dependencies) = {
             let mut state = self.state.lock().await;
             let body = session::encode_state(&state.session.doc);
             // `E`, at the last gate before anything durable happens. Room
@@ -3056,13 +2573,7 @@ impl Room {
                     })?,
                 });
             }
-            (
-                body,
-                generation,
-                durable,
-                state.session_version.clone(),
-                dependencies,
-            )
+            (body, generation, durable, dependencies)
         };
         // The reservation comes back as a guard rather than as a bare
         // success, so the window between this transaction committing and
@@ -3158,15 +2669,10 @@ impl Room {
                     .map_err(|error| error.to_string())?;
             }
         }
-        if self.journal.get().is_none() {
-            self.write_owned(&session_key(&self.slug), body, &mut version)
-                .await?;
-        }
         if let Some(quota) = quota {
             quota.commit().await.map_err(WriteError::from)?;
         }
         let mut state = self.state.lock().await;
-        state.session_version = version;
         if state.session.generation == generation {
             // The journal cursor and logical edit generation are independent:
             // persisting a document must not make an older checkpoint cover it.
@@ -3245,12 +2751,7 @@ impl Room {
         // Quiet periods may request an early save only after the journal's
         // flush floor. Continuous typing still reaches the dirty-age deadline;
         // it must not reset that deadline or force a write on every brief pause.
-        // The compatibility session store retains its original debounce policy.
-        let flush_due = if self.journal.get().is_some() {
-            floor_elapsed && (quiet || dirty_for >= 15)
-        } else {
-            quiet || floor_elapsed
-        };
+        let flush_due = floor_elapsed && (quiet || dirty_for >= 15);
         if dirty && flush_due {
             if let Err(err) = self.persist().await {
                 eprintln!(

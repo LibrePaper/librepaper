@@ -5,7 +5,7 @@
 //! canonical object rows, operation receipts, and v2 journal adapter.
 //!
 //! Coverage moved from the former shared-journal cases as follows: framing
-//! and queue/seal limits are covered by the codec/coordinator tests; corrupt
+//! limits are covered by the codec tests; corrupt
 //! and missing acknowledged physical objects by the fail-closed recovery
 //! tests; conflicting replay and per-document ownership by the cursor tests;
 //! binary base restart and old-segment retirement by the compaction tests;
@@ -21,9 +21,7 @@ use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::catalog::Catalog;
 use crate::storage::v2_catalog::V2JournalCatalogAdapter;
 use sha2::Digest;
-use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 fn state(text: &str) -> Vec<u8> {
     let doc = session::new_doc();
@@ -93,25 +91,6 @@ fn segment_round_trip_and_digest_validation() {
         Segment::decode(&broken),
         Err(JournalError::Corrupt(_))
     ));
-}
-
-#[test]
-fn coordinator_keeps_document_framing_limits() {
-    let first = JournalRecord::new("doc", 1, "retry-1", 0, b"x".to_vec()).expect("record");
-    let second = JournalRecord::new("doc", 2, "retry-2", 0, b"y".to_vec()).expect("record");
-    let limit = Segment::new(vec![first.clone()])
-        .expect("segment")
-        .encoded_len();
-    let mut coordinator = JournalCoordinator::new(CoordinatorLimits {
-        max_queued_bytes: usize::MAX,
-        max_queued_records: 4,
-        max_segment_bytes: limit,
-        max_records_per_segment: 4,
-    })
-    .expect("limits");
-    coordinator.enqueue(first).expect("enqueue first");
-    coordinator.enqueue(second).expect("enqueue second");
-    assert_eq!(coordinator.seal(true).expect("seal").len(), 2);
 }
 
 #[tokio::test]
@@ -450,182 +429,4 @@ async fn v2_large_compacted_base_survives_runtime_reopen() {
         session::texts_of(&decode_state(&recovered))["index.md"],
         text
     );
-}
-
-/// Release-only comparison trace for spec section 24. It performs real v2
-/// catalog/object writes for 100 documents and compares their physical
-/// per-document segments with the old mixed-document coordinator's framing.
-/// The test is ignored by default because it is an operator measurement, not
-/// a correctness gate; run centrally with `--ignored --nocapture`.
-#[tokio::test]
-#[ignore = "spec-24 physical journal comparison trace"]
-async fn spec24_per_document_journal_comparison_trace() {
-    const DOCUMENTS: usize = 100;
-    const UPDATES_PER_DOCUMENT: usize = 50;
-    let (catalog, blobs, runtime, _directory) = fixture();
-    let account_id = "journal-test-account";
-    let document_ids = (0..DOCUMENTS)
-        .map(|index| format!("journal-benchmark-{index:04}"))
-        .collect::<Vec<_>>();
-    catalog
-        .with_connection(|connection| {
-            for (index, document_id) in document_ids.iter().enumerate() {
-                connection.execute(
-                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,?2,?3,'owned',?2,?2,'active',1,1,'markdown','index.md')",
-                    rusqlite::params![document_id, format!("journal-benchmark-{index:04}"), account_id],
-                )?;
-            }
-            connection.execute(
-                "UPDATE accounts SET document_count=?1 WHERE id=?2",
-                rusqlite::params![(DOCUMENTS + 1) as i64, account_id],
-            )?;
-            connection.execute(
-                "UPDATE server_state SET document_count=?1 WHERE id=1",
-                [(DOCUMENTS + 1) as i64],
-            )?;
-            Ok(())
-        })
-        .expect("benchmark documents");
-    let mut documents = document_ids
-        .iter()
-        .map(|document_id| (document_id.clone(), session::new_doc()))
-        .collect::<BTreeMap<_, _>>();
-    let mut trace = Vec::with_capacity(DOCUMENTS * UPDATES_PER_DOCUMENT);
-    for sequence in 1..=UPDATES_PER_DOCUMENT {
-        for document_id in &document_ids {
-            let document = documents.get_mut(document_id).expect("trace document");
-            session::put_text(
-                document,
-                "index.md",
-                &format!("edit-{document_id}-{sequence}"),
-            );
-            trace.push((
-                document_id.clone(),
-                sequence as u64,
-                session::encode_state(document),
-            ));
-        }
-    }
-    let started = Instant::now();
-    for (document_id, sequence, body) in &trace {
-        DocumentJournal::append(&runtime, document_id, *sequence, body.clone())
-            .await
-            .expect("per-document trace append");
-    }
-    let v2_elapsed_millis = started.elapsed().as_millis();
-
-    let started = Instant::now();
-    let mut coordinator = JournalCoordinator::new(CoordinatorLimits {
-        max_queued_bytes: 16 * 1024 * 1024,
-        max_queued_records: 256,
-        max_segment_bytes: MAX_SEGMENT_BYTES,
-        max_records_per_segment: MAX_RECORDS_PER_SEGMENT,
-    })
-    .expect("mixed coordinator limits");
-    let mut mixed_segments = Vec::new();
-    for batch in trace.chunks(128) {
-        for (document_id, sequence, body) in batch {
-            coordinator
-                .enqueue(
-                    JournalRecord::new(
-                        document_id.clone(),
-                        *sequence,
-                        format!("benchmark-{document_id}-{sequence}"),
-                        0,
-                        body.clone(),
-                    )
-                    .expect("mixed trace record"),
-                )
-                .expect("mixed trace enqueue");
-        }
-        mixed_segments.extend(coordinator.seal(true).expect("mixed trace seal"));
-    }
-    let mixed_directory = tempfile::tempdir().expect("mixed journal directory");
-    let mixed_blobs = FsStore::new(mixed_directory.path(), true);
-    let mut mixed_physical_bytes = 0_u64;
-    for (index, segment) in mixed_segments.iter().enumerate() {
-        let body = segment.encode().expect("mixed segment encoding");
-        mixed_physical_bytes = mixed_physical_bytes.saturating_add(body.len() as u64);
-        mixed_blobs
-            .put(
-                &format!("journal/benchmark/segments/{index:08}"),
-                body,
-                "application/octet-stream",
-            )
-            .await
-            .expect("mixed segment PUT");
-    }
-    let mixed_write_elapsed_millis = started.elapsed().as_millis();
-    let mixed_recovery_started = Instant::now();
-    let mut mixed_last = BTreeMap::new();
-    for index in 0..mixed_segments.len() {
-        let body = mixed_blobs
-            .get(&format!("journal/benchmark/segments/{index:08}"))
-            .await
-            .expect("mixed segment read");
-        for record in Segment::decode(&body)
-            .expect("mixed segment recovery")
-            .records
-        {
-            let replace = mixed_last
-                .get(&record.storage_id)
-                .is_none_or(|(_, sequence)| *sequence < record.sequence);
-            if replace {
-                mixed_last.insert(record.storage_id, (record.payload, record.sequence));
-            }
-        }
-    }
-    let mixed_recovery_millis = mixed_recovery_started.elapsed().as_millis();
-    let v2_recovery_started = Instant::now();
-    for document_id in &document_ids {
-        let recovered = DocumentJournal::recover_latest(&runtime, document_id)
-            .await
-            .expect("per-document recovery trace")
-            .expect("per-document state");
-        let expected = trace
-            .iter()
-            .rev()
-            .find(|(candidate, _, _)| candidate == document_id)
-            .map(|(_, _, body)| body.as_slice())
-            .expect("trace state");
-        let expected_text = session::texts_of(&decode_state(expected));
-        assert_eq!(session::texts_of(&decode_state(&recovered)), expected_text);
-        assert_eq!(
-            session::encode_vector(&decode_state(&recovered)),
-            session::encode_vector(&decode_state(expected))
-        );
-        let mixed_body = mixed_last
-            .get(document_id)
-            .map(|(body, _)| body.as_slice())
-            .expect("mixed trace state");
-        assert_eq!(session::texts_of(&decode_state(mixed_body)), expected_text);
-        assert_eq!(
-            session::encode_vector(&decode_state(mixed_body)),
-            session::encode_vector(&decode_state(expected))
-        );
-    }
-    let v2_recovery_millis = v2_recovery_started.elapsed().as_millis();
-    let (physical_objects, physical_bytes, server_stored_bytes, server_document_count, account_stored_bytes, account_document_count, actual_documents): (i64, i64, i64, i64, i64, i64, i64) = catalog
-        .with_connection(|connection| {
-            Ok(connection.query_row(
-                "SELECT count(*),COALESCE(SUM(byte_length),0),(SELECT stored_bytes FROM server_state WHERE id=1),(SELECT document_count FROM server_state WHERE id=1),(SELECT stored_bytes FROM accounts WHERE id=?1),(SELECT document_count FROM accounts WHERE id=?1),(SELECT count(*) FROM documents WHERE owner_id=?1) FROM objects WHERE kind='journal_segment' AND state='available'",
-                [account_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
-            )?)
-        })
-        .expect("physical byte total");
-    assert_eq!(server_document_count, (DOCUMENTS + 1) as i64);
-    assert_eq!(account_document_count, server_document_count);
-    assert_eq!(actual_documents, server_document_count);
-    assert_eq!(account_stored_bytes, server_stored_bytes);
-    assert!(server_stored_bytes > 0);
-    assert!(catalog.audit_v2_counters().expect("v2 counter audit"));
-    println!(
-        "{{\"trace\":\"spec24-interleaved\",\"mixed_baseline\":\"coordinator+FsStore\",\"durable_fsync\":true,\"trace_records\":{},\"documents\":{},\"benchmark_documents\":{DOCUMENTS},\"updates_per_document\":{UPDATES_PER_DOCUMENT},\"v2_segments\":{physical_objects},\"mixed_segments\":{},\"v2_physical_bytes\":{physical_bytes},\"mixed_physical_bytes\":{mixed_physical_bytes},\"v2_server_stored_bytes\":{server_stored_bytes},\"mixed_stored_bytes\":{mixed_physical_bytes},\"v2_document_count\":{server_document_count},\"mixed_document_count\":{},\"v2_elapsed_ms\":{v2_elapsed_millis},\"mixed_elapsed_ms\":{mixed_write_elapsed_millis},\"v2_recovery_ms\":{v2_recovery_millis},\"mixed_recovery_ms\":{mixed_recovery_millis}}}",
-        trace.len(),
-        DOCUMENTS + 1,
-        mixed_segments.len(),
-        DOCUMENTS + 1,
-    );
-    let _ = blobs;
 }

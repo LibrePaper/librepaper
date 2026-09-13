@@ -22,6 +22,7 @@ async fn a_fenced_room_refuses_the_writes_a_publication_depends_on() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     let other = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     other.attach_store(store);
+    other.attach_deployment_lock_unavailable();
     let room = other.get("probe").await;
     assert!(room.read_only());
 
@@ -82,33 +83,59 @@ async fn an_empty_update_is_not_a_refusal() {
 #[tokio::test]
 async fn a_storage_failure_is_told_apart_from_a_refusal() {
     let dir = tempfile::tempdir().unwrap();
-    let hooked = HookStore::new(Arc::new(blob::FsStore::new(dir.path(), true)));
+    let hooked = HookStore::new(Arc::new(blob::FsStore::new(
+        dir.path().join("objects"),
+        true,
+    )));
     let config = Arc::new(Configuration::default());
+    let catalog = Arc::new(
+        crate::storage::catalog::Catalog::open(dir.path().join("catalog.sqlite")).unwrap(),
+    );
+    super::room::fixture_account(&catalog);
     let store = Arc::new(
-        store::Store::open(hooked.clone() as Arc<dyn BlobStore>, config.clone())
-            .await
-            .unwrap(),
+        store::Store::open_with_catalog(
+            hooked.clone() as Arc<dyn BlobStore>,
+            config.clone(),
+            catalog,
+        )
+        .await
+        .unwrap(),
     );
     let rooms = room::RoomSet::new(hooked.clone(), config);
     rooms.attach_store(store.clone());
+    super::room::attach_fixture_journal(&rooms, &store, hooked.clone());
     store
-        .put(store::Publication {
-            slug: "probe".into(),
-            source: "A".into(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "probe".into(),
+                source: "A".into(),
+                source_format: "markdown".into(),
+                ..Default::default()
+            },
+            super::room::fixture_actor(),
+        )
         .await
         .unwrap();
     let room = rooms.get("probe").await;
-    room.set_source("A", "markdown").await.unwrap();
-
-    *hooked.fail.lock().unwrap() = Some("sessions/".into());
-    let error = room
-        .persist()
+    room.set_source("B", "markdown").await.unwrap();
+    assert!(room.state.lock().await.session.dirty);
+    let prefix = super::room::object_write_prefix(&store, "probe");
+    *hooked.pause.lock().unwrap() = Some(("put".into(), prefix.clone()));
+    let writing = room.clone();
+    let persistence = tokio::spawn(async move { writing.persist().await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), hooked.reached.notified())
         .await
+        .expect("native journal PUT reached the failure boundary");
+    // Pause patterns use a wildcard, but failure injection takes a literal
+    // prefix. Install the failure only after the physical PUT has started.
+    *hooked.fail.lock().unwrap() = Some(prefix.trim_end_matches('*').to_owned());
+    hooked.resume.notify_one();
+    let error = persistence
+        .await
+        .unwrap()
         .expect_err("a failing store must not report a durable write");
+    assert!(room.state.lock().await.session.dirty);
+    assert_eq!(room.source().await, "B");
     assert!(
         matches!(error, WriteError::Storage(_)),
         "a store failure is a storage failure, not a refusal: {error:?}"

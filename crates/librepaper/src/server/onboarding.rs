@@ -139,9 +139,7 @@ impl Server {
                             source: starter.source.into(),
                             source_format: starter.format.into(),
                             main: starter.main.into(),
-                            owner: who.handle.clone(),
                             owner_id: who.id.clone(),
-                            owner_name: who.name.clone(),
                         },
                         actor.clone(),
                     )

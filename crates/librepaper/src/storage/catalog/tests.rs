@@ -1,8 +1,7 @@
 use super::{
-    Account, AnnotationAuthority, Catalog, CatalogError, Checkpoint, Comment, DocumentId,
-    JournalPreparation, Link, MutationAuthority, NewDocument, ObjectId, OperationKind,
-    OperationRequest, OperationScope, Reply, SourceHistoryObject, SourceHistoryRecord, UnixMillis,
-    V2Operation, V2OperationInput,
+    Account, AnnotationAuthority, Catalog, CatalogError, Checkpoint, Comment, DocumentId, Link,
+    MutationAuthority, NewDocument, ObjectId, OperationKind, OperationRequest, OperationScope,
+    Reply, UnixMillis, V2Operation, V2OperationInput,
 };
 use sha2::Digest;
 use std::sync::Arc;
@@ -715,8 +714,6 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
-    let file_a = "a".repeat(64);
-    let file_b = "b".repeat(64);
     let shared_id = fixture_object_id("source-shared");
     let shared_key = format!("v2/documents/storage-1/objects/{shared_id}");
     let recipe_key = |seed: &str| {
@@ -784,27 +781,6 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
             Ok(())
         })
         .unwrap();
-    let object = SourceHistoryObject {
-        object_key: shared_key,
-        kind: "source_chunk".into(),
-        bytes: 7,
-    };
-    let record = |digest: &str, recipe: &str, recipe_digest: &str| SourceHistoryRecord {
-        file_digest: digest.into(),
-        recipe_key: recipe.into(),
-        recipe_digest: recipe_digest.into(),
-        codec: 1,
-        uncompressed_bytes: 7,
-        recipe_bytes: 3,
-        objects: vec![
-            SourceHistoryObject {
-                object_key: recipe.into(),
-                kind: "source_recipe".into(),
-                bytes: 3,
-            },
-            object.clone(),
-        ],
-    };
     let checkpoint = |sha: &str| Checkpoint {
         slug: "doc".into(),
         sha: sha.into(),
@@ -823,26 +799,19 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
         changed: None,
         by_account: None,
     };
-    let first = checkpoint("checkpoint-a");
-    catalog
-        .insert_checkpoints_atomic_with_sources(
-            std::slice::from_ref(&first),
-            None,
-            &[record(&file_a, &recipe_a_key, &"c".repeat(64))],
-        )
-        .unwrap();
-    let second = checkpoint("checkpoint-b");
-    catalog
-        .insert_checkpoints_atomic_with_sources(
-            std::slice::from_ref(&second),
-            None,
-            &[record(&file_b, &recipe_b_key, &"d".repeat(64))],
-        )
-        .unwrap();
-    let head = checkpoint("checkpoint-head");
-    catalog
-        .insert_checkpoints_atomic_with_sources(std::slice::from_ref(&head), None, &[])
-        .unwrap();
+    for name in ["checkpoint-a", "checkpoint-b", "checkpoint-head"] {
+        catalog.insert_checkpoint(&checkpoint(name)).unwrap();
+    }
+    catalog.with_connection(|connection| {
+        for (checkpoint_id, recipe_id) in [("checkpoint-a", &recipe_a_id), ("checkpoint-b", &recipe_b_id)] {
+            for object_id in [recipe_id, &shared_id] {
+                connection.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES('storage-1',?1,?2)", rusqlite::params![checkpoint_id, object_id])?;
+            }
+        }
+        connection.execute("UPDATE documents SET checkpoint_ref_count=checkpoint_ref_count+4 WHERE id='storage-1'", [])?;
+        connection.execute("UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count+4 WHERE id=1", [])?;
+        Ok(())
+    }).unwrap();
 
     // Supply the durable v2 retention evaluation that makes these historical
     // points eligible for the typed checkpoint-delete boundary.
@@ -863,14 +832,25 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
         .unwrap();
 
     catalog.delete_checkpoint("doc", "checkpoint-a").unwrap();
-    let pending = catalog.due_deletes(crate::util::now_millis(), 100).unwrap();
-    assert!(pending
-        .iter()
-        .all(|entry| entry.object_key != object.object_key));
-
+    let document_id = DocumentId::new("storage-1").unwrap();
+    let shared_object_id = ObjectId::new(shared_id).unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE objects SET gc_after=0 WHERE document_id='storage-1' AND id=?1",
+                [shared_object_id.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let now = UnixMillis::new(crate::util::now_millis()).unwrap();
+    assert!(
+        !catalog
+            .claim_v2_object_for_deletion(&document_id, &shared_object_id, now, now,)
+            .unwrap(),
+        "the second retained file still protects the shared chunk"
+    );
     catalog.delete_checkpoint("doc", "checkpoint-b").unwrap();
-    let document_id = crate::storage::catalog::DocumentId::new("storage-1").unwrap();
-    let shared_object_id = crate::storage::catalog::ObjectId::new(shared_id).unwrap();
     catalog
         .with_connection(|connection| {
             connection.execute(
@@ -888,10 +868,18 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
             crate::storage::catalog::UnixMillis::new(crate::util::now_millis()).unwrap(),
         )
         .unwrap());
-    let pending = catalog.due_deletes(crate::util::now_millis(), 100).unwrap();
-    assert!(pending
-        .iter()
-        .any(|entry| entry.object_key == object.object_key));
+    let state: String = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT state FROM objects WHERE storage_key=?1",
+                    [&shared_key],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(state, "deleting");
 }
 
 #[test]
@@ -938,11 +926,6 @@ fn source_history_writer_lease_rejects_an_object_already_queued_for_deletion() {
                 Ok(())
             })
             .unwrap();
-        let object = SourceHistoryObject {
-            object_key: object_key.clone(),
-            kind: kind.into(),
-            bytes: 7,
-        };
         catalog
             .with_connection(|connection| {
                 connection.execute(
@@ -955,33 +938,24 @@ fn source_history_writer_lease_rejects_an_object_already_queued_for_deletion() {
         assert!(catalog
             .claim_v2_object_for_deletion(
                 &DocumentId::new("storage-1").unwrap(),
-                &ObjectId::new(object_id).unwrap(),
+                &ObjectId::new(object_id.clone()).unwrap(),
                 UnixMillis::new(now).unwrap(),
                 UnixMillis::new(now).unwrap(),
             )
             .unwrap());
-        let result = catalog.begin_source_history_lease(
-            "storage-1",
-            operation.id.as_str(),
-            &[object],
-            now,
-            now + 1_000,
+        let generation = catalog.v2_server_state().unwrap().1;
+        let result = catalog.acquire_v2_lease(
+            &DocumentId::new("storage-1").unwrap(),
+            &ObjectId::new(object_id).unwrap(),
+            "source-writer",
+            super::LeasePurpose::Stage,
+            Some(&operation.id),
+            &generation,
+            UnixMillis::new(now + 1_000).unwrap(),
+            UnixMillis::new(now).unwrap(),
         );
         assert!(matches!(result, Err(CatalogError::Conflict(_))));
     }
-}
-
-#[test]
-fn source_history_gc_on_a_fresh_catalog_with_no_objects_is_scoped_and_idempotent() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    let now = crate::util::now_unix();
-    assert_eq!(catalog.expire_source_history_leases(now, 32).unwrap(), 0);
-    assert!(catalog.due_deletes(now, 32).unwrap().is_empty());
-    // The startup sweep may run again before the first lease is created.  It
-    // must use its own durable cursor/state and remain harmless on an empty
-    // source-history graph.
-    assert_eq!(catalog.expire_source_history_leases(now, 32).unwrap(), 0);
-    assert!(catalog.due_deletes(now, 32).unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1142,17 +1116,10 @@ fn source_history_gc_drains_a_large_orphan_encoding_across_pages() {
         .unwrap();
     assert!(catalog.audit_v2_counters().unwrap());
     let document_id = DocumentId::new("storage-1").unwrap();
-    for (_, key) in &objects {
-        catalog
-            .queue_delete(&super::PendingDelete {
-                slug: "doc".into(),
-                object_key: key.clone(),
-                bytes: 7,
-                queued_at: now,
-                delete_after: now,
-            })
-            .unwrap();
-    }
+    catalog.with_connection(|connection| {
+        connection.execute("UPDATE objects SET gc_after=?1 WHERE document_id='storage-1' AND kind='source_chunk'", [now])?;
+        Ok(())
+    }).unwrap();
     let mut completed = 0;
     for page in objects.chunks(2) {
         for (id, _) in page {
@@ -1166,7 +1133,10 @@ fn source_history_gc_drains_a_large_orphan_encoding_across_pages() {
                 )
                 .unwrap());
         }
-        assert_eq!(catalog.due_deletes(now, 2).unwrap().len(), page.len());
+        let deleting: i64 = catalog.with_connection(|connection| {
+            connection.query_row("SELECT count(*) FROM objects WHERE document_id='storage-1' AND state='deleting'", [], |row| row.get(0)).map_err(CatalogError::from)
+        }).unwrap();
+        assert_eq!(deleting as usize, page.len());
         for (id, _) in page {
             assert!(catalog
                 .confirm_v2_object_deleted(&document_id, &ObjectId::new(id.clone()).unwrap())
@@ -1545,7 +1515,6 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
         .unwrap();
     let deleting = catalog.begin_delete("doc").unwrap();
     assert_eq!(deleting.counted_size, 20);
-    assert!(deleting.pending_publication.is_none());
     let state: String = catalog
         .with_connection(|connection| {
             connection
@@ -1878,12 +1847,10 @@ fn publication_receipts_are_atomic_and_idempotent() {
         .unwrap();
     assert_eq!(state, "committed");
     assert_eq!(result, r#"{"version":2,"head":2}"#);
-    assert!(catalog
-        .document("doc")
-        .unwrap()
-        .unwrap()
-        .pending_publication
-        .is_none());
+    let prepared_count: i64 = catalog.with_connection(|connection| {
+        connection.query_row("SELECT count(*) FROM operations WHERE document_id=(SELECT id FROM documents WHERE slug=?1) AND state='prepared'", ["doc"], |row| row.get(0)).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
+    assert_eq!(prepared_count, 0);
 }
 #[test]
 fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
@@ -2226,61 +2193,18 @@ fn object_accounting_settles_repeated_v2_closures_without_counter_drift() {
     assert!(catalog.audit_v2_counters().unwrap());
 }
 #[test]
-fn file_catalog_reopens_with_wal_and_journal_state() {
+fn file_catalog_reopens_with_wal_and_deployment_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog.db");
-    let (deployment_id, writer_generation) = {
-        let catalog = Catalog::open(&path).unwrap();
-        let initial = catalog.journal_state().unwrap();
-        catalog
-            .configure_journal(&initial.deployment_id, "writer-1")
-            .unwrap();
-        (initial.deployment_id, String::from("writer-1"))
-    };
+    let initial = Catalog::open(&path).unwrap().v2_server_state().unwrap();
     let reopened = Catalog::open(&path).unwrap();
-    let state = reopened.journal_state().unwrap();
-    assert_eq!(state.deployment_id, deployment_id);
-    assert_eq!(state.writer_generation, writer_generation);
-    assert_eq!(state.revision, 0);
-    assert!(reopened.journal_segments(-1, 10).unwrap().is_empty());
-}
-
-#[test]
-fn journal_identity_and_cursor_validation_are_bounded() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    let initial = catalog.journal_state().unwrap();
-    assert!(matches!(
-        catalog.configure_journal("different-deployment", "writer-1"),
-        Err(CatalogError::Conflict(_))
-    ));
-    catalog
-        .configure_journal(&initial.deployment_id, "writer-1")
-        .unwrap();
-    assert!(matches!(
-        catalog.journal_segments(-2, 10),
-        Err(CatalogError::Invalid(_))
-    ));
-    assert!(matches!(
-        catalog.journal_segments(-1, 0),
-        Err(CatalogError::Invalid(_))
-    ));
-}
-
-#[test]
-fn journal_preparation_rejects_negative_creation_time() {
-    let catalog = Catalog::open_in_memory().unwrap();
-    let error = catalog
-        .prepare_journal(&JournalPreparation {
-            operation_id: "flush-1".into(),
-            kind: "flush".into(),
-            expected_revision: 0,
-            expected_generation: "writer-1".into(),
-            created_at: -1,
-            plan: "{}".into(),
-            resolved_at: None,
+    assert_eq!(reopened.v2_server_state().unwrap(), initial);
+    let mode: String = reopened
+        .with_connection(|connection| {
+            Ok(connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?)
         })
-        .unwrap_err();
-    assert!(matches!(error, CatalogError::Invalid(_)));
+        .unwrap();
+    assert_eq!(mode, "wal");
 }
 
 #[test]

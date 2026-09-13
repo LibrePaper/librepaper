@@ -181,7 +181,6 @@ async fn seeded_writes_labels_retention_gc_and_reopen_preserve_physical_closures
                 source: "initial".into(),
                 source_format: "markdown".into(),
                 main: "main.md".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             super::room::fixture_actor(),

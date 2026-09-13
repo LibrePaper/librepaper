@@ -115,7 +115,6 @@ async fn room_fixture_config(
                 slug: "agent-room".into(),
                 source: "A".into(),
                 source_format: "markdown".into(),
-                owner: "agent".into(),
                 owner_id: "acct-agent".into(),
                 ..Default::default()
             },
@@ -312,11 +311,6 @@ async fn prepare_uncommitted_agent_effect(
     }
     drop(room);
     drop(rooms);
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("agent-room")])
-        .await
-        .expect("release room lease");
     (dir, store, storage_id, request_id, authority)
 }
 
@@ -512,11 +506,6 @@ async fn source_receipt_and_replay_survive_room_restart() {
     assert!(!first.replay);
     assert_eq!(room.source().await, "B");
     rooms.flush().await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("agent-room")])
-        .await
-        .expect("release room lease");
     let reopened = RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
     reopened.attach_store(store);
@@ -614,11 +603,6 @@ async fn accepted_source_receipt_reloads_comment_outcome_after_restart() {
         "accepted"
     );
     rooms.flush().await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("agent-room")])
-        .await
-        .expect("release room lease");
     let reopened = RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     super::room::attach_fixture_journal(&reopened, &store, store.blobs.clone());
     reopened.attach_store(store);

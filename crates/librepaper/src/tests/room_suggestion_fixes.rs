@@ -304,7 +304,6 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
                 source: "A".into(),
                 main: "main.md".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_actor(),
@@ -428,11 +427,6 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
 #[tokio::test]
 async fn failed_accept_retries_without_losing_a_concurrent_keystroke() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
@@ -489,7 +483,6 @@ async fn catalog_fixture() -> (
                 source: "A".into(),
                 main: "main.md".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_actor(),
@@ -533,7 +526,6 @@ async fn catalog_hook_fixture() -> (
                 source: "A".into(),
                 main: "main.md".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             catalog_actor(),
@@ -612,11 +604,6 @@ async fn receipt_failure_survives_room_reload_before_retry() {
     conn.execute_batch("DROP TRIGGER fail_accept;").unwrap();
 
     rooms.flush().await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("accept-probe")])
-        .await
-        .unwrap();
     let reopened = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
     attach_fixture_journal(&reopened, &store, store.blobs.clone());
@@ -709,11 +696,6 @@ async fn staged_accept_replays_unsaved_preaccept_state_after_reload() {
     gate.resume();
     *hooked.fail.lock().unwrap() = None;
 
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("accept-crash")])
-        .await
-        .unwrap();
     let reopened = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
     attach_fixture_journal(&reopened, &store, store.blobs.clone());
@@ -728,11 +710,6 @@ async fn staged_accept_replays_unsaved_preaccept_state_after_reload() {
 #[tokio::test]
 async fn failed_accept_broadcasts_a_sequence_a_peer_can_replay() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
@@ -775,11 +752,6 @@ async fn failed_accept_broadcasts_a_sequence_a_peer_can_replay() {
 #[tokio::test]
 async fn failed_deletion_accept_retries_the_first_repeated_passage_once() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
@@ -801,11 +773,6 @@ async fn failed_deletion_accept_retries_the_first_repeated_passage_once() {
 #[tokio::test]
 async fn failed_deletion_accept_retries_the_later_repeated_passage_once() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
@@ -851,11 +818,6 @@ async fn failed_deletion_accept_retries_the_later_repeated_passage_once() {
 #[tokio::test]
 async fn failed_deletion_follows_a_concurrent_insert_before_the_anchor() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
@@ -912,11 +874,6 @@ async fn failed_deletion_follows_a_concurrent_insert_before_the_anchor() {
 #[tokio::test]
 async fn failed_deletion_staging_converges_for_a_peer() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());

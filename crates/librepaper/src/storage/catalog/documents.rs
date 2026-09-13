@@ -668,7 +668,7 @@ impl Catalog {
     pub(super) const DOCUMENT_SELECT: &'static str =
         "SELECT d.slug,d.id,d.title,COALESCE(d.current_checkpoint_id,''),d.created_at,d.published_at,d.updated_at,
                 d.ownership_mode='example','',d.owner_id,d.status,d.stored_bytes,d.stored_bytes+d.reserved_bytes,
-                d.reserved_bytes,d.next_annotation_seq,d.last_checkpoint_at,NULL,COALESCE(d.publication_id,''),d.source_format,d.main_path
+                d.reserved_bytes,d.next_annotation_seq,d.last_checkpoint_at,COALESCE(d.publication_id,''),d.source_format,d.main_path
          FROM documents d JOIN accounts a ON a.id=d.owner_id AND a.status='active'";
 
     pub(super) fn document_in_tx(tx: &Transaction<'_>, slug: &str) -> CatalogResult<Document> {
@@ -701,10 +701,9 @@ impl Catalog {
             maintenance_reserved: row.get(13)?,
             comment_seq: row.get(14)?,
             last_auto_checkpoint_at: row.get(15)?,
-            pending_publication: row.get(16)?,
-            last_publication_id: row.get(17)?,
-            source_format: row.get(18)?,
-            main: row.get(19)?,
+            last_publication_id: row.get(16)?,
+            source_format: row.get(17)?,
+            main: row.get(18)?,
         })
     }
 }

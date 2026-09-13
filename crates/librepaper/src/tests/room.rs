@@ -182,7 +182,6 @@ pub(super) async fn fixture(
                 main: "main.md".into(),
                 source: "A".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             fixture_actor(),
@@ -220,7 +219,6 @@ async fn catalog_history_pagination_preserves_newer_checkpoints() {
                 slug: "catalog-history".into(),
                 source: "revision-0".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             fixture_actor(),
@@ -246,10 +244,6 @@ async fn catalog_history_pagination_preserves_newer_checkpoints() {
     assert_eq!(before.checkpoints.len(), CHECKPOINTS);
     let newest = before.latest().unwrap().sha.clone();
     rooms.flush().await;
-    blobs
-        .delete(&[blob::room_lock_key("catalog-history")])
-        .await
-        .unwrap();
 
     let reopened = room::RoomSet::new(blobs, config);
     reopened.attach_store(store);
@@ -407,11 +401,6 @@ async fn checkpoint_race_drops_dirty_edit() {
     // The legacy index entry's SHA names the published source, while a native
     // checkpoint's SHA names its serialized tree. Pause the actual retained
     // checkpoint read rather than deriving a key from the old source layout.
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
@@ -447,11 +436,6 @@ async fn checkpoint_race_drops_dirty_edit() {
 #[tokio::test]
 async fn edit_during_session_write_stays_dirty() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
@@ -492,11 +476,6 @@ async fn failed_manifest_write_never_retries() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     let catalog = store.catalog.as_ref().unwrap();
     let document = catalog.document("probe").unwrap().unwrap();
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), store.config.clone());
     rooms.attach_store(store.clone());
@@ -529,11 +508,6 @@ async fn concurrent_label_is_lost_by_checkpoint() {
     let (_dir, store, rooms) = fixture(Configuration::default()).await;
     let initial_room = rooms.get("probe").await;
     let a = initial_room.manifest().await.latest().unwrap().sha.clone();
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let hooked_store = Arc::new(
         store::Store::open_with_catalog(
@@ -684,11 +658,6 @@ async fn corrupt_session_overwritten_on_load() {
         .put(&key, vec![255], "application/octet-stream")
         .await
         .unwrap();
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     drop(room);
     drop(rooms);
     let catalog =
@@ -740,11 +709,6 @@ async fn revisiting_checkpoint_leaves_wrong_head() {
 #[tokio::test]
 async fn concurrent_restores_are_serialized() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
@@ -993,11 +957,6 @@ async fn shed_history_keeps_blob_shared_by_retained_checkpoints() {
 #[tokio::test]
 async fn concurrent_asset_admission_exceeds_limit() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
@@ -1028,8 +987,7 @@ async fn concurrent_asset_admission_exceeds_limit() {
     println!("two concurrent 10-byte assets under a 15-byte ceiling: exactly one admitted");
 }
 
-/// R23, inverting `review_read_only_room_relays_edits`: a room held by
-/// another server must refuse a peer's update before applying or relaying
+/// A room without the deployment writer lock must refuse a peer's update before applying or relaying
 /// it, rather than accept it into memory and let persistence be the only
 /// thing that later refuses to save it.
 #[tokio::test]
@@ -1037,6 +995,7 @@ async fn read_only_room_relays_edits() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     let other = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     other.attach_store(store);
+    other.attach_deployment_lock_unavailable();
     let room = other.get("probe").await;
     assert!(room.read_only());
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -1064,6 +1023,7 @@ async fn read_only_room_mutators_do_not_mutate() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
     let other = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
     other.attach_store(store);
+    other.attach_deployment_lock_unavailable();
     let room = other.get("probe").await;
     assert!(room.read_only());
     // A refusal, not an empty update: an empty update is what writing the
@@ -1113,7 +1073,6 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
                 slug: "journal-room".into(),
                 source: "initial".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             fixture_actor(),
@@ -1155,14 +1114,6 @@ async fn catalog_room_mutation_is_journaled_and_recovers() {
         "the room checkpoint must publish a journal segment"
     );
 
-    blobs
-        .delete(&[blob::session_key("journal-room")])
-        .await
-        .unwrap();
-    blobs
-        .delete(&[blob::room_lock_key("journal-room")])
-        .await
-        .unwrap();
     let recovered_runtime = Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
             Arc::new(
@@ -1227,7 +1178,6 @@ async fn catalog_room_named_asset_is_journal_root_through_reopen_and_gc() {
                 slug: "asset-journal".into(),
                 source: "initial".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 owner_id: "alice".into(),
                 ..Default::default()
             },
@@ -1345,13 +1295,6 @@ async fn catalog_room_named_asset_is_journal_root_through_reopen_and_gc() {
     assert_eq!(retired.0, 0);
     let gc_at = retired.1.expect("retired asset gets a GC grace deadline");
 
-    blobs
-        .delete(&[
-            blob::session_key(&document_id),
-            blob::room_lock_key(&document_id),
-        ])
-        .await
-        .unwrap();
     let reopened_runtime = Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
             Arc::new(
@@ -1401,7 +1344,6 @@ async fn catalog_comments_use_targeted_rows_and_idempotent_receipts() {
                 slug: "comment-receipt".into(),
                 source: "initial".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             fixture_actor(),
@@ -1624,7 +1566,6 @@ async fn checkpoint_budget_resets_on_catalog_reopen() {
                 slug: "budgeted".into(),
                 source: "source".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 owner_id: "acct-budget".into(),
                 ..Default::default()
             },
@@ -1755,7 +1696,6 @@ async fn room_try_get_refuses_hard_count_limit() {
                 slug: "second-room".into(),
                 title: "second-room".into(),
                 source: "second".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             fixture_actor(),
@@ -1769,73 +1709,42 @@ async fn room_try_get_refuses_hard_count_limit() {
     assert_eq!(rooms.open_count().await, 1);
 }
 
-/// R24, inverting `review_lease_error_reports_held`: a storage error reading
-/// the lock must fail closed on a first claim (`held = false`, same as
-/// another server actually holding it), and must report a renewal as
-/// unverified rather than silently extending it on the strength of an
-/// unconfirmed answer.
-#[tokio::test]
-async fn lease_error_reports_held() {
-    let dir = tempfile::tempdir().unwrap();
-    let hooked =
-        HookStore::new(Arc::new(blob::FsStore::new(dir.path(), true)) as Arc<dyn BlobStore>);
-    *hooked.fail.lock().unwrap() = Some(blob::room_lock_key("probe"));
-    let first = blob::take_room_lease(hooked.as_ref(), "probe", "server-b", None).await;
-    assert!(
-        !first.held,
-        "a first claim under a lock read failure must fail closed"
-    );
-    let renewal = blob::take_room_lease(hooked.as_ref(), "probe", "server-b", Some(1)).await;
-    assert!(
-        renewal.held,
-        "a renewal must not be refused outright over a storage error"
-    );
-    assert!(
-        !renewal.verified,
-        "a renewal under a storage error must be reported unverified"
-    );
-    println!("lock read failure: first claim fails closed; renewal held but unverified");
-}
-
-/// R35: a slow, cold room's lease acquisition and storage reads must not
+/// A slow, cold room's storage reads must not
 /// hold the global room map lock -- a warm room already in memory must stay
-/// servable by `get` while an unrelated cold room's lease read is still
+/// servable by `get` while an unrelated cold room's source read is still
 /// blocked in flight.
 #[tokio::test]
 async fn get_does_not_block_on_a_cold_room() {
-    let dir = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(dir.path(), true));
-    let config = Arc::new(Configuration::default());
-    let store = Arc::new(
-        store::Store::open(blobs.clone(), config.clone())
-            .await
-            .unwrap(),
-    );
+    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
+    let config = store.config.clone();
     for slug in ["warm", "cold"] {
         store
-            .put(store::Publication {
-                slug: slug.into(),
-                title: slug.into(),
-                source: "A".into(),
-                source_format: "markdown".into(),
-                owner: "alice".into(),
-                ..Default::default()
-            })
+            .put_as_actor(
+                store::Publication {
+                    slug: slug.into(),
+                    title: slug.into(),
+                    source: "A".into(),
+                    source_format: "markdown".into(),
+                    ..Default::default()
+                },
+                fixture_actor(),
+            )
             .await
             .unwrap();
     }
-    let hooked = HookStore::new(blobs.clone());
+    let hooked = HookStore::new(store.blobs.clone());
     let rooms = Arc::new(room::RoomSet::new(hooked.clone(), config));
-    rooms.attach_store(store);
+    rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
     // Warmed before anything is paused, so it is already cached in the map.
     rooms.get("warm").await;
-    *hooked.pause.lock().unwrap() = Some(("get_versioned".into(), blob::room_lock_key("cold")));
+    *hooked.pause.lock().unwrap() = Some(("get".into(), object_write_prefix(&store, "cold")));
     let cold_rooms = rooms.clone();
     let cold_task = tokio::spawn(async move { cold_rooms.get("cold").await });
     tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
-    // The cold room's lease read is now blocked mid-flight. A warm room must
+    // The cold room's source read is now blocked mid-flight. A warm room must
     // still be servable without waiting behind it.
     let warm_again = tokio::time::timeout(Duration::from_secs(1), rooms.get("warm")).await;
     assert!(
@@ -1844,7 +1753,7 @@ async fn get_does_not_block_on_a_cold_room() {
     );
     hooked.resume.notify_one();
     cold_task.await.unwrap();
-    println!("warm room lookup returned while a cold room's lease read was still blocked");
+    println!("warm room lookup returned while a cold room's source read was still blocked");
 }
 
 /// A save acknowledges only its captured updates. Another save queues behind
@@ -1852,11 +1761,6 @@ async fn get_does_not_block_on_a_cold_room() {
 #[tokio::test]
 async fn persistence_keeps_edits_live_and_acknowledges_only_saved_updates() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     reopened.attach_store(store.clone());
@@ -1919,26 +1823,176 @@ async fn persistence_keeps_edits_live_and_acknowledges_only_saved_updates() {
 #[tokio::test]
 async fn persistence_failure_leaves_the_session_retryable() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let reopened = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
+    reopened.attach_store(store.clone());
+    attach_fixture_journal(&reopened, &store, hooked.clone());
     let room = reopened.get("probe").await;
     room.set_source("retry me", "markdown").await.unwrap();
-    let version = room.state.lock().await.session_version.clone();
-    *hooked.fail.lock().unwrap() = Some(blob::session_key("probe"));
-    assert!(room.persist().await.is_err());
+    let catalog = store.catalog.as_ref().unwrap();
+    let document_id =
+        crate::storage::catalog::DocumentId::new(room.storage_id().to_owned()).unwrap();
+    let cursor = catalog.v2_document_journal_head(&document_id).unwrap();
+    let object_prefix = object_write_prefix(&store, "probe");
+    *hooked.pause.lock().unwrap() = Some(("put".into(), object_prefix.clone()));
+    let save = tokio::spawn({
+        let room = room.clone();
+        async move { room.persist().await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    // Fail the actual PUT after the allocation's initial absence check.
+    *hooked.fail.lock().unwrap() = Some(object_prefix.trim_end_matches('*').to_owned());
+    hooked.resume.notify_one();
+    assert!(save.await.unwrap().is_err());
     {
         let state = room.state.lock().await;
         assert!(state.session.dirty);
-        assert_eq!(state.session_version, version);
+        assert_eq!(
+            catalog.v2_document_journal_head(&document_id).unwrap(),
+            cursor
+        );
     }
+    let allocated_bytes: i64 = catalog.with_connection(|connection| {
+        connection.query_row("SELECT COALESCE(SUM(reserved_bytes),0) FROM objects WHERE document_id=?1 AND state='allocated'", [document_id.as_str()], |row| row.get(0)).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
+    assert!(
+        allocated_bytes > 0,
+        "uncertain physical outcomes remain charged"
+    );
     *hooked.fail.lock().unwrap() = None;
+    // The production maintenance pass resolves failed PUT outcomes before
+    // releasing their writer slot. Exercise that same bounded reconciliation.
+    let maintenance = crate::storage::v2_catalog::V2GcCatalogAdapter::new(catalog.clone());
+    assert_eq!(
+        crate::storage::maintenance_v2::V2GcCatalog::reconcile_failed_inflight(
+            &maintenance,
+            hooked.as_ref(),
+            16,
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    assert!(catalog.audit_v2_counters().unwrap());
     assert!(room.persist().await.unwrap());
     assert!(!room.state.lock().await.session.dirty);
+    assert!(catalog.v2_document_journal_head(&document_id).unwrap().1 > cursor.1);
+    assert_eq!(
+        session::text_of(&recovered_session(&store, "probe").await),
+        "retry me"
+    );
+}
+
+#[tokio::test]
+async fn compaction_failure_retries_after_physical_settlement() {
+    let (_dir, store, rooms) = fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
+    room.set_source("compaction retry", "markdown")
+        .await
+        .unwrap();
+    room.persist().await.unwrap();
+    let catalog = store.catalog.as_ref().unwrap();
+    let document_id =
+        crate::storage::catalog::DocumentId::new(room.storage_id().to_owned()).unwrap();
+    let cursor = catalog.v2_document_journal_head(&document_id).unwrap();
+    let body = session::encode_state(&room.state.lock().await.session.doc);
+    let hooked = HookStore::new(store.blobs.clone());
+    let runtime = Arc::new(
+        crate::storage::journal::V2JournalRuntime::with_persistence(
+            Arc::new(
+                crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                    catalog.clone(),
+                    store.config.persistence(),
+                ),
+            ),
+            hooked.clone(),
+            store.config.persistence(),
+        )
+        .unwrap(),
+    );
+    let epoch = u64::try_from(cursor.0).unwrap();
+    let sequence = u64::try_from(cursor.1).unwrap();
+    let prefix = object_write_prefix(&store, "probe");
+    *hooked.pause.lock().unwrap() = Some(("put".into(), prefix.clone()));
+    let compact = tokio::spawn({
+        let runtime = runtime.clone();
+        let id = document_id.as_str().to_owned();
+        let body = body.clone();
+        async move {
+            runtime
+                .compact(
+                    &id,
+                    epoch,
+                    sequence,
+                    body,
+                    "application/vnd.librepaper.journal-base",
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
+        .await
+        .unwrap();
+    *hooked.fail.lock().unwrap() = Some(prefix.trim_end_matches('*').to_owned());
+    hooked.resume.notify_one();
+    assert!(compact.await.unwrap().is_err());
+    assert_eq!(
+        catalog.v2_document_journal_head(&document_id).unwrap(),
+        cursor
+    );
+    *hooked.fail.lock().unwrap() = None;
+    let maintenance = crate::storage::v2_catalog::V2GcCatalogAdapter::new(catalog.clone());
+    assert_eq!(
+        crate::storage::maintenance_v2::V2GcCatalog::reconcile_failed_inflight(
+            &maintenance,
+            hooked.as_ref(),
+            16,
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    runtime
+        .compact(
+            document_id.as_str(),
+            epoch,
+            sequence,
+            body.clone(),
+            "application/vnd.librepaper.journal-base",
+        )
+        .await
+        .unwrap();
+    let completed = catalog.v2_document_journal_head(&document_id).unwrap();
+    assert_eq!(completed, (cursor.0 + 1, cursor.1));
+    assert_eq!(
+        session::text_of(&recovered_session(&store, "probe").await),
+        "compaction retry"
+    );
+    // A successful compaction has consumed this epoch; an old request must
+    // not allocate or advance the head a second time.
+    assert!(runtime
+        .compact(
+            document_id.as_str(),
+            epoch,
+            sequence,
+            body,
+            "application/vnd.librepaper.journal-base"
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        catalog.v2_document_journal_head(&document_id).unwrap(),
+        completed
+    );
+    let states: Vec<String> = catalog.with_connection(|connection| {
+        let mut statement = connection.prepare("SELECT state FROM operations WHERE document_id=?1 AND kind='journal_compact' ORDER BY state")?;
+        let rows = statement.query_map([document_id.as_str()], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
+    assert_eq!(states, vec!["aborted", "committed"]);
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
 /// A slow save in one room must not delay the next room's scheduled save.
@@ -1955,16 +2009,10 @@ async fn sweeper_saves_other_rooms_while_one_write_is_paused() {
                 title: "second".into(),
                 source: "second source".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             fixture_actor(),
         )
-        .await
-        .unwrap();
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
         .await
         .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
@@ -2006,11 +2054,6 @@ async fn sweeper_saves_other_rooms_while_one_write_is_paused() {
 #[tokio::test]
 async fn concurrent_checkpoints_commit_in_snapshot_order() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());
@@ -2147,7 +2190,6 @@ async fn journal_scheduled_saves_obey_floor_and_dirty_deadline() {
                 slug: "flush-floor".into(),
                 source: "initial".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             fixture_actor(),

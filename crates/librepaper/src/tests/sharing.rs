@@ -148,7 +148,19 @@ async fn a_transfer_moves_the_document_and_its_quota() {
     // The quota follows the publisher, so what @alice is charged for is now
     // nothing and what @bob is charged for is this document.
     assert!(
-        server.instance.store.room_for(&slug).await.is_some(),
+        server
+            .instance
+            .store
+            .catalog
+            .as_ref()
+            .unwrap()
+            .physical_room_for(
+                &slug,
+                server.instance.store.config.storage.per_owner,
+                server.instance.store.config.storage.total
+            )
+            .unwrap()
+            .is_some(),
         "the document has no ceiling to be charged against"
     );
 
@@ -1200,39 +1212,29 @@ async fn no_listing_keeps_the_examples_off_a_strangers_list() {
         })
         .await
         .expect("the example flag is recorded");
-    let entry = server
+    let private = publish_as(&server.url, "alice", "Private Paper").await;
+    let listed = server
         .instance
         .store
-        .get(&slug)
+        .visible_page_with_options(Some("github:anne"), Some("anne"), None, 100, true)
         .await
-        .expect("the document");
-    let stranger = crate::server::Caller {
-        key: "anne".into(),
-        id: "github:anne".into(),
-        handle: "anne".into(),
-        provider: "github".into(),
-        session_generation: "test-session-generation".into(),
-        name: "anne".into(),
-    };
-    assert_eq!(
-        server
-            .instance
-            .visible(vec![entry.clone()], &stranger)
-            .len(),
-        1,
+        .unwrap();
+    assert!(
+        listed.iter().any(|entry| entry.slug == slug),
         "an example should be listed to everyone"
     );
-
-    let closed = test_server_tuned(
-        Configuration::default(),
-        Policy::parse("any"),
-        Policy::parse("anyone"),
-        true,
-        false,
-    )
-    .await;
     assert!(
-        closed.instance.visible(vec![entry], &stranger).is_empty(),
+        !listed.iter().any(|entry| entry.slug == private),
+        "example listing must not expose an unrelated private document"
+    );
+    let hidden = server
+        .instance
+        .store
+        .visible_page_with_options(Some("github:anne"), Some("anne"), None, 100, false)
+        .await
+        .unwrap();
+    assert!(
+        hidden.is_empty(),
         "--no-listing still listed an example to a stranger"
     );
 }

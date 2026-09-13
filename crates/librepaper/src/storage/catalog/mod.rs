@@ -31,7 +31,6 @@ mod checkpoints;
 mod comments;
 mod documents;
 mod execution;
-mod journal;
 mod link_rotation;
 mod operation_capacity;
 mod operations;
@@ -42,7 +41,6 @@ mod read_objects;
 mod retention;
 mod room_edits;
 mod source_assets;
-mod source_history;
 mod v2;
 
 pub(crate) use v2::{V2CheckpointAdmissionInput, V2SourceAdmissionInput};
@@ -65,7 +63,6 @@ pub use read_objects::{
 };
 pub use retention::RetentionPass;
 pub use room_edits::RoomEditReservation;
-pub use source_history::{SourceHistoryLease, SourceHistoryObject, SourceHistoryRecord};
 pub use v2::{
     AccountKind, CheckpointCommit, CheckpointId, DocumentId, DocumentStatus, IdError, LeasePurpose,
     ObjectId, ObjectKind, ObjectState, OperationId, OperationKind, OperationScope, SourceFormat,
@@ -83,12 +80,7 @@ pub struct CheckpointAssetRef {
 
 const LATEST_SCHEMA: i64 = 2;
 const MAX_RECIPIENT_DOCUMENTS: i64 = 1_000;
-const MIGRATIONS: &[(i64, &str)] = &[
-    // Catalog v2 is intentionally a fresh-root schema. There is no in-place
-    // migration from the released v1 catalogue; the offline converter owns
-    // that boundary.
-    (2, include_str!("../../../migrations/0002_catalog.sql")),
-];
+const SCHEMA: &str = include_str!("schema.sql");
 
 fn validate_deployment_identity(value: &str) -> CatalogResult<()> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -325,7 +317,6 @@ pub struct Document {
     pub maintenance_reserved: i64,
     pub comment_seq: i64,
     pub last_auto_checkpoint_at: i64,
-    pub pending_publication: Option<String>,
     pub last_publication_id: String,
     pub source_format: String,
     pub main: String,
@@ -378,31 +369,11 @@ pub struct OperationRequest<'a> {
     pub actor: Option<OperationActor<'a>>,
 }
 
-pub struct ObjectReservationRequest<'a> {
-    pub slug: &'a str,
-    pub operation_id: &'a str,
-    pub object_key: &'a str,
-    pub kind: &'a str,
-    pub new_bytes: i64,
-    pub owner_limit: i64,
-    pub total_limit: i64,
-}
-
 pub struct OperationActor<'a> {
     pub account_id: &'a str,
     pub owner_key: &'a str,
     pub generation: &'a str,
     pub required_role: &'a str,
-}
-
-#[derive(Clone, Debug)]
-pub struct PendingPublication {
-    pub slug: String,
-    pub storage_id: String,
-    pub request_id: String,
-    pub sha: String,
-    pub last_publication_id: String,
-    pub lifecycle: String,
 }
 
 /// A quota request.  Limits are supplied by configuration rather than stored
@@ -530,50 +501,6 @@ pub struct Guest {
     pub link_hash: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PendingDelete {
-    pub slug: String,
-    pub object_key: String,
-    pub bytes: i64,
-    pub queued_at: i64,
-    pub delete_after: i64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct JournalState {
-    pub deployment_id: String,
-    pub writer_generation: String,
-    pub revision: i64,
-    pub last_operation_id: String,
-    pub next_segment_seq: i64,
-    pub manifest_key: String,
-    pub manifest_digest: String,
-    pub manifest_length: i64,
-    pub tail_after: i64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct JournalPreparation {
-    pub operation_id: String,
-    pub kind: String,
-    pub expected_revision: i64,
-    pub expected_generation: String,
-    pub created_at: i64,
-    pub plan: String,
-    pub resolved_at: Option<i64>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct JournalSegment {
-    pub segment_id: String,
-    pub segment_seq: i64,
-    pub operation_id: String,
-    pub object_key: String,
-    pub digest: String,
-    pub encoded_bytes: i64,
-    pub committed_at: i64,
-}
-
 /// A local SQLite catalogue. One connection is used per deployment.
 pub struct Catalog {
     #[cfg(test)]
@@ -583,10 +510,6 @@ pub struct Catalog {
     // boundary.  It shares this connection, so `execute` and the synchronous
     // API observe the same TEMP reservation table.
     execution: execution::CatalogExecution,
-    // One authority owns publication, recovery, and physical journal reclamation.
-    // Every runtime/worker built from this catalogue shares the same gate.
-    #[cfg(test)]
-    pub(crate) journal_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     // The first key writes new envelopes. Older keys are retained only long
     // enough to support an explicit, transactional reseal.
     link_sealing_keys: RwLock<Vec<(String, [u8; 32])>>,
@@ -633,7 +556,7 @@ impl Catalog {
         rate::reserve(&self.process_rates, owner, action, limit)
     }
 
-    /// Open or create a file-backed catalogue and apply missing migrations,
+    /// Open or create a file-backed catalogue using the native schema,
     /// with the durability a deployment wants: the WAL is fsynced on every
     /// commit. Tests compiled with `cfg(test)` get the relaxed policy, since
     /// a temporary directory deleted when the case ends has no crash to
@@ -735,6 +658,34 @@ impl Catalog {
         durable: bool,
         identity: Option<(&str, &str)>,
     ) -> CatalogResult<Self> {
+        // Reject unsupported or unrelated databases before any persistent
+        // pragma can change their journal mode or create sidecar files.
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(CatalogError::from)?;
+        if version > LATEST_SCHEMA {
+            return Err(CatalogError::Invalid(format!(
+                "catalogue schema {version} is newer than this binary (latest {LATEST_SCHEMA})"
+            )));
+        }
+        if version != 0 && version != LATEST_SCHEMA {
+            return Err(CatalogError::Invalid(format!(
+                "catalogue schema {version} is unsupported by this binary"
+            )));
+        }
+        if version == 0 {
+            let has_schema: bool = connection
+                .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema)", [], |row| {
+                    row.get(0)
+                })
+                .map_err(CatalogError::from)?;
+            if has_schema {
+                return Err(CatalogError::Invalid(
+                    "cannot initialize a nonempty database without a supported catalogue version"
+                        .into(),
+                ));
+            }
+        }
         // `FULL` fsyncs the WAL on every commit, which is what a deployment
         // wants and what makes a file-backed test spend its time waiting on
         // the disk. `OFF` keeps the same SQL semantics without the sync.
@@ -755,32 +706,11 @@ impl Catalog {
                 "SQLite foreign_keys could not be enabled".into(),
             ));
         }
-        let version: i64 = connection
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .map_err(CatalogError::from)?;
-        if version > LATEST_SCHEMA {
-            return Err(CatalogError::Invalid(format!(
-                "catalogue schema {version} is newer than this binary (latest {LATEST_SCHEMA})"
-            )));
-        }
-        if version == 1 {
-            return Err(CatalogError::Invalid(format!(
-                "catalogue schema {version} is not a fresh v2 root; use the offline converter"
-            )));
-        }
-        if version != 0 && version != LATEST_SCHEMA {
-            return Err(CatalogError::Invalid(format!(
-                "catalogue schema {version} is unsupported by this binary"
-            )));
-        }
-        for &(migration_version, sql) in MIGRATIONS {
-            if migration_version <= version {
-                continue;
-            }
+        if version == 0 {
             let tx = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(CatalogError::from)?;
-            tx.execute_batch(sql).map_err(CatalogError::from)?;
+            tx.execute_batch(SCHEMA).map_err(CatalogError::from)?;
             let deployment_id = identity
                 .map(|(deployment_id, _)| deployment_id.to_owned())
                 .unwrap_or_else(|| hex::encode(crate::auth::random_bytes(32)));
@@ -813,7 +743,7 @@ impl Catalog {
                 ],
             )
             .map_err(CatalogError::from)?;
-            tx.execute_batch(&format!("PRAGMA user_version = {migration_version}"))
+            tx.execute_batch(&format!("PRAGMA user_version = {LATEST_SCHEMA}"))
                 .map_err(CatalogError::from)?;
             tx.commit().map_err(CatalogError::from)?;
         }
@@ -853,8 +783,6 @@ impl Catalog {
         Ok(Self {
             connection: Mutex::new(Some(connection)),
             execution: execution::CatalogExecution::new(),
-            #[cfg(test)]
-            journal_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             connection_operations: std::sync::atomic::AtomicUsize::new(0),
             link_sealing_keys: RwLock::new(Vec::new()),
@@ -1124,5 +1052,78 @@ mod refusal_tests {
     fn only_a_conflict_classifies() {
         assert_eq!(CatalogError::NotFound.refusal(), CatalogRefusal::Other);
         assert_eq!(CatalogError::Busy.refusal(), CatalogRefusal::Other);
+    }
+}
+
+#[cfg(test)]
+mod fresh_schema_safety_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_databases_keep_their_bytes_and_journal_mode() {
+        for version in [0, 1, LATEST_SCHEMA + 1] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("unsupported.sqlite");
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch(
+                "PRAGMA journal_mode=DELETE; CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES('keep me');"
+            ).unwrap();
+            connection
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            drop(connection);
+            let before = std::fs::read(&path).unwrap();
+
+            assert!(
+                Catalog::open_with(&path, true).is_err(),
+                "accepted version {version}"
+            );
+
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                before,
+                "modified version {version}"
+            );
+            assert!(!path.with_extension("sqlite-wal").exists());
+            assert!(!path.with_extension("sqlite-shm").exists());
+            let connection =
+                Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+            let mode: String = connection
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(mode, "delete");
+            let value: String = connection
+                .query_row("SELECT value FROM unrelated", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(value, "keep me");
+        }
+    }
+
+    #[test]
+    fn empty_databases_initialize_the_native_schema() {
+        for preexisting in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("fresh.sqlite");
+            if preexisting {
+                let connection = Connection::open(&path).unwrap();
+                connection.execute_batch("VACUUM").unwrap();
+            }
+            let catalog = Catalog::open_with(&path, true).unwrap();
+            let (version, tables, singleton): (i64, i64, i64) = catalog
+                .with_connection(|connection| {
+                    Ok((
+                        connection.query_row("PRAGMA user_version", [], |row| row.get(0))?,
+                        connection.query_row(
+                            "SELECT count(*) FROM sqlite_schema WHERE type='table'",
+                            [],
+                            |row| row.get(0),
+                        )?,
+                        connection
+                            .query_row("SELECT count(*) FROM server_state", [], |row| row.get(0))?,
+                    ))
+                })
+                .unwrap();
+            assert_eq!((version, tables, singleton), (LATEST_SCHEMA, 12, 1));
+        }
     }
 }

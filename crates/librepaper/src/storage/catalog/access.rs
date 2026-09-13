@@ -46,21 +46,11 @@ pub(super) fn open_link_envelope(
     digest: &str,
     envelope: &[u8],
 ) -> CatalogResult<String> {
-    if envelope.len() < 30 || (&envelope[..6] != b"KLINK1" && &envelope[..6] != b"KLINK2") {
-        return Err(CatalogError::Invalid("invalid sealed link envelope".into()));
+    let key_id = envelope_key_id(envelope)?;
+    if key_id != link_key_id(key) {
+        return Err(CatalogError::Invalid("sealed link key id mismatch".into()));
     }
-    let (nonce_at, body_at) = if &envelope[..6] == b"KLINK2" {
-        if envelope.len() < 46 {
-            return Err(CatalogError::Invalid("invalid sealed link envelope".into()));
-        }
-        let key_id = link_key_id(key);
-        if envelope[6..22] != key_id.as_bytes()[..16] {
-            return Err(CatalogError::Invalid("sealed link key id mismatch".into()));
-        }
-        (22, 46)
-    } else {
-        (6, 30)
-    };
+    let (nonce_at, body_at) = (22, 46);
     let aad = format!("librepaper-link-v1\0{storage_id}\0{role}\0{digest}");
     let plaintext = XChaCha20Poly1305::new_from_slice(key)
         .map_err(|_| CatalogError::Invalid("invalid link sealing key".into()))?
@@ -107,14 +97,19 @@ pub(super) fn seal_link_envelope(
     Ok(envelope)
 }
 
-pub(super) fn envelope_key_id(envelope: &[u8]) -> String {
-    if envelope.starts_with(b"KLINK2") && envelope.len() >= 22 {
-        std::str::from_utf8(&envelope[6..22])
-            .map(str::to_owned)
-            .unwrap_or_else(|_| "legacy".into())
-    } else {
-        "legacy".into()
+pub(super) fn envelope_key_id(envelope: &[u8]) -> CatalogResult<String> {
+    if envelope.len() < 46 || !envelope.starts_with(b"KLINK2") {
+        return Err(CatalogError::Invalid("invalid sealed link envelope".into()));
     }
+    let id = &envelope[6..22];
+    if !id
+        .iter()
+        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(CatalogError::Invalid("invalid sealed link key id".into()));
+    }
+    String::from_utf8(id.to_vec())
+        .map_err(|_| CatalogError::Invalid("invalid sealed link key id".into()))
 }
 
 fn visibility_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
@@ -140,7 +135,6 @@ fn visibility_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
         maintenance_reserved: 0,
         comment_seq: 0,
         last_auto_checkpoint_at: 0,
-        pending_publication: None,
         last_publication_id: String::new(),
         source_format: row.get(11)?,
         main: row.get(12)?,
@@ -494,24 +488,12 @@ impl Catalog {
                 "link sealing key is not configured".into(),
             ));
         }
-        if envelope.len() < 30
-            || (&envelope[..6] != b"KLINK1" && &envelope[..6] != b"KLINK2")
-            || (&envelope[..6] == b"KLINK2" && envelope.len() < 46)
-        {
-            return Err(CatalogError::Invalid("invalid sealed link envelope".into()));
-        }
+        let wanted = envelope_key_id(envelope)?;
         let aad = format!("librepaper-link-v1\0{storage_id}\0{role}\0{digest}");
-        let (nonce_at, body_at) = if &envelope[..6] == b"KLINK2" {
-            (22, 46)
-        } else {
-            (6, 30)
-        };
-        let wanted = (&envelope[..6] == b"KLINK2")
-            .then(|| std::str::from_utf8(&envelope[6..22]).ok())
-            .flatten();
+        let (nonce_at, body_at) = (22, 46);
         let plaintext = keys
             .iter()
-            .filter(|(id, _)| wanted.is_none_or(|wanted| wanted == id))
+            .filter(|(id, _)| wanted == *id)
             .find_map(|(_, key)| {
                 XChaCha20Poly1305::new_from_slice(key)
                     .ok()?
@@ -686,7 +668,7 @@ impl Catalog {
                         link.role,
                         link.hash,
                         link.sealed,
-                        envelope_key_id(&link.sealed),
+                        envelope_key_id(&link.sealed)?,
                         link.label,
                         link.budget,
                         created_at,
@@ -951,7 +933,7 @@ impl Catalog {
                     "sealed link authentication failed".into(),
                 ));
             }
-            let key_id = envelope_key_id(&link.sealed);
+            let key_id = envelope_key_id(&link.sealed)?;
             let created_at = link_time(&link.since)?;
             let expires_at = if link.until.is_empty() { None } else { Some(link_time(&link.until)?) };
             if expires_at.is_some_and(|expires_at| expires_at < created_at) { return Err(CatalogError::Invalid("link expiry precedes creation".into())); }
@@ -1383,5 +1365,40 @@ impl Catalog {
         });
         documents.truncate(limit as usize);
         Ok(documents)
+    }
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+
+    #[test]
+    fn sealed_links_require_a_key_identified_envelope() {
+        let key = [7; 32];
+        let token = "opaque-read-token";
+        let digest = hex::encode(sha2::Sha256::digest(token.as_bytes()));
+        let current =
+            seal_link_envelope(&key, &link_key_id(&key), "doc", "reader", &digest, token).unwrap();
+        assert_eq!(
+            open_link_envelope(&key, "doc", "reader", &digest, &current).unwrap(),
+            token
+        );
+        // The nonce and ciphertext are still authentic; only the obsolete
+        // header omitting the sealing-key identity differs.
+        let mut obsolete = b"KLINK1".to_vec();
+        obsolete.extend_from_slice(&current[22..]);
+        assert!(open_link_envelope(&key, "doc", "reader", &digest, &obsolete).is_err());
+        assert!(envelope_key_id(&obsolete).is_err());
+        let catalog = Catalog::open_in_memory().unwrap();
+        catalog.set_link_sealing_key(&key).unwrap();
+        assert_eq!(
+            catalog
+                .open_link_key("doc", "reader", &digest, &current)
+                .unwrap(),
+            token
+        );
+        assert!(catalog
+            .open_link_key("doc", "reader", &digest, &obsolete)
+            .is_err());
     }
 }

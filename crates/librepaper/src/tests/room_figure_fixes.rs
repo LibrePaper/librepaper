@@ -2,7 +2,6 @@
 
 use super::room::{attach_fixture_journal, fixture, fixture_actor, object_write_prefix, HookStore};
 use crate::config::Configuration;
-use crate::storage::blob;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,11 +73,6 @@ async fn asset_uploaded_and_named_during_prune_survives() {
 #[tokio::test]
 async fn cancelled_asset_upload_releases_admission() {
     let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .expect("remove fixture lease");
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = crate::room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
     rooms.attach_store(store.clone());

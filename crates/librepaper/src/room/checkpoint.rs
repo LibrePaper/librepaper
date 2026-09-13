@@ -159,89 +159,7 @@ impl From<&Attribution> for Attribution {
     }
 }
 
-/// A charged checkpoint budget bucket held across an asynchronous publication.
-/// Dropping it refunds the exact owner and hour admitted by SQLite.
-pub struct PublicationCheckpointToken {
-    catalog: Option<Arc<crate::storage::catalog::Catalog>>,
-    /// The admitted owner and hour, held in the shared slot so that the
-    /// admission's completion hook and this token's `Drop` cannot both refund
-    /// it — and so that a caller cancelled while the admitting transaction is
-    /// still running is refunded by the hook rather than not at all.
-    slot: Arc<ReservationSlot<(String, i64)>>,
-}
-
-impl PublicationCheckpointToken {
-    pub(crate) fn none() -> Self {
-        let slot = ReservationSlot::default();
-        slot.keep();
-        Self {
-            catalog: None,
-            slot: Arc::new(slot),
-        }
-    }
-
-    fn new(catalog: Arc<crate::storage::catalog::Catalog>, owner: String, bucket: i64) -> Self {
-        let slot = ReservationSlot::default();
-        slot.record((owner, bucket));
-        Self {
-            catalog: Some(catalog),
-            slot: Arc::new(slot),
-        }
-    }
-
-    /// Mark the publication token consumed after the surrounding publication
-    /// transaction has committed. A successful checkpoint alone is not the
-    /// publication's final durable boundary.
-    pub fn commit(&mut self) {
-        self.slot.keep();
-    }
-}
-
-impl Drop for PublicationCheckpointToken {
-    fn drop(&mut self) {
-        let Some((owner, bucket)) = self.slot.abandon() else {
-            return;
-        };
-        let Some(catalog) = &self.catalog else {
-            return;
-        };
-        // Synchronous because a `Drop` cannot await. This is the unwind path
-        // for a publication that never happened; the refund is one statement
-        // and it names the exact owner and hour SQLite admitted, so it can
-        // never give back a bucket another publication has since taken.
-        if let Err(error) = catalog.refund_checkpoint_token(&owner, bucket) {
-            eprintln!("warning: could not refund checkpoint budget: {error}");
-        }
-    }
-}
-
-/// The service's half of the checkpoint budget handshake.
-struct CheckpointTokenCleanup {
-    slot: Arc<ReservationSlot<(String, i64)>>,
-}
-
-impl crate::storage::catalog::CatalogServiceCompletion for CheckpointTokenCleanup {
-    fn complete(
-        self: Box<Self>,
-        outcome: crate::storage::catalog::CatalogOutcome<'_>,
-        catalog: &crate::storage::catalog::Catalog,
-    ) {
-        if !matches!(outcome, crate::storage::catalog::CatalogOutcome::Committed) {
-            return;
-        }
-        let Some((owner, bucket)) = self.slot.on_completion() else {
-            return;
-        };
-        if let Err(error) = catalog.refund_checkpoint_token(&owner, bucket) {
-            eprintln!("warning: could not refund checkpoint budget: {error}");
-        }
-    }
-}
-
-/// A test-only gate in the window between a checkpoint's budget admission
-/// committing and the checkpoint that would consume it, keyed by slug. It is
-/// the publication-side counterpart of the edit reservation's gate: the
-/// window `Drop` covers rather than the completion hook.
+/// Test gate after native rate admission and before durable checkpoint staging.
 #[cfg(test)]
 pub(crate) static AFTER_CHECKPOINT_ADMISSION: super::TestGate = std::sync::Mutex::new(None);
 
@@ -250,72 +168,19 @@ async fn pause_after_checkpoint_admission(slug: &str) {
     super::ReservationGate::park(&AFTER_CHECKPOINT_ADMISSION, slug).await;
 }
 
-/// Charge one checkpoint against the hourly budgets, through the execution
-/// boundary, and hand back a token that refunds it unless a checkpoint
-/// actually happens.
-async fn admit_checkpoint_token(
-    catalog: &Arc<crate::storage::catalog::Catalog>,
-    slug: &str,
-    now: i64,
-    automatic: bool,
-    owner_limit: i64,
-    deployment_limit: i64,
-) -> Result<Option<PublicationCheckpointToken>, WriteError> {
-    let slot = Arc::new(ReservationSlot::default());
-    let token = PublicationCheckpointToken {
-        catalog: Some(catalog.clone()),
-        slot: slot.clone(),
-    };
-    let cleanup = CheckpointTokenCleanup { slot: slot.clone() };
-    let job_slug = slug.to_string();
-    let admitted = catalog
-        .reserve_execution(slug.len() + DESCRIPTOR_BYTES)
-        .await
-        .map_err(WriteError::from)?
-        .execute_catalog_with_completion(
-            move |catalog| {
-                let admitted = catalog.admit_checkpoint_token_with_limits(
-                    &job_slug,
-                    now,
-                    automatic,
-                    owner_limit,
-                    deployment_limit,
-                )?;
-                if let Some((owner, bucket)) = admitted.clone() {
-                    slot.record((owner, bucket));
-                }
-                Ok(admitted.is_some())
-            },
-            cleanup,
-        )
-        .await
-        .map_err(WriteError::from)?;
-    if !admitted {
-        // Nothing was charged, so the token owes nothing.
-        return Ok(None);
-    }
-    Ok(Some(token))
-}
-
 impl Room {
     /// Takes a checkpoint, if the text differs from the last one. Returns the
     /// SHA of the checkpoint that now stands for the current text, or None
     /// when the request was deferred.
     ///
-    /// The order of writes puts every object before anything that names it,
-    /// with the text blobs first, so that a crash leaves nothing worse than an
-    /// untidy history: the blobs, then the tree, then the session state, then
-    /// the index entry, then the manifest. Nothing ever names an object that
-    /// is not there; what a crash can leave is an object nothing names, which
-    /// costs storage and loses nothing. A manifest missing its newest entry is
-    /// repaired by the next checkpoint, which finds the object present and
-    /// names it as `parent` -- `repair` below is that.
+    /// Native publication settles the immutable object closure before the SQL
+    /// transaction commits its checkpoint event and current head together.
     pub async fn checkpoint(
         &self,
         why: &str,
         by: impl Into<Attribution>,
     ) -> Result<Option<String>, WriteError> {
-        self.checkpoint_impl(why, &by.into(), true, false, None, None, None)
+        self.checkpoint_impl(why, &by.into(), true, false, None, None)
             .await
     }
 
@@ -327,7 +192,7 @@ impl Room {
         why: &str,
         by: impl Into<Attribution>,
     ) -> Result<Option<String>, WriteError> {
-        self.checkpoint_impl(why, &by.into(), false, false, None, None, None)
+        self.checkpoint_impl(why, &by.into(), false, false, None, None)
             .await
     }
 
@@ -344,7 +209,7 @@ impl Room {
         // must be settled by this checkpoint transaction, so it cannot take
         // the ordinary content-deduplication branch.
         let force_event = actor.agent_checkpoint.is_some();
-        self.checkpoint_impl(why, &by.into(), false, force_event, None, None, Some(actor))
+        self.checkpoint_impl(why, &by.into(), false, force_event, None, Some(actor))
             .await
     }
 
@@ -359,82 +224,8 @@ impl Room {
         actor: crate::storage::catalog::MutationAuthority<'_>,
     ) -> Result<Option<String>, WriteError> {
         let force_event = actor.agent_checkpoint.is_some();
-        self.checkpoint_impl_locked(why, &by.into(), false, force_event, None, None, Some(actor))
+        self.checkpoint_impl_locked(why, &by.into(), false, force_event, None, Some(actor))
             .await
-    }
-
-    /// Reserve the explicit checkpoint budget before a publication mutates
-    /// the live CRDT. The subsequent publication checkpoint skips its normal
-    /// admission because this token already belongs to it.
-    pub fn reserve_publication_checkpoint(&self) -> Result<PublicationCheckpointToken, String> {
-        if let Some(catalog) = self.catalog.get() {
-            let Some((owner, bucket)) = catalog
-                .admit_checkpoint_token_with_limits(
-                    &self.slug,
-                    now_unix(),
-                    false,
-                    self.config.session.checkpoint_owner_per_hour,
-                    self.config.session.checkpoint_deployment_per_hour,
-                )
-                .map_err(|error| error.to_string())?
-            else {
-                return Err("checkpoint budget exhausted; retry later".into());
-            };
-            return Ok(PublicationCheckpointToken::new(
-                catalog.clone(),
-                owner,
-                bucket,
-            ));
-        }
-        Ok(PublicationCheckpointToken::none())
-    }
-
-    pub async fn checkpoint_publication_now(
-        &self,
-        why: &str,
-        by: impl Into<Attribution>,
-        token: &mut PublicationCheckpointToken,
-    ) -> Result<Option<String>, WriteError> {
-        let _restore_writer = self.restore_write.lock().await;
-        let _publication_writer = self.publication_write.lock().await;
-        let _publication_checkpoint = self.publication_checkpoint.write().await;
-        self.checkpoint_publication_now_locked(why, by, token).await
-    }
-
-    /// Publication checkpoint for a caller that already owns the publication
-    /// and checkpoint barriers across its CRDT mutation.
-    pub(crate) async fn checkpoint_publication_now_locked(
-        &self,
-        why: &str,
-        by: impl Into<Attribution>,
-        token: &mut PublicationCheckpointToken,
-    ) -> Result<Option<String>, WriteError> {
-        self.checkpoint_impl_locked(why, &by.into(), false, false, None, Some(token), None)
-            .await
-    }
-
-    /// Publication checkpoint with the authenticated mutation authority that
-    /// admitted the upload.  Existing internal callers retain the system
-    /// checkpoint path above, while HTTP replacements must carry their live
-    /// account/session fence through the final v2 transaction.
-    pub(crate) async fn checkpoint_publication_now_locked_as_actor(
-        &self,
-        why: &str,
-        by: impl Into<Attribution>,
-        token: &mut PublicationCheckpointToken,
-        actor: crate::storage::catalog::MutationAuthority<'_>,
-    ) -> Result<Option<String>, WriteError> {
-        let attribution = by.into();
-        self.checkpoint_impl_locked(
-            why,
-            &attribution,
-            false,
-            false,
-            None,
-            Some(token),
-            Some(actor),
-        )
-        .await
     }
 
     /// Takes a checkpoint event even when its tree has the same content as a
@@ -446,7 +237,7 @@ impl Room {
         &self,
         by: &Attribution,
     ) -> Result<Option<String>, WriteError> {
-        self.checkpoint_impl("restore", by, false, true, None, None, None)
+        self.checkpoint_impl("restore", by, false, true, None, None)
             .await
     }
 
@@ -458,11 +249,10 @@ impl Room {
         defer: bool,
         force_event: bool,
         protected: Option<&str>,
-        budget_token: Option<&mut PublicationCheckpointToken>,
         actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
     ) -> Result<Option<String>, WriteError> {
         let _publication_checkpoint = self.publication_checkpoint.read().await;
-        self.checkpoint_impl_locked(why, by, defer, force_event, protected, budget_token, actor)
+        self.checkpoint_impl_locked(why, by, defer, force_event, protected, actor)
             .await
     }
 
@@ -475,16 +265,14 @@ impl Room {
         by: &Attribution,
         defer: bool,
         force_event: bool,
-        protected: Option<&str>,
-        budget_token: Option<&mut PublicationCheckpointToken>,
+        _protected: Option<&str>,
         actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
     ) -> Result<Option<String>, WriteError> {
         let _checkpoint_writer = self.checkpoint_write.lock().await;
         let now = now_unix();
-        // Publications reserve their checkpoint token before mutating the
-        // document. Keep that reservation live until this call completes so
-        // read-only, lease, and lookup failures cannot consume it forever.
-        let mut admitted: Option<PublicationCheckpointToken> = None;
+        if self.catalog.get().is_none() {
+            return Err(WriteError::Storage("room has no catalog".into()));
+        }
         if self.read_only() {
             // Refused outright rather than left to fall through to the
             // deduplication branch below: on a read-only room whose direct
@@ -664,9 +452,7 @@ impl Room {
             drop(state);
             duplicate
         };
-        // Catalogue-backed actor writes use the v2 physical graph.  Keep the
-        // old path below only for isolated/legacy callers that have no
-        // authenticated MutationAuthority to carry into the final SQL fence.
+        // Authenticated writes publish the native closure under the final SQL fence.
         if !duplicate {
             if let (Some(catalog), Some(actor)) = (self.catalog.get(), actor.as_ref()) {
                 return self
@@ -742,38 +528,6 @@ impl Room {
                     .await;
             }
         }
-        if !duplicate && budget_token.is_none() {
-            if let Some(catalog) = self.catalog.get() {
-                let automatic = matches!(why, "automatic" | "quiet");
-                match admit_checkpoint_token(
-                    catalog,
-                    &self.slug,
-                    now_unix(),
-                    automatic,
-                    self.config.session.checkpoint_owner_per_hour,
-                    self.config.session.checkpoint_deployment_per_hour,
-                )
-                .await?
-                {
-                    Some(token) => admitted = Some(token),
-                    None => return Ok(None),
-                }
-                #[cfg(test)]
-                pause_after_checkpoint_admission(&self.slug).await;
-            }
-        }
-
-        let sha = if force_event {
-            // Include the current parent and a fresh timestamp. The random
-            // tail prevents two same-second restores of the same tree from
-            // ever aliasing one storage object.
-            let mut identity = tree.to_bytes();
-            identity.extend_from_slice(timestamp().as_bytes());
-            identity.extend_from_slice(crate::auth::random_bytes(8).as_slice());
-            hex::encode(sha2::Sha256::digest(identity))
-        } else {
-            content_sha.clone()
-        };
         // Quiet after quiet costs nothing: the same text is the same
         // checkpoint, and a checkpoint already in the manifest is not written
         // again and adds no entry.
@@ -816,9 +570,6 @@ impl Room {
                     // unchanged content is not a new checkpoint, and refreshing
                     // it would push the next deliberate checkpoint that actually
                     // changes something into the defer window (R26).
-                    let moved = state.session.last_checkpoint != existing;
-                    let format = state.session.format.clone();
-                    let main = tree.main.clone();
                     drop(state);
                     // Reusing a tree does not mean the current Y.Doc is
                     // already durable: CRDT item identities and concurrent
@@ -856,31 +607,6 @@ impl Room {
                         state.session.pending_checkpoint_since = 0;
                     }
                     drop(state);
-                    // A replacement of identical content still has a
-                    // prepared publication receipt. Reuse the already
-                    // durable checkpoint descriptor in that receipt so the
-                    // strict staged commit has the same coverage proof as a
-                    // newly written tree.
-                    if let Some(catalog) = self.catalog.get() {
-                        let pending_publication = read_catalog_document(catalog, &self.slug)
-                            .await
-                            .map_err(WriteError::from)?
-                            .and_then(|document| document.pending_publication)
-                            .is_some();
-                        if pending_publication {
-                            stage_existing_publication_checkpoint(
-                                catalog,
-                                &self.slug,
-                                &existing,
-                                actor
-                                    .map(|actor| crate::room::catalog::OwnedAuthority::new(&actor)),
-                            )
-                            .await?;
-                        }
-                    }
-                    if moved {
-                        self.record_size_now(Some(&existing), &format, &main).await;
-                    }
                     if why == "automatic" {
                         if let Some(catalog) = self.catalog.get() {
                             touch_auto_checkpoint(catalog, &self.slug, now).await;
@@ -890,527 +616,9 @@ impl Room {
                 }
             }
         }
-        if !self.hold().await {
-            return Err(self.fenced());
-        }
-
-        // 1. Encode complete text files outside room state locks.  The
-        // catalogue lease is installed before object I/O, and the normal
-        // put_accounted path still owns quota reservation/accounting for each
-        // physical object.  Recipes are complete file representations, so a
-        // later checkpoint can read any retained tree directly.
-        let mut encoded_sources = Vec::new();
-        let encoding_started = std::time::Instant::now();
-        let mut planned_sources = Vec::new();
-        let mut requested_chunk_keys = std::collections::HashSet::new();
-        let mut durable_chunk_sizes = std::collections::HashMap::new();
-        for (digest, body) in &bodies {
-            if let Some(catalog) = self.catalog.get() {
-                if let Some(record) = read_source_history_record(catalog, &self.storage_id, digest)
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
-                    // A retained record already carries its measured graph
-                    // sizes. Only repair an old/unresolved zero sentinel by
-                    // asking accounting for that particular key.
-                    for object in &record.objects {
-                        if object.kind == "source_chunk" {
-                            if object.bytes > 0 {
-                                durable_chunk_sizes.insert(object.object_key.clone(), object.bytes);
-                            } else {
-                                requested_chunk_keys.insert(object.object_key.clone());
-                            }
-                        }
-                    }
-                    encoded_sources.push((record, None));
-                    continue;
-                }
-            }
-            let plan = source_encoding_pool()
-                .try_plan(body.as_bytes().to_vec())
-                .await
-                .map_err(|error| WriteError::Storage(error.to_string()))?;
-            for chunk in &plan.recipe.chunks {
-                requested_chunk_keys.insert(crate::storage::blob::content_chunk_key(
-                    &self.storage_id,
-                    &hex::encode(chunk.digest),
-                ));
-            }
-            planned_sources.push((digest.clone(), body.clone(), plan));
-        }
-        if let Some(catalog) = self.catalog.get() {
-            let requested = requested_chunk_keys.into_iter().collect::<Vec<_>>();
-            durable_chunk_sizes
-                .extend(read_source_object_sizes(catalog, &self.storage_id, &requested).await?);
-        }
-        for (digest, body, plan) in planned_sources {
-            let existing: std::collections::HashSet<[u8; 32]> = plan
-                .recipe
-                .chunks
-                .iter()
-                .filter(|chunk| {
-                    let key = crate::storage::blob::content_chunk_key(
-                        &self.storage_id,
-                        &hex::encode(chunk.digest),
-                    );
-                    durable_chunk_sizes
-                        .get(&key)
-                        .is_some_and(|bytes| *bytes > 0)
-                })
-                .map(|chunk| chunk.digest)
-                .collect();
-            let encoded = source_encoding_pool()
-                .try_encode_planned(body.as_bytes().to_vec(), plan, existing)
-                .await
-                .map_err(|error| WriteError::Storage(error.to_string()))?;
-            if hex::encode(encoded.file_digest) != *digest {
-                return Err(WriteError::Storage(
-                    "source encoder returned a digest different from the tree".into(),
-                ));
-            }
-            let record = crate::storage::catalog::SourceHistoryRecord::from_encoded(
-                &self.storage_id,
-                &encoded,
-            )
-            .map_err(|error| WriteError::Storage(error.to_string()))?;
-            for object in &record.objects {
-                if object.kind == "source_chunk" && object.bytes > 0 {
-                    durable_chunk_sizes.insert(object.object_key.clone(), object.bytes);
-                }
-            }
-            encoded_sources.push((record, Some(encoded)));
-        }
-        encoded_sources.sort_by(|left, right| left.0.file_digest.cmp(&right.0.file_digest));
-        eprintln!(
-            "{}",
-            serde_json::json!({
-                "event": "source_history_encoded",
-                "files": encoded_sources.len(),
-                "logical_bytes": bodies.values().map(|body| body.len()).sum::<usize>(),
-                "introduced_bytes": encoded_sources.iter().filter_map(|(_, encoded)| encoded.as_ref())
-                    .map(|encoded| encoded.recipe_bytes.len() + encoded.objects.iter()
-                        .map(|object| object.encoded.len()).sum::<usize>()).sum::<usize>(),
-                "reused_files": encoded_sources.iter().filter(|(_, encoded)| encoded.is_none()).count(),
-                "elapsed_micros": encoding_started.elapsed().as_micros(),
-            })
-        );
-        let lease_operation = crate::util::new_id();
-        let lease_objects: Vec<_> = encoded_sources
-            .iter()
-            .flat_map(|record| {
-                std::iter::once(crate::storage::catalog::SourceHistoryObject {
-                    object_key: record.0.recipe_key.clone(),
-                    kind: "source_recipe".to_string(),
-                    bytes: record.0.recipe_bytes,
-                })
-                .chain(record.0.objects.iter().cloned())
-                .collect::<Vec<_>>()
-            })
-            .chain(std::iter::once(
-                crate::storage::catalog::SourceHistoryObject {
-                    object_key: crate::storage::blob::checkpoint_key(&self.storage_id, &sha),
-                    kind: "checkpoint_tree".to_string(),
-                    bytes: i64::try_from(tree.to_bytes().len())
-                        .map_err(|_| WriteError::Storage("checkpoint tree is too large".into()))?,
-                },
-            ))
-            .chain(
-                tree.files
-                    .values()
-                    .filter(|entry| entry.kind == "asset")
-                    .map(|entry| {
-                        if entry.size < 0 || entry.sha.is_empty() {
-                            return Err(WriteError::Storage(
-                                "checkpoint asset has invalid identity or size".into(),
-                            ));
-                        }
-                        Ok(crate::storage::catalog::SourceHistoryObject {
-                            object_key: crate::storage::blob::asset_key(
-                                &self.storage_id,
-                                &entry.sha,
-                            ),
-                            kind: "asset".into(),
-                            bytes: entry.size,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, WriteError>>()?,
-            )
-            .map(|mut object| {
-                if object.kind == "source_chunk" && object.bytes == 0 {
-                    object.bytes =
-                        *durable_chunk_sizes.get(&object.object_key).ok_or_else(|| {
-                            WriteError::Storage(
-                                "reused source chunk has no durable accounting".into(),
-                            )
-                        })?;
-                    if object.bytes <= 0 {
-                        return Err(WriteError::Storage(
-                            "reused source chunk has invalid accounting".into(),
-                        ));
-                    }
-                }
-                Ok(object)
-            })
-            .collect::<Result<Vec<_>, WriteError>>()?;
-        let source_lease = if let Some(catalog) = self.catalog.get() {
-            let lease_now = crate::util::now_millis();
-            Some(
-                begin_source_history_lease(
-                    catalog,
-                    &self.storage_id,
-                    &lease_operation,
-                    lease_objects,
-                    lease_now,
-                    lease_now.saturating_add(120_000),
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-
-        // Put chunks before recipes, then the logical tree. A digest already
-        // present in the object ledger is harmlessly reused by the accounted
-        // writer and is never charged twice.
-        for (record, encoded) in &encoded_sources {
-            let Some(encoded) = encoded else { continue };
-            for object in &encoded.objects {
-                self.put_accounted(
-                    &crate::storage::blob::content_chunk_key(
-                        &self.storage_id,
-                        &hex::encode(object.digest),
-                    ),
-                    object.encoded.clone(),
-                    "source_chunk",
-                    None,
-                )
-                .await?;
-            }
-            self.put_accounted(
-                &record.recipe_key,
-                encoded.recipe_bytes.clone(),
-                "source_recipe",
-                None,
-            )
-            .await?;
-        }
-
-        // 2. the tree, which names them.
-        self.put_accounted(
-            &checkpoint_key(&self.storage_id, &sha),
-            tree.to_bytes(),
-            "tree",
-            None,
-        )
-        .await?;
-
-        // 3. the session state, so a restart comes back at or after the
-        //    checkpoint rather than before it. The generation is captured in
-        //    the same breath as the bytes: if a newer edit lands before this
-        //    server gets to clear `dirty` below, the two disagree and `dirty`
-        //    is left set, so that edit is never reported as saved when it is
-        //    not yet on disk (R07).
-        let (session_size, durable_sequence) = match self.write_session_inner(false, true).await {
-            Ok(Some(result)) => result,
-            Ok(None) => unreachable!("an unconditional session write returns its size"),
-            Err(err) => {
-                return Err(err);
-            }
-        };
-
-        // What the parent recorded, so this entry can say which paths moved.
-        // Held in memory from one checkpoint to the next; read back only on
-        // the first checkpoint after a cold start, which is the only time
-        // this server has not seen the parent itself.
-        let parent_tree = self.parent_tree().await;
-        let ceiling = self.allowance(session_size).await;
-        let keep_count = self.config.session.history_max;
-
-        // 4. the index entry, then 5. the manifest -- staged from
-        // `state.manifest` and written under the manifest write gate, so a
-        // concurrent `label` can never land between the staging and the write
-        // and be discarded by this checkpoint's now-stale idea of the
-        // manifest (R09), and a failed write never lands in memory, so a
-        // retry recomputes from the real manifest rather than quietly
-        // no-op-ing through the deduplication branch above (R08).
-        let shed;
-        {
-            let _manifest_writer = self.manifest_write.lock().await;
-            let (mut staged, repair_format) = {
-                let state = self.state.lock().await;
-                (state.manifest.clone(), state.session.format.clone())
-            };
-            let before_repair = staged.checkpoints.len();
-            self.repair(&mut staged, &repair_format, &last).await;
-            // The resident manifest is only a bounded tail in catalogue
-            // mode. After reverting to an older checkpoint, the current
-            // parent may therefore be absent from `staged`; using the tail's
-            // latest row would forge a timeline that disagrees with SQLite.
-            let repaired = staged.checkpoints.len() != before_repair;
-            let parent = if repaired {
-                staged
-                    .latest()
-                    .map(|point| point.sha.clone())
-                    .unwrap_or_default()
-            } else if !last.is_empty() {
-                last.clone()
-            } else {
-                staged
-                    .latest()
-                    .map(|point| point.sha.clone())
-                    .unwrap_or_default()
-            };
-            staged.checkpoints.push(Checkpoint {
-                sha: sha.clone(),
-                tree_sha: content_sha.clone(),
-                parent: parent.clone(),
-                at: timestamp(),
-                by: by.display().to_string(),
-                by_account: by.account_id().map(str::to_string),
-                why: why.to_string(),
-                source_format: format.clone(),
-                size: tree.size(),
-                label: String::new(),
-                commit: String::new(),
-                dirty: false,
-                tree: true,
-                changed: tree.changed_from(parent_tree.as_ref()),
-                seq: -1,
-                original_parent: parent,
-                ancestry_gap: false,
-            });
-
-            // A checkpoint is never refused, because refusing it would lose
-            // work. What gives instead is the oldest history: the ceilings
-            // shed the oldest unlabelled checkpoints, and the oldest
-            // labelled ones after them, until the document fits.
-            // In catalogue mode this is the resident tail, not necessarily
-            // the complete history.  It is still safe to shed entries that
-            // are present here: every removed row is explicitly deleted from
-            // SQLite below, while rows omitted from the tail are never
-            // inferred to be garbage.  (With the normal tail of 64 this also
-            // handles small configured history caps exactly.)
-            let shed_now = staged.shed_protected(protected.unwrap_or_default(), |manifest| {
-                (keep_count == 0 || manifest.checkpoints.len() <= keep_count)
-                    && ceiling.is_none_or(|limit| manifest.bytes() <= limit)
-            });
-
-            // What the document costs: the live session, its history, its
-            // input figures. The quota counts each object once
-            // -- a text blob and an asset are each charged where they are
-            // stored, and the tree that names them is bookkeeping rather
-            // than a third copy. Read straight off the locked state instead
-            // of through `assets_bytes`, which lock it
-            // themselves.
-            let assets: i64 = self.state.lock().await.session.asset_sizes.values().sum();
-            let staged_bytes = if let Some(catalog) = self.catalog.get() {
-                // `staged` is intentionally only the resident tail.  Charge
-                // the complete persisted history rather than silently
-                // undercounting older rows that are not resident here.
-                read_checkpoint_stats(catalog, &self.slug)
-                    .await
-                    .map(|(_, bytes)| bytes)
-                    // A failed catalogue read is not evidence for a logical
-                    // tree size.  Keep admission conservative only through
-                    // the durable physical accounting rows that were read;
-                    // the normal `record_size_now` path fences unreadable
-                    // catalogue state rather than guessing.
-                    .unwrap_or(0)
-            } else {
-                staged.bytes()
-            };
-            let mut checkpoint_assets = std::collections::BTreeMap::<String, i64>::new();
-            for entry in tree.files.values().filter(|entry| entry.kind == "asset") {
-                if entry.size < 0 || entry.sha.is_empty() {
-                    return Err(WriteError::Storage(
-                        "checkpoint asset has invalid identity or size".into(),
-                    ));
-                }
-                let key = crate::storage::blob::asset_key(&self.storage_id, &entry.sha);
-                if checkpoint_assets
-                    .insert(key, entry.size)
-                    .is_some_and(|previous| previous != entry.size)
-                {
-                    return Err(WriteError::Storage(
-                        "checkpoint asset has conflicting sizes".into(),
-                    ));
-                }
-            }
-            let checkpoint_assets = checkpoint_assets
-                .into_iter()
-                .map(
-                    |(object_key, bytes)| crate::storage::catalog::CheckpointAssetRef {
-                        object_key,
-                        bytes,
-                    },
-                )
-                .collect::<Vec<_>>();
-            // The legacy object layout has no catalogue transaction to join
-            // the checkpoint graph.  Publish its index head before the
-            // manifest, so a crash/failure between the two leaves a durable
-            // receipt that `repair` can discover on the next checkpoint.  In
-            // catalogue mode the manifest rows and head are committed by
-            // `write_manifest` together, and the measurement is deliberately
-            // staged only after all referenced objects are durable.
-            if self.catalog.get().is_none() {
-                self.record_size(
-                    session_size + staged_bytes + assets,
-                    Some(&sha),
-                    &format,
-                    &tree.main,
-                )
-                .await;
-            }
-            self.write_manifest(
-                staged,
-                durable_sequence,
-                actor.map(|actor| crate::room::catalog::OwnedAuthority::new(&actor)),
-                &encoded_sources
-                    .iter()
-                    .map(|(record, _)| record.clone())
-                    .collect::<Vec<_>>(),
-                &checkpoint_assets,
-                Some(&lease_operation),
-            )
-            .await?;
-            // The ordinary checkpoint is durable once its manifest is
-            // committed. Release its admission before pruning or any later
-            // asynchronous cleanup; cancellation there must not refund a
-            // checkpoint that already exists.
-            if budget_token.is_none() {
-                if let Some(token) = admitted.as_mut() {
-                    token.commit();
-                }
-            }
-            // The checkpoint graph is now durable. Only then advance the
-            // catalogue head and measured accounting, so a reader can never
-            // observe a SHA whose tree or manifest was lost between object
-            // writes and publication.
-            if self.catalog.get().is_some() {
-                self.record_size(
-                    session_size + staged_bytes + assets,
-                    Some(&sha),
-                    &format,
-                    &tree.main,
-                )
-                .await;
-            }
-            let mut state = self.state.lock().await;
-            state.session.last_tree = Some(tree.clone());
-            state.session.last_checkpoint = sha.clone();
-            state.session.last_checkpoint_at = now;
-            // `write_session` may have advanced the durable cursor when an
-            // internal mutation changed the document without incrementing
-            // the in-memory generation first.  In that case the checkpoint
-            // covers the generation now resident in state.  If a newer edit
-            // arrived while objects were being written, retain the captured
-            // generation so the room stays dirty and is flushed again.
-            state.session.checkpoint_generation = tree_generation;
-            if state.session.generation == tree_generation {
-                state.session.pending_checkpoint_since = 0;
-            }
-            shed = shed_now;
-        }
-        if let Some(catalog) = self.catalog.get() {
-            let publication_pending = read_catalog_document(catalog, &self.slug)
-                .await
-                .map_err(WriteError::from)?
-                .and_then(|document| document.pending_publication)
-                .is_some();
-            if !publication_pending {
-                if let Some(lease) = source_lease {
-                    lease.finish().await?;
-                }
-                // Restore may still be fixing its merge base before leasing
-                // the selected old tree. Do not let this checkpoint's routine
-                // policy pass retire that explicit protected selection.
-                if protected.is_none() {
-                    let retention_bounds = crate::document::quota::RetentionBounds {
-                        hard_quota: self.config.storage.per_owner,
-                        max_checkpoint_count: if self.config.session.history_max == 0 {
-                            None
-                        } else {
-                            Some(self.config.session.history_max as u32)
-                        },
-                        ..Default::default()
-                    };
-                    let slug = self.slug.clone();
-                    let scheduled = catalog
-                        .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-                            catalog.schedule_document_balanced(
-                                &slug,
-                                crate::util::now_millis(),
-                                retention_bounds,
-                            )
-                        })
-                        .await;
-                    if matches!(scheduled, Ok(count) if count > 0) {
-                        self.refresh_retained_manifest().await;
-                    }
-                }
-            }
-        }
-        let mut shed = shed;
-        if let Some(catalog) = self.catalog.get() {
-            match shed_checkpoints_to_limits(
-                catalog,
-                &self.slug,
-                keep_count,
-                ceiling,
-                protected.unwrap_or_default().to_string(),
-            )
-            .await
-            {
-                Ok(extra) => shed.extend(extra),
-                Err(error) => eprintln!(
-                    "warning: could not apply full history retention for {}: {error}",
-                    self.slug
-                ),
-            }
-        }
-        shed.sort_unstable();
-        shed.dedup();
-        if !shed.is_empty() {
-            let removed: std::collections::HashSet<&str> =
-                shed.iter().map(String::as_str).collect();
-            let mut state = self.state.lock().await;
-            state
-                .manifest
-                .checkpoints
-                .retain(|point| !removed.contains(point.sha.as_str()));
-        }
-        if !shed.is_empty() {
-            // Remove catalogue metadata before deleting the object it names.
-            // A crash after object deletion but before the SQL delete would
-            // otherwise leave a durable row pointing at a missing tree. A
-            // failed metadata delete keeps its object for a later retry.
-            let keys: Vec<String> = if let Some(catalog) = self.catalog.get() {
-                delete_checkpoints(catalog, &self.slug, shed.clone())
-                    .await
-                    .iter()
-                    .map(|sha| checkpoint_key(&self.storage_id, sha))
-                    .collect()
-            } else {
-                shed.iter()
-                    .map(|sha| checkpoint_key(&self.storage_id, sha))
-                    .collect()
-            };
-            let _ = self.blobs.delete(&keys).await;
-            for key in &keys {
-                self.checkpoint_cache.invalidate(key).await;
-            }
-        }
-        // The figures nothing refers to any more, once the tree and the
-        // manifest that name what is kept are both written. This order is
-        // what makes a crash leave an unreferenced object rather than a tree
-        // pointing at one that is gone.
-        self.prune_retained(&tree).await;
-        if why == "automatic" {
-            if let Some(catalog) = self.catalog.get() {
-                touch_auto_checkpoint(catalog, &self.slug, now).await;
-            }
-        }
-        Ok(Some(sha))
+        Err(WriteError::Storage(
+            "checkpoint state changed before publication".into(),
+        ))
     }
 
     /// Write a catalogue checkpoint as one canonical v2 physical closure.
@@ -2492,85 +1700,6 @@ impl Room {
         Ok(Some(checkpoint.id.as_str().to_string()))
     }
 
-    /// Puts back a checkpoint the manifest lost, into a staged manifest the
-    /// caller has not committed yet. The index names the newest checkpoint,
-    /// so an index entry naming a SHA the manifest does not have, whose
-    /// object is still there, is a write that got as far as recording the
-    /// index but no further. `last` is this server's own idea of the newest
-    /// checkpoint, carried in memory since the checkpoint before; the store's
-    /// own head is consulted too, because a crash between recording the index
-    /// and writing the manifest leaves exactly that head standing with
-    /// nothing in the manifest naming it, and `load_session` seeds `last`
-    /// from the manifest, not the index, so a restart does not otherwise
-    /// supply it. Either candidate is added as the newest entry rather than
-    /// guessed at.
-    pub(super) async fn repair(&self, manifest: &mut Manifest, format: &str, last: &str) {
-        let mut candidates = vec![last.to_string()];
-        if let Some(store) = self.store.get() {
-            match store.get_result(&self.slug).await {
-                Ok(Some(entry)) => candidates.push(entry.sha),
-                Ok(None) => {}
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not read catalogue entry {} during repair: {error}",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                }
-            }
-        }
-        for candidate in candidates {
-            if candidate.is_empty() || manifest.has(&candidate) {
-                continue;
-            }
-            let raw = match self
-                .blobs
-                .get(&checkpoint_key(&self.storage_id, &candidate))
-                .await
-            {
-                Ok(raw) => raw,
-                Err(_) => continue,
-            };
-            // Whether what was recovered is a tree is answered by the object
-            // itself, since a checkpoint written by this code and one written
-            // before there were directories sit under the same key. Reading
-            // it as a tree is the test: a source that happens to parse as
-            // this exact JSON shape is not a source anybody wrote.
-            let recovered: Option<crate::document::history::Tree> =
-                serde_json::from_slice(&raw).ok();
-            let size = match &recovered {
-                Some(tree) => tree.size(),
-                None => raw.len() as i64,
-            };
-            let parent = manifest
-                .latest()
-                .map(|point| point.sha.clone())
-                .unwrap_or_default();
-            manifest.checkpoints.push(Checkpoint {
-                sha: candidate,
-                tree_sha: String::new(),
-                parent: parent.clone(),
-                at: timestamp(),
-                // A recovered entry is one this server found standing in
-                // storage with nothing naming it. Nothing records who wrote
-                // it, so it is attributed to nobody rather than guessed at.
-                by: String::new(),
-                by_account: None,
-                why: "recovered".to_string(),
-                source_format: format.to_string(),
-                size,
-                label: String::new(),
-                commit: String::new(),
-                dirty: false,
-                tree: recovered.is_some(),
-                changed: Vec::new(),
-                seq: -1,
-                original_parent: parent,
-                ancestry_gap: false,
-            });
-        }
-    }
-
     /// The tree the newest checkpoint recorded, for the sake of the `changed`
     /// list on the next one. Kept in memory between checkpoints; read back
     /// only after a cold start, and read as a one-file tree when the entry is
@@ -2704,36 +1833,6 @@ impl Room {
         Ok((points, None))
     }
 
-    /// Rebuilds a document, in place, from its newest checkpoint's own tree --
-    /// the same texts a `restore` would put back. Used when the saved session
-    /// itself cannot be trusted, so it takes the document to work on directly
-    /// rather than locking the room, and touches nothing but storage reads.
-    pub(super) async fn rebuild_from_checkpoint(
-        &self,
-        doc: &yrs::Doc,
-        manifest: &Manifest,
-        _named: &str,
-    ) -> Result<(), String> {
-        let point = manifest
-            .latest()
-            .cloned()
-            .ok_or_else(|| "no checkpoint to recover from".to_string())?;
-        // The document has nothing in it yet at this point, so the path/id a
-        // one-file checkpoint would fall back to come from the index entry
-        // rather than the (empty) document.
-        let (tree, bodies) = self
-            .checkpoint_cache
-            .load_checkpoint_v2(
-                self.blobs.as_ref(),
-                self.catalog.get().ok_or("durable catalog required")?,
-                &self.slug,
-                &point,
-            )
-            .await?;
-        session::restore(doc, &tree, &bodies);
-        Ok(())
-    }
-
     /// Lease every physical object a selected tree may install into the live
     /// document. This second lease is deliberately held by restore until the
     /// merged CRDT update and its forced checkpoint have committed; the
@@ -2742,7 +1841,7 @@ impl Room {
     async fn lease_checkpoint_objects(
         &self,
         point: &Checkpoint,
-        tree: &history::Tree,
+        tree: &crate::document::history::Tree,
     ) -> Result<Option<crate::storage::catalog::CheckpointReadLease>, WriteError> {
         let catalog = self
             .catalog
@@ -2777,7 +1876,7 @@ impl Room {
     ///
     /// `Ok(false)` means the manifest has no such checkpoint, which is a
     /// 404 for the caller rather than a failure here.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn label(&self, sha: &str, label: &str) -> Result<bool, WriteError> {
         self.label_as(sha, label, None).await
     }
@@ -2785,6 +1884,7 @@ impl Room {
     /// Label with the caller identity carried through to the final catalogue
     /// transaction.  The test/legacy entry point above remains available for
     /// isolated rooms that have no account authority attached.
+    #[cfg(test)]
     pub async fn label_as(
         &self,
         sha: &str,
@@ -2854,66 +1954,7 @@ impl Room {
             }
             return Ok(true);
         }
-        let mut staged = self.state.lock().await.manifest.clone();
-        for point in staged.checkpoints.iter_mut() {
-            if point.sha == sha {
-                point.label = label.to_string();
-            }
-        }
-        self.write_manifest(staged, 0, None, &[], &[], None).await?;
-        Ok(true)
-    }
-
-    /// The caller holds manifest_write from staging through commit. Keep the
-    /// room state available during storage I/O and expose changes only once
-    /// the conditional write succeeds, so failed writes and labels remain safe.
-    pub(super) async fn write_manifest(
-        &self,
-        mut staged: Manifest,
-        durable_seq: i64,
-        actor: Option<crate::room::catalog::OwnedAuthority>,
-        sources: &[crate::storage::catalog::SourceHistoryRecord],
-        assets: &[crate::storage::catalog::CheckpointAssetRef],
-        lease_operation: Option<&str>,
-    ) -> Result<(), WriteError> {
-        if let Some(catalog) = self.catalog.get() {
-            let previous = self.state.lock().await.manifest.clone();
-            save_catalog_manifest_with_assets(
-                catalog,
-                &self.slug,
-                &previous,
-                &staged,
-                durable_seq,
-                actor,
-                sources,
-                assets,
-                lease_operation,
-                self.config.storage.per_owner,
-                self.config.storage.total,
-            )
-            .await?;
-            let excess = staged
-                .checkpoints
-                .len()
-                .saturating_sub(RESIDENT_CATALOG_HISTORY as usize);
-            staged.checkpoints.drain(..excess);
-            let mut state = self.state.lock().await;
-            *state.manifest = staged;
-            return Ok(());
-        }
-        let body =
-            serde_json::to_vec(&staged).map_err(|err| WriteError::Storage(err.to_string()))?;
-        let mut version = self.state.lock().await.manifest_version.clone();
-        self.write_owned(
-            &crate::storage::blob::history_index_key(&self.slug),
-            body,
-            &mut version,
-        )
-        .await?;
-        let mut state = self.state.lock().await;
-        state.manifest_version = version;
-        *state.manifest = staged;
-        Ok(())
+        Err(WriteError::Storage("room has no catalog".into()))
     }
 
     /// Restores a checkpoint and records both sides of the operation. The
@@ -2942,7 +1983,7 @@ impl Room {
         let base_sha = match base_sha {
             Some(sha) if !sha.is_empty() => sha,
             _ => self
-                .checkpoint_impl("quiet", by, false, false, Some(&point.sha), None, None)
+                .checkpoint_impl("quiet", by, false, false, Some(&point.sha), None)
                 .await?
                 .ok_or_else(|| "could not create a restore base checkpoint".to_string())?,
         };
@@ -3123,47 +2164,6 @@ impl Room {
         Ok((update, restored))
     }
 
-    /* -------------------------------------------------------- suggestions */
-
-    /// The most this document's session and history may occupy before it
-    /// carries its owner or the deployment over a ceiling, less what the
-    /// session state already costs. `None` means there is no catalogue quota;
-    /// a negative `Some` value means the session alone is already over quota.
-    pub(super) async fn allowance(&self, session_size: i64) -> Option<i64> {
-        let store = self.store.get()?;
-        store
-            .room_for(&self.slug)
-            .await
-            .map(|room| room - session_size)
-    }
-
-    /// Records what this document now costs, and the checkpoint the index
-    /// names. A failure here is a failure of the checkpoint's bookkeeping, not
-    /// of the checkpoint: the object and the state are already written, and
-    /// the next checkpoint repairs the entry.
-    ///
-    /// Takes `format` and `main` rather than reading them off `self.state`
-    /// itself, so a caller that already holds the room's lock can call this
-    /// without deadlocking on it.
-    pub(super) async fn record_size(&self, size: i64, sha: Option<&str>, format: &str, main: &str) {
-        let Some(store) = self.store.get() else {
-            return;
-        };
-        if let Err(err) = store
-            .record_history(&self.slug, sha, size, format, main)
-            .await
-        {
-            eprintln!(
-                "warning: could not record the history of {}: {err}",
-                self.slug
-            );
-        }
-    }
-
-    /// The document's directory as a checkpoint would record it. What the
-    /// timeline reads, what the document endpoint lists the paths of, and what
-    /// a test asks when it wants to know the name the next checkpoint will
-    /// have.
     pub async fn tree(&self) -> crate::document::history::Tree {
         let _publication_writer = self.publication_write.lock().await;
         let state = self.state.lock().await;
@@ -3244,139 +2244,6 @@ impl Room {
         state.session.generation += 1;
         state.session.updated_at = now_unix();
         Ok(())
-    }
-
-    /// Drops the text blobs under `history/<slug>/blobs/` that no surviving
-    /// checkpoint and no live text still names. A checkpoint's tree is its
-    /// bookkeeping; the bodies it names are separate objects, written once
-    /// and shared by every tree that mentions their digest -- so shedding a
-    /// checkpoint's tree, on its own, leaves its text bodies exactly where
-    /// they were. Nothing else in `checkpoint` ever swept this namespace,
-    /// which is what let repeated distinct revisions grow it without bound
-    /// even under a tight `history_max` (R21).
-    ///
-    /// Run after the manifest naming what survives, and the tree/session/
-    /// index of the checkpoint just taken, are all written -- the same
-    /// ordering `prune_assets` keep, so a crash here
-    /// leaves an object nothing names rather than a name pointing at one
-    /// that is gone.
-    ///
-    /// `BlobInfo` carries no modification time, so there is no grace window
-    /// to fall back on the way `prune_assets` protects a figure between its
-    /// upload and its naming. Instead this protects the two things that
-    /// could otherwise race it: the live in-memory tree (a digest just
-    /// written but not yet the newest checkpoint) and `written`, the tree
-    /// this very checkpoint just committed. Anything a retained older
-    /// checkpoint still names survives independently, because that
-    /// checkpoint stays in the manifest until its own turn to be shed.
-    ///
-    /// A retained tree this pass cannot read is not proof its blobs are
-    /// unreferenced -- only that this attempt could not tell -- so nothing at
-    /// all is deleted on a pass where that happens, the same rule
-    /// `prune_assets` follows for the same reason (R15).
-    pub(super) async fn prune_blobs(
-        &self,
-        written: &history::Tree,
-        references: &retention::RetainedReferences,
-    ) {
-        let mut kept = {
-            let state = self.state.lock().await;
-            session::texts_of(&state.session.doc)
-                .into_values()
-                .map(|body| crate::document::store::digest_of(&body))
-                .collect::<HashSet<_>>()
-        };
-        kept.extend(references.texts.iter().cloned());
-        kept.extend(
-            written
-                .files
-                .values()
-                .filter(|entry| entry.kind == "text")
-                .map(|entry| entry.sha.clone()),
-        );
-        // Standalone rooms have no catalogue graph/collector. Their writer
-        // gate protects the native namespace while we resolve every retained
-        // recipe before deleting anything. Catalogue rooms use durable edges
-        // and leases instead of this fallback sweep.
-        if self.catalog.get().is_none() {
-            let recipe_prefix = crate::storage::blob::content_recipe_prefix(&self.storage_id);
-            let chunk_prefix = crate::storage::blob::content_chunk_prefix(&self.storage_id);
-            let Ok(recipes) = self.blobs.list(&recipe_prefix).await else {
-                return;
-            };
-            let Ok(chunks) = self.blobs.list(&chunk_prefix).await else {
-                return;
-            };
-            let mut reachable = HashSet::new();
-            let mut obsolete = Vec::new();
-            for object in recipes {
-                let digest = object.key.rsplit('/').next().unwrap_or_default();
-                if kept.contains(digest) {
-                    let Ok(bytes) = self.blobs.get(&object.key).await else {
-                        return;
-                    };
-                    let Ok(recipe) = crate::storage::encoding::Recipe::from_bytes(&bytes) else {
-                        return;
-                    };
-                    reachable.extend(recipe.chunks.iter().map(|chunk| hex::encode(chunk.digest)));
-                } else {
-                    obsolete.push(object.key);
-                }
-            }
-            obsolete.extend(
-                chunks
-                    .into_iter()
-                    .filter(|object| {
-                        !reachable.contains(object.key.rsplit('/').next().unwrap_or_default())
-                    })
-                    .map(|object| object.key),
-            );
-            if !obsolete.is_empty() {
-                let _ = self.blobs.delete(&obsolete).await;
-            }
-        }
-    }
-
-    /// Records what this document costs as it stands, without a checkpoint:
-    /// what an asset upload changes, and -- with `sha` set -- what reusing an
-    /// old tree's content moves the index head to (R17), without pretending a
-    /// new checkpoint was taken.
-    pub(super) async fn record_size_now(&self, sha: Option<&str>, format: &str, main: &str) {
-        let (session_size, resident_history) = {
-            let mut state = self.state.lock().await;
-            let generation = state.session.generation;
-            let size = match state.session.encoded_size {
-                Some((encoded, size)) if encoded == generation => size,
-                _ => {
-                    let size = session::encode_state(&state.session.doc).len();
-                    state.session.note_encoded_len(generation, size);
-                    size as i64
-                }
-            };
-            (size, state.manifest.bytes())
-        };
-        // Read with room state released. This is an accounting figure, not a
-        // fence: the catalogue is the authority for history bytes and the
-        // number it returns is whatever was durable when it was asked, so
-        // stalling every editor of the document for the length of the query
-        // bought nothing.
-        let history = match self.catalog.get() {
-            Some(catalog) => match read_checkpoint_stats(catalog, &self.slug).await {
-                Ok((_, bytes)) => bytes,
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not read checkpoint accounting for {}: {error}",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    return;
-                }
-            },
-            None => resident_history,
-        };
-        let assets = self.assets_bytes().await;
-        self.record_size(session_size + history + assets, sha, format, main)
-            .await;
     }
 
     /// The manifest, for the timeline and for the tests.

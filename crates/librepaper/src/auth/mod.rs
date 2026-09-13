@@ -175,14 +175,6 @@ pub fn qualified(provider: &str, id: &str) -> String {
     format!("{provider}:{id}")
 }
 
-/// What a bare id written by an earlier server means. Ownership, grants and
-/// checkpoints were all written before providers existed, and everything
-/// written then was GitHub, so a stored id with no prefix is read as one
-/// rather than the index being rewritten.
-pub fn stored_id(id: &str) -> String {
-    qualified(PROVIDER_GITHUB, id)
-}
-
 /// The cookie name for this request: the __Host- prefix on HTTPS, the plain
 /// name on HTTP (local `serve`), since __Host- is refused by browsers without
 /// Secure. An HTTPS request must read only the prefixed name: the plain one is

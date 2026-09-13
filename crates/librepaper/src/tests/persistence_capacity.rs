@@ -18,6 +18,34 @@ use crate::storage::blob::{self, BlobStore};
 use crate::storage::catalog::Catalog;
 use crate::storage::journal;
 
+pub(super) fn workload_actor(catalog: &Catalog, handle: &str) -> store::MutationActor {
+    let id = format!("test:{handle}");
+    catalog
+        .upsert_account(&crate::storage::catalog::Account {
+            id: id.clone(),
+            provider: "test".into(),
+            handle: handle.into(),
+            name: handle.into(),
+            email: format!("{handle}@example.test"),
+            first_seen: "2026-01-01T00:00:00.000Z".into(),
+            last_seen: "2026-01-01T00:00:00.000Z".into(),
+            plan: "free".into(),
+            status: "active".into(),
+            session_generation: "workload-session".into(),
+            erasure_cursor: None,
+        })
+        .unwrap();
+    store::MutationActor {
+        account_id: id,
+        owner_key: handle.into(),
+        session_generation: "workload-session".into(),
+        link_hash: String::new(),
+        policy_editor: true,
+        automation: false,
+        unowned_publisher: false,
+    }
+}
+
 #[derive(serde::Serialize)]
 struct Report {
     schema: u32,
@@ -221,13 +249,15 @@ async fn persistence_capacity_workload() {
         let source = format!("{marker}{}", "x".repeat(initial_bytes - marker.len()));
         deployment
             .store
-            .put(store::Publication {
-                slug: slug.clone(),
-                source: source.clone(),
-                source_format: "markdown".into(),
-                owner: format!("owner-{n}"),
-                ..Default::default()
-            })
+            .put_as_actor(
+                store::Publication {
+                    slug: slug.clone(),
+                    source: source.clone(),
+                    source_format: "markdown".into(),
+                    ..Default::default()
+                },
+                workload_actor(&deployment.catalog, &format!("owner-{n}")),
+            )
             .await
             .expect("publication puts");
         let room = deployment
@@ -516,13 +546,15 @@ async fn single_room_scale_workload() {
     let source = "a".repeat(initial_bytes);
     deployment
         .store
-        .put(store::Publication {
-            slug: "scale-room".into(),
-            source: source.clone(),
-            source_format: "markdown".into(),
-            owner: "alice".into(),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "scale-room".into(),
+                source: source.clone(),
+                source_format: "markdown".into(),
+                ..Default::default()
+            },
+            workload_actor(&deployment.catalog, "alice"),
+        )
         .await
         .unwrap();
     let room = deployment.rooms.try_get("scale-room").await.unwrap();
@@ -655,7 +687,6 @@ async fn deletion_only_edit_recovers_with_unchanged_crdt_state_vector() {
                 source: "keep remove".into(),
                 main: "main.md".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             super::room::fixture_actor(),

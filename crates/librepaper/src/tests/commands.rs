@@ -1,9 +1,7 @@
 use serde_json::json;
-use std::sync::Arc;
 
 use crate::config::Configuration;
-use crate::room::{Command, Message, RoomSet};
-use crate::storage::blob::FsStore;
+use crate::room::{Command, Message};
 
 #[test]
 fn wire_adapter_rejects_unknown_kinds_without_losing_correlation() {
@@ -118,12 +116,8 @@ fn malformed_anchor_error_keeps_the_target_for_optimistic_rollback() {
 
 #[tokio::test]
 async fn unknown_command_does_not_consume_comment_allowance() {
-    let dir = tempfile::tempdir().unwrap();
-    let rooms = RoomSet::new(
-        Arc::new(FsStore::new(dir.path(), true)),
-        Arc::new(Configuration::default()),
-    );
-    let room = rooms.get("command-rate").await;
+    let (_dir, _store, rooms) = super::room::fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
 
     let (error, ok) = room
         .apply(
@@ -133,7 +127,7 @@ async fn unknown_command_does_not_consume_comment_allowance() {
                 ..Message::default()
             },
             "198.51.100.7",
-            "visitor:test",
+            "github:alice",
             "",
             Some(1),
             false,
@@ -143,56 +137,101 @@ async fn unknown_command_does_not_consume_comment_allowance() {
     assert_eq!(error["message"], "unknown message type");
 
     let (result, ok) = room
-        .apply(
+        .apply_command_with_actor(
             Message {
                 kind: "comment".into(),
-                exact: "text".into(),
+                exact: "A".into(),
                 body: "a valid comment".into(),
+                request_id: crate::util::new_request_key(),
                 ..Message::default()
-            },
+            }
+            .into_command()
+            .unwrap(),
             "198.51.100.7",
-            "visitor:test",
+            "github:alice",
             "",
             Some(1),
             false,
+            super::room::fixture_actor(),
         )
         .await;
     assert!(ok, "valid command was charged by unknown command: {result}");
 
     let comment_id = result["comment"]["id"].as_str().unwrap().to_owned();
     let reply_id = "123e4567-e89b-12d3-a456-426614174001";
+    let reply_request = crate::util::new_request_key();
     let (first_reply, ok) = room
-        .apply(
+        .apply_command_with_actor(
             Message {
                 kind: "reply".into(),
                 comment_id: comment_id.clone(),
                 body: "a reply".into(),
                 temp_id: reply_id.into(),
+                request_id: reply_request.clone(),
                 ..Message::default()
-            },
+            }
+            .into_command()
+            .unwrap(),
             "198.51.100.7",
-            "visitor:test",
+            "github:alice",
             "",
             Some(3),
             false,
+            super::room::fixture_actor(),
         )
         .await;
     assert!(ok, "reply was refused: {first_reply}");
     let (retry, ok) = room
-        .apply(
+        .apply_command_with_actor(
             Message {
                 kind: "reply".into(),
-                comment_id,
+                comment_id: comment_id.clone(),
+                body: "a reply".into(),
                 temp_id: reply_id.into(),
+                request_id: reply_request.clone(),
                 ..Message::default()
-            },
+            }
+            .into_command()
+            .unwrap(),
             "198.51.100.7",
-            "visitor:test",
+            "github:alice",
             "",
             Some(3),
             false,
+            super::room::fixture_actor(),
         )
         .await;
-    assert!(ok, "retry with an empty body was not idempotent: {retry}");
+    assert!(ok, "identical reply retry was not idempotent: {retry}");
     assert_eq!(retry["reply"]["id"], reply_id);
+    let (changed, ok) = room
+        .apply_command_with_actor(
+            Message {
+                kind: "reply".into(),
+                comment_id: comment_id.clone(),
+                temp_id: reply_id.into(),
+                request_id: reply_request,
+                ..Message::default()
+            }
+            .into_command()
+            .unwrap(),
+            "198.51.100.7",
+            "github:alice",
+            "",
+            Some(3),
+            false,
+            super::room::fixture_actor(),
+        )
+        .await;
+    assert!(
+        !ok,
+        "an empty changed payload must not replay a prior receipt: {changed}"
+    );
+    let comments = room.snapshot().await;
+    let comment = comments
+        .iter()
+        .find(|comment| comment.id == comment_id)
+        .unwrap();
+    assert_eq!(comment.replies.len(), 1);
+    assert_eq!(comment.replies[0].id, reply_id);
+    assert_eq!(comment.replies[0].body, "a reply");
 }

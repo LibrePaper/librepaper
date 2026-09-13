@@ -26,8 +26,7 @@ use crate::document::render::{is_latex, is_markdown, is_typst, render_markdown_d
 use crate::document::store::{example_suffix, slugify, Publication, Store};
 use crate::http::{detail_of, get_json, post_directory, post_json, text};
 use crate::room::{Comment, Message, Region, Reply, Room, RoomSet, SourceAnchor};
-use crate::storage::backup::verify_local_backup;
-use crate::storage::blob::{clear_storage_checked, release_room_locks};
+use crate::storage::blob::clear_storage_checked;
 use crate::storage::{open_storage, StorageOptions};
 #[cfg(not(test))]
 use crate::util::die;
@@ -177,38 +176,9 @@ pub async fn seed_with_backup(
         let backup = backup.unwrap_or_else(|| {
             die("refusing to reset a nonempty deployment without --backup <verified-point>")
         });
-        let manifest = verify_local_backup(backup)
-            .unwrap_or_else(|err| die(format!("seed backup verification failed: {err}")));
-        if manifest.deployment_id != deployment_id {
-            die("seed backup belongs to a different deployment identity");
-        }
-        let current_schema: i64 = catalog
-            .with_connection(|connection| {
-                connection
-                    .query_row("PRAGMA user_version", [], |row| row.get(0))
-                    .map_err(crate::storage::catalog::CatalogError::from)
-            })
-            .unwrap_or_else(|err| die(format!("could not read catalogue schema: {err}")));
-        let current_revision: i64 = catalog
-            .with_connection(|connection| {
-                connection
-                    .query_row(
-                        "SELECT catalog_revision FROM server_state WHERE id=1",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .map_err(crate::storage::catalog::CatalogError::from)
-            })
-            .unwrap_or_else(|err| die(format!("could not read catalogue revision: {err}")));
-        if manifest.schema_version != current_schema || manifest.head_revision != current_revision {
-            die("seed backup is not an exact verified point for this deployment");
-        }
-        let current_catalog_digest =
-            crate::storage::backup::catalog_snapshot_digest(&catalog, catalog_path)
-                .unwrap_or_else(|err| die(format!("could not verify current catalogue: {err}")));
-        if manifest.catalog.digest != current_catalog_digest {
-            die("seed backup is not fresh for the current catalogue state");
-        }
+        crate::storage::backup_v2::verify_seed_backup(&catalog, &paths, backup)
+            .await
+            .unwrap_or_else(|err| die(err));
     }
     let secrets = &paths.secrets;
     let link_keys = link_sealing_keyring_file(&secrets.join("links.key"), catalog_nonempty)
@@ -465,7 +435,6 @@ async fn seed_with_store(
         );
         rooms.attach_journal(journal);
     }
-    let mut seeded = Vec::new();
 
     for document in documents {
         // Rendered in memory, and not stored: the rendering is here only to
@@ -483,12 +452,7 @@ async fn seed_with_store(
                     source: source.clone(),
                     source_format: format.clone(),
                     main: main.clone(),
-                    owner: owner.trim().to_lowercase(),
                     owner_id: String::new(),
-                    owner_name: system_owner_id
-                        .as_ref()
-                        .map(|_| "Examples".to_string())
-                        .unwrap_or_else(|| owner.trim().to_string()),
                 },
                 seed_actor.clone(),
             )
@@ -616,7 +580,6 @@ async fn seed_with_store(
         }
         let (placed, missed) =
             seed_annotations(&room, &document.annotations, &text, &source, &main).await;
-        seeded.push(slug.clone());
 
         println!("  {:<28} {}", entry.slug, document.title);
         print!("      {placed} annotation(s)");
@@ -627,8 +590,6 @@ async fn seed_with_store(
         }
         println!();
     }
-    // The seeding is done, so nothing here is writing these rooms any more.
-    release_room_locks(blobs.as_ref(), &seeded).await;
 }
 
 /// Gives a deployment the same curated titles and annotations as the local

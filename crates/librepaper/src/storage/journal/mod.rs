@@ -1,58 +1,24 @@
-//! Durable local edit-journal primitives.
-//!
-//! The journal deliberately has no knowledge of rooms or Yjs.  It owns the
-//! bounded record/segment format and the small SQL state transition used by a
-//! coordinator.  Object writes are performed before `commit_segment`; callers
-//! must therefore treat a failed commit as an unknown outcome and reconcile by
-//! operation id before retrying.
+//! Native per-document journal framing, memory admission, and v2 storage.
 
 use std::collections::HashMap;
-#[cfg(test)]
-use std::collections::{HashSet, VecDeque};
 use std::fmt;
-#[cfg(test)]
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-#[cfg(test)]
-use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(test)]
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::Notify;
 
 use crate::storage::blob::BlobError;
-#[cfg(test)]
-use crate::storage::blob::{
-    journal_base_key, journal_manifest_key, journal_segment_key, BlobStore,
-};
 use crate::storage::catalog::CatalogError;
-#[cfg(test)]
-use crate::storage::catalog::{Catalog, CatalogResult};
 
 mod budget;
 mod codec;
-#[cfg(test)]
-mod coordinator;
-#[cfg(test)]
-mod recovery;
-#[cfg(test)]
-mod runtime;
 mod segment;
-#[cfg(test)]
-mod store;
 mod v2;
 
 pub use budget::*;
 pub use codec::*;
-#[cfg(test)]
-pub use coordinator::*;
-#[cfg(test)]
-pub use runtime::*;
 pub use segment::*;
-#[cfg(test)]
-pub use store::*;
 pub use v2::*;
 
 #[derive(Debug)]
@@ -132,12 +98,6 @@ impl From<BlobError> for JournalError {
 }
 
 pub type JournalResult<T> = Result<T, JournalError>;
-
-#[cfg(test)]
-impl JournalRuntime {}
-
-#[cfg(test)]
-impl JournalStore {}
 
 #[cfg(test)]
 mod tests;

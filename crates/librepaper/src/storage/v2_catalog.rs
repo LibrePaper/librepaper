@@ -752,6 +752,28 @@ fn abort_failed_allocation(catalog: &Catalog, record: &InflightPut) -> Result<()
         .map_err(|error| error.to_string())
 }
 
+/// A definitively aborted physical attempt does not consume the journal
+/// cursor. Retain its receipt and give the replacement attempt a fresh key;
+/// prepared or committed attempts retain their original identity. Admission
+/// still checks the durable cursor and single-writer fence in this transaction.
+fn journal_attempt_key(
+    tx: &rusqlite::Transaction<'_>,
+    document_id: &str,
+    actor_key: &str,
+    request_key: &str,
+    operation_id: &str,
+) -> crate::storage::catalog::CatalogResult<String> {
+    let aborted: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM operations WHERE document_id=?1 AND actor_key=?2 AND request_key=?3 AND state='aborted' AND kind IN ('journal_append','journal_compact'))",
+        params![document_id, actor_key, request_key], |row| row.get(0),
+    ).map_err(crate::storage::catalog::CatalogError::from)?;
+    Ok(if aborted {
+        format!("attempt-{operation_id}")
+    } else {
+        request_key.to_owned()
+    })
+}
+
 fn journal_tx<T>(
     catalog: &Catalog,
     operation: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::storage::catalog::CatalogResult<T>,
@@ -2023,6 +2045,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             let operation_id = journal_operation_id();
             let now = now_millis();
             Catalog::admit_operation_slot(tx, Some(&request.document_id), "journal_append")?;
+            let attempt_key = journal_attempt_key(tx, &request.document_id, &request.actor_key, &request.request_key, &operation_id)?;
             // Persist only the immutable physical IDs.  Repeating every
             // digest/kind/length in the operation plan makes a valid 512
             // object closure exceed the 64 KiB plan bound.  The stage lease
@@ -2030,7 +2053,7 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             // canonical rows in the same transaction before rooting them.
             let dependency_digest = journal_dependency_digest(&resolved_dependencies);
             let mut plan = serde_json::json!({"version":1,"epoch":request.epoch,"first_sequence":request.first_sequence,"last_sequence":request.last_sequence,"parts":request.parts.iter().map(|part| serde_json::json!({"first":part.first_sequence,"last":part.last_sequence,"digest":part.digest,"bytes":part.byte_length})).collect::<Vec<_>>(),"dependency_count":resolved_dependencies.len(),"dependency_digest":dependency_digest});
-            tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,?3,?4,'journal_append',?5,'prepared',?6,?7,?8,?9,?9,?10)", params![operation_id,request.document_id,request.actor_key,request.request_key,journal_request_digest(&request),writer_generation,source_generation,plan.to_string(),now,now.saturating_add(3_600_000)]).map_err(crate::storage::catalog::CatalogError::from)?;
+            tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,?3,?4,'journal_append',?5,'prepared',?6,?7,?8,?9,?9,?10)", params![operation_id,request.document_id,request.actor_key,attempt_key,journal_request_digest(&request),writer_generation,source_generation,plan.to_string(),now,now.saturating_add(3_600_000)]).map_err(crate::storage::catalog::CatalogError::from)?;
             let mut allocations = Vec::with_capacity(request.parts.len());
             let mut reserved = 0i64;
             for part in &request.parts {
@@ -2319,12 +2342,13 @@ impl V2JournalCatalog for V2JournalCatalogAdapter {
             let operation_id = journal_operation_id();
             let now = now_millis();
             Catalog::admit_operation_slot(tx, Some(&document_id), "journal_compact")?;
+            let attempt_key = journal_attempt_key(tx, &document_id, "room", &format!("compact-{expected_epoch}-{expected_sequence}"), &operation_id)?;
             if resolved_dependencies.len() > 4_096 {
                 return Err(crate::storage::catalog::CatalogError::Invalid("journal dependency closure exceeds 4096 objects".into()));
             }
             let dependency_digest = journal_dependency_digest(&resolved_dependencies);
             let initial_plan = serde_json::json!({"version":1,"epoch":expected_epoch,"sequence":expected_sequence,"digest":digest,"bytes":byte_length,"dependency_count":resolved_dependencies.len(),"dependency_digest":dependency_digest}).to_string();
-            tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,'room',?3,'journal_compact',?4,'prepared',?5,?6,?7,?8,?8,?9)", params![operation_id,document_id,format!("compact-{expected_epoch}-{expected_sequence}"),request_digest,writer_generation,generation,initial_plan,now,now.saturating_add(3_600_000)]).map_err(crate::storage::catalog::CatalogError::from)?;
+            tx.execute("INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,NULL,'room',?3,'journal_compact',?4,'prepared',?5,?6,?7,?8,?8,?9)", params![operation_id,document_id,attempt_key,request_digest,writer_generation,generation,initial_plan,now,now.saturating_add(3_600_000)]).map_err(crate::storage::catalog::CatalogError::from)?;
             let object_id = ObjectId::random();
             let storage_key = crate::storage::blob::v2_object_key(&document_id, &object_id).map_err(|error| crate::storage::catalog::CatalogError::Invalid(error.to_string()))?;
             let bytes = bytes_i64;

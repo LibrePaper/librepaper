@@ -63,7 +63,10 @@ async fn persistence_default_limits_refuse_without_discarding_dirty_rooms() {
     let journal = Arc::new(
         journal::V2JournalRuntime::with_persistence(
             Arc::new(
-                crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog, limits),
+                crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                    catalog.clone(),
+                    limits,
+                ),
             ),
             objects,
             limits,
@@ -84,13 +87,18 @@ async fn persistence_default_limits_refuse_without_discarding_dirty_rooms() {
             "x".repeat(source_bytes.saturating_sub(marker.len()))
         );
         store
-            .put(store::Publication {
-                slug: slug.clone(),
-                source: source.clone(),
-                source_format: "markdown".into(),
-                owner: format!("defaults-owner-{index}"),
-                ..Default::default()
-            })
+            .put_as_actor(
+                store::Publication {
+                    slug: slug.clone(),
+                    source: source.clone(),
+                    source_format: "markdown".into(),
+                    ..Default::default()
+                },
+                super::persistence_capacity::workload_actor(
+                    &catalog,
+                    &format!("defaults-owner-{index}"),
+                ),
+            )
             .await
             .expect("publish capacity document");
         match rooms.try_get(&slug).await {

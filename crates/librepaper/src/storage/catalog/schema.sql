@@ -1,5 +1,5 @@
--- Proposed catalog v2 schema. This is a specification artifact, not an
--- application migration. See sql-schema-v2.md for the transaction contracts.
+-- Native catalog v2 schema, embedded by application startup.
+-- The documentation mirror records the same DDL and transaction contracts.
 -- Fresh databases only. Execute with foreign_keys enabled, in a transaction.
 -- All times are Unix milliseconds. No application-defined SQL functions.
 -- DDL only: the initializer inserts deployment-specific server_state and sets

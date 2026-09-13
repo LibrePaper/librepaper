@@ -546,7 +546,7 @@ pub fn parse_budget_transfer(value: &str) -> Result<u64, String> {
         _ => {
             return Err(format!(
                 "--transfer-budget {value:?} has an unknown unit; use B, KiB, MiB, GiB, or TiB"
-            ))
+            ));
         }
     };
     number
@@ -1142,20 +1142,6 @@ impl Configuration {
                 name.starts_with("state_").then_some(3600),
             );
         }
-        add(
-            "backup.temporary_bytes",
-            json!(crate::storage::backup::BACKUP_TEMP_RESERVATION_BYTES),
-            "bytes",
-            "backup",
-            None,
-        );
-        add(
-            "backup.emergency_headroom_bytes",
-            json!(crate::storage::backup::BACKUP_EMERGENCY_HEADROOM_BYTES),
-            "bytes",
-            "primary volume",
-            None,
-        );
         add(
             "backup.warning_count",
             json!(self.backup.warning_count),

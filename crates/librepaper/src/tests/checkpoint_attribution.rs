@@ -58,7 +58,6 @@ async fn catalog_room(
                 slug: slug.into(),
                 source: "start".into(),
                 source_format: "markdown".into(),
-                owner: "owner".into(),
                 owner_id: "acct-owner".into(),
                 ..Default::default()
             },

@@ -74,7 +74,6 @@ async fn fixture(
                 slug: slug.into(),
                 source: "first".into(),
                 source_format: "markdown".into(),
-                owner: "alice".into(),
                 ..Default::default()
             },
             fixture_actor(),

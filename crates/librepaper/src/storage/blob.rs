@@ -14,11 +14,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use fs2::{available_space, total_space, FileExt};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
-
-use crate::util::{parse_timestamp, timestamp};
 
 /// An object's ETag, or "" for one that is not there.
 pub type BlobVersion = String;
@@ -159,15 +156,11 @@ pub async fn write_v2_object_with_id(
     })
 }
 
-/// One object in a listing. Size is what the quotas are summed from when an
-/// index has to be rebuilt, and version is what a conditional write would be
-/// made against; a caller that only wants names ignores both.
+/// One object in a storage listing, with its logical byte length.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct BlobInfo {
     pub key: String,
     pub size: i64,
-    pub version: BlobVersion,
 }
 
 #[derive(Debug)]
@@ -438,7 +431,7 @@ impl FsStore {
             match write_file_immutable(&path, &body, durable) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return Err(BlobError::Conflict)
+                    return Err(BlobError::Conflict);
                 }
                 Err(error) => return Err(error.into()),
             }
@@ -965,7 +958,7 @@ fn walk(root: &Path, dir: &Path, prefix: &str, found: &mut Vec<BlobInfo>) -> Blo
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
             ) =>
         {
-            return Ok(())
+            return Ok(());
         }
         Err(err) => return Err(err.into()),
     };
@@ -1010,7 +1003,6 @@ fn walk(root: &Path, dir: &Path, prefix: &str, found: &mut Vec<BlobInfo>) -> Blo
         found.push(BlobInfo {
             key,
             size: info.len() as i64,
-            version: String::new(),
         });
     }
     Ok(())
@@ -1036,7 +1028,7 @@ fn walk_bounded(
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
             ) =>
         {
-            return Ok(())
+            return Ok(());
         }
         Err(err) => return Err(err.into()),
     };
@@ -1082,7 +1074,6 @@ fn walk_bounded(
         found.push(BlobInfo {
             key,
             size: metadata.len() as i64,
-            version: String::new(),
         });
         if found.len() > limit {
             let worst = found
@@ -1303,153 +1294,11 @@ fn durable_create_dir_all(path: &Path, durable: bool) -> std::io::Result<()> {
     }
 }
 
-/* ----------------------------------------------------------------- keys */
-
-/// The key layout, in one place, so a change to it is one change.
-pub const INDEX_KEY: &str = "index.json";
-
-/// Prefix for all immutable objects owned by one document identity. The
-/// identity, not the mutable public slug, is the deletion and object-reuse
-/// boundary.
-pub fn content_prefix(storage_id: &str) -> String {
-    format!("content/{storage_id}/")
-}
-pub fn tree_key(storage_id: &str, tree_sha: &str) -> String {
-    format!("content/{storage_id}/trees/{tree_sha}")
-}
-pub fn content_blob_key(storage_id: &str, sha: &str) -> String {
-    format!("content/{storage_id}/blobs/{sha}")
-}
-/// A compressed source-history object. The digest is of the uncompressed
-/// chunk bytes, while the complete file identity remains the digest recorded
-/// in its recipe. Keeping chunks in a distinct namespace lets GC follow
-/// recipes without confusing them with legacy whole-file blobs.
-pub fn content_chunk_key(storage_id: &str, encoded_digest: &str) -> String {
-    format!("content/{storage_id}/chunks/{encoded_digest}")
-}
-pub fn content_chunk_prefix(storage_id: &str) -> String {
-    format!("content/{storage_id}/chunks/")
-}
-/// The compact recipe for one complete source file, addressed by the logical
-/// uncompressed file digest. A recipe is itself immutable and independently
-/// readable.
-pub fn content_recipe_key(storage_id: &str, file_digest: &str) -> String {
-    format!("content/{storage_id}/recipes/{file_digest}")
-}
-pub fn content_recipe_prefix(storage_id: &str) -> String {
-    format!("content/{storage_id}/recipes/")
-}
-pub fn content_asset_key(storage_id: &str, sha: &str) -> String {
-    format!("content/{storage_id}/assets/{sha}")
-}
-pub fn document_key(storage_id: &str, digest: &str) -> String {
-    tree_key(storage_id, digest)
-}
-pub fn document_prefix(storage_id: &str) -> String {
-    content_prefix(storage_id)
-}
-/// A source is stored under the digest of the version it was rendered into,
-/// exactly as the HTML is, so publishing a new version never writes over the
-/// source of the one the index still names. The index commits the digest, and
-/// a source written for a version the index never named is unreachable --
-/// which is the half-state to prefer.
-pub fn source_key(slug: &str, digest: &str) -> String {
-    content_blob_key(slug, digest)
-}
-pub fn source_prefix(slug: &str) -> String {
-    format!("content/{slug}/blobs/")
-}
-pub fn room_key(slug: &str) -> String {
-    format!("rooms/{slug}.json")
-}
-pub fn room_lock_key(slug: &str) -> String {
-    format!("rooms/{slug}.lock")
-}
-pub fn examples_key(slug: &str) -> String {
-    format!("examples/{slug}.json")
-}
-
-/// The live document: the Yjs state of the session as one v1 update, replaced
-/// on a debounce and at every checkpoint. Only the server reads it.
-pub fn session_key(slug: &str) -> String {
-    format!("sessions/{slug}")
-}
-/// The manifest: every checkpoint of a document, oldest first.
-pub fn history_index_key(slug: &str) -> String {
-    format!("history/{slug}/index.json")
-}
-/// One checkpoint: the tree, named by its own sha256. For a document
-/// checkpointed before a document was a directory, the source bytes
-/// themselves, which is why nothing here needs rewriting -- an entry the
-/// manifest does not mark as a tree is read as a tree of one file.
-pub fn checkpoint_key(slug: &str, sha: &str) -> String {
-    tree_key(slug, sha)
-}
-/// One text a checkpoint names, by the digest of its bytes. Every tree that
-/// mentions that digest shares this one object, so a chapter untouched between
-/// twenty checkpoints is stored once.
-pub fn blob_key(slug: &str, sha: &str) -> String {
-    content_blob_key(slug, sha)
-}
-/// One figure, by the digest of its bytes, under the document that holds it.
-///
-/// Under the slug and nowhere else: the same figure in two documents is stored
-/// twice, on purpose. A blob shared across documents has no owner to charge
-/// and no moment at which it may be deleted, and the bytes are cheaper than
-/// the bookkeeping that would answer either question.
-pub fn asset_key(slug: &str, sha: &str) -> String {
-    content_asset_key(slug, sha)
-}
-pub fn asset_prefix(slug: &str) -> String {
-    format!("content/{slug}/assets/")
-}
-pub fn history_prefix(slug: &str) -> String {
-    format!("content/{slug}/trees/")
-}
-
-/// Shared edit-journal objects have their own ownership and retirement
-/// metadata. They must never be swept by a document's content prefix.
-#[allow(dead_code)]
-pub fn journal_prefix(deployment_id: &str) -> String {
-    format!("journal/{deployment_id}/")
-}
-#[allow(dead_code)]
-pub fn journal_segment_key(deployment_id: &str, segment_id: &str) -> String {
-    format!("journal/{deployment_id}/segments/{segment_id}")
-}
-#[allow(dead_code)]
-pub fn journal_manifest_key(deployment_id: &str, revision: &str) -> String {
-    format!("journal/{deployment_id}/manifests/{revision}")
-}
-#[allow(dead_code)]
-pub fn journal_base_key(deployment_id: &str, storage_id: &str, revision: &str) -> String {
-    format!("journal/{deployment_id}/bases/{storage_id}/{revision}")
-}
-
-/// Removes everything librepaper wrote and nothing else. Seeding starts from
-/// nothing, and on a bucket somebody else supplied, "nothing" means our keys
-/// -- never the container, and never what else is in it.
-#[allow(dead_code)]
-pub async fn clear_storage(blobs: &dyn BlobStore) {
-    let _ = clear_storage_checked(blobs).await;
-}
-
-/// The seed/reset path must not continue after a partial object cleanup.  The
-/// compatibility `clear_storage` wrapper above remains best-effort for old
-/// callers, while destructive local reset uses this checked variant.
+/// Remove native application objects in bounded pages, retaining unrelated
+/// storage keys and refusing to continue after a partial deletion.
 pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
     const RESET_PAGE: usize = 256;
-    for prefix in [
-        "content/",
-        "journal/",
-        "v2/",
-        "rooms/",
-        "sessions/",
-        "history/",
-        "documents/",
-        "sources/",
-        "examples/",
-    ] {
+    for prefix in ["v2/"] {
         let mut after = None;
         loop {
             let page = blobs
@@ -1507,233 +1356,10 @@ pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
             )));
         }
     }
-    let outcome = blobs.delete_each(&[INDEX_KEY.to_string()]).await?;
-    if outcome.len() != 1 {
-        return Err(BlobError::Other(
-            "seed reset received an incomplete legacy-index deletion result".into(),
-        ));
-    }
-    if outcome.iter().any(|item| !item.confirmed()) {
-        return Err(BlobError::Other(
-            "seed reset could not confirm removal of the legacy index".into(),
-        ));
-    }
-    match blobs.exists(INDEX_KEY).await {
-        Ok(true) => {
-            return Err(BlobError::Other(
-                "seed reset found the legacy index still present".into(),
-            ));
-        }
-        Ok(false) => {}
-        Err(error) => return Err(error),
-    }
     Ok(())
 }
 
 /* ----------------------------------------------------------- room locks */
-
-/// A room is the state a second server must not write behind the first one's
-/// back: the in-memory copy is authoritative while anyone is connected, so two
-/// servers on one bucket would each save over the other's document.
-///
-/// This is a **renewable, fenced writer lease**, and the fencing is the half
-/// that matters. The lease object says who holds it, when they last said so,
-/// and which epoch they hold -- a number that goes up every time the lease
-/// changes hands. A holder renews well before the lease could go stale, and
-/// stops writing on its own once it is too old to be sure, without having to
-/// ask anybody.
-///
-/// A lease alone is still only a claim, though, because a process can stall
-/// between deciding it holds the lease and its write landing. So the lease is
-/// backed by conditional writes: every object a room owns is written with
-/// compare-and-swap against the version this server last saw, and a write that
-/// loses is proof that somebody else owns the room. That is what makes the
-/// ownership enforced rather than advisory -- a former holder that wakes up
-/// late cannot write, because storage itself refuses it.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct RoomLock {
-    #[serde(default)]
-    pub holder: String,
-    #[serde(default)]
-    pub taken: String,
-    /// Goes up by one every time the lease is taken by somebody new. A holder
-    /// that renews keeps its epoch; a holder whose epoch has moved on has been
-    /// fenced out and must never write again.
-    #[serde(default)]
-    pub epoch: u64,
-}
-
-/// How long a lease outlives its holder's last word, in seconds. A server that
-/// was killed leaves one behind, and nobody should have to delete an object by
-/// hand to restart their own deployment.
-pub const LOCK_STALE_SECONDS: i64 = 5 * 60;
-
-/// How far before a lease could be taken from us we stop trusting it. It has
-/// to cover the worst clock disagreement between two servers plus the longest
-/// a write can take to land, because the whole point is that a holder stops
-/// writing strictly before anybody else could start.
-#[allow(dead_code)]
-pub const LEASE_GUARD_SECONDS: i64 = 60;
-
-/// What a server holds on a room. `held` is false when somebody else has it,
-/// in which case the room can be read and served but never written.
-#[derive(Clone, Debug, Default)]
-pub struct Lease {
-    pub held: bool,
-    pub holder: String,
-    pub epoch: u64,
-    /// When this lease was last written, as seconds since the epoch.
-    #[allow(dead_code)]
-    pub taken_at: i64,
-    /// Whether `taken_at` (and the rest of this answer) was actually
-    /// confirmed against storage, rather than assumed after a storage error.
-    /// A first claim that cannot even read the lock has nothing to protect
-    /// and fails closed (`held = false`), so `verified` is moot for it. A
-    /// renewal that hits a storage error other than `Conflict` still reports
-    /// `held = true` -- refusing outright would stop a holder that storage
-    /// simply could not confirm one way or the other -- but with
-    /// `verified = false`, so `Room::hold` knows not to trust this answer's
-    /// fresh `taken_at` and keeps the one from the last renewal storage
-    /// actually agreed with (R24).
-    pub verified: bool,
-}
-
-impl Lease {
-    /// The last moment at which writing under this lease is certainly safe.
-    #[allow(dead_code)]
-    pub fn safe_until(&self) -> i64 {
-        self.taken_at + LOCK_STALE_SECONDS - LEASE_GUARD_SECONDS
-    }
-}
-
-/// Releases the locks a batch command took. A lock means "a server is writing
-/// this room right now", so a command that has finished holding one would
-/// otherwise leave every room read-only to the next server for as long as the
-/// lock stays fresh -- which is exactly what `seed` then `serve` does.
-pub async fn release_room_locks(blobs: &dyn BlobStore, slugs: &[String]) {
-    let keys: Vec<String> = slugs.iter().map(|slug| room_lock_key(slug)).collect();
-    if !keys.is_empty() {
-        let _ = blobs.delete(&keys).await;
-    }
-}
-
-/// What a storage error while taking or renewing the lease becomes. A first
-/// claim (`expect_epoch == None`) has no existing lease of its own to
-/// protect, so it fails closed: `held = false`, exactly as if another server
-/// were holding the room, and the room this feeds simply opens read-only. A
-/// renewal (`expect_epoch == Some`) does have one to protect: refusing it
-/// outright over a storage hiccup would stop a holder that nothing has
-/// actually shown lost the room, so it reports `held = true` but
-/// `verified = false`, which tells `Room::hold` not to trust this answer's
-/// fresh `taken_at` (R24).
-fn lease_on_storage_error(holder: &str, expect_epoch: Option<u64>, now: i64) -> Lease {
-    let renewal = expect_epoch.is_some();
-    Lease {
-        held: renewal,
-        holder: if renewal {
-            holder.to_string()
-        } else {
-            "an unknown holder (storage error)".to_string()
-        },
-        epoch: expect_epoch.unwrap_or(0),
-        taken_at: now,
-        verified: false,
-    }
-}
-
-/// Claims or renews the lease on a room. An expired lease is taken over -- its
-/// holder is gone -- and taking it over raises the epoch, which fences the old
-/// holder out for good.
-///
-/// `expect_epoch` is what a renewal asserts: a holder renewing its own lease
-/// passes the epoch it believes it has, and is refused if the lease has moved
-/// on without it. A first claim passes `None`.
-///
-/// A storage error reading or writing the lock is not proof anyone else holds
-/// it, but it is also not proof that we do -- see `lease_on_storage_error` for
-/// the two-sided answer this gives depending on whether it is a first claim or
-/// a renewal (R24).
-pub async fn take_room_lease(
-    blobs: &dyn BlobStore,
-    slug: &str,
-    holder: &str,
-    expect_epoch: Option<u64>,
-) -> Lease {
-    let key = room_lock_key(slug);
-    let now = crate::util::now_unix();
-    let (at, epoch) = match blobs.get_versioned(&key).await {
-        Ok((raw, at)) => {
-            let held: RoomLock = serde_json::from_slice(&raw).unwrap_or_default();
-            let fresh = parse_timestamp(&held.taken)
-                .map(|taken| now - taken < LOCK_STALE_SECONDS)
-                .unwrap_or(false);
-            if fresh && held.holder != holder {
-                return Lease {
-                    held: false,
-                    holder: held.holder,
-                    epoch: held.epoch,
-                    taken_at: now,
-                    verified: false,
-                };
-            }
-            // A renewal that finds a different epoch than the one it believes
-            // it holds has been fenced out: somebody took the lease, and
-            // whatever this server has been doing since is not authoritative.
-            if let Some(mine) = expect_epoch {
-                if held.epoch != mine {
-                    return Lease {
-                        held: false,
-                        holder: held.holder,
-                        epoch: held.epoch,
-                        taken_at: now,
-                        verified: false,
-                    };
-                }
-            }
-            // Taking over a stale lease is a change of hands, and raises the
-            // epoch; renewing our own keeps it.
-            let epoch = if held.holder == holder {
-                held.epoch
-            } else {
-                held.epoch + 1
-            };
-            (at, epoch)
-        }
-        Err(BlobError::NotFound) => (String::new(), 1),
-        Err(_) => return lease_on_storage_error(holder, expect_epoch, now),
-    };
-
-    let mine = RoomLock {
-        holder: holder.to_string(),
-        taken: timestamp(),
-        epoch,
-    };
-    let Ok(body) = serde_json::to_vec(&mine) else {
-        return lease_on_storage_error(holder, expect_epoch, now);
-    };
-    match blobs.swap(&key, body, &at).await {
-        Ok(_) => Lease {
-            held: true,
-            holder: holder.to_string(),
-            epoch,
-            taken_at: now,
-            verified: true,
-        },
-        // Somebody wrote the lease between our reading it and our writing it,
-        // which means somebody else is claiming this room.
-        Err(BlobError::Conflict) => Lease {
-            held: false,
-            holder: "another server".to_string(),
-            epoch,
-            taken_at: now,
-            verified: false,
-        },
-        // Storage without conditional writes; the assertion stands, and the
-        // conditional writes on the room's own objects are what actually
-        // enforce it.
-        Err(_) => lease_on_storage_error(holder, expect_epoch, now),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1859,9 +1485,13 @@ mod tests {
                 .expect("seed fixture object");
         }
         blobs
-            .put(INDEX_KEY, b"legacy index".to_vec(), "application/json")
+            .put(
+                "unrelated/metadata",
+                b"preserve me".to_vec(),
+                "application/json",
+            )
             .await
-            .expect("legacy index");
+            .expect("unrelated metadata");
 
         assert!(clear_storage_checked(&blobs).await.is_err());
         assert!(!blobs.inner.list("v2/").await.unwrap().is_empty());
@@ -1869,10 +1499,10 @@ mod tests {
             .await
             .expect("retry seed cleanup");
         assert!(blobs.inner.list("v2/").await.unwrap().is_empty());
-        assert!(matches!(
-            blobs.get(INDEX_KEY).await,
-            Err(BlobError::NotFound)
-        ));
+        assert_eq!(
+            blobs.get("unrelated/metadata").await.unwrap(),
+            b"preserve me"
+        );
     }
 
     struct FlakyDeleteStore {

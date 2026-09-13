@@ -261,14 +261,11 @@ async fn only_an_editor_may_put_a_figure() {
         let (status, _) = put_asset(cookie, &server.url, &slug, png(4)).await;
         assert_eq!(status, 404, "a caller who may not edit was not refused");
     }
-    let stored = server
-        .instance
-        .store
-        .blobs
-        .list(&crate::storage::blob::asset_prefix(&slug))
-        .await
-        .unwrap();
-    assert!(stored.is_empty(), "a refused upload stored something");
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let stored: i64 = catalog.with_connection(|db| {
+        Ok(db.query_row("SELECT COUNT(*) FROM objects o JOIN documents d ON d.id=o.document_id WHERE d.slug=?1 AND o.kind='asset'", [&slug], |row| row.get(0))?)
+    }).unwrap();
+    assert_eq!(stored, 0, "a refused upload allocated an asset");
 }
 
 #[tokio::test]
@@ -559,6 +556,8 @@ async fn destroying_a_document_takes_its_figures() {
     let cookie = session_as(TEST_PUBLISHER);
     put_asset(&cookie, &server.url, &slug, png(30)).await;
 
+    let catalog = server.instance.store.catalog.as_ref().unwrap();
+    let document_id = catalog.document(&slug).unwrap().unwrap().storage_id;
     let (status, _) = post_as(
         &cookie,
         &server.url,
@@ -567,14 +566,25 @@ async fn destroying_a_document_takes_its_figures() {
     )
     .await;
     assert_eq!(status, 200);
+    let worker = crate::storage::maintenance::DeletionWorker::new(
+        catalog.clone(),
+        server.instance.store.blobs.clone(),
+        Default::default(),
+    )
+    .unwrap();
+    let after_grace = crate::util::now_millis() + 48 * 60 * 60 * 1000;
+    for pass in 0..4 {
+        worker.run_v2_once(after_grace + pass).await.unwrap();
+    }
     let left = server
         .instance
         .store
         .blobs
-        .list(&crate::storage::blob::asset_prefix(&slug))
+        .list(&format!("v2/documents/{document_id}/objects/"))
         .await
         .unwrap();
     assert!(left.is_empty(), "destroy left {left:?}");
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
 /* --------------------------------------------------- publishing a directory */
