@@ -21,8 +21,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use unicode_normalization::UnicodeNormalization;
 use yrs::updates::decoder::Decode;
-use yrs::updates::encoder::Encode;
-use yrs::{Doc, ReadTxn, RootRef, Text, Transact, Update};
+use yrs::{Doc, ReadTxn, Text, Transact, Update};
 
 const CONVERTER_VERSION: &str = "catalog-v1-import/1";
 const MANIFEST_FILE: &str = "conversion-manifest.json";
@@ -672,6 +671,26 @@ struct SourceFile { path: String, kind: String, id: String, sha: String, size: i
 #[derive(Clone, Debug)]
 struct SourceTree { main: String, files: Vec<SourceFile>, settings: Option<Value> }
 
+// These wire structs mirror storage/encoding.rs. Keeping the converter
+// standalone avoids linking the server crate while preserving the v2 reader
+// contract exactly.
+#[derive(Clone, Debug, Serialize)]
+enum V2Codec { WholeZstd, ChunkedZstd }
+#[derive(Clone, Debug, Serialize)]
+struct V2ChunkRef { digest: [u8;32], length: u32 }
+#[derive(Clone, Debug, Serialize)]
+struct V2Recipe { version: u16, profile_id: u16, codec: V2Codec, uncompressed_len: u64, file_digest: [u8;32], chunks: Vec<V2ChunkRef> }
+#[derive(Clone, Debug, Serialize)]
+struct V2Locator { object_id: String, object_digest: [u8;32], logical_digest: Option<[u8;32]>, logical_length: u64, byte_length: u64, encoding_version: u16 }
+#[derive(Clone, Debug, Serialize)]
+struct V2RecipeEnvelope { version: u16, recipe: V2Recipe, chunk_locators: Vec<V2Locator> }
+#[derive(Clone, Debug, Serialize)]
+struct V2TreeFileLocator { kind: String, file_id: String, logical_digest: [u8;32], logical_length: u64, recipe: Option<V2Locator>, asset: Option<V2Locator> }
+#[derive(Clone, Debug, Serialize)]
+struct V2TreeEnvelope { version: u16, main_path: String, source_format: String, settings_json: String, logical_digest: [u8;32], files: BTreeMap<String,V2TreeFileLocator> }
+
+fn digest_array(hex_digest: &str, field: &str) -> Result<[u8;32]> { let bytes=hex::decode(hex_digest).map_err(|e|Error::Invalid(format!("{field} is not hexadecimal: {e}")))?; bytes.try_into().map_err(|_|Error::Invalid(format!("{field} is not a SHA-256 digest"))) }
+
 #[derive(Clone, Debug)]
 struct SourceCheckpoint { id: String, seq: i64, tree_sha: String, parent: Option<String>, at: i64, by: String, by_account: Option<String>, why: String, source_format: String, size: i64, label: Option<String>, commit: String, dirty: bool, changed: Vec<String> }
 
@@ -859,9 +878,9 @@ fn decode_base(bytes: &[u8]) -> Result<(String, u64, u64, Vec<u8>)> {
 #[derive(Clone, Debug)]
 struct ReplayedJournal { payload: Vec<u8>, epoch: u64, sequence: u64 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct ManifestBaseDescriptor { base_id: String, storage_id: String, epoch: u64, sequence: u64, object_key: String, digest: String, encoded_bytes: i64, committed_at: i64 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct ManifestShardDescriptor { shard_id: String, shard_seq: u64, object_key: String, digest: String, encoded_bytes: i64, #[serde(default)] next_key: Option<String>, #[serde(default)] bases: Vec<ManifestBaseDescriptor>, #[serde(default)] segments: Vec<String> }
 
 fn journal_manifest_descriptors(source_root: &Path, source: &Connection, doc: &SourceDocument) -> Result<Option<(Vec<ManifestBaseDescriptor>, Vec<String>)>> {
@@ -902,9 +921,11 @@ fn journal_replay(source_root: &Path, source: &Connection, doc: &SourceDocument)
     let mut updates: BTreeMap<(u64,u64),Vec<u8>>=BTreeMap::new();
     for ((epoch,sequence),parts) in fragments {
         if base_identity.is_some_and(|base| (epoch,sequence) <= base) { continue; }
-        let first=parts.first().ok_or_else(|| Error::Invalid("empty journal fragment set".into()))?; if parts.len()!=first.fragment_count as usize || parts.iter().any(|p| p.fragment_count!=first.fragment_count || p.digest!=first.digest) { return Err(Error::Invalid(format!("journal sequence {sequence} has incomplete fragments"))); }
+        let first=parts.first().ok_or_else(|| Error::Invalid("empty journal fragment set".into()))?;
+        let expected_fragments=first.fragment_count; let expected_digest=first.digest.clone();
+        if parts.len()!=expected_fragments as usize || parts.iter().any(|p| p.fragment_count!=expected_fragments || p.digest!=expected_digest) { return Err(Error::Invalid(format!("journal sequence {sequence} has incomplete fragments"))); }
         let mut ordered=parts; ordered.sort_by_key(|p|p.fragment_index); if ordered.iter().enumerate().any(|(i,p)|p.fragment_index as usize!=i) { return Err(Error::Invalid(format!("journal sequence {sequence} has a fragment gap"))); }
-        let payload=ordered.into_iter().flat_map(|p|p.payload).collect::<Vec<_>>(); if sha256(&payload)!=first.digest { return Err(Error::Invalid(format!("journal sequence {sequence} digest mismatch"))); }
+        let payload=ordered.into_iter().flat_map(|p|p.payload).collect::<Vec<_>>(); if sha256(&payload)!=expected_digest { return Err(Error::Invalid(format!("journal sequence {sequence} digest mismatch"))); }
         updates.insert((epoch,sequence),payload);
     }
     if latest.is_none() && updates.keys().next().is_some_and(|(epoch,sequence)| *epoch != 0 || *sequence != 1) {
@@ -917,7 +938,7 @@ fn journal_replay(source_root: &Path, source: &Connection, doc: &SourceDocument)
     }
     let ydoc=Doc::new();
     if let Some((_,_,payload))=&latest { let update=Update::decode_v1(payload).map_err(|e|Error::Invalid(format!("journal base CRDT is invalid: {e}")))?; ydoc.transact_mut().apply_update(update).map_err(|e|Error::Invalid(format!("journal base cannot be applied: {e}")))?; }
-    let mut expected=latest.map_or((0,0),|(epoch,sequence,_)|(epoch,sequence)); let mut last=expected;
+    let mut expected=latest.as_ref().map_or((0,0),|(epoch,sequence,_)|(*epoch,*sequence)); let mut last=expected;
     for ((epoch,sequence),payload) in updates {
         if (epoch,sequence) < expected { continue; }
         if epoch==expected.0 { if sequence != expected.1.saturating_add(1) { return Err(Error::Invalid(format!("journal sequence coverage gap before epoch {epoch} sequence {sequence}"))); } }
@@ -1004,7 +1025,7 @@ fn import_sharing(source: &Connection, target: &mut Connection, docs: &[SourceDo
 
 fn import_annotations(source: &Connection, target: &mut Connection, docs: &[SourceDocument], progress: &mut HashMap<String,DocumentProgress>) -> Result<()> {
     let doc_map: HashMap<String,String>=docs.iter().map(|d|(d.slug.clone(),d.storage_id.clone())).collect(); let tx=target.transaction()?;
-    let mut checkpoint_map=HashMap::new(); let mut stcp=tx.prepare("SELECT document_id,id FROM checkpoints")?; for row in stcp.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {let (d,id)=row?;checkpoint_map.insert((d,id.clone()),id);}
+    let mut checkpoint_map=HashMap::new(); { let mut stcp=tx.prepare("SELECT document_id,id FROM checkpoints")?; for row in stcp.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {let (d,id)=row?;checkpoint_map.insert((d,id.clone()),id);} }
     let mut st=source.prepare("SELECT slug,id,seq,motivation,body,creator,author,via,created,publication_id,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,resolved,resolved_at,resolved_in,pass,point,color,quarto_output FROM comments ORDER BY slug,seq,id")?;
     let mut annotations=HashSet::new();
     for row in st.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?,r.get::<_,String>(10)?,r.get::<_,String>(11)?,r.get::<_,String>(12)?,r.get::<_,Option<i64>>(13)?,r.get::<_,Option<String>>(14)?,r.get::<_,Option<String>>(15)?,r.get::<_,Option<String>>(16)?,r.get::<_,Option<String>>(17)?,r.get::<_,Option<String>>(18)?,r.get::<_,Option<i64>>(19)?,r.get::<_,Option<String>>(20)?,r.get::<_,String>(21)?,r.get::<_,String>(22)?,r.get::<_,String>(23)?,r.get::<_,i64>(24)?,r.get::<_,Option<String>>(25)?,r.get::<_,String>(26)?,r.get::<_,String>(27)?,r.get::<_,i64>(28)?,r.get::<_,Option<String>>(29)?,r.get::<_,Option<String>>(30)?)))? {
