@@ -947,7 +947,9 @@ impl Catalog {
             let encoded = serde_json::to_string(&value).map_err(|error| {
                 CatalogError::Invalid(format!("invalid acceptance plan: {error}"))
             })?;
-            validate_json(&encoded, "acceptance plan", 65_536)?;
+            if encoded.len() > 65_536 {
+                return Err(CatalogError::Invalid("acceptance plan exceeds the payload bound".into()));
+            }
             tx.execute(
                 "UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2)
                  WHERE id=?3 AND state='prepared'",

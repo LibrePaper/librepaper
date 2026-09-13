@@ -3027,7 +3027,12 @@ impl Room {
             None
         };
         let mut durable_sequence = catalog_journal_head
-            .map(|(_, sequence)| sequence.saturating_add(1))
+            .map(|(_, sequence)| {
+                u64::try_from(sequence)
+                    .map(|sequence| sequence.saturating_add(1))
+                    .map_err(|_| WriteError::Storage("negative catalog journal sequence".into()))
+            })
+            .transpose()?
             .unwrap_or_else(|| generation.saturating_add(1));
         if let Some(journal) = self.journal.get() {
             if catalog_journal_head.is_none() {
