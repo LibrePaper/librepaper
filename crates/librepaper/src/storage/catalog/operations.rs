@@ -81,31 +81,32 @@ impl Catalog {
                 )
                 .map_err(CatalogError::from)?;
             }
-            // The public request only changes lifecycle state.  Ordinary
+            // The public request only changes lifecycle state. Ordinary
             // operation withdrawal, root removal, and physical teardown are
             // durable worker stages so a large document can never turn this
-            // request into an unbounded transaction.  A repeated request is
-            // therefore intentionally a status-only read.
-            if was_deleting {
-                return Self::document_in_tx(tx, slug);
-            }
+            // request into an unbounded transaction. A repeated request is
+            // status-only unless an interrupted earlier request lost its
+            // erase receipt; recreating that one receipt repairs the durable
+            // protocol without touching object grace deadlines.
             let now = unix_millis();
-            tx.execute(
-                "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,
-                    receipt_expires_at=?3,updated_at=?2
-                 WHERE id IN (
-                   SELECT id FROM operations
-                   WHERE document_id=?4 AND state='prepared' AND kind<>'erase_document'
-                   ORDER BY id LIMIT 250
-                 )",
-                params![
-                    r#"{"version":2,"reason":"document_deleting"}"#,
-                    now,
-                    now.saturating_add(7 * 24 * 60 * 60 * 1_000),
-                    document_id
-                ],
-            )
-            .map_err(CatalogError::from)?;
+            if !was_deleting {
+                tx.execute(
+                    "UPDATE operations SET state='aborted',result_json=?1,completed_at=?2,
+                        receipt_expires_at=?3,updated_at=?2
+                     WHERE id IN (
+                       SELECT id FROM operations
+                       WHERE document_id=?4 AND state='prepared' AND kind<>'erase_document'
+                       ORDER BY id LIMIT 250
+                     )",
+                    params![
+                        r#"{"version":2,"reason":"document_deleting"}"#,
+                        now,
+                        now.saturating_add(7 * 24 * 60 * 60 * 1_000),
+                        document_id
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+            }
             let erase_exists: i64 = tx
                 .query_row(
                     "SELECT count(*) FROM operations
@@ -163,40 +164,64 @@ impl Catalog {
                 .optional()
                 .map_err(CatalogError::from)?
                 .ok_or(CatalogError::NotFound)?;
+            let (operation_id, operation_generation, operation_plan): (String, String, String) = tx
+                .query_row(
+                    "SELECT id,writer_generation,plan_json FROM operations
+                     WHERE document_id=?1 AND kind='erase_document' AND state='prepared'",
+                    [&document_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(CatalogError::from)?
+                .ok_or_else(|| CatalogError::Conflict("document erase operation is missing".into()))?;
+            let operation_plan: serde_json::Value = serde_json::from_str(&operation_plan)
+                .map_err(|error| CatalogError::Invalid(format!("invalid erase plan: {error}")))?;
+            if operation_plan.get("version").and_then(serde_json::Value::as_i64) != Some(2)
+                || operation_plan.get("stage").and_then(serde_json::Value::as_str) != Some("done")
+            {
+                return Err(CatalogError::Conflict("document teardown stages remain".into()));
+            }
+            let current_generation: String = tx
+                .query_row(
+                    "SELECT writer_generation FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if operation_generation != current_generation {
+                return Err(CatalogError::Conflict(
+                    "document erase operation belongs to an obsolete writer generation".into(),
+                ));
+            }
             let (
-                objects,
-                checkpoints,
-                checkpoint_objects,
-                leases,
-                prepared,
-                other_operations,
+                has_objects,
+                has_checkpoints,
+                has_checkpoint_objects,
+                has_leases,
+                has_other_prepared,
+                has_other_operations,
                 stored,
                 reserved,
-                annotations,
-                replies,
-                grants,
-                links,
-                bookmarks,
-            ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = tx
+                has_annotations,
+                has_replies,
+                has_grants,
+                has_links,
+            ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = tx
                 .query_row(
                     "SELECT
-                        (SELECT count(*) FROM objects WHERE document_id=?1),
-                        (SELECT count(*) FROM checkpoints WHERE document_id=?1),
-                        (SELECT count(*) FROM checkpoint_objects WHERE document_id=?1),
-                        (SELECT count(*) FROM object_leases WHERE document_id=?1),
-                        (SELECT count(*) FROM operations WHERE document_id=?1 AND state='prepared'),
-                        (SELECT count(*) FROM operations
-                         WHERE document_id=?1
-                           AND NOT (kind='erase_document' AND state='prepared')),
+                        EXISTS(SELECT 1 FROM objects WHERE document_id=?1),
+                        EXISTS(SELECT 1 FROM checkpoints WHERE document_id=?1),
+                        EXISTS(SELECT 1 FROM checkpoint_objects WHERE document_id=?1),
+                        EXISTS(SELECT 1 FROM object_leases WHERE document_id=?1),
+                        EXISTS(SELECT 1 FROM operations WHERE document_id=?1 AND id<>?2 AND state='prepared'),
+                        EXISTS(SELECT 1 FROM operations WHERE document_id=?1 AND id<>?2),
                         stored_bytes,reserved_bytes,
-                        (SELECT count(*) FROM annotations WHERE document_id=?1),
-                        (SELECT count(*) FROM replies WHERE document_id=?1),
-                        (SELECT count(*) FROM grants WHERE document_id=?1),
-                        (SELECT count(*) FROM links WHERE document_id=?1),
-                        (SELECT count(*) FROM accounts a, json_each(a.bookmarks_json, '$.items') item
-                         WHERE json_extract(item.value, '$.document_id')=?1)
+                        EXISTS(SELECT 1 FROM annotations WHERE document_id=?1),
+                        EXISTS(SELECT 1 FROM replies WHERE document_id=?1),
+                        EXISTS(SELECT 1 FROM grants WHERE document_id=?1),
+                        EXISTS(SELECT 1 FROM links WHERE document_id=?1)
                      FROM documents WHERE id=?1",
-                    [&document_id],
+                    params![document_id, operation_id],
                     |row| {
                         Ok((
                             row.get(0)?,
@@ -211,59 +236,25 @@ impl Catalog {
                             row.get(9)?,
                             row.get(10)?,
                             row.get(11)?,
-                            row.get(12)?,
                         ))
                     },
                 )
                 .map_err(CatalogError::from)?;
-            if objects != 0
-                || checkpoints != 0
-                || checkpoint_objects != 0
-                || leases != 0
-                || prepared != 1
-                || other_operations > 250
+            if has_objects != 0
+                || has_checkpoints != 0
+                || has_checkpoint_objects != 0
+                || has_leases != 0
+                || has_other_prepared != 0
+                || has_other_operations != 0
                 || stored != 0
                 || reserved != 0
-                || annotations != 0
-                || replies != 0
-                || grants != 0
-                || links != 0
-                || bookmarks != 0
+                || has_annotations != 0
+                || has_replies != 0
+                || has_grants != 0
+                || has_links != 0
             {
                 return Err(CatalogError::Conflict(
                     "document teardown or charges remain".into(),
-                ));
-            }
-            if other_operations != 0 {
-                tx.execute(
-                    "DELETE FROM operations WHERE id IN (
-                         SELECT id FROM operations
-                         WHERE document_id=?1
-                           AND NOT (kind='erase_document' AND state='prepared')
-                         ORDER BY id LIMIT 250
-                     )",
-                    [&document_id],
-                )
-                .map_err(CatalogError::from)?;
-            }
-            let (operation_id, operation_generation): (String, String) = tx
-                .query_row(
-                    "SELECT id,writer_generation FROM operations
-                     WHERE document_id=?1 AND kind='erase_document' AND state='prepared'",
-                    [&document_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(CatalogError::from)?;
-            let current_generation: String = tx
-                .query_row(
-                    "SELECT writer_generation FROM server_state WHERE id=1",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(CatalogError::from)?;
-            if operation_generation != current_generation {
-                return Err(CatalogError::Conflict(
-                    "document erase operation belongs to an obsolete writer generation".into(),
                 ));
             }
             let now = unix_millis();
@@ -451,19 +442,22 @@ impl Catalog {
                         ids.len() as i64
                     }
                     "bookmarks" => {
-                        let mut statement = tx.prepare(
-                            "SELECT a.id,a.bookmarks_json FROM accounts a
-                             WHERE EXISTS (
-                               SELECT 1 FROM json_each(a.bookmarks_json, '$.items') item
-                               WHERE json_extract(item.value, '$.document_id')=?1
-                             )
-                             ORDER BY a.id LIMIT ?2",
-                        )?;
-                        let accounts: Vec<(String, String)> = statement
-                            .query_map(params![document_id, remaining], |row| {
-                                Ok((row.get(0)?, row.get(1)?))
-                            })?
-                            .collect::<rusqlite::Result<Vec<_>>>()?;
+                        let after_account = plan
+                            .get("cursor")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("");
+                        let accounts: Vec<(String, String)> = {
+                            let mut statement = tx.prepare(
+                                "SELECT a.id,a.bookmarks_json FROM accounts a
+                                 WHERE a.id>?1 ORDER BY a.id LIMIT ?2",
+                            )?;
+                            statement
+                                .query_map(params![after_account, remaining], |row| {
+                                    Ok((row.get(0)?, row.get(1)?))
+                                })?
+                                .collect::<rusqlite::Result<Vec<_>>>()?
+                        };
+                        let last_account = accounts.last().map(|(id, _)| id.clone());
                         for (account_id, payload) in &accounts {
                             let mut json: serde_json::Value = serde_json::from_str(payload)
                                 .map_err(|error| {
@@ -479,11 +473,15 @@ impl Catalog {
                                         "account bookmarks have invalid item shape".into(),
                                     )
                                 })?;
+                            let original_len = items.len();
                             items.retain(|item| {
                                 item.get("document_id")
                                     .and_then(serde_json::Value::as_str)
                                     != Some(document_id.as_str())
                             });
+                            if items.len() == original_len {
+                                continue;
+                            }
                             let encoded = serde_json::to_string(&json)
                                 .map_err(|error| CatalogError::Invalid(error.to_string()))?;
                             tx.execute(
@@ -494,6 +492,9 @@ impl Catalog {
                         if accounts.len() < remaining as usize {
                             stage = "grants".into();
                             plan["cursor"] = serde_json::Value::Null;
+                        } else if let Some(last_account) = last_account {
+                            plan["cursor"] = serde_json::Value::String(last_account);
+                            yield_stage = true;
                         }
                         accounts.len() as i64
                     }
@@ -538,25 +539,30 @@ impl Catalog {
                         ids.len() as i64
                     }
                     "checkpoints" => {
-                        let mut statement = tx.prepare(
-                            "SELECT c.id, count(co.object_id) FROM checkpoints c
-                             LEFT JOIN checkpoint_objects co ON co.checkpoint_id=c.id
-                             WHERE c.document_id=?1
-                             GROUP BY c.id
-                             ORDER BY c.id LIMIT ?2",
-                        )?;
                         let checkpoint_page_limit = remaining.min(32);
-                        let candidates: Vec<(String, i64)> = statement
-                            .query_map(params![document_id, checkpoint_page_limit], |row| {
-                                Ok((row.get(0)?, row.get(1)?))
-                            })?
-                            .collect::<rusqlite::Result<Vec<_>>>()?;
+                        let candidate_ids: Vec<String> = {
+                            let mut statement = tx.prepare(
+                                "SELECT id FROM checkpoints
+                                 WHERE document_id=?1 ORDER BY id LIMIT ?2",
+                            )?;
+                            statement
+                                .query_map(params![document_id, checkpoint_page_limit], |row| {
+                                    row.get(0)
+                                })?
+                                .collect::<rusqlite::Result<Vec<_>>>()?
+                        };
                         let full_checkpoint_page =
-                            candidates.len() as i64 == checkpoint_page_limit;
+                            candidate_ids.len() as i64 == checkpoint_page_limit;
                         let mut ids = Vec::new();
                         let mut edge_total = 0i64;
                         let mut edge_limited = false;
-                        for (checkpoint_id, edge_count) in candidates {
+                        for checkpoint_id in candidate_ids {
+                            let edge_count: i64 = tx.query_row(
+                                "SELECT count(*) FROM checkpoint_objects
+                                 WHERE document_id=?1 AND checkpoint_id=?2",
+                                params![document_id, checkpoint_id],
+                                |row| row.get(0),
+                            )?;
                             if edge_count > 32_768 {
                                 return Err(CatalogError::Conflict(
                                     "checkpoint edge set exceeds one deletion batch".into(),
@@ -623,11 +629,25 @@ impl Catalog {
                         let mut changed_rows = 0i64;
                         let mut pinned = false;
                         for (candidate_id, state) in &candidates {
+                            let was_prepared = state == "prepared";
+                            if was_prepared {
+                                // Withdrawal is the first step even when the
+                                // operation still owns allocated rows. The
+                                // terminal state lets recovery/GC settle the
+                                // allocation while this stage skips its FK
+                                // pin below.
+                                tx.execute(
+                                    r#"UPDATE operations SET state='aborted',
+                                     result_json='{"version":2,"reason":"document_deleting"}',
+                                     completed_at=?1,receipt_expires_at=?1,updated_at=?1
+                                     WHERE id=?2 AND state='prepared'"#,
+                                    params![now, candidate_id],
+                                )?;
+                            }
                             let blocked: i64 = tx.query_row(
                                 "SELECT
                                    (SELECT count(*) FROM objects
-                                    WHERE allocation_operation_id=?1
-                                      AND state IN ('allocated','uploaded','committed'))
+                                    WHERE allocation_operation_id=?1)
                                    + (SELECT count(*) FROM object_leases
                                       WHERE operation_id=?1)",
                                 [candidate_id],
@@ -640,17 +660,7 @@ impl Catalog {
                                 pinned = true;
                                 continue;
                             }
-                            if state == "prepared" {
-                                tx.execute(
-                                    r#"UPDATE operations SET state='aborted',
-                                     result_json='{"version":2,"reason":"document_deleting"}',
-                                     completed_at=?1,receipt_expires_at=?1,updated_at=?1
-                                     WHERE id=?2 AND state='prepared'"#,
-                                    params![now, candidate_id],
-                                )?;
-                            } else {
-                                tx.execute("DELETE FROM operations WHERE id=?1", [candidate_id])?;
-                            }
+                            tx.execute("DELETE FROM operations WHERE id=?1", [candidate_id])?;
                             changed_rows += 1;
                         }
                         if candidates.is_empty() {
@@ -682,7 +692,7 @@ impl Catalog {
                 return Err(CatalogError::Invalid("document erase plan is too large".into()));
             }
             tx.execute(
-                "UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2)
+                "UPDATE operations SET plan_json=?1,updated_at=max(updated_at+1,?2)
                  WHERE id=?3 AND state='prepared'",
                 params![encoded, now, operation_id],
             )?;

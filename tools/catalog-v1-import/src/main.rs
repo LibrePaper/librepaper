@@ -3896,10 +3896,13 @@ fn import_annotations(
         } else {
             resolved_ms
         };
-        let author_id = target_account_exists(&tx, Some(&creator))?;
+        // v1 kept the opaque attribution key in `author` (for example an
+        // account identity or `visitor:...`) and the display name in
+        // `creator`. Preserve both independently in the v2 columns.
+        let author_id = target_account_exists(&tx, Some(&author))?;
         let updated = effective_resolved.unwrap_or(created_ms);
         let proposed_text = if kind == "suggestion" { proposed } else { None };
-        tx.execute("INSERT OR IGNORE INTO annotations(document_id,id,seq,kind,body,author_account_id,author_key,author_label,via,created_at,updated_at,publication_id,source_revision,selector_json,context_json,protected_checkpoint_id,proposed_text,suggestion_state,acceptance_operation_id,resolution_revision,resolved_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",params![doc_id,id,seq.max(1),kind,body,author_id,author,author,via,created_ms,updated,if publication_id.is_empty(){None::<String>}else{Some(publication_id)},if resolution.is_empty(){None::<String>}else{Some(resolution.clone())},selector_json,context,protection,proposed_text,if state.is_empty(){None::<String>}else{Some(state)},if acceptance.is_empty(){None::<String>}else{Some(acceptance)},if resolution.is_empty(){None::<String>}else{Some(resolution)},effective_resolved])?;
+        tx.execute("INSERT OR IGNORE INTO annotations(document_id,id,seq,kind,body,author_account_id,author_key,author_label,via,created_at,updated_at,publication_id,source_revision,selector_json,context_json,protected_checkpoint_id,proposed_text,suggestion_state,acceptance_operation_id,resolution_revision,resolved_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",params![doc_id,id,seq.max(1),kind,body,author_id,author,creator,via,created_ms,updated,if publication_id.is_empty(){None::<String>}else{Some(publication_id)},if resolution.is_empty(){None::<String>}else{Some(resolution.clone())},selector_json,context,protection,proposed_text,if state.is_empty(){None::<String>}else{Some(state)},if acceptance.is_empty(){None::<String>}else{Some(acceptance)},if resolution.is_empty(){None::<String>}else{Some(resolution)},effective_resolved])?;
         progress.entry(doc_id.clone()).or_default().annotations += 1;
     }
     let mut sr=source.prepare("SELECT slug,comment_id,id,body,creator,author,created FROM replies ORDER BY slug,comment_id,id")?;
@@ -3918,8 +3921,8 @@ fn import_annotations(
         let Some(doc_id) = doc_map.get(&slug) else {
             continue;
         };
-        let author_id = target_account_exists(&tx, Some(&creator))?;
-        tx.execute("INSERT OR IGNORE INTO replies(document_id,annotation_id,id,body,author_account_id,author_key,author_label,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8)",params![doc_id,comment,id,body,author_id,author,author,parse_time(&created,"replies.created")?])?;
+        let author_id = target_account_exists(&tx, Some(&author))?;
+        tx.execute("INSERT OR IGNORE INTO replies(document_id,annotation_id,id,body,author_account_id,author_key,author_label,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8)",params![doc_id,comment,id,body,author_id,author,creator,parse_time(&created,"replies.created")?])?;
     }
     for doc in docs {
         let max: i64 = tx.query_row(
@@ -5057,8 +5060,8 @@ mod tests {
             serde_json::to_vec(&publication).expect("publication manifest"),
         )
         .expect("publication");
-        db.execute("INSERT INTO comments(slug,id,seq,motivation,body,creator,author,via,created,publication_id,exact,prefix,suffix,outcome,accept_request,revision,resolved,resolved_in,pass,point) VALUES('paper','comment-1',1,'comment','body','acct','Author','web','2','pub-1','exact','pre','suf','','','',0,'','',0)",[]).expect("comment");
-        db.execute("INSERT INTO replies(slug,comment_id,id,body,creator,author,created) VALUES('paper','comment-1','reply-1','reply body','acct','Author','2')",[]).expect("reply");
+        db.execute("INSERT INTO comments(slug,id,seq,motivation,body,creator,author,via,created,publication_id,exact,prefix,suffix,outcome,accept_request,revision,resolved,resolved_in,pass,point) VALUES('paper','comment-1',1,'comment','body','Display name','acct','web','2','pub-1','exact','pre','suf','','','',0,'','',0)",[]).expect("comment");
+        db.execute("INSERT INTO replies(slug,comment_id,id,body,creator,author,created) VALUES('paper','comment-1','reply-1','reply body','Display name','acct','2')",[]).expect("reply");
         let args = Args {
             source_data: source.path().to_path_buf(),
             target_data: target.path().join("v2"),
@@ -5114,6 +5117,30 @@ mod tests {
                 .query_row::<i64, _, _>("SELECT COUNT(*) FROM replies", [], |r| r.get(0))
                 .expect("replies"),
             1
+        );
+        let attribution: (String, String, Option<String>) = target_db
+            .query_row(
+                "SELECT author_key,author_label,author_account_id FROM annotations
+                 WHERE id='comment-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("annotation attribution");
+        assert_eq!(
+            attribution,
+            ("acct".into(), "Display name".into(), Some("acct".into()))
+        );
+        let reply_attribution: (String, String, Option<String>) = target_db
+            .query_row(
+                "SELECT author_key,author_label,author_account_id FROM replies
+                 WHERE id='reply-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("reply attribution");
+        assert_eq!(
+            reply_attribution,
+            ("acct".into(), "Display name".into(), Some("acct".into()))
         );
         assert_eq!(
             target_db

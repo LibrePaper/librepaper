@@ -475,7 +475,11 @@ impl DeletionWorker {
                 for slug in catalog.deleting_documents_page(64, true)? {
                     // A conflict means physical GC or a lease still fences
                     // finalization; the next maintenance pass retries it.
-                    let _ = catalog.finish_delete(&slug);
+                    if let Err(error) = catalog.finish_delete(&slug) {
+                        if !matches!(&error, CatalogError::Conflict(_)) {
+                            return Err(error);
+                        }
+                    }
                 }
                 Ok(())
             })
