@@ -99,6 +99,34 @@ pub(crate) fn register_physical_guard(namespace: usize, document_id: &str, objec
     register_inflight(namespace, document_id, object_id, 0, "", "", "", "", false)
 }
 
+fn attach_inflight(
+    namespace: usize,
+    document_id: &str,
+    object_id: &str,
+    reserved: i64,
+    kind: &str,
+    operation_id: &str,
+    writer_generation: &str,
+    expected_digest: &str,
+) -> bool {
+    let mut guards = inflight_puts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(record) = guards.get_mut(&(namespace, document_id.to_owned(), object_id.to_owned())) else {
+        return false;
+    };
+    if record.managed || record.written.is_some() || record.failure.is_some() {
+        return false;
+    }
+    record.reserved = reserved;
+    record.kind = kind.to_owned();
+    record.operation_id = operation_id.to_owned();
+    record.writer_generation = writer_generation.to_owned();
+    record.expected_digest = expected_digest.to_owned();
+    record.managed = true;
+    true
+}
+
 pub(crate) fn complete_physical_guard(namespace: usize, document_id: &str, written: &WrittenObject) {
     let key = (namespace, document_id.to_owned(), written.object_id.as_str().to_owned());
     if let Some(record) = inflight_puts()
@@ -163,29 +191,43 @@ fn completed_inflight(namespace: usize, limit: usize) -> Vec<InflightPut> {
 }
 
 fn failed_inflight(namespace: usize, limit: usize) -> (Vec<InflightPut>, Option<u64>) {
-    let mut records: Vec<_> = inflight_puts()
+    let guards = inflight_puts()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .values()
-        .filter(|record| {
-            record.namespace == namespace && record.failure.is_some() && record.written.is_none()
-        })
-        .cloned()
-        .collect();
-    records.sort_by_key(|record| record.sequence);
+        ;
     let mut cursors = failed_inflight_cursors()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let cursor = cursors.get(&namespace).copied().unwrap_or(0);
-    let mut page: Vec<_> = records
-        .iter()
-        .filter(|record| record.sequence > cursor)
-        .take(limit)
-        .cloned()
-        .collect();
-    if page.is_empty() && !records.is_empty() {
+    let select = |after: u64| {
+        let mut page = Vec::with_capacity(limit);
+        for record in guards.values().filter(|record| {
+            record.namespace == namespace
+                && record.failure.is_some()
+                && record.written.is_none()
+                && record.sequence > after
+        }) {
+            if page.len() < limit {
+                page.push(record.clone());
+                continue;
+            }
+            if let Some((largest, largest_index)) = page
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, value)| value.sequence)
+            {
+                if record.sequence < largest.sequence {
+                    page[largest_index] = record.clone();
+                }
+            }
+        }
+        page.sort_by_key(|record| record.sequence);
+        page
+    };
+    let mut page = select(cursor);
+    if page.is_empty() && cursor != 0 {
         cursors.insert(namespace, 0);
-        page = records.into_iter().take(limit).collect();
+        page = select(0);
     }
     let last = page.last().map(|record| record.sequence);
     (page, last)
@@ -448,6 +490,22 @@ fn abort_failed_allocation(catalog: &Catalog, record: &InflightPut) -> Result<()
                 return Err(crate::storage::catalog::CatalogError::Conflict(
                     "committed allocation cannot be refunded after failed PUT".into(),
                 ));
+            }
+            let now = now_millis();
+            if operation_state.as_deref() == Some("prepared") {
+                transaction
+                    .execute(
+                        "UPDATE operations
+                            SET state='aborted',
+                                result_json='{"version":2,"aborted":true,"reason":"physical_absence"}',
+                                completed_at=MAX(COALESCE(completed_at,0),?1),
+                                receipt_expires_at=MAX(COALESCE(receipt_expires_at,0),?2),
+                                work_expires_at=MAX(COALESCE(work_expires_at,0),?1),
+                                updated_at=MAX(updated_at,?1)
+                          WHERE id=?3 AND state='prepared'",
+                        params![now, now.saturating_add(RECEIPT_RETENTION_MS), operation_id],
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
             }
             transaction
                 .execute(
@@ -746,7 +804,7 @@ async fn heartbeat_stage_leases_pages(
         if cursor.is_none() {
             return Ok(renewed);
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
     Err("stage-lease heartbeat capacity exceeded during bounded maintenance pass".into())
 }
@@ -1787,7 +1845,11 @@ impl V2ObjectWriter {
         let object_key = object_id.as_str().to_owned();
         let expected_digest_for_admission = expected_digest.clone();
         let body_length = body.len() as u64;
-        let (reserved, kind, admitted_operation, admitted_generation) = self
+        let namespace = Arc::as_ptr(&self.catalog) as usize;
+        if !register_physical_guard(namespace, document_id, object_id.as_str()) {
+            return Err("physical object write is already in flight for this allocation".into());
+        }
+        let admission = self
             .catalog
             .clone()
             .execute(1024, move |connection| {
@@ -1812,16 +1874,17 @@ impl V2ObjectWriter {
                 Ok((reserved, kind, operation, operation_generation))
             })
             .await
-            .map_err(|error| error.to_string())?;
-        // Keep the immutable PUT alive when the request future is cancelled.
-        // Recovery must be able to inspect and settle an admitted allocation;
-        // dropping the caller future cannot silently cancel the physical
-        // write after admission.
-        let blobs = Arc::clone(&self.blobs);
-        let document_for_write = document_id.to_owned();
-        let content_type_for_write = content_type.to_owned();
-        let namespace = Arc::as_ptr(&self.catalog) as usize;
-        if !register_inflight(
+            .map_err(|error| error.to_string());
+        let (reserved, kind, admitted_operation, admitted_generation) = match admission {
+            Ok(value) => value,
+            Err(error) => {
+                // No physical task has been spawned, so removing the
+                // pre-admission guard cannot orphan a PUT.
+                remove_inflight(namespace, document_id, object_id.as_str());
+                return Err(error);
+            }
+        };
+        if !attach_inflight(
             namespace,
             document_id,
             object_id.as_str(),
@@ -1830,10 +1893,17 @@ impl V2ObjectWriter {
             &admitted_operation,
             &admitted_generation,
             &expected_digest,
-            true,
         ) {
-            return Err("physical object write is already in flight for this allocation".into());
+            remove_inflight(namespace, document_id, object_id.as_str());
+            return Err("physical allocation guard disappeared during admission".into());
         }
+        // Keep the immutable PUT alive when the request future is cancelled.
+        // Recovery must be able to inspect and settle an admitted allocation;
+        // dropping the caller future cannot silently cancel the physical
+        // write after admission.
+        let blobs = Arc::clone(&self.blobs);
+        let document_for_write = document_id.to_owned();
+        let content_type_for_write = content_type.to_owned();
         let guarded_document = document_id.to_owned();
         let guarded_object = object_id.as_str().to_owned();
         let guarded_object_for_task = guarded_object.clone();
@@ -2205,6 +2275,87 @@ mod aborted_inflight_tests {
     #[tokio::test]
     async fn cancelled_uncertain_put_settles_verified_body() {
         run_cancelled_failed_put(FailureMode::AfterWrite, true).await;
+    }
+
+    #[tokio::test]
+    async fn admission_guard_blocks_abort_cleanup_before_paused_sql_admission() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("v2 catalog"));
+        let document_id = "paused-admission-document";
+        let account_id = "paused-admission-account";
+        let operation_id = "paused-admission-operation";
+        let object_id = ObjectId::parse("11111111111111111111111111111111").expect("object id");
+        let body = b"paused admission body".to_vec();
+        insert_failed_put_fixture(
+            catalog.as_ref(),
+            document_id,
+            account_id,
+            operation_id,
+            &object_id,
+            &body,
+        )
+        .expect("admitted allocation");
+        let root = tempfile::tempdir().expect("object root");
+        let inner = Arc::new(FsStore::new(root.path(), false));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let finished = Arc::new(Notify::new());
+        let blobs: Arc<dyn BlobStore> = Arc::new(DelayedStore {
+            inner,
+            started: Arc::clone(&started),
+            release,
+            finished,
+            failure_mode: FailureMode::Success,
+            probe_failures: Arc::new(AtomicUsize::new(0)),
+            put_entered: Arc::new(AtomicBool::new(false)),
+        });
+        let blocker_started = Arc::new(Notify::new());
+        let blocker_catalog = Arc::clone(&catalog);
+        let blocker_signal = Arc::clone(&blocker_started);
+        let blocker = tokio::spawn(async move {
+            blocker_catalog
+                .execute(64, move |_| {
+                    blocker_signal.notify_one();
+                    std::thread::sleep(Duration::from_millis(50));
+                    Ok::<(), crate::storage::catalog::CatalogError>(())
+                })
+                .await
+        });
+        blocker_started.notified().await;
+        let abort_catalog = Arc::clone(&catalog);
+        let abort_task = tokio::spawn(async move {
+            abort_catalog
+                .execute(128, move |connection| {
+                    let now = now_millis();
+                    connection.execute(
+                        "UPDATE operations SET state='aborted',result_json='{\"version\":1,\"aborted\":true}',completed_at=?1,receipt_expires_at=?2,updated_at=?1 WHERE id=?3",
+                        params![now, now.saturating_add(RECEIPT_RETENTION_MS), operation_id],
+                    )?;
+                    Ok(())
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        let writer = V2ObjectWriter::new(Arc::clone(&catalog), Arc::clone(&blobs));
+        let writer_task = tokio::spawn(async move {
+            writer
+                .write_allocated(&document_id, object_id, body, "application/octet-stream")
+                .await
+        });
+        let result = writer_task.await.expect("writer task");
+        assert!(result.is_err(), "aborted admission must not start a PUT");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), started.notified())
+                .await
+                .is_err(),
+            "pre-admission guard must prevent a physical PUT"
+        );
+        abort_task.await.expect("abort task").expect("abort SQL");
+        blocker.await.expect("blocker task").expect("blocker SQL");
+        assert!(!inflight_active(
+            Arc::as_ptr(&catalog) as usize,
+            "paused-admission-document",
+            "11111111111111111111111111111111"
+        ));
     }
 
     #[tokio::test]
