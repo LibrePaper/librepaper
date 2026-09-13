@@ -1817,7 +1817,7 @@ impl Catalog {
             .prepare(
                 "SELECT ?1,annotation_id,id,body,author_label,author_key,created_at
                    FROM replies WHERE document_id=?2 AND annotation_id=?3
-                   ORDER BY created_at,id",
+                   ORDER BY created_at,id LIMIT 100",
             )
             .map_err(CatalogError::from)?;
         let mut rows = statement

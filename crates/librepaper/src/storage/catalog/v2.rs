@@ -697,20 +697,26 @@ fn operation_authorized_in_tx(
 }
 
 impl Catalog {
+    /// Compare the current checkpoint's captured journal fence with the
+    /// document head in the same SQL snapshot.  The journal runtime's
+    /// `latest_sequence` API is intentionally not used here: its v2
+    /// implementation returns the head sequence and does not validate the
+    /// requested epoch.
     pub(crate) fn current_checkpoint_journal_fence(
         &self,
         slug: &str,
-    ) -> CatalogResult<Option<(i64, i64)>> {
+    ) -> CatalogResult<Option<bool>> {
         self.with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT c.journal_epoch,c.journal_sequence
+                    "SELECT c.journal_epoch = d.journal_epoch
+                              AND c.journal_sequence = d.journal_sequence
                        FROM checkpoints c
                        JOIN documents d ON d.id=c.document_id
                       WHERE d.slug=?1 AND d.status <> 'deleting'
                         AND c.id=d.current_checkpoint_id",
                     [slug],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| row.get::<_, i64>(0).map(|value| value != 0),
                 )
                 .optional()
                 .map_err(CatalogError::from)

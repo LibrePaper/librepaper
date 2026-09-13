@@ -1758,10 +1758,7 @@ impl Room {
             }
         };
         let recovered_from_durable_checkpoint = if stored.is_some() {
-            if let (Some(catalog), Some(journal)) = (
-                self.catalog.get(),
-                self.journal.get(),
-            ) {
+            if let Some(catalog) = self.catalog.get() {
                 let slug = self.slug.clone();
                 match catalog
                     .execute_catalog(256, move |catalog| {
@@ -1769,17 +1766,7 @@ impl Room {
                     })
                     .await
                 {
-                    Ok(Some((epoch, checkpoint_sequence))) => {
-                        match u64::try_from(epoch) {
-                            Ok(epoch) => match journal.latest_sequence(&self.storage_id, epoch).await {
-                                Ok(live_sequence) => {
-                                    u64::try_from(checkpoint_sequence).ok() == Some(live_sequence)
-                                }
-                                Err(_) => false,
-                            },
-                            Err(_) => false,
-                        }
-                    }
+                    Ok(Some(matches)) => matches,
                     _ => false,
                 }
             } else {
