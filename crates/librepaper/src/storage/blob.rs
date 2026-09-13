@@ -1395,19 +1395,36 @@ pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
                     "seed reset object cursor did not advance under {prefix}"
                 )));
             }
+            if keys.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(BlobError::Other(format!(
+                    "seed reset object page was not strictly ordered under {prefix}"
+                )));
+            }
             let outcomes = blobs.delete_each(&keys).await?;
             if outcomes.len() != keys.len() {
                 return Err(BlobError::Other(format!(
                     "seed reset received incomplete deletion results under {prefix}"
                 )));
             }
-            if let Some(failed) = outcomes.iter().find(|outcome| !outcome.confirmed()) {
-                return Err(BlobError::Other(format!(
-                    "seed reset could not confirm removal under {prefix}: {}",
-                    failed.why()
-                )));
+            for (key, outcome) in keys.iter().zip(outcomes.iter()) {
+                if !outcome.confirmed() {
+                    return Err(BlobError::Other(format!(
+                        "seed reset could not confirm removal under {prefix}: {}",
+                        outcome.why()
+                    )));
+                }
+                if blobs.exists(key).await? {
+                    return Err(BlobError::Other(format!(
+                        "seed reset deletion outcome did not remove {key}"
+                    )));
+                }
             }
             after = Some(last);
+        }
+        if !blobs.list_page(prefix, None, 1).await?.is_empty() {
+            return Err(BlobError::Other(format!(
+                "seed reset found objects remaining under {prefix}"
+            )));
         }
     }
     let outcome = blobs.delete_each(&[INDEX_KEY.to_string()]).await?;
@@ -1421,13 +1438,13 @@ pub async fn clear_storage_checked(blobs: &dyn BlobStore) -> BlobResult<()> {
             "seed reset could not confirm removal of the legacy index".into(),
         ));
     }
-    match blobs.get(INDEX_KEY).await {
-        Ok(_) => {
+    match blobs.exists(INDEX_KEY).await {
+        Ok(true) => {
             return Err(BlobError::Other(
                 "seed reset found the legacy index still present".into(),
             ));
         }
-        Err(BlobError::NotFound) => {}
+        Ok(false) => {}
         Err(error) => return Err(error),
     }
     Ok(())

@@ -22,6 +22,7 @@ use crate::storage::blob::{
 use crate::storage::catalog::{Catalog, CatalogError, CatalogResult};
 
 mod budget;
+mod codec;
 #[cfg(test)]
 mod coordinator;
 #[cfg(test)]
@@ -34,6 +35,7 @@ mod store;
 mod v2;
 
 pub use budget::*;
+pub use codec::*;
 #[cfg(test)]
 pub use coordinator::*;
 #[cfg(test)]
