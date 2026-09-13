@@ -754,8 +754,17 @@ async fn room_for_charges_uncached_catalog_documents() {
         .room_for("first")
         .await
         .expect("first is a document the catalogue actually has");
-    // Only "second"'s physical v2 object closure is charged against the
-    // remaining ceiling; source bytes are not the accounting unit anymore.
+    // Existing physical bytes remain charged while a new allocation is
+    // admitted. The room for "first" therefore subtracts both documents'
+    // settled v2 object closures; source text is not the accounting unit.
+    let first_size = fresh
+        .catalog
+        .as_ref()
+        .unwrap()
+        .document("first")
+        .unwrap()
+        .expect("first is present")
+        .counted_size;
     let second_size = fresh
         .catalog
         .as_ref()
@@ -764,7 +773,7 @@ async fn room_for_charges_uncached_catalog_documents() {
         .unwrap()
         .expect("second is present")
         .counted_size;
-    assert_eq!(room, 1000 - second_size);
+    assert_eq!(room, 1000 - first_size - second_size);
 }
 
 /// A listing entry with a sealed link: the link key is unsealed after the

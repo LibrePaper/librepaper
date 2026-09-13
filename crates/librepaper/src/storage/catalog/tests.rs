@@ -50,7 +50,10 @@ pub(super) fn annotation(id: &str, motivation: &str) -> Comment {
         pass: String::new(),
         outcome: String::new(),
         accept_request: String::new(),
-        revision: "revision".into(),
+        // Ordinary annotation fixtures are not anchored to a source
+        // checkpoint. Tests that exercise retention protection install a
+        // real checkpoint and set this field explicitly.
+        revision: String::new(),
         resolved: false,
         resolved_at: None,
         resolved_in: String::new(),
@@ -319,23 +322,9 @@ fn reopening_annotation_restores_protection_from_stored_source_revision() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
-    catalog
-        .with_connection(|connection| {
-            connection.execute(
-                "INSERT INTO objects
-                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
-                 VALUES('storage-1','tree-revision','objects/tree-revision','source_tree',
-                        'available',?1,1,0,0)",
-                ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
-            )?;
-            Ok(())
-        })
-        .unwrap();
     let mut revision = attributed("revision", "Alice", Some("acct-1"));
-    revision.tree_sha = "a".repeat(64);
-    catalog
-        .insert_checkpoints_atomic(&[revision])
-        .unwrap();
+    revision.tree_sha = fixture_tree_digest("revision");
+    insert_fixture_checkpoint(&catalog, &revision);
     let owner = AnnotationAuthority {
         account_id: "acct-1",
         generation: "generation-1",
@@ -1238,7 +1227,7 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
             request_id: &request_id,
             kind: "source_publish",
             request_digest: &operation_digest,
-            intent: "{}",
+            intent: r#"{"version":2,"effect":"source_publish"}"#,
             created_at: now,
             actor: None,
         })
@@ -1257,6 +1246,7 @@ fn deletion_resolves_prepared_publication_without_refunding_live_bytes() {
     assert!(catalog
         .commit_operation("storage-1", &request_id, "{}", "head")
         .is_err());
+    drain_document_delete(&catalog, "doc");
     catalog.finish_delete("doc").unwrap();
     assert_eq!(catalog.totals().unwrap(), (0, 0));
 }
@@ -1369,6 +1359,7 @@ fn document_pages_cross_the_limit_without_skips_or_duplicates() {
 #[test]
 fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
     let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
     for index in 0..1000 {
         catalog
             .create_document(&NewDocument {
@@ -1381,7 +1372,7 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
                 updated_at: format!("2026-01-01T00:{:02}:00Z", index % 60),
                 example: false,
                 owner_key: "owner".into(),
-                owner_id: None,
+                owner_id: Some("acct-1".into()),
                 status: "active".into(),
                 size: 1,
                 counted_size: 1,
@@ -1403,7 +1394,7 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
             updated_at: "2026-01-01T00:00:00Z".into(),
             example: true,
             owner_key: "example:example-0000".into(),
-            owner_id: None,
+            owner_id: Some("acct-1".into()),
             status: "active".into(),
             size: 1,
             counted_size: 1,
@@ -1418,14 +1409,14 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
         .unwrap();
     assert!(hidden.is_empty());
     let first = catalog
-        .visible_documents_with_examples(None, Some("owner"), None, 20, false)
+        .visible_documents_with_examples(Some("acct-1"), Some("owner"), None, 20, false)
         .unwrap();
     assert_eq!(first.len(), 20);
     let cursor = first
         .last()
         .map(|row| (row.updated_at.as_str(), row.slug.as_str()));
     let second = catalog
-        .visible_documents_with_examples(None, Some("owner"), cursor, 20, false)
+        .visible_documents_with_examples(Some("acct-1"), Some("owner"), cursor, 20, false)
         .unwrap();
     assert_eq!(second.len(), 20);
     assert!(first
@@ -1499,7 +1490,7 @@ fn publication_receipts_are_atomic_and_idempotent() {
             request_id: &request_id,
             kind: "source_publish",
             request_digest: &digest,
-            intent: r#"{"version":1}"#,
+            intent: r#"{"version":2,"effect":"source_publish"}"#,
             created_at: now,
             actor: None,
         })
@@ -1515,7 +1506,7 @@ fn publication_receipts_are_atomic_and_idempotent() {
             request_id: &request_id,
             kind: "source_publish",
             request_digest: &digest,
-            intent: r#"{"version":1}"#,
+            intent: r#"{"version":2,"effect":"source_publish"}"#,
             created_at: now,
             actor: None,
         })
@@ -1552,7 +1543,7 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
                 request_id: &request_id,
                 kind: "source_publish",
                 request_digest: &digest,
-                intent: r#"{"version":1}"#,
+                intent: r#"{"version":2,"effect":"source_publish"}"#,
                 created_at: now,
                 actor: None,
             })
@@ -1578,7 +1569,7 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
             request_id: &request_id,
             kind: "source_publish",
             request_digest: &digest,
-            intent: r#"{"version":1}"#,
+            intent: r#"{"version":2,"effect":"source_publish"}"#,
             created_at: now,
             actor: None,
         }),
@@ -1634,6 +1625,7 @@ fn deleting_keeps_slug_reserved_until_finish() {
     catalog.begin_delete("doc").unwrap();
     assert_eq!(catalog.document("doc").unwrap().unwrap().status, "deleting");
     assert!(catalog.create_document(&document()).is_err());
+    drain_document_delete(&catalog, "doc");
     catalog.finish_delete("doc").unwrap();
     assert!(catalog.document("doc").unwrap().is_none());
 }
@@ -1652,7 +1644,7 @@ fn deleting_document_cannot_commit_a_prepared_publication() {
             request_id: &request_id,
             kind: "source_publish",
             request_digest: &operation_digest,
-            intent: "{}",
+            intent: r#"{"version":2,"effect":"source_publish"}"#,
             created_at: now,
             actor: None,
         })
@@ -1672,35 +1664,13 @@ fn deleting_document_cannot_commit_a_prepared_publication() {
 }
 
 #[test]
-fn deleting_document_keeps_capacity_until_journal_retirement_finishes() {
+fn deleting_document_keeps_capacity_until_bounded_teardown_finishes() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
     catalog.begin_delete("doc").unwrap();
-    catalog
-        .with_connection(|connection| {
-            connection
-                .execute(
-                    "INSERT INTO journal_retirements
-                     (object_key,kind,encoded_bytes,modified_at,delete_after)
-                     VALUES ('journal/deploy/segments/s1','segment',1,1,1)",
-                    [],
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .unwrap();
     assert!(catalog.finish_delete("doc").is_err());
-    catalog
-        .with_connection(|connection| {
-            connection
-                .execute(
-                    "DELETE FROM journal_retirements
-                     WHERE object_key='journal/deploy/segments/s1'",
-                    [],
-                )
-                .map_err(crate::storage::catalog::CatalogError::from)
-        })
-        .unwrap();
+    drain_document_delete(&catalog, "doc");
     catalog.finish_delete("doc").unwrap();
 }
 
@@ -2864,6 +2834,31 @@ fn drain_erasure(catalog: &Catalog, id: &str, limit: u32) {
     }
 }
 
+fn drain_document_delete(catalog: &Catalog, slug: &str) {
+    for _ in 0..64 {
+        let _ = catalog
+            .erase_document_batch(slug, 250, crate::util::now_millis())
+            .unwrap();
+        let done = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT json_extract(plan_json,'$.stage')='done'
+                         FROM operations o JOIN documents d ON d.id=o.document_id
+                         WHERE d.slug=?1 AND o.kind='erase_document' AND o.state='prepared'",
+                        [slug],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(CatalogError::from)
+            })
+            .unwrap();
+        if done {
+            return;
+        }
+    }
+    panic!("document teardown did not reach its durable done stage");
+}
+
 fn attribution_of(catalog: &Catalog, sha: &str) -> (String, Option<String>) {
     let row = catalog.checkpoint("doc", sha).unwrap().unwrap();
     (row.by, row.by_account)
@@ -2908,7 +2903,7 @@ fn erasure_follows_the_account_not_the_handle() {
     );
     let kept = catalog.checkpoint("doc", "mine").unwrap().unwrap();
     assert_eq!(kept.tree_sha, fixture_tree_digest("mine"));
-    assert_eq!(kept.at, "2026-02-02T00:00:00.000Z");
+    assert_eq!(kept.at, "2026-02-02T00:00:00Z");
     assert_eq!(kept.size, 7);
     assert_eq!(kept.why, "cli");
     catalog.finish_erasure("acct-writer").unwrap();
@@ -2927,8 +2922,9 @@ fn erasure_covers_legacy_rows_and_leaves_unattributed_ones_alone() {
         .upsert_account(&contributor("acct-writer", "alice"))
         .unwrap();
     insert_attributed(&catalog, "stable", "alice", Some("acct-writer"));
-    // Written before this column existed, when the erasure query matched the
-    // account id in `by`.
+    // A v2 row without an account attribution is immutable provenance. The
+    // opaque legacy value is retained; erasure must not guess that it names
+    // the account being erased.
     insert_attributed(&catalog, "legacy", "acct-writer", None);
     insert_attributed(&catalog, "anonymous", "Reviewer two", None);
     insert_attributed(&catalog, "imported", "", None);
@@ -2944,7 +2940,7 @@ fn erasure_covers_legacy_rows_and_leaves_unattributed_ones_alone() {
     );
     assert_eq!(
         attribution_of(&catalog, "legacy"),
-        ("Deleted user".to_string(), None)
+        ("acct-writer".to_string(), None)
     );
     assert_eq!(
         attribution_of(&catalog, "anonymous"),
