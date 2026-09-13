@@ -278,7 +278,6 @@ pub struct QuotaPreferencesRecord {
     pub account_id: String,
     pub revision: i64,
     pub payload: String,
-    pub policy_generation: String,
     pub updated_at: i64,
 }
 

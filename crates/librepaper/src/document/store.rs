@@ -578,9 +578,11 @@ impl Store {
                 );
                 // A failed reservation is not permission to evict history
                 // synchronously. When the owner is already over its hard
-                // quota, enqueue a bounded pressure plan so a retry can make
-                // progress after successful GC. A refusal caused only by
-                // this prospective write is a no-op while current usage fits.
+                // quota, recheck the live pressure decision for diagnostics.
+                // This never creates a durable pressure plan; the retention
+                // worker independently recalculates document eligibility.
+                // A refusal caused only by this prospective write is a no-op
+                // while current usage fits.
                 if matches!(
                     &result,
                     Err(crate::storage::catalog::CatalogError::Refused(
@@ -589,7 +591,7 @@ impl Store {
                         _
                     ))
                 ) {
-                    let _ = catalog.schedule_hard_pressure_for_slug_for_growth_with_limits(
+                    let _ = catalog.check_hard_pressure_for_slug_for_growth_with_limits(
                         &slug,
                         per_owner,
                         bytes,
@@ -1475,12 +1477,13 @@ impl Store {
             if let Some(owner) = pressure_owner {
                 let _ = catalog
                     .execute_catalog(STORE_JOB_BYTES + owner.len(), move |catalog| {
-                        catalog.schedule_hard_pressure_for_growth_with_limits(
+                        catalog.check_hard_pressure_for_growth_with_limits(
                             &owner,
                             limits.per_owner,
                             // A failed admission has not charged these
-                            // prospective bytes yet; pressure must reserve
-                            // room for the whole attempted publication.
+                            // prospective bytes yet; check the whole
+                            // attempted publication without creating a
+                            // persistent pressure plan.
                             pressure_growth,
                             hard_count,
                             crate::util::now_unix(),

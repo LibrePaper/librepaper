@@ -222,28 +222,16 @@ fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
     catalog.upsert_account(&account()).unwrap();
     assert!(catalog.quota_preferences("acct-1").unwrap().is_none());
     let first = catalog
-        .save_quota_preferences(
-            "acct-1",
-            0,
-            r#"{"version":1,"futureField":true}"#,
-            "generation-1",
-            10,
-        )
+        .save_quota_preferences("acct-1", 0, r#"{"version":1,"futureField":true}"#, 10)
         .unwrap();
     assert_eq!(first.revision, 1);
     assert_eq!(first.payload, r#"{"version":1,"futureField":true}"#);
     assert!(matches!(
-        catalog.save_quota_preferences("acct-1", 0, "{}", "stale", 11),
+        catalog.save_quota_preferences("acct-1", 0, "{}", 11),
         Err(CatalogError::Conflict(_))
     ));
     let second = catalog
-        .save_quota_preferences(
-            "acct-1",
-            1,
-            r#"{"version":1,"futureField":false}"#,
-            "generation-2",
-            12,
-        )
+        .save_quota_preferences("acct-1", 1, r#"{"version":1,"futureField":false}"#, 12)
         .unwrap();
     assert_eq!(second.revision, 2);
     assert_eq!(
@@ -253,7 +241,7 @@ fn quota_preferences_use_optimistic_revisions_and_preserve_payload() {
 }
 
 #[test]
-fn retention_hard_count_overrides_protection_only_until_the_count_is_met() {
+fn quota_apply_marks_live_policy_for_advisory_worker() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
@@ -272,23 +260,11 @@ fn retention_hard_count_overrides_protection_only_until_the_count_is_met() {
     let payload =
         serde_json::to_string(&crate::document::quota::QuotaPreferences::default()).unwrap();
     catalog
-        .save_quota_preferences_and_schedule_with_hard_count_limit(
-            "acct-1",
-            0,
-            &payload,
-            "hard-count",
-            "approved",
-            &[
-                ("doc".into(), "milestone-0".into()),
-                ("doc".into(), "milestone-1".into()),
-            ],
-            1,
-            1,
-            Some(2),
-        )
+        .save_quota_preferences_advisory("acct-1", 0, &payload, 1)
         .unwrap();
     let pass = catalog.run_retention_pass(2, 100).unwrap();
-    assert_eq!(pass.removed, vec![("doc".into(), "milestone-0".into())]);
+    assert!(pass.removed.is_empty());
+    assert!(pass.blocked == 0);
     assert!(catalog.checkpoint("doc", "milestone-1").unwrap().is_some());
     assert!(catalog.checkpoint("doc", "milestone-2").unwrap().is_some());
     assert_eq!(

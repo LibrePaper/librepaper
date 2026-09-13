@@ -25,7 +25,6 @@ fn default_record(account_id: &str) -> QuotaPreferencesRecord {
         revision: 0,
         payload: serde_json::to_string(&QuotaPreferences::default())
             .expect("preferences serialize"),
-        policy_generation: String::new(),
         updated_at: 0,
     }
 }
@@ -238,16 +237,14 @@ impl Server {
         let Some(catalog) = &self.store.catalog else {
             return write_json(503, &json!({"error":"catalog unavailable"}));
         };
-        let generation = crate::util::new_request_key();
         let saved = catalog
             .execute_catalog(
                 SERVER_JOB_BYTES + account_id.len() + payload.len(),
                 move |catalog| {
-                    catalog.save_quota_preferences(
+                    catalog.save_quota_preferences_advisory(
                         &account_id,
                         asked.revision,
                         &payload,
-                        &generation,
                         crate::util::now_millis(),
                     )
                 },

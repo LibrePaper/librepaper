@@ -56,9 +56,10 @@ fn retention_candidates(
             !point.current
                 && !point.labelled
                 && !point.protected
-                && (point.age_due || point.routine_rank.is_some_and(|rank| {
-                    max_routine_count.is_some_and(|limit| rank >= limit)
-                }))
+                && (point.age_due
+                    || point
+                        .routine_rank
+                        .is_some_and(|rank| max_routine_count.is_some_and(|limit| rank >= limit)))
         })
         .map(|point| point.id.clone())
         .collect()
@@ -80,6 +81,7 @@ fn policy_fingerprint(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[deprecated(note = "v2 has no durable retention jobs")]
 pub struct RetentionJob {
     pub account_id: String,
     pub generation: String,
@@ -96,11 +98,20 @@ pub struct RetentionPass {
     pub blocked: usize,
 }
 
-fn retention_time(value: &str) -> i64 { value.parse().unwrap_or(0) }
+fn retention_time(value: &str) -> i64 {
+    value.parse().unwrap_or(0)
+}
 
 impl Catalog {
-    pub fn schedule_document_balanced(&self, slug: &str, now: i64, bounds: crate::document::quota::RetentionBounds) -> CatalogResult<usize> {
-        if slug.is_empty() || now < 0 { return Err(CatalogError::Invalid("invalid retention schedule".into())); }
+    pub fn schedule_document_balanced(
+        &self,
+        slug: &str,
+        now: i64,
+        bounds: crate::document::quota::RetentionBounds,
+    ) -> CatalogResult<usize> {
+        if slug.is_empty() || now < 0 {
+            return Err(CatalogError::Invalid("invalid retention schedule".into()));
+        }
         self.immediate(|tx| {
             let (document_id, owner_id, mode, document_revision, retention_json): (String, String, String, i64, String) = tx
                 .query_row(
@@ -249,7 +260,12 @@ impl Catalog {
         })
     }
 
-    pub fn retention_metadata_range(&self, slug: &str, first: i64, last: i64) -> CatalogResult<HashMap<String,(String,bool)>> {
+    pub fn retention_metadata_range(
+        &self,
+        slug: &str,
+        first: i64,
+        last: i64,
+    ) -> CatalogResult<HashMap<String, (String, bool)>> {
         self.with_connection(|connection| {
             let mut statement = connection.prepare("SELECT c.id,COALESCE(c.parent_id,''),0 FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.slug=?1 AND c.seq>=?2 AND c.seq<=?3") .map_err(CatalogError::from)?;
             let rows = statement.query_map(params![slug,first,last], |row| Ok((row.get(0)?,(row.get(1)?,row.get::<_,i64>(2)? != 0)))).map_err(CatalogError::from)?;
@@ -257,32 +273,45 @@ impl Catalog {
         })
     }
 
-    pub fn checkpoint_retention_metadata(&self, slug: &str, sha: &str) -> CatalogResult<Option<(String,bool)>> {
+    pub fn checkpoint_retention_metadata(
+        &self,
+        slug: &str,
+        sha: &str,
+    ) -> CatalogResult<Option<(String, bool)>> {
         self.with_connection(|connection| connection.query_row("SELECT COALESCE(c.parent_id,''),0 FROM checkpoints c JOIN documents d ON d.id=c.document_id WHERE d.slug=?1 AND c.id=?2", params![slug,sha], |row| Ok((row.get(0)?,row.get::<_,i64>(1)? != 0))).optional().map_err(CatalogError::from))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn save_quota_preferences_and_schedule(&self, account_id: &str, expected_revision: i64, payload: &str, generation: &str, candidate_fingerprint: &str, _candidates: &[(String,String)], grace_until: i64, now: i64) -> CatalogResult<RetentionJob> {
-        self.save_quota_preferences_and_schedule_with_hard_count_limit(account_id,expected_revision,payload,generation,candidate_fingerprint,&[],grace_until,now,None)
+    /// Save a policy and mark the owner's active documents for recalculation.
+    ///
+    /// The bounded worker performs the actual eligibility calculation and
+    /// applies the fixed 24-hour grace to newly eligible points.  This method
+    /// deliberately returns the saved preference record instead of a durable
+    /// job identity: v2 has no candidate table, generation, or immutable
+    /// preview to resume.
+    pub fn save_quota_preferences_advisory(
+        &self,
+        account_id: &str,
+        expected_revision: i64,
+        payload: &str,
+        now: i64,
+    ) -> CatalogResult<QuotaPreferencesRecord> {
+        self.save_quota_preferences(account_id, expected_revision, payload, now)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn save_quota_preferences_and_schedule_with_hard_count_limit(&self, account_id: &str, expected_revision: i64, payload: &str, generation: &str, candidate_fingerprint: &str, _candidates: &[(String,String)], grace_until: i64, now: i64, _hard_count_limit: Option<u32>) -> CatalogResult<RetentionJob> {
-        if generation.is_empty() || candidate_fingerprint.is_empty() || grace_until < now { return Err(CatalogError::Invalid("invalid retention application".into())); }
-        let record = self.save_quota_preferences(account_id,expected_revision,payload,generation,now)?;
-        let slugs: Vec<String> = self.with_connection(|connection| {
-            let mut statement = connection.prepare("SELECT slug FROM documents WHERE owner_id=?1 AND status IN ('active','creating')").map_err(CatalogError::from)?;
-            let rows = statement.query_map([account_id], |row| row.get(0)).map_err(CatalogError::from)?;
-            rows.collect::<Result<Vec<_>,_>>().map_err(CatalogError::from)
-        })?;
-        for slug in slugs { let _ = self.schedule_document_balanced(&slug, now, crate::document::quota::RetentionBounds::default())?; }
-        Ok(RetentionJob { account_id:account_id.into(),generation:generation.into(),revision:record.revision,status:"advisory".into(),grace_until,candidate_fingerprint:candidate_fingerprint.into() })
+    pub fn run_retention_pass(&self, now: i64, limit: u32) -> CatalogResult<RetentionPass> {
+        self.run_retention_pass_with_limits(now, limit, None, None)
     }
 
-    pub fn run_retention_pass(&self, now: i64, limit: u32) -> CatalogResult<RetentionPass> { self.run_retention_pass_with_limits(now,limit,None,None) }
-
-    pub fn run_retention_pass_with_limits(&self, now: i64, limit: u32, _current_hard_quota: Option<i64>, _current_hard_count: Option<u32>) -> CatalogResult<RetentionPass> {
-        if now < 0 { return Err(CatalogError::Invalid("negative retention time".into())); }
+    pub fn run_retention_pass_with_limits(
+        &self,
+        now: i64,
+        limit: u32,
+        _current_hard_quota: Option<i64>,
+        _current_hard_count: Option<u32>,
+    ) -> CatalogResult<RetentionPass> {
+        if now < 0 {
+            return Err(CatalogError::Invalid("negative retention time".into()));
+        }
         // A retention transaction is bounded to the normative 32 checkpoint
         // rows.  Closure edges are checked before each delete and stop the
         // pass before the 32,768-row transaction budget can be exceeded.
@@ -295,22 +324,62 @@ impl Catalog {
         let mut removed = Vec::new();
         let mut blocked = 0usize;
         let mut edges = 0i64;
-        for (document_id,checkpoint_id,slug,count) in candidates {
-            if edges.checked_add(count).ok_or_else(|| CatalogError::Invalid("retention edge counter overflow".into()))? > 32_768 { break; }
+        for (document_id, checkpoint_id, slug, count) in candidates {
+            if edges
+                .checked_add(count)
+                .ok_or_else(|| CatalogError::Invalid("retention edge counter overflow".into()))?
+                > 32_768
+            {
+                break;
+            }
             // Re-evaluate the live account/document policy before each
             // deletion. A preference update can invalidate a due row between
             // candidate discovery and this transaction.
-            let _ = self.schedule_document_balanced(&slug, now, crate::document::quota::RetentionBounds::default())?;
-            let doc = DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-            let checkpoint = CheckpointId::new(checkpoint_id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
-            if self.delete_v2_checkpoint(&doc,&checkpoint,UnixMillis::new(now)?)? { edges += count; removed.push((slug,checkpoint.to_string())); } else { blocked += 1; }
+            let _ = self.schedule_document_balanced(
+                &slug,
+                now,
+                crate::document::quota::RetentionBounds::default(),
+            )?;
+            let doc =
+                DocumentId::new(document_id).map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            let checkpoint = CheckpointId::new(checkpoint_id)
+                .map_err(|e| CatalogError::Invalid(e.to_string()))?;
+            if self.delete_v2_checkpoint(&doc, &checkpoint, UnixMillis::new(now)?)? {
+                edges += count;
+                removed.push((slug, checkpoint.to_string()));
+            } else {
+                blocked += 1;
+            }
         }
-        Ok(RetentionPass { generation:format!("retention:{now}"),removed,blocked })
+        Ok(RetentionPass {
+            generation: format!("retention:{now}"),
+            removed,
+            blocked,
+        })
     }
 
-    pub fn retention_job(&self, _account_id: &str, _generation: &str) -> CatalogResult<Option<RetentionJob>> { Err(CatalogError::Invalid("durable retention jobs were removed in catalog v2".into())) }
-    pub fn latest_retention_job(&self, _account_id: &str) -> CatalogResult<Option<RetentionJob>> { Err(CatalogError::Invalid("durable retention jobs were removed in catalog v2".into())) }
-    pub fn last_completed_retention_generation(&self, _account_id: &str) -> CatalogResult<Option<String>> { Err(CatalogError::Invalid("durable retention jobs were removed in catalog v2".into())) }
+    pub fn retention_job(
+        &self,
+        _account_id: &str,
+        _generation: &str,
+    ) -> CatalogResult<Option<RetentionJob>> {
+        Err(CatalogError::Invalid(
+            "durable retention jobs were removed in catalog v2".into(),
+        ))
+    }
+    pub fn latest_retention_job(&self, _account_id: &str) -> CatalogResult<Option<RetentionJob>> {
+        Err(CatalogError::Invalid(
+            "durable retention jobs were removed in catalog v2".into(),
+        ))
+    }
+    pub fn last_completed_retention_generation(
+        &self,
+        _account_id: &str,
+    ) -> CatalogResult<Option<String>> {
+        Err(CatalogError::Invalid(
+            "durable retention jobs were removed in catalog v2".into(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -337,7 +406,13 @@ mod tests {
         let mut current = point("current", Some(0), true);
         current.current = true;
         let eligible = retention_candidates(
-            &[labelled, protected, current, point("newest", Some(0), false), point("old", Some(1), false)],
+            &[
+                labelled,
+                protected,
+                current,
+                point("newest", Some(0), false),
+                point("old", Some(1), false),
+            ],
             Some(1),
         );
         assert_eq!(eligible, std::collections::BTreeSet::from(["old".into()]));
@@ -345,7 +420,10 @@ mod tests {
 
     #[test]
     fn age_is_an_independent_candidate_bound() {
-        let eligible = retention_candidates(&[point("fresh", Some(0), false), point("old", Some(0), true)], Some(50));
+        let eligible = retention_candidates(
+            &[point("fresh", Some(0), false), point("old", Some(0), true)],
+            Some(50),
+        );
         assert_eq!(eligible, std::collections::BTreeSet::from(["old".into()]));
     }
 

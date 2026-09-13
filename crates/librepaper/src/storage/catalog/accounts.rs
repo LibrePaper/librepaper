@@ -306,7 +306,6 @@ impl Catalog {
                             account_id: row.get(0)?,
                             revision: row.get(1)?,
                             payload: row.get(2)?,
-                            policy_generation: String::new(),
                             updated_at: row.get(4)?,
                         })
                     },
@@ -318,14 +317,13 @@ impl Catalog {
 
     /// Save account quota intent with optimistic concurrency.  `expected` is
     /// zero for an initial insert; a non-zero value must equal the persisted
-    /// revision.  The generation is an immutable operation identity used by
-    /// preview/apply and thinning workers.
+    /// revision. Retention eligibility is recalculated from live policy and
+    /// document metadata; no durable operation generation is assigned.
     pub fn save_quota_preferences(
         &self,
         account_id: &str,
         expected: i64,
         payload: &str,
-        policy_generation: &str,
         updated_at: i64,
     ) -> CatalogResult<QuotaPreferencesRecord> {
         if account_id.is_empty() || payload.is_empty() || payload.len() > 65_536 || updated_at < 0 {
@@ -405,7 +403,6 @@ impl Catalog {
                 account_id: account_id.to_string(),
                 revision,
                 payload: payload.to_string(),
-                policy_generation: policy_generation.to_string(),
                 updated_at,
             })
         })

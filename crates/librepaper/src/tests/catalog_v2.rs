@@ -468,14 +468,14 @@ fn quota_preferences_reject_stale_and_invalid_updates_atomically() {
     let preferences = crate::document::quota::QuotaPreferences::default();
     let payload = serde_json::to_string(&preferences).unwrap();
     let saved = catalog
-        .save_quota_preferences("owner", 0, &payload, "", 100)
+        .save_quota_preferences("owner", 0, &payload, 100)
         .unwrap();
     assert_eq!(saved.revision, 1);
     assert!(catalog
-        .save_quota_preferences("owner", 0, &payload, "", 200)
+        .save_quota_preferences("owner", 0, &payload, 200)
         .is_err());
     assert!(catalog
-        .save_quota_preferences("owner", 1, r#"{"version":99}"#, "", 200)
+        .save_quota_preferences("owner", 1, r#"{"version":99}"#, 200)
         .is_err());
     assert_eq!(
         catalog
