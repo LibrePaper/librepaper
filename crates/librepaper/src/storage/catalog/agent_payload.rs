@@ -561,19 +561,37 @@ mod tests {
             V2AdmissionLimits { owner_bytes: i64::MAX, deployment_bytes: i64::MAX, owner_documents: i64::MAX },
             UnixMillis(1),
         ).expect("admission");
-        catalog.with_connection(|db| {
-            db.execute(
-                "UPDATE objects SET state='available',byte_length=128,allocation_operation_id=NULL WHERE document_id=?1 AND id=?2",
-                params![admitted.document_id.as_str(), admitted.object_id.as_str()],
-            )?;
-            Ok(())
-        }).expect("settled physical object");
+        // Exercise the same settlement path as the physical writer so the
+        // object row and all owner/deployment counters agree at the replay
+        // boundary.
+        catalog
+            .settle_v2_object(
+                &admitted.document_id,
+                &admitted.object_id,
+                128,
+                UnixMillis(2),
+            )
+            .expect("settled physical object");
         catalog.finish_agent_payload(
             &admitted.operation_id,
             &authority,
             r#"{"version":2}"#,
             UnixMillis(2),
         ).expect("finish stage");
+        let replay = catalog
+            .admit_agent_payload(
+                &request,
+                &authority,
+                V2AdmissionLimits {
+                    owner_bytes: i64::MAX,
+                    deployment_bytes: i64::MAX,
+                    owner_documents: i64::MAX,
+                },
+                UnixMillis(3),
+            )
+            .expect("settled stage replay");
+        assert!(replay.replay);
+        assert_eq!(replay.state, "staged");
         let (state, live_root, leases): (String, i64, i64) = catalog.with_connection(|db| {
             db.query_row(
                 "SELECT op.state,o.live_root,(SELECT count(*) FROM object_leases l WHERE l.operation_id=op.id AND l.purpose='stage') FROM operations op JOIN objects o ON o.document_id=op.document_id AND o.id=json_extract(op.plan_json,'$.object_id') WHERE op.id=?1",

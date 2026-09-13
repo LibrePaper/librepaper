@@ -784,50 +784,53 @@ impl Server {
                 return Err(Failure::new("request_memory", "request memory budget exhausted"));
             }
         };
-        let mut get = Box::pin(self.store.blobs.get(&descriptor.storage_key));
-        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
-        let raw = loop {
-            tokio::select! {
-                result = &mut get => break match result {
-                    Ok(raw) => raw,
-                    Err(error) => {
-                        let release_catalog = Arc::clone(catalog);
-                        let release_document = descriptor.document_id.clone();
-                        let release_object = descriptor.id.clone();
-                        let release_holder = holder.clone();
-                        let _ = release_catalog.execute_catalog(128, move |catalog| catalog.release_v2_lease(&release_document, &release_object, &release_holder)).await;
-                        return Err(Failure::new("unavailable", error.to_string()));
-                    }
-                },
-                _ = heartbeat.tick() => {
-                    let renewed = catalog.execute_catalog(
-                        256,
-                        {
-                            let document_id = descriptor.document_id.clone();
-                            let object_id = descriptor.id.clone();
-                            let holder = holder.clone();
-                            let deadline = read.expires_at;
-                            move |catalog| catalog.renew_agent_payload_read(
-                                &document_id, &object_id, &holder, UnixMillis(crate::util::now_millis()), deadline,
-                            )
-                        },
-                    ).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
-                    if !renewed {
-                        let release_catalog = Arc::clone(catalog);
-                        let release_document = descriptor.document_id.clone();
-                        let release_object = descriptor.id.clone();
-                        let release_holder = holder.clone();
-                        let _ = release_catalog.execute_catalog(128, move |catalog| catalog.release_v2_lease(&release_document, &release_object, &release_holder)).await;
-                        return Err(Failure::new("view_expired", "agent read lease expired"));
+        // BlobStore implementations may move their I/O into a blocking task.
+        // Keep the compressed budget permit in an owned task together with
+        // that I/O, so cancellation of this request cannot release shared
+        // memory while a detached read is still filling its buffer.
+        let read_catalog = Arc::clone(catalog);
+        let read_document = descriptor.document_id.clone();
+        let read_object = descriptor.id.clone();
+        let read_holder = holder.clone();
+        let read_key = descriptor.storage_key.clone();
+        let read_deadline = read.expires_at;
+        let read_permit = compressed_permit;
+        let read_blobs = Arc::clone(&self.store.blobs);
+        let read_task = tokio::spawn(async move {
+            let mut get = Box::pin(read_blobs.get(&read_key));
+            let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+            let result: Result<Vec<u8>, Failure> = loop {
+                tokio::select! {
+                    result = &mut get => break result.map_err(|error| Failure::new("unavailable", error.to_string())),
+                    _ = heartbeat.tick() => {
+                        let renewed = read_catalog.execute_catalog(
+                            256,
+                            {
+                                let document_id = read_document.clone();
+                                let object_id = read_object.clone();
+                                let holder = read_holder.clone();
+                                move |catalog| catalog.renew_agent_payload_read(
+                                    &document_id, &object_id, &holder,
+                                    UnixMillis(crate::util::now_millis()), read_deadline,
+                                )
+                            },
+                        ).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
+                        if !renewed {
+                            break Err(Failure::new("view_expired", "agent read lease expired"));
+                        }
                     }
                 }
-            }
-        };
-        let release_catalog = Arc::clone(catalog);
-        let release_document = descriptor.document_id.clone();
-        let release_object = descriptor.id.clone();
-        let release_holder = holder.clone();
-        let _ = release_catalog.execute_catalog(128, move |catalog| catalog.release_v2_lease(&release_document, &release_object, &release_holder)).await;
+            };
+            let _ = read_catalog.execute_catalog(128, {
+                let document_id = read_document;
+                let object_id = read_object;
+                let holder = read_holder;
+                move |catalog| catalog.release_v2_lease(&document_id, &object_id, &holder)
+            }).await;
+            result.map(|raw| (raw, read_permit))
+        });
+        let (raw, compressed_permit) = read_task.await
+            .map_err(|error| Failure::new("unavailable", error.to_string()))??;
         if descriptor.byte_length != i64::try_from(raw.len()).ok()
             || hex::encode(Sha256::digest(&raw)) != descriptor.digest
         {

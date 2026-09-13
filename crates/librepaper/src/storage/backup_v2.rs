@@ -862,10 +862,11 @@ pub async fn restore_backup(
         if !buffered.is_empty() {
             return Err(BackupV2Error::Corrupt("object inventory has an unterminated entry".into()));
         }
-        if report.objects_restored as u64 != manifest.object_count
-            || hex::encode(inventory_digest.finalize()) != inventory.digest
-        {
-            return Err(BackupV2Error::Corrupt("object inventory digest or count mismatch".into()));
+        if report.objects_restored as u64 != manifest.object_count {
+            return Err(BackupV2Error::Corrupt("object inventory count mismatch".into()));
+        }
+        if hex::encode(inventory_digest.finalize()) != inventory.digest {
+            return Err(BackupV2Error::Corrupt("object inventory digest mismatch".into()));
         }
     } else {
         return Err(BackupV2Error::Corrupt("missing streamed object inventory".into()));
@@ -2976,7 +2977,10 @@ mod tests {
             })
             .expect("server identity");
         let operation_id = "active-expired-backup";
-        let now = 10_000_i64;
+        // Use the same clock domain as the production expiry worker.  A
+        // small fixture timestamp is already expired before the heartbeat
+        // and would make this test race the real wall clock.
+        let now = crate::util::now_millis();
         catalog
             .with_connection(|connection| {
                 connection

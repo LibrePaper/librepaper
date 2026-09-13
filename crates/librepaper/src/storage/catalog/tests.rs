@@ -124,13 +124,14 @@ fn annotation_writes_recheck_the_account_session_generation() {
         )
         .unwrap();
     catalog
-        .record_suggestion_accept_checkpoint(
+        .record_suggestion_accept_checkpoint_authorized(
             "doc",
             "suggestion-1",
             &accept_request,
             &accept_digest,
             "checkpoint-sha",
             "2026-01-01T00:00:03.000Z",
+            current,
         )
         .unwrap();
     catalog.revoke_sessions("acct-1", "generation-2").unwrap();
@@ -820,6 +821,13 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
                 r#"UPDATE documents SET retention_due_at=1,
                  retention_json='{"version":1,"evaluation":{"accountRevision":0,"documentRevision":0}}'
                  WHERE id='storage-1'"#,
+                [],
+            )?;
+            // The current checkpoint is protected by the v2 delete fence.
+            // Clear the display head explicitly: this fixture is about
+            // pruning two retained historical files and their shared chunk.
+            connection.execute(
+                "UPDATE documents SET current_checkpoint_id=NULL WHERE id='storage-1'",
                 [],
             )?;
             Ok(())
@@ -1738,9 +1746,9 @@ fn visible_documents_is_keyset_bounded_and_respects_listing_switch() {
     let plans = catalog
         .with_connection(|connection| {
             let queries = [
-                "EXPLAIN QUERY PLAN SELECT d.slug FROM grants g JOIN documents d ON d.id=g.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE d.status='active' AND g.account_id='acct-1' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
-                "EXPLAIN QUERY PLAN SELECT d.slug FROM links l JOIN documents d ON d.id=l.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE d.status='active' AND l.credential_generation>0 ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
-                "EXPLAIN QUERY PLAN SELECT d.slug FROM documents d INDEXED BY documents_examples WHERE d.status='active' AND d.ownership_mode='example' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
+                "EXPLAIN QUERY PLAN SELECT d.slug FROM grants g JOIN documents d INDEXED BY documents_active_updated ON d.id=g.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE d.status='active' AND g.account_id='acct-1' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
+                "EXPLAIN QUERY PLAN SELECT d.slug FROM links l JOIN documents d INDEXED BY documents_active_updated ON d.id=l.document_id JOIN accounts a ON a.id=d.owner_id AND a.status='active' WHERE d.status='active' AND l.credential_generation>0 ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
+                "EXPLAIN QUERY PLAN SELECT d.slug FROM documents d INDEXED BY documents_active_example_updated WHERE d.status='active' AND d.ownership_mode='example' ORDER BY d.updated_at DESC,d.slug DESC LIMIT 20",
             ];
             Ok(queries
                 .iter()
@@ -2959,7 +2967,7 @@ fn v2_checkpoint_operation_receipt_is_bounded_and_terminal() {
         })
         .unwrap();
     assert_eq!(state, "committed");
-    assert_eq!(result, "{}");
+    assert_eq!(result, r#"{"version":2}"#);
     assert!(receipt_expires_at > crate::util::now_millis());
 }
 
