@@ -2496,3 +2496,117 @@ fn project_names_are_unique_per_owner_across_creation_and_rename() {
         Err(CatalogError::Conflict(_))
     ));
 }
+
+#[test]
+fn v2_erasure_reopens_with_revocation_and_250_row_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog.db");
+    let catalog = Catalog::open(&path).unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog
+        .begin_erasure("acct-1", "generation-erasing")
+        .unwrap();
+    let (status, generation, operation_id): (String, String, String) = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT a.status,a.session_generation,o.id
+                     FROM accounts a JOIN operations o ON o.account_id=a.id
+                      AND o.kind='erase_account' AND o.state='prepared'
+                     WHERE a.id='acct-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(status, "erasing");
+    assert_eq!(generation, "generation-erasing");
+    assert_eq!(operation_id.len(), 32);
+    drop(catalog);
+
+    let reopened = Catalog::open(&path).unwrap();
+    assert_eq!(
+        reopened.erasure_stage("acct-1").unwrap().as_deref(),
+        Some("owned_documents")
+    );
+
+    reopened
+        .with_connection(|connection| {
+            for index in 0..251 {
+                let document_id = format!("document-{index:03}");
+                connection.execute(
+                    "INSERT INTO documents
+                     (id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path)
+                     VALUES(?1,?2,'acct-1','owned',?2,?2,'active',0,0,'markdown','README.md')",
+                    rusqlite::params![document_id, format!("slug-{index:03}")],
+                )?;
+                connection.execute(
+                    "INSERT INTO grants(document_id,account_id,role,created_at)
+                     VALUES(?1,'acct-1','reader',0)",
+                    [&document_id],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        reopened
+            .erase_account_batch("acct-1", "owned_documents", None, 1, 1000)
+            .unwrap(),
+        250
+    );
+    let deleting: i64 = reopened
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM documents WHERE owner_id='acct-1' AND status='deleting'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(deleting, 250);
+    assert_eq!(
+        reopened
+            .erase_account_batch("acct-1", "grants", None, 2, 1000)
+            .unwrap(),
+        250
+    );
+    let remaining: i64 = reopened
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM grants WHERE account_id='acct-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(remaining, 1);
+}
+
+#[test]
+fn v2_erasure_finalization_removes_account_operation_after_fk_cleanup() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    catalog.upsert_account(&account()).unwrap();
+    catalog
+        .begin_erasure("acct-1", "generation-erasing")
+        .unwrap();
+    catalog.finish_erasure("acct-1").unwrap();
+    assert!(catalog.account("acct-1").unwrap().is_none());
+    let operations: i64 = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM operations WHERE account_id='acct-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(operations, 0);
+}

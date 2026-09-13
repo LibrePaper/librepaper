@@ -14,18 +14,30 @@ fn update_erasure_progress(
 ) -> CatalogResult<()> {
     if !matches!(
         stage,
-        "grants" | "bookmarks" | "annotations" | "replies" | "checkpoints" | "operations"
+        "owned_documents"
+            | "operations"
+            | "grants"
+            | "bookmarks"
+            | "annotations"
+            | "replies"
+            | "checkpoints"
     ) {
         return Err(CatalogError::Invalid("unknown erasure stage".into()));
     }
-    let raw: String = tx
+    let (raw, operation_generation, current_generation): (String, String, String) = tx
         .query_row(
-            "SELECT plan_json FROM operations
-             WHERE account_id=?1 AND kind='erase_account' AND state='prepared'",
+            "SELECT o.plan_json, o.writer_generation, s.writer_generation
+             FROM operations o CROSS JOIN server_state s
+             WHERE o.account_id=?1 AND o.kind='erase_account' AND o.state='prepared' AND s.id=1",
             [account_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(CatalogError::from)?;
+    if operation_generation != current_generation {
+        return Err(CatalogError::Conflict(
+            "account erasure writer generation changed".into(),
+        ));
+    }
     let mut plan: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|error| CatalogError::Invalid(format!("invalid erasure plan: {error}")))?;
     if !plan.is_object() || plan.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
@@ -49,8 +61,9 @@ fn update_erasure_progress(
     let changed = tx
         .execute(
             "UPDATE operations SET plan_json=?2,updated_at=max(updated_at,?3)
-             WHERE account_id=?1 AND kind='erase_account' AND state='prepared'",
-            params![account_id, encoded, updated_at],
+             WHERE account_id=?1 AND kind='erase_account' AND state='prepared'
+               AND writer_generation=?4",
+            params![account_id, encoded, updated_at, current_generation],
         )
         .map_err(CatalogError::from)?;
     if changed != 1 {
@@ -589,40 +602,10 @@ impl Catalog {
                 "UPDATE accounts SET status='erasing', session_generation=?2 WHERE id=?1 AND status='active'",
                 params![id, new_generation],
             ).map_err(CatalogError::from)?;
-            // Withdrawal is part of the lifecycle transition.  The erasure
-            // worker still owns physical reclamation and must retain these
-            // rows (and their reservations) until object cleanup succeeds.
-            // Withdraw every owned lifecycle row, including a creation whose
-            // publication receipt is still prepared.  A prepared receipt is
-            // an externally visible reservation even though its document is
-            // not listed; leaving it behind would let a restart resurrect
-            // content for an account that has already been erased.
-            tx.execute(
-                "UPDATE documents
-                    SET status='deleting', publication_id=NULL,
-                 publication_object_id=NULL, published_at=NULL
-
-                    WHERE owner_id=?1
-                    AND status IN ('active','creating')",
-                [id],
-            )
-            .map_err(CatalogError::from)?;
-            tx.execute(
-                "UPDATE operations
-                    SET state='aborted', result_json=?2, completed_at=?3, receipt_expires_at=?3, updated_at=max(updated_at,?3)
-
-                    WHERE state='prepared' AND kind <> 'erase_account'
-                    AND document_id IN
-                   (SELECT id
-                    FROM documents
-                    WHERE owner_id=?1
-                    AND status='deleting')",
-                params![id, r#"{"version":1,"reason":"account_erasure"}"#, super::unix_millis()],
-            ).map_err(CatalogError::from)?;
-            let operation_id = crate::util::new_id();
+            let operation_id = hex::encode(crate::auth::random_bytes(16));
             let request_digest = hex::encode(Sha256::digest(id.as_bytes()));
             let request_key = format!("erase-account:{}", &request_digest[..32]);
-            let plan = r#"{"version":1,"stage":"grants","cursor":null}"#;
+            let plan = r#"{"version":1,"stage":"owned_documents","cursor":null}"#;
             let writer_generation: String = tx.query_row(
                 "SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0))?;
             let now = super::unix_millis();
@@ -735,6 +718,43 @@ impl Catalog {
                 })
                 .transpose()?;
             let n_and_cursor = match stage {
+                "owned_documents" => {
+                    let after_document = cursor_parts
+                        .as_ref()
+                        .map(|parts| {
+                            if parts.len() != 1 {
+                                return Err(CatalogError::Invalid("invalid owned-document cursor".into()));
+                            }
+                            Ok(parts[0].as_str())
+                        })
+                        .transpose()?
+                        .unwrap_or("");
+                    let mut rows = tx
+                        .prepare(
+                            "SELECT id FROM documents
+                             WHERE owner_id=?1 AND status IN ('active','creating') AND id>?2
+                             ORDER BY id LIMIT ?3",
+                        )?
+                        .query_map(
+                            params![id, after_document, i64::from(limit.min(MAX_ERASURE_BATCH))],
+                            |row| row.get::<_, String>(0),
+                        )?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    let last = rows.last().cloned();
+                    let has_rows = last.is_some();
+                    for document_id in rows.drain(..) {
+                        tx.execute(
+                            "UPDATE documents SET status='deleting', publication_id=NULL,
+                             publication_object_id=NULL, published_at=NULL
+                             WHERE id=?1 AND owner_id=?2 AND status IN ('active','creating')",
+                            params![document_id, id],
+                        )?;
+                    }
+                    (
+                        last.map(|document_id| serde_json::json!([document_id]).to_string()),
+                        has_rows,
+                    )
+                }
                 "grants" => {
                     let (after_document, after_account) = cursor_parts
                         .as_ref()
@@ -964,29 +984,55 @@ impl Catalog {
                         .unwrap_or("");
                     let mut rows = tx
                         .prepare(
-                            "SELECT o.id FROM operations o
-                             WHERE o.account_id=?1 AND o.kind <> 'erase_account'
-                               AND o.state <> 'prepared' AND o.id>?2
-                               AND NOT EXISTS (SELECT 1 FROM objects WHERE allocation_operation_id=o.id)
-                               AND NOT EXISTS (SELECT 1 FROM object_leases WHERE operation_id=o.id)
+                            "SELECT o.id, o.state FROM operations o
+                             WHERE o.kind <> 'erase_account'
+                               AND (o.account_id=?1 OR o.actor_key=?1 OR o.actor_key=('account:' || ?1) OR EXISTS
+                                   (SELECT 1 FROM documents d WHERE d.id=o.document_id AND d.owner_id=?1))
+                               AND o.id>?2
                              ORDER BY o.id LIMIT ?3",
                         )?
                         .query_map(
                             params![id, after_id, i64::from(limit.min(MAX_ERASURE_BATCH))],
-                            |row| row.get::<_, String>(0),
+                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                         )?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     let last = rows.last().cloned();
                     let has_rows = last.is_some();
-                    for operation_id in rows.drain(..) {
+                    let mut progress = None;
+                    for (operation_id, state) in rows.drain(..) {
+                        if state == "prepared" {
+                            let now = super::unix_millis();
+                            let receipt = now.saturating_add(7 * 24 * 60 * 60 * 1000);
+                            tx.execute(
+                                "UPDATE operations SET state='aborted', result_json=?2,
+                                 completed_at=?3, receipt_expires_at=max(COALESCE(receipt_expires_at,0),?4),
+                                 updated_at=max(updated_at,?3)
+                                 WHERE id=?1 AND state='prepared' AND kind <> 'erase_account'",
+                                params![operation_id, r#"{"version":1,"reason":"account_erasure"}"#, now, receipt],
+                            )?;
+                            progress = Some(operation_id);
+                            continue;
+                        }
+                        let pinned: i64 = tx.query_row(
+                            "SELECT
+                               (SELECT COUNT(*) FROM objects WHERE allocation_operation_id=?1) +
+                               (SELECT COUNT(*) FROM object_leases WHERE operation_id=?1)",
+                            [&operation_id], |row| row.get(0))?;
+                        if pinned != 0 {
+                            return Err(CatalogError::Conflict(
+                                "account erasure operation is still physically pinned".into(),
+                            ));
+                        }
                         tx.execute(
-                            "DELETE FROM operations WHERE id=?1 AND account_id=?2 AND state <> 'prepared'",
-                            params![operation_id, id],
+                            "DELETE FROM operations WHERE id=?1 AND state <> 'prepared'",
+                            [&operation_id],
                         )?;
+                        progress = Some(operation_id);
                     }
+                    let progressed = progress.is_some();
                     (
-                        last.map(|operation_id| serde_json::json!([operation_id]).to_string()),
-                        has_rows,
+                        progress.map(|operation_id| serde_json::json!([operation_id]).to_string()),
+                        progressed && has_rows,
                     )
                 }
                 _ => return Err(CatalogError::Invalid("unknown erasure stage".into())),

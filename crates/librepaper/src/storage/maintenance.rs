@@ -102,7 +102,7 @@ pub fn run_erasure_pass(
     rows: u32,
 ) -> MaintenanceResult<u32> {
     validate_erasure_limits(now, accounts, rows)?;
-    erasure_pass_sql(catalog, now, accounts, rows).map_err(MaintenanceError::from)
+    erasure_pass_sql(catalog, now, accounts, rows.min(250)).map_err(MaintenanceError::from)
 }
 
 /// The asynchronous counterpart of [`run_erasure_pass`].
@@ -123,14 +123,14 @@ pub async fn run_erasure_pass_async(
     validate_erasure_limits(now, accounts, rows)?;
     catalog
         .execute_catalog(MAINTENANCE_JOB_BYTES, move |catalog| {
-            erasure_pass_sql(catalog, now, accounts, rows)
+            erasure_pass_sql(catalog, now, accounts, rows.min(250))
         })
         .await
         .map_err(MaintenanceError::from)
 }
 
 fn validate_erasure_limits(now: i64, accounts: u32, rows: u32) -> MaintenanceResult<()> {
-    if now < 0 || accounts == 0 || rows == 0 || rows > 250 {
+    if now < 0 || accounts == 0 || rows == 0 || rows > 1000 {
         return Err(MaintenanceError::Invalid(
             "invalid erasure pass limits".into(),
         ));
@@ -148,12 +148,13 @@ fn erasure_pass_sql(
     for id in catalog.erasing_accounts(None, accounts)? {
         touched += 1;
         let stages = [
+            "owned_documents",
+            "operations",
             "grants",
             "bookmarks",
             "annotations",
             "replies",
             "checkpoints",
-            "operations",
         ];
         let (current, stored_cursor) = catalog
             .erasure_progress(&id)?
