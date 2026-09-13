@@ -33,6 +33,7 @@ mod execution;
 mod journal;
 mod operations;
 mod pressure;
+mod publication;
 mod retention;
 mod read_objects;
 mod room_edits;
