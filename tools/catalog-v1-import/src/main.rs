@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
@@ -385,7 +385,7 @@ fn sync_json(path: &Path, value: &Manifest) -> Result<()> {
 fn catalog_digest(path: &Path) -> Result<String> { Ok(sha256(&fs::read(path)?)) }
 
 fn source_physical_digest(root: &Path) -> Result<String> {
-    let mut files = Vec::new();
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(directory) = stack.pop() {
         for entry in fs::read_dir(&directory)? {
@@ -398,27 +398,37 @@ fn source_physical_digest(root: &Path) -> Result<String> {
                 stack.push(path);
             } else if metadata.is_file() {
                 let relative = path.strip_prefix(root).map_err(|_| Error::Invalid("source file escaped deployment root".into()))?;
-                let bytes = fs::read(&path)?;
-                if bytes.len() as u64 > MAX_SOURCE_FILE_BYTES {
-                    return Err(Error::Invalid(format!("source file {} exceeds {} byte limit", relative.display(), MAX_SOURCE_FILE_BYTES)));
-                }
-                files.push((relative.to_string_lossy().replace('\\', "/"), bytes));
+                files.push((relative.to_string_lossy().replace('\\', "/"), path));
             } else {
                 return Err(Error::Invalid(format!("source deployment entry is not a regular file or directory: {}", path.display())));
             }
         }
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut canonical = Vec::new();
-    for (relative, bytes) in files {
-        canonical.extend_from_slice(relative.as_bytes());
-        canonical.push(0);
-        canonical.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-        canonical.push(0);
-        canonical.extend_from_slice(Sha256::digest(&bytes).as_slice());
-        canonical.push(b'\n');
+    let mut hasher = Sha256::new();
+    for (relative, path) in files {
+        let mut file = File::open(&path)?;
+        let mut file_hasher = Sha256::new();
+        let mut length = 0u64;
+        let mut buffer = [0u8; 1024 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 { break; }
+            length = length.checked_add(read as u64).ok_or_else(|| Error::Invalid("source physical file length overflow".into()))?;
+            if length > MAX_SOURCE_FILE_BYTES {
+                return Err(Error::Invalid(format!("source file {} exceeds {} byte limit", relative, MAX_SOURCE_FILE_BYTES)));
+            }
+            file_hasher.update(&buffer[..read]);
+        }
+        let file_digest = file_hasher.finalize();
+        hasher.update(relative.as_bytes());
+        hasher.update([0]);
+        hasher.update(length.to_le_bytes());
+        hasher.update([0]);
+        hasher.update(file_digest);
+        hasher.update([b'\n']);
     }
-    Ok(sha256(&canonical))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn open_source(path: &Path) -> Result<Connection> {
@@ -713,6 +723,9 @@ fn open_target_existing(root: &Path, manifest: &Manifest) -> Result<Connection> 
     if version != V2_USER_VERSION { return Err(Error::Invalid(format!("resume target reports user_version {version}, expected 2"))); }
     let (id,): (String,) = connection.query_row("SELECT deployment_id FROM server_state WHERE id=1", [], |row| Ok((row.get(0)?,)))?;
     if id != manifest.target_identity { return Err(Error::Invalid("target identity differs from conversion manifest".into())); }
+    let identity_path = root.join("state").join("deployment.id");
+    let file_identity = fs::read_to_string(&identity_path).map_err(|e| Error::Invalid(format!("target deployment identity is unreadable: {e}")))?;
+    if file_identity.trim() != manifest.target_identity { return Err(Error::Invalid("target state/deployment.id differs from conversion manifest".into())); }
     Ok(connection)
 }
 
@@ -1155,7 +1168,7 @@ fn journal_replay(source_root: &Path, source: &Connection, doc: &SourceDocument)
         let expected_fragments=first.fragment_count; let expected_digest=first.digest.clone();
         if parts.len()!=expected_fragments as usize || parts.iter().any(|p| p.fragment_count!=expected_fragments || p.digest!=expected_digest) { return Err(Error::Invalid(format!("journal sequence {sequence} has incomplete fragments"))); }
         let mut ordered=parts; ordered.sort_by_key(|p|p.fragment_index); if ordered.iter().enumerate().any(|(i,p)|p.fragment_index as usize!=i) { return Err(Error::Invalid(format!("journal sequence {sequence} has a fragment gap"))); }
-        let total = ordered.iter().try_fold(0usize, |sum, part| sum.checked_add(part.payload.len())).ok_or_else(|| Error::Invalid("journal update length overflow"))?;
+        let total = ordered.iter().try_fold(0usize, |sum, part| sum.checked_add(part.payload.len())).ok_or_else(|| Error::Invalid("journal update length overflow".into()))?;
         if total > MAX_OBJECT_BYTES { return Err(Error::Invalid(format!("journal sequence {sequence} exceeds object size limit"))); }
         let payload=ordered.into_iter().flat_map(|p|p.payload).collect::<Vec<_>>(); if sha256(&payload)!=expected_digest { return Err(Error::Invalid(format!("journal sequence {sequence} digest mismatch"))); }
         updates.insert((epoch,sequence),payload);
@@ -1215,7 +1228,7 @@ fn convert_document(source_root: &Path, target_root: &Path, source: &Connection,
         let metadata=json_text(&json!({"version":1,"git_commit":item.point.commit,"dirty":item.point.dirty,"changed":item.point.changed,"original_parent":item.point.parent}),65536,"checkpoint metadata")?;
         tx.execute("INSERT OR IGNORE INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,0,?14,?15)",params![doc.storage_id,item.point.id,item.point.seq.max(1),item.tree_id,item.tree_digest,item.point.parent,item.point.at,author,item.point.by,item.point.why,item.point.source_format,item.logical_bytes,item.point.label,metadata,now_ms()+30*24*60*60*1000])?;
         for object_id in &item.object_ids {
-            closure_count = closure_count.checked_add(1).ok_or_else(|| Error::Invalid("checkpoint closure count overflow"))?;
+            closure_count = closure_count.checked_add(1).ok_or_else(|| Error::Invalid("checkpoint closure count overflow".into()))?;
             if closure_count > 1_048_576 { return Err(Error::Invalid(format!("document {} exceeds checkpoint closure limit", doc.storage_id))); }
             tx.execute("INSERT OR IGNORE INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![doc.storage_id,item.point.id,object_id])?;
         }
