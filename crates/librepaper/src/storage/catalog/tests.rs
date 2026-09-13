@@ -686,15 +686,76 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    let file_a = "a".repeat(64);
+    let file_b = "b".repeat(64);
+    let shared_id = fixture_object_id("source-shared");
+    let shared_key = format!("v2/documents/storage-1/objects/{shared_id}");
+    let recipe_key = |seed: &str| {
+        let id = fixture_object_id(seed);
+        (id.clone(), format!("v2/documents/storage-1/objects/{id}"))
+    };
+    let (recipe_a_id, recipe_a_key) = recipe_key("recipe-a");
+    let (recipe_b_id, recipe_b_key) = recipe_key("recipe-b");
+    let tree_a_id = fixture_object_id("tree-a");
+    let tree_b_id = fixture_object_id("tree-b");
+    catalog
+        .with_connection(|connection| {
+            for (id, key, kind, digest, bytes) in [
+                (
+                    shared_id.clone(),
+                    shared_key.clone(),
+                    "source_chunk",
+                    fixture_tree_digest("shared"),
+                    7_i64,
+                ),
+                (
+                    recipe_a_id.clone(),
+                    recipe_a_key.clone(),
+                    "source_recipe",
+                    fixture_tree_digest("recipe-a"),
+                    3,
+                ),
+                (
+                    recipe_b_id.clone(),
+                    recipe_b_key.clone(),
+                    "source_recipe",
+                    fixture_tree_digest("recipe-b"),
+                    3,
+                ),
+                (
+                    tree_a_id.clone(),
+                    format!("v2/documents/storage-1/objects/{tree_a_id}"),
+                    "source_tree",
+                    fixture_tree_digest("checkpoint-a"),
+                    1,
+                ),
+                (
+                    tree_b_id.clone(),
+                    format!("v2/documents/storage-1/objects/{tree_b_id}"),
+                    "source_tree",
+                    fixture_tree_digest("checkpoint-b"),
+                    1,
+                ),
+            ] {
+                connection.execute(
+                    "INSERT INTO objects
+                     (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                     VALUES('storage-1',?1,?2,?3,'available',?4,?5,0,0)",
+                    rusqlite::params![id, key, kind, digest, bytes],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
     let object = SourceHistoryObject {
-        object_key: "content/storage-1/chunks/shared".into(),
+        object_key: shared_key,
         kind: "source_chunk".into(),
         bytes: 7,
     };
-    let record = |digest: &str, recipe: &str| SourceHistoryRecord {
+    let record = |digest: &str, recipe: &str, recipe_digest: &str| SourceHistoryRecord {
         file_digest: digest.into(),
-        recipe_key: format!("content/storage-1/recipes/{digest}"),
-        recipe_digest: format!("recipe-{digest}"),
+        recipe_key: recipe.into(),
+        recipe_digest: recipe_digest.into(),
         codec: 1,
         uncompressed_bytes: 7,
         recipe_bytes: 3,
@@ -712,9 +773,9 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
         sha: sha.into(),
         seq: -1,
         durable_seq: 0,
-        tree_sha: sha.into(),
+        tree_sha: fixture_tree_digest(sha),
         parent: String::new(),
-        at: sha.into(),
+        at: "2026-01-01T00:00:00.000Z".into(),
         by: String::new(),
         why: "test".into(),
         source_format: "markdown".into(),
@@ -730,7 +791,7 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
         .insert_checkpoints_atomic_with_sources(
             std::slice::from_ref(&first),
             None,
-            &[record("file-a", "content/storage-1/recipes/file-a")],
+            &[record(&file_a, &recipe_a_key, &"c".repeat(64))],
         )
         .unwrap();
     let second = checkpoint("checkpoint-b");
@@ -738,18 +799,55 @@ fn source_history_gc_keeps_a_chunk_shared_by_two_retained_files() {
         .insert_checkpoints_atomic_with_sources(
             std::slice::from_ref(&second),
             None,
-            &[record("file-b", "content/storage-1/recipes/file-b")],
+            &[record(&file_b, &recipe_b_key, &"d".repeat(64))],
         )
         .unwrap();
 
+    // Supply the durable v2 retention evaluation that makes these historical
+    // points eligible for the typed checkpoint-delete boundary.
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE checkpoints SET eligible_after=0 WHERE document_id='storage-1'",
+                [],
+            )?;
+            connection.execute(
+                r#"UPDATE documents SET retention_due_at=1,
+                 retention_json='{"version":1,"evaluation":{"accountRevision":0,"documentRevision":0}}'
+                 WHERE id='storage-1'"#,
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
     catalog.delete_checkpoint("doc", "checkpoint-a").unwrap();
-    let pending = catalog.due_deletes(crate::util::now_unix(), 100).unwrap();
+    let pending = catalog.due_deletes(crate::util::now_millis(), 100).unwrap();
     assert!(pending
         .iter()
         .all(|entry| entry.object_key != object.object_key));
 
     catalog.delete_checkpoint("doc", "checkpoint-b").unwrap();
-    let pending = catalog.due_deletes(crate::util::now_unix(), 100).unwrap();
+    let document_id = crate::storage::catalog::DocumentId::new("storage-1").unwrap();
+    let shared_object_id = crate::storage::catalog::ObjectId::new(shared_id).unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "UPDATE objects SET gc_after=0 WHERE document_id='storage-1' AND id=?1",
+                [shared_object_id.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(catalog
+        .claim_v2_object_for_deletion(
+            &document_id,
+            &shared_object_id,
+            crate::storage::catalog::UnixMillis::new(crate::util::now_millis()).unwrap(),
+            crate::storage::catalog::UnixMillis::new(crate::util::now_millis()).unwrap(),
+        )
+        .unwrap());
+    let pending = catalog.due_deletes(crate::util::now_millis(), 100).unwrap();
     assert!(pending
         .iter()
         .any(|entry| entry.object_key == object.object_key));
