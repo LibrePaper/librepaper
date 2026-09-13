@@ -328,7 +328,7 @@ mod tests {
             proposed: (motivation == "editing").then(|| "beta".to_string()),
             revision: String::new(),
             temp_id: temp_id.into(),
-            request_id: String::new(),
+            request_id: crate::util::new_request_key(),
         }
     }
 
@@ -337,12 +337,12 @@ mod tests {
             .apply_command(
                 command,
                 "10.0.0.1",
-                "visitor:one",
-                "test",
+                "alice",
+                "",
                 None,
                 true,
-                "",
-                "",
+                "alice",
+                "resident-fixture-session",
             )
             .await;
         assert!(ok, "the fixture command must succeed: {response}");
@@ -461,7 +461,7 @@ mod tests {
                 body: "a reply".into(),
                 creator: "reviewer".into(),
                 temp_id: "reply".into(),
-                request_id: String::new(),
+                request_id: crate::util::new_request_key(),
             },
         )
         .await;
@@ -480,7 +480,7 @@ mod tests {
                     ..Default::default()
                 },
                 temp_id: "anchor".into(),
-                request_id: String::new(),
+                request_id: crate::util::new_request_key(),
             },
         )
         .await;
@@ -493,7 +493,7 @@ mod tests {
                 comment_id: id.clone(),
                 resolved: true,
                 temp_id: "resolve".into(),
-                request_id: String::new(),
+                request_id: crate::util::new_request_key(),
             },
         )
         .await;
@@ -504,7 +504,7 @@ mod tests {
             Command::Delete {
                 comment_id: id,
                 temp_id: "delete".into(),
-                request_id: String::new(),
+                request_id: crate::util::new_request_key(),
             },
         )
         .await;
@@ -536,7 +536,7 @@ mod tests {
             .map(|item| item.id.clone())
             .unwrap();
         assert!(
-            room.accept_suggestion(&id, "request-one", "alice")
+            room.accept_suggestion(&id, &crate::util::new_request_key(), "alice")
                 .await
                 .is_ok(),
             "the suggestion must apply to the seeded source"

@@ -283,6 +283,27 @@ mod tests {
                 })
                 .unwrap();
         }
+        catalog
+            .with_connection(|connection| {
+                connection.execute(
+                    "UPDATE documents
+                        SET checkpoint_ref_count=(
+                            SELECT count(*) FROM checkpoint_objects
+                             WHERE document_id=documents.id
+                        )
+                      WHERE slug='doc'",
+                    [],
+                )?;
+                connection.execute(
+                    "UPDATE server_state
+                        SET checkpoint_ref_count=(SELECT count(*) FROM checkpoint_objects)
+                      WHERE id=1",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(catalog.audit_v2_counters().unwrap());
         let room = rooms.get("doc").await;
         room.refresh_retained_manifest().await;
         assert!(!room.read_only(), "the fixture must admit live edits");
@@ -346,12 +367,63 @@ mod tests {
             assert!(blobs.exists(key).await.unwrap(), "retained object disappeared: {key}");
         }
 
+        // An available v2 asset with complete evidence and no checkpoint edge
+        // is handed to the bounded GC worker and physically reclaimed after
+        // its immutable grace deadline.
+        let (unused_digest, unused_bytes) = room
+            .put_asset_authorized(b"unreferenced".to_vec(), (1 << 20, 1 << 20), &actor)
+            .await
+            .unwrap();
+        let (unused_key, unused_object_id): (String, String) = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT o.storage_key,o.id
+                           FROM objects o JOIN documents d ON d.id=o.document_id
+                          WHERE d.slug=?1 AND o.kind='asset' AND o.digest=?2
+                            AND o.state='available'",
+                        rusqlite::params!["doc", unused_digest],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .unwrap();
+        assert_eq!(blobs.get(&unused_key).await.unwrap().len(), unused_bytes as usize);
+        let gc = crate::storage::v2_catalog::V2GcCatalogAdapter::new(catalog.clone());
+        let report = crate::storage::maintenance_v2::run_gc_pass(
+            &gc,
+            blobs.as_ref(),
+            crate::util::now_millis() + 900_001,
+        )
+        .await
+        .unwrap();
+        assert!(report.objects_deleted >= 1, "unreferenced v2 asset was not reclaimed");
+        assert!(!blobs.exists(&unused_key).await.unwrap());
+        assert!(catalog
+            .with_connection(|connection| {
+                let state: String = connection.query_row(
+                    "SELECT state FROM objects WHERE id=?1",
+                    [&unused_object_id],
+                    |row| row.get(0),
+                )?;
+                Ok(state)
+            })
+            .is_err());
+
         // Missing physical evidence must fail closed: a later pass cannot
         // infer that dependent text/assets are unreferenced from an unreadable
         // tree and therefore leaves every other immutable object untouched.
         blobs.delete(&[missing_tree_key.clone()]).await.unwrap();
         room.prune_retained(&history::Tree::default()).await;
-        for key in retained_keys.iter().filter(|key| **key != missing_tree_key) {
+        let report = crate::storage::maintenance_v2::run_gc_pass(
+            &gc,
+            blobs.as_ref(),
+            crate::util::now_millis() + 1_800_001,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.objects_deleted, 0, "missing tree evidence must block GC");
+        for key in retained_keys.iter().filter(|key| key.as_str() != missing_tree_key) {
             assert!(blobs.exists(key).await.unwrap(), "dependent object was deleted: {key}");
         }
         assert_eq!(blobs.active.load(Ordering::Relaxed), 0);
