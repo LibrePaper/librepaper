@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
@@ -22,7 +22,7 @@ use time::OffsetDateTime;
 use unicode_normalization::UnicodeNormalization;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
-use yrs::{Doc, Transact, Update};
+use yrs::{Doc, ReadTxn, RootRef, Text, Transact, Update};
 
 const CONVERTER_VERSION: &str = "catalog-v1-import/1";
 const MANIFEST_FILE: &str = "conversion-manifest.json";
@@ -325,7 +325,8 @@ fn open_source(path: &Path) -> Result<Connection> {
 
 fn table_names(connection: &Connection) -> Result<Vec<String>> {
     let mut statement = connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
-    Ok(statement.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?)
+    let names=statement.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(names)
 }
 
 fn schema_fingerprint(connection: &Connection) -> Result<String> { schema_fingerprint_filtered(connection, false) }
@@ -691,7 +692,7 @@ fn load_tree(source_root: &Path, doc: &SourceDocument, tree_sha: &str, source_fo
     for key in candidates { if let Some(bytes) = read_object_optional(source_root, &key)? { body = Some(bytes); break; } }
     let Some(body) = body else {
         let bytes = read_file_bytes(source_root, doc, tree_sha, "text", source_format, history)?;
-        return Ok(SourceTree { main: doc.main_path.clone(), files: vec![SourceFile { path: doc.main_path.clone(), kind: "text".into(), id: deterministic_id("legacy-file", &format!("{}:{tree_sha}")).to_string(), sha: sha256(&bytes), size: bytes.len() as i64 }], settings: None });
+        return Ok(SourceTree { main: doc.main_path.clone(), files: vec![SourceFile { path: doc.main_path.clone(), kind: "text".into(), id: deterministic_id("legacy-file", &format!("{}:{tree_sha}", doc.storage_id)), sha: sha256(&bytes), size: bytes.len() as i64 }], settings: None });
     };
     if tree_sha.len() == 64 && sha256(&body) != tree_sha { return Err(Error::Invalid(format!("checkpoint tree {tree_sha} failed byte digest verification"))); }
     let value: Value = serde_json::from_slice(&body).map_err(|e| Error::Invalid(format!("checkpoint {} tree is invalid JSON: {e}", tree_sha)))?;
@@ -858,9 +859,26 @@ fn decode_base(bytes: &[u8]) -> Result<(String, u64, u64, Vec<u8>)> {
 #[derive(Clone, Debug)]
 struct ReplayedJournal { payload: Vec<u8>, epoch: u64, sequence: u64 }
 
+#[derive(Deserialize)]
+struct ManifestBaseDescriptor { base_id: String, storage_id: String, epoch: u64, sequence: u64, object_key: String, digest: String, encoded_bytes: i64, committed_at: i64 }
+#[derive(Deserialize)]
+struct ManifestShardDescriptor { shard_id: String, shard_seq: u64, object_key: String, digest: String, encoded_bytes: i64, #[serde(default)] next_key: Option<String>, #[serde(default)] bases: Vec<ManifestBaseDescriptor>, #[serde(default)] segments: Vec<String> }
+
+fn journal_manifest_descriptors(source_root: &Path, source: &Connection, doc: &SourceDocument) -> Result<Option<(Vec<ManifestBaseDescriptor>, Vec<String>)>> {
+    if !has_table(source,"journal_state")? { return Ok(None); }
+    let state: Option<(String,String,i64,i64)>=source.query_row("SELECT manifest_key,manifest_digest,manifest_length,revision FROM journal_state WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+    let Some((root,root_digest,root_len,_revision))=state else{return Ok(None)}; if root.is_empty(){return Ok(None)};
+    let mut key=root; let mut visited=HashSet::new(); let mut bases=Vec::new(); let mut segments=Vec::new();
+    for index in 0..4096 { if !visited.insert(key.clone()){return Err(Error::Invalid("journal manifest shard cycle".into()));} let bytes=read_object(source_root,&key)?; let shard:ManifestShardDescriptor=serde_json::from_slice(&bytes).map_err(|e|Error::Invalid(format!("journal manifest shard {key} is invalid: {e}")))?; if shard.object_key!=key || shard.encoded_bytes!=bytes.len() as i64{return Err(Error::Invalid(format!("journal manifest shard {key} identity/length mismatch")));} let mut canonical=shard;let digest=canonical.digest.clone();canonical.digest.clear();let canonical_bytes=serde_json::to_vec(&canonical)?;if sha256(&canonical_bytes)!=digest{return Err(Error::Invalid(format!("journal manifest shard {key} digest mismatch")));}if index==0 && (digest!=root_digest || bytes.len() as i64!=root_len){return Err(Error::Invalid("journal manifest root differs from journal_state".into()));} let next=canonical.next_key.clone(); bases.extend(canonical.bases.into_iter().filter(|base|base.storage_id==doc.storage_id));segments.extend(canonical.segments);match next{Some(next)=>key=next,None=>break}; if index==4095{return Err(Error::Invalid("journal manifest chain is too long".into()));} }
+    Ok(Some((bases,segments)))
+}
+
 fn journal_replay(source_root: &Path, source: &Connection, doc: &SourceDocument) -> Result<Option<ReplayedJournal>> {
     let mut latest: Option<(u64,u64,Vec<u8>)> = None;
-    if has_table(source,"journal_bases")? {
+    let manifest_descriptors=journal_manifest_descriptors(source_root,source,doc)?;
+    if let Some((bases,_segments))=&manifest_descriptors {
+        if let Some(base)=bases.iter().max_by_key(|base|(base.epoch,base.sequence)) { let bytes=read_object(source_root,&base.object_key)?; if bytes.len() as i64!=base.encoded_bytes || sha256(&bytes)!=base.digest{return Err(Error::Invalid(format!("journal base {} failed descriptor integrity",base.object_key)));} let (storage,epoch,sequence,payload)=decode_base(&bytes)?;if storage!=doc.storage_id||epoch!=base.epoch||sequence!=base.sequence{return Err(Error::Invalid(format!("journal base {} identity mismatch",base.object_key)));}latest=Some((epoch,sequence,payload)); }
+    } else if has_table(source,"journal_bases")? {
         let mut st=source.prepare("SELECT object_key,digest,epoch,sequence FROM journal_bases WHERE storage_id=?1 ORDER BY epoch DESC,sequence DESC")?;
         for row in st.query_map([&doc.storage_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?)))? {
             let (key,digest,epoch,sequence)=row?; let bytes=read_object(source_root,&key)?; if sha256(&bytes)!=digest { return Err(Error::Invalid(format!("journal base {key} digest mismatch"))); }
@@ -869,7 +887,9 @@ fn journal_replay(source_root: &Path, source: &Connection, doc: &SourceDocument)
         }
     }
     let base_identity=latest.as_ref().map(|(e,s,_)|(*e,*s)); let mut fragments: BTreeMap<(u64,u64),Vec<JournalRecord>>=BTreeMap::new();
-    if has_table(source,"journal_segments")? {
+    if let Some((_bases,segment_keys))=&manifest_descriptors {
+        for key in segment_keys { let bytes=read_object(source_root,key)?; for record in decode_segment(&bytes)?.into_iter().filter(|r|r.storage_id==doc.storage_id) { fragments.entry((record.epoch,record.sequence)).or_default().push(record); } }
+    } else if has_table(source,"journal_segments")? {
         // v1 segments were physically shared: the descriptor's optional
         // storage_id is only an index hint. Decode every committed descriptor
         // and select records by their framed storage identity.
@@ -929,10 +949,10 @@ fn convert_document(source_root: &Path, target_root: &Path, source: &Connection,
         for record in &converted_point.objects { write_object(target_root, &record.key, &record.bytes)?; all_objects.entry(record.id.clone()).or_insert_with(||record.clone()); }
         converted.push(converted_point);
     }
-    let journal_record=journal.as_ref().map(|state| object_record(doc,deterministic_id("journal-base",&doc.storage_id),"journal_base",state.payload.clone(),None));
+    let journal_record=journal.as_ref().map(|state| { let mut record=object_record(doc,deterministic_id("journal-base",&doc.storage_id),"journal_base",state.payload.clone(),None); record.journal=Some((state.epoch as i64,0,state.sequence as i64)); record });
     if let Some(record)=&journal_record { write_object(target_root,&record.key,&record.bytes)?; all_objects.entry(record.id.clone()).or_insert_with(||record.clone()); }
     let tx=target.transaction()?;
-    for record in all_objects.values() { insert_object(&tx,record,None)?; }
+    for record in all_objects.values() { insert_object(&tx,record,record.journal)?; }
     if let Some(record)=&journal_record { if let Some(state)=&journal { tx.execute("UPDATE objects SET journal_epoch=?3,first_sequence=0,last_sequence=?4,live_root=1 WHERE document_id=?1 AND id=?2",params![doc.storage_id,record.id,state.epoch as i64,state.sequence as i64])?; } }
     let mut closure_count=0u64;
     let mut checkpoint_ids=HashSet::new();
@@ -987,14 +1007,14 @@ fn import_annotations(source: &Connection, target: &mut Connection, docs: &[Sour
     let mut checkpoint_map=HashMap::new(); let mut stcp=tx.prepare("SELECT document_id,id FROM checkpoints")?; for row in stcp.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {let (d,id)=row?;checkpoint_map.insert((d,id.clone()),id);}
     let mut st=source.prepare("SELECT slug,id,seq,motivation,body,creator,author,via,created,publication_id,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,resolved,resolved_at,resolved_in,pass,point,color,quarto_output FROM comments ORDER BY slug,seq,id")?;
     let mut annotations=HashSet::new();
-    for row in st.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?,r.get::<_,String>(10)?,r.get::<_,String>(11)?,r.get::<_,String>(12)?,r.get::<_,Option<i64>>(13)?,r.get::<_,Option<String>>(14)?,r.get::<_,Option<String>>(15)?,r.get::<_,Option<String>>(16)?,r.get::<_,Option<String>>(17)?,r.get::<_,Option<String>>(18)?,r.get::<_,Option<i64>>(19)?,r.get::<_,Option<String>>(20)?,r.get::<_,String>(21)?,r.get::<_,String>(22)?,r.get::<_,String>(23)?,r.get::<_,String>(24)?,r.get::<_,i64>(25)?,r.get::<_,Option<String>>(26)?,r.get::<_,String>(27)?,r.get::<_,String>(28)?,r.get::<_,Option<i64>>(29)?,r.get::<_,Option<String>>(30)?,r.get::<_,Option<String>>(31)?)))? {
+    for row in st.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?,r.get::<_,String>(10)?,r.get::<_,String>(11)?,r.get::<_,String>(12)?,r.get::<_,Option<i64>>(13)?,r.get::<_,Option<String>>(14)?,r.get::<_,Option<String>>(15)?,r.get::<_,Option<String>>(16)?,r.get::<_,Option<String>>(17)?,r.get::<_,Option<String>>(18)?,r.get::<_,Option<i64>>(19)?,r.get::<_,Option<String>>(20)?,r.get::<_,String>(21)?,r.get::<_,String>(22)?,r.get::<_,String>(23)?,r.get::<_,i64>(24)?,r.get::<_,Option<String>>(25)?,r.get::<_,String>(26)?,r.get::<_,String>(27)?,r.get::<_,i64>(28)?,r.get::<_,Option<String>>(29)?,r.get::<_,Option<String>>(30)?)))? {
         let (slug,id,seq,motivation,body,creator,author,via,created,publication_id,exact,prefix,suffix,position,region,source_path,source_exact,source_prefix,source_suffix,source_position,proposed,outcome,accept_request,revision,resolved,resolved_at,resolved_in,pass,point,color,quarto_output)=row?; let Some(doc_id)=doc_map.get(&slug) else{continue}; if !annotations.insert((doc_id.clone(),id.clone())){return Err(Error::Invalid(format!("duplicate annotation {slug}/{id}")));}
         if position.is_some_and(|value| value < 0) || source_position.is_some_and(|value| value < 0) { return Err(Error::Invalid(format!("annotation {doc_id}/{id} has a negative selector position"))); }
         let region_value=region.as_deref().map(|raw|serde_json::from_str::<Value>(raw).map_err(|e|Error::Invalid(format!("annotation {doc_id}/{id} has an invalid region selector: {e}")))).transpose()?;
         if let Some(path)=source_path.as_deref(){validate_key(path)?;}
         let kind=match motivation.as_str(){"highlight"=>"highlight","suggestion"=>"suggestion",_=>if proposed.is_some(){"suggestion"}else{"comment"}};
         let selector=json!({"version":1,"rendered":{"kind":if region_value.is_some(){"figure_region"}else if point != 0{"point"}else if position.is_some(){"text_position"}else{"text_quote"},"exact":exact,"prefix":prefix,"suffix":suffix,"position":position,"region":region_value},"source":source_path.map(|path|json!({"path":path,"exact":source_exact,"prefix":source_prefix,"suffix":source_suffix,"position":source_position}))}); let selector_json=json_text(&selector,65536,"annotation selector")?;
-        let context=json_text(&json!({"version":1,"review_pass":pass,"point":point,"color":color,"quarto_output":quarto_output}),16384,"annotation context")?; let created_ms=parse_time(&created,"comments.created")?; let resolved_ms=resolved_at.as_deref().map(|v|parse_time(v,"comments.resolved_at")).transpose()?; let state=if kind=="suggestion"{match outcome.as_str(){"accepted"=>"accepted","rejected"=>"rejected",_=>"proposed"}}else{""}; let accepted=state=="accepted"; let acceptance=if accepted{if accept_request.is_empty(){deterministic_id("legacy-accept",&format!("{doc_id}:{id}"))}else{accept_request.clone()}}else{String::new()}; let resolution=if accepted{if revision.is_empty(){"legacy".into()}else{revision.clone()}}else{if revision.is_empty(){String::new()}else{revision.clone()}}; let protection=if resolved.unwrap_or(0)==0 && !resolution.is_empty(){checkpoint_map.get(&(doc_id.clone(),resolution.clone())).cloned()}else{None}; let context=if !resolution.is_empty() && protection.is_none(){json_text(&json!({"version":1,"review_pass":pass,"point":point,"color":color,"quarto_output":quarto_output,"unavailable":true}),16384,"annotation context")?}else{context};
+        let context=json_text(&json!({"version":1,"review_pass":pass,"point":point,"color":color,"quarto_output":quarto_output}),16384,"annotation context")?; let created_ms=parse_time(&created,"comments.created")?; let resolved_ms=resolved_at.as_deref().map(|v|parse_time(v,"comments.resolved_at")).transpose()?; let state: String=if kind=="suggestion"{match outcome.as_str(){"accepted"=>"accepted".into(),"rejected"=>"rejected".into(),_=>"proposed".into()}}else{String::new()}; let accepted=state=="accepted"; let acceptance=if accepted{if accept_request.is_empty(){deterministic_id("legacy-accept",&format!("{doc_id}:{id}"))}else{accept_request.clone()}}else{String::new()}; let resolution=if accepted{if revision.is_empty(){"legacy".into()}else{revision.clone()}}else{if revision.is_empty(){String::new()}else{revision.clone()}}; let protection=if resolved==0 && !resolution.is_empty(){checkpoint_map.get(&(doc_id.clone(),resolution.clone())).cloned()}else{None}; let context=if !resolution.is_empty() && protection.is_none(){json_text(&json!({"version":1,"review_pass":pass,"point":point,"color":color,"quarto_output":quarto_output,"unavailable":true}),16384,"annotation context")?}else{context};
         let effective_resolved=if accepted {resolved_ms.or(Some(created_ms))} else {resolved_ms}; let author_id=target_account_exists(&tx,Some(&creator))?; let updated=effective_resolved.unwrap_or(created_ms); let proposed_text=if kind=="suggestion"{proposed}else{None}; tx.execute("INSERT OR IGNORE INTO annotations(document_id,id,seq,kind,body,author_account_id,author_key,author_label,via,created_at,updated_at,publication_id,source_revision,selector_json,context_json,protected_checkpoint_id,proposed_text,suggestion_state,acceptance_operation_id,resolution_revision,resolved_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",params![doc_id,id,seq.max(1),kind,body,author_id,author,author,via,created_ms,updated,if publication_id.is_empty(){None::<String>}else{Some(publication_id)},if resolution.is_empty(){None::<String>}else{Some(resolution.clone())},selector_json,context,protection,proposed_text,if state.is_empty(){None::<String>}else{Some(state)},if acceptance.is_empty(){None::<String>}else{Some(acceptance)},if resolution.is_empty(){None::<String>}else{Some(resolution)},effective_resolved])?;
         progress.entry(doc_id.clone()).or_default().annotations+=1;
     }
@@ -1010,7 +1030,7 @@ struct V1PublicationAsset { path: String, #[serde(flatten)] object: V1Publicatio
 #[derive(Deserialize)]
 struct V1Publication { publication_id: String, bundle_sha256: String, source_sha256: String, render_config_sha256: String, published_at: String, publisher: String, #[serde(default)] previous_publication_id: String, html: V1PublicationObject, assets: Vec<V1PublicationAsset> }
 
-fn convert_publication(source_root: &Path, source: &Connection, target_root: &Path, target: &mut Connection, doc: &SourceDocument) -> Result<()> {
+fn convert_publication(source_root: &Path, _source: &Connection, target_root: &Path, target: &mut Connection, doc: &SourceDocument) -> Result<()> {
     let Some(manifest_bytes)=read_object_optional(source_root,&format!("publications/{}/current.json",doc.storage_id))? else {
         if !doc.last_publication_id.is_empty() { return Err(Error::Invalid(format!("document {} names publication {} but current manifest is missing",doc.storage_id,doc.last_publication_id))); }
         return Ok(())
@@ -1039,7 +1059,7 @@ fn recompute_counters(target: &mut Connection) -> Result<Counts> {
 
 fn verify_target(target_root: &Path, target: &Connection) -> Result<Verification> {
     let mut statement=target.prepare("SELECT document_id,id,storage_key,digest,byte_length,state FROM objects ORDER BY document_id,id")?; for row in statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?)))? {let (doc,id,key,digest,length,state)=row?;if state!="available"||length<0{return Err(Error::Invalid(format!("target object {doc}/{id} is not settled")));}let bytes=read_target_object(target_root,&key)?;if bytes.len() as i64!=length || sha256(&bytes)!=digest{return Err(Error::Invalid(format!("target object {key} failed final digest verification")));}}
-    let fk=target.prepare("PRAGMA foreign_key_check")?; if fk.query([])?.next()?.is_some(){return Err(Error::Invalid("target foreign_key_check reported violations".into()));}
+    let mut fk=target.prepare("PRAGMA foreign_key_check")?; if fk.query([])?.next()?.is_some(){return Err(Error::Invalid("target foreign_key_check reported violations".into()));}
     let integrity:String=target.query_row("PRAGMA integrity_check",[],|r|r.get(0))?; if integrity!="ok"{return Err(Error::Invalid(format!("target integrity_check failed: {integrity}")));}
     let counters: (i64,i64,i64,i64,i64,i64)=target.query_row("SELECT stored_bytes,reserved_bytes,document_count,agent_payload_bytes,agent_payload_count,checkpoint_ref_count FROM server_state WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?; let expected:(i64,i64,i64,i64,i64,i64)=target.query_row("SELECT COALESCE(SUM(stored_bytes),0),COALESCE(SUM(reserved_bytes),0),COUNT(*),COALESCE(SUM(agent_payload_bytes),0),COALESCE(SUM(agent_payload_count),0),COALESCE(SUM(checkpoint_ref_count),0) FROM documents",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?; if counters!=expected{return Err(Error::Invalid("target cached counters do not equal defining rows".into()));}
     Ok(Verification {source_integrity:"ok".into(),target_integrity:"ok".into(),physical_digests:true,foreign_keys:true,counters:true,complete_manifest:false})
@@ -1102,5 +1122,25 @@ mod tests {
         let tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",[],|r|r.get(0)).expect("table count");
         let triggers:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'",[],|r|r.get(0)).expect("trigger count");
         assert_eq!(tables,12); assert_eq!(triggers,0);
+    }
+
+    #[test]
+    fn converts_fixture_document_and_resume_is_idempotent() {
+        let source=tempfile::tempdir().expect("source"); let target=tempfile::tempdir().expect("target");
+        std::fs::create_dir_all(source.path().join("state")).expect("state"); std::fs::create_dir_all(source.path().join("objects")).expect("objects");
+        std::fs::write(source.path().join("state/writer.lock"), b"").expect("writer lock");
+        let source_db=Connection::open(source.path().join("catalog.db")).expect("catalog"); source_db.execute_batch(V1_DDL).expect("v1 fixture"); source_db.execute_batch("PRAGMA user_version=1;") .expect("version");
+        source_db.execute("INSERT INTO accounts(id,provider,handle,name,email,first_seen,last_seen,plan,status,session_generation) VALUES('acct','github','vincent','Vincent','v@example.test','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','free','active','old-session')",[]).expect("account");
+        source_db.execute("INSERT INTO link_keyring(key_id,status,created_at) VALUES('legacy','primary',0)",[]).expect("key");
+        source_db.execute("INSERT INTO documents(slug,storage_id,title,sha,created_at,published_at,updated_at,example,owner_key,owner_id,status,size,counted_size,maintenance_reserved,comment_seq,last_auto_checkpoint_at,pending_publication,last_publication_id,source_format,main) VALUES('paper','doc-1','Paper','', '2026-01-01T00:00:00Z','','2026-01-01T00:00:00Z',0,'acct','acct','active',0,0,0,0,0,NULL,'','markdown','paper.md')",[]).expect("document");
+        let ydoc=Doc::new(); let text=ydoc.get_or_insert_text("body"); {let mut txn=ydoc.transact_mut(); text.insert(&mut txn,0,"hello");} let session=ydoc.transact().encode_state_as_update_v1(&yrs::StateVector::default()); std::fs::create_dir_all(source.path().join("objects/sessions")).expect("session dir"); std::fs::write(source.path().join("objects/sessions/paper"),session).expect("session");
+        let args=Args{source_data:source.path().to_path_buf(),target_data:target.path().join("v2"),dry_run:false,resume:false,documents:Vec::new(),active_link_key:None}; run(args).expect("conversion");
+        let target_db=Connection::open(target.path().join("v2/catalog.db")).expect("target catalog"); assert_eq!(target_db.query_row::<i64,_,_>("PRAGMA user_version",[],|r|r.get(0)).expect("version"),2); assert_eq!(target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM documents",[],|r|r.get(0)).expect("document"),1); assert!(target.path().join("v2/conversion-manifest.json").is_file());
+        let args=Args{source_data:source.path().to_path_buf(),target_data:target.path().join("v2"),dry_run:false,resume:true,documents:Vec::new(),active_link_key:None}; run(args).expect("resume"); assert_eq!(target_db.query_row::<i64,_,_>("SELECT COUNT(*) FROM objects",[],|r|r.get(0)).expect("objects"),1);
+    }
+
+    #[test]
+    fn dry_run_does_not_create_target_root() {
+        let source=tempfile::tempdir().expect("source"); let target=tempfile::tempdir().expect("target"); std::fs::create_dir_all(source.path().join("state")).expect("state"); std::fs::create_dir_all(source.path().join("objects")).expect("objects"); std::fs::write(source.path().join("state/writer.lock"), b"").expect("writer lock"); let db=Connection::open(source.path().join("catalog.db")).expect("catalog"); db.execute_batch(V1_DDL).expect("v1 fixture"); db.execute("INSERT INTO link_keyring(key_id,status,created_at) VALUES('legacy','primary',0)",[]).expect("key"); let args=Args{source_data:source.path().to_path_buf(),target_data:target.path().join("new"),dry_run:true,resume:false,documents:Vec::new(),active_link_key:None}; run(args).expect("dry run"); assert!(!target.path().join("new").exists());
     }
 }
