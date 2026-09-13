@@ -302,12 +302,19 @@ impl Server {
         } else {
             format!("{base}-{}", random_suffix(&self.config))
         };
-        // Publishing over a document that already exists is an edit into its
-        // live session rather than a new version beside the old one. There is
-        // one document, so there is nothing to conflict with: the source the
-        // command line sends is diffed into the session, so an editor typing
-        // at that moment keeps their words and sees the rest change under
-        // them, and the write is marked with a checkpoint.
+        let actor = crate::document::store::MutationActor {
+            account_id: who.id.clone(),
+            owner_key: who.key.clone(),
+            session_generation: who.session_generation.clone(),
+            link_hash: String::new(),
+            policy_editor: true,
+            automation: false,
+            unowned_publisher: false,
+        };
+        // Publishing over a document is an edit into its live Room.  The Room
+        // holds the restore/publication/checkpoint gates while merging the
+        // directory, so concurrent CRDT edits are preserved and the v2
+        // checkpoint sees the same source generation it admitted.
         if mine {
             let room = match self.rooms.try_get(&key).await {
                 Ok(room) => room,
@@ -316,7 +323,7 @@ impl Server {
                 }
             };
             let entry = match self
-                .edit_into_session(&room, &parsed, &who, &existing.unwrap())
+                .edit_into_session(&room, &parsed, &who, &existing.clone().unwrap())
                 .await
             {
                 Ok(entry) => entry,
@@ -356,15 +363,6 @@ impl Server {
         {
             return response;
         }
-        let actor = crate::document::store::MutationActor {
-            account_id: who.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.session_generation.clone(),
-            link_hash: String::new(),
-            policy_editor: true,
-            automation: false,
-            unowned_publisher: false,
-        };
         let entry = match self
             .store
             .put_directory_as_actor(
@@ -611,6 +609,34 @@ impl Server {
             .await
             .map_err(|error| write_json(409, &json!({"error": error})))?;
 
+        // Replacements are source uploads even though the live Room owns the
+        // merge. Charge the durable document owner, rather than the editor's
+        // account or link, so collaborators share one bounded bucket.
+        let mut source_rate = if let Some(catalog) = &self.store.catalog {
+            let owner = if existing.publisher_id.is_empty() {
+                return Err(write_json(
+                    409,
+                    &json!({"error": "document has no durable owner"}),
+                ));
+            } else {
+                format!("account:{}", existing.publisher_id)
+            };
+            Some(
+                catalog
+                    .reserve_process_rate(
+                        &owner,
+                        "source_upload",
+                        self.config.storage.uploads_per_hour,
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+                    .map_err(|_| {
+                        write_json(429, &json!({"error": "too many uploads this hour; try later"}))
+                    })?,
+            )
+        } else {
+            None
+        };
+
         // The v2 checkpoint admission installs the operation, physical
         // allocations, counters, and leases in one transaction.  The old
         // standalone publication budget token cannot represent a replacement
@@ -802,6 +828,9 @@ impl Server {
             }
         };
         publication_token.commit();
+        if let Some(rate) = source_rate.as_mut() {
+            rate.commit();
+        }
         room.broadcast_editors_except(
             None,
             &json!({"type": "y-update", "update": encode_update(&update)}),

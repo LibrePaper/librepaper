@@ -274,95 +274,204 @@ impl Room {
             "by": by.display(),
             "proposed": comment.proposed.clone(),
         }));
-        let staged_update =
-            if let (Some(catalog), false) = (self.catalog.get(), request_id.is_empty()) {
-                match begin_suggestion_accept(
-                    catalog,
-                    &self.slug,
-                    comment_id,
-                    request_id,
-                    &acceptance_digest,
-                    now_unix(),
-                    mutation_actor.clone(),
-                )
-                .await
-                .map_err(AcceptError::Failed)?
-                {
-                    Some(done) => {
-                        let resolved_at = done.resolved_at.clone().unwrap_or_default();
+        let staged_update = if let (Some(catalog), false) =
+            (self.catalog.get(), request_id.is_empty())
+        {
+            match begin_suggestion_accept(
+                catalog,
+                &self.slug,
+                comment_id,
+                request_id,
+                &acceptance_digest,
+                now_unix(),
+                mutation_actor.clone(),
+            )
+            .await
+            .map_err(AcceptError::Failed)?
+            {
+                Some(done) => {
+                    let resolved_at = done.resolved_at.clone().unwrap_or_default();
+                    let mut state = self.state.lock().await;
+                    if let Some(index) =
+                        state.comments.iter().position(|item| item.id == comment_id)
+                    {
+                        state.comments[index].resolved = true;
+                        state.comments[index].resolved_at = Some(resolved_at.clone());
+                        state.comments[index].resolved_in = done.resolved_in.clone();
+                        state.comments[index].outcome = "accepted".to_string();
+                        state.comments[index].accept_request = request_id.to_string();
+                    }
+                    drop(state);
+                    self.broadcast_current_state().await;
+                    return Ok(Accepted::Noop {
+                        sha: done.resolved_in,
+                        resolved_at,
+                    });
+                }
+                None => {
+                    if let Some((recorded_id, sha, resolved_at)) = suggestion_accept_checkpoint(
+                        catalog,
+                        &self.slug,
+                        request_id,
+                        &acceptance_digest,
+                        mutation_actor.clone(),
+                    )
+                    .await
+                    .map_err(AcceptError::Failed)?
+                    {
+                        if recorded_id != comment_id {
+                            return Err(AcceptError::Failed(
+                                "suggestion acceptance receipt names another comment".into(),
+                            ));
+                        }
+                        finish_suggestion_accept(
+                            catalog,
+                            &self.slug,
+                            comment_id,
+                            request_id,
+                            &acceptance_digest,
+                            &sha,
+                            &resolved_at,
+                            mutation_actor.clone(),
+                        )
+                        .await
+                        .map_err(AcceptError::Failed)?;
                         let mut state = self.state.lock().await;
                         if let Some(index) =
                             state.comments.iter().position(|item| item.id == comment_id)
                         {
                             state.comments[index].resolved = true;
                             state.comments[index].resolved_at = Some(resolved_at.clone());
-                            state.comments[index].resolved_in = done.resolved_in.clone();
+                            state.comments[index].resolved_in = sha.clone();
                             state.comments[index].outcome = "accepted".to_string();
                             state.comments[index].accept_request = request_id.to_string();
                         }
                         drop(state);
                         self.broadcast_current_state().await;
-                        return Ok(Accepted::Noop {
-                            sha: done.resolved_in,
-                            resolved_at,
-                        });
+                        return Ok(Accepted::Noop { sha, resolved_at });
                     }
-                    None => {
-                        if let Some((recorded_id, sha, resolved_at)) = suggestion_accept_checkpoint(
-                            catalog,
-                            &self.slug,
-                            request_id,
-                            &acceptance_digest,
-                            mutation_actor.clone(),
-                        )
-                        .await
-                        .map_err(AcceptError::Failed)?
-                        {
-                            if recorded_id != comment_id {
-                                return Err(AcceptError::Failed(
-                                    "suggestion acceptance receipt names another comment".into(),
-                                ));
-                            }
-                            finish_suggestion_accept(
-                                catalog,
-                                &self.slug,
-                                comment_id,
-                                request_id,
-                                &acceptance_digest,
-                                &sha,
-                                &resolved_at,
-                                mutation_actor.clone(),
-                            )
+                    let staged_object = suggestion_accept_update(
+                        catalog,
+                        &self.slug,
+                        request_id,
+                        &acceptance_digest,
+                        mutation_actor.clone(),
+                    )
+                    .await
+                    .map_err(AcceptError::Failed)?;
+                    if let Some(object_id) = staged_object {
+                        let document_id =
+                            crate::storage::catalog::DocumentId::new(self.storage_id.clone())
+                                .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                        let object_id = crate::storage::catalog::ObjectId::new(object_id)
+                            .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                        let object = catalog
+                            .execute_catalog(512, {
+                                let document_id = document_id.clone();
+                                let object_id = object_id.clone();
+                                move |catalog| catalog.object_by_id(&document_id, &object_id)
+                            })
                             .await
-                            .map_err(AcceptError::Failed)?;
-                            let mut state = self.state.lock().await;
-                            if let Some(index) =
-                                state.comments.iter().position(|item| item.id == comment_id)
-                            {
-                                state.comments[index].resolved = true;
-                                state.comments[index].resolved_at = Some(resolved_at.clone());
-                                state.comments[index].resolved_in = sha.clone();
-                                state.comments[index].outcome = "accepted".to_string();
-                                state.comments[index].accept_request = request_id.to_string();
-                            }
-                            drop(state);
-                            self.broadcast_current_state().await;
-                            return Ok(Accepted::Noop { sha, resolved_at });
+                            .map_err(|error| AcceptError::Failed(error.to_string()))?
+                            .ok_or_else(|| {
+                                AcceptError::Failed(
+                                    "staged suggestion update object is unavailable".into(),
+                                )
+                            })?;
+                        let (_, writer_generation, _) = catalog
+                            .execute_catalog(256, |catalog| catalog.v2_server_state())
+                            .await
+                            .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                        let now =
+                            crate::storage::catalog::UnixMillis::new(crate::util::now_millis())
+                                .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                        let holder = format!("suggestion-read:{}", object_id);
+                        let expiry =
+                            crate::storage::catalog::UnixMillis::new(now.0.saturating_add(120_000))
+                                .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                        catalog
+                            .execute_catalog(512, {
+                                let document_id = document_id.clone();
+                                let object_id = object_id.clone();
+                                let holder = holder.clone();
+                                let writer_generation = writer_generation.clone();
+                                move |catalog| {
+                                    catalog.acquire_v2_read_set(
+                                        &document_id,
+                                        std::slice::from_ref(&object_id),
+                                        &holder,
+                                        &writer_generation,
+                                        expiry,
+                                        now,
+                                    )
+                                }
+                            })
+                            .await
+                            .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                        let bytes = self
+                            .blobs
+                            .get(&object.storage_key)
+                            .await
+                            .map_err(|error| AcceptError::Failed(error.to_string()));
+                        let _ = catalog
+                            .execute_catalog(256, {
+                                let document_id = document_id.clone();
+                                let holder = holder.clone();
+                                move |catalog| {
+                                    catalog.release_v2_lease(&document_id, &object_id, &holder)
+                                }
+                            })
+                            .await;
+                        let bytes = bytes?;
+                        let physical_digest = hex::encode(sha2::Sha256::digest(&bytes));
+                        if object.byte_length != Some(bytes.len() as i64)
+                            || object.digest != physical_digest
+                        {
+                            return Err(AcceptError::Failed(
+                                "staged suggestion payload failed its physical integrity check"
+                                    .into(),
+                            ));
                         }
-                        suggestion_accept_update(
-                            catalog,
-                            &self.slug,
-                            request_id,
-                            &acceptance_digest,
-                            mutation_actor.clone(),
-                        )
-                        .await
-                        .map_err(AcceptError::Failed)?
+                        let actor_after_read = mutation_actor.clone();
+                        let still_staged = catalog
+                            .execute_catalog(512, {
+                                let slug = self.slug.clone();
+                                let request_id = request_id.to_string();
+                                let request_digest = acceptance_digest.clone();
+                                move |catalog| {
+                                    catalog.suggestion_accept_update_object_authorized(
+                                        &slug,
+                                        &request_id,
+                                        &request_digest,
+                                        crate::storage::catalog::AnnotationAuthority {
+                                            account_id: &actor_after_read.account_id,
+                                            author_key: &actor_after_read.owner_key,
+                                            generation: &actor_after_read.session_generation,
+                                            link_hash: &actor_after_read.link_hash,
+                                            policy_comment: actor_after_read.policy_editor,
+                                            automation: actor_after_read.automation,
+                                            require_editor: true,
+                                        },
+                                    )
+                                }
+                            })
+                            .await
+                            .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                        if still_staged != Some(object_id.clone()) {
+                            return Err(AcceptError::Failed(
+                                "suggestion acceptance authority changed while reading payload"
+                                    .into(),
+                            ));
+                        }
+                        Some(bytes)
+                    } else {
+                        None
                     }
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
 
         // Step 2 of the spec: the passage as the live text has it now. A
         // first look, without the lock held across the storage read below:
@@ -538,7 +647,12 @@ impl Room {
                 }
             };
             if let (Some(catalog), false) = (self.catalog.get(), request_id.is_empty()) {
-                stage_suggestion_accept_update(
+                let limits = crate::storage::catalog::V2AdmissionLimits {
+                    owner_bytes: self.config.storage.per_owner.max(0),
+                    deployment_bytes: self.config.storage.total.max(0),
+                    owner_documents: self.config.storage.documents_per_owner.max(1) as i64,
+                };
+                let (allocation, _holder) = stage_suggestion_accept_update(
                     catalog,
                     &self.slug,
                     comment_id,
@@ -546,9 +660,26 @@ impl Room {
                     &acceptance_digest,
                     &update,
                     mutation_actor.clone(),
+                    limits,
                 )
                 .await
                 .map_err(AcceptError::Failed)?;
+                let writer = crate::storage::v2_catalog::V2ObjectWriter::new(
+                    std::sync::Arc::clone(catalog),
+                    std::sync::Arc::clone(&self.blobs),
+                );
+                let object_id =
+                    crate::storage::blob::ObjectId::parse(allocation.id.as_str().to_owned())
+                        .map_err(|error| AcceptError::Failed(error.to_string()))?;
+                writer
+                    .write_allocated(
+                        allocation.document_id.as_str(),
+                        object_id,
+                        update.clone(),
+                        "application/vnd.librepaper.agent-payload",
+                    )
+                    .await
+                    .map_err(AcceptError::Failed)?;
             }
             update
         };

@@ -1483,33 +1483,14 @@ impl Room {
                 return Err(error);
             }
         };
-        if let Err(error) = self.write_session_inner(true, false).await {
-            let agent_error = AgentError::from(error.clone());
-            if matches!(error, WriteError::Storage(_)) {
-                // The SQL receipt has not been attempted yet, so the
-                // prepared operation cannot have committed. Restore the
-                // durable pre-effect backup even when the failed write may
-                // have reached the journal before reporting its error.
-                if let Err(rollback_error) = restore_agent_backup(self, &backup).await {
-                    self.fence(super::FenceReason::AgentRecoveryPending);
-                    return Err(rollback_error);
-                }
-            } else if let Err(rollback_error) = self
-                .rollback_agent_memory(&request, &tree, &request_id)
-                .await
-            {
-                self.fence(super::FenceReason::AgentRecoveryPending);
-                return Err(rollback_error);
-            }
-            if let Err(abort_error) =
-                abort_agent_operation(self, &catalog, &request_id, "agent source write failed")
-                    .await
-            {
-                self.fence(super::FenceReason::AgentRecoveryPending);
-                return Err(abort_error);
-            }
-            return Err(agent_error);
-        }
+        // The prepared `agent_apply` row owns this document's sole source
+        // writer slot.  Calling `write_session_inner` here would prepare a
+        // second `journal_append` operation before the agent receipt is
+        // committed, violating the v2 one-source-writer index.  The
+        // canonical checkpoint below records the complete post-edit source
+        // closure and settles this same operation.  The session journal is
+        // flushed after that commit, so a crash can replay the committed
+        // source checkpoint without manufacturing a competing operation.
         let digest = request_digest(&request)?;
         let receipt = match self
             .commit_agent_receipt(
@@ -1617,6 +1598,14 @@ impl Room {
                 ));
             }
         };
+        if let Err(error) = self.write_session_inner(true, false).await {
+            // The v2 source checkpoint and receipt are already durable.  A
+            // journal append failure must not turn that committed mutation
+            // into an ambiguous outcome; fence the room and let recovery
+            // replay the committed operation from its canonical source.
+            self.fence(super::FenceReason::AgentRecoveryPending);
+            let _ = error;
+        }
         // Broadcast follows the durable receipt, never precedes it.
         let payload = serde_json::json!({
             "type": "y-update",

@@ -37,6 +37,7 @@ mod operations;
 mod operation_capacity;
 mod pressure;
 mod publication;
+mod rate;
 mod read_objects;
 mod retention;
 mod room_edits;
@@ -592,6 +593,10 @@ pub struct Catalog {
     /// Unacknowledged room edits are process-local and disappear on restart;
     /// keeping them here avoids creating a TEMP SQL table at runtime.
     pub(crate) room_reservations: Mutex<AdmissionReservations>,
+    /// Process-local bounded mutation buckets.  Restarting a process resets
+    /// these transient limits; durable byte and operation accounting remains
+    /// in the catalogue tables.
+    pub(crate) process_rates: std::sync::Arc<Mutex<rate::ProcessRateState>>,
 }
 
 #[derive(Default)]
@@ -616,6 +621,18 @@ impl fmt::Debug for Catalog {
 }
 
 impl Catalog {
+    /// Reserve one transient mutation token for a stable owner/action pair.
+    /// The returned guard refunds the token unless its caller marks the
+    /// surrounding durable operation committed.
+    pub(crate) fn reserve_process_rate(
+        &self,
+        owner: &str,
+        action: &str,
+        limit: usize,
+    ) -> CatalogResult<rate::ProcessRateReservation> {
+        rate::reserve(&self.process_rates, owner, action, limit)
+    }
+
     /// Open or create a file-backed catalogue and apply missing migrations,
     /// with the durability a deployment wants: the WAL is fsynced on every
     /// commit. Tests compiled with `cfg(test)` get the relaxed policy, since
@@ -839,6 +856,7 @@ impl Catalog {
             connection_operations: std::sync::atomic::AtomicUsize::new(0),
             link_sealing_keys: RwLock::new(Vec::new()),
             room_reservations: Mutex::new(AdmissionReservations::default()),
+            process_rates: std::sync::Arc::new(Mutex::new(rate::ProcessRateState::default())),
         })
     }
 

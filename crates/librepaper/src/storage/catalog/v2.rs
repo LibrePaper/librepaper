@@ -20,6 +20,7 @@ pub const MAX_CHECKPOINT_OBJECTS: usize = 16_384;
 pub const MAX_DOCUMENT_CHECKPOINT_REFS: i64 = 1_048_576;
 pub const MAX_DEPLOYMENT_CHECKPOINT_REFS: i64 = 8_388_608;
 pub const MAX_AGENT_PAYLOAD_BYTES: i64 = 33_554_432;
+pub const MAX_AGENT_PAYLOAD_OBJECT_BYTES: i64 = 16_777_216;
 pub const MAX_AGENT_PAYLOAD_COUNT: i64 = 512;
 
 #[derive(Clone, Copy, Debug)]
@@ -513,7 +514,7 @@ impl VerifiedPublicationBundle {
     }
 }
 
-fn validate_digest(value: &str, label: &str) -> CatalogResult<()> {
+pub(super) fn validate_digest(value: &str, label: &str) -> CatalogResult<()> {
     if value.len() != 64
         || !value
             .bytes()
@@ -1235,6 +1236,22 @@ impl Catalog {
         })
     }
 
+    /// Resolve the durable owner used for shared mutation budgets.  Caller
+    /// credentials and links authorize the mutation, but never choose the
+    /// budget partition.
+    pub(crate) fn v2_document_owner_id(&self, document_id: &DocumentId) -> CatalogResult<String> {
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT owner_id FROM documents
+                       WHERE id=?1 AND status<>'deleting'",
+                    [document_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)
+        })
+    }
+
     pub fn objects_by_ids(
         &self,
         document_id: &DocumentId,
@@ -1518,7 +1535,8 @@ impl Catalog {
                 return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "object allocation exceeds configured byte limit"));
             }
             if allocation.kind == ObjectKind::AgentPayload {
-                if checked_add(agent_bytes, allocation.reserved_bytes, "agent payload")? > MAX_AGENT_PAYLOAD_BYTES || checked_add(agent_count, 1, "agent payload count")? > MAX_AGENT_PAYLOAD_COUNT || checked_add(server_agent_bytes, allocation.reserved_bytes, "deployment agent payload")? > 134_217_728 || checked_add(server_agent_count, 1, "deployment agent count")? > 16_384 {
+                if allocation.reserved_bytes > MAX_AGENT_PAYLOAD_OBJECT_BYTES
+                    || checked_add(agent_bytes, allocation.reserved_bytes, "agent payload")? > MAX_AGENT_PAYLOAD_BYTES || checked_add(agent_count, 1, "agent payload count")? > MAX_AGENT_PAYLOAD_COUNT || checked_add(server_agent_bytes, allocation.reserved_bytes, "deployment agent payload")? > 134_217_728 || checked_add(server_agent_count, 1, "deployment agent count")? > 16_384 {
                     return Err(CatalogError::refused(super::CatalogRefusal::OwnerBytes, "agent staging capacity exceeded"));
                 }
             }
@@ -1744,13 +1762,34 @@ impl Catalog {
                 ],
                 )
                 .map_err(CatalogError::from)?;
+            } else {
+                // The prepared agent row owns the document writer slot. Add
+                // the checkpoint's verified closure and journal-base fields
+                // to that row without discarding its before/after tree,
+                // acceptance, and actor fences.
+                tx.execute(
+                    "UPDATE operations SET plan_json=json_patch(plan_json,?1),
+                         updated_at=max(updated_at,?2)
+                       WHERE id=?3 AND document_id=?4 AND state='prepared'",
+                    params![
+                        input.operation.plan_json,
+                        input.now.0,
+                        operation_id.as_str(),
+                        input.document_id.as_str(),
+                    ],
+                )
+                .map_err(CatalogError::from)?;
             }
             for allocation in &input.allocations {
                 tx.execute(
                     "INSERT INTO objects
                      (document_id,id,storage_key,kind,state,digest,logical_digest,
-                      encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at)
-                     VALUES(?1,?2,?3,?4,'allocated',?5,?6,?7,NULL,?8,?9,?10)",
+                      encoding_version,byte_length,reserved_bytes,allocation_operation_id,
+                      created_at,journal_epoch,first_sequence,last_sequence)
+                     VALUES(?1,?2,?3,?4,'allocated',?5,?6,?7,NULL,?8,?9,?10,
+                        CASE WHEN ?4='journal_base' THEN json_extract(?11,'$.journal_base_epoch') ELSE NULL END,
+                        CASE WHEN ?4='journal_base' THEN json_extract(?11,'$.journal_base_sequence') ELSE NULL END,
+                        CASE WHEN ?4='journal_base' THEN json_extract(?11,'$.journal_base_sequence') ELSE NULL END)",
                     params![
                         allocation.document_id.as_str(),
                         allocation.id.as_str(),
@@ -1762,6 +1801,7 @@ impl Catalog {
                         allocation.reserved_bytes,
                         operation_id.as_str(),
                         input.now.0,
+                        input.operation.plan_json,
                     ],
                 )
                 .map_err(CatalogError::from)?;
@@ -3545,6 +3585,97 @@ impl Catalog {
             if planned_digest != closure_digest(&checkpoint.object_ids) {
                 return Err(CatalogError::Conflict("source closure changed after manifest verification".into()));
             }
+            let journal_base = serde_json::from_str::<serde_json::Value>(&plan_json)
+                .ok()
+                .and_then(|plan| {
+                    let id = plan
+                        .get("journal_base_object_id")
+                        .and_then(serde_json::Value::as_str)?
+                        .to_owned();
+                    let digest = plan
+                        .get("journal_base_digest")
+                        .and_then(serde_json::Value::as_str)?
+                        .to_owned();
+                    let epoch = plan
+                        .get("journal_base_epoch")
+                        .and_then(serde_json::Value::as_i64)?;
+                    let sequence = plan
+                        .get("journal_base_sequence")
+                        .and_then(serde_json::Value::as_i64)?;
+                    Some((id, digest, epoch, sequence))
+                });
+            if kind == OperationKind::AgentApply.as_str() && journal_base.is_none() {
+                return Err(CatalogError::Conflict(
+                    "agent checkpoint has no encoded journal base".into(),
+                ));
+            }
+            if let Some((base_id, base_digest, base_epoch, base_sequence)) = journal_base.as_ref() {
+                let expected_epoch = journal_epoch
+                    .checked_add(1)
+                    .ok_or_else(|| CatalogError::Conflict("journal epoch overflow".into()))?;
+                let expected_sequence = journal_sequence.max(1);
+                if *base_epoch != expected_epoch || *base_sequence != expected_sequence {
+                    return Err(CatalogError::Conflict(
+                        "encoded journal base does not advance the captured journal fence"
+                            .into(),
+                    ));
+                }
+                let (base_kind, base_state, actual_digest, epoch, first, last): (
+                    String,
+                    String,
+                    String,
+                    Option<i64>,
+                    Option<i64>,
+                    Option<i64>,
+                ) = tx
+                    .query_row(
+                        "SELECT kind,state,digest,journal_epoch,first_sequence,last_sequence
+                           FROM objects WHERE document_id=?1 AND id=?2",
+                        params![checkpoint.document_id.as_str(), base_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                            ))
+                        },
+                    )
+                    .map_err(CatalogError::from)?;
+                if base_kind != ObjectKind::JournalBase.as_str()
+                    || base_state != ObjectState::Available.as_str()
+                    || actual_digest != *base_digest
+                    || epoch != Some(*base_epoch)
+                    || first != Some(*base_sequence)
+                    || last != Some(*base_sequence)
+                {
+                    return Err(CatalogError::Conflict(
+                        "encoded journal base is not an available fenced object".into(),
+                    ));
+                }
+                let leased: i64 = tx
+                    .query_row(
+                        "SELECT count(*) FROM object_leases
+                          WHERE document_id=?1 AND object_id=?2 AND operation_id=?3
+                            AND purpose='stage' AND writer_generation=?4 AND expires_at>?5",
+                        params![
+                            checkpoint.document_id.as_str(),
+                            base_id,
+                            operation_id.as_str(),
+                            generation,
+                            checkpoint.now.0
+                        ],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if leased != 1 {
+                    return Err(CatalogError::Conflict(
+                        "encoded journal base lease is expired or missing".into(),
+                    ));
+                }
+            }
             let tree_kind: String = tx.query_row("SELECT kind FROM objects WHERE document_id=?1 AND id=?2 AND state='available'", params![checkpoint.document_id.as_str(),checkpoint.tree_object_id.as_str()], |r| r.get(0)).map_err(CatalogError::from)?;
             if tree_kind != ObjectKind::SourceTree.as_str() { return Err(CatalogError::Invalid("checkpoint tree must be a source_tree object".into())); }
             for object_id in &checkpoint.object_ids {
@@ -3573,6 +3704,11 @@ impl Catalog {
                     .filter(|value| matches!(*value, "markdown" | "html" | "typst" | "latex" | "quarto"))
                     .ok_or_else(|| CatalogError::Invalid("source operation format is invalid".into()))?
                     .to_owned();
+                if format != checkpoint.source_format.as_str() {
+                    return Err(CatalogError::Conflict(
+                        "source operation format differs from checkpoint tree".into(),
+                    ));
+                }
                 let main = plan
                     .get("main")
                     .and_then(serde_json::Value::as_str)
@@ -3582,13 +3718,84 @@ impl Catalog {
                 let key = title_key(&title);
                 (Some(title), Some(key), Some(format), Some(main))
             } else {
-                (None, None, None, None)
+                let metadata: serde_json::Value = serde_json::from_str(&checkpoint.metadata_json)
+                    .map_err(|error| CatalogError::Invalid(format!("checkpoint metadata: {error}")))?;
+                let main = metadata
+                    .get("main")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned);
+                if let Some(main) = main.as_deref() {
+                    validate_main_path(main)?;
+                }
+                (
+                    None,
+                    None,
+                    Some(checkpoint.source_format.as_str().to_owned()),
+                    main,
+                )
             };
             let count = i64::try_from(checkpoint.object_ids.len()).map_err(|_| CatalogError::Invalid("checkpoint closure too large".into()))?;
             if checked_add(doc_refs,count,"document checkpoint references")? > MAX_DOCUMENT_CHECKPOINT_REFS { return Err(CatalogError::refused(super::CatalogRefusal::Other,"checkpoint_reference_limit")); }
             tx.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,parent_id,created_at,author_account_id,author_label,reason,source_format,logical_bytes,label,journal_epoch,journal_sequence,metadata_json,eligible_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)", params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),next,checkpoint.tree_object_id.as_str(),checkpoint.tree_digest,checkpoint.parent_id,checkpoint.now.0,checkpoint.author_account_id,checkpoint.author_label,checkpoint.reason,checkpoint.source_format.as_str(),checkpoint.logical_bytes,checkpoint.label,checkpoint.journal_epoch,checkpoint.journal_sequence,checkpoint.metadata_json,checkpoint.eligible_after.map(|value|value.0)]).map_err(CatalogError::from)?;
             for object_id in &checkpoint.object_ids { tx.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES(?1,?2,?3)",params![checkpoint.document_id.as_str(),checkpoint.id.as_str(),object_id.as_str()]).map_err(CatalogError::from)?; }
             tx.execute("UPDATE documents SET title=COALESCE(?1,title),title_key=COALESCE(?2,title_key),source_format=COALESCE(?3,source_format),main_path=COALESCE(?4,main_path),status=CASE WHEN status='creating' THEN 'active' ELSE status END,next_checkpoint_seq=next_checkpoint_seq+1,source_generation=source_generation+1,checkpoint_ref_count=checkpoint_ref_count+?5,last_checkpoint_at=?6,retention_due_at=0,current_checkpoint_id=CASE WHEN ?7 THEN ?8 ELSE current_checkpoint_id END,updated_at=max(updated_at,?6) WHERE id=?9",params![title.as_deref(),title_key_value.as_deref(),plan_format.as_deref(),plan_main.as_deref(),count,checkpoint.now.0,checkpoint.make_current,checkpoint.id.as_str(),checkpoint.document_id.as_str()]).map_err(CatalogError::from)?;
+            if let Some((base_id, _, base_epoch, base_sequence)) = journal_base {
+                let grace = checkpoint.now.0.saturating_add(900_000);
+                tx.execute(
+                    "UPDATE objects SET live_root=0,
+                         gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END
+                       WHERE document_id=?2 AND kind IN ('journal_segment','journal_base')
+                         AND state='available' AND live_root=1 AND id<>?3",
+                    params![grace, checkpoint.document_id.as_str(), base_id],
+                )
+                .map_err(CatalogError::from)?;
+                // The new journal base depends on the complete checkpoint
+                // closure. Keep that closure rooted with it so pruning a
+                // prior checkpoint cannot strand the recipe, chunks, or
+                // assets needed to recover the acknowledged state. The
+                // indexed checkpoint edge set makes this bounded by the
+                // admitted closure rather than scanning object payloads.
+                tx.execute(
+                    "UPDATE objects SET live_root=0,
+                         gc_after=CASE WHEN gc_after IS NULL OR gc_after<?1 THEN ?1 ELSE gc_after END
+                       WHERE document_id=?2 AND state='available' AND live_root=1
+                         AND kind IN ('source_tree','source_recipe','source_chunk','asset',
+                                      'journal_segment','journal_base')
+                         AND NOT EXISTS (
+                           SELECT 1 FROM checkpoint_objects co
+                            WHERE co.document_id=objects.document_id
+                              AND co.checkpoint_id=?3
+                              AND co.object_id=objects.id
+                         )
+                         AND id<>?4",
+                    params![grace, checkpoint.document_id.as_str(), checkpoint.id.as_str(), base_id],
+                )
+                .map_err(CatalogError::from)?;
+                tx.execute(
+                    "UPDATE objects SET live_root=1,gc_after=NULL
+                       WHERE document_id=?1 AND state='available'
+                         AND id IN (
+                           SELECT object_id FROM checkpoint_objects
+                            WHERE document_id=?1 AND checkpoint_id=?2
+                         )",
+                    params![checkpoint.document_id.as_str(), checkpoint.id.as_str()],
+                )
+                .map_err(CatalogError::from)?;
+                tx.execute(
+                    "UPDATE objects SET live_root=1,gc_after=NULL
+                       WHERE document_id=?1 AND id=?2 AND kind='journal_base' AND state='available'",
+                    params![checkpoint.document_id.as_str(), base_id],
+                )
+                .map_err(CatalogError::from)?;
+                tx.execute(
+                    "UPDATE documents SET journal_epoch=?1,journal_sequence=?2,
+                         journal_base_object_id=?3,journal_base_sequence=?2,
+                         updated_at=max(updated_at,?4) WHERE id=?5",
+                    params![base_epoch, base_sequence, base_id, checkpoint.now.0, checkpoint.document_id.as_str()],
+                )
+                .map_err(CatalogError::from)?;
+            }
             let receipt_expires=checkpoint.now.0.checked_add(7*24*60*60*1_000).ok_or_else(||CatalogError::Invalid("checkpoint receipt expiry overflow".into()))?;
             tx.execute("UPDATE operations SET state='committed',result_json=?1,completed_at=?2,receipt_expires_at=?3,updated_at=?2 WHERE id=?4 AND state='prepared'",params![result_json,checkpoint.now.0,receipt_expires,operation_id.as_str()]).map_err(CatalogError::from)?;
             tx.execute("UPDATE server_state SET checkpoint_ref_count=checkpoint_ref_count+?1,catalog_revision=catalog_revision+1,updated_at=?2 WHERE id=1",params![count,checkpoint.now.0]).map_err(CatalogError::from)?;

@@ -1584,6 +1584,24 @@ impl Store {
         } else {
             None
         };
+        let rate_owner = if let Some(owner_id) = owner_id.as_deref() {
+            format!("account:{owner_id}")
+        } else if let Some(anonymous_owner_id) = anonymous_owner_id.as_deref() {
+            format!("account:{anonymous_owner_id}")
+        } else {
+            return Err(PutError::Authorization {
+                status: 401,
+                message: "publication actor has no accountable identity",
+            });
+        };
+        let mut source_rate = catalog
+            .reserve_process_rate(
+                &rate_owner,
+                "source_upload",
+                self.config.storage.uploads_per_hour,
+            )
+            .map_err(crate::storage::catalog::CatalogError::from)
+            .map_err(source_put_error)?;
         let created_at = existing
             .as_ref()
             .map(|document| document.created_at.clone())
@@ -2034,7 +2052,10 @@ impl Store {
             metadata_json: serde_json::json!({
                 "version": 2,
                 "sourceDigest": hex::encode(main_file_digest),
+                "main": main.clone(),
+                "source_format": format.clone(),
                 "fileCount": file_inputs.len(),
+                "changed": file_inputs.keys().cloned().collect::<Vec<_>>(),
             })
             .to_string(),
             eligible_after: None,
@@ -2084,6 +2105,7 @@ impl Store {
             })
             .await
             .map_err(|error| PutError::Storage(error.to_string()))?;
+        source_rate.commit();
         for object_id in &checkpoint.object_ids {
             let _ = catalog
                 .execute_catalog(STORE_JOB_BYTES, {

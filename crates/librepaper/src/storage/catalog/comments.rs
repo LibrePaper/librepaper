@@ -1,6 +1,7 @@
 //! Annotation and reply persistence for the v2 catalogue.
 
 use super::*;
+use sha2::{Digest, Sha256};
 
 fn annotation_session_active(
     tx: &rusqlite::Transaction<'_>,
@@ -846,7 +847,9 @@ impl Catalog {
         authority: AnnotationAuthority<'_>,
     ) -> CatalogResult<()> {
         self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
             let doc = document_id(tx, slug)?;
+            annotation_account_authorized(tx, &doc, authority)?;
             let actor = annotation_actor(authority);
             let Some((operation_id, state, digest, _actor)) =
                 unique_acceptance_operation_tx(tx, &doc, request_id, comment_id, &actor)?
@@ -940,9 +943,18 @@ impl Catalog {
             let object = value
                 .as_object_mut()
                 .ok_or_else(|| CatalogError::Invalid("acceptance plan is not an object".into()))?;
+            // The update body is an agent_payload object, never an inline
+            // hex string.  This compatibility entry point can only retain
+            // its bounded digest metadata; production callers use
+            // `allocate_suggestion_accept_update_authorized`, which records
+            // the physical object identity after quota admission.
             object.insert(
-                "update".into(),
-                serde_json::Value::String(hex::encode(update)),
+                "update_digest".into(),
+                serde_json::Value::String(hex::encode(Sha256::digest(update))),
+            );
+            object.insert(
+                "update_len".into(),
+                serde_json::Value::Number(serde_json::Number::from(update.len())),
             );
             let encoded = serde_json::to_string(&value).map_err(|error| {
                 CatalogError::Invalid(format!("invalid acceptance plan: {error}"))
@@ -955,6 +967,275 @@ impl Catalog {
             )
             .map_err(CatalogError::from)?;
             Ok(())
+        })
+    }
+
+    /// Admit the post-accept CRDT state as a physical agent payload.  The
+    /// bytes are written by the room's V2ObjectWriter after this transaction;
+    /// operation JSON carries only the immutable object identity.
+    pub(crate) fn allocate_suggestion_accept_update_authorized(
+        &self,
+        slug: &str,
+        comment_id: &str,
+        request_id: &str,
+        request_digest: &str,
+        update_digest: &str,
+        update_len: i64,
+        limits: V2AdmissionLimits,
+        now: UnixMillis,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<(V2ObjectAllocation, String)> {
+        if update_len <= 0 || update_len > super::v2::MAX_AGENT_PAYLOAD_OBJECT_BYTES {
+            return Err(CatalogError::Invalid(
+                "suggestion update is too large".into(),
+            ));
+        }
+        super::v2::validate_digest(update_digest, "suggestion update digest")?;
+        if limits.owner_bytes < 0 || limits.deployment_bytes < 0 {
+            return Err(CatalogError::Invalid("invalid acceptance limits".into()));
+        }
+        let admission_guard = self
+            .room_reservations
+            .lock()
+            .map_err(|_| CatalogError::Busy)?;
+        self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
+            let doc = document_id(tx, slug)?;
+            annotation_account_authorized(tx, &doc, authority)?;
+            let actor = annotation_actor(authority);
+            let Some((raw_id, state, digest, stored_actor)) =
+                unique_acceptance_operation_tx(tx, &doc, request_id, comment_id, &actor)?
+            else {
+                return Err(CatalogError::NotFound);
+            };
+            if state != "prepared" || digest != request_digest {
+                return Err(CatalogError::Conflict("suggestion acceptance receipt is not writable".into()));
+            }
+            let operation_id = OperationId::new(raw_id)
+                .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+            let (writer_generation, work_expires): (String, Option<i64>) = tx.query_row(
+                "SELECT writer_generation,work_expires_at FROM operations
+                 WHERE id=?1 AND document_id=?2 AND actor_key=?3 AND state='prepared'",
+                params![operation_id.as_str(), doc, stored_actor],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).map_err(CatalogError::from)?;
+            let current_generation: String = tx.query_row(
+                "SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0),
+            ).map_err(CatalogError::from)?;
+            if writer_generation != current_generation
+                || work_expires.is_some_and(|deadline| deadline <= now.0)
+            {
+                return Err(CatalogError::Conflict("suggestion acceptance operation is fenced or expired".into()));
+            }
+            let plan: String = tx.query_row(
+                "SELECT plan_json FROM operations WHERE id=?1 AND document_id=?2 AND actor_key=?3 AND state='prepared'",
+                params![operation_id.as_str(), doc, stored_actor], |row| row.get(0),
+            ).map_err(CatalogError::from)?;
+            let mut value: serde_json::Value = serde_json::from_str(&plan)
+                .map_err(|_| CatalogError::Invalid("invalid acceptance plan".into()))?;
+            if let Some(existing_id) = value
+                .get("update_object_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                let existing_digest = value
+                    .get("update_digest")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let existing_len = value
+                    .get("update_len")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(-1);
+                if existing_digest != update_digest || existing_len != update_len {
+                    return Err(CatalogError::Conflict(
+                        "suggestion update was staged with different bytes".into(),
+                    ));
+                }
+                let existing_object = tx
+                    .query_row(
+                        "SELECT storage_key,state,digest,byte_length,reserved_bytes,
+                                allocation_operation_id
+                           FROM objects
+                          WHERE document_id=?1 AND id=?2 AND kind='agent_payload'",
+                        params![doc, existing_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, Option<i64>>(3)?,
+                                row.get::<_, i64>(4)?,
+                                row.get::<_, Option<String>>(5)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(CatalogError::from)?
+                    .ok_or_else(|| CatalogError::Conflict("staged suggestion object is missing".into()))?;
+                let active_stage_lease: i64 = tx
+                    .query_row(
+                        "SELECT count(*) FROM object_leases
+                          WHERE document_id=?1 AND object_id=?2 AND operation_id=?3
+                            AND purpose='stage' AND expires_at>?4",
+                        params![doc, existing_id, operation_id.as_str(), now.0],
+                        |row| row.get(0),
+                    )
+                    .map_err(CatalogError::from)?;
+                if existing_object.2 != update_digest
+                    || !matches!(existing_object.1.as_str(), "allocated" | "available")
+                    || (existing_object.1 == "allocated"
+                        && (existing_object.5.as_deref() != Some(operation_id.as_str())
+                            || existing_object.4 != update_len))
+                    || (existing_object.1 == "available"
+                        && (existing_object.5.is_some()
+                            || existing_object.3 != Some(update_len)
+                            || active_stage_lease != 1))
+                {
+                    return Err(CatalogError::Conflict(
+                        "staged suggestion object no longer matches its receipt".into(),
+                    ));
+                }
+                let existing_id = ObjectId::new(existing_id.to_owned())
+                    .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+                return Ok((
+                    V2ObjectAllocation {
+                        document_id: DocumentId::new(doc.clone())
+                            .map_err(|error| CatalogError::Invalid(error.to_string()))?,
+                        id: existing_id.clone(),
+                        storage_key: existing_object.0,
+                        kind: ObjectKind::AgentPayload,
+                        digest: update_digest.to_owned(),
+                        logical_digest: None,
+                        encoding_version: 1,
+                        reserved_bytes: existing_object.4,
+                        operation_id: operation_id.clone(),
+                        now,
+                    },
+                    format!("agent-accept:{}:{}", operation_id, existing_id),
+                ));
+            }
+            let (owner_id, owner_plan): (String, String) = tx.query_row(
+                "SELECT d.owner_id,a.plan
+                   FROM documents d JOIN accounts a ON a.id=d.owner_id
+                  WHERE d.id=?1 AND d.status='active' AND a.status='active'",
+                [&doc],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).map_err(CatalogError::from)?;
+            if let Some(planned) = value
+                .get("owner_plan")
+                .and_then(serde_json::Value::as_str)
+                && planned != owner_plan
+            {
+                return Err(CatalogError::Conflict(
+                    "owner hard-quota plan changed while staging suggestion".into(),
+                ));
+            }
+            value
+                .as_object_mut()
+                .ok_or_else(|| CatalogError::Invalid("acceptance plan is not an object".into()))?
+                .insert("owner_plan".into(), serde_json::Value::String(owner_plan));
+            let (doc_reserved, doc_agent_bytes, doc_agent_count): (i64, i64, i64) = tx.query_row(
+                "SELECT reserved_bytes,agent_payload_bytes,agent_payload_count FROM documents WHERE id=?1",
+                [&doc], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).map_err(CatalogError::from)?;
+            let (owner_stored, owner_reserved): (i64, i64) = tx.query_row(
+                "SELECT stored_bytes,reserved_bytes FROM accounts WHERE id=?1 AND status='active'",
+                [&owner_id], |row| Ok((row.get(0)?, row.get(1)?)),
+            ).map_err(CatalogError::from)?;
+            let (server_stored, server_reserved, server_agent_bytes, server_agent_count): (i64, i64, i64, i64) = tx.query_row(
+                "SELECT stored_bytes,reserved_bytes,agent_payload_bytes,agent_payload_count FROM server_state WHERE id=1",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).map_err(CatalogError::from)?;
+            let checked = |a: i64, b: i64, label: &str| a.checked_add(b)
+                .ok_or_else(|| CatalogError::Invalid(format!("{label} accounting overflow")));
+            let doc_reserved_new = checked(doc_reserved, update_len, "document")?;
+            let owner_reserved_new = checked(owner_reserved, update_len, "owner")?;
+            let server_reserved_new = checked(server_reserved, update_len, "deployment")?;
+            let process_owner = admission_guard.owner_bytes.get(&owner_id).copied().unwrap_or(0);
+            let process_total = admission_guard.deployment_bytes;
+            if checked(
+                checked(owner_stored, owner_reserved_new, "owner")?,
+                process_owner,
+                "owner process reservation",
+            )? > limits.owner_bytes
+            {
+                return Err(CatalogError::refused(
+                    CatalogRefusal::OwnerBytes,
+                    "suggestion update exceeds owner storage quota",
+                ));
+            }
+            if checked(
+                checked(server_stored, server_reserved_new, "deployment")?,
+                process_total,
+                "deployment process reservation",
+            )? > limits.deployment_bytes
+            {
+                return Err(CatalogError::refused(
+                    CatalogRefusal::DeploymentBytes,
+                    "suggestion update exceeds deployment storage quota",
+                ));
+            }
+            let doc_agent_bytes_new = checked(doc_agent_bytes, update_len, "document agent")?;
+            let doc_agent_count_new = checked(doc_agent_count, 1, "document agent count")?;
+            let server_agent_bytes_new = checked(server_agent_bytes, update_len, "server agent")?;
+            let server_agent_count_new = checked(server_agent_count, 1, "server agent count")?;
+            if doc_agent_bytes_new > super::v2::MAX_AGENT_PAYLOAD_BYTES
+                || doc_agent_count_new > super::v2::MAX_AGENT_PAYLOAD_COUNT
+                || server_agent_bytes_new > 134_217_728
+                || server_agent_count_new > 16_384
+            {
+                return Err(CatalogError::refused(CatalogRefusal::OwnerBytes, "agent staging capacity exceeded"));
+            }
+            let object_id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
+                .map_err(|error| CatalogError::Invalid(error.to_string()))?;
+            let object_text = object_id.to_string();
+            let holder = format!("agent-accept:{}:{}", operation_id, object_id);
+            let lease_expires = work_expires.unwrap_or(i64::MAX)
+                .min(now.0.checked_add(120_000).ok_or_else(|| CatalogError::Invalid("acceptance lease overflow".into()))?);
+            if lease_expires <= now.0 {
+                return Err(CatalogError::Conflict("acceptance lease expired".into()));
+            }
+            let object = value.as_object_mut().ok_or_else(|| CatalogError::Invalid("acceptance plan is not an object".into()))?;
+            object.insert("version".into(), serde_json::Value::Number(serde_json::Number::from(2)));
+            object.insert("update_object_id".into(), serde_json::Value::String(object_text.clone()));
+            object.insert("update_digest".into(), serde_json::Value::String(update_digest.to_owned()));
+            object.insert("update_len".into(), serde_json::Value::Number(serde_json::Number::from(update_len)));
+            let encoded = serde_json::to_string(&value).map_err(|error| CatalogError::Invalid(format!("invalid acceptance plan: {error}")))?;
+            super::v2::validate_json(&encoded, "acceptance plan", 65_536)?;
+            tx.execute(
+                "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,logical_digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at)
+                 VALUES(?1,?2,?3,'agent_payload','allocated',?4,NULL,1,NULL,?5,?6,?7)",
+                params![doc, object_text, format!("v2/documents/{doc}/objects/{object_id}"), update_digest, update_len, operation_id.as_str(), now.0],
+            ).map_err(CatalogError::from)?;
+            tx.execute(
+                "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at)
+                 VALUES(?1,?2,?3,'stage',?4,?5,?6,?7)",
+                params![doc, object_text, holder, operation_id.as_str(), current_generation, now.0, lease_expires],
+            ).map_err(CatalogError::from)?;
+            tx.execute("UPDATE documents SET reserved_bytes=?1,agent_payload_bytes=?2,agent_payload_count=?3,updated_at=max(updated_at,?4) WHERE id=?5", params![doc_reserved_new, doc_agent_bytes_new, doc_agent_count_new, now.0, doc]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE accounts SET reserved_bytes=?1 WHERE id=?2", params![owner_reserved_new, owner_id]).map_err(CatalogError::from)?;
+            tx.execute("UPDATE server_state SET reserved_bytes=?1,agent_payload_bytes=?2,agent_payload_count=?3,catalog_revision=catalog_revision+1,updated_at=?4 WHERE id=1", params![server_reserved_new, server_agent_bytes_new, server_agent_count_new, now.0]).map_err(CatalogError::from)?;
+            let changed = tx.execute(
+                "UPDATE operations SET plan_json=?1,updated_at=max(updated_at,?2)
+                 WHERE id=?3 AND document_id=?4 AND actor_key=?5 AND state='prepared'",
+                params![encoded, now.0, operation_id.as_str(), doc, stored_actor],
+            ).map_err(CatalogError::from)?;
+            if changed != 1 {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance operation changed while staging".into(),
+                ));
+            }
+            Ok((V2ObjectAllocation {
+                document_id: DocumentId::new(doc.clone()).map_err(|error| CatalogError::Invalid(error.to_string()))?,
+                id: object_id,
+                storage_key: format!("v2/documents/{doc}/objects/{object_text}"),
+                kind: ObjectKind::AgentPayload,
+                digest: update_digest.to_owned(),
+                logical_digest: None,
+                encoding_version: 1,
+                reserved_bytes: update_len,
+                operation_id,
+                now,
+            }, holder))
         })
     }
     pub fn suggestion_accept_update(
@@ -978,6 +1259,11 @@ impl Catalog {
         request_digest: &str,
         authority: AnnotationAuthority<'_>,
     ) -> CatalogResult<Option<Vec<u8>>> {
+        self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
+            let doc = document_id(tx, slug)?;
+            annotation_account_authorized(tx, &doc, authority)
+        })?;
         self.with_connection(|connection| {
             let doc = document_id_connection(connection, slug)?;
             let actor = annotation_actor(authority);
@@ -1006,14 +1292,60 @@ impl Catalog {
                 .map_err(CatalogError::from)?;
             let value: serde_json::Value = serde_json::from_str(&plan)
                 .map_err(|_| CatalogError::Invalid("invalid acceptance plan".into()))?;
-            value
-                .get("update")
+            if value
+                .get("update_object_id")
                 .and_then(|value| value.as_str())
-                .map(hex::decode)
-                .transpose()
-                .map_err(|error| {
-                    CatalogError::Invalid(format!("invalid acceptance update: {error}"))
+                .is_some()
+            {
+                return Err(CatalogError::Conflict(
+                    "acceptance update is a physical agent payload; use the object reader".into(),
+                ));
+            }
+            Ok(None)
+        })
+    }
+
+    pub(crate) fn suggestion_accept_update_object_authorized(
+        &self,
+        slug: &str,
+        request_id: &str,
+        request_digest: &str,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Option<ObjectId>> {
+        self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
+            let doc = document_id(tx, slug)?;
+            annotation_account_authorized(tx, &doc, authority)
+        })?;
+        self.with_connection(|connection| {
+            let doc = document_id_connection(connection, slug)?;
+            let actor = annotation_actor(authority);
+            let Some((operation_id, state, digest, _actor)) =
+                unique_acceptance_operation_connection(connection, &doc, request_id, &actor)?
+            else {
+                return Ok(None);
+            };
+            if digest != request_digest {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance receipt does not match".into(),
+                ));
+            }
+            if state != "prepared" {
+                return Ok(None);
+            }
+            let object_id: Option<String> = connection
+                .query_row(
+                    "SELECT json_extract(plan_json,'$.update_object_id')
+                     FROM operations WHERE id=?1 AND state='prepared'",
+                    [operation_id],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            object_id
+                .map(|value| {
+                    ObjectId::new(value).map_err(|error| CatalogError::Invalid(error.to_string()))
                 })
+                .transpose()
         })
     }
     pub fn pending_suggestion_accept(&self, slug: &str, comment_id: &str) -> CatalogResult<bool> {
@@ -1040,6 +1372,11 @@ impl Catalog {
         request_digest: &str,
         authority: AnnotationAuthority<'_>,
     ) -> CatalogResult<Option<(String, String, String)>> {
+        self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
+            let doc = document_id(tx, slug)?;
+            annotation_account_authorized(tx, &doc, authority)
+        })?;
         self.with_connection(|connection| {
             let doc = document_id_connection(connection, slug)?;
             let actor = annotation_actor(authority);
@@ -1118,7 +1455,9 @@ impl Catalog {
         authority: AnnotationAuthority<'_>,
     ) -> CatalogResult<Comment> {
         self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
             let doc = document_id(tx, slug)?;
+            annotation_account_authorized(tx, &doc, authority)?;
             let actor = annotation_actor(authority);
             let Some((operation_id, state, digest, _actor)) =
                 unique_acceptance_operation_tx(tx, &doc, request_id, comment_id, &actor)?
@@ -1170,6 +1509,121 @@ impl Catalog {
                     done.saturating_add(7 * 24 * 60 * 60 * 1000),
                     operation_id
                 ],
+            )
+            .map_err(CatalogError::from)?;
+            Self::comment_in_tx(tx, slug, comment_id)
+        })
+    }
+
+    /// Record the checkpoint and settle the suggestion in one transaction.
+    /// The checkpoint commit already made the source durable; keeping this
+    /// receipt transition together prevents a retry from observing a half
+    /// updated annotation and keeps the exact actor scoped throughout.
+    pub(crate) fn record_and_finish_suggestion_accept_authorized(
+        &self,
+        slug: &str,
+        comment_id: &str,
+        request_id: &str,
+        request_digest: &str,
+        resolved_in: &str,
+        resolved_at: &str,
+        authority: AnnotationAuthority<'_>,
+    ) -> CatalogResult<Comment> {
+        self.immediate(|tx| {
+            annotation_session_active(tx, authority)?;
+            let doc = document_id(tx, slug)?;
+            annotation_account_authorized(tx, &doc, authority)?;
+            let actor = annotation_actor(authority);
+            let Some((operation_id, state, digest, _stored_actor)) =
+                unique_acceptance_operation_tx(tx, &doc, request_id, comment_id, &actor)?
+            else {
+                return Err(CatalogError::NotFound);
+            };
+            if digest != request_digest {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance receipt does not match".into(),
+                ));
+            }
+            if state == "committed" {
+                return Self::comment_in_tx(tx, slug, comment_id);
+            }
+            if state != "prepared" {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance was aborted".into(),
+                ));
+            }
+            let at = millis(resolved_at);
+            let changed = tx
+                .execute(
+                    "UPDATE annotations SET protected_checkpoint_id=?1,
+                     suggestion_state='accepted',acceptance_operation_id=?2,
+                     resolution_revision=?3,resolved_at=?4,updated_at=?4
+                     WHERE document_id=?5 AND id=?6 AND kind='suggestion'
+                       AND suggestion_state='proposed'",
+                    params![resolved_in, operation_id, resolved_in, at, doc, comment_id],
+                )
+                .map_err(CatalogError::from)?;
+            if changed != 1 {
+                return Err(CatalogError::NotFound);
+            }
+            let done = unix_millis();
+            let result = serde_json::json!({
+                "version": 1,
+                "commentId": comment_id,
+                "resolvedIn": resolved_in,
+                "resolvedAt": resolved_at,
+            })
+            .to_string();
+            let plan: String = tx
+                .query_row(
+                    "SELECT plan_json FROM operations WHERE id=?1 AND document_id=?2
+                       AND actor_key=?3 AND state='prepared'",
+                    params![operation_id, doc, actor],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            let mut plan: serde_json::Value = serde_json::from_str(&plan)
+                .map_err(|_| CatalogError::Invalid("invalid acceptance plan".into()))?;
+            let plan_object = plan
+                .as_object_mut()
+                .ok_or_else(|| CatalogError::Invalid("acceptance plan is not an object".into()))?;
+            plan_object.insert(
+                "status".into(),
+                serde_json::Value::String("committed".into()),
+            );
+            plan_object.insert(
+                "resolved_in".into(),
+                serde_json::Value::String(resolved_in.to_owned()),
+            );
+            let plan = serde_json::to_string(&plan)
+                .map_err(|error| CatalogError::Invalid(format!("invalid acceptance plan: {error}")))?;
+            super::v2::validate_json(&plan, "acceptance plan", 65_536)?;
+            let changed = tx
+                .execute(
+                    "UPDATE operations SET state='committed',result_json=?1,
+                     plan_json=?2,work_expires_at=NULL,completed_at=?3,receipt_expires_at=?4,updated_at=?3
+                     WHERE id=?5 AND document_id=?6 AND actor_key=?7
+                       AND state='prepared'",
+                    params![
+                        result,
+                        plan,
+                        done,
+                        done.saturating_add(7 * 24 * 60 * 60 * 1_000),
+                        operation_id,
+                        doc,
+                        actor,
+                    ],
+                )
+                .map_err(CatalogError::from)?;
+            if changed != 1 {
+                return Err(CatalogError::Conflict(
+                    "suggestion acceptance operation changed while settling".into(),
+                ));
+            }
+            tx.execute(
+                "DELETE FROM object_leases
+                  WHERE document_id=?1 AND operation_id=?2 AND purpose='stage'",
+                params![doc, operation_id],
             )
             .map_err(CatalogError::from)?;
             Self::comment_in_tx(tx, slug, comment_id)

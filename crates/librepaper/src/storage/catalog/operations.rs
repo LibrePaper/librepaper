@@ -1048,6 +1048,19 @@ impl Catalog {
             },
             now,
         )?;
+        // `prepare_v2_operation` deliberately returns the compact typed
+        // operation row, so a request-key replay needs one scoped receipt
+        // read before it is exposed through the legacy-shaped `Operation`
+        // adapter.  Returning an empty result here made an already committed
+        // retry look like a fresh acknowledgement and discarded the durable
+        // checkpoint head from the first request.
+        let result = if operation.state == "prepared" {
+            String::new()
+        } else {
+            self.operation_for_actor(document_id.as_str(), &operation.request_key, &actor_key)?
+                .map(|receipt| receipt.result)
+                .unwrap_or_default()
+        };
         Ok(Operation {
             storage_id: document_id.to_string(),
             request_id: operation.request_key,
@@ -1055,7 +1068,7 @@ impl Catalog {
             request_digest: operation.request_digest,
             status: operation.state,
             intent: canonical_intent,
-            result: String::new(),
+            result,
             created_at: request.created_at,
         })
     }

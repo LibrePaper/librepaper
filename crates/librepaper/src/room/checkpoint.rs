@@ -474,7 +474,11 @@ impl Room {
             } else {
                 (0, (0, 0))
             };
-        let (tree, bodies, format, last, deferred, tree_generation) = {
+        let needs_agent_snapshot = actor
+            .as_ref()
+            .and_then(|authority| authority.agent_checkpoint.as_ref())
+            .is_some();
+        let (tree, bodies, format, last, deferred, tree_generation, snapshot_state) = {
             let mut state = self.state.lock().await;
             // A deliberate write inside the defer window is not refused; it
             // waits, and is taken when the window passes, if the text still
@@ -492,6 +496,7 @@ impl Room {
                     String::new(),
                     true,
                     0,
+                    None,
                 )
             } else {
                 let (tree, bodies) = tree_of(&state.session.doc, &state.session.asset_sizes);
@@ -520,6 +525,35 @@ impl Room {
                     // tell whether the document has moved on without hashing
                     // the whole tree again (R26).
                     state.session.generation,
+                    {
+                        let snapshot_permit = if needs_agent_snapshot {
+                            let bytes = tree.files.values().try_fold(0usize, |total, file| {
+                                total.checked_add(usize::try_from(file.size.max(0)).map_err(
+                                    |_| WriteError::Storage("snapshot size overflow".into()),
+                                )?)
+                                .ok_or_else(|| {
+                                    WriteError::Storage("snapshot size overflow".into())
+                                })
+                            })?;
+                            self.journal
+                                .get()
+                                .map(|journal| {
+                                    journal
+                                        .memory()
+                                        .try_acquire(crate::config::PersistenceLimits::staging_cost(
+                                            bytes,
+                                        ))
+                                        .map_err(|_| WriteError::ServerBusy)
+                                })
+                                .transpose()?
+                        } else {
+                            None
+                        };
+                        let snapshot =
+                            needs_agent_snapshot.then(|| session::encode_state(&state.session.doc));
+                        drop(snapshot_permit);
+                        snapshot
+                    },
                 )
             }
         };
@@ -563,6 +597,7 @@ impl Room {
                         snapshot_source_generation,
                         snapshot_journal,
                         actor.agent_checkpoint,
+                        snapshot_state.as_deref().unwrap_or_default(),
                     )
                     .await;
             }
@@ -610,6 +645,7 @@ impl Room {
                         snapshot_source_generation,
                         snapshot_journal,
                         None,
+                        snapshot_state.as_deref().unwrap_or_default(),
                     )
                     .await;
             }
@@ -1300,6 +1336,7 @@ impl Room {
         source_generation: i64,
         journal: (i64, i64),
         agent_checkpoint: Option<&crate::storage::catalog::AgentCheckpointCommit>,
+        snapshot_state: &[u8],
     ) -> Result<Option<String>, WriteError> {
         use crate::storage::blob::ObjectId as BlobObjectId;
         use crate::storage::catalog::{
@@ -1322,6 +1359,28 @@ impl Room {
         let now =
             UnixMillis::new(now_ms).map_err(|error| WriteError::Storage(error.to_string()))?;
         let (journal_epoch, journal_sequence) = journal;
+        let durable_owner_id = catalog
+            .execute_catalog(128, {
+                let document_id = document_id.clone();
+                move |catalog| catalog.v2_document_owner_id(&document_id)
+            })
+            .await
+            .map_err(WriteError::from)?;
+        let rate_owner = format!("account:{durable_owner_id}");
+        let mut owner_rate = catalog
+            .reserve_process_rate(
+                &rate_owner,
+                "checkpoint_owner",
+                self.config.session.checkpoint_owner_per_hour.max(0) as usize,
+            )
+            .map_err(WriteError::from)?;
+        let mut deployment_rate = catalog
+            .reserve_process_rate(
+                "deployment",
+                "checkpoint_deployment",
+                self.config.session.checkpoint_deployment_per_hour.max(0) as usize,
+            )
+            .map_err(WriteError::from)?;
         let generated_operation_id = OperationId::new(hex::encode(crate::auth::random_bytes(16)))
             .map_err(|error| WriteError::Storage(error.to_string()))?;
         let checkpoint_id =
@@ -1645,11 +1704,66 @@ impl Room {
             write: true,
         });
 
+        // Agent effects need the same encoded recovery base used by the v2
+        // journal runtime. It is allocated under the parent agent operation
+        // and promoted with the checkpoint, so a crash before the ordinary
+        // journal flush still reopens the exact post-effect CRDT state.
+        let journal_base = if agent_checkpoint.is_some() {
+            let payload = snapshot_state.to_vec();
+            let base_epoch = journal_epoch
+                .checked_add(1)
+                .ok_or_else(|| WriteError::Storage("journal epoch overflow".into()))?;
+            let base_sequence = journal_sequence.max(1);
+            let body = crate::storage::journal::RecoveryBaseBody {
+                format_version: crate::storage::journal::SEGMENT_FORMAT,
+                storage_id: self.storage_id.clone(),
+                epoch: u64::try_from(base_epoch)
+                    .map_err(|_| WriteError::Storage("journal epoch is negative".into()))?,
+                sequence: u64::try_from(base_sequence)
+                    .map_err(|_| WriteError::Storage("journal sequence is negative".into()))?,
+                digest: hex::encode(Sha256::digest(&payload)),
+                payload,
+            };
+            let bytes = crate::storage::journal::encode_recovery_base(&body)
+                .map_err(|error| WriteError::Storage(error.to_string()))?;
+            // Decode the exact bytes that will be written before admission
+            // can name them.  The SQL commit rechecks the immutable object
+            // digest and lease, while this proof covers the binary recovery
+            // envelope and its payload identity outside SQLite.
+            let decoded = crate::storage::journal::decode_recovery_base(&bytes)
+                .map_err(|error| WriteError::Storage(error.to_string()))?;
+            if decoded != body {
+                return Err(WriteError::Storage(
+                    "encoded journal base did not round-trip".into(),
+                ));
+            }
+            let id = ObjectId::new(hex::encode(crate::auth::random_bytes(16)))
+                .map_err(|error| WriteError::Storage(error.to_string()))?;
+            let digest = hex::encode(Sha256::digest(&bytes));
+            physical.push(PhysicalObject {
+                id: id.clone(),
+                kind: ObjectKind::JournalBase,
+                bytes,
+                content_type: "application/vnd.librepaper.journal-base",
+                digest: digest.clone(),
+                logical_digest: None,
+                write: true,
+            });
+            Some((id, digest, base_epoch, base_sequence))
+        } else {
+            None
+        };
+
         // The tree is committed first in the closure so replay and recovery
         // always have a canonical root, while the digest covers every object.
         let mut object_ids = Vec::with_capacity(physical.len());
         for object in physical.iter().rev() {
-            object_ids.push(object.id.clone());
+            if journal_base
+                .as_ref()
+                .is_none_or(|(base_id, _, _, _)| object.id != *base_id)
+            {
+                object_ids.push(object.id.clone());
+            }
         }
         object_ids.reverse();
         let mut closure_hasher = Sha256::new();
@@ -1730,6 +1844,14 @@ impl Room {
             "closure_digest": closure_digest,
             "tree_digest": hex::encode(tree_envelope.logical_digest),
             "tree_physical_digest": hex::encode(tree_physical_digest),
+            "journal_base_object_id": journal_base
+                .as_ref()
+                .map(|(id, _, _, _)| id.as_str()),
+            "journal_base_digest": journal_base
+                .as_ref()
+                .map(|(_, digest, _, _)| digest.as_str()),
+            "journal_base_epoch": journal_base.as_ref().map(|(_, _, epoch, _)| epoch),
+            "journal_base_sequence": journal_base.as_ref().map(|(_, _, _, sequence)| sequence),
             "authority": authority,
         })
         .to_string();
@@ -1904,7 +2026,10 @@ impl Room {
         let heartbeat_error = Arc::new(std::sync::Mutex::new(None::<String>));
         let heartbeat_catalog = Arc::clone(catalog);
         let heartbeat_document = document_id.clone();
-        let heartbeat_ids = object_ids.clone();
+        let heartbeat_ids = physical
+            .iter()
+            .map(|object| object.id.clone())
+            .collect::<Vec<_>>();
         let heartbeat_holder = holder.clone();
         let heartbeat_operation = admitted_operation.id.clone();
         let heartbeat_generation = writer_generation.clone();
@@ -1986,6 +2111,8 @@ impl Room {
                 "checkpoint closure heartbeat failed: {error}"
             )));
         }
+        let parent_tree_for_metadata = self.parent_tree().await;
+        let changed_paths = tree.changed_from(parent_tree_for_metadata.as_ref());
         let checkpoint = CheckpointCommit {
             document_id: document_id.clone(),
             id: checkpoint_id,
@@ -2000,9 +2127,14 @@ impl Room {
             label: None,
             journal_epoch,
             journal_sequence,
-            metadata_json:
-                serde_json::json!({"version": 2, "tree": hex::encode(tree_envelope.logical_digest)})
-                    .to_string(),
+            metadata_json: serde_json::json!({
+                "version": 2,
+                "tree": hex::encode(tree_envelope.logical_digest),
+                "main": tree_envelope.main_path,
+                "source_format": source_format.as_str(),
+                "changed": changed_paths,
+            })
+            .to_string(),
             eligible_after: None,
             object_ids,
             make_current: true,
@@ -2056,6 +2188,8 @@ impl Room {
             })
             .await
             .map_err(WriteError::from)?;
+        owner_rate.commit();
+        deployment_rate.commit();
         // Keep the lease heartbeat alive through closure verification and the
         // atomic head/receipt commit. Only after that transaction succeeds is
         // it safe to stop renewing the stage leases.
@@ -2067,7 +2201,10 @@ impl Room {
         if let Err(error) = catalog
             .execute_catalog(checkpoint.object_ids.len() * 64 + 256, {
                 let document = document_id.clone();
-                let ids = checkpoint.object_ids.clone();
+                let ids = physical
+                    .iter()
+                    .map(|object| object.id.clone())
+                    .collect::<Vec<_>>();
                 let holder = holder.clone();
                 move |catalog| catalog.release_v2_lease_set(&document, &ids, &holder)
             })

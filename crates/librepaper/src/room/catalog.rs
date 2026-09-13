@@ -1552,7 +1552,7 @@ pub(super) async fn suggestion_accept_update(
     request_id: &str,
     digest: &str,
     actor: crate::document::store::MutationActor,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Option<String>, String> {
     let slug = slug.to_string();
     let request_id = request_id.to_string();
     let digest = digest.to_string();
@@ -1564,20 +1564,22 @@ pub(super) async fn suggestion_accept_update(
         + DESCRIPTOR_BYTES;
     catalog
         .execute_catalog(input_bytes, move |catalog| {
-            catalog.suggestion_accept_update_authorized(
-                &slug,
-                &request_id,
-                &digest,
-                crate::storage::catalog::AnnotationAuthority {
-                    account_id: &actor.account_id,
-                    author_key: &actor.owner_key,
-                    generation: &actor.session_generation,
-                    link_hash: &actor.link_hash,
-                    policy_comment: actor.policy_editor,
-                    automation: actor.automation,
-                    require_editor: true,
-                },
-            )
+            catalog
+                .suggestion_accept_update_object_authorized(
+                    &slug,
+                    &request_id,
+                    &digest,
+                    crate::storage::catalog::AnnotationAuthority {
+                        account_id: &actor.account_id,
+                        author_key: &actor.owner_key,
+                        generation: &actor.session_generation,
+                        link_hash: &actor.link_hash,
+                        policy_comment: actor.policy_editor,
+                        automation: actor.automation,
+                        require_editor: true,
+                    },
+                )
+                .map(|value| value.map(|object_id| object_id.to_string()))
         })
         .await
         .map_err(|error| error.to_string())
@@ -1594,7 +1596,8 @@ pub(super) async fn stage_suggestion_accept_update(
     digest: &str,
     update: &[u8],
     actor: crate::document::store::MutationActor,
-) -> Result<(), String> {
+    limits: crate::storage::catalog::V2AdmissionLimits,
+) -> Result<(crate::storage::catalog::V2ObjectAllocation, String), String> {
     let input_bytes = slug.len()
         + comment_id.len()
         + request_id.len()
@@ -1614,12 +1617,19 @@ pub(super) async fn stage_suggestion_accept_update(
     let update = update.to_vec();
     reservation
         .execute_catalog(move |catalog| {
-            catalog.stage_suggestion_accept_update_authorized(
+            catalog.allocate_suggestion_accept_update_authorized(
                 &slug,
                 &comment_id,
                 &request_id,
                 &digest,
-                &update,
+                &crate::document::store::digest_of_bytes(&update),
+                i64::try_from(update.len()).map_err(|_| {
+                    crate::storage::catalog::CatalogError::Invalid(
+                        "suggestion update is too large".into(),
+                    )
+                })?,
+                limits,
+                crate::storage::catalog::UnixMillis::new(crate::util::now_millis())?,
                 crate::storage::catalog::AnnotationAuthority {
                     account_id: &actor.account_id,
                     author_key: &actor.owner_key,
@@ -1674,17 +1684,8 @@ pub(super) async fn record_and_finish_suggestion_accept(
                 automation: actor.automation,
                 require_editor: true,
             };
-            catalog.record_suggestion_accept_checkpoint_authorized(
-                &slug,
-                &comment_id,
-                &request_id,
-                &digest,
-                &sha,
-                &resolved_at,
-                authority,
-            )?;
             catalog
-                .finish_suggestion_accept_authorized(
+                .record_and_finish_suggestion_accept_authorized(
                     &slug,
                     &comment_id,
                     &request_id,
