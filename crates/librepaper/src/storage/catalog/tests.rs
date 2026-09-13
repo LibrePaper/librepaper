@@ -1535,14 +1535,20 @@ fn publication_receipts_are_atomic_and_idempotent() {
 fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
-    catalog.create_document(&document()).unwrap();
+    for index in 0..113 {
+        let mut document = document();
+        document.slug = format!("doc-{index}");
+        document.storage_id = format!("storage-{index}");
+        document.title = format!("Document {index}");
+        catalog.create_document(&document).unwrap();
+    }
     let now = crate::util::now_millis();
     for index in 0..112 {
         let request_id = crate::util::new_request_key();
         let digest = format!("{index:064x}");
         catalog
             .prepare_operation(&OperationRequest {
-                storage_id: "storage-1",
+                storage_id: &format!("storage-{index}"),
                 request_id: &request_id,
                 kind: "source_publish",
                 request_digest: &digest,
@@ -1556,7 +1562,7 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
         .with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM operations WHERE document_id='storage-1'",
+                    "SELECT COUNT(*) FROM operations",
                     [],
                     |row| row.get(0),
                 )
@@ -1568,7 +1574,7 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
     let digest = "e".repeat(64);
     assert!(matches!(
         catalog.prepare_operation(&OperationRequest {
-            storage_id: "storage-1",
+            storage_id: "storage-112",
             request_id: &request_id,
             kind: "source_publish",
             request_digest: &digest,
@@ -1582,7 +1588,7 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
         .with_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM operations WHERE document_id='storage-1'",
+                    "SELECT COUNT(*) FROM operations",
                     [],
                     |row| row.get(0),
                 )
@@ -1591,7 +1597,7 @@ fn operation_capacity_refusal_does_not_leave_an_orphan_receipt() {
         .unwrap();
     assert_eq!(after, before);
     assert!(catalog
-        .operation("storage-1", &request_id)
+        .operation("storage-112", &request_id)
         .unwrap()
         .is_none());
 }
