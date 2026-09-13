@@ -3598,7 +3598,7 @@ mod journal_commit_race_tests {
                     let operation_id = format!("{index:032x}");
                     let object_id = format!("{:032x}", index + 1);
                     transaction.execute(
-                        "INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,created_at,updated_at,completed_at,receipt_expires_at) VALUES(?1,?2,NULL,'account:expiry-page',?3,'agent_stage','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','committed','generation',?4,?5,?5,?5,?6)",
+                        "INSERT INTO operations(id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,plan_json,result_json,created_at,updated_at,completed_at,receipt_expires_at) VALUES(?1,?2,NULL,'account:expiry-page',?3,'agent_stage','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','committed','generation',?4,'{\"version\":1,\"expired\":true}',?5,?5,?5,?6)",
                         params![operation_id, document_id, format!("request-{index}"), serde_json::json!({"version":2,"object_id":object_id}).to_string(), now - 1000, now - 1],
                     )?;
                     transaction.execute(
