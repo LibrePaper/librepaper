@@ -3738,7 +3738,9 @@ mod journal_commit_race_tests {
 
     #[tokio::test]
     async fn journal_large_dependency_closures_survive_ack_and_compaction() {
-        let catalog = Arc::new(Catalog::open_in_memory().expect("v2 catalog"));
+        let catalog_dir = tempfile::tempdir().expect("catalog directory");
+        let catalog_path = catalog_dir.path().join("catalog.db");
+        let catalog = Arc::new(Catalog::open_with(&catalog_path, false).expect("v2 catalog"));
         let document_id = "journal-large-closure";
         let account_id = "journal-large-account";
         catalog
@@ -3892,5 +3894,24 @@ mod journal_commit_race_tests {
             })
             .expect("large closure state");
         assert_eq!(rooted, (512, 0, 0));
+        drop(runtime);
+        drop(journal);
+        drop(catalog);
+        let reopened = Catalog::open_with(&catalog_path, false).expect("reopened v2 catalog");
+        let reopened_rooted: (i64, i64, i64) = reopened
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT
+                           (SELECT count(*) FROM objects WHERE document_id=?1 AND kind='asset' AND live_root=1),
+                           (SELECT count(*) FROM objects WHERE document_id=?1 AND kind='source_chunk' AND live_root=1),
+                           (SELECT count(*) FROM operations WHERE document_id=?1 AND state='prepared')",
+                        [document_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("reopened large closure state");
+        assert_eq!(reopened_rooted, (512, 0, 0));
     }
 }
