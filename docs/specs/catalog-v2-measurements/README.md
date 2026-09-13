@@ -1,6 +1,6 @@
 # Catalog v2 SQL measurements — 2026-09-13
 
-These measurements cover the SQL matrix in specification section 24. They do **not** establish completion of the migration or acceptance of its runtime protocols. The physical journal comparison below is a separate runtime observation. The randomized root/physical-inventory audit remains unfinished.
+These measurements cover the SQL matrix in specification section 24. They do **not** establish completion of the migration or acceptance of its runtime protocols. The physical journal comparison below is a separate runtime observation. The seeded root/physical-inventory audit described below also passes.
 
 The runner creates disposable catalogs from the normative DDL, enables foreign keys and WAL with `synchronous=FULL`, and validates reference counters, foreign keys and SQLite integrity before recording each case. No application database was opened. Builds and tests were paused during the measurements. Hardware: AMD Ryzen AI 7 PRO 450, 16 logical CPUs; Linux 6.18.45; Python 3.14.6; SQLite 3.53.1. Storage latency is part of the wall times; these are single observations, not controlled repeated trials.
 
@@ -47,3 +47,7 @@ The [physical trace report](catalog-v2-physical-journal-20260913.json) records o
 | Recovery wall time | 398 ms | 65 ms |
 
 The v2 path includes SQLite admission and publication for each document update. The baseline batches through the bounded mixed coordinator and FsStore; it is not the complete old runtime. Its recovery extracts the last full-state record per document, while v2 follows its catalogued chain. This comparison exposes the cost of separate durable objects and must not be described as an apples-to-apples throughput benchmark. The test configures durable writes but does not count fsync syscalls. These results do not establish release performance acceptance or replace the independent randomized root audit.
+
+## Seeded physical inventory audit
+
+At integration commit `de533c55`, `cargo test --offline -p librepaper --lib tests::catalog_v2_randomized -- --nocapture` passed its 48-step seeded test. It combines source checkpoints, journal acknowledgements and reopen, labels, retention, GC, and asset naming/removal. After each step it independently hashes and measures the physical inventory, decodes trees and recipes to reconstruct exact checkpoint closures, verifies recovered asset roots, and reconciles document/account/deployment counters. This is one reproducible seed on a small document, not exhaustive concurrency or failure-injection coverage.

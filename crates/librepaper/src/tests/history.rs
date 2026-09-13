@@ -10,29 +10,13 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::*;
 use crate::config::{Configuration, SessionLimit};
-use crate::storage::blob::{
-    checkpoint_key, history_index_key, session_key, BlobError, BlobInfo, BlobResult, BlobStore,
-    BlobVersion, FsStore,
-};
+use crate::storage::blob::{BlobStore, FsStore};
 use crate::tests::edit::{publish_with_source, TEST_MARKDOWN};
 use crate::tests::yjs::{browser_available, Browser};
-
-/* --------------------------------------------------------- a failing store */
-
-/// A store that refuses to write whatever the test tells it to. Failure
-/// injection is the only way to find out what a half-finished write leaves
-/// behind, and "leaves behind" is the whole subject of the commit sequence a
-/// checkpoint follows.
-struct Failing {
-    inner: Arc<dyn BlobStore>,
-    /// Writes whose key contains any of these are refused.
-    refuse: std::sync::Mutex<Vec<String>>,
-}
 
 /// A restore is an editor write with a durable event of its own. The old
 /// checkpoint remains readable, and the restored event points at the
@@ -120,62 +104,6 @@ async fn a_reader_cannot_restore_a_checkpoint() {
     )
     .await;
     assert_eq!(status, 404);
-}
-
-impl Failing {
-    fn over(inner: Arc<dyn BlobStore>) -> Arc<Failing> {
-        Arc::new(Failing {
-            inner,
-            refuse: std::sync::Mutex::new(Vec::new()),
-        })
-    }
-
-    fn refuse_writes_to(&self, fragment: &str) {
-        self.refuse.lock().unwrap().push(fragment.to_string());
-    }
-
-    fn allow_everything(&self) {
-        self.refuse.lock().unwrap().clear();
-    }
-
-    fn refused(&self, key: &str) -> bool {
-        self.refuse
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|fragment| key.contains(fragment.as_str()))
-    }
-}
-
-#[async_trait]
-impl BlobStore for Failing {
-    async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
-        self.inner.get(key).await
-    }
-    async fn get_versioned(&self, key: &str) -> BlobResult<(Vec<u8>, BlobVersion)> {
-        self.inner.get_versioned(key).await
-    }
-    async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
-        if self.refused(key) {
-            return Err(BlobError::Other("the disk is on fire".into()));
-        }
-        self.inner.put(key, body, content_type).await
-    }
-    async fn delete(&self, keys: &[String]) -> BlobResult<()> {
-        self.inner.delete(keys).await
-    }
-    async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
-        self.inner.list(prefix).await
-    }
-    async fn swap(&self, key: &str, body: Vec<u8>, expect: &str) -> BlobResult<BlobVersion> {
-        if self.refused(key) {
-            return Err(BlobError::Other("the disk is on fire".into()));
-        }
-        self.inner.swap(key, body, expect).await
-    }
-    fn describe(&self) -> String {
-        self.inner.describe()
-    }
 }
 
 /* ------------------------------------------------------------- the client */
@@ -473,125 +401,71 @@ async fn concurrent_updates_cannot_pass_the_size_limit() {
 /// was. Nothing half-written is presented as the document.
 #[tokio::test]
 async fn a_failed_write_leaves_the_document_and_the_manifest_alone() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    let blobs = Failing::over(Arc::new(FsStore::new(dir.path(), true)));
-    let (base, instance) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
-    let slug = text(&publish_with_source(&base).await, "slug");
-    let before = crate::document::history::load(blobs.as_ref(), &slug)
-        .await
-        .expect("a manifest");
-    assert_eq!(before.checkpoints.len(), 1);
-
-    // The document moves on, and every write of it is refused.
-    let room = instance.rooms.get(&slug).await;
-    let edited = "# My Paper\n\nHello *world*, edited.\n";
-    room.set_source(edited, "markdown").await.unwrap();
-    blobs.refuse_writes_to("sessions/");
-    assert!(
-        room.persist().await.is_err(),
-        "a refused write reported success"
-    );
+    let (_dir, store, original_rooms) = super::room::fixture(Configuration::default()).await;
+    drop(original_rooms);
+    store.blobs.delete(&[crate::storage::blob::room_lock_key("probe")]).await.unwrap();
+    let hooked = super::room::HookStore::new(store.blobs.clone());
+    let rooms = crate::room::RoomSet::new(hooked.clone(), store.config.clone());
+    rooms.attach_store(store.clone());
+    super::room::attach_fixture_journal(&rooms, &store, hooked.clone());
+    let room = rooms.get("probe").await;
+    let catalog = store.catalog.as_ref().unwrap();
+    let before = catalog.checkpoints("probe", None, 100).unwrap();
+    room.set_source("edited", "markdown").await.unwrap();
+    *hooked.fail.lock().unwrap() = Some(super::room::object_write_prefix(&store, "probe"));
+    assert!(room.persist().await.is_err());
+    assert_eq!(room.source().await, "edited");
+    assert_eq!(catalog.checkpoints("probe", None, 100).unwrap(), before);
+    *hooked.fail.lock().unwrap() = None;
+    catalog.with_connection(|connection| {
+        connection.execute_batch("CREATE TRIGGER refuse_checkpoint BEFORE INSERT ON checkpoints BEGIN SELECT RAISE(ABORT,'checkpoint commit fault'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(room.checkpoint_now("quiet", "alice").await.is_err());
+    assert_eq!(catalog.checkpoints("probe", None, 100).unwrap(), before);
     assert_eq!(
-        room.source().await,
-        edited,
-        "a failed write changed the document"
+        catalog.document("probe").unwrap().unwrap().sha,
+        before.last().unwrap().sha
     );
-    assert_eq!(
-        crate::document::history::load(blobs.as_ref(), &slug)
-            .await
-            .expect("a manifest")
-            .checkpoints,
-        before.checkpoints,
-        "a failed session write touched the manifest"
-    );
-
-    // And a checkpoint whose manifest write is refused leaves the manifest as
-    // it was rather than as half of what it was about to be.
-    blobs.allow_everything();
-    blobs.refuse_writes_to(&history_index_key(&slug));
-    assert!(
-        room.checkpoint("quiet", "vincent").await.is_err(),
-        "a checkpoint with no manifest reported success"
-    );
-    assert_eq!(
-        crate::document::history::load(blobs.as_ref(), &slug)
-            .await
-            .expect("a manifest")
-            .checkpoints,
-        before.checkpoints,
-        "the manifest was left half written"
-    );
-    // The document itself is untouched, which is the thing that must never be
-    // lost to a storage failure.
-    assert_eq!(room.source().await, edited);
+    assert_eq!(room.source().await, "edited");
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
-/// The repair the write order is designed for. The index names the newest
-/// checkpoint before the manifest is written, so a crash between the two
-/// leaves an entry the manifest has never heard of -- and the next checkpoint
-/// finds its object present and names it as `parent`.
+/// A failed SQL commit leaves the old head intact. The next successful
+/// checkpoint points at that committed head, skipping the failed attempt.
 #[tokio::test]
-async fn a_manifest_missing_its_newest_entry_is_repaired() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    let blobs = Failing::over(Arc::new(FsStore::new(dir.path(), true)));
-    let (base, instance) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
-    let slug = text(&publish_with_source(&base).await, "slug");
-    let room = instance.rooms.get(&slug).await;
-
-    // A checkpoint that gets as far as the index and no further.
-    let lost = "# My Paper\n\nThe checkpoint the manifest never heard of.\n";
-    room.set_source(lost, "markdown").await.unwrap();
-    blobs.refuse_writes_to(&history_index_key(&slug));
-    // The name a checkpoint of this document would have, which is the digest
-    // of its tree rather than of its text: a checkpoint is the whole
-    // directory, and the text sits beside it under its own digest.
-    let lost_sha = room.tree().await.digest();
-    assert!(room.checkpoint("quiet", "vincent").await.is_err());
-    assert!(
-        blobs.get(&checkpoint_key(&slug, &lost_sha)).await.is_ok(),
-        "the checkpoint object was never written"
-    );
-    assert_eq!(
-        crate::storage::encoding::read_file(
-            blobs.as_ref(),
-            &slug,
-            &crate::document::store::digest_of(lost),
-        )
-        .await
-        .unwrap(),
-        lost.as_bytes(),
-        "the text the checkpoint names was never written"
-    );
-    assert!(
-        !crate::document::history::load(blobs.as_ref(), &slug)
-            .await
-            .unwrap()
-            .has(&lost_sha),
-        "the manifest was written after all"
-    );
-
-    // Storage comes back, and the next checkpoint repairs it.
-    blobs.allow_everything();
-    let next = "# My Paper\n\nAnd the one after it.\n";
-    room.set_source(next, "markdown").await.unwrap();
-    let taken = room
-        .checkpoint("quiet", "vincent")
-        .await
-        .expect("the checkpoint succeeds")
-        .expect("a checkpoint, not a deferral");
-    let manifest = crate::document::history::load(blobs.as_ref(), &slug)
-        .await
+async fn a_failed_checkpoint_commit_never_publishes_a_partial_head() {
+    let (_dir, store, rooms) = super::room::fixture(Configuration::default()).await;
+    let catalog = store.catalog.as_ref().unwrap();
+    let room = rooms.get("probe").await;
+    let before = catalog.document("probe").unwrap().unwrap().sha;
+    room.set_source("uncommitted", "markdown").await.unwrap();
+    catalog.with_connection(|connection| {
+        connection.execute_batch("CREATE TRIGGER refuse_checkpoint BEFORE INSERT ON checkpoints BEGIN SELECT RAISE(ABORT,'checkpoint commit fault'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(room.checkpoint_now("quiet", "alice").await.is_err());
+    assert_eq!(catalog.document("probe").unwrap().unwrap().sha, before);
+    assert_eq!(catalog.checkpoints("probe", None, 100).unwrap().len(), 1);
+    assert_eq!(checkpoint_text(&store, "probe", &before).await, "A");
+    catalog
+        .with_connection(|connection| {
+            connection.execute_batch("DROP TRIGGER refuse_checkpoint;")?;
+            Ok(())
+        })
         .unwrap();
-    assert!(
-        manifest.has(&lost_sha),
-        "the missing checkpoint was not recovered: {manifest:?}"
-    );
-    let newest = manifest.latest().unwrap();
-    assert_eq!(newest.sha, taken);
-    assert_eq!(
-        newest.parent, lost_sha,
-        "the repair did not become the new checkpoint's parent"
-    );
+    room.set_source("next", "markdown").await.unwrap();
+    let next = room
+        .checkpoint_now("quiet", "alice")
+        .await
+        .unwrap()
+        .unwrap();
+    let points = catalog.checkpoints("probe", None, 100).unwrap();
+    assert_eq!(points.len(), 2);
+    assert_eq!(points.last().unwrap().parent, before);
+    assert_eq!(points.last().unwrap().sha, next);
+    assert_eq!(checkpoint_text(&store, "probe", &next).await, "next");
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
 /// Quiet after quiet costs nothing: a checkpoint whose SHA is already in the
@@ -659,59 +533,38 @@ async fn a_comment_lands_on_a_checkpoint_that_contains_its_quotation() {
     assert_eq!(newest.why, "comment");
 }
 
-/// A checkpoint is never refused for a quota, because refusing it would lose
-/// work. What gives is the oldest history.
+/// Retention is explicit background work after admission; it keeps the
+/// current head and removes obsolete physical objects only after their grace.
 #[tokio::test]
-async fn history_is_shed_rather_than_a_checkpoint_refused() {
-    let config = Configuration {
-        session: SessionLimit {
-            history_max: 2,
-            ..Configuration::default().session
-        },
-        ..Configuration::default()
-    };
-    let server = test_server_with(
-        config,
-        crate::auth::Policy::parse(TEST_PUBLISHER),
-        crate::auth::Policy::parse("anyone"),
-        true,
-    )
-    .await;
-    let slug = text(&publish_with_source(&server.url).await, "slug");
-    let room = server.instance.rooms.get(&slug).await;
-    let mut shas = Vec::new();
+async fn history_retention_runs_after_checkpoint_commit_and_preserves_the_head() {
+    let (_dir, store, rooms) = super::room::fixture(Configuration::default()).await;
+    let room = rooms.get("probe").await;
+    let catalog = store.catalog.as_ref().unwrap();
+    let mut heads = Vec::new();
     for round in 0..4 {
-        let source = format!("# My Paper\n\nRound {round}.\n");
-        room.set_source(&source, "markdown").await.unwrap();
-        shas.push(
-            room.checkpoint("quiet", "vincent")
+        room.set_source(&format!("round {round}"), "markdown")
+            .await
+            .unwrap();
+        heads.push(
+            room.checkpoint_now("quiet", "alice")
                 .await
-                .expect("a checkpoint")
-                .expect("not deferred"),
+                .unwrap()
+                .unwrap(),
         );
     }
-    let manifest = room.manifest().await;
+    assert_eq!(catalog.checkpoints("probe", None, 100).unwrap().len(), 5);
+    let retired_tree: String = catalog.with_connection(|connection| {
+        connection.query_row("SELECT o.storage_key FROM checkpoints c JOIN objects o ON o.document_id=c.document_id AND o.id=c.tree_object_id WHERE c.id=?1", [&heads[0]], |row| row.get(0)).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
+    super::room::retain_and_collect(&store, 2).await;
+    let points = catalog.checkpoints("probe", None, 100).unwrap();
+    assert_eq!(points.len(), 2);
+    assert_eq!(&points.last().unwrap().sha, heads.last().unwrap());
     assert_eq!(
-        manifest.checkpoints.len(),
-        2,
-        "the cap did not shed: {manifest:?}"
+        checkpoint_text(&store, "probe", heads.last().unwrap()).await,
+        "round 3"
     );
-    assert_eq!(
-        manifest.latest().unwrap().sha,
-        *shas.last().unwrap(),
-        "the newest checkpoint was shed"
-    );
-    // And the objects went with the entries.
-    assert!(
-        server
-            .instance
-            .store
-            .blobs
-            .get(&checkpoint_key(&slug, &shas[0]))
-            .await
-            .is_err(),
-        "a shed checkpoint's bytes were kept"
-    );
+    assert!(!store.blobs.exists(&retired_tree).await.unwrap());
 }
 
 /// A room nobody has open is written out and let go of, so a server that has
@@ -1354,83 +1207,36 @@ async fn a_second_process_over_the_same_storage_does_not_write() {
     );
 }
 
-/// The case the epoch exists for: a holder that stalled long enough for its
-/// lease to go stale, was taken over, and then woke up. Its writes are refused
-/// by storage itself, because every object a room owns is written with
-/// compare-and-swap against the version it last saw -- and the version it last
-/// saw is not the one that is there.
+/// A cached writer cannot publish after its deployment generation is fenced.
 #[tokio::test]
-async fn a_former_owner_cannot_write_after_being_taken_over() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    // This test deliberately edits the old session/lock object keys directly;
-    // use the explicit legacy harness so that those writes exercise the same
-    // layout as the room under test rather than bypassing the SQLite journal.
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(dir.path(), true));
-    let (url, stalled) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
-    let slug = text(&publish_with_source(&url).await, "slug");
-    let old = stalled.rooms.get(&slug).await;
-    old.set_source("# From the first owner\n", "markdown")
-        .await
-        .unwrap();
-    old.persist().await.expect("the owner may write");
-
-    // Its lease goes stale, and somebody takes it over. Written directly,
-    // because the alternative is a test that waits five minutes.
-    blobs
-        .put(
-            &crate::storage::blob::room_lock_key(&slug),
-            serde_json::to_vec(&crate::storage::blob::RoomLock {
-                holder: "server-that-took-over".into(),
-                taken: crate::util::format_unix(crate::util::now_unix()),
-                epoch: 99,
-            })
-            .unwrap(),
-            "application/json",
-        )
-        .await
-        .unwrap();
-    // And the new owner writes the session, which is what moves it out from
-    // under the old one.
-    let (_, taker) = server_over_blobs_legacy(blobs.clone(), Configuration::default()).await;
-    let now_theirs = taker.rooms.get(&slug).await;
-    // Refused or accepted depending on which server the lease reached
-    // first; what this test cares about is the old server, below.
-    let _ = now_theirs
-        .set_source("# From the new owner\n", "markdown")
-        .await;
-    // The new owner cannot write either while the lease says somebody else
-    // holds it, which is correct -- so the lease is handed to it properly by
-    // reading the room fresh once the old lock is stale. What this test cares
-    // about is the *old* server, below.
-    let _ = now_theirs.persist().await;
-    blobs
-        .put(
-            &session_key(&slug),
-            b"not what the old owner last saw".to_vec(),
-            "application/octet-stream",
-        )
-        .await
-        .unwrap();
-
-    // The old server wakes up and tries to write what it was holding.
-    old.set_source("# The stalled owner's words\n", "markdown")
-        .await
-        .unwrap();
-    let refused = old.persist().await;
-    assert!(
-        refused.is_err(),
-        "a former owner wrote the session after being taken over"
-    );
-    assert!(
-        old.read_only(),
-        "a former owner that lost a write did not stop writing"
-    );
-    // Storage still holds what the new owner put there.
-    assert_eq!(
-        blobs.get(&session_key(&slug)).await.unwrap(),
-        b"not what the old owner last saw",
-        "the former owner's write landed"
-    );
+async fn a_former_writer_generation_cannot_publish_after_being_fenced() {
+    let (_dir, store, original_rooms) = super::room::fixture(Configuration::default()).await;
+    drop(original_rooms);
+    store.blobs.delete(&[crate::storage::blob::room_lock_key("probe")]).await.unwrap();
+    let hooked = super::room::HookStore::new(store.blobs.clone());
+    let rooms = crate::room::RoomSet::new(hooked.clone(), store.config.clone());
+    rooms.attach_store(store.clone());
+    super::room::attach_fixture_journal(&rooms, &store, hooked.clone());
+    let catalog = store.catalog.as_ref().unwrap();
+    let room = rooms.get("probe").await;
+    room.set_source("acknowledged", "markdown").await.unwrap();
+    room.persist().await.unwrap();
+    let before = super::room::recovered_session(&store, "probe").await;
+    let vector = crate::document::session::encode_vector(&before);
+    room.set_source("stale writer", "markdown").await.unwrap();
+    *hooked.pause.lock().unwrap() = Some(("put".into(), format!("{}*", super::room::object_write_prefix(&store, "probe"))));
+    let writer = room.clone();
+    let pending = tokio::spawn(async move { writer.persist().await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified()).await.unwrap();
+    catalog.with_connection(|connection| {
+        connection.execute("UPDATE server_state SET writer_generation='replacement-generation' WHERE id=1", [])?;
+        Ok(())
+    }).unwrap();
+    hooked.resume.notify_one();
+    assert!(tokio::time::timeout(std::time::Duration::from_secs(2), pending).await.unwrap().unwrap().is_err());
+    let recovered = super::room::recovered_session(&store, "probe").await;
+    assert_eq!(crate::document::session::encode_vector(&recovered), vector);
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
 /// Quota admission is decided against the index it is committed against. Two
