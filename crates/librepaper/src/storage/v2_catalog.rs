@@ -228,6 +228,30 @@ fn completed_inflight(namespace: usize, limit: usize) -> Vec<InflightPut> {
         .collect()
 }
 
+fn select_failed_inflight(
+    registry: &InflightRegistry,
+    namespace: usize,
+    after: u64,
+    limit: usize,
+) -> Vec<InflightPut> {
+    registry
+        .failed
+        .range((namespace, after.saturating_add(1))..=(namespace, u64::MAX))
+        .take(limit)
+        .filter_map(|((_, sequence), (document_id, object_id))| {
+            registry
+                .records
+                .get(&(namespace, document_id.clone(), object_id.clone()))
+                .filter(|record| {
+                    record.sequence == *sequence
+                        && record.failure.is_some()
+                        && record.written.is_none()
+                })
+                .cloned()
+        })
+        .collect()
+}
+
 fn failed_inflight(namespace: usize, limit: usize) -> (Vec<InflightPut>, Option<u64>) {
     if limit == 0 {
         return (Vec::new(), None);
@@ -236,35 +260,15 @@ fn failed_inflight(namespace: usize, limit: usize) -> (Vec<InflightPut>, Option<
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let cursor = registry.failed_cursors.get(&namespace).copied().unwrap_or(0);
-    let select = |after: u64| -> Vec<InflightPut> {
-        // The ordered index bounds both the registry work and the number of
-        // records cloned for one maintenance pass.  The old implementation
-        // scanned every namespace entry and then retained the smallest page,
-        // which made a large failed-write registry an unbounded GC operation.
-        let keys: Vec<(u64, String, String)> = registry.failed
-            .range((namespace, after.saturating_add(1))..=(namespace, u64::MAX))
-            .take(limit)
-            .map(|((_, sequence), (document_id, object_id))| {
-                (*sequence, document_id.clone(), object_id.clone())
-            })
-            .collect();
-        keys.into_iter()
-            .filter_map(|(sequence, document_id, object_id)| {
-                registry.records
-                    .get(&(namespace, document_id, object_id))
-                    .filter(|record| {
-                        record.sequence == sequence
-                            && record.failure.is_some()
-                            && record.written.is_none()
-                    })
-                    .cloned()
-            })
-            .collect()
-    };
-    let mut page: Vec<InflightPut> = select(cursor);
+    // The ordered index bounds both the registry work and the number of
+    // records cloned for one maintenance pass.  The old implementation
+    // scanned every namespace entry and then retained the smallest page,
+    // which made a large failed-write registry an unbounded GC operation.
+    let mut page = select_failed_inflight(&registry, namespace, cursor, limit);
     if page.is_empty() && cursor != 0 {
+        let reset_page = select_failed_inflight(&registry, namespace, 0, limit);
         registry.failed_cursors.insert(namespace, 0);
-        page = select(0);
+        page = reset_page;
     }
     let last = page.last().map(|record| record.sequence);
     (page, last)
@@ -2590,7 +2594,11 @@ mod aborted_inflight_tests {
         }
 
         let adapter = V2GcCatalogAdapter::new(catalog.clone());
-        let report = run_gc_pass(&adapter, blobs.as_ref(), now_millis())
+        // Keep the first pass's logical clock just before settlement.  The
+        // completed PUT receives a real-time grace deadline, so this makes
+        // the two-pass assertion independent of sub-millisecond scheduling.
+        let first_pass_now = now_millis().saturating_sub(60_000);
+        let report = run_gc_pass(&adapter, blobs.as_ref(), first_pass_now)
             .await
             .expect("aborted write is reclaimed");
         assert_eq!(report.inflight_settled, 1);
@@ -2598,7 +2606,7 @@ mod aborted_inflight_tests {
         let deletion_report = run_gc_pass(
             &adapter,
             blobs.as_ref(),
-            now_millis().saturating_add(GC_RETRY_MS + 1),
+            first_pass_now.saturating_add(GC_RETRY_MS + 1),
         )
         .await
         .expect("settled aborted write is eventually deleted");
@@ -2869,7 +2877,12 @@ mod journal_commit_race_tests {
             .expect("journal document");
         let object_root = tempfile::tempdir().expect("object root");
         let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
-        let state = crate::document::session::encode_state(&crate::document::session::new_doc());
+        let source = crate::document::session::new_doc();
+        let mut states = Vec::new();
+        for text in ["first", "second", "third"] {
+            crate::document::session::replace_text(&source, text, "index.md");
+            states.push(crate::document::session::encode_state(&source));
+        }
         {
             let adapter = Arc::new(V2JournalCatalogAdapter::with_limits_and_quota(
                 Arc::clone(&catalog),
@@ -2883,8 +2896,8 @@ mod journal_commit_race_tests {
                 PersistenceLimits::default(),
             )
             .expect("journal runtime");
-            for sequence in 1..=3 {
-                DocumentJournal::append(&runtime, document_id, sequence, state.clone())
+            for (sequence, state) in states.iter().enumerate() {
+                DocumentJournal::append(&runtime, document_id, sequence as u64 + 1, state.clone())
                     .await
                     .expect("journal append");
             }
@@ -2892,14 +2905,21 @@ mod journal_commit_race_tests {
                 .await
                 .expect("pre-compaction recovery")
                 .expect("journal state");
-            crate::document::session::apply_update(&crate::document::session::new_doc(), &before)
+            let before_doc = crate::document::session::new_doc();
+            crate::document::session::apply_update(&before_doc, &before)
                 .expect("pre-compaction state is valid");
+            assert_eq!(
+                crate::document::session::texts_of(&before_doc)
+                    .get("index.md")
+                    .map(String::as_str),
+                Some("third")
+            );
             runtime
                 .compact(
                     document_id,
                     0,
                     3,
-                    state.clone(),
+                    states[2].clone(),
                     "application/vnd.librepaper.journal-base",
                 )
                 .await
@@ -2923,8 +2943,15 @@ mod journal_commit_race_tests {
             .await
             .expect("post-reopen recovery")
             .expect("reopened journal state");
-        crate::document::session::apply_update(&crate::document::session::new_doc(), &recovered)
+        let recovered_doc = crate::document::session::new_doc();
+        crate::document::session::apply_update(&recovered_doc, &recovered)
             .expect("reopened state is valid");
+        assert_eq!(
+            crate::document::session::texts_of(&recovered_doc)
+                .get("index.md")
+                .map(String::as_str),
+            Some("third")
+        );
         let head: (i64, i64, i64) = reopened
             .with_connection(|connection| {
                 connection.query_row(
