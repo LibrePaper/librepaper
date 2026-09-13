@@ -1920,7 +1920,7 @@ mod tests {
         PatchRequest {
             operation: OperationKey {
                 epoch: "epoch-1".into(),
-                id: "op-1".into(),
+                id: crate::util::new_request_key(),
             },
             base_tree: base.digest(),
             consistency: Consistency::ExactTree,
