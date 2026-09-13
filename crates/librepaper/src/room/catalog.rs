@@ -17,8 +17,8 @@ use crate::storage::catalog::{Catalog, CatalogExecError, MutationAuthority, Room
 /// which is what keeps an ordinary edit from failing under a burst.
 pub(super) const DESCRIPTOR_BYTES: usize = 128;
 
-const SOURCE_HISTORY_LEASE_SECONDS: i64 = 3_600;
-const SOURCE_HISTORY_LEASE_HEARTBEAT_SECONDS: u64 = 300;
+const SOURCE_HISTORY_LEASE_MS: i64 = 120_000;
+const SOURCE_HISTORY_LEASE_HEARTBEAT_SECONDS: u64 = 30;
 
 /// An in-flight source publication/read lease with a bounded heartbeat.  The
 /// task only extends rows that still exist and have not expired; if the
@@ -45,8 +45,8 @@ impl SourceHistoryLeaseGuard {
             interval.tick().await;
             loop {
                 interval.tick().await;
-                let now = crate::util::now_unix();
-                let expires_at = now.saturating_add(SOURCE_HISTORY_LEASE_SECONDS);
+                let now = crate::util::now_millis();
+                let expires_at = now.saturating_add(SOURCE_HISTORY_LEASE_MS);
                 let storage_id = heartbeat_storage.clone();
                 let operation_id = heartbeat_operation.clone();
                 let result = heartbeat_catalog
@@ -99,7 +99,7 @@ impl SourceHistoryLeaseGuard {
         let operation_id = self.operation_id.clone();
         self.catalog
             .execute_catalog(
-                input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+                input_bytes,
                 move |catalog| {
                     catalog.begin_source_history_lease(
                         &storage_id,
@@ -825,7 +825,7 @@ pub(super) async fn begin_source_history_lease(
     let lease_operation_id = operation_id.clone();
     catalog
         .execute_catalog(
-            input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+            input_bytes,
             move |catalog| {
                 catalog.begin_source_history_lease(
                     &lease_storage_id,
@@ -908,7 +908,7 @@ pub(super) async fn read_source_object_sizes(
             storage_id.len() + DESCRIPTOR_BYTES + keys.iter().map(String::len).sum::<usize>();
         let found = catalog
             .execute_catalog(
-                input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+                input_bytes,
                 move |catalog| catalog.source_history_object_sizes(&storage_id, &keys),
             )
             .await
@@ -1008,7 +1008,7 @@ pub(super) async fn shed_checkpoints_to_limits(
     let slug = slug.to_string();
     catalog
         .execute_catalog(
-            input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+            input_bytes,
             move |catalog| {
                 catalog.shed_checkpoints_to_limits(&slug, keep_count, ceiling, &protected)
             },
@@ -1030,7 +1030,7 @@ pub(super) async fn delete_checkpoints(
     let slug_owned = slug.to_string();
     let reported = catalog
         .execute_catalog(
-            input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+            input_bytes,
             move |catalog| {
                 // Source-history edges and their pending deletion handoff
                 // move with the checkpoint row in one SQLite transaction.
@@ -2097,7 +2097,7 @@ pub(super) async fn save_catalog_manifest_with_assets(
     let lease_operation = lease_operation.map(str::to_owned);
     catalog
         .execute_catalog(
-            input_bytes.min(crate::storage::catalog::MAX_REQUEST_BYTES),
+            input_bytes,
             move |catalog| {
                 // A publication has a prepared receipt.  Keep its checkpoint
                 // descriptor in that receipt until the final commit

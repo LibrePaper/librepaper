@@ -523,3 +523,38 @@ fn retention_releases_only_the_deleted_closure_and_preserves_shared_objects() {
     }).unwrap();
     assert!(catalog.audit_v2_counters().unwrap());
 }
+
+#[test]
+fn source_history_renewal_is_finite_and_cannot_revive_partially_expired_closures() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    account(&catalog);
+    document(&catalog, "lease", "Leases");
+    catalog.with_connection(|db| {
+        db.execute("INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,created_at,updated_at,work_expires_at)
+            SELECT 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee','lease','account:owner','test','source_publish',?1,'prepared',writer_generation,1,1,150000 FROM server_state WHERE id=1",["a".repeat(64)])?;
+        for id in ["one","two"] {
+            db.execute("INSERT INTO objects(document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,created_at)
+                VALUES('lease',?1,?2,'source_tree','available',?3,1,0,1)",rusqlite::params![id,format!("v2/documents/lease/objects/{id}"),"a".repeat(64)])?;
+        }
+        Ok(())
+    }).unwrap();
+    let objects: Vec<SourceHistoryObject> = ["one","two"].iter().map(|id|SourceHistoryObject {
+        object_key:format!("v2/documents/lease/objects/{id}"),kind:"source_tree".into(),bytes:1,
+    }).collect();
+    catalog.begin_source_history_lease("lease","eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",&objects,1000,121000).unwrap();
+    catalog.renew_source_history_lease("lease","eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",60000,180000).unwrap();
+    catalog.with_connection(|db| {
+        let expiry: i64 = db.query_row("SELECT min(expires_at) FROM object_leases WHERE document_id='lease'",[],|row|row.get(0))?;
+        assert_eq!(expiry,150000);
+        db.execute("UPDATE object_leases SET expires_at=60000 WHERE document_id='lease' AND object_id='one'",[])?;
+        Ok(())
+    }).unwrap();
+    assert!(catalog.renew_source_history_lease("lease","eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",60000,180000).is_err());
+    catalog.with_connection(|db| {
+        assert_eq!(db.query_row("SELECT expires_at FROM object_leases WHERE document_id='lease' AND object_id='one'",[],|row|row.get::<_,i64>(0))?,60000);
+        db.execute("UPDATE object_leases SET expires_at=150000 WHERE document_id='lease'",[])?;
+        db.execute("UPDATE server_state SET writer_generation='new-writer' WHERE id=1",[])?;
+        Ok(())
+    }).unwrap();
+    assert!(catalog.renew_source_history_lease("lease","eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",61000,181000).is_err());
+}

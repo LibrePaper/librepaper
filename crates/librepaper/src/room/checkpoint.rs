@@ -767,8 +767,8 @@ impl Room {
                     &self.storage_id,
                     &lease_operation,
                     lease_objects,
-                    now,
-                    now.saturating_add(3600),
+                    now.saturating_mul(1000),
+                    now.saturating_mul(1000).saturating_add(120_000),
                 )
                 .await?,
             )

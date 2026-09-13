@@ -238,6 +238,7 @@ impl Catalog {
             || objects.len() > MAX_CHECKPOINT_OBJECTS
             || created_at < 0
             || expires_at <= created_at
+            || expires_at.saturating_sub(created_at) > 120_000
         {
             return Err(CatalogError::Invalid("invalid source-history lease".into()));
         }
@@ -250,16 +251,18 @@ impl Catalog {
             if state != "prepared" || op_generation != writer_generation {
                 return Err(CatalogError::Conflict("source operation is not prepared in the current writer generation".into()));
             }
+            let expires_at = source_lease_deadline(tx, storage_id, operation_id, created_at, expires_at)?;
             for object in objects {
                 if object.bytes < 0 || object.kind.is_empty() {
                     return Err(CatalogError::Invalid("invalid source-history object lease".into()));
                 }
-                let (kind, state, measured): (String, String, Option<i64>) = tx.query_row(
-                    "SELECT kind,state,byte_length FROM objects WHERE document_id=?1 AND storage_key=?2",
-                    params![document_id.as_str(), object.object_key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                let (kind, state, measured, allocation): (String, String, Option<i64>, Option<String>) = tx.query_row(
+                    "SELECT kind,state,byte_length,allocation_operation_id FROM objects WHERE document_id=?1 AND storage_key=?2",
+                    params![document_id.as_str(), object.object_key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 ).optional().map_err(CatalogError::from)?
                     .ok_or(CatalogError::NotFound)?;
-                if kind != object.kind || !matches!(state.as_str(), "allocated" | "available") {
+                if kind != object.kind || !matches!(state.as_str(), "allocated" | "available")
+                    || (state == "allocated" && allocation.as_deref() != Some(operation_id)) {
                     return Err(CatalogError::Conflict("source object kind or state changed".into()));
                 }
                 if measured.is_some_and(|value| value != object.bytes) {
@@ -273,7 +276,7 @@ impl Catalog {
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 ).optional().map_err(CatalogError::from)?;
                 if let Some((old_expiry, old_generation, old_created)) = previous {
-                    if old_expiry != expires_at || old_generation != writer_generation || old_created != created_at {
+                    if old_expiry <= created_at || old_expiry != expires_at || old_generation != writer_generation || old_created != created_at {
                         return Err(CatalogError::Conflict("source-history lease was reused with a different object".into()));
                     }
                     continue;
@@ -324,14 +327,16 @@ impl Catalog {
             ));
         }
         self.immediate(|tx| {
-            let generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0)).map_err(CatalogError::from)?;
-            let active: i64 = tx.query_row(
-                "SELECT count(*) FROM object_leases l JOIN operations o ON o.document_id=l.document_id AND o.id=l.operation_id
-                 WHERE l.document_id=?1 AND l.operation_id=?2 AND l.purpose='write' AND o.state='prepared'
-                   AND l.writer_generation=?3 AND l.expires_at>?4",
+            let expires_at = source_lease_deadline(tx, storage_id, operation_id, now, expires_at)?;
+            let generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |r| r.get(0))?;
+            let invalid: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM object_leases l JOIN objects o
+                   ON o.document_id=l.document_id AND o.id=l.object_id
+                 WHERE l.document_id=?1 AND l.operation_id=?2 AND l.purpose='write'
+                   AND (l.writer_generation<>?3 OR l.expires_at<=?4 OR o.state='deleting'))",
                 params![document_id.as_str(), operation.as_str(), generation, now], |r| r.get(0),
-            ).map_err(CatalogError::from)?;
-            if active == 0 { return Err(CatalogError::NotFound); }
+            )?;
+            if invalid { return Err(CatalogError::Conflict("source-history lease has expired or changed".into())); }
             let changed = tx.execute(
                 "UPDATE object_leases SET expires_at=?1 WHERE document_id=?2 AND operation_id=?3
                  AND purpose='write' AND writer_generation=?4 AND expires_at>?5",
@@ -351,12 +356,18 @@ impl Catalog {
             .map_err(|e| CatalogError::Invalid(e.to_string()))?;
         let operation = OperationId::new(operation_id.to_owned())
             .map_err(|e| CatalogError::Invalid(e.to_string()))?;
+        let now = unix_millis();
+        source_lease_deadline(tx, storage_id, operation_id, now, now.saturating_add(120_000))?;
         let active: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM object_leases l JOIN operations o
                  ON o.document_id=l.document_id AND o.id=l.operation_id
              WHERE l.document_id=?1 AND l.operation_id=?2 AND l.purpose='write'
                AND o.state='prepared' AND l.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1)
-               AND l.expires_at>?3)",
+               AND l.expires_at>?3) AND NOT EXISTS(SELECT 1 FROM object_leases l
+             JOIN objects object ON object.document_id=l.document_id AND object.id=l.object_id
+             WHERE l.document_id=?1 AND l.operation_id=?2 AND l.purpose='write'
+               AND (l.expires_at<=?3 OR l.writer_generation<>(SELECT writer_generation FROM server_state WHERE id=1)
+                 OR object.state='deleting'))",
             params![document_id.as_str(), operation.as_str(), unix_millis()], |r| r.get(0),
         ).map_err(CatalogError::from)?;
         if !active {
@@ -499,4 +510,25 @@ impl Catalog {
         }
         Ok(removed)
     }
+}
+
+/// Resolve the finite protection window under the same transaction as the
+/// lease write. A changed owner lifecycle or writer invalidates renewal.
+fn source_lease_deadline(
+    tx: &Transaction<'_>, document_id: &str, operation_id: &str, now: i64, requested: i64,
+) -> CatalogResult<i64> {
+    let deadline: Option<i64> = tx.query_row(
+        "SELECT op.work_expires_at FROM operations op
+         JOIN documents d ON d.id=op.document_id
+         JOIN accounts a ON a.id=d.owner_id
+         WHERE op.document_id=?1 AND op.id=?2 AND op.state='prepared'
+           AND op.writer_generation=(SELECT writer_generation FROM server_state WHERE id=1)
+           AND (op.expected_document_generation IS NULL OR op.expected_document_generation=d.source_generation)
+           AND d.status IN ('creating','active') AND a.status='active'",
+        params![document_id, operation_id], |row| row.get::<_, Option<i64>>(0),
+    ).optional()?.flatten();
+    let deadline = deadline.ok_or_else(|| CatalogError::Conflict("source operation is no longer live".into()))?;
+    let expiry = requested.min(now.saturating_add(120_000)).min(deadline);
+    if expiry <= now { return Err(CatalogError::Conflict("source operation has expired".into())); }
+    Ok(expiry)
 }
