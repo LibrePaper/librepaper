@@ -150,6 +150,7 @@ impl Catalog {
                 let outcome = if result.is_empty() { plan } else { result };
                 return Ok(AgentCancellation { target_request_id: target_request_id.into(), cancel_request_id: cancel_request_id.into(), request_digest: digest, kind: kind.into(), target_id: target_id.into(), status: if state == "committed" { "cancel_requested".into() } else { state }, result: outcome });
             }
+            Catalog::admit_operation_slot(tx, Some(document_id.as_str()), "agent_cancel")?;
             let target: Option<(String,String,Option<String>,String)> = tx.query_row(
                 "SELECT id,state,result_json,kind FROM operations WHERE document_id=?1 AND request_key=?2
                  ORDER BY created_at DESC,id DESC LIMIT 1",

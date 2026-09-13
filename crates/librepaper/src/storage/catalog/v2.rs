@@ -1774,6 +1774,11 @@ impl Catalog {
             if duplicate != 0 {
                 return Err(CatalogError::Conflict("source operation id already exists".into()));
             }
+            Self::admit_operation_slot(
+                tx,
+                Some(document.storage_id.as_str()),
+                operation_input.kind.as_str(),
+            )?;
             let operation_plan_json = operation_plan.to_string();
             validate_json(&operation_plan_json, "source operation plan", 65_536)?;
             tx.execute(
@@ -2993,6 +2998,7 @@ impl Catalog {
             {
                 return Err(CatalogError::Invalid("request key is outside the admission freshness window".into()));
             }
+            Self::admit_operation_slot(tx, document_id, input.kind.as_str())?;
             let operation_id = hex::encode(crate::auth::random_bytes(16));
             let writer_generation: String = tx.query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0)).map_err(CatalogError::from)?;
             tx.execute("INSERT INTO operations (id,document_id,account_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,target_operation_id,target_request_key,conversation_id,execution_epoch,plan_json,created_at,updated_at,work_expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'prepared',?8,?9,NULL,NULL,?10,?11,?12,?13,?13,?14)", params![operation_id,document_id,account_id,input.actor_key,input.request_key,input.kind.as_str(),input.request_digest,writer_generation,input.expected_document_generation,input.conversation_id,input.execution_epoch,input.plan_json,now.0,input.work_expires_at.map(|v| v.0)]).map_err(CatalogError::from)?;
