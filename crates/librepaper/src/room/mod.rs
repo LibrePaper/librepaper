@@ -1916,27 +1916,6 @@ impl Room {
             }
             return;
         }
-        if cfg!(test) {
-            // Test fixtures that exercise migration still seed legacy asset
-            // keys. Production catalogue rooms use only the bounded v2 read
-            // below; this compatibility branch is compiled out of releases.
-            if let Ok(found) = self
-                .blobs
-                .list(&crate::storage::blob::asset_prefix(&self.storage_id))
-                .await
-            {
-                let mut state = self.state.lock().await;
-                for object in found {
-                    if let Some(sha) = object.key.rsplit('/').next() {
-                        state
-                            .session
-                            .asset_sizes
-                            .insert(sha.to_string(), object.size);
-                    }
-                }
-            }
-        }
-
         let Some(catalog) = self.catalog.get() else {
             return;
         };
@@ -1969,9 +1948,6 @@ impl Room {
             .collect::<std::collections::HashSet<_>>()
             .len();
         if sizes.len() != expected {
-            if cfg!(test) {
-                return;
-            }
             self.fence(FenceReason::UnreadableState);
             return;
         }

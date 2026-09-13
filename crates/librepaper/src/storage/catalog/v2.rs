@@ -1213,37 +1213,41 @@ impl Catalog {
             return Ok(HashMap::new());
         }
         self.with_connection(|connection| {
-            let placeholders = std::iter::repeat("?")
-                .take(digests.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "SELECT o.digest,o.byte_length FROM objects o
-                 JOIN documents d ON d.id=o.document_id
-                 JOIN accounts a ON a.id=d.owner_id
-                 WHERE o.document_id=?1 AND o.kind=?2 AND o.state='available'
-                   AND d.status='active' AND a.status='active'
-                   AND o.digest IN ({placeholders})"
-            );
-            let mut values = Vec::with_capacity(digests.len() + 2);
-            values.push(document_id.as_str().to_owned());
-            values.push(ObjectKind::Asset.as_str().to_owned());
-            values.extend(digests.iter().cloned());
-            let mut statement = connection.prepare(&sql).map_err(CatalogError::from)?;
-            let rows = statement
-                .query_map(rusqlite::params_from_iter(values.iter()), |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
-                })
-                .map_err(CatalogError::from)?;
             let mut sizes = HashMap::new();
-            for row in rows {
-                let (digest, size) = row.map_err(CatalogError::from)?;
-                if let Some(size) = size {
-                    if let Some(previous) = sizes.insert(digest, size) {
-                        if previous != size {
-                            return Err(CatalogError::Invalid(
-                                "canonical asset digest has conflicting sizes".into(),
-                            ));
+            // Keep the IN list below SQLite's variable limit even if a
+            // malformed document names more than the normal asset bound.
+            for chunk in digests.chunks(256) {
+                let placeholders = std::iter::repeat("?")
+                    .take(chunk.len())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT o.digest,o.byte_length FROM objects o
+                     JOIN documents d ON d.id=o.document_id
+                     JOIN accounts a ON a.id=d.owner_id
+                     WHERE o.document_id=?1 AND o.kind=?2 AND o.state='available'
+                       AND d.status='active' AND a.status='active'
+                       AND o.digest IN ({placeholders})"
+                );
+                let mut values = Vec::with_capacity(chunk.len() + 2);
+                values.push(document_id.as_str().to_owned());
+                values.push(ObjectKind::Asset.as_str().to_owned());
+                values.extend(chunk.iter().cloned());
+                let mut statement = connection.prepare(&sql).map_err(CatalogError::from)?;
+                let rows = statement
+                    .query_map(rusqlite::params_from_iter(values.iter()), |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                    })
+                    .map_err(CatalogError::from)?;
+                for row in rows {
+                    let (digest, size) = row.map_err(CatalogError::from)?;
+                    if let Some(size) = size {
+                        if let Some(previous) = sizes.insert(digest, size) {
+                            if previous != size {
+                                return Err(CatalogError::Invalid(
+                                    "canonical asset digest has conflicting sizes".into(),
+                                ));
+                            }
                         }
                     }
                 }
