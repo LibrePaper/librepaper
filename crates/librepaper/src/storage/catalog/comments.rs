@@ -105,7 +105,7 @@ fn annotation_account_authorized(
     } else {
         Err(CatalogError::refused(
             CatalogRefusal::ActorRights,
-            "annotation authority changed".into(),
+            "annotation authority changed",
         ))
     }
 }

@@ -221,7 +221,7 @@ impl Catalog {
                  ORDER BY o.created_at,o.id LIMIT ?1",
                 )
                 .map_err(CatalogError::from)?;
-            statement
+            let rows = statement
                 .query_map([i64::from(limit.min(1000))], |row| {
                     Ok(PendingPublication {
                         slug: row.get(0)?,
@@ -234,7 +234,8 @@ impl Catalog {
                 })
                 .map_err(CatalogError::from)?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(CatalogError::from)
+                .map_err(CatalogError::from);
+            rows
         })
     }
 
@@ -431,12 +432,12 @@ impl Catalog {
 
     pub fn discard_aborted_creation(&self, slug: &str) -> CatalogResult<bool> {
         self.immediate(|tx| {
-            let (document_id, owner_id): Option<(String, String)> = tx
+            let document: Option<(String, String)> = tx
                 .query_row(
                     "SELECT id,owner_id FROM documents WHERE slug=?1 AND status='creating'",
                     [slug], |r| Ok((r.get(0)?, r.get(1)?)),
                 ).optional().map_err(CatalogError::from)?;
-            let Some((document_id, owner_id)) = (document_id, owner_id) else { return Ok(false); };
+            let Some((document_id, owner_id)) = document else { return Ok(false); };
             let objects: i64 = tx.query_row("SELECT count(*) FROM objects WHERE document_id=?1", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
             let operations: i64 = tx.query_row("SELECT count(*) FROM operations WHERE document_id=?1 AND state='prepared'", [&document_id], |r| r.get(0)).map_err(CatalogError::from)?;
             if objects != 0 || operations != 0 { return Err(CatalogError::Conflict("creating document still has durable work".into())); }
