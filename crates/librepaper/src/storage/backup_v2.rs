@@ -423,7 +423,8 @@ pub async fn restore_backup(
         std::process::id(),
         hex::encode(crate::auth::random_bytes(8))
     ));
-    let mut catalog_cleanup = RestoreTempFile(Some(catalog_path.clone()));
+    let _catalog_cleanup = RestoreTempFile(Some(catalog_path.clone()));
+    let mut catalog_writer = RestoreFileWriter::new(catalog_path.clone());
     let mut catalog_digest = Sha256::new();
     let mut catalog_offset = 0_u64;
     while catalog_offset < catalog_length {
@@ -436,22 +437,16 @@ pub async fn restore_backup(
         return Err(BackupV2Error::Corrupt("catalog snapshot range length mismatch".into()));
         }
         catalog_digest.update(&chunk);
-        let path = catalog_path.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
-            use std::fs::OpenOptions;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .append(true)
-                .open(path)
-                .map_err(|error| error.to_string())?;
-            file.write_all(&chunk).map_err(|error| error.to_string())?;
-            Ok(())
-        })
-        .await
-        .map_err(|error| format!("catalog snapshot write task failed: {error}"))??;
+        catalog_writer
+            .send(chunk)
+            .await
+            .map_err(BackupV2Error::Storage)?;
         catalog_offset = end;
     }
+    catalog_writer
+        .finish()
+        .await
+        .map_err(BackupV2Error::Storage)?;
     if hex::encode(catalog_digest.finalize()) != manifest.catalog_digest {
         return Err(BackupV2Error::Corrupt("catalog snapshot digest mismatch".into()));
     }
@@ -486,7 +481,6 @@ pub async fn restore_backup(
     {
         return Err(BackupV2Error::Catalog(error));
     }
-    catalog_cleanup.0 = None;
     catalog
         .abort_restored_backup(&manifest.operation_id)
         .await
@@ -532,6 +526,91 @@ impl Drop for RestoreTempFile {
         if let Some(path) = self.0.take() {
             let _ = fs::remove_file(path);
         }
+    }
+}
+
+enum RestoreFileMessage {
+    Chunk(Vec<u8>),
+    Complete,
+}
+
+struct RestoreFileWriter {
+    sender: Option<tokio::sync::mpsc::Sender<RestoreFileMessage>>,
+    task: Option<tokio::task::JoinHandle<Result<(), String>>>,
+}
+
+impl RestoreFileWriter {
+    fn new(path: PathBuf) -> Self {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let task = tokio::task::spawn_blocking(move || {
+            let result = (|| {
+                let mut options = OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600).custom_flags(nofollow_flag());
+                }
+                let mut file = options.open(&path).map_err(|error| error.to_string())?;
+                let mut complete = false;
+                while let Some(message) = receiver.blocking_recv() {
+                    match message {
+                        RestoreFileMessage::Chunk(chunk) => {
+                            file.write_all(&chunk).map_err(|error| error.to_string())?;
+                        }
+                        RestoreFileMessage::Complete => {
+                            complete = true;
+                            break;
+                        }
+                    }
+                }
+                if !complete {
+                    return Err("catalog snapshot stream was cancelled".into());
+                }
+                file.sync_all().map_err(|error| error.to_string())
+            })();
+            if result.is_err() {
+                let _ = fs::remove_file(&path);
+            }
+            result
+        });
+        Self {
+            sender: Some(sender),
+            task: Some(task),
+        }
+    }
+
+    async fn send(&mut self, chunk: Vec<u8>) -> Result<(), String> {
+        self.sender
+            .as_ref()
+            .ok_or_else(|| "catalog snapshot writer is closed".to_string())?
+            .send(RestoreFileMessage::Chunk(chunk))
+            .await
+            .map_err(|_| "catalog snapshot writer stopped".to_string())
+    }
+
+    async fn finish(mut self) -> Result<(), String> {
+        self.sender
+            .take()
+            .ok_or_else(|| "catalog snapshot writer is closed".to_string())?
+            .send(RestoreFileMessage::Complete)
+            .await
+            .map_err(|_| "catalog snapshot writer stopped".to_string())?;
+        self.task
+            .take()
+            .ok_or_else(|| "catalog snapshot task is missing".to_string())?
+            .await
+            .map_err(|error| format!("catalog snapshot task failed: {error}"))?
+    }
+}
+
+impl Drop for RestoreFileWriter {
+    fn drop(&mut self) {
+        // Dropping the sender tells the blocking task to remove an incomplete
+        // private file. Its own task owns the file descriptor, so cancellation
+        // cannot race a caller-side unlink against an in-flight write.
+        self.sender.take();
+        self.task.take();
     }
 }
 
@@ -987,6 +1066,44 @@ impl LocalV2RestoreCatalog {
     }
 }
 
+fn install_catalog_snapshot_file_sync(
+    paths: &DeploymentPaths,
+    deployment_id: &str,
+    source: &Path,
+) -> Result<(), String> {
+    if paths.catalog.exists() {
+        return Err("restore destination already has a catalog".into());
+    }
+    create_secure_dirs(&paths.deployment)?;
+    create_secure_dirs(&paths.state)?;
+    let temporary = paths.catalog.with_extension("restore");
+    secure_copy_atomic(&temporary, source)?;
+    Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
+    let snapshot_identity = Connection::open_with_flags(
+        &temporary,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| error.to_string())?
+    .query_row(
+        "SELECT deployment_id FROM server_state WHERE id=1",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .map_err(|error| error.to_string())?;
+    if snapshot_identity != deployment_id {
+        let _ = fs::remove_file(&temporary);
+        return Err("restore deployment identity does not match the catalog snapshot".into());
+    }
+    let actual = fs::read_to_string(&paths.deployment_identity).unwrap_or_default();
+    if !actual.trim().is_empty() && actual.trim() != deployment_id {
+        let _ = fs::remove_file(&temporary);
+        return Err("restore deployment identity does not match the catalog snapshot".into());
+    }
+    fs::rename(&temporary, &paths.catalog).map_err(|error| error.to_string())?;
+    sync_directory(paths.catalog.parent())?;
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl V2RestoreCatalog for LocalV2RestoreCatalog {
     async fn install_catalog_snapshot(
@@ -1034,37 +1151,13 @@ impl V2RestoreCatalog for LocalV2RestoreCatalog {
         _snapshot_revision: i64,
         source: PathBuf,
     ) -> Result<(), String> {
-        if self.paths.catalog.exists() {
-            return Err("restore destination already has a catalog".into());
-        }
-        create_secure_dirs(&self.paths.deployment)?;
-        create_secure_dirs(&self.paths.state)?;
-        let temporary = self.paths.catalog.with_extension("restore");
-        secure_copy_atomic(&temporary, &source)?;
-        Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
-        let snapshot_identity = Connection::open_with_flags(
-            &temporary,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(|error| error.to_string())?
-        .query_row(
-            "SELECT deployment_id FROM server_state WHERE id=1",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(|error| error.to_string())?;
-        if snapshot_identity != deployment_id {
-            let _ = fs::remove_file(&temporary);
-            return Err("restore deployment identity does not match the catalog snapshot".into());
-        }
-        let actual = fs::read_to_string(&self.paths.deployment_identity).unwrap_or_default();
-        if !actual.trim().is_empty() && actual.trim() != deployment_id {
-            let _ = fs::remove_file(&temporary);
-            return Err("restore deployment identity does not match the catalog snapshot".into());
-        }
-        fs::rename(&temporary, &self.paths.catalog).map_err(|error| error.to_string())?;
-        sync_directory(self.paths.catalog.parent())?;
-        Ok(())
+        let paths = self.paths.clone();
+        let deployment_id = deployment_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            install_catalog_snapshot_file_sync(&paths, &deployment_id, &source)
+        })
+        .await
+        .map_err(|error| format!("catalog snapshot install task failed: {error}"))?
     }
 
     async fn abort_restored_backup(&self, operation_id: &str) -> Result<(), String> {
@@ -1495,6 +1588,65 @@ mod tests {
         }
     }
 
+    struct FileStreamingStore {
+        inner: MemoryStore,
+        lengths: Arc<Mutex<Vec<u64>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl BlobStore for FileStreamingStore {
+        async fn get(&self, key: &str) -> crate::storage::blob::BlobResult<Vec<u8>> {
+            self.inner.get(key).await
+        }
+
+        async fn put(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> crate::storage::blob::BlobResult<()> {
+            self.inner.put(key, body, content_type).await
+        }
+
+        async fn put_file(
+            &self,
+            key: &str,
+            path: &Path,
+            _content_type: &str,
+        ) -> crate::storage::blob::BlobResult<()> {
+            let length = std::fs::metadata(path)
+                .map_err(crate::storage::blob::BlobError::from)?
+                .len();
+            self.lengths.lock().unwrap().push(length);
+            self.inner.put(key, Vec::new(), "application/octet-stream").await
+        }
+
+        async fn delete(&self, keys: &[String]) -> crate::storage::blob::BlobResult<()> {
+            self.inner.delete(keys).await
+        }
+
+        async fn list(&self, prefix: &str) -> crate::storage::blob::BlobResult<Vec<crate::storage::blob::BlobInfo>> {
+            self.inner.list(prefix).await
+        }
+
+        async fn swap(
+            &self,
+            key: &str,
+            body: Vec<u8>,
+            expect: &str,
+        ) -> crate::storage::blob::BlobResult<crate::storage::blob::BlobVersion> {
+            self.inner.swap(key, body, expect).await
+        }
+
+        async fn get_versioned(&self, key: &str) -> crate::storage::blob::BlobResult<(Vec<u8>, crate::storage::blob::BlobVersion)> {
+            self.inner.get_versioned(key).await
+        }
+
+        fn describe(&self) -> String {
+            "streaming-test-store".into()
+        }
+    }
+
     struct MockBackupCatalog {
         snapshot: BackupSnapshot,
         objects: Vec<BackupObjectEntry>,
@@ -1707,6 +1859,48 @@ mod tests {
             .expect("restore completes");
         assert_eq!(report.objects_restored, 1);
         assert_eq!(restore_events.lock().unwrap().as_slice(), &["install_file", "install_catalog", "abort_copied", "finish"]);
+    }
+
+    #[tokio::test]
+    async fn large_catalog_snapshot_uses_file_stream_without_heap_bound() {
+        let (object, _) = sample_object();
+        let snapshot_path = tempfile::tempdir().expect("snapshot directory");
+        let snapshot_file = snapshot_path.path().join("catalog.db");
+        std::fs::File::create(&snapshot_file)
+            .expect("snapshot file")
+            .set_len(MAX_CATALOG_SNAPSHOT_BYTES as u64 + 1)
+            .expect("sparse snapshot");
+        let mut snapshot = sample_snapshot(object);
+        snapshot.catalog_bytes.clear();
+        snapshot.object_count = 0;
+        snapshot.catalog_file = Some(BackupCatalogFile {
+            path: snapshot_file,
+            digest: "a".repeat(64),
+            byte_length: MAX_CATALOG_SNAPSHOT_BYTES as u64 + 1,
+        });
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let catalog = MockBackupCatalog {
+            snapshot,
+            objects: Vec::new(),
+            events,
+        };
+        let source = Arc::new(MemoryStore(Arc::new(Mutex::new(HashMap::new()))));
+        let lengths = Arc::new(Mutex::new(Vec::new()));
+        let destination: Arc<dyn BlobStore> = Arc::new(FileStreamingStore {
+            inner: MemoryStore(Arc::new(Mutex::new(HashMap::new()))),
+            lengths: Arc::clone(&lengths),
+        });
+        let manifest = create_backup(
+            &catalog,
+            source,
+            destination,
+            "large-catalog",
+            1,
+        )
+        .await
+        .expect("streamed large catalog backup");
+        assert_eq!(manifest.catalog_length, MAX_CATALOG_SNAPSHOT_BYTES as u64 + 1);
+        assert_eq!(lengths.lock().unwrap().as_slice(), &[MAX_CATALOG_SNAPSHOT_BYTES as u64 + 1]);
     }
 
     #[tokio::test]

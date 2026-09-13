@@ -271,12 +271,10 @@ pub trait BlobStore: Send + Sync {
     }
     async fn put(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()>;
     /// Publish a filesystem snapshot without requiring the caller to retain
-    /// the complete file in memory. Backends with a native streaming upload
-    /// may override this; the fallback is intentionally bounded to the
-    /// existing small test stores.
-    async fn put_file(&self, key: &str, path: &Path, content_type: &str) -> BlobResult<()> {
-        let body = std::fs::read(path).map_err(BlobError::from)?;
-        self.put(key, body, content_type).await
+    /// the complete file in memory. Backends must opt into this operation;
+    /// silently reading an unbounded snapshot into the request heap is unsafe.
+    async fn put_file(&self, _key: &str, _path: &Path, _content_type: &str) -> BlobResult<()> {
+        Err(BlobError::Other("streaming file upload is unsupported by this store".into()))
     }
     /// Publish an immutable v2 object. Implementations with an atomic
     /// no-replace primitive should override this; the default remains useful
@@ -1183,7 +1181,7 @@ pub fn write_file_atomically(name: &Path, body: &[u8], durable: bool) -> std::io
 
 /// Copy a potentially large local snapshot to its final key while retaining
 /// only the operating-system copy buffer in memory. The temporary file is
-/// private and the final rename is the publication point.
+/// private and the final hard link is the no-replace publication point.
 fn copy_file_atomically(name: &Path, source: &Path, durable: bool) -> std::io::Result<()> {
     if let Some(parent) = name.parent() {
         durable_create_dir_all(parent, durable)?;
@@ -1210,7 +1208,11 @@ fn copy_file_atomically(name: &Path, source: &Path, durable: bool) -> std::io::R
         std::io::copy(&mut input, &mut output)?;
         sync_file(&output, durable)?;
         drop(output);
-        std::fs::rename(&temporary, name)?;
+        // Hard-link publication is atomic and refuses an existing destination,
+        // preserving the backup manifest's no-replace contract even when two
+        // workers race after the existence check.
+        std::fs::hard_link(&temporary, name)?;
+        std::fs::remove_file(&temporary)?;
         if let Some(parent) = name.parent() {
             sync_directory(parent, durable)?;
         }
