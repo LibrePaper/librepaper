@@ -70,7 +70,8 @@ struct BoundedJsonWriter {
     bytes: Vec<u8>,
     limit: usize,
     budget: std::sync::Arc<tokio::sync::Semaphore>,
-    permits: Vec<tokio::sync::OwnedSemaphorePermit>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    charged: usize,
 }
 
 impl std::io::Write for BoundedJsonWriter {
@@ -78,19 +79,33 @@ impl std::io::Write for BoundedJsonWriter {
         if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "JSON payload exceeds limit"));
         }
-        let permit = self
-            .budget
-            .clone()
-            .try_acquire_many_owned(u32::try_from(bytes.len()).map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "payload size overflows memory budget")
-            })?)
-            .map_err(|error| match error {
-                tokio::sync::TryAcquireError::Closed =>
-                    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "memory budget is closed"),
-                tokio::sync::TryAcquireError::NoPermits =>
-                    std::io::Error::new(std::io::ErrorKind::WouldBlock, "payload memory is saturated"),
-            })?;
-        self.permits.push(permit);
+        let new_len = self.bytes.len().saturating_add(bytes.len());
+        if new_len > self.charged {
+            let additional = new_len - self.charged;
+            let permit = self
+                .budget
+                .clone()
+                .try_acquire_many_owned(u32::try_from(additional).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "payload size overflows memory budget")
+                })?)
+                .map_err(|error| match error {
+                    tokio::sync::TryAcquireError::Closed =>
+                        std::io::Error::new(std::io::ErrorKind::BrokenPipe, "memory budget is closed"),
+                    tokio::sync::TryAcquireError::NoPermits =>
+                        std::io::Error::new(std::io::ErrorKind::WouldBlock, "payload memory is saturated"),
+                })?;
+            if let Some(existing) = self.permit.as_mut() {
+                existing.merge(permit);
+            } else {
+                self.permit = Some(permit);
+            }
+            // Charge the bounded target capacity before asking Vec to grow;
+            // reserve_exact avoids an uncharged geometric capacity jump.
+            self.bytes
+                .try_reserve_exact(new_len.saturating_sub(self.bytes.capacity()))
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "payload buffer allocation failed"))?;
+            self.charged = new_len;
+        }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
@@ -400,7 +415,8 @@ impl Server {
             bytes: Vec::new(),
             limit: MAX_PAYLOAD_BYTES,
             budget: Arc::clone(&self.mcp_capacity.payload_memory),
-            permits: Vec::new(),
+            permit: None,
+            charged: 0,
         };
         serde_json::to_writer(&mut bounded, object)
             .map_err(|error| match error.io_error_kind() {
@@ -408,7 +424,7 @@ impl Server {
                     Failure::new("unavailable", "MCP payload memory is saturated"),
                 _ => Failure::new("budget_exceeded", error.to_string()),
             })?;
-        let BoundedJsonWriter { bytes: raw, permits: raw_permits, budget, .. } = bounded;
+        let BoundedJsonWriter { bytes: raw, permit: raw_permit, budget, .. } = bounded;
         if id.is_empty() || id.len() > 256 || kind.is_empty() || kind.len() > 128 {
             return Err(Failure::new("invalid_params", "agent object identity is invalid"));
         }
@@ -426,18 +442,19 @@ impl Server {
             return Err(Failure::new("permission_changed", "a live account or link is required"));
         };
         let logical_digest = hex::encode(Sha256::digest(&raw));
-        let (bytes, memory_permits) = tokio::task::spawn_blocking(move || {
+        let (bytes, memory_permit) = tokio::task::spawn_blocking(move || {
             let mut encoded = BoundedJsonWriter {
                 bytes: Vec::new(),
                 limit: MAX_PAYLOAD_BYTES,
                 budget,
-                permits: Vec::new(),
+                permit: None,
+                charged: 0,
             };
             let mut encoder = flate2::write::ZlibEncoder::new(&mut encoded, flate2::Compression::fast());
             encoder.write_all(&raw)?;
             encoder.finish()?;
-            drop(raw_permits);
-            Ok::<_, std::io::Error>((encoded.bytes, encoded.permits))
+            drop(raw_permit);
+            Ok::<_, std::io::Error>((encoded.bytes, encoded.permit))
         }).await.map_err(|e| Failure::new("unavailable", e.to_string()))?
           .map_err(|e| {
               if e.kind() == std::io::ErrorKind::WouldBlock {
@@ -509,7 +526,7 @@ impl Server {
             admitted.document_id.as_str(), crate::storage::blob::ObjectId::parse(admitted.object_id.as_str()).map_err(|error| Failure::new("internal", error.to_string()))?, bytes,
             "application/vnd.librepaper.agent-payload+zlib",
         ).await.map_err(|error| Failure::new("unavailable", error))?;
-        drop(memory_permits);
+        drop(memory_permit);
         let result_json = serde_json::json!({
             "version": 2,
             "object_id": admitted.object_id.as_str(),
@@ -568,7 +585,9 @@ impl Server {
         };
         let descriptor = read.object;
         const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
-        let requested_bytes = usize::try_from(descriptor.byte_length).ok();
+        let requested_bytes = descriptor
+            .byte_length
+            .and_then(|bytes| usize::try_from(bytes).ok());
         if requested_bytes.is_none() || requested_bytes.is_some_and(|bytes| bytes > MAX_PAYLOAD_BYTES) {
             let release_catalog = Arc::clone(catalog);
             let release_document = descriptor.document_id.clone();
@@ -660,7 +679,8 @@ impl Server {
                 bytes: Vec::new(),
                 limit: MAX_PAYLOAD_BYTES,
                 budget: decode_budget,
-                permits: Vec::new(),
+                permit: None,
+                charged: 0,
             };
             let mut chunk = [0_u8; 8192];
             loop {
