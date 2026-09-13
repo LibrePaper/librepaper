@@ -400,8 +400,8 @@ async fn a_figure_is_an_upload_and_is_rate_limited_as_one() {
 
 #[tokio::test]
 async fn a_figure_nothing_refers_to_is_pruned_once_its_grace_has_passed() {
-    // No grace, so the test is about what is referred to rather than about
-    // waiting. The grace itself is the next test.
+    // Advance the collector's clock beyond v2's durable GC grace below;
+    // checkpoint references must still preserve the named asset.
     let config = Configuration {
         asset_grace: 0,
         ..Configuration::default()
@@ -452,7 +452,7 @@ async fn a_figure_nothing_refers_to_is_pruned_once_its_grace_has_passed() {
     )
     .expect("deletion worker");
     worker
-        .run_once(crate::util::now_unix())
+        .run_v2_once(crate::util::now_millis() + 900_001)
         .await
         .expect("deletion pass");
 
