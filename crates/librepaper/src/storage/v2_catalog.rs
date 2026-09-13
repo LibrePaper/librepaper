@@ -21,7 +21,8 @@ use crate::storage::journal::{
 };
 use crate::storage::maintenance_v2::{
     GcCandidate, PreparedAllocation, PreparedKind, PreparedOperation, V2GcCatalog,
-    V2RecoveryCatalog, READ_LEASE_MS,
+    V2RecoveryCatalog, READ_LEASE_MS, STAGE_HEARTBEAT_DUE_MS, STAGE_HEARTBEAT_MAX_PAGES,
+    STAGE_HEARTBEAT_PAGE_SIZE,
 };
 use crate::storage::catalog::Catalog;
 
@@ -347,6 +348,164 @@ impl V2GcCatalogAdapter {
     }
 }
 
+#[derive(Clone, Debug)]
+struct StageLeaseCursor {
+    document_id: String,
+    object_id: String,
+    holder_id: String,
+}
+
+struct StageLeasePage {
+    renewed: usize,
+    next: Option<StageLeaseCursor>,
+}
+
+/// Renew a bounded page of live display-publication stage leases.  The
+/// cursor is the immutable lease key, so changing expiry while scanning can
+/// never make a row move backwards into an already processed page.
+async fn heartbeat_stage_leases_page(
+    catalog: &Arc<Catalog>,
+    now: i64,
+    cursor: Option<StageLeaseCursor>,
+    limit: usize,
+) -> Result<StageLeasePage, String> {
+    if now < 0 || limit == 0 || limit > STAGE_HEARTBEAT_PAGE_SIZE {
+        return Err("invalid stage-lease heartbeat page".into());
+    }
+    let upper = now.saturating_add(STAGE_HEARTBEAT_DUE_MS);
+    let renewal_limit = now.saturating_add(READ_LEASE_MS);
+    let cursor_document = cursor.as_ref().map(|value| value.document_id.clone());
+    let cursor_object = cursor.as_ref().map(|value| value.object_id.clone());
+    let cursor_holder = cursor.as_ref().map(|value| value.holder_id.clone());
+    catalog
+        .execute_catalog(1024, move |catalog| {
+            catalog.with_connection(|connection| {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT lease.document_id,lease.object_id,lease.holder_id,
+                                lease.operation_id,candidate.work_expires_at
+                         FROM object_leases lease
+                         JOIN operations candidate
+                           ON candidate.id=lease.operation_id
+                          AND candidate.document_id=lease.document_id
+                         JOIN documents d ON d.id=lease.document_id
+                         JOIN accounts a ON a.id=d.owner_id
+                         JOIN objects o
+                           ON o.document_id=lease.document_id AND o.id=lease.object_id
+                         WHERE lease.purpose='stage'
+                           AND lease.expires_at>?1
+                           AND lease.expires_at<=?2
+                           AND candidate.kind='display_publish'
+                           AND candidate.state='prepared'
+                           AND candidate.writer_generation=(
+                               SELECT writer_generation FROM server_state WHERE id=1)
+                           AND candidate.work_expires_at>?1
+                           AND lease.writer_generation=candidate.writer_generation
+                           AND o.state IN ('allocated','available')
+                           AND d.status='active' AND a.status='active'
+                           AND MIN(?3,candidate.work_expires_at)>lease.expires_at
+                           AND (
+                               ?4 IS NULL OR lease.document_id>?4
+                               OR (lease.document_id=?4 AND lease.object_id>?5)
+                               OR (lease.document_id=?4 AND lease.object_id=?5
+                                   AND lease.holder_id>?6)
+                           )
+                         ORDER BY lease.document_id,lease.object_id,lease.holder_id
+                         LIMIT ?7",
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                let rows = statement
+                    .query_map(
+                        params![
+                            now,
+                            upper,
+                            renewal_limit,
+                            cursor_document.as_deref(),
+                            cursor_object.as_deref(),
+                            cursor_holder.as_deref(),
+                            i64::try_from(limit).unwrap_or(256),
+                        ],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, i64>(4)?,
+                            ))
+                        },
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                let rows = rows
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                drop(statement);
+                let next = rows.last().map(|row| StageLeaseCursor {
+                    document_id: row.0.clone(),
+                    object_id: row.1.clone(),
+                    holder_id: row.2.clone(),
+                });
+                let mut renewed = 0usize;
+                for (document_id, object_id, holder_id, operation_id, work_expires_at) in rows {
+                    let expires_at = renewal_limit.min(work_expires_at);
+                    let changed = transaction
+                        .execute(
+                            "UPDATE object_leases
+                                SET expires_at=?1
+                              WHERE document_id=?2 AND object_id=?3 AND holder_id=?4
+                                AND purpose='stage' AND operation_id=?5
+                                AND writer_generation=(SELECT writer_generation FROM operations
+                                    WHERE id=?5 AND document_id=?2)
+                                AND expires_at>?6 AND expires_at<=?7 AND expires_at<?1",
+                            params![
+                                expires_at,
+                                document_id,
+                                object_id,
+                                holder_id,
+                                operation_id,
+                                now,
+                                upper,
+                            ],
+                        )
+                        .map_err(crate::storage::catalog::CatalogError::from)?;
+                    renewed += changed;
+                }
+                transaction
+                    .commit()
+                    .map_err(crate::storage::catalog::CatalogError::from)?;
+                Ok(StageLeasePage { renewed, next })
+            })
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn heartbeat_stage_leases_pages(
+    catalog: &Arc<Catalog>,
+    now: i64,
+    requested_limit: usize,
+) -> Result<usize, String> {
+    if requested_limit == 0 {
+        return Err("invalid stage-lease heartbeat limit".into());
+    }
+    let page_size = requested_limit.min(STAGE_HEARTBEAT_PAGE_SIZE);
+    let mut cursor = None;
+    let mut renewed = 0usize;
+    for _ in 0..STAGE_HEARTBEAT_MAX_PAGES {
+        let page = heartbeat_stage_leases_page(catalog, now, cursor, page_size).await?;
+        renewed = renewed.saturating_add(page.renewed);
+        cursor = page.next;
+        if cursor.is_none() {
+            return Ok(renewed);
+        }
+        tokio::task::yield_now().await;
+    }
+    Err("stage-lease heartbeat capacity exceeded; publication must be admitted in smaller bundles".into())
+}
+
 async fn blocking_catalog_call<T, F, Fut>(catalog: Arc<Catalog>, operation: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -363,9 +522,7 @@ where
 #[async_trait]
 impl V2GcCatalog for V2GcCatalogAdapter {
     async fn heartbeat_stage_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
-        blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
-            <Catalog as V2GcCatalog>::heartbeat_stage_leases(catalog.as_ref(), now, limit).await
-        }).await
+        heartbeat_stage_leases_pages(&self.catalog, now, limit).await
     }
     async fn expire_leases(&self, now: i64, limit: usize) -> Result<usize, String> {
         blocking_catalog_call(self.catalog.clone(), move |catalog| async move {
@@ -1415,6 +1572,7 @@ mod aborted_inflight_tests {
     use super::*;
     use crate::storage::blob::{BlobInfo, BlobVersion, FsStore};
     use crate::storage::maintenance_v2::run_gc_pass;
+    use std::time::Duration;
     use tokio::sync::Notify;
 
     struct DelayedStore {
@@ -1481,9 +1639,14 @@ mod aborted_inflight_tests {
                     "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,'aborted',?2,'owned','Aborted','aborted','active',1,1,'markdown','index.md')",
                     params![document_id, account_id],
                 )?;
+                let writer_generation: String = connection.query_row(
+                    "SELECT writer_generation FROM server_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )?;
                 connection.execute(
-                    "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,'test','aborted-request','journal_append',?3,'prepared','generation',0,'{\"version\":1}',1,1,9999999999999)",
-                    params![operation_id, document_id, digest],
+                    "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,'test','aborted-request','journal_append',?3,'prepared',?4,0,'{\"version\":1}',1,1,9999999999999)",
+                    params![operation_id, document_id, digest, writer_generation],
                 )?;
                 connection.execute(
                     "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,allocation_operation_id,created_at,journal_epoch,first_sequence,last_sequence) VALUES(?1,?2,?3,'journal_segment','allocated',?4,1,NULL,?5,?6,1,0,1,1)",
@@ -1512,7 +1675,7 @@ mod aborted_inflight_tests {
         let delayed_body = body.clone();
         let delayed_object = object_id.clone();
         let delayed_document = document_id.to_owned();
-        let put_task = tokio::spawn(async move {
+        let mut put_task = tokio::spawn(async move {
             writer.write_allocated(
                 &delayed_document,
                 delayed_object,
@@ -1521,7 +1684,15 @@ mod aborted_inflight_tests {
             )
             .await
         });
-        started.notified().await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                _ = started.notified() => Ok::<(), String>(()),
+                result = &mut put_task => Err(format!("writer exited before physical PUT: {result:?}")),
+            }
+        })
+        .await
+        .expect("writer did not reach the physical PUT")
+        .expect("writer failed before the physical PUT");
         put_task.abort();
         catalog
             .with_connection(|connection| {
@@ -1534,7 +1705,9 @@ mod aborted_inflight_tests {
         })
             .expect("cancel operation");
         release.notify_one();
-        finished.notified().await;
+        tokio::time::timeout(Duration::from_secs(5), finished.notified())
+            .await
+            .expect("cancelled physical PUT did not finish");
         for _ in 0..100 {
             if !completed_inflight(namespace, 1).is_empty() {
                 break;
@@ -1561,5 +1734,130 @@ mod aborted_inflight_tests {
             })
             .expect("refunded counters");
         assert_eq!(counters, (0, 0, 0));
+    }
+}
+
+#[cfg(test)]
+mod stage_heartbeat_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn heartbeat_pages_renew_late_bundles_without_reviving_invalid_leases() {
+        let catalog = Arc::new(Catalog::open_in_memory().expect("v2 catalog"));
+        let now = 1_000_000_i64;
+        let current_generation: String = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT writer_generation FROM server_state WHERE id=1", [], |row| row.get(0))
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .expect("writer generation");
+
+        catalog
+            .with_connection(|connection| {
+                for bundle in 0..3 {
+                    let account_id = format!("heartbeat-account-{bundle}");
+                    let document_id = format!("heartbeat-document-{bundle}");
+                    connection.execute(
+                        "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status,session_generation,plan,created_at,last_seen_at) VALUES(?1,'registered','heartbeat',?1,?2,?2,'heartbeat@example.test','active','session','test',?3,?3)",
+                        params![account_id, account_id, now - 100_000],
+                    )?;
+                    connection.execute(
+                        "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,source_format,main_path) VALUES(?1,?2,?3,'owned',?2,?2,'active',?4,?4,'markdown','index.md')",
+                        params![document_id, document_id, account_id, now - 100_000],
+                    )?;
+                    for item in 0..200 {
+                        let object_id = format!("{:032x}", bundle * 1000 + item);
+                        let operation_id = format!("{:032x}", bundle * 1000 + item + 10_000);
+                        let request_key = format!("heartbeat-request-{bundle}-{item}");
+                        let lease_expiry = if bundle == 2 && item == 199 {
+                            now + 80_000
+                        } else {
+                            now + 70_000
+                        };
+                        let work_expiry = if bundle == 2 && item == 199 {
+                            now + 100_000
+                        } else {
+                            now + 600_000
+                        };
+                        connection.execute(
+                            "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,'heartbeat',?3,'display_publish',?4,'prepared',?5,0,'{\"version\":1}',?6,?6,?7)",
+                            params![operation_id, document_id, request_key, "a".repeat(64), current_generation, now - 100_000, work_expiry],
+                        )?;
+                        connection.execute(
+                            "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,created_at) VALUES(?1,?2,?3,'publication_asset','available',?4,1,1,0,?5)",
+                            params![document_id, object_id, format!("v2/documents/{document_id}/objects/{object_id}"), "b".repeat(64), now - 100_000],
+                        )?;
+                        connection.execute(
+                            "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,?3,'stage',?4,?5,?6,?7)",
+                            params![document_id, object_id, operation_id, operation_id, current_generation, now - 100_000, lease_expiry],
+                        )?;
+                    }
+                }
+
+                let document_id = "heartbeat-document-0";
+                let account_id = "heartbeat-account-0";
+                let object_id = format!("{:032x}", 90_000_u32);
+                let operation_id = format!("{:032x}", 100_000_u32);
+                connection.execute(
+                    "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,'heartbeat','heartbeat-expired','display_publish',?3,'prepared',?4,0,'{\"version\":1}',?5,?5,?6)",
+                    params![operation_id, document_id, "c".repeat(64), current_generation, now - 100_000, now + 600_000],
+                )?;
+                connection.execute(
+                    "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,created_at) VALUES(?1,?2,?3,'publication_asset','available',?4,1,1,0,?5)",
+                    params![document_id, object_id, format!("v2/documents/{document_id}/objects/{object_id}"), "d".repeat(64), now - 100_000],
+                )?;
+                connection.execute(
+                    "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,?3,'stage',?4,?5,?6,?7)",
+                    params![document_id, object_id, operation_id, operation_id, current_generation, now - 100_000, now - 1],
+                )?;
+
+                let object_id = format!("{:032x}", 90_001_u32);
+                let operation_id = format!("{:032x}", 100_001_u32);
+                connection.execute(
+                    "INSERT INTO operations(id,document_id,actor_key,request_key,kind,request_digest,state,writer_generation,expected_document_generation,plan_json,created_at,updated_at,work_expires_at) VALUES(?1,?2,'heartbeat','heartbeat-old-generation','display_publish',?3,'prepared',?4,0,'{\"version\":1}',?5,?5,?6)",
+                    params![operation_id, document_id, "e".repeat(64), current_generation, now - 100_000, now + 600_000],
+                )?;
+                connection.execute(
+                    "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,created_at) VALUES(?1,?2,?3,'publication_asset','available',?4,1,1,0,?5)",
+                    params![document_id, object_id, format!("v2/documents/{document_id}/objects/{object_id}"), "f".repeat(64), now - 100_000],
+                )?;
+                connection.execute(
+                    "INSERT INTO object_leases(document_id,object_id,holder_id,purpose,operation_id,writer_generation,created_at,expires_at) VALUES(?1,?2,?3,'stage',?4,'old-generation',?5,?6)",
+                    params![document_id, object_id, operation_id, now - 100_000, now + 70_000],
+                )?;
+                Ok(())
+            })
+            .expect("heartbeat fixture");
+
+        let adapter = V2GcCatalogAdapter::new(Arc::clone(&catalog));
+        let renewed = V2GcCatalog::heartbeat_stage_leases(&adapter, now, STAGE_HEARTBEAT_PAGE_SIZE)
+            .await
+            .expect("all bounded pages renew");
+        assert_eq!(renewed, 600);
+
+        let values: (i64, i64, i64) = catalog
+            .with_connection(|connection| {
+                let late: i64 = connection.query_row(
+                    "SELECT expires_at FROM object_leases WHERE document_id=?1 AND object_id=?2",
+                    params!["heartbeat-document-2", format!("{:032x}", 2_000 + 199)],
+                    |row| row.get(0),
+                )?;
+                let expired: i64 = connection.query_row(
+                    "SELECT expires_at FROM object_leases WHERE document_id=?1 AND object_id=?2",
+                    params!["heartbeat-document-0", format!("{:032x}", 90_000_u32)],
+                    |row| row.get(0),
+                )?;
+                let old_generation: i64 = connection.query_row(
+                    "SELECT expires_at FROM object_leases WHERE document_id=?1 AND object_id=?2",
+                    params!["heartbeat-document-0", format!("{:032x}", 90_001_u32)],
+                    |row| row.get(0),
+                )?;
+                Ok((late, expired, old_generation))
+            })
+            .expect("heartbeat results");
+        assert_eq!(values.0, now + 100_000, "work deadline clamps the renewal");
+        assert_eq!(values.1, now - 1, "expired leases are never revived");
+        assert_eq!(values.2, now + 70_000, "old writer generations are never revived");
     }
 }

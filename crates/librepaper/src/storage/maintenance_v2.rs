@@ -16,11 +16,16 @@ pub const GC_DELETE_BATCH: usize = 64;
 pub const OBJECT_SUPERSESSION_GRACE_MS: i64 = 15 * 60 * 1000;
 pub const READ_LEASE_MS: i64 = 120 * 1000;
 pub const READ_LEASE_HEARTBEAT_MS: i64 = 30 * 1000;
-/// The serving worker renews this many stage rows per 30-second pass. Four
-/// passes fit within the 120-second lease, so the deployment admission bound
-/// is 16,384 live stage rows. A larger prepared publication is refused before
-/// its first lease is written; expired rows are never resurrected.
-pub const STAGE_HEARTBEAT_PAGE_SIZE: usize = 4_096;
+/// A stage lease is renewed during the final 90 seconds of its 120 second
+/// lease.  The strict lower bound in the catalogue query prevents a worker
+/// from touching already expired leases.
+pub const STAGE_HEARTBEAT_DUE_MS: i64 = 90 * 1000;
+/// Heartbeats use bounded cursor pages. At most 64 pages are processed per
+/// scheduler pass (16,384 rows); expired rows are never resurrected. The
+/// publication admission path must keep the live stage set within this
+/// throughput bound or surface the worker's explicit capacity error.
+pub const STAGE_HEARTBEAT_PAGE_SIZE: usize = 256;
+pub const STAGE_HEARTBEAT_MAX_PAGES: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GcCandidate {
