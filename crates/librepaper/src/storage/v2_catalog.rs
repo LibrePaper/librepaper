@@ -2977,7 +2977,7 @@ mod journal_commit_race_tests {
                     "SELECT journal_epoch,journal_sequence,journal_base_sequence FROM documents WHERE id=?1",
                     [document_id],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
+                ).map_err(crate::storage::catalog::CatalogError::from)
             })
             .expect("reopened journal head");
         assert_eq!(head, (1, 3, 3));
@@ -2987,7 +2987,7 @@ mod journal_commit_race_tests {
                     "SELECT count(*) FROM objects WHERE document_id=?1 AND kind='journal_segment' AND state='available' AND live_root=0",
                     [document_id],
                     |row| row.get(0),
-                )
+                ).map_err(crate::storage::catalog::CatalogError::from)
             })
             .expect("retired journal segments");
         assert_eq!(retired_segments, 3);

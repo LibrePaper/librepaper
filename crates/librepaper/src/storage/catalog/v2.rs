@@ -617,8 +617,8 @@ fn operation_authorized_in_tx(
                 |row| row.get(0),
             )
             .map_err(CatalogError::from)?;
-        if owner_match {
-            return Ok(required_role == "editor");
+        if owner_match && required_role == "editor" {
+            return Ok(());
         }
     }
 
@@ -669,6 +669,15 @@ fn operation_authorized_in_tx(
 }
 
 impl Catalog {
+    pub(crate) fn v2_document_source_generation(&self, document_id: &DocumentId) -> CatalogResult<i64> {
+        self.with_connection(|db| {
+            db.query_row(
+                "SELECT d.source_generation FROM documents d JOIN accounts a ON a.id=d.owner_id
+                 WHERE d.id=?1 AND d.status IN ('creating','active') AND a.status='active'",
+                [document_id.as_str()], |row| row.get(0),
+            ).optional()?.ok_or(CatalogError::NotFound)
+        })
+    }
     /// Verify the bytes decoded by the publication worker and derive the
     /// complete immutable object closure from those bytes. Manifest callers
     /// cannot omit an HTML or asset object while supplying an unrelated list:
