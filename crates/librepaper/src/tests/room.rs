@@ -6,6 +6,7 @@ use crate::document::history;
 use crate::document::session;
 use crate::document::store;
 use crate::room;
+use crate::storage::journal::DocumentJournal;
 use crate::storage::blob::{self, BlobError, BlobInfo, BlobResult, BlobStore, BlobVersion};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -50,6 +51,54 @@ pub(super) fn attach_fixture_journal(rooms: &room::RoomSet, store: &store::Store
             catalog.clone(), store.config.persistence(),
         )), blobs, store.config.persistence(),
     ).unwrap()));
+}
+
+fn object_write_prefix(store: &store::Store, slug: &str) -> String {
+    let document = store.catalog.as_ref().unwrap().document(slug).unwrap().unwrap();
+    format!("v2/documents/{}/objects/*", document.storage_id)
+}
+
+fn checkpoint_storage_key(store: &store::Store, slug: &str, checkpoint: &str) -> String {
+    store.catalog.as_ref().unwrap().with_connection(|connection| {
+        connection.query_row(
+            "SELECT o.storage_key FROM checkpoints c JOIN objects o
+               ON o.document_id=c.document_id AND o.id=c.tree_object_id
+             JOIN documents d ON d.id=c.document_id WHERE d.slug=?1 AND c.id=?2",
+            rusqlite::params![slug, checkpoint], |row| row.get(0),
+        ).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap()
+}
+
+async fn recovered_session(store: &store::Store, slug: &str) -> yrs::Doc {
+    let catalog = store.catalog.as_ref().unwrap();
+    let document = catalog.document(slug).unwrap().unwrap();
+    let journal = crate::storage::journal::V2JournalRuntime::with_persistence(
+        Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+            catalog.clone(), store.config.persistence(),
+        )), store.blobs.clone(), store.config.persistence(),
+    ).unwrap();
+    let bytes = journal.recover_latest(&document.storage_id).await.unwrap().unwrap();
+    let saved = session::new_doc();
+    session::apply_update(&saved, &bytes).unwrap();
+    saved
+}
+
+async fn retain_and_collect(store: &store::Store, keep: usize) {
+    let catalog = store.catalog.as_ref().unwrap();
+    let now = crate::util::now_millis();
+    catalog.with_connection(|connection| {
+        connection.execute(
+            "UPDATE documents SET retention_json=?1,retention_revision=retention_revision+1,retention_due_at=0 WHERE slug='probe'",
+            [serde_json::json!({"version":1,"profile":"custom","maxRoutineCount":keep.saturating_sub(1)}).to_string()],
+        )?;
+        Ok(())
+    }).unwrap();
+    catalog.schedule_document_balanced("probe", now, Default::default()).unwrap();
+    let due = now + 86_400_001;
+    catalog.run_retention_pass(due, 32).unwrap();
+    let adapter = crate::storage::v2_catalog::V2GcCatalogAdapter::new(catalog.clone());
+    crate::storage::maintenance_v2::run_gc_pass(&adapter, store.blobs.as_ref(), due + 900_001).await.unwrap();
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
 /// A room already holding one checkpoint of "A", the same fixture the review
@@ -309,8 +358,6 @@ async fn checkpoint_race_drops_dirty_edit() {
     // The legacy index entry's SHA names the published source, while a native
     // checkpoint's SHA names its serialized tree. Pause the actual retained
     // checkpoint read rather than deriving a key from the old source layout.
-    let initial_room = rooms.get("probe").await;
-    let sha = initial_room.manifest().await.latest().unwrap().sha.clone();
     store
         .blobs
         .delete(&[blob::room_lock_key("probe")])
@@ -322,7 +369,7 @@ async fn checkpoint_race_drops_dirty_edit() {
     attach_fixture_journal(&reopened, &store, hooked.clone());
     let room = reopened.get("probe").await;
     room.set_source("B", "markdown").await.unwrap();
-    *hooked.pause.lock().unwrap() = Some(("get".into(), blob::checkpoint_key("probe", &sha)));
+    *hooked.pause.lock().unwrap() = Some(("put".into(), object_write_prefix(&store, "probe")));
     let task = tokio::spawn({
         let room = room.clone();
         async move { room.checkpoint("comment", "").await }
@@ -341,12 +388,7 @@ async fn checkpoint_race_drops_dirty_edit() {
     // silently reported as saved.
     assert!(room.state.lock().await.session.dirty);
     assert!(room.persist().await.unwrap());
-    let saved = session::new_doc();
-    session::apply_update(
-        &saved,
-        &store.blobs.get(&blob::session_key("probe")).await.unwrap(),
-    )
-    .unwrap();
+    let saved = recovered_session(&store, "probe").await;
     assert_eq!(session::text_of(&saved), "C AFTER SNAPSHOT");
     println!("checkpoint race: edit after the session snapshot stays dirty and persists");
 }
@@ -367,7 +409,7 @@ async fn edit_during_session_write_stays_dirty() {
     attach_fixture_journal(&reopened, &store, hooked.clone());
     let room = reopened.get("probe").await;
     room.set_source("B", "markdown").await.unwrap();
-    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
+    *hooked.pause.lock().unwrap() = Some(("put".into(), object_write_prefix(&store, "probe")));
     let task = tokio::spawn({
         let room = room.clone();
         async move { room.checkpoint("comment", "").await }
@@ -387,12 +429,7 @@ async fn edit_during_session_write_stays_dirty() {
     assert_eq!(room.source().await, "C DURING SESSION WRITE");
     assert!(room.state.lock().await.session.dirty);
     assert!(room.persist().await.unwrap());
-    let saved = session::new_doc();
-    session::apply_update(
-        &saved,
-        &store.blobs.get(&blob::session_key("probe")).await.unwrap(),
-    )
-    .unwrap();
+    let saved = recovered_session(&store, "probe").await;
     assert_eq!(session::text_of(&saved), "C DURING SESSION WRITE");
     println!("checkpoint race: edit during the session write itself stays dirty and persists");
 }
@@ -497,45 +534,31 @@ async fn concurrent_label_is_lost_by_checkpoint() {
 /// its life. Nothing is deleted on a pass where a tree could not be read.
 #[tokio::test]
 async fn failed_tree_read_prunes_retained_asset() {
-    let config = Configuration {
-        asset_grace: 0,
-        ..Configuration::default()
-    };
-    let (_dir, store, rooms) = fixture(config.clone()).await;
+    let (_dir, store, rooms) = fixture(Configuration::default()).await;
+    let catalog = store.catalog.as_ref().unwrap();
     let room = rooms.get("probe").await;
-    let (sha, _) = room.put_asset(vec![9; 10], (100, 100)).await.unwrap();
+    let (sha, _) = room.put_asset_authorized(vec![9; 10], (100, 100), &fixture_actor()).await.unwrap();
     room.name_asset("fig.png", &sha).await.unwrap();
-    let old = room.checkpoint("comment", "").await.unwrap().unwrap();
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
-    let hooked = HookStore::new(store.blobs.clone());
-    let reopened = room::RoomSet::new(hooked.clone(), Arc::new(config));
-    reopened.attach_store(store.clone());
-    attach_fixture_journal(&reopened, &store, hooked.clone());
-    let room = reopened.get("probe").await;
+    let old = room.checkpoint("comment", "alice").await.unwrap().unwrap();
+    let asset_key: String = catalog.with_connection(|connection| {
+        connection.query_row("SELECT storage_key FROM objects WHERE kind='asset' AND digest=?1", [&sha], |row| row.get(0))
+            .map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
     {
         let state = room.state.lock().await;
-        state
-            .session
-            .doc
-            .get_or_insert_map(session::ASSETS)
+        state.session.doc.get_or_insert_map(session::ASSETS)
             .remove(&mut state.session.doc.transact_mut(), "fig.png");
     }
     room.set_source("B", "markdown").await.unwrap();
-    *hooked.fail.lock().unwrap() = Some(blob::checkpoint_key("probe", &old));
-    room.checkpoint("comment", "").await.unwrap();
-    assert!(room.manifest().await.has(&old));
-    // The asset the unreadable retained tree names must survive: nothing was
-    // deleted on a pass that could not tell what was still referenced.
-    assert!(store
-        .blobs
-        .get(&blob::asset_key("probe", &sha))
-        .await
-        .is_ok());
-    println!("retained history tree read failed: its asset was kept, not pruned");
+    room.checkpoint("comment", "alice").await.unwrap();
+    let hooked = HookStore::new(store.blobs.clone());
+    *hooked.fail.lock().unwrap() = Some(checkpoint_storage_key(&store, "probe", &old));
+    assert!(hooked.get(&checkpoint_storage_key(&store, "probe", &old)).await.is_err());
+    let adapter = crate::storage::v2_catalog::V2GcCatalogAdapter::new(catalog.clone());
+    crate::storage::maintenance_v2::run_gc_pass(&adapter, hooked.as_ref(), crate::util::now_millis()+900_001).await.unwrap();
+    assert!(catalog.checkpoint("probe", &old).unwrap().is_some());
+    assert_eq!(store.blobs.get(&asset_key).await.unwrap(), vec![9; 10]);
+    assert!(catalog.audit_v2_counters().unwrap());
 }
 
 /// R16, inverting `review_corrupt_session_overwritten_on_load`: a room
@@ -544,53 +567,28 @@ async fn failed_tree_read_prunes_retained_asset() {
 /// preserved rather than silently overwritten.
 #[tokio::test]
 async fn corrupt_session_overwritten_on_load() {
-    let (_dir, store, _rooms) = fixture(Configuration::default()).await;
-    store
-        .blobs
-        .put(
-            &blob::session_key("probe"),
-            vec![255],
-            "application/octet-stream",
-        )
-        .await
-        .unwrap();
-    store
-        .blobs
-        .delete(&[blob::room_lock_key("probe")])
-        .await
-        .unwrap();
-    let rooms = room::RoomSet::new(store.blobs.clone(), Arc::new(Configuration::default()));
-    rooms.attach_store(store.clone());
+    let (dir, store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
-    // Recovered from the last checkpoint's tree ("A"), not left empty.
-    assert_eq!(room.source().await, "A");
-    // The corrupt object is preserved under a sibling key, not silently lost.
-    let preserved = store
-        .blobs
-        .list("sessions/")
-        .await
-        .unwrap()
-        .into_iter()
-        .any(|object| {
-            object
-                .key
-                .starts_with(&format!("{}.unreadable-", blob::session_key("probe")))
-        });
-    assert!(
-        preserved,
-        "the corrupt session object must be preserved aside"
-    );
-    // Recovery is dirty, so a persist writes the good state back rather than
-    // leaving the corrupt object standing at `sessions/probe`.
+    room.set_source("acknowledged journal state", "markdown").await.unwrap();
     room.persist().await.unwrap();
-    let doc = session::new_doc();
-    session::apply_update(
-        &doc,
-        &store.blobs.get(&blob::session_key("probe")).await.unwrap(),
-    )
-    .unwrap();
-    assert_eq!(session::text_of(&doc), "A");
-    println!("corrupt session recovered from history; the original object was preserved");
+    let key: String = store.catalog.as_ref().unwrap().with_connection(|connection| {
+        Ok(connection.query_row("SELECT storage_key FROM objects WHERE kind='journal_segment' AND state='available' ORDER BY first_sequence DESC LIMIT 1", [], |row| row.get(0))?)
+    }).unwrap();
+    // Simulate damaged durable bytes after ACK. Recovery must not quietly
+    // serve the older checkpoint as a writable replacement for that state.
+    store.blobs.put(&key, vec![255], "application/octet-stream").await.unwrap();
+    store.blobs.delete(&[blob::room_lock_key("probe")]).await.unwrap();
+    drop(room);
+    drop(rooms);
+    let catalog = Arc::new(crate::storage::catalog::Catalog::open(dir.path().join("catalog.db")).unwrap());
+    let reopened_store = Arc::new(store::Store::open_with_catalog(store.blobs.clone(), store.config.clone(), catalog).await.unwrap());
+    let reopened = room::RoomSet::new(store.blobs.clone(), store.config.clone());
+    reopened.attach_store(reopened_store.clone());
+    attach_fixture_journal(&reopened, &reopened_store, store.blobs.clone());
+    let damaged = reopened.get("probe").await;
+    assert!(damaged.read_only(), "corrupt acknowledged state must fence writes");
+    assert!(damaged.set_source("must not overwrite", "markdown").await.is_err());
+    assert_eq!(store.blobs.get(&key).await.unwrap(), vec![255]);
 }
 
 /// Returning to earlier content records another event while moving the head.
@@ -658,14 +656,15 @@ async fn concurrent_restores_are_serialized() {
         .find(|point| point.sha == second)
         .unwrap();
 
-    *hooked.pause.lock().unwrap() = Some(("get".into(), blob::checkpoint_key("probe", &first)));
-    let one = tokio::spawn({
+    *hooked.pause.lock().unwrap() = Some(("get".into(), checkpoint_storage_key(&store, "probe", &first)));
+    let mut one = tokio::spawn({
         let room = room.clone();
         async move { room.restore_and_checkpoint(&first_point, "alice").await }
     });
-    tokio::time::timeout(std::time::Duration::from_secs(2), hooked.reached.notified())
-        .await
-        .unwrap();
+    tokio::select! {
+        result = &mut one => panic!("restore finished before physical tree read: {result:?}"),
+        result = tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified()) => result.unwrap(),
+    }
     let mut two = tokio::spawn({
         let room = room.clone();
         async move { room.restore_and_checkpoint(&second_point, "alice").await }
@@ -776,7 +775,7 @@ fn latex_main_path_is_tex_not_txt() {
 async fn persist_keeps_input_asset_charges() {
     let (_dir, store, rooms) = fixture(Configuration::default()).await;
     let room = rooms.get("probe").await;
-    room.put_asset(vec![1; 100000], (200000, 200000))
+    room.put_asset_authorized(vec![1; 100000], (200000, 200000), &fixture_actor())
         .await
         .unwrap();
     assert!(store.get("probe").await.unwrap().size >= 100000);
@@ -805,28 +804,17 @@ async fn shed_history_leaks_text_blobs() {
         room.set_source(s, "markdown").await.unwrap();
         room.checkpoint("comment", "").await.unwrap();
     }
-    assert_eq!(room.manifest().await.checkpoints.len(), 1);
-    let recipes = store
-        .blobs
-        .list(&blob::content_recipe_prefix("probe"))
-        .await
-        .unwrap();
-    let chunks = store
-        .blobs
-        .list(&blob::content_chunk_prefix("probe"))
-        .await
-        .unwrap();
-    assert_eq!(
-        recipes.len(),
-        1,
-        "shedding checkpoints must reclaim recipes only retained checkpoints name"
-    );
-    assert_eq!(
-        chunks.len(),
-        1,
-        "shedding checkpoints must reclaim chunks only retained checkpoints name"
-    );
-    println!("history_max=1: one checkpoint retained, only its text blob retained");
+    retain_and_collect(&store, 1).await;
+    let catalog = store.catalog.as_ref().unwrap();
+    assert_eq!(catalog.checkpoints("probe", None, 100).unwrap().len(), 1);
+    let counts: (i64, i64) = catalog.with_connection(|connection| {
+        connection.query_row(
+            "SELECT count(*) FILTER (WHERE kind='source_recipe'),count(*) FILTER (WHERE kind='source_chunk') FROM objects",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).map_err(crate::storage::catalog::CatalogError::from)
+    }).unwrap();
+    assert_eq!(counts, (1, 1), "unreferenced physical source objects must be reclaimed");
+    assert_eq!(store.read_source("probe").await.unwrap(), b"D");
 }
 
 /// R21, the sharing case the correction calls out explicitly: a text blob
@@ -847,19 +835,15 @@ async fn shed_history_keeps_blob_shared_by_retained_checkpoints() {
     room.checkpoint("comment", "").await.unwrap();
     room.set_source("C", "markdown").await.unwrap();
     room.checkpoint("comment", "").await.unwrap();
-    // history_max=2 has shed down to the two newest checkpoints by now; both
-    // still name shared.txt.
-    assert_eq!(room.manifest().await.checkpoints.len(), 2);
-    let shared_sha = crate::document::store::digest_of("SHARED");
-    assert_eq!(
-        crate::storage::encoding::read_file(store.blobs.as_ref(), "probe", &shared_sha)
-            .await
-            .unwrap(),
-        b"SHARED",
-        "a blob shared by two retained checkpoints must survive after an earlier \
-         checkpoint sharing it was shed"
-    );
-    println!("blob shared by two retained checkpoints survives history shedding");
+    retain_and_collect(&store, 2).await;
+    let points = store.catalog.as_ref().unwrap().checkpoints("probe", None, 100).unwrap();
+    assert_eq!(points.len(), 2);
+    let manifest = room.manifest().await;
+    for point in points {
+        let retained = manifest.checkpoints.iter().find(|candidate| candidate.sha == point.sha).unwrap();
+        let (tree, bodies) = room.checkpoint_texts(retained).await.unwrap();
+        assert_eq!(bodies[&tree.files["shared.txt"].sha], "SHARED");
+    }
 }
 
 /// R22, inverting `review_concurrent_asset_admission_exceeds_limit`: two
@@ -878,18 +862,19 @@ async fn concurrent_asset_admission_exceeds_limit() {
         .unwrap();
     let hooked = HookStore::new(store.blobs.clone());
     let rooms = room::RoomSet::new(hooked.clone(), Arc::new(Configuration::default()));
-    rooms.attach_store(store);
+    rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, hooked.clone());
     let room = rooms.get("probe").await;
-    let key = blob::asset_key("probe", &store::digest_of_bytes(&[1; 10]));
+    let key = object_write_prefix(&store, "probe");
     *hooked.pause.lock().unwrap() = Some(("put".into(), key));
     let task = tokio::spawn({
         let room = room.clone();
-        async move { room.put_asset(vec![1; 10], (15, 15)).await }
+        async move { room.put_asset_authorized(vec![1; 10], (15, 15), &fixture_actor()).await }
     });
     tokio::time::timeout(Duration::from_secs(2), hooked.reached.notified())
         .await
         .unwrap();
-    let second = room.put_asset(vec![2; 10], (15, 15)).await;
+    let second = room.put_asset_authorized(vec![2; 10], (15, 15), &fixture_actor()).await;
     hooked.resume.notify_one();
     task.await.unwrap().unwrap();
     assert!(
@@ -1132,7 +1117,7 @@ async fn catalog_room_named_asset_is_journal_root_through_reopen_and_gc() {
         .put_asset_authorized(b"uploaded but never named".to_vec(), (1024, 4096), &asset_actor)
         .await
         .unwrap();
-    let (digest, size) = room
+    let (digest, _size) = room
         .put_asset_authorized(body.clone(), (1024, 4096), &asset_actor)
         .await
         .unwrap();
@@ -1150,55 +1135,18 @@ async fn catalog_room_named_asset_is_journal_root_through_reopen_and_gc() {
         })
         .unwrap();
 
-    // Asset upload remains a Room-facing operation, while its v2 immutable
-    // row is created by the physical-object writer.  This fixture supplies
-    // that settled row so the test exercises the same journal dependency
-    // lookup used by production publication workers.
-    let object_id = blob::ObjectId::random();
-    let storage_key = blob::v2_object_key(&document_id, &object_id).unwrap();
-    blobs
-        .put(&storage_key, body.clone(), "application/octet-stream")
-        .await
-        .unwrap();
-    let size = size;
-    catalog
+    let (object_id, storage_key, _size): (String, String, i64) = catalog
         .with_connection(|connection| {
-            let tx = connection
-                .unchecked_transaction()
-                .map_err(crate::storage::catalog::CatalogError::from)?;
-            let owner_id: String = tx.query_row(
-                "SELECT owner_id FROM documents WHERE id=?1",
-                [&document_id],
-                |row| row.get(0),
-            )?;
-            tx.execute(
-                "INSERT INTO objects(document_id,id,storage_key,kind,state,digest,encoding_version,byte_length,reserved_bytes,created_at,live_root,publication_root) VALUES(?1,?2,?3,'asset','available',?4,1,?5,0,?6,0,0)",
-                rusqlite::params![
-                    document_id,
-                    object_id.as_str(),
-                    storage_key,
-                    digest,
-                    size,
-                    crate::util::now_millis(),
-                ],
-            )?;
-            tx.execute(
-                "UPDATE documents SET stored_bytes=stored_bytes+?1 WHERE id=?2",
-                rusqlite::params![size, document_id],
-            )?;
-            tx.execute(
-                "UPDATE accounts SET stored_bytes=stored_bytes+?1 WHERE id=?2",
-                rusqlite::params![size, owner_id],
-            )?;
-            tx.execute(
-                "UPDATE server_state SET stored_bytes=stored_bytes+?1 WHERE id=1",
-                [size],
-            )?;
-            tx.commit()
+            connection
+                .query_row(
+                    "SELECT id,storage_key,byte_length FROM objects WHERE document_id=?1 AND kind='asset' AND state='available' AND digest=?2 ORDER BY id LIMIT 1",
+                    rusqlite::params![document_id, digest],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
         .unwrap();
-    room.checkpoint_now("asset", "alice").await.unwrap();
+    room.persist().await.unwrap();
     let live: i64 = catalog
         .with_connection(|connection| {
             connection
@@ -1221,13 +1169,13 @@ async fn catalog_room_named_asset_is_journal_root_through_reopen_and_gc() {
             .remove(&mut state.session.doc.transact_mut(), "figure.bin");
     }
     room.set_source("asset removed", "markdown").await.unwrap();
-    room.checkpoint_now("asset-removed", "alice").await.unwrap();
+    room.persist().await.unwrap();
     let retired: (i64, Option<i64>) = catalog
         .with_connection(|connection| {
             connection
                 .query_row(
                     "SELECT live_root,gc_after FROM objects WHERE document_id=?1 AND id=?2",
-                    rusqlite::params![document_id, object_id.as_str()],
+                    rusqlite::params![document_id, object_id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(crate::storage::catalog::CatalogError::from)
@@ -1443,66 +1391,109 @@ async fn checkpoint_deadline_survives_intermediate_session_persists() {
 }
 
 #[tokio::test]
-async fn checkpoint_budget_is_atomic_and_survives_catalog_reopen() {
+async fn checkpoint_budget_resets_on_catalog_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let objects = dir.path().join("objects");
     std::fs::create_dir_all(&objects).unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(blob::FsStore::new(objects, true));
     let catalog_path = dir.path().join("catalog.db");
     let catalog = Arc::new(crate::storage::catalog::Catalog::open(&catalog_path).unwrap());
-    let config = Arc::new(Configuration::default());
+    let mut policy = Configuration::default();
+    policy.session.checkpoint_owner_per_hour = 1;
+    policy.session.checkpoint_deployment_per_hour = 1;
+    let config = Arc::new(policy);
+    catalog
+        .upsert_account(&crate::storage::catalog::Account {
+            id: "acct-budget".into(),
+            provider: "test".into(),
+            handle: "budget".into(),
+            name: "Budget".into(),
+            email: "budget@example.test".into(),
+            first_seen: "2026-01-01T00:00:00Z".into(),
+            last_seen: "2026-01-01T00:00:00Z".into(),
+            plan: "free".into(),
+            status: "active".into(),
+            session_generation: "generation-1".into(),
+            erasure_cursor: None,
+        })
+        .unwrap();
     let store = Arc::new(
         store::Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone())
             .await
             .unwrap(),
     );
     store
-        .put(store::Publication {
-            slug: "budgeted".into(),
-            source: "source".into(),
-            owner: "alice".into(),
-            peak_bytes: Some(1 << 20),
-            ..Default::default()
-        })
+        .put_as_actor(
+            store::Publication {
+                slug: "budgeted".into(),
+                source: "source".into(),
+                source_format: "markdown".into(),
+                owner: "alice".into(),
+                owner_id: "acct-budget".into(),
+                ..Default::default()
+            },
+            store::MutationActor {
+                account_id: "acct-budget".into(),
+                owner_key: String::new(),
+                session_generation: "generation-1".into(),
+                link_hash: String::new(),
+                policy_editor: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
         .await
         .unwrap();
-    store
-        .prepare_publication("budgeted", &store::digest_of("source"), "publish", None)
-        .await
-        .unwrap();
-    let rooms = room::RoomSet::new(blobs, config);
+    let rooms = room::RoomSet::new(blobs.clone(), config);
     rooms.attach_store(store.clone());
+    attach_fixture_journal(&rooms, &store, blobs);
     let room = rooms.get("budgeted").await;
-    let mut publication_token = room.reserve_publication_checkpoint().unwrap();
-    room.set_main_file("source", "markdown", "main.md")
+    room.set_source("first checkpoint", "markdown")
         .await
         .unwrap();
-    let initial_sha = room
-        .checkpoint_publication_now("cli", "alice", &mut publication_token)
+    let authority = crate::storage::catalog::MutationAuthority {
+        account_id: "acct-budget",
+        owner_key: "",
+        generation: "generation-1",
+        link_hash: "",
+        policy_editor: true,
+        automation: false,
+        unowned_publisher: false,
+        execution_epoch: "",
+        agent_checkpoint: None,
+    };
+    room.checkpoint_now_with_authority(
+        "editor",
+        room::Attribution::account("acct-budget", "Budget"),
+        authority,
+    )
+    .await
+    .unwrap();
+    room.set_source("second checkpoint", "markdown")
         .await
-        .unwrap()
         .unwrap();
-    store
-        .commit_publication("budgeted", &initial_sha)
+    let refused = room
+        .checkpoint_now_with_authority(
+            "editor",
+            room::Attribution::account("acct-budget", "Budget"),
+            authority,
+        )
         .await
-        .unwrap();
-    publication_token.commit();
-    for _ in 0..300 {
-        assert!(catalog
-            .admit_checkpoint("budgeted", 7 * 3600, false)
-            .unwrap());
-    }
-    assert!(!catalog
-        .admit_checkpoint("budgeted", 7 * 3600, true)
-        .unwrap());
-    assert!(catalog
-        .admit_checkpoint("budgeted", 7 * 3600, false)
-        .is_err());
+        .unwrap_err();
+    assert!(matches!(refused, crate::room::WriteError::Quota(_)));
+    drop(room);
+    drop(rooms);
+    drop(store);
     drop(catalog);
     let reopened = crate::storage::catalog::Catalog::open(catalog_path).unwrap();
-    assert!(!reopened
-        .admit_checkpoint("budgeted", 7 * 3600, true)
-        .unwrap());
+    let owner_token = reopened
+        .reserve_process_rate("account:acct-budget", "checkpoint_owner", 1)
+        .unwrap();
+    let deployment_token = reopened
+        .reserve_process_rate("deployment", "checkpoint_deployment", 1)
+        .unwrap();
+    drop(owner_token);
+    drop(deployment_token);
 }
 
 #[tokio::test]
@@ -1536,7 +1527,7 @@ async fn room_opens_read_only_when_catalogue_authorization_read_fails() {
     catalog
         .with_connection(|connection| {
             connection
-                .execute("DROP TABLE grants", [])
+                .execute("ALTER TABLE documents RENAME COLUMN owner_id TO unavailable_owner", [])
                 .map(|_| ())
                 .map_err(crate::storage::catalog::CatalogError::from)
         })
@@ -1673,7 +1664,7 @@ async fn persistence_keeps_edits_live_and_acknowledges_only_saved_updates() {
     room.attach(123, tx, true).await;
     room.set_source("B", "markdown").await.unwrap();
     room.state.lock().await.sockets.get_mut(&123).unwrap().sent = 1;
-    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
+    *hooked.pause.lock().unwrap() = Some(("put".into(), object_write_prefix(&store, "probe")));
     let save = tokio::spawn({
         let room = room.clone();
         async move { room.persist().await }
@@ -1703,12 +1694,7 @@ async fn persistence_keeps_edits_live_and_acknowledges_only_saved_updates() {
         serde_json::from_str::<serde_json::Value>(&ack).unwrap()["seq"],
         1
     );
-    let saved = session::new_doc();
-    session::apply_update(
-        &saved,
-        &store.blobs.get(&blob::session_key("probe")).await.unwrap(),
-    )
-    .unwrap();
+    let saved = recovered_session(&store, "probe").await;
     assert_eq!(session::text_of(&saved), "B");
     let (one, two) = tokio::join!(room.persist(), room.persist());
     assert_ne!(
@@ -1717,12 +1703,7 @@ async fn persistence_keeps_edits_live_and_acknowledges_only_saved_updates() {
         "only one writer saves the same generation"
     );
     assert!(!room.state.lock().await.session.dirty);
-    let saved = session::new_doc();
-    session::apply_update(
-        &saved,
-        &store.blobs.get(&blob::session_key("probe")).await.unwrap(),
-    )
-    .unwrap();
+    let saved = recovered_session(&store, "probe").await;
     assert_eq!(session::text_of(&saved), "newer, longer C");
     let room::Outgoing::Text(ack) = rx.recv().await.unwrap() else {
         panic!("expected ack")
@@ -1792,7 +1773,7 @@ async fn sweeper_saves_other_rooms_while_one_write_is_paused() {
         .set_source("second changed", "markdown")
         .await
         .unwrap();
-    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
+    *hooked.pause.lock().unwrap() = Some(("put".into(), object_write_prefix(&store, "probe")));
     let sweep = tokio::spawn({
         let rooms = rooms.clone();
         async move { rooms.sweep().await }
@@ -1813,12 +1794,7 @@ async fn sweeper_saves_other_rooms_while_one_write_is_paused() {
     assert!(first.state.lock().await.session.dirty);
     hooked.resume.notify_one();
     sweep.await.unwrap();
-    let saved = session::new_doc();
-    session::apply_update(
-        &saved,
-        &store.blobs.get(&blob::session_key("second")).await.unwrap(),
-    )
-    .unwrap();
+    let saved = recovered_session(&store, "second").await;
     assert_eq!(session::text_of(&saved), "second changed");
 }
 
@@ -1836,7 +1812,7 @@ async fn concurrent_checkpoints_commit_in_snapshot_order() {
     attach_fixture_journal(&rooms, &store, hooked.clone());
     let room = rooms.get("probe").await;
     room.set_source("B", "markdown").await.unwrap();
-    *hooked.pause.lock().unwrap() = Some(("swap".into(), blob::session_key("probe")));
+    *hooked.pause.lock().unwrap() = Some(("put".into(), object_write_prefix(&store, "probe")));
     let first = tokio::spawn({
         let room = room.clone();
         async move { room.checkpoint_now("quiet", "alice").await }
@@ -1858,12 +1834,7 @@ async fn concurrent_checkpoints_commit_in_snapshot_order() {
     assert_eq!(latest.sha, second);
     assert_eq!(latest.parent, first);
     assert_eq!(store.get("probe").await.unwrap().sha, second);
-    let saved = session::new_doc();
-    session::apply_update(
-        &saved,
-        &store.blobs.get(&blob::session_key("probe")).await.unwrap(),
-    )
-    .unwrap();
+    let saved = recovered_session(&store, "probe").await;
     assert_eq!(session::text_of(&saved), "C");
 }
 
@@ -1880,6 +1851,7 @@ async fn comment_view_agrees_across_snapshot_and_event_for_every_viewer() {
         kind: "comment".into(),
         body: "look here".into(),
         exact: "A".into(),
+        publication_id: "0123456789abcdef0123456789abcdef".into(),
         temp_id: "223e4567-e89b-12d3-a456-426614174000".into(),
         request_id: crate::util::new_request_key(),
         ..Default::default()
