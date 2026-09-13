@@ -1235,6 +1235,31 @@ impl Catalog {
         validate_json(&input.settings_json, "settings_json", 65_536)?;
         validate_json(&input.retention_json, "retention_json", 16_384)?;
         self.immediate(|tx| {
+            let owner_active: bool = tx
+                .query_row(
+                    "SELECT status='active' FROM accounts WHERE id=?1",
+                    [&input.owner_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(CatalogError::from)?
+                .unwrap_or(false);
+            if !owner_active {
+                return Err(CatalogError::Conflict("owner account is not active".into()));
+            }
+            let duplicate_title: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM documents
+                     WHERE owner_id=?1 AND title_key=?2 AND status<>'deleting')",
+                    params![input.owner_id, title_key(&input.title)],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if duplicate_title {
+                return Err(CatalogError::Conflict(
+                    "owner already has a document with this title".into(),
+                ));
+            }
             tx.execute(
                 "INSERT INTO documents
                  (id,slug,owner_id,ownership_mode,title,title_key,status,created_at,updated_at,
