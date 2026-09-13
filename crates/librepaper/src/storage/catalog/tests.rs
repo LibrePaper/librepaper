@@ -2775,25 +2775,12 @@ fn v2_erasure_worker_resumes_pinned_operation_and_refuses_live_child_cascade() {
             Ok(())
         })
         .unwrap();
-    crate::storage::maintenance::run_erasure_pass(&catalog, 3, 1, 1).unwrap();
-
-    // Stop before the worker consumes the annotation stage. The reply is
-    // inserted while its parent is still present, so the fixture exercises a
-    // live-child race without violating the parent foreign key.
-    for now in 4..20 {
-        if matches!(
-            catalog.erasure_stage("acct-1").unwrap().as_deref(),
-            Some("annotation_replies") | Some("annotations")
-        ) {
-            break;
-        }
-        crate::storage::maintenance::run_erasure_pass(&catalog, now, 1, 1).unwrap();
-    }
-    let stage = catalog.erasure_stage("acct-1").unwrap();
-    assert!(matches!(
-        stage.as_deref(),
-        Some("annotation_replies") | Some("annotations")
-    ));
+    // Persist the child-drain stage while the parent still exists. This
+    // models a worker crash between stage transition and its next pass and
+    // keeps the live-reply fixture valid under the parent foreign key.
+    catalog
+        .erasure_batch("acct-1", "annotation_replies", None, 3, 1)
+        .unwrap();
     catalog
         .with_connection(|connection| {
             connection.execute(
@@ -2807,7 +2794,7 @@ fn v2_erasure_worker_resumes_pinned_operation_and_refuses_live_child_cascade() {
             Ok(())
         })
         .unwrap();
-    crate::storage::maintenance::run_erasure_pass(&catalog, 20, 1, 1).unwrap();
+    crate::storage::maintenance::run_erasure_pass(&catalog, 3, 1, 1).unwrap();
     let still_there: i64 = catalog
         .with_connection(|connection| {
             connection
