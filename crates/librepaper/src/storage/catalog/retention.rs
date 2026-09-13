@@ -402,7 +402,11 @@ impl Catalog {
             }
         }
         if !touched_documents.is_empty() && (candidate_count >= limit as usize || edges >= 32_768) {
-            let yield_at = now.saturating_add(1);
+            // A saturated candidate page must yield its document to the
+            // durable queue for a real scheduler tick.  One millisecond is
+            // too small for a cron/maintenance pass: the next invocation
+            // would select the same document again before other due rows.
+            let yield_at = now.saturating_add(60_000);
             for document_id in touched_documents {
                 self.immediate(|tx| {
                     tx.execute(

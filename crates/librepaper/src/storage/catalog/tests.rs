@@ -287,10 +287,24 @@ fn retention_wakes_time_only_age_policy_without_existing_candidates() {
     let catalog = Catalog::open_in_memory().unwrap();
     catalog.upsert_account(&account()).unwrap();
     catalog.create_document(&document()).unwrap();
+    catalog
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO objects
+                 (document_id,id,storage_key,kind,state,digest,byte_length,reserved_bytes,
+                  created_at,live_root,gc_after)
+                 VALUES('storage-1','age-tree','objects/age-tree','source_tree','available',
+                        ?1,1,0,0,1,0)",
+                ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     let now = crate::util::now_millis();
     for index in 0..2 {
         let mut point = attributed(&format!("age-{index}"), "alice", Some("acct-1"));
         point.seq = index;
+        point.tree_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
         point.at = (now - (index as i64 + 1) * 1_000).to_string();
         point.parent = if index == 0 {
             String::new()
