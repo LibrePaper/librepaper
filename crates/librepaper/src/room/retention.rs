@@ -410,9 +410,8 @@ mod tests {
             })
             .is_err());
 
-        // Missing physical evidence must fail closed: a later pass cannot
-        // infer that dependent text/assets are unreferenced from an unreadable
-        // tree and therefore leaves every other immutable object untouched.
+        // The flattened catalog closure protects dependencies even when its
+        // physical tree is unreadable. GC must still honor those references.
         blobs.delete(&[missing_tree_key.clone()]).await.unwrap();
         room.prune_retained(&history::Tree::default()).await;
         let report = crate::storage::maintenance_v2::run_gc_pass(
@@ -422,7 +421,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(report.objects_deleted, 0, "missing tree evidence must block GC");
+        assert_eq!(report.objects_deleted, 0, "retained closure dependencies must survive GC");
         for key in retained_keys.iter().filter(|key| key.as_str() != missing_tree_key) {
             assert!(blobs.exists(key).await.unwrap(), "dependent object was deleted: {key}");
         }

@@ -1895,23 +1895,6 @@ impl Catalog {
                 ],
                 )
                 .map_err(CatalogError::from)?;
-            } else {
-                // The prepared agent row owns the document writer slot. Add
-                // the checkpoint's verified closure and journal-base fields
-                // to that row without discarding its before/after tree,
-                // acceptance, and actor fences.
-                tx.execute(
-                    "UPDATE operations SET plan_json=json_patch(plan_json,?1),
-                         updated_at=max(updated_at,?2)
-                       WHERE id=?3 AND document_id=?4 AND state='prepared'",
-                    params![
-                        input.operation.plan_json,
-                        input.now.0,
-                        operation_id.as_str(),
-                        input.document_id.as_str(),
-                    ],
-                )
-                .map_err(CatalogError::from)?;
             }
             for allocation in &input.allocations {
                 tx.execute(
@@ -3623,7 +3606,7 @@ impl Catalog {
                             .query_row(
                                 "SELECT count(*) FROM annotations
                                   WHERE document_id=?1 AND id=?2
-                                    AND kind='suggestion' AND suggestion_state='proposed'",
+                                    AND kind='suggestion' AND suggestion_state IN ('proposed','rejected')",
                                 params![checkpoint.document_id.as_str(), comment_id],
                                 |row| row.get(0),
                             )
@@ -3919,7 +3902,7 @@ impl Catalog {
                                 resolved_at=?3,
                                 updated_at=max(updated_at,?3)
                           WHERE document_id=?4 AND id=?5
-                            AND kind='suggestion' AND suggestion_state='proposed'",
+                            AND kind='suggestion' AND suggestion_state IN ('proposed','rejected')",
                         params![
                             checkpoint.id.as_str(),
                             operation_id.as_str(),
