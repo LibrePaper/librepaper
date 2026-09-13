@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
 
-use crate::storage::blob::{v2_object_key, BlobError, BlobStore, ObjectId};
+use crate::storage::blob::{v2_object_key, write_v2_object, BlobError, BlobStore, ObjectId, WrittenObject};
 
 use super::{JournalError, JournalRecord, JournalResult, Segment};
 
@@ -37,6 +37,24 @@ pub struct JournalAppendRequest {
     pub last_sequence: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalObjectRef {
+    pub object_id: String,
+    pub storage_key: String,
+    pub epoch: u64,
+    pub first_sequence: u64,
+    pub last_sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalCompactionAdmission {
+    pub operation_id: String,
+    pub document_id: String,
+    pub captured_epoch: u64,
+    pub captured_sequence: u64,
+    pub writer_generation: String,
+}
+
 /// SQL-side hooks for the v2 append protocol. The implementation must use an
 /// immediate transaction for prepare/commit and must keep the operation row
 /// prepared until every object has settled. It also owns object/counter rows;
@@ -51,6 +69,128 @@ pub trait V2JournalCatalog: Send + Sync {
         objects: Vec<WrittenJournalObject>,
     ) -> Result<(), String>;
     async fn abort_append(&self, operation_id: &str) -> Result<(), String>;
+    async fn journal_objects(
+        &self,
+        document_id: &str,
+        epoch: u64,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<JournalObjectRef>, String>;
+    async fn prepare_compaction(
+        &self,
+        document_id: &str,
+        expected_epoch: u64,
+        expected_sequence: u64,
+    ) -> Result<JournalCompactionAdmission, String>;
+    async fn commit_compaction(
+        &self,
+        admission: JournalCompactionAdmission,
+        base: WrittenObject,
+        new_epoch: u64,
+        new_sequence: u64,
+    ) -> Result<(), String>;
+    async fn abort_compaction(&self, operation_id: &str) -> Result<(), String>;
+}
+
+pub struct V2JournalRuntime<C> {
+    catalog: std::sync::Arc<C>,
+    blobs: std::sync::Arc<dyn BlobStore>,
+}
+
+impl<C> V2JournalRuntime<C>
+where
+    C: V2JournalCatalog + 'static,
+{
+    pub fn new(catalog: std::sync::Arc<C>, blobs: std::sync::Arc<dyn BlobStore>) -> Self {
+        Self { catalog, blobs }
+    }
+
+    pub async fn append(
+        &self,
+        request: JournalAppendRequest,
+        segments: &[Segment],
+    ) -> JournalResult<Vec<WrittenJournalObject>> {
+        append_segments(self.catalog.as_ref(), self.blobs.as_ref(), request, segments).await
+    }
+
+    /// Read all catalogued segment descriptors in bounded pages and fail
+    /// closed if an acknowledged range is missing or an object disappears.
+    pub async fn recover(
+        &self,
+        document_id: &str,
+        epoch: u64,
+        first_sequence: u64,
+        last_sequence: u64,
+    ) -> JournalResult<Vec<JournalRecord>> {
+        if first_sequence == 0 || last_sequence < first_sequence {
+            return Err(JournalError::Invalid("invalid journal recovery range".into()));
+        }
+        let mut after = 0;
+        let mut bodies = Vec::new();
+        loop {
+            let page = self
+                .catalog
+                .journal_objects(document_id, epoch, after, 128)
+                .await
+                .map_err(JournalError::CatalogText)?;
+            if page.is_empty() {
+                break;
+            }
+            if page.len() > 128 {
+                return Err(JournalError::Corrupt("journal descriptor page exceeded bound".into()));
+            }
+            let previous_after = after;
+            for object in &page {
+                if object.epoch != epoch {
+                    return Err(JournalError::Corrupt("journal object epoch mismatch".into()));
+                }
+                bodies.push(
+                    self.blobs
+                        .get(&object.storage_key)
+                        .await
+                        .map_err(|error| JournalError::Storage(error.to_string()))?,
+                );
+                after = after.max(object.last_sequence);
+            }
+            if after <= previous_after {
+                return Err(JournalError::Corrupt("journal descriptor cursor did not advance".into()));
+            }
+            if page.last().is_some_and(|object| object.last_sequence >= last_sequence) {
+                break;
+            }
+        }
+        recover_records(bodies, document_id, epoch, Some(first_sequence), Some(last_sequence))
+    }
+
+    pub async fn compact(
+        &self,
+        document_id: &str,
+        expected_epoch: u64,
+        expected_sequence: u64,
+        base: Vec<u8>,
+        content_type: &str,
+    ) -> JournalResult<WrittenObject> {
+        let admission = self
+            .catalog
+            .prepare_compaction(document_id, expected_epoch, expected_sequence)
+            .await
+            .map_err(JournalError::CatalogText)?;
+        let written = match write_v2_object(self.blobs.as_ref(), document_id, base, content_type).await {
+            Ok(written) => written,
+            Err(error) => {
+                let _ = self.catalog.abort_compaction(&admission.operation_id).await;
+                return Err(JournalError::Storage(error.to_string()));
+            }
+        };
+        if let Err(error) = self
+            .catalog
+            .commit_compaction(admission.clone(), written.clone(), expected_epoch.saturating_add(1), expected_sequence)
+            .await
+        {
+            return Err(JournalError::CatalogText(error));
+        }
+        Ok(written)
+    }
 }
 
 pub async fn append_segments(
