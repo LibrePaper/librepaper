@@ -15,7 +15,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, RwLock};
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
 use sha2::Digest;
 
 mod access;
@@ -655,7 +655,31 @@ impl Catalog {
         {
             return Ok(false);
         }
-        let connection = Connection::open(path).map_err(CatalogError::from)?;
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(CatalogError::from)?;
+        let initialized: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='server_state')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(CatalogError::from)?;
+        if initialized {
+            return Ok(true);
+        }
+        let has_documents: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(CatalogError::from)?;
+        if !has_documents {
+            return Ok(false);
+        }
         connection
             .query_row("SELECT EXISTS(SELECT 1 FROM documents LIMIT 1)", [], |row| {
                 row.get(0)
@@ -729,7 +753,7 @@ impl Catalog {
             tx.execute_batch(sql).map_err(CatalogError::from)?;
             let deployment_id = identity
                 .map(|(deployment_id, _)| deployment_id.to_owned())
-                .unwrap_or_else(|| hex::encode(crate::auth::random_bytes(16)));
+                .unwrap_or_else(|| hex::encode(crate::auth::random_bytes(32)));
             let writer_generation = hex::encode(crate::auth::random_bytes(16));
             let active_link_key_id = identity
                 .map(|(_, key_id)| key_id.to_owned())
@@ -974,6 +998,13 @@ mod identity_tests {
         assert_eq!(persisted.1, key_id);
         assert!(persisted.2.contains(&key_id));
         drop(catalog);
+        // The singleton itself makes the root nonempty: deleting the last
+        // document must never allow deployment secrets to be regenerated.
+        assert!(Catalog::path_is_nonempty(&path).expect("initialized root"));
+        let secrets = root.path().join("secrets");
+        std::fs::create_dir_all(&secrets).expect("secrets directory");
+        assert!(crate::auth::session_key_file(&secrets.join("session.key"), true).is_err());
+        assert!(crate::auth::link_sealing_keyring_file(&secrets.join("links.key"), true).is_err());
         Catalog::open_with_identity(&path, false, &deployment_id, &key_id)
             .expect("matching reopen");
         assert!(Catalog::open_with_identity(&path, false, &"b".repeat(64), &key_id).is_err());
