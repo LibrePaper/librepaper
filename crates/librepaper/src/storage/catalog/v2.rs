@@ -55,6 +55,16 @@ macro_rules! id_type {
                         stringify!($name)
                     )));
                 }
+                if stringify!($name) == "DocumentId"
+                    && !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                {
+                    return Err(IdError(format!(
+                        "{} must be one safe path segment",
+                        stringify!($name)
+                    )));
+                }
                 if $exact_hex
                     && (value.len() != 32
                         || !value
