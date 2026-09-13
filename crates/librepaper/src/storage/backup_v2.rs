@@ -423,6 +423,7 @@ pub async fn restore_backup(
         std::process::id(),
         hex::encode(crate::auth::random_bytes(8))
     ));
+    let mut catalog_cleanup = RestoreTempFile(Some(catalog_path.clone()));
     let mut catalog_digest = Sha256::new();
     let mut catalog_offset = 0_u64;
     while catalog_offset < catalog_length {
@@ -432,8 +433,7 @@ pub async fn restore_backup(
             .await
             .map_err(|error| BackupV2Error::Storage(error.to_string()))?;
         if chunk.len() as u64 != end.saturating_sub(catalog_offset) {
-            let _ = fs::remove_file(&catalog_path);
-            return Err(BackupV2Error::Corrupt("catalog snapshot range length mismatch".into()));
+        return Err(BackupV2Error::Corrupt("catalog snapshot range length mismatch".into()));
         }
         catalog_digest.update(&chunk);
         let path = catalog_path.clone();
@@ -453,7 +453,6 @@ pub async fn restore_backup(
         catalog_offset = end;
     }
     if hex::encode(catalog_digest.finalize()) != manifest.catalog_digest {
-        let _ = fs::remove_file(&catalog_path);
         return Err(BackupV2Error::Corrupt("catalog snapshot digest mismatch".into()));
     }
     for file in std::iter::once(&manifest.identity).chain(manifest.secrets.iter()) {
@@ -485,10 +484,9 @@ pub async fn restore_backup(
         )
         .await
     {
-        let _ = fs::remove_file(&catalog_path);
         return Err(BackupV2Error::Catalog(error));
     }
-    let _ = fs::remove_file(&catalog_path);
+    catalog_cleanup.0 = None;
     catalog
         .abort_restored_backup(&manifest.operation_id)
         .await
@@ -525,6 +523,16 @@ pub async fn restore_backup(
     }
     catalog.finish_restore().await.map_err(BackupV2Error::Catalog)?;
     Ok(report)
+}
+
+struct RestoreTempFile(Option<PathBuf>);
+
+impl Drop for RestoreTempFile {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 async fn put_new_destination(
