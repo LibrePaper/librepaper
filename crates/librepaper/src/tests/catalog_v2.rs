@@ -121,7 +121,9 @@ fn cost_snapshot_does_not_overwrite_identity_or_create_tables() {
     catalog
         .save_cost_state_json(r#"{"version":2,"state":null}"#)
         .unwrap();
-    assert_eq!(catalog.v2_server_state().unwrap(), before);
+    let after = catalog.v2_server_state().unwrap();
+    assert_eq!((&after.0, &after.1), (&before.0, &before.1));
+    assert_eq!(after.2, before.2 + 1);
     assert!(catalog.save_cost_state_json("invalid").is_err());
     assert!(catalog.catalog_allocated_bytes().unwrap() > 0);
 }
@@ -130,4 +132,207 @@ fn typed_object_ids_validate_json_as_well_as_constructors() {
     assert!(ObjectId::new("../../escape").is_err());
     assert!(serde_json::from_str::<ObjectId>(r#""../../escape""#).is_err());
     assert!(serde_json::from_str::<ObjectId>(r#""ABCDEF0123456789ABCDEF0123456789""#).is_err());
+}
+
+fn allocation(catalog: &Catalog, bytes: i64) -> V2ObjectAllocation {
+    account(catalog);
+    document(catalog, "doc", "Title");
+    let now = UnixMillis::now();
+    let operation = catalog
+        .prepare_v2_operation(
+            &V2OperationInput {
+                scope: OperationScope::Document(DocumentId::new("doc").unwrap()),
+                actor_key: "owner".into(),
+                request_key: crate::util::new_request_key(),
+                kind: OperationKind::AgentStage,
+                request_digest: "a".repeat(64),
+                plan_json: r#"{"version":1}"#.into(),
+                expected_document_generation: Some(0),
+                conversation_id: None,
+                execution_epoch: None,
+                work_expires_at: Some(UnixMillis::new(i64::from(now) + 3_600_000).unwrap()),
+            },
+            now,
+        )
+        .unwrap();
+    let id = ObjectId::new("0123456789abcdef0123456789abcdef").unwrap();
+    V2ObjectAllocation {
+        document_id: DocumentId::new("doc").unwrap(),
+        storage_key: format!("v2/documents/doc/objects/{id}"),
+        id,
+        kind: ObjectKind::AgentPayload,
+        digest: "b".repeat(64),
+        logical_digest: None,
+        encoding_version: 1,
+        reserved_bytes: bytes,
+        operation_id: operation.id,
+        now,
+    }
+}
+#[test]
+fn v2_quota_refusal_has_no_partial_allocation_or_counter_delta() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    let request = allocation(&catalog, 101);
+    assert!(catalog
+        .allocate_v2_object_with_limits(
+            &request,
+            V2AdmissionLimits {
+                owner_bytes: 100,
+                deployment_bytes: 1000,
+                owner_documents: 10
+            }
+        )
+        .is_err());
+    assert!(catalog.audit_v2_counters().unwrap());
+    catalog
+        .with_connection(|db| {
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM objects", [], |r| r.get::<_, i64>(0))?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+#[test]
+fn settlement_rejects_size_overrun_and_keeps_reservation() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    let request = allocation(&catalog, 100);
+    catalog
+        .allocate_v2_object_with_limits(
+            &request,
+            V2AdmissionLimits {
+                owner_bytes: 100,
+                deployment_bytes: 1000,
+                owner_documents: 10,
+            },
+        )
+        .unwrap();
+    assert!(catalog
+        .settle_v2_object(&request.document_id, &request.id, 101, request.now)
+        .is_err());
+    assert!(catalog.audit_v2_counters().unwrap());
+    catalog
+        .with_connection(|db| {
+            assert_eq!(
+                db.query_row("SELECT reserved_bytes FROM objects", [], |r| r
+                    .get::<_, i64>(0))?,
+                100
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+#[test]
+fn unsettled_reservation_and_ram_edits_share_the_owner_limit() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    let request = allocation(&catalog, 60);
+    catalog.reserve_room_edit("doc", 60, 100, 1000).unwrap();
+    assert!(catalog
+        .allocate_v2_object_with_limits(
+            &request,
+            V2AdmissionLimits {
+                owner_bytes: 100,
+                deployment_bytes: 1000,
+                owner_documents: 10
+            }
+        )
+        .is_err());
+    assert!(catalog.audit_v2_counters().unwrap());
+}
+#[test]
+fn gc_requires_due_grace_and_respects_live_reader() {
+    let catalog = Catalog::open_in_memory().unwrap();
+    let request = allocation(&catalog, 100);
+    catalog
+        .allocate_v2_object_with_limits(
+            &request,
+            V2AdmissionLimits {
+                owner_bytes: 100,
+                deployment_bytes: 1000,
+                owner_documents: 10,
+            },
+        )
+        .unwrap();
+    catalog
+        .settle_v2_object(&request.document_id, &request.id, 80, request.now)
+        .unwrap();
+    assert!(!catalog
+        .claim_v2_object_for_deletion(&request.document_id, &request.id, request.now, request.now)
+        .unwrap());
+    let generation = catalog.v2_server_state().unwrap().1;
+    catalog
+        .acquire_v2_lease(
+            &request.document_id,
+            &request.id,
+            "reader",
+            LeasePurpose::Read,
+            None,
+            &generation,
+            UnixMillis::new(i64::from(request.now) + 120_000).unwrap(),
+            request.now,
+        )
+        .unwrap();
+    catalog
+        .with_connection(|db| {
+            db.execute("UPDATE objects SET gc_after=0", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(!catalog
+        .claim_v2_object_for_deletion(&request.document_id, &request.id, request.now, request.now)
+        .unwrap());
+    assert!(catalog.audit_v2_counters().unwrap());
+}
+
+#[test]
+fn checkpoint_read_leases_survive_checkpoint_removal_until_reader_finishes() {
+    use std::sync::Arc;
+    let catalog = Arc::new(Catalog::open_in_memory().unwrap());
+    let mut request = allocation(&catalog, 100);
+    request.kind = ObjectKind::SourceTree;
+    catalog
+        .allocate_v2_object_with_limits(
+            &request,
+            V2AdmissionLimits {
+                owner_bytes: 100,
+                deployment_bytes: 1000,
+                owner_documents: 10,
+            },
+        )
+        .unwrap();
+    catalog
+        .settle_v2_object(&request.document_id, &request.id, 80, request.now)
+        .unwrap();
+    catalog.with_connection(|db| {
+        db.execute("UPDATE documents SET status='active'",[])?;
+        db.execute("INSERT INTO checkpoints(document_id,id,seq,tree_object_id,tree_digest,created_at,author_label,reason,source_format,logical_bytes,journal_epoch,journal_sequence) VALUES('doc','point',1,?1,?2,1,'Owner','save','markdown',0,0,0)",rusqlite::params![request.id.as_str(),"a".repeat(64)])?;
+        db.execute("INSERT INTO checkpoint_objects(document_id,checkpoint_id,object_id) VALUES('doc','point',?1)",[request.id.as_str()])?;
+        db.execute("UPDATE documents SET checkpoint_ref_count=1",[])?;
+        db.execute("UPDATE server_state SET checkpoint_ref_count=1",[])?;
+        Ok(())
+    }).unwrap();
+    let mut lease = catalog
+        .acquire_checkpoint_read("doc", Some("point"), i64::from(request.now))
+        .unwrap();
+    catalog
+        .with_connection(|db| {
+            db.execute("DELETE FROM checkpoints WHERE id='point'", [])?;
+            db.execute("UPDATE documents SET checkpoint_ref_count=0", [])?;
+            db.execute("UPDATE server_state SET checkpoint_ref_count=0", [])?;
+            db.execute("UPDATE objects SET gc_after=0", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(!catalog
+        .claim_v2_object_for_deletion(&request.document_id, &request.id, request.now, request.now)
+        .unwrap());
+    lease.renew(i64::from(request.now) + 30_000).unwrap();
+    assert!(!lease.valid_at(i64::from(request.now) + 150_000));
+    assert!(lease.renew(i64::from(request.now) + 150_000).is_err());
+    drop(lease);
+    assert!(catalog
+        .claim_v2_object_for_deletion(&request.document_id, &request.id, request.now, request.now)
+        .unwrap());
+    assert!(catalog.audit_v2_counters().unwrap());
 }

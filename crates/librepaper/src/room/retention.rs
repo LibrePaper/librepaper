@@ -66,13 +66,6 @@ impl Room {
         &self,
         points: &[Checkpoint],
     ) -> Result<RetainedReferences, String> {
-        let (path, id) = {
-            let state = self.state.lock().await;
-            (
-                session::main_path(&state.session.doc),
-                session::main_id(&state.session.doc),
-            )
-        };
         let mut unique = HashSet::new();
         let trees: Vec<_> = points
             .iter()
@@ -80,32 +73,27 @@ impl Room {
             .cloned()
             .collect();
         let mut reads = stream::iter(trees)
-            .map(|point| {
-                let path = path.clone();
-                let id = id.clone();
-                async move {
-                    let tree = history::load_tree(
-                        self.blobs.as_ref(),
-                        &self.storage_id,
-                        &point,
-                        &path,
-                        &id,
-                    )
-                    .await?;
-                    let mut references = RetainedReferences::default();
-                    for entry in tree.files.into_values() {
-                        match entry.kind.as_str() {
-                            "asset" => {
-                                references.assets.insert(entry.sha);
-                            }
-                            "text" => {
-                                references.texts.insert(entry.sha);
-                            }
-                            _ => {}
+            .map(|point| async move {
+                let tree = history::load_tree(
+                    self.blobs.as_ref(),
+                    self.catalog.get().ok_or("catalog is required")?,
+                    &self.slug,
+                    &point,
+                )
+                .await?;
+                let mut references = RetainedReferences::default();
+                for entry in tree.files.into_values() {
+                    match entry.kind.as_str() {
+                        "asset" => {
+                            references.assets.insert(entry.sha);
                         }
+                        "text" => {
+                            references.texts.insert(entry.sha);
+                        }
+                        _ => {}
                     }
-                    Ok::<_, String>(references)
                 }
+                Ok::<_, String>(references)
             })
             .buffer_unordered(4);
         let mut references = RetainedReferences::default();

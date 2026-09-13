@@ -1204,26 +1204,14 @@ impl Room {
     /// only after a cold start, and read as a one-file tree when the entry is
     /// from before a document was a directory.
     pub(super) async fn parent_tree(&self) -> Option<crate::document::history::Tree> {
-        let (held, point, path, id) = {
+        let (held, point) = {
             let state = self.state.lock().await;
-            (
-                state.session.last_tree.clone(),
-                state.manifest.latest().cloned(),
-                session::main_path(&state.session.doc),
-                session::main_id(&state.session.doc),
-            )
+            (state.session.last_tree.clone(), state.manifest.latest().cloned())
         };
-        if held.is_some() {
-            return held;
-        }
+        if held.is_some() { return held; }
         let point = point?;
-        crate::document::history::load_tree(
-            self.blobs.as_ref(),
-            &self.storage_id,
-            &point,
-            &path,
-            &id,
-        )
+        let catalog = self.catalog.get()?;
+        crate::document::history::load_tree(self.blobs.as_ref(), catalog, &self.slug, &point)
         .await
         .ok()
     }

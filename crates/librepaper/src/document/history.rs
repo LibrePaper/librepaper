@@ -418,38 +418,71 @@ pub async fn load_versioned(
     }
 }
 
-/// The tree one checkpoint recorded. An entry marked `tree` is read as the
-/// JSON it is; one from before -- when a checkpoint was a source and nothing
-/// else -- is read as a directory of one file at `path`, which is what makes
-/// the timeline continuous across the change without a single old object being
-/// rewritten.
+/// Read the canonical tree through its checkpoint closure and a durable read lease.
 pub async fn load_tree(
     blobs: &dyn BlobStore,
+    catalog: &std::sync::Arc<crate::storage::catalog::Catalog>,
     slug: &str,
     point: &Checkpoint,
-    path: &str,
-    id: &str,
 ) -> Result<Tree, String> {
-    let raw = blobs
-        .get(&crate::storage::blob::checkpoint_key(slug, &point.sha))
+    let owner = catalog.clone();
+    let slug = slug.to_owned();
+    let event = point.sha.clone();
+    let lease = catalog
+        .execute_catalog(slug.len() + event.len(), move |_| {
+            owner.acquire_checkpoint_read(&slug, Some(&event), crate::util::now_millis())
+        })
         .await
-        .map_err(|err| err.to_string())?;
-    if !point.tree {
-        return Ok(Tree::of_one_file(path, id, &point.sha, raw.len() as i64));
+        .map_err(|error| error.to_string())?;
+    let object = lease
+        .set
+        .objects
+        .iter()
+        .find(|object| object.id == lease.set.tree_object_id)
+        .ok_or("checkpoint tree is absent from its closure")?;
+    let raw = blobs
+        .get(&object.storage_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !lease.valid_at(crate::util::now_millis()) {
+        return Err("checkpoint read lease expired".into());
     }
-    let tree: Tree = serde_json::from_slice(&raw).map_err(|err| {
-        format!(
-            "the checkpoint {} of {slug} is not readable ({err})",
-            point.sha
-        )
-    })?;
-    if !point.tree_sha.is_empty() && hex::encode(Sha256::digest(&raw)) != point.tree_sha {
-        return Err(format!(
-            "the checkpoint {} of {slug} has a tree digest that does not match its catalogue row",
-            point.sha
-        ));
+    if object.byte_length != i64::try_from(raw.len()).ok()
+        || hex::encode(Sha256::digest(&raw)) != object.digest
+    {
+        return Err("checkpoint tree physical integrity check failed".into());
     }
-    Ok(tree)
+    let envelope = crate::storage::encoding::TreeEnvelope::from_bytes(&raw)
+        .map_err(|error| error.to_string())?;
+    let logical = envelope
+        .logical_bytes()
+        .map_err(|error| error.to_string())?;
+    let digest = hex::encode(Sha256::digest(&logical));
+    if digest != lease.set.tree_digest || digest != hex::encode(envelope.logical_digest) {
+        return Err("checkpoint logical tree digest mismatch".into());
+    }
+    for file in envelope.files.values() {
+        let locator = file
+            .recipe
+            .as_ref()
+            .or(file.asset.as_ref())
+            .ok_or("tree file has no physical locator")?;
+        let kind = if file.kind == "asset" {
+            "asset"
+        } else {
+            "source_recipe"
+        };
+        if !lease.set.objects.iter().any(|object| {
+            object.id.as_str() == locator.object_id.as_str()
+                && object.kind == kind
+                && object.digest == hex::encode(locator.object_digest)
+                && object.byte_length == i64::try_from(locator.byte_length).ok()
+        }) {
+            return Err("checkpoint file is outside its available closure".into());
+        }
+    }
+    serde_json::from_slice(&logical)
+        .map_err(|error| format!("invalid logical checkpoint tree: {error}"))
 }
 
 /// The manifest alone, for the callers that are only reading it.
