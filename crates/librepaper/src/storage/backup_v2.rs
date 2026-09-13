@@ -540,11 +540,6 @@ impl RestoreFileWriter {
     fn new(path: PathBuf) -> Self {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         let task = tokio::task::spawn_blocking(move || {
-            // The blocking writer owns cleanup until it has returned the
-            // completed path to the async caller. This closes the cancellation
-            // window in which a caller-side guard could unlink the path before
-            // this task had reached create_new.
-            let cleanup = RestoreTempFile(Some(path.clone()));
             let result = (|| {
                 let mut options = OpenOptions::new();
                 options.write(true).create_new(true);
@@ -554,6 +549,9 @@ impl RestoreFileWriter {
                     options.mode(0o600).custom_flags(nofollow_flag());
                 }
                 let mut file = options.open(&path).map_err(|error| error.to_string())?;
+                // Construct cleanup only after create_new succeeds. A
+                // collision must leave the pre-existing file untouched.
+                let cleanup = RestoreTempFile(Some(path.clone()));
                 let mut complete = false;
                 while let Some(message) = receiver.blocking_recv() {
                     match message {
@@ -569,12 +567,10 @@ impl RestoreFileWriter {
                 if !complete {
                     return Err("catalog snapshot stream was cancelled".into());
                 }
-                file.sync_all().map_err(|error| error.to_string())
+                file.sync_all().map_err(|error| error.to_string())?;
+                Ok(cleanup)
             })();
-            match result {
-                Ok(()) => Ok(cleanup),
-                Err(error) => Err(error),
-            }
+            result
         });
         Self {
             sender: Some(sender),
@@ -1129,6 +1125,7 @@ fn install_catalog_snapshot_file_sync(
     create_secure_dirs(&paths.deployment)?;
     create_secure_dirs(&paths.state)?;
     let temporary = paths.catalog.with_extension("restore");
+    let _temporary_cleanup = RestoreTempFile(Some(temporary.clone()));
     secure_copy_atomic(&temporary, source)?;
     Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
     let snapshot_identity = Connection::open_with_flags(
@@ -1170,6 +1167,7 @@ impl V2RestoreCatalog for LocalV2RestoreCatalog {
         create_secure_dirs(&self.paths.deployment)?;
         create_secure_dirs(&self.paths.state)?;
         let temporary = self.paths.catalog.with_extension("restore");
+        let _temporary_cleanup = RestoreTempFile(Some(temporary.clone()));
         secure_atomic_write(&temporary, &catalog_bytes)?;
         Catalog::verify_backup_snapshot(&temporary).map_err(|error| error.to_string())?;
         let snapshot_identity = Connection::open_with_flags(
@@ -2195,6 +2193,16 @@ mod tests {
         assert!(publish_noreplace(&temporary, &destination).is_err());
         assert_eq!(fs::read(&destination).expect("existing destination"), b"old");
         assert_eq!(fs::read(&temporary).expect("temporary remains"), b"new");
+    }
+
+    #[tokio::test]
+    async fn cancelled_restore_writer_does_not_remove_a_preexisting_path() {
+        let root = tempfile::tempdir().expect("writer directory");
+        let path = root.path().join("catalog.db");
+        fs::write(&path, b"existing").expect("existing path");
+        let writer = RestoreFileWriter::new(path.clone());
+        assert!(writer.finish().await.is_err());
+        assert_eq!(fs::read(&path).expect("existing path remains"), b"existing");
     }
 
     #[tokio::test]
