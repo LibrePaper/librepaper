@@ -50,9 +50,15 @@ provider-qualified v1 account IDs are split at the matching `provider:` prefix w
 retaining the v1 account ID as the target account identity. Preferences revisions,
 bookmarks, onboarding entries, simple retention policy state, current publications,
 deduplicated publication assets, and secret files are copied with their integrity data.
+When a source has deployment secrets, `session.key` must be the runtime's 32-byte
+hex key and `links.key` must be a version-1 keyring whose SHA-256-derived IDs agree
+with every `link_keyring` row and the selected active key. The v1 cost ledger is
+validated as a durable state and installed in the v2 `{"version":2,"state":...}`
+envelope; an absent ledger becomes an explicit null state.
 
 The journal decoder accepts only the reviewed framed KJBS/KJNL formats and v1 manifest
-descriptors. It validates descriptor and fragment checksums, sequence/epoch coverage,
+shard descriptors (with local journal tables as the legacy fallback). It validates
+descriptor and fragment checksums, sequence/epoch coverage,
 then applies the complete base plus every contiguous Yrs update before writing the
 self-contained v2 journal base. Source recipes are decoded only as LPREC001, each
 declared physical chunk is independently located, decompressed, sized, and hashed, and
@@ -69,6 +75,7 @@ Runtime-only v1 ledgers and derived totals are intentionally settled into v2 cou
 removed after their inputs are verified; they are not copied as opaque rows. An
 explicit partial conversion records every excluded document and remains identifiable as
 partial in the completion manifest. The Rust tests in this crate cover the fixture
-conversion, CRDT replay, multi-chunk source history, publication/annotation/reply and
-secret conversion, dry-run, interrupted object staging, duplicate publication assets,
-and changed-source resume rejection; the root agent runs them centrally.
+conversion, CRDT replay from both local rows and a shared manifest shard, missing-
+shard refusal, multi-chunk source history, publication/annotation/reply and secret
+conversion, dry-run, interrupted object staging, duplicate publication assets, and
+changed-source resume rejection; the root agent runs them centrally.

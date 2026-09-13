@@ -560,6 +560,169 @@ fn copy_secrets(source_root: &Path, target_root: &Path) -> Result<u64> {
     Ok(copied)
 }
 
+#[derive(Deserialize)]
+struct SourceLinkKeyring {
+    version: u32,
+    keys: Vec<SourceLinkKey>,
+}
+
+#[derive(Deserialize)]
+struct SourceLinkKey {
+    id: String,
+    key: String,
+}
+
+#[derive(Deserialize)]
+struct CostMinute {
+    expires: i64,
+    ordinary: u64,
+    emergency: u64,
+}
+
+#[derive(Deserialize)]
+struct CostDurable {
+    minutes: Vec<CostMinute>,
+    sent: [u64; 8],
+    #[serde(default)]
+    responses: [[u64; 6]; 8],
+    #[serde(default)]
+    mutation_outcomes: [u64; 9],
+    #[serde(default)]
+    bytes_by_status: [[u64; 6]; 8],
+    #[serde(default)]
+    policy: Value,
+    #[serde(default)]
+    mode_nanoseconds: [u64; 2],
+    #[serde(default)]
+    response_size_histogram: [[u64; 7]; 8],
+}
+
+fn validate_secret_material(source_root: &Path, source: &Connection, active: &str) -> Result<()> {
+    let secrets = source_root.join("secrets");
+    if !secrets.exists() {
+        return Ok(());
+    }
+    if fs::symlink_metadata(&secrets)?.file_type().is_symlink() {
+        return Err(Error::Invalid(
+            "source secrets directory is a symlink".into(),
+        ));
+    }
+    let session = secrets.join("session.key");
+    let session_bytes = fs::read(&session).map_err(|e| {
+        Error::Invalid(format!(
+            "cannot read source session key {}: {e}",
+            session.display()
+        ))
+    })?;
+    let session_hex = String::from_utf8_lossy(&session_bytes);
+    let session_raw = hex::decode(session_hex.trim()).map_err(|_| {
+        Error::Invalid("source secrets/session.key is not a hexadecimal 32-byte key".into())
+    })?;
+    if session_raw.len() != 32 || session_hex.trim().len() != 64 {
+        return Err(Error::Invalid(
+            "source secrets/session.key is not a hexadecimal 32-byte key".into(),
+        ));
+    }
+
+    let links = secrets.join("links.key");
+    let links_bytes = fs::read(&links).map_err(|e| {
+        Error::Invalid(format!(
+            "cannot read source link keyring {}: {e}",
+            links.display()
+        ))
+    })?;
+    let keyring: SourceLinkKeyring = serde_json::from_slice(&links_bytes).map_err(|e| {
+        Error::Invalid(format!("source secrets/links.key is not a v1 keyring: {e}"))
+    })?;
+    if keyring.version != 1 || keyring.keys.is_empty() {
+        return Err(Error::Invalid(
+            "source secrets/links.key must contain a nonempty version 1 keyring".into(),
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    for row in &keyring.keys {
+        let raw = hex::decode(&row.key).map_err(|_| {
+            Error::Invalid("source link keyring contains a non-hexadecimal key".into())
+        })?;
+        if raw.len() != 32 || row.key.len() != 64 {
+            return Err(Error::Invalid(
+                "source link keyring contains a key that is not 32 bytes".into(),
+            ));
+        }
+        let expected = sha256(&raw)[..16].to_string();
+        if row.id != expected || !ids.insert(row.id.clone()) {
+            return Err(Error::Invalid(
+                "source link keyring has an invalid or duplicate key id".into(),
+            ));
+        }
+    }
+    if !ids.contains(active) {
+        return Err(Error::Invalid(format!(
+            "active source link key {active} is absent from secrets/links.key"
+        )));
+    }
+    if has_table(source, "link_keyring")? {
+        let metadata: BTreeSet<String> = source
+            .prepare("SELECT key_id FROM link_keyring")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+        if metadata != ids {
+            return Err(Error::Invalid(
+                "source link_keyring metadata does not match secrets/links.key".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn source_cost_json(source: &Connection) -> Result<String> {
+    if !has_table(source, "cost_state")? {
+        return json_text(&json!({"version": 2, "state": null}), 262_144, "cost_json");
+    }
+    let saved: Option<String> = source
+        .query_row("SELECT state FROM cost_state WHERE id=1", [], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    let Some(saved) = saved else {
+        return json_text(&json!({"version": 2, "state": null}), 262_144, "cost_json");
+    };
+    let value: Value = serde_json::from_str(&saved)
+        .map_err(|e| Error::Invalid(format!("source cost state is invalid JSON: {e}")))?;
+    let had_version = value.get("version").is_some();
+    let state = if let Some(version) = value.get("version") {
+        if version.as_u64() != Some(2) {
+            return Err(Error::Invalid(
+                "source cost state has an unsupported envelope version".into(),
+            ));
+        }
+        value
+            .get("state")
+            .cloned()
+            .ok_or_else(|| Error::Invalid("source v2 cost state has no state field".into()))?
+    } else {
+        value
+    };
+    if state.is_null() && !had_version {
+        return Err(Error::Invalid(
+            "source cost state is null instead of a durable state".into(),
+        ));
+    }
+    if !state.is_null() {
+        let durable: CostDurable = serde_json::from_value(state.clone()).map_err(|e| {
+            Error::Invalid(format!(
+                "source cost state is not a valid durable state: {e}"
+            ))
+        })?;
+        if durable.minutes.len() > 1442 {
+            return Err(Error::Invalid(
+                "source cost state exceeds its rolling window bound".into(),
+            ));
+        }
+    }
+    json_text(&json!({"version": 2, "state": state}), 262_144, "cost_json")
+}
+
 fn reject_path_symlinks(root: &Path, path: &Path) -> Result<()> {
     let relative = path
         .strip_prefix(root)
@@ -1266,7 +1429,13 @@ const V2_DDL: &str = include_str!("../../../docs/specs/catalog-v2.sql");
 const V1_DDL: &str = include_str!("../fixtures/catalog-v1.sql");
 const V1_RUNTIME_TABLES: &[&str] = &["cost_state", "source_history_gc_encoding_state"];
 
-fn initialize_target(root: &Path, target_id: &str) -> Result<Connection> {
+fn initialize_target(
+    root: &Path,
+    target_id: &str,
+    active_key: &str,
+    keyring_json: &str,
+    cost_json: &str,
+) -> Result<Connection> {
     fs::create_dir_all(root.join("state"))?;
     fs::create_dir_all(root.join("objects"))?;
     let path = catalog_path(root);
@@ -1276,10 +1445,9 @@ fn initialize_target(root: &Path, target_id: &str) -> Result<Connection> {
         let _ = connection.execute_batch("ROLLBACK");
         return Err(error.into());
     }
-    let active_key = "legacy";
     connection.execute(
         "INSERT INTO server_state(id,deployment_id,writer_generation,active_link_key_id,keyring_json,cost_json,maintenance_json,updated_at) VALUES(1,?1,?2,?3,?4,?5,?6,?7)",
-        params![target_id, deterministic_id("writer", target_id), active_key, json_text(&json!({"version":1,"keys":[{"key_id":"legacy","status":"active"}]}), 16384, "keyring_json")?, json_text(&json!({"version":1}), 262144, "cost_json")?, json_text(&json!({"version":1}), 16384, "maintenance_json")?, now_ms()],
+        params![target_id, deterministic_id("writer", target_id), active_key, keyring_json, cost_json, json_text(&json!({"version":1}), 16384, "maintenance_json")?, now_ms()],
     )?;
     connection.execute_batch("PRAGMA user_version=2; COMMIT;")?;
     let identity_path = root.join("state").join("deployment.id");
@@ -3582,9 +3750,9 @@ fn convert_publication(
     Ok(())
 }
 
-fn import_keyring(source: &Connection, target: &mut Connection, active: &str) -> Result<()> {
+fn source_keyring_json(source: &Connection) -> Result<String> {
     if !has_table(source, "link_keyring")? {
-        return Ok(());
+        return json_text(&json!({"version": 1, "keys": []}), 16_384, "keyring_json");
     }
     let mut keys = Vec::new();
     let mut st = source
@@ -3597,10 +3765,22 @@ fn import_keyring(source: &Connection, target: &mut Connection, active: &str) ->
             r.get::<_, Option<i64>>(3)?,
         ))
     })? {
-        let (k, status, created, retired) = row?;
-        keys.push(json!({"key_id":k,"status":status,"created_at":created,"retired_at":retired}));
+        let (key_id, status, created_at, retired_at) = row?;
+        keys.push(json!({
+            "key_id": key_id,
+            "status": status,
+            "created_at": created_at,
+            "retired_at": retired_at,
+        }));
     }
-    let payload = json_text(&json!({"version":1,"keys":keys}), 16384, "keyring")?;
+    json_text(&json!({"version": 1, "keys": keys}), 16_384, "keyring_json")
+}
+
+fn import_keyring(source: &Connection, target: &mut Connection, active: &str) -> Result<()> {
+    if !has_table(source, "link_keyring")? {
+        return Ok(());
+    }
+    let payload = source_keyring_json(source)?;
     target.execute(
         "UPDATE server_state SET active_link_key_id=?1,keyring_json=?2,updated_at=?3 WHERE id=1",
         params![active, payload, now_ms()],
@@ -3837,6 +4017,9 @@ fn run(args: Args) -> Result<()> {
     let physical_digest = source_physical_digest(&source)?;
     let source_id = source_identity(&source, &source_db, &source_digest)?;
     let plan = make_plan(&source_db, &args.documents, args.active_link_key.as_deref())?;
+    validate_secret_material(&source, &source_db, &plan.active_key)?;
+    let source_keyring = source_keyring_json(&source_db)?;
+    let source_cost = source_cost_json(&source_db)?;
     if args.dry_run {
         print_plan(&source_id, &schema, &plan, None);
         if !plan.errors.is_empty() {
@@ -3880,7 +4063,13 @@ fn run(args: Args) -> Result<()> {
             &plan,
             &args.documents,
         );
-        let db = initialize_target(&target, &target_id)?;
+        let db = initialize_target(
+            &target,
+            &target_id,
+            &plan.active_key,
+            &source_keyring,
+            &source_cost,
+        )?;
         sync_json(&manifest_path, &manifest)?;
         db
     };
@@ -4299,6 +4488,147 @@ mod tests {
     }
 
     #[test]
+    fn journal_replay_reads_manifest_shard_and_rejects_missing_shard() {
+        let root = tempfile::tempdir().expect("source");
+        std::fs::create_dir_all(root.path().join("objects/journal/deployment/bases/doc-1"))
+            .expect("base directory");
+        std::fs::create_dir_all(root.path().join("objects/journal/deployment/segments"))
+            .expect("segment directory");
+        let db = Connection::open_in_memory().expect("catalog");
+        db.execute_batch(V1_DDL).expect("v1 fixture");
+
+        let document = SourceDocument {
+            slug: "paper".into(),
+            storage_id: "doc-1".into(),
+            title: "Paper".into(),
+            created_at: 1_000,
+            published_at: None,
+            updated_at: 1_000,
+            example: false,
+            owner_key: "acct".into(),
+            owner_id: Some("acct".into()),
+            status: "active".into(),
+            source_format: "markdown".into(),
+            main_path: "paper.md".into(),
+            last_publication_id: String::new(),
+            pending_publication: None,
+        };
+        let ydoc = Doc::new();
+        let text = ydoc.get_or_insert_text("body");
+        {
+            let mut txn = ydoc.transact_mut();
+            text.insert(&mut txn, 0, "base");
+        }
+        let base_payload = ydoc
+            .transact()
+            .encode_state_as_update_v1(&yrs::StateVector::default());
+        let state_after_base = ydoc.transact().state_vector();
+        {
+            let mut txn = ydoc.transact_mut();
+            text.insert(&mut txn, 4, " one");
+        }
+        let update_one = ydoc.transact().encode_state_as_update_v1(&state_after_base);
+        let state_after_one = ydoc.transact().state_vector();
+        {
+            let mut txn = ydoc.transact_mut();
+            text.insert(&mut txn, 8, " two");
+        }
+        let update_two = ydoc.transact().encode_state_as_update_v1(&state_after_one);
+
+        let base_key = "journal/deployment/bases/doc-1/base-1";
+        let base_bytes = encode_recovery_base("doc-1", 0, 1, &base_payload).expect("base");
+        std::fs::write(root.path().join("objects").join(base_key), &base_bytes)
+            .expect("base object");
+
+        let encode_record = |sequence: u64, retry: &str, payload: &[u8]| {
+            let digest = sha256(payload);
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&2u16.to_le_bytes());
+            bytes.extend_from_slice(&5u16.to_le_bytes());
+            bytes.extend_from_slice(b"doc-1");
+            bytes.extend_from_slice(&sequence.to_le_bytes());
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            bytes.extend_from_slice(&(retry.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(retry.as_bytes());
+            bytes.extend_from_slice(&(digest.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(digest.as_bytes());
+            bytes.extend_from_slice(&(digest.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(digest.as_bytes());
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(payload);
+            bytes
+        };
+        let record_one = encode_record(2, "retry-one", &update_one);
+        let record_two = encode_record(3, "retry-two", &update_two);
+        let mut segment = Vec::new();
+        segment.extend_from_slice(b"KJNL");
+        segment.extend_from_slice(&2u16.to_le_bytes());
+        segment.extend_from_slice(&2u32.to_le_bytes());
+        segment.extend_from_slice(&record_one);
+        segment.extend_from_slice(&record_two);
+        let segment_key = "journal/deployment/segments/segment-1";
+        std::fs::write(root.path().join("objects").join(segment_key), &segment)
+            .expect("segment object");
+
+        let mut shard = ManifestShardDescriptor {
+            shard_id: "manifest-1".into(),
+            shard_seq: 1,
+            object_key: "journal/deployment/manifests/manifest-1".into(),
+            digest: String::new(),
+            encoded_bytes: 0,
+            next_key: None,
+            bases: vec![ManifestBaseDescriptor {
+                base_id: "base-1".into(),
+                storage_id: "doc-1".into(),
+                epoch: 0,
+                sequence: 1,
+                object_key: base_key.into(),
+                digest: sha256(&base_bytes),
+                encoded_bytes: base_bytes.len() as i64,
+                committed_at: 0,
+            }],
+            segments: vec![segment_key.into()],
+        };
+        shard.digest.clear();
+        shard.encoded_bytes = 0;
+        for _ in 0..3 {
+            shard.digest.clear();
+            let canonical = serde_json::to_vec(&shard).expect("canonical shard");
+            shard.digest = sha256(&canonical);
+            shard.encoded_bytes = serde_json::to_vec(&shard).expect("shard").len() as i64;
+        }
+        let shard_bytes = serde_json::to_vec(&shard).expect("shard bytes");
+        let shard_key = shard.object_key.clone();
+        std::fs::create_dir_all(root.path().join("objects/journal/deployment/manifests"))
+            .expect("manifest directory");
+        std::fs::write(root.path().join("objects").join(&shard_key), &shard_bytes)
+            .expect("manifest object");
+        db.execute(
+            "UPDATE journal_state SET manifest_key=?1,manifest_digest=?2,manifest_length=?3 WHERE id=1",
+            params![shard_key, shard.digest, shard_bytes.len() as i64],
+        )
+        .expect("manifest state");
+
+        let replayed = journal_replay(root.path(), &db, &document)
+            .expect("manifest replay")
+            .expect("journal state");
+        assert_eq!((replayed.epoch, replayed.sequence), (0, 3));
+        let replay_doc = Doc::new();
+        replay_doc
+            .transact_mut()
+            .apply_update(Update::decode_v1(&replayed.payload).expect("decoded state"))
+            .expect("applied state");
+        let replay_text = replay_doc.get_or_insert_text("body");
+        let replay_txn = replay_doc.transact();
+        assert_eq!(replay_text.get_string(&replay_txn), "base one two");
+
+        std::fs::remove_file(root.path().join("objects").join(&shard_key)).expect("remove shard");
+        assert!(journal_replay(root.path(), &db, &document).is_err());
+    }
+
+    #[test]
     fn converts_publication_annotations_replies_and_secret_files() {
         let source = tempfile::tempdir().expect("source");
         let target = tempfile::tempdir().expect("target");
@@ -4307,19 +4637,32 @@ mod tests {
             .expect("publication objects");
         std::fs::create_dir_all(source.path().join("secrets")).expect("secrets");
         std::fs::write(source.path().join("state/writer.lock"), b"").expect("lock");
-        std::fs::write(source.path().join("secrets/links.key"), b"legacy-link-key")
-            .expect("link secret");
-        std::fs::write(
-            source.path().join("secrets/session.key"),
-            b"legacy-session-key",
-        )
-        .expect("session secret");
+        let link_key = vec![0x11_u8; 32];
+        let link_id = sha256(&link_key)[..16].to_string();
+        let link_secret = serde_json::to_vec(&json!({
+            "version": 1,
+            "keys": [{"id": link_id.clone(), "key": hex::encode(&link_key)}]
+        }))
+        .expect("link secret json");
+        std::fs::write(source.path().join("secrets/links.key"), &link_secret).expect("link secret");
+        let session_secret = b"0000000000000000000000000000000000000000000000000000000000000000";
+        std::fs::write(source.path().join("secrets/session.key"), session_secret)
+            .expect("session secret");
         let db = Connection::open(source.path().join("catalog.db")).expect("catalog");
         db.execute_batch(V1_DDL).expect("v1 fixture");
+        db.execute_batch(
+            "CREATE TABLE cost_state (id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL);",
+        )
+        .expect("cost table");
+        db.execute(
+            "INSERT INTO cost_state(id,state) VALUES(1,?1)",
+            [r#"{"minutes":[],"sent":[0,0,0,0,0,0,0,0]}"#],
+        )
+        .expect("cost state");
         db.execute("INSERT INTO accounts(id,provider,handle,name,email,first_seen,last_seen,plan,status,session_generation) VALUES('acct','github','h','H','h@example.test','1','1','free','active','s')",[]).expect("account");
         db.execute(
-            "INSERT INTO link_keyring(key_id,status,created_at) VALUES('legacy','primary',0)",
-            [],
+            "INSERT INTO link_keyring(key_id,status,created_at) VALUES(?1,'primary',0)",
+            [&link_id],
         )
         .expect("key");
         db.execute("INSERT INTO documents(slug,storage_id,title,sha,created_at,published_at,updated_at,example,owner_key,owner_id,status,size,counted_size,maintenance_reserved,comment_seq,last_auto_checkpoint_at,pending_publication,last_publication_id,source_format,main) VALUES('paper','doc-1','Paper','', '1','2','2',0,'acct','acct','active',0,0,0,0,0,NULL,'pub-1','markdown','paper.md')",[]).expect("document");
@@ -4363,13 +4706,23 @@ mod tests {
         let target_root = target.path().join("v2");
         assert_eq!(
             std::fs::read(target_root.join("secrets/links.key")).expect("target link secret"),
-            b"legacy-link-key"
+            link_secret
         );
         assert_eq!(
             std::fs::read(target_root.join("secrets/session.key")).expect("target session secret"),
-            b"legacy-session-key"
+            session_secret
         );
         let target_db = Connection::open(target_root.join("catalog.db")).expect("target catalog");
+        assert_eq!(
+            target_db
+                .query_row::<String, _, _>(
+                    "SELECT cost_json FROM server_state WHERE id=1",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("cost json"),
+            r#"{"version":2,"state":{"minutes":[],"sent":[0,0,0,0,0,0,0,0]}}"#
+        );
         assert_eq!(
             target_db
                 .query_row::<i64, _, _>("SELECT COUNT(*) FROM annotations", [], |r| r.get(0))
