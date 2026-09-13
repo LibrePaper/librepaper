@@ -8,8 +8,9 @@ async fn account_examples_resume_after_admission_failure() {
     let mut config = Configuration::default();
     config.set_counts(Some(4), Some(30)).unwrap();
     let server = test_server_with(config, Policy::parse("any"), Policy::parse("any"), true).await;
-    let who = Identity::github("alice", "alice");
+    let mut who = Identity::github("alice", "alice");
     get_json_as(&session_as("alice"), &server.url, "/api/me").await;
+    who.session_generation = "test-session-generation".into();
     assert!(server
         .instance
         .initialize_account_examples(&who)
@@ -49,11 +50,13 @@ async fn account_examples_are_private_owned_and_created_once() {
         true,
     )
     .await;
-    let alice = Identity::github("alice", "alice");
-    let bob = Identity::github("bob", "bob");
+    let mut alice = Identity::github("alice", "alice");
+    let mut bob = Identity::github("bob", "bob");
     // Establish normal account rows through the test harness's signed cookies.
     get_json_as(&session_as("alice"), &server.url, "/api/me").await;
     get_json_as(&session_as("bob"), &server.url, "/api/me").await;
+    alice.session_generation = "test-session-generation".into();
+    bob.session_generation = "test-session-generation".into();
     let (first, concurrent) = tokio::join!(
         server.instance.initialize_account_examples(&alice),
         server.instance.initialize_account_examples(&alice),

@@ -92,6 +92,11 @@ impl Server {
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "account disappeared during onboarding".to_string())?;
+        if who.session_generation.is_empty()
+            || who.session_generation != account.session_generation
+        {
+            return Err("account session changed during onboarding".into());
+        }
         // Account-example provisioning is an authenticated first-party write.
         // `Store::put` deliberately refuses catalogue-backed writes because it
         // has no request actor, so carry the identity that sign-in already
@@ -99,7 +104,7 @@ impl Server {
         let actor = crate::document::store::MutationActor {
             account_id: account.id.clone(),
             owner_key: account.handle.clone(),
-            session_generation: account.session_generation.clone(),
+            session_generation: who.session_generation.clone(),
             link_hash: String::new(),
             policy_editor: self.publishers.allows(&account.handle),
             automation: false,

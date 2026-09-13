@@ -95,6 +95,35 @@ async fn opening_with_a_live_link_while_signed_in_pins_the_document() {
     assert_eq!(text(row, "role"), "commenter", "{row}");
 }
 
+#[tokio::test]
+async fn a_bookmark_never_bypasses_the_commenter_ceiling() {
+    let server = test_server_with(
+        Configuration::default(),
+        Policy::parse("any"),
+        Policy::parse("rachel"),
+        true,
+    )
+    .await;
+    let slug = publish_as(&server.url, "alice", "Alice Paper").await;
+    let key = mint(&server.url, "alice", &slug, "commenter").await;
+
+    let (status, document) = get_json_keyed(
+        &session_as("bob"),
+        &key,
+        &server.url,
+        &format!("/api/documents/{slug}"),
+    )
+    .await;
+    assert_eq!(status, 200, "{document}");
+    assert_eq!(text(&document, "role"), "reader");
+    let rows = listing_of(&server.url, "bob").await;
+    let row = rows
+        .iter()
+        .find(|row| text(row, "slug") == slug)
+        .expect("bookmark listing row");
+    assert_eq!(text(row, "role"), "reader", "{row}");
+}
+
 // Opening anonymously, or signed in with no link at all, pins nothing: a
 // guest is recorded only for an account that actually came in on a key.
 #[tokio::test]

@@ -893,20 +893,23 @@ impl Server {
         // guest whose link says "editor" on a deployment that will not let
         // them publish is listed as the commenter they actually are.
         let link = entry
-            .guests
-            .iter()
-            .find(|guest| guest.id == who.id)
-            .map(|guest| guest.link.clone())
+            .bookmark_link_hash
+            .clone()
+            .or_else(|| {
+                entry
+                    .guests
+                    .iter()
+                    .find(|guest| guest.id == who.id)
+                    .map(|guest| guest.link.clone())
+            })
             .unwrap_or_default();
-        let role = entry.bookmark_role.unwrap_or_else(|| {
-            entry.role_of(
-                &who.key,
-                &who.id,
-                &link,
-                self.ceiling_for(&who.identity()),
-                now,
-            )
-        });
+        let role = entry.role_of(
+            &who.key,
+            &who.id,
+            &link,
+            self.ceiling_for(&who.identity()),
+            now,
+        );
         let metadata = crate::results::document_metadata(&entry.source_format);
         json!({
             "slug": entry.slug,

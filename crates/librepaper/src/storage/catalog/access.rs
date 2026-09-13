@@ -1036,7 +1036,7 @@ impl Catalog {
         &self,
         slug: &str,
         account_id: &str,
-    ) -> CatalogResult<Option<(String, String)>> {
+    ) -> CatalogResult<Option<String>> {
         if slug.is_empty() || account_id.is_empty() {
             return Ok(None);
         }
@@ -1098,11 +1098,11 @@ impl Catalog {
                 };
                 return connection
                     .query_row(
-                        "SELECT token_hash,role FROM links
+                        "SELECT token_hash FROM links
                          WHERE id=?1 AND document_id=?2 AND credential_generation=?3
                            AND (expires_at IS NULL OR expires_at>?4)",
                         params![link_id, document_id, generation, now],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| row.get(0),
                     )
                     .optional()
                     .map_err(CatalogError::from);
