@@ -57,8 +57,9 @@ fn pending_edits_share_quota_with_other_rooms_and_uploads() {
     catalog.reserve_room_edit("one", 80, 100, 100).unwrap();
     assert!(catalog.reserve_room_edit("two", 21, 100, 100).is_err());
     // Source bytes are admitted as allocations owned by a typed v2
-    // operation. Exercise that lifecycle instead of the removed standalone
-    // byte reservation, which had no object or receipt to settle.
+    // operation. The allocation sees the room's 80-byte process reservation,
+    // so the additional 21 bytes must be refused against the 100-byte owner
+    // limit without creating an object or changing durable counters.
     let now = crate::storage::catalog::UnixMillis::now();
     let operation = catalog
         .prepare_v2_operation(
@@ -81,7 +82,57 @@ fn pending_edits_share_quota_with_other_rooms_and_uploads() {
             now,
         )
         .unwrap();
-    assert_eq!(operation.state, "prepared");
+    let before = catalog.account_storage_usage("acct-1").unwrap();
+    let before_objects = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT count(*) FROM objects WHERE document_id=?1",
+                    ["two"],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    let allocation = crate::storage::catalog::V2ObjectAllocation {
+        document_id: crate::storage::catalog::DocumentId::new("two").unwrap(),
+        id: crate::storage::catalog::ObjectId::new(format!("{:032x}", 21)).unwrap(),
+        storage_key: format!("v2/documents/two/objects/{:032x}", 21),
+        kind: crate::storage::catalog::ObjectKind::SourceChunk,
+        digest: "b".repeat(64),
+        logical_digest: None,
+        encoding_version: 1,
+        reserved_bytes: 21,
+        operation_id: operation.id.clone(),
+        now,
+    };
+    assert!(matches!(
+        catalog.allocate_v2_object_with_limits(
+            &allocation,
+            crate::storage::catalog::V2AdmissionLimits {
+                owner_bytes: 100,
+                deployment_bytes: 100,
+                owner_documents: 10,
+            },
+        ),
+        Err(crate::storage::catalog::CatalogError::Refused(
+            crate::storage::catalog::CatalogRefusal::OwnerBytes,
+            _
+        ))
+    ));
+    assert_eq!(catalog.account_storage_usage("acct-1").unwrap(), before);
+    let after_objects = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT count(*) FROM objects WHERE document_id=?1",
+                    ["two"],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(after_objects, before_objects);
     catalog
         .finish_v2_operation(&operation.id, r#"{"version":2}"#, false, now)
         .unwrap();

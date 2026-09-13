@@ -172,6 +172,7 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
         .unwrap();
     let request_id = crate::util::new_request_key();
     let digest = "a".repeat(64);
+    let comment_request = crate::util::new_request_key();
     let authority = crate::storage::catalog::AnnotationAuthority {
         account_id: "github:alice",
         generation: "suggestion-fixture-generation",
@@ -179,8 +180,7 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
         require_editor: true,
         ..Default::default()
     };
-    catalog
-        .insert_comment(&crate::storage::catalog::Comment {
+    let comment = crate::storage::catalog::Comment {
             slug: "accept-receipt".into(),
             id: "comment-1".into(),
             seq: -1,
@@ -212,7 +212,15 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
             resolved: false,
             resolved_at: None,
             resolved_in: String::new(),
-        })
+        };
+    catalog
+        .insert_comment_request_authorized(
+            &comment,
+            &comment_request,
+            &"c".repeat(64),
+            crate::util::now_millis(),
+            authority,
+        )
         .unwrap();
     catalog
         .begin_suggestion_accept_authorized(
@@ -224,22 +232,56 @@ async fn prepared_acceptance_keeps_the_exact_crdt_update_for_replay() {
             authority,
         )
         .unwrap();
-    let update = vec![1, 2, 3, 4];
-    catalog
-        .stage_suggestion_accept_update_authorized(
+    let candidate = session::new_doc();
+    session::replace_text(&candidate, "B", "main.md");
+    let update = session::encode_state(&candidate);
+    let update_digest = store::digest_of_bytes(&update);
+    let now = crate::storage::catalog::UnixMillis::now();
+    let (allocation, _holder) = catalog
+        .allocate_suggestion_accept_update_authorized(
             "accept-receipt",
             "comment-1",
             &request_id,
             &digest,
-            &update,
+            &update_digest,
+            update.len() as i64,
+            crate::storage::catalog::V2AdmissionLimits {
+                owner_bytes: 1_000_000,
+                deployment_bytes: 1_000_000,
+                owner_documents: 10,
+            },
+            now,
             authority,
         )
         .unwrap();
-    let replay = catalog
-        .suggestion_accept_update_authorized("accept-receipt", &request_id, &digest, authority)
+    crate::storage::blob::write_v2_object_with_id(
+        blobs.as_ref(),
+        allocation.document_id.as_str(),
+        crate::storage::blob::ObjectId::parse(allocation.id.to_string()).unwrap(),
+        update.clone(),
+        "application/octet-stream",
+    )
+    .await
+    .unwrap();
+    catalog
+        .settle_v2_object(
+            &allocation.document_id,
+            &allocation.id,
+            update.len() as i64,
+            now,
+        )
+        .unwrap();
+    let replay_id = catalog
+        .suggestion_accept_update_object_authorized(
+            "accept-receipt",
+            &request_id,
+            &digest,
+            authority,
+        )
         .unwrap()
         .unwrap();
-    assert_eq!(replay, update);
+    assert_eq!(replay_id, allocation.id);
+    assert_eq!(blobs.get(&allocation.storage_key).await.unwrap(), update);
 }
 
 #[tokio::test]
