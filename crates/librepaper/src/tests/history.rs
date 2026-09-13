@@ -651,12 +651,7 @@ async fn a_comment_lands_on_a_checkpoint_that_contains_its_quotation() {
         .get(&slug)
         .await
         .expect("the document is in the index");
-    let bytes = checkpoint_text(
-        server.instance.store.blobs.as_ref(),
-        &entry.storage_id,
-        &newest.sha,
-    )
-    .await;
+    let bytes = checkpoint_text(&server.instance.store, &entry.slug, &newest.sha).await;
     assert!(
         bytes.contains("a sentence to quote"),
         "the comment's checkpoint does not contain what it quotes"

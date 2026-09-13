@@ -267,7 +267,12 @@ async fn build_test_server(
     server.listing = listing;
     let journal = Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog, persistence)),
+            Arc::new(
+                crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                    catalog,
+                    persistence,
+                ),
+            ),
             blobs,
             persistence,
         )
@@ -346,7 +351,12 @@ pub async fn server_over(path: &std::path::Path, config: Configuration) -> (Stri
     instance.accounts = Arc::new(TestAccounts);
     instance.rooms.attach_journal(Arc::new(
         crate::storage::journal::V2JournalRuntime::with_persistence(
-            Arc::new(crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(catalog, persistence)),
+            Arc::new(
+                crate::storage::v2_catalog::V2JournalCatalogAdapter::with_limits(
+                    catalog,
+                    persistence,
+                ),
+            ),
             blobs,
             persistence,
         )
@@ -925,19 +935,26 @@ pub async fn test_server_checking(
 
 /// The words held by the main file in a current-format checkpoint tree.
 pub async fn checkpoint_text(
-    blobs: &dyn crate::storage::blob::BlobStore,
-    storage_id: &str,
+    store: &crate::document::store::Store,
+    slug: &str,
     sha: &str,
 ) -> String {
-    let raw = blobs
-        .get(&crate::storage::blob::checkpoint_key(storage_id, sha))
+    let cache = crate::document::checkpoint_cache::CheckpointCache::new(0, 1, 1);
+    let (tree, bodies) = cache
+        .load_checkpoint_v2(
+            store.blobs.as_ref(),
+            store.catalog.as_ref().expect("the v2 catalog"),
+            slug,
+            &crate::document::history::Checkpoint {
+                sha: sha.into(),
+                ..Default::default()
+            },
+        )
         .await
-        .expect("the checkpoint object");
-    let tree = serde_json::from_slice::<crate::document::history::Tree>(&raw)
-        .expect("the checkpoint tree");
+        .expect("the verified checkpoint closure");
     let entry = tree.files.get(&tree.main).expect("the main file");
-    let body = crate::storage::encoding::read_file(blobs, storage_id, &entry.sha)
-        .await
-        .expect("the text the tree names");
-    String::from_utf8_lossy(&body).to_string()
+    bodies
+        .get(&entry.sha)
+        .expect("the text the tree names")
+        .clone()
 }

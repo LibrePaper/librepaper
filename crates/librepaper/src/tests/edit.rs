@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use sha2::Digest;
 
 use super::*;
 use crate::config::{Configuration, SessionLimit};
@@ -107,22 +108,16 @@ async fn a_document_is_charged_for_its_source_and_its_history() {
         .expect("the document is in the index");
     // The first checkpoint is the source it was published with, and the index
     // names it.
-    let checkpoint = checkpoint_text(
-        server.instance.store.blobs.as_ref(),
-        &entry.storage_id,
-        &entry.sha,
-    )
-    .await;
+    let checkpoint = checkpoint_text(&server.instance.store, &entry.slug, &entry.sha).await;
     assert_eq!(checkpoint, TEST_MARKDOWN);
-    // The catalogue's entry size is a measured physical/resident charge, not
-    // the source's uncompressed length.  Compression may make it smaller than
-    // the source while the encoded object ledger remains the lower bound.
+    // Physical payloads are charged once; flattened checkpoint references
+    // and SQL metadata do not add another payload charge.
     if let Some(catalog) = server.instance.store.catalog.as_ref() {
         let ledger_bytes: i64 =
             catalog
                 .with_connection(|connection| {
                     connection.query_row(
-                    "SELECT COALESCE(SUM(bytes),0) FROM object_accounting WHERE storage_id=?1",
+                    "SELECT COALESCE(SUM(byte_length),0) FROM objects WHERE document_id=?1 AND state='available'",
                     [&entry.storage_id],
                     |row| row.get(0),
                 ).map_err(crate::storage::catalog::CatalogError::from)
@@ -132,12 +127,19 @@ async fn a_document_is_charged_for_its_source_and_its_history() {
             ledger_bytes > 0,
             "published source has no physical ledger rows"
         );
-        assert!(
-            entry.size >= ledger_bytes,
-            "entry size {} is below measured object bytes {}",
-            entry.size,
-            ledger_bytes
-        );
+        let stored: i64 = catalog
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT stored_bytes FROM documents WHERE id=?1",
+                        [&entry.storage_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::storage::catalog::CatalogError::from)
+            })
+            .unwrap();
+        assert_eq!(stored, ledger_bytes);
+        assert!(catalog.audit_v2_counters().unwrap());
     }
     // Nothing derived is stored: no page, and no second copy of the source.
     for prefix in [
@@ -332,43 +334,37 @@ async fn an_html_document_is_stored_once() {
         .get(&slug)
         .await
         .expect("in the index");
-    // One copy as a checkpoint, plus the live document it is held in. Not two
-    // copies of the page, and no rendering of it.
-    let checkpoint = server
-        .instance
-        .store
-        .blobs
-        .get(&crate::storage::blob::checkpoint_key(
-            &entry.storage_id,
-            &entry.sha,
-        ))
-        .await
-        .expect("stored as a checkpoint");
-    // The checkpoint is the directory; the page is the one file in it.
-    let tree: crate::document::history::Tree =
-        serde_json::from_slice(&checkpoint).expect("the checkpoint is a tree");
-    let source_digest = &tree.files[&tree.main].sha;
+    assert_eq!(
+        checkpoint_text(&server.instance.store, &slug, &entry.sha).await,
+        page
+    );
     let catalog = server
         .instance
         .store
         .catalog
         .as_ref()
         .expect("catalogue-backed test server");
-    let source = catalog
-        .source_history_record(&entry.storage_id, source_digest)
-        .unwrap()
-        .expect("the source's encoded history record");
-    assert_eq!(source.uncompressed_bytes, page.len() as i64);
-    for object in &source.objects {
-        let encoded = server
-            .instance
-            .store
-            .blobs
-            .get(&object.object_key)
-            .await
-            .expect("the encoded source object");
-        assert_eq!(encoded.len() as i64, object.bytes);
-    }
+    let (recipes, chunks, displays): (i64, i64, i64) = catalog
+        .with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FILTER (WHERE kind='source_recipe'),
+                    COUNT(*) FILTER (WHERE kind='source_chunk'),
+                    COUNT(*) FILTER (WHERE kind IN ('publication_html','publication_manifest'))
+             FROM objects WHERE document_id=?1 AND state='available'",
+                    [&entry.storage_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(crate::storage::catalog::CatalogError::from)
+        })
+        .unwrap();
+    assert_eq!(
+        (recipes, chunks, displays),
+        (1, 1, 0),
+        "one encoded source, with no rendered duplicate"
+    );
+    assert!(catalog.audit_v2_counters().unwrap());
+    let source_digest = hex::encode(sha2::Sha256::digest(page.as_bytes()));
     assert!(
         server
             .instance
@@ -376,7 +372,7 @@ async fn an_html_document_is_stored_once() {
             .blobs
             .get(&crate::storage::blob::blob_key(
                 &entry.storage_id,
-                source_digest
+                &source_digest
             ))
             .await
             .is_err(),
