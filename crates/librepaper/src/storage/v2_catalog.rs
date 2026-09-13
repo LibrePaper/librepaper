@@ -264,7 +264,7 @@ fn failed_inflight(namespace: usize, limit: usize) -> (Vec<InflightPut>, Option<
             })
             .collect()
     };
-    let mut page = select(cursor);
+    let mut page: Vec<InflightPut> = select(cursor);
     if page.is_empty() && cursor != 0 {
         cursors.insert(namespace, 0);
         page = select(0);
@@ -848,7 +848,7 @@ async fn heartbeat_stage_leases_pages(
         if cursor.is_none() {
             return Ok(renewed);
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
     Err("stage-lease heartbeat capacity exceeded during bounded maintenance pass".into())
 }
