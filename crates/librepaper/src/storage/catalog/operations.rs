@@ -1488,8 +1488,9 @@ impl Catalog {
             let now = unix_millis();
             let receipt_expires = now
                 .checked_add(match kind.as_str() {
-                    "display_publish" | "checkpoint" | "source_publish" => 7 * 24 * 60 * 60 * 1_000,
-                    "agent_execution" | "agent_apply" | "agent_annotations" => 60 * 60 * 1_000,
+                    "display_publish" | "checkpoint" | "source_publish" | "agent_apply"
+                    | "agent_cancel" | "agent_annotations" => 7 * 24 * 60 * 60 * 1_000,
+                    "agent_execution" | "agent_stage" => 60 * 60 * 1_000,
                     _ => 60 * 1_000,
                 })
                 .ok_or_else(|| CatalogError::Invalid("operation receipt expiry overflow".into()))?;
@@ -1544,9 +1545,20 @@ impl Catalog {
             if operation.status != "prepared" {
                 return Ok(operation);
             }
+            let kind: String = tx
+                .query_row(
+                    "SELECT kind FROM operations WHERE document_id=?1 AND request_key=?2",
+                    params![storage_id, request_id],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
             let now = unix_millis();
             let receipt_expires = now
-                .checked_add(7 * 24 * 60 * 60 * 1_000)
+                .checked_add(match kind.as_str() {
+                    "agent_execution" | "agent_stage" => 60 * 60 * 1_000,
+                    "journal_append" | "journal_compact" => 60 * 1_000,
+                    _ => 7 * 24 * 60 * 60 * 1_000,
+                })
                 .ok_or_else(|| CatalogError::Invalid("operation receipt expiry overflow".into()))?;
             let changed = tx
                 .execute(
