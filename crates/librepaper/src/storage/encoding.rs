@@ -1367,7 +1367,7 @@ mod tests {
             object_digest: [8u8; 32],
             logical_digest: Some(digest),
             logical_length: 8,
-            byte_length: 8,
+            byte_length: 3,
             encoding_version: 1,
         };
         let mut files = std::collections::BTreeMap::new();

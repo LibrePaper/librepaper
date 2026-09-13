@@ -441,5 +441,7 @@ mod tests {
         let key = v2_object_key("stable-document", &first).expect("valid object key");
         assert!(key.starts_with("v2/documents/stable-document/objects/"));
         assert!(crate::storage::blob::validate_v2_object_key(&key).is_ok());
+        assert!(crate::storage::blob::parse_v2_object_key(&key).is_ok());
+        assert!(crate::storage::blob::validate_v2_object_key(&format!("{key}/extra")).is_err());
     }
 }
