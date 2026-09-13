@@ -671,18 +671,28 @@ impl Room {
                     // edits can differ while the visible tree is identical.
                     // Persist and acknowledge that state before success.
                     self.write_session_inner(true, true).await?;
-                    if let (Some(catalog), Some(actor)) = (self.catalog.get(), actor) {
-                        let slug = self.slug.clone();
-                        let actor = crate::room::catalog::OwnedAuthority::new(&actor);
-                        catalog
-                            .execute_catalog(
-                                slug.len() + crate::room::catalog::DESCRIPTOR_BYTES,
-                                move |catalog| {
-                                    catalog.require_mutation_authority(&slug, actor.borrow())
-                                },
-                            )
-                            .await
-                            .map_err(WriteError::from)?;
+                    if let Some(catalog) = self.catalog.get() {
+                        if let Some(actor) = actor {
+                            let slug = self.slug.clone();
+                            let actor = crate::room::catalog::OwnedAuthority::new(&actor);
+                            catalog
+                                .execute_catalog(
+                                    slug.len() + crate::room::catalog::DESCRIPTOR_BYTES,
+                                    move |catalog| {
+                                        catalog.require_mutation_authority(&slug, actor.borrow())
+                                    },
+                                )
+                                .await
+                                .map_err(WriteError::from)?;
+                        } else {
+                            let slug = self.slug.clone();
+                            catalog
+                                .execute_catalog(slug.len() + 128, move |catalog| {
+                                    catalog.require_internal_checkpoint_authority(&slug)
+                                })
+                                .await
+                                .map_err(WriteError::from)?;
+                        }
                     }
                     let mut state = self.state.lock().await;
                     state.session.last_checkpoint = existing.clone();

@@ -685,6 +685,32 @@ impl Catalog {
             ).optional()?.ok_or(CatalogError::NotFound)
         })
     }
+    /// Internal scheduler/importer fence used for an idempotent no-op
+    /// checkpoint. It verifies the live document and owner in the catalogue;
+    /// no caller-provided account or session is treated as authority.
+    pub(crate) fn require_internal_checkpoint_authority(&self, slug: &str) -> CatalogResult<()> {
+        self.immediate(|tx| {
+            let active: bool = tx
+                .query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM documents d JOIN accounts owner ON owner.id=d.owner_id
+                        WHERE d.slug=?1 AND d.status IN ('active','creating')
+                          AND owner.status='active')",
+                    [slug],
+                    |row| row.get(0),
+                )
+                .map_err(CatalogError::from)?;
+            if active {
+                Ok(())
+            } else {
+                Err(CatalogError::refused(
+                    CatalogRefusal::ActorRights,
+                    "internal checkpoint document is not active",
+                ))
+            }
+        })
+    }
+
     /// Verify the bytes decoded by the publication worker and derive the
     /// complete immutable object closure from those bytes. Manifest callers
     /// cannot omit an HTML or asset object while supplying an unrelated list:
