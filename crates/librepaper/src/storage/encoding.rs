@@ -879,18 +879,24 @@ pub async fn read_file_v2(
     blobs: &dyn crate::storage::blob::BlobStore,
     document_id: &str,
     recipe_object_id: &ObjectId,
-    expected_recipe_digest: Option<[u8; 32]>,
+    expected_recipe_digest: [u8; 32],
 ) -> Result<Vec<u8>, EncodingError> {
+    // Hold the bounded reconstruction slot before fetching any physical
+    // payload. Otherwise concurrent callers can each materialize a full
+    // compressed closure while waiting for the native decoder permit.
+    let permit = reconstruction_pool()
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| EncodingError::Worker("reconstruction pool is closed".into()))?;
     let recipe_key = crate::storage::blob::v2_object_key(document_id, recipe_object_id)
         .map_err(|error| EncodingError::Integrity(error.to_string()))?;
     let recipe_bytes = blobs
         .get(&recipe_key)
         .await
         .map_err(|error| EncodingError::Integrity(error.to_string()))?;
-    if expected_recipe_digest.is_some_and(|digest| {
-        let actual: [u8; 32] = Sha256::digest(&recipe_bytes).into();
-        actual != digest
-    }) {
+    let actual_recipe_digest: [u8; 32] = Sha256::digest(&recipe_bytes).into();
+    if actual_recipe_digest != expected_recipe_digest {
         return Err(EncodingError::Integrity("recipe object digest mismatch".into()));
     }
     let envelope = SourceRecipeEnvelope::from_bytes(&recipe_bytes)?;
@@ -899,9 +905,6 @@ pub async fn read_file_v2(
         let logical_digest = locator
             .logical_digest
             .ok_or_else(|| EncodingError::Integrity("source locator has no logical digest".into()))?;
-        if objects.contains_key(&logical_digest) {
-            continue;
-        }
         let key = crate::storage::blob::v2_object_key(document_id, &locator.object_id)
             .map_err(|error| EncodingError::Integrity(error.to_string()))?;
         let bytes = blobs
@@ -914,11 +917,6 @@ pub async fn read_file_v2(
         }
         objects.insert(logical_digest, bytes);
     }
-    let permit = reconstruction_pool()
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| EncodingError::Worker("reconstruction pool is closed".into()))?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         reconstruct(&envelope.recipe, |digest| {
