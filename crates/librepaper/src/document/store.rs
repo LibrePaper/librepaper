@@ -2225,6 +2225,10 @@ impl Store {
         update_catalog_entry_access(catalog, entry.clone(), Some(actor.clone()))
             .await
             .map_err(|err| ModifyError::Refused(err.to_string()))?;
+        let entry = load_catalog_entry(catalog, slug, true)
+            .await
+            .map_err(|err| ModifyError::Storage(err.to_string()))?
+            .ok_or(ModifyError::NotFound)?;
         self.state
             .lock()
             .await

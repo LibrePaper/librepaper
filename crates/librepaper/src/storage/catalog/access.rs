@@ -1103,6 +1103,7 @@ impl Catalog {
                     vec![&cursor_time, &cursor_slug, &page_limit],
                 )?;
             }
+            drop(page);
 
             let mut stale = Vec::new();
             if !account.is_empty() {
