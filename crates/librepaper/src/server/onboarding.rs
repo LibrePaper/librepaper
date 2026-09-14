@@ -117,9 +117,7 @@ const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
 
 impl Server {
     pub(crate) async fn initialize_account_examples(&self, who: &Identity) -> Result<(), String> {
-        let Some(catalog) = &self.store.catalog else {
-            return Ok(());
-        };
+        let catalog = &self.store.catalog;
         let _guard = self.onboarding.lock().await;
         // The caller can be an identity captured before the account row was
         // refreshed. Read the live generation once and use it for every write

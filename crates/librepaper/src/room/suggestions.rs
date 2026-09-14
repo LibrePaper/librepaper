@@ -105,7 +105,7 @@ impl Room {
             item.resolved_in = sha.clone();
             item.clone()
         };
-        if let Some(catalog) = self.catalog.get() {
+        if let Some(catalog) = self.catalog.as_ref().get() {
             let row = catalog_comment_row(&self.slug, &updated).map_err(AcceptError::Failed)?;
             update_comment_row(catalog, row, actor)
                 .await
@@ -161,7 +161,7 @@ impl Room {
             updated.resolved_at = Some(resolved_at);
             updated
         };
-        if let Some(catalog) = self.catalog.get() {
+        if let Some(catalog) = self.catalog.as_ref().get() {
             let row = catalog_comment_row(&self.slug, &updated)?;
             update_comment_row(catalog, row, actor).await?;
         }

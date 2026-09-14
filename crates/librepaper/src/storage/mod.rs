@@ -2,7 +2,6 @@
 
 pub mod backup;
 pub mod blob;
-pub mod blob_s3;
 pub mod collaboration;
 pub mod maintenance;
 pub mod postgres;
@@ -17,7 +16,7 @@ use std::sync::Arc;
 use clap::Args;
 
 use crate::config::DeploymentPaths;
-use crate::storage::blob::{BlobStore, FsStore};
+use crate::storage::blob::{BlobStore, ObjectBlobStore};
 
 #[derive(Clone, Debug)]
 pub struct StorageOptions {
@@ -58,8 +57,11 @@ pub async fn open_storage(options: StorageOptions) -> Result<Arc<dyn BlobStore>,
     create_private_dir(&paths.state)?;
     create_private_dir(&paths.secrets)?;
     match options.object_store.as_str() {
-        "filesystem" => Ok(Arc::new(FsStore::new(paths.objects, options.fsync))),
-        "s3" => Ok(Arc::new(blob_s3::S3Store::new(
+        "filesystem" => Ok(Arc::new(ObjectBlobStore::filesystem(
+            paths.objects,
+            options.fsync,
+        )?)),
+        "s3" => Ok(Arc::new(ObjectBlobStore::s3(
             options.s3_endpoint.as_deref(),
             &options.s3_region,
             options

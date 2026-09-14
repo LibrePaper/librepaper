@@ -509,27 +509,21 @@ impl RoomSet {
             }
         }
     }
-    pub fn new(blobs: Arc<dyn BlobStore>, config: Arc<Configuration>) -> RoomSet {
+    pub fn new(store: Arc<crate::document::store::Store>) -> RoomSet {
+        let blobs = store.blobs.clone();
+        let config = store.config.clone();
+        let attached_store = Arc::new(std::sync::OnceLock::new());
+        let catalog = Arc::new(std::sync::OnceLock::new());
+        let _ = attached_store.set(store.clone());
+        let _ = catalog.set(store.catalog.clone());
         RoomSet {
             blobs,
             config,
             rooms: Mutex::new(HashMap::new()),
             admission: Mutex::new(()),
             loading: Mutex::new(HashMap::new()),
-            store: Arc::new(std::sync::OnceLock::new()),
-            catalog: Arc::new(std::sync::OnceLock::new()),
-        }
-    }
-
-    /// Hands the rooms the index. Called once, by `Server::new`, because a
-    /// checkpoint has to record its own size against the document's quota and
-    /// the store is what holds that.
-    pub fn attach_store(&self, store: Arc<crate::document::store::Store>) {
-        let _ = self.store.set(store);
-        if let Some(store) = self.store.get() {
-            if let Some(catalog) = &store.catalog {
-                let _ = self.catalog.set(catalog.clone());
-            }
+            store: attached_store,
+            catalog,
         }
     }
 
@@ -650,13 +644,13 @@ impl RoomSet {
         // open. Embedded catalog fixtures can omit the OS lock, while an
         // explicitly failed writer claim always opens read-only.
         let mut catalog_read_failed = false;
-        let catalog_document = match self.catalog.get() {
+        let catalog_document = match self.catalog.as_ref().get() {
             Some(catalog) => match read_catalog_document(catalog, slug).await {
                 Ok(document) => document,
                 Err(error) => {
                     eprintln!(
-                        "warning: could not read catalogue document {slug} while opening room: {error}"
-                    );
+                    "warning: could not read catalogue document {slug} while opening room: {error}"
+                );
                     catalog_read_failed = true;
                     None
                 }
@@ -666,15 +660,9 @@ impl RoomSet {
         let deleting = catalog_document
             .as_ref()
             .is_some_and(|document| document.status == "deleting");
-        let storage_id = match self.store.get() {
+        let storage_id = (match self.store.as_ref().get() {
             Some(store) => match store.get_result(slug).await {
                 Ok(entry) => entry.map(|entry| entry.storage_id).or_else(|| {
-                    // A publication is staged as `creating` until its first
-                    // checkpoint commits.  It is not visible through the
-                    // ordinary active-document lookup yet, but the room
-                    // created for that publication must still use the
-                    // catalogue identity or a restart would reopen it under
-                    // the slug and miss its journal/session objects.
                     catalog_document
                         .as_ref()
                         .map(|document| document.id.to_string())
@@ -686,11 +674,11 @@ impl RoomSet {
                         .as_ref()
                         .map(|document| document.id.to_string())
                 }
-            }
-            .filter(|identity| !identity.is_empty())
-            .unwrap_or_else(|| slug.to_string()),
-            None => slug.to_string(),
-        };
+            },
+            None => None,
+        })
+        .filter(|identity| !identity.is_empty())
+        .unwrap_or_else(|| slug.to_string());
         let room = Arc::new(Room {
             slug: slug.to_string(),
             storage_id,
@@ -1191,7 +1179,7 @@ impl Room {
     }
 
     async fn load(&self) {
-        if let Some(catalog) = self.catalog.get() {
+        if let Some(catalog) = self.catalog.as_ref().get() {
             match load_catalog_comments(catalog, &self.slug).await {
                 Ok((seq, comments)) => {
                     let mut state = self.state.lock().await;
@@ -1214,7 +1202,7 @@ impl Room {
 
     /// Recover the PostgreSQL collaboration base and ordered update tail.
     async fn load_session(&self) {
-        let Some(catalog) = self.catalog.get() else {
+        let Some(catalog) = self.catalog.as_ref().get() else {
             self.fence(FenceReason::UnreadableState);
             return;
         };
@@ -1229,7 +1217,7 @@ impl Room {
                 return;
             }
         };
-        let entry = match self.store.get() {
+        let entry = match self.store.as_ref().get() {
             Some(store) => match store.get_result(&self.slug).await {
                 Ok(entry) => entry,
                 Err(error) => {
@@ -1356,7 +1344,7 @@ impl Room {
     /// Rooms resolve current asset metadata through one bounded PostgreSQL query and fence on a
     /// missing or unreadable asset instead of deriving an under-sized tree.
     async fn load_asset_sizes(&self) {
-        let Some(catalog) = self.catalog.get() else {
+        let Some(catalog) = self.catalog.as_ref().get() else {
             return;
         };
         let digests = {
@@ -1403,8 +1391,8 @@ impl Room {
         document_id: uuid::Uuid,
         entry: Option<&crate::document::store::IndexEntry>,
     ) -> Option<(crate::storage::source::StoredProject, bool)> {
-        let store = self.store.get()?;
-        let catalog = store.catalog.as_ref()?;
+        let store = self.store.as_ref().get()?;
+        let catalog = &store.catalog;
         let source = crate::storage::source::SourceStorage::new(
             catalog.clone(),
             self.blobs.clone(),
@@ -1479,7 +1467,7 @@ impl Room {
     /// Native mutations enforce catalog generation and operation authority.
     /// Preserve the room's startup, corruption, and lifecycle fences too.
     async fn hold(&self) -> bool {
-        !self.read_only() && self.catalog.get().is_some()
+        !self.read_only() && self.catalog.as_ref().get().is_some()
     }
 
     /// The per-caller view of the whole thread: the hello frame and the REST
@@ -2001,7 +1989,11 @@ impl Room {
     }
 
     async fn merge_remote_updates(&self) -> Result<(), String> {
-        let catalog = self.catalog.get().ok_or("PostgreSQL catalog required")?;
+        let catalog = self
+            .catalog
+            .as_ref()
+            .get()
+            .ok_or("PostgreSQL catalog required")?;
         let document_id =
             uuid::Uuid::parse_str(&self.storage_id).map_err(|_| "invalid document id")?;
         loop {

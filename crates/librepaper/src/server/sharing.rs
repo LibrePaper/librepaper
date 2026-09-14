@@ -519,7 +519,8 @@ impl Server {
         // Recheck ownership in the authoritative PostgreSQL transaction before
         // changing anything; transfers and revocations racing
         // this request therefore have a single winner.
-        if let Some(catalog) = &self.store.catalog {
+        {
+            let catalog = &self.store.catalog;
             let target = match catalog
                 .upsert_registered_account(crate::storage::postgres::NewAccount {
                     kind: "registered".into(),
@@ -557,24 +558,12 @@ impl Server {
         // quite correctly sees the new owner and would reject a successful
         // transfer as an ownership race. Legacy stores have no catalogue
         // transaction, so retain the ownership guard around their write.
-        let moved = if self.store.catalog.is_some() {
+        let moved = {
             self.store
                 .get_result(slug)
                 .await
                 .map_err(|error| ModifyError::Storage(error.to_string()))
                 .and_then(|entry| entry.ok_or(ModifyError::NotFound))
-        } else {
-            self.store
-                .modify(slug, |entry| {
-                    if !entry.owned_by(&current_who.key, &current_who.id.id) {
-                        return Err("ownership changed".into());
-                    }
-                    entry.publisher = account.handle.clone();
-                    entry.publisher_id = account.id.clone();
-                    entry.publisher_name = account.name.clone();
-                    Ok(())
-                })
-                .await
         };
         match moved {
             Ok(entry) => {

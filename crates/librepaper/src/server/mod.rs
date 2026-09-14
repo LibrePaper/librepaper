@@ -21,10 +21,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-tokio::task_local! {
-    static REQUEST_AUTHENTICATION: std::cell::RefCell<Option<Result<Identity, AuthenticationFailure>>>;
-}
-
 use crate::auth::pseudonym::pseudonym_for;
 use crate::auth::{
     cookie_name, normalized, now_unix, pkce_verifier, random_token, read_device, read_session,
@@ -79,9 +75,54 @@ pub use sharing::*;
 pub use signin::*;
 use socket::*;
 
-pub struct Server {
+/// The document boundary shared by HTTP handlers and realtime rooms.
+///
+/// Keeping the durable store and the resident-room cache together prevents a
+/// server from constructing either half without wiring the other.  Existing
+/// handler code dereferences through this service while operations migrate to
+/// its authorization-aware API.
+pub struct DocumentService {
     pub store: Arc<Store>,
     pub rooms: RoomSet,
+}
+
+impl DocumentService {
+    pub fn new(store: Store) -> Self {
+        let store = Arc::new(store);
+        let rooms = RoomSet::new(store.clone());
+        Self { store, rooms }
+    }
+
+    /// Read through the authoritative catalogue without conflating a storage
+    /// failure with a missing document.
+    #[allow(clippy::result_large_err)]
+    async fn checked_entry(&self, slug: &str) -> Result<Option<IndexEntry>, Reply> {
+        self.store.get_result(slug).await.map_err(|error| {
+            write_json(
+                503,
+                &json!({
+                    "error": error.to_string(),
+                    "retryable": true,
+                }),
+            )
+        })
+    }
+
+    /// Apply the complete read policy to an already-resolved caller.
+    fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
+        if who.automation {
+            return entry.example
+                || (!who.link.is_empty()
+                    && entry
+                        .link_role(&who.link, crate::util::now_unix())
+                        .is_some());
+        }
+        entry.readable_by(&who.key, &who.id.id, &who.link, crate::util::now_unix())
+    }
+}
+
+pub struct Server {
+    documents: DocumentService,
     pub shell: HashMap<String, ShellFile>,
     pub app: GithubApp,
     /// The other way in. Configured from the environment alone, and set after
@@ -139,6 +180,14 @@ pub struct Server {
     /// with. Inserted when a socket attaches to a room and removed on every
     /// exit from `run_socket`, so a stale entry never outlives its socket.
     connections: tokio::sync::Mutex<HashMap<u64, Connection>>,
+}
+
+impl std::ops::Deref for Server {
+    type Target = DocumentService;
+
+    fn deref(&self) -> &Self::Target {
+        &self.documents
+    }
 }
 
 /// Explicitly marks a request as an agent/automation request. In this mode a
@@ -244,6 +293,21 @@ enum AuthenticationFailure {
     Unavailable,
 }
 
+/// Values resolved once at the admission boundary and shared by every handler
+/// involved in one HTTP request.
+#[derive(Clone, Debug)]
+pub(super) struct RequestContext {
+    pub arrival: Arrival,
+    pub peer: SocketAddr,
+    authentication: Result<Identity, AuthenticationFailure>,
+}
+
+impl RequestContext {
+    fn identity(&self) -> Identity {
+        self.authentication.clone().unwrap_or_default()
+    }
+}
+
 /// Read one account row off the runtime worker.
 pub(crate) async fn account_row(
     catalog: &Arc<crate::storage::postgres::PostgresCatalog>,
@@ -279,27 +343,9 @@ fn authentication_failure_of(error: crate::storage::postgres::Error) -> Authenti
 }
 
 impl Server {
-    /// Read a document through the authoritative catalogue when one is
-    /// configured.  A catalogue failure is never treated as a missing
-    /// document: callers map this response to a retryable 503, while the
-    /// `Ok(None)` case remains an ordinary 404.
-    #[allow(clippy::result_large_err)]
-    async fn checked_entry(&self, slug: &str) -> Result<Option<IndexEntry>, Reply> {
-        self.store.get_result(slug).await.map_err(|error| {
-            write_json(
-                503,
-                &json!({
-                    "error": error.to_string(),
-                    "retryable": true,
-                }),
-            )
-        })
-    }
-
     #[allow(clippy::too_many_arguments)] // a server is made of exactly these
     pub fn new(
         store: Store,
-        rooms: RoomSet,
         shell: HashMap<String, ShellFile>,
         app: GithubApp,
         key: Vec<u8>,
@@ -307,18 +353,18 @@ impl Server {
         publishers: Policy,
         commenters: Policy,
     ) -> Server {
-        // The rooms are handed the index before anything opens one: a
-        // checkpoint has to charge itself to the document's owner, and the
-        // index is what holds that.
-        let store = Arc::new(store);
-        rooms.attach_store(store.clone());
+        // Rooms and durable document storage form one service boundary and
+        // are wired before the server can be observed.
+        let documents = DocumentService::new(store);
         let accounts = Arc::new(GithubAccounts::new(&app));
-        let cost = Arc::new(cost::CostMeter::new(&config, store.catalog.clone()));
+        let cost = Arc::new(cost::CostMeter::new(
+            &config,
+            documents.store.catalog.clone(),
+        ));
         let socket_budget = socket_budget::SocketBudget::new(config.sockets);
         let mcp_capacity = mcp::Capacity::default();
         Server {
-            store,
-            rooms,
+            documents,
             shell,
             app,
             google: GoogleApp::default(),
@@ -349,10 +395,17 @@ impl Server {
         // multipart overhead together -- so Axum's own default (2 MiB, meant
         // for a deployment that never overrides it) must not additionally cut
         // a legitimate upload off before that ceiling is even consulted.
+        let fallback = Router::new()
+            .fallback(routes::dispatch)
+            .with_state(self.clone());
         Router::new()
-            .fallback(cost::handle)
+            .merge(routes::api_router(self.clone()))
+            .merge(fallback)
             .layer(DefaultBodyLimit::disable())
-            .with_state(self)
+            .layer(axum::middleware::from_fn_with_state(
+                self.clone(),
+                cost::middleware,
+            ))
     }
 
     /// Identifies the caller: a browser by its session cookie, the CLI by the
@@ -382,9 +435,6 @@ impl Server {
         headers: &HeaderMap,
         arrival: &Arrival,
     ) -> Result<Identity, AuthenticationFailure> {
-        if let Ok(Some(cached)) = REQUEST_AUTHENTICATION.try_with(|slot| slot.borrow_mut().take()) {
-            return cached;
-        }
         let authorization = header_of(headers, "authorization");
         let bearer = authorization
             .as_deref()
@@ -428,9 +478,7 @@ impl Server {
             };
         }
 
-        let Some(catalog) = &self.store.catalog else {
-            return Ok(identity);
-        };
+        let catalog = &self.store.catalog;
 
         if github_bearer {
             // A real GitHub bearer is an admission path of its own. Establish
@@ -466,15 +514,6 @@ impl Server {
             Ok(None) => Err(AuthenticationFailure::Invalid),
             Err(_) => Err(AuthenticationFailure::Unavailable),
         }
-    }
-
-    async fn with_request_authentication<F: std::future::Future>(
-        authentication: Result<Identity, AuthenticationFailure>,
-        future: F,
-    ) -> F::Output {
-        REQUEST_AUTHENTICATION
-            .scope(std::cell::RefCell::new(Some(authentication)), future)
-            .await
     }
 
     /// The key a caller's uploads belong to. A signed-in caller is their
@@ -665,20 +704,6 @@ impl Server {
         }
     }
 
-    /// Whether a caller may read this document at all: its owner, whoever
-    /// holds a live link, and anybody at all for an example. The bare URL
-    /// opens nothing for anyone else.
-    pub fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
-        if who.automation {
-            return entry.example
-                || (!who.link.is_empty()
-                    && entry
-                        .link_role(&who.link, crate::util::now_unix())
-                        .is_some());
-        }
-        entry.readable_by(&who.key, &who.id.id, &who.link, crate::util::now_unix())
-    }
-
     /// Answers the request itself when the caller may not publish, and
     /// otherwise returns the key and id that own whatever that caller uploads.
     // The error is a whole response, which is the point: a refusal says what
@@ -773,17 +798,14 @@ impl Server {
         // generation was revoked. This helper is called only after the
         // fallible authentication gate has confirmed a 401, so an unavailable
         // catalogue never causes a live credential to be cleared.
-        let revoked = match self.store.catalog.as_ref() {
-            Some(catalog) => match account_row(catalog, &identity.id).await {
-                Ok(Some(account)) => {
-                    account.status != "active"
-                        || identity.session_generation.is_empty()
-                        || account.session_generation.to_string() != identity.session_generation
-                }
-                Ok(None) => true,
-                Err(_) => false,
-            },
-            None => false,
+        let revoked = match account_row(&self.store.catalog, &identity.id).await {
+            Ok(Some(account)) => {
+                account.status != "active"
+                    || identity.session_generation.is_empty()
+                    || account.session_generation.to_string() != identity.session_generation
+            }
+            Ok(None) => true,
+            Err(_) => false,
         };
         if revoked {
             add_cookie(response, &clear_cookie(&name, https));
@@ -793,25 +815,6 @@ impl Server {
     fn auth_credential_supplied(&self, headers: &HeaderMap, arrival: &Arrival) -> bool {
         header_of(headers, "authorization").is_some()
             || cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE)).is_some()
-    }
-
-    async fn authentication_failure(
-        &self,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-    ) -> Option<(u16, &'static str)> {
-        if !self.auth_credential_supplied(headers, arrival) {
-            return None;
-        }
-        match self.authenticated_identity(headers, arrival).await {
-            Ok(identity) if identity.is_signed_in() => None,
-            Ok(_) | Err(AuthenticationFailure::Invalid) => {
-                Some((401, "authentication expired or was revoked"))
-            }
-            Err(AuthenticationFailure::Unavailable) => {
-                Some((503, "authentication service temporarily unavailable"))
-            }
-        }
     }
 
     /// One row of a listing: what the document is, and what this caller holds

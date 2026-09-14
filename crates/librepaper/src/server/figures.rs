@@ -200,9 +200,7 @@ impl Server {
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
-        let Some(catalog) = self.store.catalog.clone() else {
-            return plain(503, "local catalogue unavailable");
-        };
+        let catalog = self.store.catalog.clone();
         let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {
             return plain(404, "not found");
         };

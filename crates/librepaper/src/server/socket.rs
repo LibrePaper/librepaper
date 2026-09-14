@@ -141,7 +141,7 @@ impl Server {
         // A room belongs to a document. Without this, any invented slug would
         // conjure one, and since the rate limiter counts per room, a new slug
         // per comment would also mean no rate limit at all.
-        let entry = if self.store.catalog.is_some() {
+        let entry = {
             match self.store.get_checked(slug).await {
                 Ok(Some(entry)) => entry,
                 Ok(None) => return plain(404, "not found"),
@@ -150,13 +150,6 @@ impl Server {
                     return plain(503, "catalogue temporarily unavailable");
                 }
             }
-        } else {
-            let entry = match self.checked_entry(slug).await {
-                Ok(Some(entry)) => entry,
-                Ok(None) => return plain(404, "not found"),
-                Err(response) => return response,
-            };
-            entry
         };
         let headers = request.headers().clone();
         // A browser cannot set a header on a socket handshake, so the link key

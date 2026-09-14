@@ -20,17 +20,8 @@ const body = (start, end) => {
 };
 
 const showCheckpoint = body("  async function showCheckpoint(sha)", "  async function nameCheckpoint");
-// A ready frame must not replace an in-flight historical URL/navigation with
-// an automatic captured-current comparison.
-for (const [arrived, navigating, expected] of [["old", 0, 0], ["", 1, 0], ["", 0, 1]]) {
-  let comparisons = 0;
-  vm.runInNewContext(body('        if (panel === "history" && historyBaseline', '        if (first && !publishedMode)'), {
-    panel: "history", historyBaseline: { sha: "old" }, historyComparePoint: null, viewing: null,
-    ARRIVED_AT: arrived, checkpointNavigationPending: navigating,
-    computeHistoryChanges: () => comparisons++,
-  });
-  assert.equal(comparisons, expected, "historical navigation owns frame readiness");
-}
+// History no longer starts comparisons from preview readiness. The full
+// Reader browser test covers preview events during pending source navigation.
 const backToNow = body("  function backToNow()", "  async function nameCheckpoint");
 for (const stale of [false, true]) {
   let finish;
@@ -442,7 +433,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let notified = 0;
   const ctx = context({
-    sourceGeneration: 0, viewing: { sha: "old" }, mayEdit: true, publishedPublication: null,
+    sourceGeneration: 0, historyLiveVersion: 0, viewing: { sha: "old" }, mayEdit: true, publishedPublication: null,
     outlineRevision: 0,
     historyController: { noteLiveChange: () => notified++ },
     diagnosticPainter: { typed: () => assert.fail("historical preview must remain stable") },
@@ -457,7 +448,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedPublication: null,
+    sourceGeneration: 0, historyLiveVersion: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedPublication: null,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
@@ -476,7 +467,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
+    sourceGeneration: 0, historyLiveVersion: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
     previewTimer: null, diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
       assert.ok(ms <= 50, "Typst starts rendering within 50 ms of an edit");
@@ -496,7 +487,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let inEditorUpdate = true;
   let paintedDiagnostics = 0;
   const ctx = context({
-    sourceGeneration: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
+    sourceGeneration: 0, historyLiveVersion: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
     session: {
       mainPath: () => "main.qmd", mainId: () => "main", textOf: () => ({ toString: () => "# Draft\n" }),
       text: { toString: () => "# Draft\n" },

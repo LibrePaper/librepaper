@@ -198,7 +198,7 @@ impl Room {
         let Ok(id) = uuid::Uuid::parse_str(sha) else {
             return Ok(None);
         };
-        let Some(catalog) = self.catalog.get() else {
+        let Some(catalog) = self.catalog.as_ref().get() else {
             return Ok(None);
         };
         let document_id =
@@ -224,7 +224,11 @@ impl Room {
         after: Option<i64>,
         limit: u32,
     ) -> Result<(Vec<Checkpoint>, Option<i64>), String> {
-        let catalog = self.catalog.get().ok_or("PostgreSQL catalog required")?;
+        let catalog = self
+            .catalog
+            .as_ref()
+            .get()
+            .ok_or("PostgreSQL catalog required")?;
         let id = uuid::Uuid::parse_str(&self.storage_id).map_err(|_| "invalid document id")?;
         let rows = catalog
             .version_page(id, after, limit.clamp(1, 200) as i64)
@@ -307,7 +311,7 @@ impl Room {
         Ok(())
     }
     pub async fn manifest(&self) -> Manifest {
-        let Some(catalog) = self.catalog.get() else {
+        let Some(catalog) = self.catalog.as_ref().get() else {
             return self.state.lock().await.manifest.clone();
         };
         let Ok(id) = uuid::Uuid::parse_str(&self.storage_id) else {
@@ -328,7 +332,11 @@ impl Room {
         &self,
         point: &Checkpoint,
     ) -> Result<crate::storage::source::StoredProject, String> {
-        let catalog = self.catalog.get().ok_or("PostgreSQL catalog required")?;
+        let catalog = self
+            .catalog
+            .as_ref()
+            .get()
+            .ok_or("PostgreSQL catalog required")?;
         let doc = uuid::Uuid::parse_str(&self.storage_id).map_err(|_| "invalid document id")?;
         let id = uuid::Uuid::parse_str(&point.sha).map_err(|_| "invalid version id")?;
         let version = catalog

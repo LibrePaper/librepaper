@@ -10,7 +10,6 @@ use crate::auth::{session_key_file, GithubApp, GoogleApp, Policy};
 use crate::config::Configuration;
 use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
 use crate::document::store::Store;
-use crate::room::RoomSet;
 use crate::server::origins::DOCS_PREFIX;
 use crate::server::shell::load_shell;
 use crate::server::Server;
@@ -266,10 +265,8 @@ pub async fn serve(options: ServeOptions) {
     let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
         .await
         .unwrap_or_else(|err| die(err));
-    let rooms = RoomSet::new(blobs.clone(), config.clone());
     let mut instance = Server::new(
         store,
-        rooms,
         shell,
         app,
         key,
@@ -411,7 +408,8 @@ pub async fn serve(options: ServeOptions) {
         }
     });
 
-    if let Some(catalog) = instance.store.catalog.clone() {
+    {
+        let catalog = instance.store.catalog.clone();
         let worker = crate::storage::worker::Worker::new(catalog.clone(), blobs.clone());
         tokio::spawn(worker.run());
         let maintenance_catalog = catalog;
@@ -428,13 +426,7 @@ pub async fn serve(options: ServeOptions) {
                     account_id: None,
                     scope_key: "deployment".into(),
                     dedupe_key: Some(format!("lifecycle:{generation}")),
-                    payload: serde_json::json!({
-                        "base_cleanup_batch": 100,
-                        "completed_job_retention_days": 7,
-                        "completed_job_batch": 1000,
-                        "orphan_scan_batch": 500,
-                        "orphan_grace_hours": 168
-                    }),
+                    payload: serde_json::json!({}),
                     priority: -10,
                     max_attempts: 5,
                     run_after: now,
@@ -488,9 +480,7 @@ pub async fn serve(options: ServeOptions) {
     if let Err(error) = closing_cost.checkpoint().await {
         eprintln!("warning: final transfer checkpoint failed: {error}");
     }
-    if let Some(catalog) = closing_catalog.as_ref() {
-        catalog.close().await;
-    }
+    closing_catalog.close().await;
     if let Err(err) = serve_result {
         die(err);
     }

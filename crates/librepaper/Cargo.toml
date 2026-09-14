@@ -80,7 +80,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 uuid = { version = "1", features = ["v7", "serde"] }
 log = "0.4"
 tempfile = "3"
-object_store = { version = "0.12", features = ["aws"] }
+object_store = { version = "0.14", features = ["aws", "fs"] }
 
 [dev-dependencies]
 # A font file for the tests to put in a library.

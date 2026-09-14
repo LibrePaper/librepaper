@@ -88,8 +88,6 @@ window.historyPanelCheck = async () => {
   input.value = 'Working draft'; input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await flush();
   check(events.some((event) => event[0] === 'name' && event[1] === 'current' && event[2] === 'Working draft'), 'current naming reports the current pseudo-version');
-  window.dispatchEvent(new KeyboardEvent('keydown', { key: ']' })); await flush();
-  check(events.some((event) => event[0] === 'step'), 'keyboard change navigation remains active');
   component.$set({ checkpoints: points.map(({ changed, ...point }) => point), path: 'main.md' }); await flush();
   check(document.querySelectorAll('[data-sha]').length > 0,
     'legacy manifests without changed-path metadata do not look like an empty history');
@@ -116,7 +114,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("history panel component", () => tab.evaluate("Boolean(window.historyPanelCheck)"));
   assert.equal(await tab.evaluate("window.historyPanelCheck()"), true);
-  console.log("history panel: grouping, expansion, filtering, naming, and keyboard controls passed");
+  console.log("history panel: grouping, expansion, filtering, comparison modes, and naming passed");
 } finally {
   await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
 }

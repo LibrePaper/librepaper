@@ -7,7 +7,7 @@
 // checked here, because they are what a careless change would break silently:
 // the panel would still render, and the history would just be harder to read.
 
-import { coalesce, sizeDelta, timeline } from "../../src/lib/history.js";
+import { coalesce, loadWithStatus, sizeDelta, timeline } from "../../src/lib/history.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -46,6 +46,25 @@ const shas = (rows) =>
 }
 
 /* -------------------------------------------------------------- the folding */
+
+{
+  const points = marks("05", "anne", 3).map((point, i) => ({ ...point, at: "2026-09-05T09:00:00Z", seq: i + 1 }));
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async url => {
+    urls.push(url);
+    return { ok: true, json: async () => urls.length === 1
+      ? { checkpoints: [points[2], points[1]], next_cursor: 2, durability: {live_save:"saved"} }
+      : { checkpoints: [points[0]] } };
+  };
+  try {
+    const loaded = await loadWithStatus("paper");
+    check("history follows the server's page cursor", urls[1] === "/api/documents/paper/history?after=2");
+    check("controller input is oldest first across all pages", loaded.checkpoints.map(point => point.seq).join() === "1,2,3");
+    check("the first page's durability is retained", loaded.durability.live_save === "saved");
+    check("timeline breaks timestamp ties by sequence", shas(rowsOf(timeline(loaded.checkpoints)))[0] === points[2].sha);
+  } finally { globalThis.fetch = originalFetch; }
+}
 
 {
   // Two in a row is not a run: folding one row hides nothing and costs a click.

@@ -73,6 +73,7 @@
     checkpoints = [],
     viewing = null,
     historySelectedSha = "",
+    historyMode = "current",
     historyDurability = null,
     historyController,
     historyProblem = "",
@@ -238,16 +239,10 @@
               onopen={onopendiagnostic} provenance={lastLatexResult?.provenance || null}
               attempts={lastLatexResult?.attempts || []} />
           {:else if tab.id === "history"}
-            <History {checkpoints} {path} viewing={historySelectedSha || viewing?.sha || null}
+            <History {checkpoints} {path} viewing={historySelectedSha} comparison={historyMode}
               canEdit={mayEdit} durability={historyDurability}
-              comparingCurrent={historyController?.comparingCurrent} newerEdits={historyController?.newerEdits}
-              oncomparecurrent={oncomparecurrent} onrefreshcurrent={onrefreshcurrent} problem={historyProblem}
-              baseline={historyBaseline} changes={historyChanges} changedPaths={historyChangedPaths}
-              redlines={historyRedlines} onredlines={onsethistoryredlines} {fileDiff}
-              target={historyComparePoint} onview={onviewpoint} oncompare={oncompare}
-              onback={onbackhistory} onname={onnamecheckpoint} onrestore={onrestore}
-              oncopy={oncopycheckpoint} onstep={onstephistory} oncheckpointfile={oncheckpointfile}
-              onfilediff={onfilediff} onclosefilediff={onclosefilediff} />
+              problem={historyProblem} onview={onviewpoint} onname={onnamecheckpoint}
+              onrestore={onrestore} oncopy={oncopycheckpoint} />
           {/if}
           {#if panel === tab.id && ["collaboration", "changes"].includes(tab.id) && unconfirmed.length}
             <div class="pending-recovery">

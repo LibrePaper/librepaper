@@ -40,16 +40,6 @@ struct SourceCompactionPayload {
     through_update_sequence: i64,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MaintenancePayload {
-    base_cleanup_batch: i64,
-    completed_job_retention_days: i64,
-    completed_job_batch: i64,
-    orphan_scan_batch: usize,
-    orphan_grace_hours: i64,
-}
-
 impl Worker {
     pub fn new(catalog: Arc<PostgresCatalog>, blobs: Arc<dyn BlobStore>) -> Self {
         Self {
@@ -213,29 +203,22 @@ impl Worker {
     }
 
     async fn maintenance(&self, claim: &JobClaim) -> Result<(), String> {
-        let payload: MaintenancePayload = serde_json::from_value(claim.job.payload.clone())
-            .map_err(|error| format!("invalid maintenance payload: {error}"))?;
-        if !(1..=500).contains(&payload.base_cleanup_batch)
-            || !(1..=10_000).contains(&payload.completed_job_batch)
-            || !(1..=3650).contains(&payload.completed_job_retention_days)
-            || !(1..=1000).contains(&payload.orphan_scan_batch)
-            || !(24 * 7..=24 * 365).contains(&payload.orphan_grace_hours)
-        {
-            return Err("maintenance payload is outside its bounded limits".into());
-        }
+        let _ = &claim.job.payload;
         let maintenance = Maintenance::new(self.catalog.clone(), self.blobs.clone());
+        let base_cleanup_batch = 100;
+        let orphan_scan_batch = 500;
+        let orphan_grace_hours = 24 * 7;
+        let completed_job_retention_days = 7;
+        let completed_job_batch = 1000;
         let mut failures = Vec::new();
         if let Err(error) = maintenance
-            .delete_superseded_bases(payload.base_cleanup_batch)
+            .delete_superseded_bases(base_cleanup_batch)
             .await
         {
             failures.push(error);
         }
         if let Err(error) = maintenance
-            .delete_orphans(
-                payload.orphan_scan_batch,
-                Duration::hours(payload.orphan_grace_hours),
-            )
+            .delete_orphans(orphan_scan_batch, Duration::hours(orphan_grace_hours))
             .await
         {
             failures.push(error);
@@ -243,8 +226,8 @@ impl Worker {
         if let Err(error) = self
             .catalog
             .prune_jobs(
-                OffsetDateTime::now_utc() - Duration::days(payload.completed_job_retention_days),
-                payload.completed_job_batch,
+                OffsetDateTime::now_utc() - Duration::days(completed_job_retention_days),
+                completed_job_batch,
             )
             .await
         {

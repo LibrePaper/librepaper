@@ -220,11 +220,7 @@ impl PublicationStore {
         }
         let document_id = Uuid::parse_str(storage_id)
             .map_err(|_| PublicationError::Invalid("invalid document id".into()))?;
-        let catalog = self
-            .store
-            .catalog
-            .clone()
-            .ok_or_else(|| PublicationError::Storage("PostgreSQL catalog required".into()))?;
+        let catalog = self.store.catalog.clone();
         let current = catalog
             .current_publication(document_id)
             .await
@@ -283,11 +279,7 @@ impl PublicationStore {
     ) -> Result<Option<PublicationManifest>, PublicationError> {
         let id = Uuid::parse_str(storage_id)
             .map_err(|_| PublicationError::Invalid("invalid document id".into()))?;
-        let catalog = self
-            .store
-            .catalog
-            .as_ref()
-            .ok_or_else(|| PublicationError::Storage("PostgreSQL catalog required".into()))?;
+        let catalog = &self.store.catalog;
         let Some(row) = catalog
             .current_publication(id)
             .await
@@ -319,11 +311,7 @@ impl PublicationStore {
         let path = validate_path(path)?;
         let id = Uuid::parse_str(storage_id)
             .map_err(|_| PublicationError::Invalid("invalid document id".into()))?;
-        let catalog = self
-            .store
-            .catalog
-            .as_ref()
-            .ok_or_else(|| PublicationError::Storage("PostgreSQL catalog required".into()))?;
+        let catalog = &self.store.catalog;
         let publication = catalog
             .current_publication(id)
             .await

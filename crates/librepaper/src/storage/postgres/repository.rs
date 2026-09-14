@@ -5,6 +5,7 @@ use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use super::{new_id, Error, PostgresCatalog, Result};
+use crate::document::quota::{DEFAULT_ROUTINE_VERSION_AGE_DAYS, DEFAULT_ROUTINE_VERSION_COUNT};
 
 #[derive(Clone, Debug)]
 pub struct NewAccount {
@@ -776,41 +777,26 @@ impl PostgresCatalog {
                 ));
             }
         }
-        let mut version_count: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM document_versions WHERE document_id=$1")
-                .bind(input.document_id)
-                .fetch_one(&mut *tx)
-                .await?;
-        while version_count >= 1000 {
-            // Make room only from history already eligible under the default
-            // retention predicate. Current and labeled versions are never
-            // selected. The immutable archive may remain as an orphan until
-            // provider lifecycle cleanup, which is an accepted coarse loss.
-            let removed: Option<Uuid> = sqlx::query_scalar(
-                "WITH eligible AS (
-                   SELECT v.id FROM document_versions v
-                   JOIN documents d ON d.id=v.document_id
-                   WHERE v.document_id=$1 AND v.label IS NULL
-                     AND v.id IS DISTINCT FROM d.current_version_id
-                     AND v.created_at < now()-interval '30 days'
-                     AND v.id NOT IN (
-                       SELECT id FROM document_versions
-                       WHERE document_id=$1 AND label IS NULL
-                       ORDER BY sequence DESC,id DESC LIMIT 50
-                     )
-                   ORDER BY v.sequence,v.id LIMIT 1
-                 )
-                 DELETE FROM document_versions v USING eligible e
-                 WHERE v.id=e.id RETURNING v.id",
-            )
-            .bind(input.document_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            if removed.is_none() {
-                return Err(Error::Conflict("retained version ceiling reached".into()));
-            }
-            version_count -= 1;
-        }
+        sqlx::query(
+            "WITH ranked AS (
+               SELECT id,
+                      row_number() OVER (ORDER BY sequence DESC,id DESC) AS rank
+               FROM document_versions v
+               JOIN documents d ON d.id=v.document_id
+               WHERE v.document_id=$1
+                 AND v.label IS NULL
+                 AND v.id IS DISTINCT FROM d.current_version_id
+             )
+             DELETE FROM document_versions v
+             USING ranked r
+             WHERE v.id = r.id
+               AND (r.rank > $2 OR v.created_at < now() - make_interval(days => $3))",
+        )
+        .bind(input.document_id)
+        .bind(i64::from(DEFAULT_ROUTINE_VERSION_COUNT))
+        .bind(DEFAULT_ROUTINE_VERSION_AGE_DAYS)
+        .execute(&mut *tx)
+        .await?;
         let recent:i64=sqlx::query_scalar("SELECT count(*) FROM document_versions v JOIN documents d ON d.id=v.document_id WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1) AND v.created_at>=now()-interval '1 hour'").bind(input.document_id).fetch_one(&mut *tx).await?;
         if recent >= self.policy.versions_per_hour {
             return Err(Error::Conflict(

@@ -10,6 +10,8 @@
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
   import { createHistoryController } from "../lib/reader/history.svelte.js";
+  import { createHistorySource } from "../lib/reader/history-source.svelte.js";
+  import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import * as passages from "../lib/passages.js";
   import * as suggestions from "../lib/suggestions.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
@@ -541,16 +543,9 @@
         reanchor();
         applySelection();
         revealPendingHistory();
-        // A repaint rebuilds the frame's document from scratch, so redlines
-        // need resending here just as highlights do in `reanchor` -- the
-        // `computeHistoryChanges` branch below covers the case where the
-        // hunks themselves are stale, but the common case is the same hunks
-        // painted onto a freshly built DOM.
+        // Clear any redlines left on the rebuilt preview. History source
+        // navigation has its own request lifetime and never starts here.
         applyRedlines();
-        // Initial checkpoint navigation owns the pane. A frame readiness
-        // message must not start a current capture that overtakes that URL.
-        if (panel === "history" && historyBaseline && !historyComparePoint && !viewing &&
-            !ARRIVED_AT && !checkpointNavigationPending) void computeHistoryChanges();
         if (first && !publishedMode) {
           void paintPreview();
         }
@@ -1372,18 +1367,35 @@
   // Selection is a user-interface fact, not proof that rendering or diffing
   // succeeded. Keep it independently so a missing asset or renderer failure
   // cannot make a clicked checkpoint appear unselected.
-  let historySelectedSha = $state("");
+  const historySource = createHistorySource({
+    checkpoint: sha => history.checkpoint(SLUG, sha, keyHeaders(KEY)),
+    checkpoints: () => checkpoints,
+    preferredPath: () => session?.paths?.get(openFile) || "",
+    currentTree: () => {
+      if (session && session.joined !== false) return session.tree();
+      // A checkpoint URL can arrive before the initial collaborative state.
+      // Wait for that state instead of comparing with a temporary empty tree.
+      return (async () => {
+        const deadline = Date.now() + 10000;
+        while (!readerDisposed && (!session || session.joined === false) && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        if (readerDisposed || !session || session.joined === false) throw new Error("The current document is still connecting. Please retry when it has loaded.");
+        return session.tree();
+      })();
+    },
+  });
+  const historySelectedSha = $derived(historySource.selected);
+  let historyLiveVersion = $state(0);
+  $effect(() => () => historySource.dispose());
+  $effect(() => {
+    if (panel !== "history" || historySource.selected) return;
+    void historyLiveVersion;
+    if (!session) return;
+    untrack(() => { void historySource.select(""); });
+  });
   // The PDF viewer exposes the same text offsets as the HTML frame.
   const redlinesDisabledReason = "";
-  async function setHistoryRedlines(on) {
-    const enabled = Boolean(on) && !redlinesDisabledReason;
-    historyController.setRedlines(enabled);
-    const selected = historyController.baseline?.sha || (!viewing?._current ? viewing?.sha : "");
-    if (!selected) return;
-    if (enabled) {
-      await compareWithCurrent(selected);
-    }
-  }
   let fileDiff = $derived(historyController.fileDiff);
   $effect(() => () => historyController.dispose());
   // Kept here, not read off the pill, so Escape can stop dictation from
@@ -1403,17 +1415,12 @@
 
   const loadHistory = () => {
     historyNavigationProblem = "";
-    return historyController.load();
-  };
-  const chooseHistoryBaseline = (sha) => {
-    historyNavigationProblem = "";
-    return historyController.chooseBaseline(sha);
+    return historyController.load({ selectBaseline: false });
   };
   const chooseHistoryTarget = (sha) => {
     historyNavigationProblem = "";
     return historyController.chooseTarget(sha);
   };
-  const computeHistoryChanges = (point) => historyController.computeChanges(point);
   // Stepping through the changes. A change is named by its offset into the
   // text the frame published -- the same offset its redlines were painted at
   // -- so finding it is asking the frame to scroll there. The frame has to
@@ -1446,83 +1453,12 @@
     }
   }
 
-  // Selecting a history row opens its source diff against a captured copy of
-  // the current draft. History is a source workspace: it does not render the
-  // selected checkpoint in the document preview.
-  async function viewPoint(sha, comparison = "current") {
-    // On a compact screen the history list occupies the whole workspace, so
-    // move to the source after choosing a row. History deliberately has no
-    // rendered-preview mode: Diff only switches the source pane between the
-    // untouched checkpoint and checkpoint-versus-current.
-    if (mayEdit && !editing) await startEditing();
-    if (compact || mayEdit) showMobileView("source");
-    if (!sha) {
-      historySelectedSha = "";
-      historyController.closeFileDiff();
-      backToNow();
-      await chooseHistoryTarget("");
-      return;
-    }
-    historySelectedSha = sha;
-    if (comparison === "current") {
-      historyController.setRedlines(true);
-      await compareWithCurrent(sha);
-      return;
-    }
-    const mine = ++navigationGeneration;
-    if (comparison === "previous") {
-      historyController.setRedlines(true);
-      await historyController.compareTo(sha);
-      const target = historyController.target;
-      if (mine !== navigationGeneration || historySelectedSha !== sha || target?.sha !== sha) return;
-      viewing = target;
-      const path = session?.paths?.get(openFile) || target.main;
-      if (path) await historyController.openFileDiff(path);
-      return;
-    }
-    await historyController.chooseBaseline(sha, { compute: false });
-    const point = historyController.baseline;
-    if (mine !== navigationGeneration || historySelectedSha !== sha || point?.sha !== sha) return;
-    historyController.closeFileDiff();
-    viewing = point;
-    const path = session?.paths?.get(openFile) || point.main;
-    if (!path) return;
-    mergeTarget = {
-      path,
-      oldText: point.texts?.[path] ?? "",
-      newText: point.texts?.[path] ?? "",
-      liveText: null,
-      awareness: null,
-      editable: false,
-      targetLabel: point.label || history.shortSha(point.sha),
-    };
-    historyController.setRedlines(false);
-  }
-
-  async function compareSince(sha) {
-    await chooseHistoryBaseline(sha);
-    // The baseline moved past the compare end, so the range now runs to the
-    // live document, and the pane has to show the live document too.
-    if (viewing && !historyComparePoint) backToNow();
-  }
-
-  async function compareWithCurrent(sha) {
-    const mine = ++navigationGeneration;
-    await historyController.compareWithCurrent(sha);
-    if (mine !== navigationGeneration || !historyController.capturedCurrent) return;
-    const captured = historyController.capturedCurrent;
-    if (panel === "history") {
-      viewing = captured;
-      const path = session?.paths?.get(openFile) || captured.main;
-      if (path) await historyController.openFileDiff(path);
-    } else if (viewing?.sha !== captured.sha) await showCapturedCurrent();
-  }
-
-  async function refreshHistoryCurrent() {
-    const mine = ++navigationGeneration;
-    await historyController.refreshCurrent();
-    if (mine !== navigationGeneration || !historyController.capturedCurrent) return;
-    if (viewing?.sha !== historyController.capturedCurrent.sha) await showCapturedCurrent();
+  // The timeline and source workspace share one selection/mode. They never
+  // use the preview's navigation generation or semantic-comparison callbacks.
+  function viewPoint(sha, comparison = historySource.mode, path = historySource.path || session?.paths?.get(openFile) || "") {
+    const pending = historySource.select(sha, comparison, path);
+    if (compact) showMobileView("source");
+    return pending;
   }
 
   async function showCapturedCurrent() {
@@ -1575,7 +1511,7 @@
       mergeTarget = null;
       backToNow();
       await loadHistory();
-      await chooseHistoryTarget("");
+      await historySource.select("");
     } catch (error) {
       toastProblem(error.message || "that checkpoint could not be restored");
     } finally {
@@ -1583,7 +1519,6 @@
     }
   }
 
-  const openCheckpointFile = (point, path) => historyController.openCheckpointFile(point, path);
   const openFileDiff = (path) => historyController.openFileDiff(path);
 
   // A checkpoint as a renderer takes it. Its texts came with it; its figures
@@ -2472,6 +2407,7 @@
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
+    historyLiveVersion += 1;
     if (mayEdit && publishedPublication?.source_sha256) {
       void refreshPublicationStatus();
     }
@@ -2663,7 +2599,7 @@
     ? read(MOBILE_VIEW, "document") : "document");
   let preferredPane = $state(read(LAYOUT, "split") === "source" ? "source" : "document");
   function showMobileView(view) {
-    if (view === "source" && !editing) view = "document";
+    if (view === "source" && !editing && panel !== "history") view = "document";
     mobileView = view;
     if (view !== "sidebar") preferredPane = view;
     if (!compact && view !== "sidebar" && layout !== "split") {
@@ -2695,7 +2631,7 @@
 
   $effect(() => {
     if (panel !== "history") return;
-    const timer = setInterval(() => void historyController.load(), 15000);
+    const timer = setInterval(() => void historyController.load({ selectBaseline: false }), 15000);
     return () => clearInterval(timer);
   });
 
@@ -2705,22 +2641,16 @@
   // Opening it is what fetches the manifest.
   function showPanel(name, remembered = true) {
     if (panel === "history" && name !== "history") {
-      historySelectedSha = "";
+      historySource.close();
       historyController.closeFileDiff();
       const hadCheckpoint = Boolean(viewing);
       backToNow();
       if (!hadCheckpoint) navigationGeneration += 1;
     }
-    // Opening History establishes its default without pretending the user
-    // clicked the Diff control. A comparison starts only after a row exists
-    // to serve as its baseline.
-    if (name === "history" && panel !== "history") historyController.setRedlines(true);
+    // Reopening starts at the current source while retaining the chosen mode.
+    const enteringHistory = name === "history" && panel !== "history";
     panel = name;
-    if (name === "history" && mayEdit) {
-      void startEditing().then(() => {
-        if (panel === "history") showMobileView("source");
-      });
-    }
+    if (enteringHistory) void historySource.select("");
     // Changes is a source-review queue. On desktop, opening it establishes a
     // source-only workspace; on compact screens the sidebar remains visible
     // until the reviewer chooses a row, which then moves to source.
@@ -2753,11 +2683,12 @@
   // moves.
   let width = $state(innerWidth);
   const compact = $derived(width <= 760);
-  const activeMobileView = $derived(mobileView === "source" && !editing ? "document"
+  const activeMobileView = $derived(panel === "history" && mobileView === "document" ? "source"
+    : mobileView === "source" && !editing && panel !== "history" ? "document"
     : mobileView === "sidebar" && !panel ? "document" : mobileView);
   const splitTight = $derived(width < PANES.editor.min + DOCUMENT_MIN + GRIP
     + (panel ? PANES.sidebar.min + GRIP : ACTIVITY_WIDTH));
-  const effectiveLayout = $derived(!compact && panel === "history" && editing
+  const effectiveLayout = $derived(!compact && panel === "history"
     ? "source"
     : compact
     ? (activeMobileView === "source" ? "source" : "document")
@@ -2770,13 +2701,13 @@
   const panes = $derived({
     layout: effectiveLayout,
     comments: Boolean(panel),
-    editing,
+    editing: editing || panel === "history",
     sourceSide,
     sizes,
     width,
   });
   const shown = $derived(compact ? {
-    source: editing && activeMobileView === "source",
+    source: (editing || panel === "history") && activeMobileView === "source",
     document: activeMobileView === "document",
     comments: activeMobileView === "sidebar",
   } : showing(panes));
@@ -3908,7 +3839,7 @@
     revision={pending?.revision || ""} request={assistantRequest} {comments} {figureAt} {identity}
     commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
     {liveChat} {connected} {mayChat} {unreadChat} bind:collaborationTab
-    {checkpoints} {viewing} {historySelectedSha} historyDurability={historyDurability} {historyController}
+    {checkpoints} {viewing} {historySelectedSha} historyMode={historySource.mode} historyDurability={historyDurability} {historyController}
     {historyProblem} historyBaseline={historyBaseline} historyChanges={historyChanges}
     historyChangedPaths={historyChangedPaths} historyRedlines={historyRedlines} {fileDiff}
     historyComparePoint={historyComparePoint} localAppDiagnostics={localAppDiagnostics}
@@ -3923,30 +3854,29 @@
     onreview={reviewAssistantResults} onpreview={previewAssistant} onsendchat={sendLiveChat}
     ontool={chooseTool} onreveal={revealAnnotation} onresolve={resolve} onaskdelete={askDelete}
     ondeletemany={askDeleteMany} onreply={reply} ondecide={decideSuggestion}
-    onrejectconfirmed={rejectConfirmed} onsethistoryredlines={setHistoryRedlines}
-    onshowhistory={() => { setHistoryRedlines(true); void showPanel("history"); }}
+    onrejectconfirmed={rejectConfirmed}
+    onshowhistory={() => { void showPanel("history"); }}
     onshareclose={() => showPanel("")}
     ondrop={dropped}
     onretrylocal={() => sourceFormat === "quarto" ? setQuartoPreviewMode("quarto") : sourceFormat === "typst" ? setTypstPreviewMode("calepin") : ensureLocalApp()}
     canopendiagnostic={(item) => Boolean(diagnosticFile(item))} onopendiagnostic={openDiagnostic}
-    onviewpoint={viewPoint} oncompare={compareSince}
-    oncomparecurrent={compareWithCurrent} onrefreshcurrent={refreshHistoryCurrent}
-    onbackhistory={() => viewPoint("")} onnamecheckpoint={nameCheckpoint} onrestore={restoreCheckpoint}
-    oncopycheckpoint={checkpointLink} onstephistory={revealHistoryHunk} oncheckpointfile={openCheckpointFile}
-    onfilediff={openFileDiff} onclosefilediff={historyController.closeFileDiff}
+    onviewpoint={viewPoint} onnamecheckpoint={nameCheckpoint} onrestore={restoreCheckpoint}
+    oncopycheckpoint={checkpointLink}
     onsize={(size) => setSize(PANES.sidebar, size)} onguide={(where) => (guide = where)}
     ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}
     onretryannotation={(id, send) => outbox.retry(id, send)} ondiscardannotation={discardAnnotation}
   />
 
-  {#if editing}
+  {#if editing || panel === "history"}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <section class="editorpane" class:away={!shown.source}
              ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
-      {#if mergeTarget && MergeEditor}
+      {#if panel === "history"}
+        <HistoryWorkspace source={historySource} />
+      {:else if mergeTarget && MergeEditor}
         <MergeEditor path={mergeTarget.path} oldText={mergeTarget.oldText} newText={mergeTarget.newText}
                      liveText={mergeTarget.liveText} awareness={mergeTarget.awareness}
                      diff={panel !== "history" || historyRedlines}

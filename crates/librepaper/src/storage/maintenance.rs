@@ -28,19 +28,22 @@ impl Maintenance {
         let mut removed = 0;
         let mut failures = Vec::new();
         for (document_id, key) in rows {
-            let outcome = self
-                .blobs
-                .delete_each(std::slice::from_ref(&key))
-                .await
-                .map_err(|error| error.to_string())?
-                .pop()
-                .ok_or("blob store returned no deletion outcome")?;
-            if !outcome.confirmed() {
-                failures.push(format!("{key}: {}", outcome.why()));
-                continue;
+            match self.blobs.delete(std::slice::from_ref(&key)).await {
+                Ok(()) => {
+                    removed += sqlx::query(
+                        "UPDATE document_bases
+                         SET previous_snapshot_key=NULL, previous_delete_after=NULL
+                         WHERE document_id=$1 AND previous_snapshot_key=$2",
+                    )
+                    .bind(document_id)
+                    .bind(key)
+                    .execute(self.catalog.pool())
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .rows_affected() as usize;
+                }
+                Err(error) => failures.push(format!("{key}: {error}")),
             }
-            removed+=sqlx::query("UPDATE document_bases SET previous_snapshot_key=NULL,previous_delete_after=NULL WHERE document_id=$1 AND previous_snapshot_key=$2")
-                .bind(document_id).bind(key).execute(self.catalog.pool()).await.map_err(|e|e.to_string())?.rows_affected() as usize;
         }
         if failures.is_empty() {
             Ok(removed)
@@ -89,11 +92,7 @@ impl Maintenance {
             let doomed: Vec<String> = page
                 .iter()
                 .filter(|item| !referenced.contains(&item.key))
-                .filter(|item| {
-                    item.modified_at
-                        .or_else(|| object_created_at(&item.key))
-                        .is_some_and(|created| created <= cutoff)
-                })
+                .filter(|item| item.modified_at.is_some_and(|created| created <= cutoff))
                 .map(|item| item.key.clone())
                 .collect();
             if !doomed.is_empty() {
@@ -142,39 +141,4 @@ async fn referenced_keys(
     .await
     .map_err(|error| error.to_string())?;
     Ok(found.into_iter().collect())
-}
-
-fn object_created_at(key: &str) -> Option<std::time::SystemTime> {
-    let parts: Vec<&str> = key.split('/').collect();
-    let raw = match parts.as_slice() {
-        ["documents", _, "assets", id] => *id,
-        ["documents", _, "versions", file] | ["documents", _, "collaboration", file] => {
-            file.split('.').next()?
-        }
-        ["documents", _, "publications", id, ..] => *id,
-        _ => return None,
-    };
-    let id = Uuid::parse_str(raw).ok()?;
-    let (seconds, nanos) = id.get_timestamp()?.to_unix();
-    std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(seconds, nanos))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::object_created_at;
-
-    #[test]
-    fn recognizes_uuid_v7_object_namespaces() {
-        let id = uuid::Uuid::now_v7();
-        for key in [
-            format!("documents/{id}/assets/{id}"),
-            format!("documents/{id}/versions/{id}.tar.zst"),
-            format!("documents/{id}/collaboration/{id}.yrs.zst"),
-            format!("documents/{id}/publications/{id}/index.html"),
-        ] {
-            assert!(object_created_at(&key).is_some(), "{key}");
-        }
-        assert!(object_created_at("documents/nope/assets/nope").is_none());
-        assert!(object_created_at(&format!("temporary/publications/{id}/index.html")).is_none());
-    }
 }

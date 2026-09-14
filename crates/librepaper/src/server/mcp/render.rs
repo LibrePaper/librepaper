@@ -158,9 +158,7 @@ async fn recheck_issuer(
         return Err(boxed_error(404, "candidate not found"));
     }
     if !candidate.grant.account_id.is_empty() {
-        let Some(catalog) = &server.store.catalog else {
-            return Err(boxed_error(503, "candidate authorization unavailable"));
-        };
+        let catalog = &server.store.catalog;
         let account = account_row(catalog, &candidate.grant.account_id)
             .await
             .map_err(|_| boxed_error(503, "candidate authorization unavailable"))?;

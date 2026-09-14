@@ -103,7 +103,7 @@ struct State {
 
 pub struct CostMeter {
     config: Arc<Configuration>,
-    catalog: Option<Arc<crate::storage::postgres::PostgresCatalog>>,
+    catalog: Arc<crate::storage::postgres::PostgresCatalog>,
     state: Mutex<State>,
     checkpoint_gate: tokio::sync::Mutex<()>,
     pub transfers: Arc<tokio::sync::Semaphore>,
@@ -114,9 +114,7 @@ pub struct CostMeter {
 
 impl CostMeter {
     pub async fn restore(&self) -> Result<(), String> {
-        let Some(catalog) = &self.catalog else {
-            return Ok(());
-        };
+        let catalog = &self.catalog;
         let Some(value) = catalog
             .runtime_state("cost-meter-v2")
             .await
@@ -136,7 +134,7 @@ impl CostMeter {
 
     pub fn new(
         config: &Arc<Configuration>,
-        catalog: Option<Arc<crate::storage::postgres::PostgresCatalog>>,
+        catalog: Arc<crate::storage::postgres::PostgresCatalog>,
     ) -> Self {
         let durable = Durable::default();
         let unavailable = false;
@@ -350,9 +348,7 @@ impl CostMeter {
 
     pub async fn checkpoint(&self) -> Result<(), String> {
         let _checkpoint = self.checkpoint_gate.lock().await;
-        let Some(catalog) = &self.catalog else {
-            return Ok(());
-        };
+        let catalog = &self.catalog;
         let saved = {
             let mut state = self.state();
             Self::expire(&mut state, now_unix());
@@ -465,12 +461,10 @@ impl Server {
         snapshot["host"] = tokio::task::spawn_blocking(super::host_metrics::snapshot)
             .await
             .unwrap_or(Value::Null);
-        if let Some(catalog) = &self.store.catalog {
-            snapshot["storage"] = match catalog.usage_bytes(None).await {
-                Ok(bytes) => json!({"retained_bytes":bytes}),
-                Err(_) => Value::Null,
-            };
-        }
+        snapshot["storage"] = match self.store.catalog.usage_bytes(None).await {
+            Ok(bytes) => json!({"retained_bytes":bytes}),
+            Err(_) => Value::Null,
+        };
         snapshot
     }
 }
@@ -577,10 +571,11 @@ fn direct_operator_request(peer: SocketAddr, headers: &HeaderMap) -> bool {
             .is_none_or(|h| h == "same-origin" || h == "none")
 }
 
-pub(super) async fn handle(
+pub(super) async fn middleware(
     axum::extract::State(server): axum::extract::State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    request: Request<Body>,
+    mut request: Request<Body>,
+    next: axum::middleware::Next,
 ) -> Reply {
     let path = request.uri().path().to_string();
     let method = request.method().clone();
@@ -748,6 +743,11 @@ pub(super) async fn handle(
     } else {
         None
     };
+    request.extensions_mut().insert(RequestContext {
+        arrival,
+        peer,
+        authentication: authentication.clone(),
+    });
     let mut response = if path == "/api/status" {
         if !direct_operator_request(peer, request.headers()) {
             plain(403, "operator status requires a direct loopback connection")
@@ -759,15 +759,7 @@ pub(super) async fn handle(
     } else if path == "/health" {
         write_json(200, &json!({"ok":true}))
     } else {
-        Server::with_request_authentication(
-            authentication,
-            dispatch(
-                axum::extract::State(server.clone()),
-                ConnectInfo(peer),
-                request,
-            ),
-        )
-        .await
+        next.run(request).await
     };
     if path.starts_with("/api/") && !path.starts_with("/api/fonts/")
         || path.starts_with("/raw/")

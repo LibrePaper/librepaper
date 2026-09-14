@@ -521,7 +521,7 @@ impl Room {
         // may lag a previous process while the room lease is being acquired.
         // Asked before room state is taken: it is the catalogue's answer and
         // needs nothing of this room's.
-        let durable_comments = match self.catalog.get() {
+        let durable_comments = match self.catalog.as_ref().get() {
             Some(catalog) => Some(
                 count_catalog_comments(catalog, &self.slug)
                     .await
@@ -624,7 +624,7 @@ impl Room {
             prepared.push((results.len() - 1, added));
         }
         drop(state);
-        if let Some(catalog) = self.catalog.get() {
+        if let Some(catalog) = self.catalog.as_ref().get() {
             // Row by row, each acknowledged individually, with room state
             // released for the whole pass: a hundred inserts used to hold the
             // document's lock from the first to the last.
@@ -818,7 +818,7 @@ impl Room {
                 .then(|| format!("request:{}", crate::document::store::digest_of(&request_id)))
         });
         if let Some(id) = requested_id.as_deref() {
-            if self.catalog.get().is_none()
+            if self.catalog.as_ref().get().is_none()
                 && matches!(&command, Command::Comment { .. } | Command::Reply { .. })
             {
                 for item in &state.comments {
@@ -925,7 +925,7 @@ impl Room {
                 refined.proposed = Some(proposed);
                 refined.body = body;
                 drop(state);
-                let persisted = if let Some(catalog) = self.catalog.get() {
+                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     match catalog_comment_row(&self.slug, &refined) {
                         Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
                         Err(error) => Err(error),
@@ -937,7 +937,7 @@ impl Room {
                 if persisted.is_err() {
                     return fail(UNSAVED);
                 }
-                if self.catalog.get().is_some() {
+                if self.catalog.as_ref().get().is_some() {
                     install_comment(&mut state, refined.clone());
                 }
                 (
@@ -1018,7 +1018,7 @@ impl Room {
                     };
                 }
                 drop(state);
-                let persisted = if let Some(catalog) = self.catalog.get() {
+                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     match catalog_comment_row(&self.slug, &decided) {
                         Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
                         Err(error) => Err(error),
@@ -1030,7 +1030,7 @@ impl Room {
                 if persisted.is_err() {
                     return fail(UNSAVED);
                 }
-                if self.catalog.get().is_some() {
+                if self.catalog.as_ref().get().is_some() {
                     install_comment(&mut state, decided.clone());
                 }
                 (
@@ -1059,7 +1059,7 @@ impl Room {
                 // cancelled caller cannot hide a comment from this room that
                 // every other reader still has.
                 drop(state);
-                let persisted = if let Some(catalog) = self.catalog.get() {
+                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     delete_comment_row(catalog, &self.slug, &comment_id, mutation_actor.clone())
                         .await
                 } else {
@@ -1069,7 +1069,7 @@ impl Room {
                 if persisted.is_err() {
                     return fail(UNSAVED);
                 }
-                if self.catalog.get().is_some() {
+                if self.catalog.as_ref().get().is_some() {
                     state.comments.retain(|item| item.id != comment_id);
                 }
                 (
@@ -1111,7 +1111,7 @@ impl Room {
                 let mut anchored = state.comments[index].clone();
                 anchored.source = Some(anchor.clone());
                 drop(state);
-                let persisted = if let Some(catalog) = self.catalog.get() {
+                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     match catalog_comment_row(&self.slug, &anchored) {
                         Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
                         Err(error) => Err(error),
@@ -1124,7 +1124,7 @@ impl Room {
                     return fail(UNSAVED);
                 }
                 let anchored_id = anchored.id.clone();
-                if self.catalog.get().is_some() {
+                if self.catalog.as_ref().get().is_some() {
                     install_comment(&mut state, anchored);
                 }
                 (
@@ -1172,7 +1172,7 @@ impl Room {
                 // than inserting the reply twice.
                 let target_id = state.comments[index].id.clone();
                 drop(state);
-                let persisted = if let Some(catalog) = self.catalog.get() {
+                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     let row = ReplyRow {
                         comment_id: target_id.clone(),
                         id: added.id.clone(),
@@ -1209,7 +1209,7 @@ impl Room {
                     response["retryable"] = json!(error.is_temporary());
                     return (response, false);
                 }
-                if self.catalog.get().is_some() {
+                if self.catalog.as_ref().get().is_some() {
                     if let Some(target) =
                         state.comments.iter_mut().find(|item| item.id == target_id)
                     {
@@ -1422,7 +1422,7 @@ impl Room {
                     accept_request: String::new(),
                 };
                 drop(state);
-                let persisted = if let Some(catalog) = self.catalog.get() {
+                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     let digest = request_digest(&json!({
                         "kind": "comment",
                         "comment": added,

@@ -354,8 +354,8 @@ pub struct Store {
     /// Where the bytes are. The store does not care what holds them.
     pub blobs: Arc<dyn BlobStore>,
     pub config: Arc<Configuration>,
-    /// The authoritative catalogue. Operations fail closed when absent.
-    pub catalog: Option<Arc<Catalog>>,
+    /// The authoritative catalogue.
+    pub catalog: Arc<Catalog>,
 }
 
 /// A document as it is created. There is one version of it from here on, and
@@ -450,12 +450,12 @@ impl Store {
         Ok(Self {
             blobs,
             config,
-            catalog: Some(catalog),
+            catalog,
         })
     }
 
     pub async fn begin_delete(&self, slug: &str) -> Result<Option<String>, String> {
-        let catalog = self.catalog.as_ref().ok_or("PostgreSQL catalog required")?;
+        let catalog = &self.catalog;
         let Some(document) = catalog
             .document_by_slug(slug)
             .await
@@ -489,10 +489,7 @@ impl Store {
     }
 
     pub async fn get_result(&self, slug: &str) -> Result<Option<IndexEntry>, CatalogError> {
-        let catalog = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| CatalogError::Invalid("PostgreSQL catalog required".into()))?;
+        let catalog = &self.catalog;
         let Some(document) = catalog.document_by_slug(slug).await? else {
             return Ok(None);
         };
@@ -504,10 +501,7 @@ impl Store {
     }
 
     pub async fn list_result(&self) -> Result<Vec<IndexEntry>, CatalogError> {
-        let catalog = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| CatalogError::Invalid("PostgreSQL catalog required".into()))?;
+        let catalog = &self.catalog;
         let mut result = Vec::new();
         for document in catalog.list_documents(None, 200).await? {
             result.push(entry_from_document(catalog, &document).await?);
@@ -523,10 +517,7 @@ impl Store {
         limit: u32,
         include_examples: bool,
     ) -> Result<Vec<IndexEntry>, CatalogError> {
-        let catalog = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| CatalogError::Invalid("PostgreSQL catalog required".into()))?;
+        let catalog = &self.catalog;
         let account_id = account_id
             .map(uuid::Uuid::parse_str)
             .transpose()
@@ -563,10 +554,7 @@ impl Store {
         files: Vec<(String, Vec<u8>)>,
         actor: MutationActor,
     ) -> Result<IndexEntry, PutError> {
-        let catalog = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| PutError::Storage("PostgreSQL catalog required".into()))?;
+        let catalog = &self.catalog;
         let account_id =
             uuid::Uuid::parse_str(&actor.account_id).map_err(|_| PutError::Authorization {
                 status: 401,
@@ -654,7 +642,7 @@ impl Store {
         if title.is_empty() {
             return Ok(());
         }
-        let catalog = self.catalog.as_ref().ok_or("PostgreSQL catalog required")?;
+        let catalog = &self.catalog;
         let Some(document) = catalog
             .document_by_slug(slug)
             .await
@@ -674,6 +662,7 @@ impl Store {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn modify<F>(&self, slug: &str, change: F) -> Result<IndexEntry, ModifyError>
     where
         F: Fn(&mut IndexEntry) -> Result<(), String>,
@@ -688,10 +677,7 @@ impl Store {
         link_hash: &str,
         role: Role,
     ) -> Result<(), ModifyError> {
-        let catalog = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| ModifyError::Storage("PostgreSQL catalog required".into()))?;
+        let catalog = &self.catalog;
         let document = catalog
             .document_by_slug(slug)
             .await
@@ -737,10 +723,7 @@ impl Store {
     where
         F: Fn(&mut IndexEntry) -> Result<(), String>,
     {
-        let catalog = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| ModifyError::Storage("PostgreSQL catalog required".into()))?;
+        let catalog = &self.catalog;
         let document = catalog
             .document_by_slug(slug)
             .await

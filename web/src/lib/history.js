@@ -19,19 +19,29 @@ const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
 /// The endpoint keeps this metadata beside `checkpoints` so old consumers can
 /// continue treating the response as a list through `load` below.
 export async function loadWithStatus(slug, headers = {}) {
-  const response = await fetch(`/api/documents/${slug}/history`, {
-    headers: asked(headers),
-    // History is private and labels can change. Never let the browser answer
-    // from an HTTP cache after a link has been rotated or revoked.
-    cache: "no-store",
-  });
-  if (!response.ok) throw new Error("this document's history is not readable");
-  const payload = await response.json();
+  const points = new Map();
+  let cursor = null;
+  let durability = null;
+  do {
+    const response = await fetch(`/api/documents/${slug}/history${cursor === null ? "" : `?after=${encodeURIComponent(cursor)}`}`, {
+      headers: asked(headers),
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("this document's history is not readable");
+    const payload = await response.json();
+    if (cursor === null) durability = payload.durability || null;
+    for (const point of payload.checkpoints || []) points.set(point.sha, point);
+    const next = payload.next_cursor ?? null;
+    if (next !== null && (!Number.isSafeInteger(next) || next <= 0 || (cursor !== null && next >= cursor))) {
+      throw new Error("The history server returned an invalid page cursor.");
+    }
+    cursor = next;
+  } while (cursor !== null);
   return {
-    checkpoints: Array.isArray(payload.checkpoints) ? payload.checkpoints : [],
-    durability: payload.durability && typeof payload.durability === "object"
-      ? payload.durability
-      : null,
+    // Controllers and provenance read oldest first. The paged endpoint reads
+    // newest first; normalize once at the boundary, including timestamp ties.
+    checkpoints: [...points.values()].sort(checkpointOrder),
+    durability: durability && typeof durability === "object" ? durability : null,
   };
 }
 
@@ -263,8 +273,7 @@ export function isMilestone(point) {
 /// or `{ kind: "folded", first, last, hidden }` -- `hidden` being the
 /// checkpoints between them, which the panel offers to open.
 export function timeline(checkpoints, timeZone) {
-  const newest = [...(checkpoints || [])].sort((left, right) =>
-    new Date(right.at).getTime() - new Date(left.at).getTime());
+  const newest = [...(checkpoints || [])].sort((left, right) => checkpointOrder(right, left));
   const days = [];
   for (const point of newest) {
     const day = dayOf(point.at, timeZone);
@@ -273,6 +282,11 @@ export function timeline(checkpoints, timeZone) {
     else days.push({ day, points: [point] });
   }
   return days.map(({ day, points }) => ({ day, rows: fold(points) }));
+}
+
+function checkpointOrder(left, right) {
+  if (left.seq > 0 && right.seq > 0 && left.seq !== right.seq) return left.seq - right.seq;
+  return (Date.parse(left.at) || 0) - (Date.parse(right.at) || 0) || String(left.sha).localeCompare(String(right.sha));
 }
 
 function fold(points) {

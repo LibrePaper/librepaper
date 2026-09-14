@@ -152,7 +152,7 @@ export function createHistoryController({
 
   const indexOf = (sha) => state.checkpoints.findIndex((point) => point.sha === sha);
 
-  async function load() {
+  async function load({ selectBaseline = true } = {}) {
     if (disposed) return;
     const generation = ++loadGeneration;
     // Do not carry a previous response's boundary through a refresh whose
@@ -169,7 +169,7 @@ export function createHistoryController({
       state.checkpoints = Array.isArray(points) ? points : [];
       state.durability = Array.isArray(loaded) ? null : (loaded?.durability || null);
       state.problem = "";
-      if (!state.baseline && !pendingBaseline && state.checkpoints.length) {
+      if (selectBaseline && !state.baseline && !pendingBaseline && state.checkpoints.length) {
         const remembered = readBaseline();
         const own = [...(comments() || [])].reverse().find((comment) =>
           comment.mine && comment.revision && state.checkpoints.some((point) => point.sha === comment.revision),

@@ -79,7 +79,11 @@ impl Room {
         if !authority.policy_comment {
             return Err("comment access changed".into());
         }
-        let catalog = self.catalog.get().ok_or("durable catalog required")?;
+        let catalog = self
+            .catalog
+            .as_ref()
+            .get()
+            .ok_or("durable catalog required")?;
         let actor = crate::document::store::MutationActor {
             account_id: authority.account_id,
             owner_key: caller.author.into(),

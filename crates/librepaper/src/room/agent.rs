@@ -639,7 +639,7 @@ impl Room {
                 comment.resolved_in = checkpoint.clone().unwrap_or_default();
                 comment.clone()
             };
-            if let Some(catalog) = self.catalog.get() {
+            if let Some(catalog) = self.catalog.as_ref().get() {
                 let row = super::catalog::catalog_comment_row(&self.slug, &updated)
                     .map_err(AgentError::Storage)?;
                 super::catalog::update_comment_row(catalog, row, actor)

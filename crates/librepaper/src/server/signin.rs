@@ -103,7 +103,8 @@ impl Server {
     pub(super) async fn sign_in(&self, arrival: &Arrival, who: &Identity, next: &str) -> Reply {
         let https = arrival.is_https();
         let mut signed_who = who.clone();
-        if let Some(catalog) = &self.store.catalog {
+        {
+            let catalog = &self.store.catalog;
             let profile = crate::storage::postgres::NewAccount {
                 kind: "registered".into(),
                 provider: Some(who.provider.clone()),
