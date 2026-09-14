@@ -8,7 +8,7 @@
   //
   // Everything arriving from the frame is untrusted. The agent shares an
   // origin with the document, and a hostile document can rewrite it.
-  let { src, docsOrigin, onmessage, onload, path = "", grabbing = false, away = false, status, overlay } = $props();
+  let { src, docsOrigin, onmessage, onload, path = "", grabbing = false, away = false, status } = $props();
 
   let frame = $state(null);
   let viewport = $state(null);
@@ -75,5 +75,4 @@
       sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
     ></iframe>
   {/key}
-  {@render overlay?.()}
 </section>

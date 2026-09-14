@@ -61,6 +61,44 @@ export function producesPdf(format) {
   return outputKind(format) === "pdf";
 }
 
+// Authored HTML is displayed from the isolated preview origin, not from the
+// directory that contains its source. Point relative display assets at the
+// authenticated object URLs gathered for this exact tree. Keep the rewrite
+// deliberately narrow: links and nested documents retain their authored
+// meaning, while the attributes that load binary display content use the
+// same URLs as Markdown's renderer.
+export function resolveHtmlAssetUrls(source, tree) {
+  const urls = tree.urls || {};
+  const base = new URL(tree.main || "index.html", "https://librepaper.invalid/");
+  const projectPath = (reference) => {
+    if (!reference || reference.startsWith("#") || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(reference)) return null;
+    try {
+      const target = new URL(reference, base);
+      return target.origin === base.origin ? decodeURIComponent(target.pathname.slice(1)) : null;
+    } catch {
+      return null;
+    }
+  };
+  const escapedAttribute = (value) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Project HTML files cannot be navigated to below the preview's /raw/
+  // endpoint. Embed them as an iframe document instead, preserving the
+  // authored sandbox boundary and avoiding a request that can only be a 404.
+  source = source.replace(/<iframe\b([^>]*?)\bsrc\s*=\s*(["'])(.*?)\2([^>]*)>/gi,
+    (whole, before, quote, reference, after) => {
+      const path = projectPath(reference);
+      const nested = path && tree.texts?.[path];
+      return typeof nested === "string"
+        ? `<iframe${before}srcdoc="${escapedAttribute(nested)}"${after}>`
+        : whole;
+    });
+  const resolve = (reference) => {
+    const path = projectPath(reference);
+    return path && urls[path] ? urls[path] : reference;
+  };
+  return source.replace(/\b(src|poster|data)\s*=\s*(["'])(.*?)\2/gi,
+    (whole, attribute, quote, reference) => `${attribute}=${quote}${resolve(reference)}${quote}`);
+}
+
 export function cancelPreview(options) {
   latexHtml.cancel(options);
   activeLocalAbort?.abort();
@@ -156,11 +194,10 @@ export async function render(tree, title, { manual = false, format: requestedFor
   // cache identity names the renderer that actually runs.
   const capturedModules = configuration && Object.prototype.hasOwnProperty.call(configuration, "modules")
     ? configuration.modules : urls();
-  // HTML's renderer is the identity, so there is nothing to fetch and nothing
-  // that can fail: the source is the page. A directory whose main file is
-  // HTML is allowed, and nothing in it is rewritten -- an HTML document is
-  // self-contained, as it always was.
-  if (format === "html") return { html: source, diagnostics: [] };
+  // HTML needs no compiler: the source is the page. Resolve its relative
+  // binary dependencies because the page itself is displayed from the
+  // isolated documents origin rather than from the source directory.
+  if (format === "html") return { html: resolveHtmlAssetUrls(source, tree), diagnostics: [] };
   // LaTeX branches before `load`, and not into it. What follows below writes
   // files into a WebAssembly module's memory through `alloc`/`add_file`/
   // `set_main`, an ABI the engine crate exports and a TeX distribution has

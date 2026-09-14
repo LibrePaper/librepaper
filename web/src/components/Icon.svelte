@@ -8,6 +8,10 @@
   // rounded rectangle as a square-cornered path is what made these look like
   // icons from two different sets.
   const ICONS = {
+    home: [
+      ["path", "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"],
+      ["path", "M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
+    ],
     eye: [["path", "M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"], ["circle", { cx: 12, cy: 12, r: 3 }]],
     bot: [["path", "M12 8V4H8"], ["rect", { width: 16, height: 12, x: 4, y: 8, rx: 2 }], ["path", "M2 14h2"], ["path", "M20 14h2"], ["path", "M15 13v2"], ["path", "M9 13v2"]],
     "chevrons-up": [["path", "m17 11-5-5-5 5"], ["path", "m17 18-5-5-5 5"]],

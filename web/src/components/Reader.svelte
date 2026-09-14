@@ -1994,7 +1994,7 @@
 
   // Whether `LatexStatus` has anything to draw. It draws nothing while the
   // engine is idle, and the Preview header uses the phase for its compact
-  // control and activity overlay.
+  // status control.
   let latexState = $state.raw(latex.status());
   const latexPhase = $derived(latexState.phase);
   $effect(() => latex.subscribe((next) => (latexState = next)));
@@ -4011,11 +4011,6 @@
       </PreviewStatus>
     {/if}
   {/snippet}
-  {#snippet previewOverlay()}
-    {#if previewBusy}
-      <div class="preview-activity" role="status"><span class="spinner" aria-hidden="true"></span>{previewStatusLabel}…</div>
-    {/if}
-  {/snippet}
   {#if publishedMode && !publishedPublication?.id}
     <section class="latexpane" role="status"><div class="notyet">
       <h2 class="h4">Not published yet</h2>
@@ -4023,7 +4018,7 @@
     </div></section>
   {/if}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
-           path={viewing?.main || previewMain} status={previewStatusControl} overlay={previewOverlay}
+           path={viewing?.main || previewMain} status={previewStatusControl}
            away={!shown.document || unrendered || failedBeforeRender} />
 
   <nav class="mobile-pane-nav" aria-label="Workspace view">

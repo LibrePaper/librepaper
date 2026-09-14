@@ -185,6 +185,7 @@
       {/each}
     </div>
     <div class="activity-bottom" role="group" aria-label="Workspace controls">
+      <IconButton icon="home" label="All documents" href="/" />
       {#if editing}
         <IconButton icon={arrangements[layout].icon}
           label={`Layout: ${arrangements[layout].says}. Switch to ${arrangements[arrangements[layout].next].says}`}

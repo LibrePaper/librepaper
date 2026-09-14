@@ -150,23 +150,6 @@ main.reader {
   min-width: 0;
   color: var(--panel-muted);
 }
-.preview-activity {
-  position: absolute;
-  z-index: 1;
-  top: --spacing(10);
-  left: 50%;
-  display: inline-flex;
-  align-items: center;
-  gap: --spacing(2);
-  transform: translateX(-50%);
-  padding: --spacing(2) --spacing(3);
-  border: 1px solid var(--color-divider);
-  border-radius: var(--radius-container);
-  background: color-mix(in srgb, var(--color-shell) 92%, transparent);
-  box-shadow: var(--shadow-md);
-  color: var(--color-surface-700-300);
-  pointer-events: none;
-}
 /* The column, at the left of the window: the tabs, then whichever panel they
    chose. The panel is what scrolls, so the tabs stay where they are, and a
    sticky row inside a panel has the panel to stick to. */
