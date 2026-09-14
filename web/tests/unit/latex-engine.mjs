@@ -3,7 +3,7 @@
 // here is precedence and false-positive avoidance, not real-world documents
 // (those are exercised end-to-end in latex-browser.mjs).
 import assert from "node:assert/strict";
-import { ENGINES, directiveOf, detect, resolveEngine, needsBiber } from "../../src/lib/latex/engine.js";
+import { ENGINES, directiveOf, detect, needsLuaTeX, resolveEngine, needsBiber } from "../../src/lib/latex/engine.js";
 
 assert.deepEqual(ENGINES, ["pdflatex", "xelatex", "lualatex"]);
 
@@ -31,9 +31,20 @@ assert.equal(detect("\\usepackage{polyglossia}\n"), "xelatex");
 assert.equal(detect("\\usepackage{xeCJK}\n"), "xelatex");
 assert.equal(detect("\\usepackage{xetexko}\n"), "xelatex");
 assert.equal(detect("\\setmainfont{Latin Modern Roman}\n"), "xelatex");
-assert.equal(detect("\\usepackage{luacode}\n"), "lualatex");
-assert.equal(detect("\\usepackage{luatexja}\n"), "lualatex");
-assert.equal(detect("\\directlua{tex.print(1)}\n"), "lualatex");
+// No release ships LuaTeX, so detection never selects it: choosing an engine
+// the worker is certain to refuse would fail the document before a pass ran,
+// and blame the engine rather than name what the document needs.
+assert.equal(detect("\\usepackage{luacode}\n"), null);
+assert.equal(detect("\\usepackage{luatexja}\n"), null);
+assert.equal(detect("\\directlua{tex.print(1)}\n"), null);
+
+// needsLuaTeX still recognises those documents; it is what the failure text
+// uses to say why the document cannot be built here.
+assert.equal(needsLuaTeX("\\usepackage{luacode}\n"), true);
+assert.equal(needsLuaTeX("\\directlua{tex.print(1)}\n"), true);
+assert.equal(needsLuaTeX("\\usepackage{fontspec}\n"), false);
+// A commented-out LuaTeX requirement is not a requirement.
+assert.equal(needsLuaTeX("% \\usepackage{luacode}\n"), false);
 assert.equal(detect("\\documentclass{article}\n\\usepackage{amsmath}\n\\begin{document}\\end{document}"), null);
 
 // A commented-out package requirement must not switch the engine: an author
@@ -69,7 +80,13 @@ assert.equal(
   "pdflatex",
 );
 // 3. No setting, no directive: detection.
-assert.equal(resolveEngine(treeWith("\\usepackage{luatexja}\n"), { engine: "auto" }), "lualatex");
+assert.equal(resolveEngine(treeWith("\\usepackage{polyglossia}\n"), { engine: "auto" }), "xelatex");
+// A LuaTeX-only document falls through to pdflatex rather than to an engine
+// that does not exist; the compile then explains what it needs.
+assert.equal(resolveEngine(treeWith("\\usepackage{luatexja}\n"), { engine: "auto" }), "pdflatex");
+// An author who names LuaLaTeX explicitly still gets it -- and an honest
+// failure from the compiler, rather than a silently substituted engine.
+assert.equal(resolveEngine(treeWith("% !TEX program = lualatex\n"), { engine: "auto" }), "lualatex");
 // 4. Nothing matches: pdflatex.
 assert.equal(resolveEngine(treeWith("\\documentclass{article}\n"), { engine: "auto" }), "pdflatex");
 assert.equal(resolveEngine(treeWith(""), null), "pdflatex");

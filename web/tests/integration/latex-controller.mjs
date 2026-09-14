@@ -692,14 +692,17 @@ function nextProject() {
 latex._testing.reset();
 console.log("latex controller: queue, bibliography reuse, routing and lifecycle checks passed");
 
-// Unshipped LuaLaTeX must report the release limitation without downloading
-// any engine.
+// An explicitly chosen LuaLaTeX says the compiler does not include LuaTeX --
+// not that "this release" does not, which would imply a later one might --
+// and downloads no engine to find out.
 {
   latex._testing.inject({ worker: FakeWorker, fetch: async () => jsonResponse(MANIFEST) });
   latex.configure({ project: nextProject(), settings: { engine: 'lualatex', release: 'r1' } });
   const result = await latex.compile(tree('main.tex', 'LuaLaTeX selection'));
   assert.equal(result.ok, false);
-  assert.match(result.failure.message, /not available in this release/);
+  assert.equal(result.failure.kind, 'unsupported');
+  assert.match(result.failure.message, /does not include LuaTeX/);
+  assert.match(result.failure.message, /pdfLaTeX or XeLaTeX/);
   assert.equal(result.attempts.length, 0);
   latex._testing.reset();
 }
@@ -769,4 +772,37 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
   assert.equal(aborted, true);
   latex._testing.reset();
   console.log('latex controller: release-provided Biber, cache reuse, provenance, and cancellation checked');
+}
+
+// A document that needs LuaTeX is now compiled with pdflatex, so it fails on
+// an undefined control sequence. The reader is told what the document needs,
+// not which macro the wrong engine choked on.
+{
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
+  latex.configure({ project: nextProject(), settings: { engine: 'auto', release: 'r1' } });
+  worker().texReplies = [
+    { status: 1, pdf: null, synctex: null, log: '! Undefined control sequence.\nl.3 \\directlua\n', outputs: {} },
+  ];
+  const result = await latex.compile(tree('main.tex', '\\directlua{tex.print(1)}'));
+  assert.equal(result.ok, false);
+  assert.equal(result.failure.kind, 'unsupported');
+  assert.match(result.failure.message, /needs LuaTeX/);
+  // The engine's own log and diagnostics survive; only the headline changes.
+  assert.match(result.log, /Undefined control sequence/);
+  latex._testing.reset();
+}
+
+// Shell-escape is named as the reason, with the packages that need it.
+{
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
+  latex.configure({ project: nextProject(), settings: { engine: 'pdflatex', release: 'r1' } });
+  worker().texReplies = [
+    { status: 1, pdf: null, synctex: null, log: '! Package minted Error: You must invoke LaTeX with the -shell-escape flag.\n', outputs: {} },
+  ];
+  const result = await latex.compile(tree('main.tex', '\\usepackage{minted}'));
+  assert.equal(result.ok, false);
+  assert.equal(result.failure.kind, 'unsupported');
+  assert.match(result.failure.message, /run another program \(shell-escape\)/);
+  assert.match(result.failure.message, /minted/);
+  latex._testing.reset();
 }

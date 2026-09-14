@@ -431,12 +431,32 @@ async function mirrorAbsentMessage(mirrorAbsent) {
   return `Package ${named} is not available in the browser mirror.`;
 }
 
+// What this browser cannot do, in the document's own terms.
+//
+// The engine's error for a document that wants LuaTeX or shell-escape is a
+// true statement about a macro and a useless one about the situation:
+// "Undefined control sequence" for \\directlua, "-shell-escape" for minted.
+// LibrePaper builds LaTeX in the browser and nowhere else, so these are
+// permanent limits of this document here, not transient errors -- saying so
+// is more use than a control sequence name.
+function unsupportedReason(source, log) {
+  if (engineMod.needsLuaTeX(source)) {
+    return "This document needs LuaTeX, which LibrePaper's browser compiler does not include. LuaTeX-only packages and \\directlua cannot be built here.";
+  }
+  if (/shell-escape|\\write18|runsystem\(/i.test(log)) {
+    return "This document asks LaTeX to run another program (shell-escape), which a browser cannot do. Packages like minted, svg and gnuplot backends need it; a pre-rendered figure does not.";
+  }
+  return "";
+}
+
 async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, kind, message, signal }) {
   // The failure's own words are the reason; the log is the engine's, from
   // the attempt that just failed, and the diagnostics are read out of it so
   // a missing package or an undefined control sequence lands in the gutter
-  // rather than behind a generic sentence.
+  // rather than behind a generic sentence. A limit this compiler simply does
+  // not have replaces that reason: the engine's complaint is a symptom.
   const lastLog = [...attempts].reverse().find((one) => one.stage === "browser")?.log || "";
+  const unsupported = unsupportedReason(tree?.texts?.[tree?.main] ?? "", lastLog);
   return buildResult({
     job,
     attempts,
@@ -444,7 +464,11 @@ async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, st
     ok: false,
     log: lastLog,
     diagnostics: lastLog ? logMod.parse(lastLog, { main: tree.main, paths: treePaths(tree) }) : [],
-    failure: { kind, message, stage: "browser" },
+    failure: {
+      kind: unsupported ? "unsupported" : kind,
+      message: unsupported || message,
+      stage: "browser",
+    },
     provenance: baseProvenance(engine, releaseId),
   });
 }
@@ -507,10 +531,18 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       provenance: baseProvenance(engine, releaseId),
     });
   }
+  // LuaLaTeX is never selected for the author (see `engine.js`'s `detect`);
+  // reaching here means the setting or a `% !TEX engine` directive asked for
+  // it by name. No release ships LuaTeX, so say that rather than implying a
+  // later release might, or that the document is at fault.
   if (engine === "lualatex" && !releaseEntry.engines?.luatex) {
     return buildResult({
       job, attempts, startedAt, ok: false,
-      failure: { kind: "resources", message: "LuaLaTeX is not available in this release", stage: "browser" },
+      failure: {
+        kind: "unsupported",
+        message: "LibrePaper's browser compiler does not include LuaTeX. Choose pdfLaTeX or XeLaTeX, or remove the LuaLaTeX directive.",
+        stage: "browser",
+      },
       provenance: baseProvenance(engine, releaseId),
     });
   }

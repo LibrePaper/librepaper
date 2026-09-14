@@ -84,6 +84,13 @@ function firstOf(packages, wanted) {
 
 // LuaTeX-only packages and commands: real LuaTeX API usage, not just
 // something that happens to work under LuaLaTeX too.
+//
+// `detect` never returns "lualatex" for these. No release ships LuaTeX
+// (`latex/worker.js`'s BUNDLE_CAPABLE leaves it out), so selecting it would
+// pick an engine `ensureEngine` is certain to refuse -- a document that says
+// \\directlua would fail before a single pass ran, and the reader would be
+// told the engine is unavailable rather than that the document needs it.
+// Detection stays for `needsLuaTeX`, which explains the real situation.
 const LUATEX_PACKAGES = new Set([
   "luacode",
   "luatextra",
@@ -115,12 +122,19 @@ const UNICODE_PACKAGES = new Set([
 
 const FONTSPEC_COMMAND = /\\(?:setmainfont|setsansfont|setmonofont|newfontface|fontspec)\b/;
 
+/// Whether the document actually needs LuaTeX -- real LuaTeX API usage, not
+/// merely a Unicode engine. Nothing selects LuaTeX from this; the caller uses
+/// it to say why the document cannot be built here.
+export function needsLuaTeX(source) {
+  const preamble = preambleOf(source);
+  if (/\\directlua\b/.test(preamble)) return true;
+  return Boolean(firstOf(loadedPackages(preamble), LUATEX_PACKAGES));
+}
+
 export function detect(source) {
   const preamble = preambleOf(source);
   const packages = loadedPackages(preamble);
 
-  if (/\\directlua\b/.test(preamble)) return "lualatex";
-  if (firstOf(packages, LUATEX_PACKAGES)) return "lualatex";
   if (firstOf(packages, XETEX_ONLY_PACKAGES)) return "xelatex";
   if (firstOf(packages, UNICODE_PACKAGES)) return "xelatex";
   if (FONTSPEC_COMMAND.test(preamble)) return "xelatex";
