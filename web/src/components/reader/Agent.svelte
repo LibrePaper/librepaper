@@ -97,8 +97,8 @@
     if (!connection.id || !connection.token || !validDocumentLink()) return "";
     const documentLink = agentLink || link;
     return [
-      "Reuse recent LibrePaper CLI/version checks from this session when the installation has not changed; connecting another document does not require checking for a newer release. Otherwise check: librepaper --version && librepaper skills list && librepaper agent connect --help. If missing or these commands are unavailable, install or upgrade from https://github.com/LibrePaper/librepaper#install before continuing.",
-      "Reuse LibrePaper skills already in context for the installed version. Load only missing skills with librepaper skills show librepaper-pair; librepaper skills show librepaper-document; librepaper skills show librepaper-write. Read references only as needed with librepaper skills show <name> --file references/<file>. Refresh affected instructions after an upgrade or a command/version mismatch. No separate skill installation is needed.",
+      "Reuse recent LibrePaper CLI/version checks from this session when the installation has not changed; connecting another document does not require checking for a newer release. Otherwise check: librepaper --version && librepaper agent connect --help. If missing or this command is unavailable, install or upgrade from https://github.com/LibrePaper/librepaper#install before continuing.",
+      "The LibrePaper runner supplies its bundled document and writing instructions to the agent. Reuse those instructions for the installed version and refresh the runner after an upgrade or command/version mismatch. No separate skill installation is needed.",
       "Run each command below as written. Each is self-contained and can run in a separate shell.",
       `LIBREPAPER_CHAT_TOKEN=${shell(connection.token)} librepaper agent connect ${shell(documentLink)} ${shell(connection.id)} --background`,
       mode === "tracked"

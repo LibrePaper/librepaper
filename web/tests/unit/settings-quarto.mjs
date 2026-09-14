@@ -5,13 +5,14 @@ const read = (name) => readFile(new URL(`../../src/components/settings/${name}`,
 const registry = await read("registry.js");
 const local = await read("LocalAppSettings.svelte");
 const storage = await read("StorageSettings.svelte");
-const dictation = await read("DictationSettings.svelte");
 const rendering = await read("RenderingSettings.svelte");
 
-// The local pairing surface is shared by the two formats. Keep these checks
-// close to the components because a LaTeX-only gate silently makes Quarto's
-// local renderer impossible to configure from the browser.
-assert.match(registry, /const local = \(\{ format, mayEdit \}\) => \["latex", "typst", "markdown", "quarto"\]\.includes\(format\) && mayEdit;/);
+// The local pairing surface is shared by the formats that have a local
+// builder. Keep this check close to the components because a LaTeX-only gate
+// silently makes Quarto's local renderer impossible to configure from the
+// browser, and because LaTeX itself must stay out: it builds in the browser,
+// and its native fallback is routed by `latex.js` rather than configured here.
+assert.match(registry, /const local = \(\{ format, mayEdit \}\) => \["typst", "markdown", "quarto"\]\.includes\(format\) && mayEdit;/);
 assert.match(registry, /id: "local", says: "Local app", offered: local,/);
 assert.match(local, /import \* as localBridge from "\.\.\/\.\.\/lib\/latex\/local\.js"/);
 assert.match(local, /localBridge\.subscribe\(\(status\) => \(local = status\)\)/);
@@ -26,13 +27,6 @@ assert.match(registry, /const latex = \(\{ format, mayEdit \}\) => format === "l
 assert.match(registry, /id: "build", says: "Build", offered: build,/);
 assert.match(registry, /id: "storage", says: "Storage", offered: latex,/);
 assert.match(storage, /id="storage-latex"/);
-assert.doesNotMatch(storage, /dictation/);
-
-// The speech models a browser downloaded are listed with the rest of
-// dictation, not under a separate storage page.
-assert.match(registry, /id: "dictation-downloads", says: "Downloaded models"/);
-assert.match(dictation, /id={index === 0 \? "dictation-downloads" : undefined}/);
-assert.match(dictation, /removeCachedModel/);
 
 // The Quarto page offers only what the live preview actually reads: a
 // profile and parameters. There is no format picker (the preview is always

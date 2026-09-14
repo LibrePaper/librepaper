@@ -4,8 +4,8 @@
 //! persistence.  This module owns the small amount of engine selection needed
 //! to hand a request to the implementation that knows its source inventory,
 //! invocation policy, output capture and publication exclusions. Quarto is
-//! the only computation engine currently supported by this adapter surface;
-//! TeX and Biber continue through the existing native runner.
+//! the only computation engine currently supported by this adapter surface.
+//! LaTeX is built in the browser, so no TeX or Biber job reaches here.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -17,32 +17,20 @@ use tokio::sync::{mpsc, watch};
 use super::protocol::{
     Capabilities, JobOutcome, JobRequest, JobStatus, QuartoJobOptions, Workspace,
 };
-use super::{native, quarto, quarto_capture};
+use super::{quarto, quarto_capture};
 
-/// The engine selected for a local job.  The `Native` arm is the compatibility
-/// path for the pre-adapter TeX/Biber jobs; it does not grant another engine
-/// access to the Quarto execution surface.
+/// The engine selected for a local job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobAdapter {
-    Native,
     Quarto,
 }
 
 /// Selects an adapter from the explicit wire job kind and engine field.
-/// Unknown kinds never fall through to native execution.  Calepin is named
-/// here so adding its wire vocabulary cannot accidentally enable execution
-/// before its adapter, grants and capture policy exist.
+/// Unknown kinds are refused rather than dispatched. Calepin is named here so
+/// adding its wire vocabulary cannot accidentally enable execution before its
+/// adapter, grants and capture policy exist.
 pub fn select(request: &JobRequest) -> Result<JobAdapter, String> {
     match request.kind.as_str() {
-        "tex"
-            if matches!(
-                request.engine.as_str(),
-                "" | "pdflatex" | "xelatex" | "lualatex"
-            ) =>
-        {
-            Ok(JobAdapter::Native)
-        }
-        "biber" if request.engine.is_empty() => Ok(JobAdapter::Native),
         "quarto" if request.engine.is_empty() || request.engine == "quarto" => {
             Ok(JobAdapter::Quarto)
         }
@@ -51,10 +39,6 @@ pub fn select(request: &JobRequest) -> Result<JobAdapter, String> {
             request.engine
         )),
         "calepin" => Err("unsupported execution engine: calepin".into()),
-        "tex" | "biber" => Err(format!(
-            "unsupported engine {:?} for {} job",
-            request.engine, request.kind
-        )),
         other => Err(format!("unknown job kind: {other}")),
     }
 }
@@ -116,9 +100,6 @@ pub async fn run(
         .await;
     }
     match select(&request) {
-        Ok(JobAdapter::Native) => {
-            native::run_job(tex_path, request, workspace, cancel, progress).await
-        }
         Ok(JobAdapter::Quarto) => {
             quarto::run_job_with_bindings(request, workspace, cancel, progress, bindings).await
         }
@@ -247,6 +228,7 @@ pub fn quarto_capture(
 /// The files selected for a Quarto publication.  Quarto's source and
 /// editorial inputs are shareable by default; generated output and local
 /// environments require an explicit `.librepaper-share.json` include.
+#[allow(dead_code)]
 pub fn quarto_shared_paths(
     root: &Path,
     main: &str,
@@ -354,7 +336,7 @@ mod tests {
 
     fn request(kind: &str, engine: &str) -> JobRequest {
         JobRequest {
-            protocol: 1,
+            protocol: 2,
             kind: kind.into(),
             project: "project".into(),
             origin: "https://example.test".into(),
@@ -380,7 +362,9 @@ mod tests {
     fn explicit_job_gate_keeps_quarto_narrow() {
         assert_eq!(select(&request("quarto", "")), Ok(JobAdapter::Quarto));
         assert_eq!(select(&request("quarto", "quarto")), Ok(JobAdapter::Quarto));
-        assert_eq!(select(&request("tex", "")), Ok(JobAdapter::Native));
+        // LaTeX builds in the browser; no TeX or Biber job is dispatchable.
+        assert!(select(&request("tex", "")).is_err());
+        assert!(select(&request("biber", "")).is_err());
         assert_eq!(
             select(&request("calepin", "")),
             Err("unsupported execution engine: calepin".into())

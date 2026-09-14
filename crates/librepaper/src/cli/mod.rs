@@ -10,15 +10,9 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
 use crate::config::{parse_budget_transfer, Configuration};
-use crate::document::render::{
-    counted, is_html, is_markdown, is_typst, report, title_from_html, title_from_markdown,
-    title_from_typst,
-};
-use crate::http::{
-    detail_of, get_as, get_json, get_with_token, post_directory, post_json, text, Credentials,
-};
+use crate::http::{detail_of, get_as, get_json, get_with_token, post_json, text, Credentials};
 use crate::storage::StorageFlags;
-use crate::util::{die, is_terminal_stdout, new_id};
+use crate::util::{die, new_id};
 
 /// Removed deployment settings must fail loudly even when they arrive through
 /// the process environment. Clap can reject removed arguments, but it cannot
@@ -79,8 +73,6 @@ pub mod export;
 mod history;
 pub(crate) mod mcp;
 pub mod peer;
-mod publish;
-mod quarto;
 mod runner;
 pub(crate) mod runner_context;
 pub(crate) mod runner_journal;
@@ -88,11 +80,9 @@ mod runner_lifecycle;
 pub(crate) mod runner_preview;
 mod runner_transport;
 mod skills;
-pub mod sync;
 mod tokens;
 
 pub use documents::*;
-pub use publish::*;
 pub use tokens::*;
 
 #[derive(Parser)]
@@ -488,29 +478,10 @@ fn backup_policy_from_config(path: Option<&std::path::Path>) -> crate::config::B
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Read or export the agent skills bundled with this version (offline)
-    Skills {
-        #[command(subcommand)]
-        command: skills::SkillsCommand,
-    },
     /// Sign in through a deployment, in a browser
     Login,
     /// Forget the stored sign-in
     Logout,
-    /// Publish a document and print its link
-    Publish {
-        /// The HTML, markdown or typst file to publish, or a directory holding one
-        file: String,
-        /// Display title; defaults to the first heading, then the filename
-        #[arg(long, value_name = "TITLE")]
-        title: Option<String>,
-        /// Full existing slug to replace, keeping link and comments
-        #[arg(long, value_name = "SLUG")]
-        slug: Option<String>,
-        /// Which file in a directory is the document
-        #[arg(long, value_name = "PATH")]
-        main: Option<String>,
-    },
     /// Deployment administration and operator commands.
     Admin {
         #[command(subcommand)]
@@ -518,59 +489,35 @@ pub(crate) enum Command {
     },
     /// List your documents
     List,
-    /// Open a document in the browser
-    Open {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// A share link, or the key from one
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-    },
-    /// Keep a local file and a document in step, both ways, until interrupted
-    Sync {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// The file to keep in step with the document's main file
-        file: String,
-        /// How long either side stays quiet before it is acted on (default 250ms)
-        #[arg(long, value_name = "DURATION")]
-        interval: Option<String>,
-        /// An edit link, or the key from one: join as its holder, with no
-        /// sign-in needed where the deployment asks for none
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-        /// Show the project files that would be synchronized, then exit
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Annotations as W3C JSON-LD, markdown, or a response to reviewers
+    /// Export comments or an independent copy of the complete project
     Export {
         /// A full slug, or one of the short handles `list` prints
         id: String,
         /// jsonld (W3C Web Annotation), markdown, or response
-        #[arg(long, value_name = "FORMAT", default_value = "jsonld")]
-        format: String,
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
         /// Only comments made at or after this checkpoint, using its history digest
         #[arg(long, value_name = "SHA")]
         since: Option<String>,
-        /// File to write; defaults to standard output
-        #[arg(long, value_name = "FILE")]
+        /// File for comments, or a new directory for a project
+        #[arg(long, value_name = "PATH")]
         output: Option<String>,
         /// A share link, or the key from one: read as its holder rather than
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
+        /// Export comments (the default when no mode is supplied)
+        #[arg(long, conflicts_with = "project")]
+        comments: bool,
+        /// Export all project source files and owned binary assets
+        #[arg(long, conflicts_with = "comments")]
+        project: bool,
     },
     /// The local compilation service: run native TeX on this machine for
     /// the browser editor when its own compiler cannot
     Local {
         #[command(subcommand)]
         command: LocalCommand,
-    },
-    /// Import, publish, and inspect saved Quarto results without executing code
-    Quarto {
-        #[command(subcommand)]
-        command: quarto::QuartoCommand,
     },
     /// Run the MCP adapter or manage the local assistant runner.
     Agent {
@@ -844,76 +791,46 @@ pub async fn main() {
     let server = cli.server;
     let token = cli.token;
     match cli.command {
-        Command::Skills { command } => {
-            if let Err(error) = skills::run(command) {
-                die(error);
-            }
-        }
         Command::Login => login(server).await,
         Command::Logout => logout(),
-        Command::Publish {
-            file,
-            title,
-            slug,
-            main,
-        } => {
-            publish(
-                &file,
-                title.unwrap_or_default(),
-                slug.unwrap_or_default(),
-                server,
-                token,
-                main.unwrap_or_default(),
-            )
-            .await
-        }
         Command::Admin { command } => run_admin(command, server, token).await,
         Command::List => list_documents(server, token).await,
-        Command::Open { id, key } => {
-            open_document(&id, server, token, key.unwrap_or_default()).await
-        }
-        Command::Sync {
-            id,
-            file,
-            interval,
-            key,
-            dry_run,
-        } => {
-            crate::cli::sync::sync_document(
-                &id,
-                &file,
-                server,
-                token,
-                interval.unwrap_or_default(),
-                key.unwrap_or_default(),
-                dry_run,
-            )
-            .await
-        }
         Command::Export {
             id,
             format,
             since,
             output,
             key,
+            comments: _,
+            project,
         } => {
-            crate::cli::export::export_document(
-                &id,
-                server,
-                token,
-                &format,
-                output.unwrap_or_default(),
-                since.unwrap_or_default(),
-                key.unwrap_or_default(),
-            )
-            .await
-        }
-        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
-        Command::Quarto { command } => {
-            if let Err(error) = quarto::run(command, server, token).await {
-                die(error);
+            if project {
+                if format.is_some() || since.is_some() {
+                    die("--format and --since apply only to comments export");
+                }
+                let output = output.unwrap_or_else(|| die("--project requires --output DIRECTORY"));
+                crate::cli::export::export_project(
+                    &id,
+                    server,
+                    token,
+                    &output,
+                    key.unwrap_or_default(),
+                )
+                .await
+            } else {
+                crate::cli::export::export_document(
+                    &id,
+                    server,
+                    token,
+                    format.as_deref().unwrap_or("jsonld"),
+                    output.unwrap_or_default(),
+                    since.unwrap_or_default(),
+                    key.unwrap_or_default(),
+                )
+                .await
             }
         }
+        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
         Command::Agent { command } => {
             if let Err(err) = crate::cli::peer::run_cli(command, server, token).await {
                 die(err);
@@ -1077,6 +994,38 @@ fn origin_of(server: &str) -> String {
 #[cfg(test)]
 mod socket_policy_tests {
     use super::*;
+
+    #[test]
+    fn simplified_command_surface_and_export_modes_parse() {
+        for removed in ["publish", "sync", "open", "skills", "quarto"] {
+            assert!(
+                Cli::try_parse_from(["librepaper", removed]).is_err(),
+                "{removed} remains available"
+            );
+        }
+        let comments = Cli::try_parse_from([
+            "librepaper",
+            "export",
+            "paper",
+            "--comments",
+            "--format",
+            "markdown",
+        ]);
+        assert!(comments.is_ok());
+        let project = Cli::try_parse_from([
+            "librepaper",
+            "export",
+            "paper",
+            "--project",
+            "--output",
+            "copy",
+        ]);
+        assert!(project.is_ok());
+        assert!(
+            Cli::try_parse_from(["librepaper", "export", "paper", "--comments", "--project"])
+                .is_err()
+        );
+    }
 
     #[test]
     fn advanced_configuration_accepts_separate_document_role_caps() {

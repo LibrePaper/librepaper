@@ -126,53 +126,6 @@ export function hunks(oldText, newText, edits = [], context = 6) {
   });
 }
 
-/// Hunks that belong to one passage, read as one change. The word diff
-/// reports "not" -> "Survived" and "shown" -> "the Auditions" as two edits;
-/// a person reading a heading that was rewritten sees one. Two hunks are one
-/// change when the second begins inside the first's trailing context -- that
-/// is, within a few words -- and the unchanged words between them are then
-/// known, because the window holds them.
-///
-/// Each group carries the pieces to draw it as a line of prose: `before`, the
-/// `parts` (an alternating list of `{ keep }` and `{ old, insert }`), and
-/// `after`, plus the `position` and `length` of the whole span in the new
-/// text, which is where the frame is asked to scroll. The hunks are expected
-/// in text order with `position` stamped on each, as `Reader` stamps them.
-export function coalesce(hunks = []) {
-  const groups = [];
-  for (const hunk of hunks) {
-    const position = Number(hunk.position) || 0;
-    const insert = hunk.insert || "";
-    const window = hunk.currentAfter || hunk.suffix || "";
-    const last = groups[groups.length - 1];
-    if (last) {
-      const gap = position - last.end;
-      if (gap >= 0 && gap <= last.window.length) {
-        if (gap > 0) last.parts.push({ keep: last.window.slice(0, gap) });
-        last.parts.push({ old: hunk.old || "", insert });
-        last.hunks.push(hunk);
-        last.end = position + insert.length;
-        last.window = window;
-        last.after = window;
-        last.length = last.end - last.position;
-        continue;
-      }
-    }
-    groups.push({
-      path: hunk.path,
-      position,
-      end: position + insert.length,
-      length: insert.length,
-      before: hunk.currentBefore || hunk.prefix || "",
-      after: window,
-      window,
-      parts: [{ old: hunk.old || "", insert }],
-      hunks: [hunk],
-    });
-  }
-  return groups.map(({ window, end, ...group }) => group);
-}
-
 // The new-text offset of an edit is its old offset plus all prior insertions
 // and deletions. Edits from librepaper-text are sorted and non-overlapping.
 function newOffset(edits, edit) {
@@ -241,55 +194,13 @@ export function sizeDelta(point, checkpoints) {
 /// the way every other date in the app is written -- see `dates.js`.
 const dayOf = isoDay;
 
-/// How many unlabelled marks by one person in a row are shown before the
-/// middle of the run is folded away. Two is not a run; three is the smallest
-/// number where folding hides anything at all.
-const RUN = 3;
-/// A long pause starts a new editing session, even when the same person
-/// returns later on the same day. This is presentation only: no checkpoints
-/// are removed from the manifest.
-export const SESSION_GAP_MS = 15 * 60 * 1000;
-
-/// Publication and restoration are milestones in the timeline. The server has
-/// used both `cli` and `publish` for publication over time, so retain both
-/// spellings at the presentation boundary.
-export const MILESTONE_REASONS = new Set(["cli", "publish", "restore", "restored"]);
-
-export function isMilestone(point) {
-  return MILESTONE_REASONS.has(point?.why);
-}
-
-/// The checkpoints a timeline shows while `path` is the file being edited:
-/// those that moved it, and those that cannot say what they moved.
+/// The newest-first manifest as a list somebody reads, grouped by day.
 ///
-/// A checkpoint records the paths whose contents differ from its parent's, so
-/// an edit confined to references.bib does not appear while manuscript.tex is
-/// open. Where that evidence is missing -- a version written before the
-/// catalogue recorded it, or one whose list was too long to be worth keeping
-/// -- the checkpoint is shown. Absence of evidence is not evidence that the
-/// file was untouched, and a history that hides a real revision is worse than
-/// one that shows an extra row.
-export function forFile(checkpoints = [], path = "") {
-  if (!path) return checkpoints;
-  return checkpoints.filter((point) => {
-    const changed = point?.changed;
-    return !Array.isArray(changed) || changed.length === 0 || changed.includes(path);
-  });
-}
-
-/// The newest-first manifest as a list somebody reads, grouped by day, and
-/// with runs of unlabelled checkpoints by one person folded to their first and
-/// last. A run is also split by a fifteen-minute gap or a milestone.
+/// One row per version, in one project-wide timeline: a history is read as
+/// "what happened, when", and a row that stands for several moments is a row
+/// the reader has to open before it says anything at all.
 ///
-/// The folding is the whole point. A working afternoon is thirty quiet
-/// checkpoints by one author, and thirty rows of the same name and the same
-/// reason say less than three do. A labelled checkpoint never folds, because a
-/// label is somebody saying this moment matters; nor does a run of two, since
-/// folding one row saves nothing and costs a click.
-///
-/// Returns `[{ day, rows }]`, where a row is either `{ kind: "point", point }`
-/// or `{ kind: "folded", first, last, hidden }` -- `hidden` being the
-/// checkpoints between them, which the panel offers to open.
+/// Returns `[{ day, points }]`, newest day first, each day newest first.
 export function timeline(checkpoints, timeZone) {
   const newest = [...(checkpoints || [])].sort((left, right) => checkpointOrder(right, left));
   const days = [];
@@ -299,7 +210,7 @@ export function timeline(checkpoints, timeZone) {
     if (last && last.day === day) last.points.push(point);
     else days.push({ day, points: [point] });
   }
-  return days.map(({ day, points }) => ({ day, rows: fold(points) }));
+  return days;
 }
 
 function checkpointOrder(left, right) {
@@ -307,44 +218,3 @@ function checkpointOrder(left, right) {
   return (Date.parse(left.at) || 0) - (Date.parse(right.at) || 0) || String(left.sha).localeCompare(String(right.sha));
 }
 
-function fold(points) {
-  const rows = [];
-  let at = 0;
-  while (at < points.length) {
-    const point = points[at];
-    if (point.label || isMilestone(point)) {
-      rows.push({ kind: "point", point });
-      at += 1;
-      continue;
-    }
-    let end = at;
-    while (
-      end + 1 < points.length &&
-      !points[end + 1].label &&
-      !isMilestone(points[end + 1]) &&
-      points[end + 1].by === point.by &&
-      !startsSession(points[end].at, points[end + 1].at)
-    ) {
-      end += 1;
-    }
-    const run = points.slice(at, end + 1);
-    if (run.length < RUN) {
-      for (const one of run) rows.push({ kind: "point", point: one });
-    } else {
-      rows.push({
-        kind: "folded",
-        first: run[0],
-        last: run[run.length - 1],
-        hidden: run.slice(1, -1),
-      });
-    }
-    at = end + 1;
-  }
-  return rows;
-}
-
-function startsSession(previous, next) {
-  const before = new Date(previous).getTime();
-  const after = new Date(next).getTime();
-  return Number.isFinite(before) && Number.isFinite(after) && Math.abs(after - before) >= SESSION_GAP_MS;
-}

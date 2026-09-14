@@ -6,9 +6,11 @@
 //! it actually came from.
 
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::cli::{resolve_identifier, server_or_die};
 use crate::config::Configuration;
@@ -16,6 +18,168 @@ use crate::http::{get_as, send, Credentials};
 use crate::room::text::{len16 as utf16_len, utf16_slice};
 use crate::room::Comment;
 use crate::util::die;
+
+#[derive(serde::Deserialize)]
+struct ProjectSnapshot {
+    sha: String,
+    tree: crate::document::history::Tree,
+    #[serde(default)]
+    texts: std::collections::BTreeMap<String, String>,
+}
+
+/// Download an immutable, server-captured project tree into a new directory.
+/// Text bodies arrive in the snapshot response; assets are fetched by the
+/// content digest recorded in that response and verified before publication.
+pub async fn export_project(
+    identifier: &str,
+    server: Option<String>,
+    token: Option<String>,
+    output: &str,
+    key: String,
+) {
+    if let Err(error) =
+        export_project_inner(identifier, server, token, Path::new(output), key).await
+    {
+        die(error);
+    }
+}
+
+async fn export_project_inner(
+    identifier: &str,
+    server: Option<String>,
+    token: Option<String>,
+    destination: &Path,
+    key: String,
+) -> Result<(), String> {
+    if destination.as_os_str().is_empty() {
+        return Err("--output must name a destination directory".into());
+    }
+    if std::fs::symlink_metadata(destination).is_ok() {
+        return Err(format!(
+            "destination {} already exists",
+            destination.display()
+        ));
+    }
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if !parent.is_dir() {
+        return Err(format!(
+            "destination parent {} is not a directory",
+            parent.display()
+        ));
+    }
+
+    let server = server_or_die(server);
+    let key = crate::cli::link_key(&key);
+    let slug = resolve_identifier(identifier, &server, &key, token.as_deref()).await;
+    let who = Credentials::new(
+        &crate::cli::stored_token_for(&server, token.as_deref()),
+        &key,
+    );
+    let (status, raw) = get_as(
+        &format!("{server}/api/documents/{slug}/snapshot"),
+        &who,
+        Duration::from_secs(60),
+    )
+    .await?;
+    if status != 200 {
+        return Err(format!("could not capture project snapshot ({status})"));
+    }
+    let snapshot: ProjectSnapshot = serde_json::from_value(raw)
+        .map_err(|error| format!("invalid project snapshot: {error}"))?;
+    if snapshot.sha != snapshot.tree.digest() {
+        return Err("project snapshot tree digest does not match its identity".into());
+    }
+
+    let staging = tempfile::Builder::new()
+        .prefix(".librepaper-export-")
+        .tempdir_in(parent)
+        .map_err(|error| format!("could not create export staging directory: {error}"))?;
+    for (relative, entry) in &snapshot.tree.files {
+        let relative = safe_relative_path(relative)?;
+        let bytes = match entry.kind.as_str() {
+            "text" => snapshot
+                .texts
+                .get(relative.to_str().unwrap_or_default())
+                .ok_or_else(|| format!("snapshot omitted text file {}", relative.display()))?
+                .as_bytes()
+                .to_vec(),
+            "asset" => {
+                let owned = who.headers();
+                let headers: Vec<(&str, &str)> =
+                    owned.iter().map(|(n, v)| (*n, v.as_str())).collect();
+                let (status, bytes) = send(
+                    reqwest::Method::GET,
+                    &format!("{server}/api/documents/{slug}/assets/{}", entry.sha),
+                    &headers,
+                    None,
+                    Duration::from_secs(60),
+                )
+                .await?;
+                if status != 200 {
+                    return Err(format!(
+                        "could not download asset {} ({status})",
+                        relative.display()
+                    ));
+                }
+                bytes
+            }
+            kind => return Err(format!("snapshot has unknown file kind {kind:?}")),
+        };
+        if bytes.len() as i64 != entry.size {
+            return Err(format!("file {} has the wrong size", relative.display()));
+        }
+        if hex::encode(Sha256::digest(&bytes)) != entry.sha {
+            return Err(format!(
+                "file {} failed digest verification",
+                relative.display()
+            ));
+        }
+        let target = staging.path().join(&relative);
+        if let Some(directory) = target.parent() {
+            std::fs::create_dir_all(directory)
+                .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
+        }
+        super::tokens::write_private_file(&target, &bytes)?;
+    }
+    let staging_path = staging.keep();
+    if std::fs::symlink_metadata(destination).is_ok() {
+        let _ = std::fs::remove_dir_all(&staging_path);
+        return Err(format!(
+            "destination {} was created while the export was running",
+            destination.display()
+        ));
+    }
+    if let Err(error) = std::fs::rename(&staging_path, destination) {
+        let _ = std::fs::remove_dir_all(&staging_path);
+        return Err(format!(
+            "could not publish export to {}: {error}",
+            destination.display()
+        ));
+    }
+    eprintln!(
+        "wrote {} ({} files, snapshot {})",
+        destination.display(),
+        snapshot.tree.files.len(),
+        snapshot.sha
+    );
+    Ok(())
+}
+
+fn safe_relative_path(path: &str) -> Result<PathBuf, String> {
+    let path = Path::new(path);
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(format!("snapshot contains unsafe path {:?}", path));
+    }
+    Ok(path.to_path_buf())
+}
 
 pub const ANNOTATION_CONTEXT: &str = "http://www.w3.org/ns/anno.jsonld";
 
@@ -906,6 +1070,17 @@ pub fn since(comments: Vec<Comment>, checkpoints: &[Value], from: &str) -> Vec<C
 #[cfg(test)]
 mod checkpoint_export_tests {
     use super::*;
+
+    #[test]
+    fn project_paths_are_strictly_relative() {
+        assert_eq!(
+            safe_relative_path("figures/chart.png").unwrap(),
+            PathBuf::from("figures/chart.png")
+        );
+        for path in ["", "/etc/passwd", "../secret", "a/../secret", "./paper.md"] {
+            assert!(safe_relative_path(path).is_err(), "accepted {path:?}");
+        }
+    }
 
     #[test]
     fn pdf_source_is_never_returned_as_rendered_text() {

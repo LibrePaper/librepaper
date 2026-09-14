@@ -23,7 +23,7 @@ the document.
 
 \section{Source and preview}
 
-This file is \LaTeX. LibrePaper compiles PDF in the browser with a pinned WebAssembly engine and can fall back to the TeX installation exposed by the local companion. The server synchronizes the source and stores successful PDFs; it does not compile the document.
+This file is \LaTeX. LibrePaper compiles PDF in the browser with a pinned WebAssembly engine and Biber. The server synchronizes the source and stores successful PDFs; it does not compile the document.
 
 \section{A small scientific example}
 
@@ -53,7 +53,7 @@ leave a comment on this paragraph.
 
 \section{Working with other clients}
 
-Choose Automatic, pdfLaTeX, XeLaTeX, or LuaLaTeX in Settings; availability depends on the pinned browser release. Use \texttt{librepaper sync} to edit the project with a local editor, and \texttt{librepaper publish} to publish from the terminal. Readers receive the stored PDF and do not need \LaTeX{} installed.
+Choose Automatic, pdfLaTeX, XeLaTeX, or LuaLaTeX in Settings; availability depends on the pinned browser release. A project export creates an independent local copy. Readers receive the stored PDF and do not need \LaTeX{} installed.
 
 \bibliographystyle{plain}
 \bibliography{references}

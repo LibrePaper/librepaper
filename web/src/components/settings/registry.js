@@ -8,27 +8,16 @@
 // `offered` answers with the document's format and whether this browser may
 // edit it. `terms` are the words somebody might type when looking for a row
 // and not finding its title.
-const everyone = () => true;
 const editor = ({ mayEdit }) => mayEdit;
 const build = ({ format, mayEdit }) => ["latex", "typst", "markdown", "quarto"].includes(format) && mayEdit;
 const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
 const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
-const local = ({ format, mayEdit }) => ["latex", "typst", "markdown", "quarto"].includes(format) && mayEdit;
+const local = ({ format, mayEdit }) => ["typst", "markdown", "quarto"].includes(format) && mayEdit;
 
 export const CATEGORIES = [
   {
     id: "editor", says: "Editor", offered: editor,
     entries: [{ id: "editor-keys", says: "Keys", terms: "vim emacs keymap keyboard bindings modal source standard" }],
-  },
-  {
-    id: "dictation", says: "Dictation", offered: everyone,
-    entries: [
-      { id: "dictation-backend", says: "Speech recognition", terms: "backend browser device whisper privacy audio" },
-      { id: "dictation-model", says: "Model", terms: "whisper parakeet download size" },
-      { id: "dictation-language", says: "Language", terms: "detect automatically" },
-      { id: "dictation-status", says: "Loaded model", terms: "webgpu cpu wasm device running" },
-      { id: "dictation-downloads", says: "Downloaded models", terms: "storage cache clear remove free space whisper" },
-    ],
   },
   {
     id: "storage", says: "Storage", offered: latex,

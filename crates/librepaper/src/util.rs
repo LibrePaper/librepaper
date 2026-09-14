@@ -32,11 +32,6 @@ pub fn die(message: impl std::fmt::Display) -> ! {
     std::process::exit(1)
 }
 
-pub fn is_terminal_stdout() -> bool {
-    use std::io::IsTerminal;
-    std::io::stdout().is_terminal()
-}
-
 pub fn now_unix() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
 }

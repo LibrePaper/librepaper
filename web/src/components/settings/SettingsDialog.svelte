@@ -8,7 +8,6 @@
   import Modal from "../Modal.svelte";
   import { offered, search } from "./registry.js";
   import EditorSettings from "./EditorSettings.svelte";
-  import DictationSettings from "./DictationSettings.svelte";
   import StorageSettings from "./StorageSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
@@ -32,7 +31,6 @@
     main = "",
     onbindingid,
     options,
-    viewing = null,
     onapplyoptions,
   } = $props();
 
@@ -80,14 +78,12 @@
         </header>
         {#if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} />
-        {:else if shown.id === "dictation"}
-          <DictationSettings />
         {:else if shown.id === "storage"}
           <StorageSettings />
         {:else if shown.id === "build"}
           <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
         {:else if shown.id === "rendering"}
-          <RenderingSettings {options} {viewing} {onapplyoptions} />
+          <RenderingSettings {options} {onapplyoptions} />
         {:else if shown.id === "local"}
           <LocalAppSettings {main} {sourceFormat} {bindingId} {onbindingid} />
         {/if}

@@ -617,7 +617,7 @@ impl Server {
                             }
                             // A deliberate act by the author, and so a mark in the
                             // timeline. The requester is told which checkpoint it
-                            // became, which is how `librepaper sync` knows what to print.
+                            // became, so peers can report the accepted revision.
                             "y-checkpoint" => {
                                 if !may_edit {
                                     let payload = json!({

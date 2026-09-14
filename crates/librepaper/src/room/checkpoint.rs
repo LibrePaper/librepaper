@@ -291,15 +291,22 @@ impl Room {
             .await
             .map_err(|e| WriteError::Storage(e.to_string()))
     }
+    /// Replaces the live room with one checkpoint's files, preserving what it
+    /// replaced. A restore is the one write that discards the whole document
+    /// at once, so the state it discards is committed as a version of its own
+    /// first -- `commit_version` writes nothing when that state is already the
+    /// newest checkpoint, so an untouched document gains no duplicate row.
     pub async fn restore_and_checkpoint(
         &self,
         point: &Checkpoint,
         by: impl Into<Attribution>,
     ) -> Result<(Vec<u8>, String), WriteError> {
+        let by = by.into();
         let (tree, bodies) = self
             .checkpoint_texts(point)
             .await
             .map_err(WriteError::Storage)?;
+        self.commit_version("superseded", by.clone(), false).await?;
         let before = {
             let state = self.state.lock().await;
             session::encode_vector(&state.session.doc)
@@ -315,7 +322,7 @@ impl Room {
             session::encode_diff(&state.session.doc, &before).map_err(WriteError::Storage)?
         };
         let sha = self
-            .commit_version("restore", by.into(), true)
+            .commit_version("restore", by, true)
             .await?
             .ok_or_else(|| WriteError::Storage("restore checkpoint missing".into()))?;
         Ok((update, sha))

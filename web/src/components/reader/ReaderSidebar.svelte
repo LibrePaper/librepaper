@@ -71,18 +71,9 @@
     unreadChat = false,
     collaborationTab = $bindable("comments"),
     checkpoints = [],
-    viewing = null,
     historySelectedSha = "",
-    historyMode = "current",
     historyDurability = null,
-    historyController,
     historyProblem = "",
-    historyBaseline = null,
-    historyChanges = null,
-    historyChangedPaths = [],
-    historyRedlines = true,
-    fileDiff = null,
-    historyComparePoint = null,
     localAppDiagnostics = [],
     previewMain = "",
     lastLatexResult = null,
@@ -122,7 +113,6 @@
     onreply,
     ondecide,
     onrejectconfirmed,
-    onsethistoryredlines,
     onshowhistory,
     onshareclose,
     onretrylocal,
@@ -130,17 +120,8 @@
     onopendiagnostic,
     ondrop,
     onviewpoint,
-    oncompare,
-    oncomparecurrent,
-    onrefreshcurrent,
-    onbackhistory,
     onnamecheckpoint,
-    onrestore,
     oncopycheckpoint,
-    onstephistory,
-    oncheckpointfile,
-    onfilediff,
-    onclosefilediff,
     onretryannotation,
     ondiscardannotation,
   } = $props();
@@ -220,9 +201,9 @@
               ondeletemany={ondeletemany} onreply={onreply} />
           {:else if tab.id === "changes"}
             <Changes {comments} {files} {figureAt} {identity} commentingAs={commentingAs} {canModerate}
-              canReview={mayEdit && !viewing} {tool}
+              canReview={mayEdit} {tool}
               revisions={trackingState.revisions} tracking={trackingState.enabled} showMarkup={trackingState.showMarkup}
-              canTrack={mayEdit && !viewing} {selectedRevision} {ontracking} {onmarkup}
+              canTrack={mayEdit} {selectedRevision} {ontracking} {onmarkup}
               onrevisionreveal={onrevisionreveal} onrevisiondecide={onrevisiondecide} onrevisionundo={onrevisionundo}
               {went} {replacements} canComment={mayChat} ontool={ontool} onreveal={onreveal}
               {selected} onresolve={onresolve} ondelete={onaskdelete}
@@ -239,10 +220,10 @@
               onopen={onopendiagnostic} provenance={lastLatexResult?.provenance || null}
               attempts={lastLatexResult?.attempts || []} />
           {:else if tab.id === "history"}
-            <History {checkpoints} {path} viewing={historySelectedSha} comparison={historyMode}
+            <History {checkpoints} viewing={historySelectedSha}
               canEdit={mayEdit} durability={historyDurability}
               problem={historyProblem} onview={onviewpoint} onname={onnamecheckpoint}
-              onrestore={onrestore} oncopy={oncopycheckpoint} />
+              oncopy={oncopycheckpoint} />
           {/if}
           {#if panel === tab.id && ["collaboration", "changes"].includes(tab.id) && unconfirmed.length}
             <div class="pending-recovery">

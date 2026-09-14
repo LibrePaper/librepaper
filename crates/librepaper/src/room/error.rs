@@ -108,16 +108,16 @@ impl FigureLimit {
 
 /// A ceiling the shared document itself has reached, refused on the socket
 /// that wrote past it. These four messages are wire text: a close frame
-/// carries nothing but a reason, and `librepaper sync` decides from it whether
-/// to reconnect or to stop. They live here so that both sides of that
-/// decision read one table -- see [`permanent_close_reason`].
+/// carries nothing but a reason. These strings are part of the collaboration
+/// protocol and must remain stable across clients.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DocumentLimit {
     /// Past `max_document`: the visible source.
     Size,
     /// Past `max_files`.
     Files,
-    /// The owner or the deployment has no bytes left for this room's edits.
+    /// The owner or deployment has no bytes left for this room's edits.
+    #[allow(dead_code)]
     Quota,
     /// Past `E`: the encoded snapshot, history and metadata included.
     Encoded,
@@ -132,21 +132,6 @@ impl DocumentLimit {
             Self::Encoded => super::ENCODED_CEILING_REFUSAL,
         }
     }
-}
-
-/// Whether a socket close reason names a refusal that reconnecting cannot
-/// fix. `librepaper sync` asks this before deciding to try again, and every
-/// message it can answer `true` for is written above -- so rewording one
-/// cannot leave the command line reconnecting into the same refusal forever.
-pub fn permanent_close_reason(reason: &str) -> bool {
-    [
-        DocumentLimit::Size,
-        DocumentLimit::Files,
-        DocumentLimit::Quota,
-        DocumentLimit::Encoded,
-    ]
-    .iter()
-    .any(|limit| limit.message() == reason)
 }
 
 /// Whether the same write is worth sending again.

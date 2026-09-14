@@ -463,7 +463,10 @@ export async function probe({ force = false, pairedOnly = false } = {}) {
     setStatus({ state: "reachable", capabilities: null, instance: body.instance });
   }
   lastInstance = body.instance || null;
-  if (!body.protocol.includes(1)) {
+  // Protocol 2 is the floor: it is the version that reports adapter-oriented
+  // `builders` capabilities, the only capability schema this browser reads.
+  // An older companion is reported as incompatible rather than as toolless.
+  if (!body.protocol.includes(2)) {
     resetNegativeCache();
     return scopedStatus({
       state: "incompatible", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
@@ -964,34 +967,6 @@ async function sourceSnapshot(treeDigest, main, manifest) {
   };
 }
 
-async function buildBiberForm(request) {
-  const stem = request.stem;
-  const files = [[`${stem}.bcf`, bytesOf(request.bcf)]];
-  for (const [path, bytes] of Object.entries(request.files || {})) files.push([path, bytesOf(bytes)]);
-  const manifest = await manifestOf(files);
-  const jobRequest = {
-    protocol: 1, kind: "biber",
-    project: current.project, origin: current.origin,
-    snapshot: request.job.snapshot, generation: request.job.generation,
-    stem, manifest,
-  };
-  return formOf(jobRequest, files);
-}
-
-async function buildTexForm({ job, tree, engine, main }) {
-  const files = [];
-  for (const [path, text] of Object.entries(tree.texts || {})) files.push([path, bytesOf(text)]);
-  for (const [path, bytes] of Object.entries(tree.assets || {})) files.push([path, bytesOf(bytes)]);
-  const manifest = await manifestOf(files);
-  const jobRequest = {
-    protocol: 1, kind: "tex",
-    project: current.project, origin: current.origin,
-    snapshot: job.snapshot, generation: job.generation,
-    engine, main, manifest,
-  };
-  return formOf(jobRequest, files);
-}
-
 // -------------------------------------------------------------- job polling
 
 async function pollJob(id, token, signal) {
@@ -1068,52 +1043,10 @@ function base64Of(bytes) {
 
 // -------------------------------------------------------------- jobs
 
-export async function runBiber(request, { signal, onProgress } = {}) {
-  const pairing = requirePairing();
-  onProgress?.({ done: 0, total: 1, scope: "local Biber" });
-  const form = await buildBiberForm(request);
-  const { id, status } = await submitAndAwait(pairing, form, signal);
-  const bbl = await fetchOutput(id, pairing.token, "bbl", status);
-  const blgBytes = (await fetchOutput(id, pairing.token, "blg", status)) || new Uint8Array();
-  onProgress?.({ done: 1, total: 1, scope: "local Biber" });
-  return {
-    ok: status.status === "done" && status.exit === 0 && bbl != null,
-    bbl,
-    blg: new TextDecoder().decode(blgBytes),
-    exit: status.exit,
-    tool: { name: "biber", version: status.provenance?.tools?.biber || null, backend: "local" },
-    incompatible: !!status.incompatible,
-    ...(status.error ? { error: status.error } : {}),
-  };
-}
-
-export async function runTex({ job, tree, engine, main }, { signal, onProgress } = {}) {
-  const pairing = requirePairing();
-  onProgress?.({ done: 0, total: 1, scope: "local compilation" });
-  const form = await buildTexForm({ job, tree, engine, main });
-  const { id, status } = await submitAndAwait(pairing, form, signal);
-  const pdf = await fetchOutput(id, pairing.token, "pdf", status);
-  const synctex = await fetchOutput(id, pairing.token, "synctex", status);
-  const logBytes = (await fetchOutput(id, pairing.token, "log", status)) || new Uint8Array();
-  onProgress?.({ done: 1, total: 1, scope: "local compilation" });
-  return {
-    ok: status.status === "done" && status.exit === 0 && pdf != null,
-    pdf, synctex,
-    log: new TextDecoder().decode(logBytes),
-    diagnostics: status.diagnostics || [],
-    exit: status.exit,
-    provenance: { ...(status.provenance || {}), backend: "local" },
-    ...(status.error ? { error: status.error } : {}),
-  };
-}
-
-// Version 2 adapter request used by non-direct local builders. The command,
-// executable and environment remain entirely companion-local.
 export async function runBuild({ job = {}, tree, builder, engine, output = "pdf", options = {}, bindingId = "", preset = "" }, { signal, onProgress } = {}) {
+  // A pairing only exists after a health check that refused anything below
+  // protocol 2 (see `probe`), so the build request needs no version guard.
   const pairing = requirePairing();
-  if (!Array.isArray(status().protocol) || !status().protocol.includes(2)) {
-    throw named("Refused", "This companion does not support protocol 2 build adapters. Update LibrePaper and retry.");
-  }
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
   const request = {

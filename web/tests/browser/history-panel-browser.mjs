@@ -37,48 +37,48 @@ const points = ${JSON.stringify(points)};
 const otherFilePoint = ${JSON.stringify(otherFilePoint)};
 const events = [];
 const component = createClassComponent({ component: History, target: document.body, props: {
-  checkpoints: [...points, otherFilePoint], path: "main.md", canEdit: true, changes: [{ position: 0, old: "old", insert: "new", currentBefore: "", currentAfter: "text", path: "main.md" }], currentLabel: "",
-  onview: (sha, comparison) => events.push(["view", sha, comparison]), onstep: () => events.push(["step"]),
-  onredlines: (shown) => events.push(["redlines", shown]),
+  checkpoints: [...points, otherFilePoint], canEdit: true, currentLabel: "",
+  onview: (sha) => events.push(["view", sha]),
   onname: (sha, label) => events.push(["name", sha, label]),
 } });
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 30)); await tick(); };
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 window.historyPanelCheck = async () => {
   await flush();
-  check(!document.querySelector('li[data-sha="' + otherFilePoint.sha + '"]'),
-    'history excludes checkpoints that did not change the selected file');
+  // The timeline is the project's, not the open file's: a version that only
+  // moved references.bib is still a version of this project.
+  check(document.querySelector('li[data-sha="' + otherFilePoint.sha + '"]'),
+    'the timeline is project-wide');
+  check(document.querySelectorAll('li[data-sha]').length === points.length + 1,
+    'every version is a row of its own');
+  check(!document.querySelector('.timeline-folded'),
+    'no row stands for several versions');
   const namedRow = document.querySelector('li[data-sha="' + points[4].sha + '"]');
   check(namedRow?.textContent.includes('Submitted draft') && !namedRow?.textContent.includes('Vincent') && !namedRow?.textContent.includes('Autosaved') && !namedRow?.textContent.includes('Named version'),
     'a named revision is presented only with its explicit name');
-  check(document.querySelector('.timeline-folded'), 'routine checkpoints are grouped');
-  const session = document.querySelector('.timeline-folded');
-  check(session.textContent.includes('3 versions'), 'group displays a readable version count');
-  session.click(); await flush();
-  check(events.some((event) => event[0] === 'view' && event[1] === points[3].sha), 'session label previews newest version');
-  document.querySelector('[aria-label="Expand editing session"]').click(); await flush();
-  check(document.querySelectorAll('.timeline-point').length >= 6, 'expansion reveals every version');
+  check(!document.querySelector('[aria-label="Compare selected checkpoint"]'),
+    'there is one comparison, so there is no mode to choose');
   check(!document.querySelector('[aria-label="Name this version"]'),
     'unselected revisions do not expose row actions');
+  const row = document.querySelector('li[data-sha="' + points[1].sha + '"] .timeline-point');
+  row.click(); await flush();
+  check(events.some((event) => event[0] === 'view' && event[1] === points[1].sha),
+    'selecting a version asks for its comparison');
   component.$set({ viewing: points[1].sha }); await flush();
-  check(document.querySelector('[aria-label="Name this version"]') && document.querySelector('[aria-label="Restore this version"]') && document.querySelector('[aria-label="Copy the link to this version"]'),
-    'the selected revision exposes naming, restore, and link actions');
-  const comparison = document.querySelector('[aria-label="Compare selected checkpoint"]');
-  check(comparison?.value === 'current', 'history defaults to checkpoint versus current');
-  comparison.value = 'checkpoint'; comparison.dispatchEvent(new Event('change', { bubbles: true })); await flush();
-  check(events.some((event) => event[0] === 'view' && event[1] === points[1].sha && event[2] === 'checkpoint'),
-    'the comparison control reloads the selected checkpoint as source');
+  check(document.querySelector('[aria-label="Name this version"]') && document.querySelector('[aria-label="Copy the link to this version"]'),
+    'the selected revision exposes naming and link actions');
+  check(!document.querySelector('[aria-label="Restore this version"]'),
+    'restoring belongs to the comparison, where what it replaces is on the screen');
   const currentRow = document.querySelector('.timeline-now .timeline-point');
   const currentBox = currentRow.getBoundingClientRect();
   check(document.elementFromPoint(currentBox.left + 10, currentBox.top + currentBox.height / 2)?.closest('.timeline-point') === currentRow,
     'selected-version details do not intercept timeline controls');
-  check(document.querySelector('[aria-label="Collapse editing session"]'), 'selecting a hidden version reveals its session');
-  document.querySelector('[aria-label="Collapse editing session"]').click(); await flush();
-  check(document.querySelector('[aria-label="Expand editing session"]') && !document.querySelector('[aria-label="Collapse editing session"]'), 'session can collapse again without being reopened');
   const filter = document.querySelector('[aria-label="Filter version history"]');
+  check([...filter.options].map((option) => option.value).join() === 'all,named',
+    'the only filter left is the named one');
   filter.value = 'named'; filter.dispatchEvent(new Event('change', { bubbles: true })); await flush();
   const filtered = [...document.querySelectorAll('[data-sha]')].map((node) => node.dataset.sha);
-  check(filtered.length === 3 && filtered[0] === points[4].sha && filtered[1] === points[1].sha && filtered[2] === points[0].sha, 'named filter preserves chronological order across days');
+  check(filtered.length === 3 && filtered[0] === points[4].sha && filtered[1] === points[1].sha && filtered[2] === points[0].sha, 'named filter preserves chronological order across days, and keeps the selected version');
   filter.value = 'all'; filter.dispatchEvent(new Event('change', { bubbles: true })); await flush();
   component.$set({ viewing: '' }); await flush();
   const currentName = document.querySelector('[aria-label="Name the current version"]');
@@ -88,9 +88,6 @@ window.historyPanelCheck = async () => {
   input.value = 'Working draft'; input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await flush();
   check(events.some((event) => event[0] === 'name' && event[1] === 'current' && event[2] === 'Working draft'), 'current naming reports the current pseudo-version');
-  component.$set({ checkpoints: points.map(({ changed, ...point }) => point), path: 'main.md' }); await flush();
-  check(document.querySelectorAll('[data-sha]').length > 0,
-    'legacy manifests without changed-path metadata do not look like an empty history');
   component.$destroy();
   return true;
 };
@@ -114,7 +111,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("history panel component", () => tab.evaluate("Boolean(window.historyPanelCheck)"));
   assert.equal(await tab.evaluate("window.historyPanelCheck()"), true);
-  console.log("history panel: grouping, expansion, filtering, comparison modes, and naming passed");
+  console.log("history panel: a project-wide dated list, one row per version, selection, filtering and naming passed");
 } finally {
   await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
 }

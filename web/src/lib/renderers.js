@@ -120,7 +120,7 @@ function request(format, operation, args = {}, moduleUrls = urls()) {
 
 let activeLocalAbort = null;
 
-/// The word-level diff shared with `librepaper sync`. It does not depend on
+/// The word-level diff used for source projections. It does not depend on
 /// the source format, but runs through the same engine module as the document
 /// so the browser needs no second WASM bundle. HTML documents use Markdown's
 /// small module when one is available.
@@ -165,6 +165,9 @@ export function formatOf(path) {
 export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "" } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = formatOf(tree.main);
+  // LaTeX is never dispatched to the companion from here. It builds in the
+  // browser, and its one local path is the automatic Biber and native
+  // fallback that `latex.js` routes for itself.
   if (buildPreferences?.selection === "tool" && buildPreferences.backend === "local" && format !== "latex") {
     localBridge.configure({ project, origin: globalThis.location?.origin || "", active: true });
     const digest = await snapshotDigest(tree);
@@ -180,10 +183,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
     let result;
     if (buildPreferences.tool === "quarto") {
       const options = { ...(buildPreferences.options || {}), ...(buildPreferences.profile ? { profile: buildPreferences.profile } : {}), ...(buildPreferences.parameters ? { parameters: buildPreferences.parameters } : {}), ...(buildPreferences.policy ? { policy: buildPreferences.policy } : {}) };
-      if (buildPreferences.preset && !localBridge.status().protocol?.includes(2)) throw new Error("Update the local companion to use presets.");
-      result = localBridge.status().protocol?.includes(2)
-        ? await localBridge.runBuild({ job, tree, builder: "quarto", output, options, preset: buildPreferences.preset, bindingId: job.binding }, { signal: abort.signal })
-        : await localBridge.runQuarto({ job, tree, options: { ...options, entrypoint: tree.main, format: output } }, { signal: abort.signal });
+      result = await localBridge.runBuild({ job, tree, builder: "quarto", output, options, preset: buildPreferences.preset, bindingId: job.binding }, { signal: abort.signal });
       return { artifact: result.artifact, artifactKind: result.kind, html: result.kind === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null, pdf: result.kind === "pdf" ? result.artifact : null, diagnostics: result.diagnostics || [], log: result.log || result.logs || "", provenance: result.provenance, ok: result.ok, failure: result.ok ? null : { kind: "local", message: result.error || "Local Quarto build failed" } };
     }
     result = await localBridge.runBuild({ job, tree, builder: buildPreferences.tool, output, options: buildPreferences.options || {}, preset: buildPreferences.preset, bindingId: job.binding }, { signal: abort.signal });
@@ -234,9 +234,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
       // The log travels too, for the one case the list is empty and the log
       // is the only account of why there is no PDF.
       log: log || "",
-      // `latex.js` may have fallen back to a local backend; the reader
-      // shows that provenance and both attempts' logs (SPEC "Failure
-      // presentation") rather than the browser-only shape this used to be.
+      // Keep provenance and the browser attempt log explicit for diagnostics.
       attempts,
       provenance,
       failure,

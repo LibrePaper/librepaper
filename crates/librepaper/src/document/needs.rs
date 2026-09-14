@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! What a typst compile could not find, fetched: packages from the registry,
 //! and font families from the deployment's library, kept in a cache between
 //! runs. The browser does the same with the module's `needs` export, so a

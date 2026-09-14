@@ -13,17 +13,6 @@
   const selected = $derived(preferences.selection === "tool" ? (preferences.preset ? `local:preset:${preferences.preset}` : preferences.tool === "tex" && preferences.engine ? `${preferences.backend || "browser"}:tex:${preferences.engine}` : optionValue(preferences.backend || "browser", preferences.tool || "")) : "automatic");
 
   function scope() { return { origin: globalThis.location?.origin || "", user: userId, document: documentId }; }
-  function choose(selection, backend, tool = "") {
-    const next = update(scope(), format, {
-      selection, backend, ...(tool ? { tool } : {}),
-      ...(tool === "tex" || tool === "latexmk" ? { engine: "pdflatex" } : {}),
-    });
-    onpreferences?.(next);
-  }
-  function chooseEngine(engine) {
-    const next = update(scope(), format, { selection: "tool", backend: preferences.backend || "browser", tool: preferences.tool || "tex", engine });
-    onpreferences?.(next);
-  }
   function chooseOutput(output) {
     onpreferences?.(update(scope(), format, { output }));
   }
@@ -31,8 +20,7 @@
   function chooseParameters(text) {
     try { const parameters = text.trim() ? JSON.parse(text) : {}; if (!parameters || Array.isArray(parameters) || typeof parameters !== "object") return; onpreferences?.(update(scope(), format, { parameters })); } catch { /* leave the last valid map */ }
   }
-  function disabled(entry) { const capability = capabilityFor(local?.capabilities, entry.id); const protocol = Math.max(...(local?.protocol || [1])); return entry.backend.includes("local") && (!capability || capability.available !== true || (entry.minProtocol && protocol < entry.minProtocol) || !supportsOperation(local?.capabilities, entry.id, "build", "snapshot")); }
-  function disabledEngine(entry, engine) { const capability = capabilityFor(local?.capabilities, entry.id); return disabled(entry) || (Array.isArray(capability?.engines) && !capability.engines.includes(engine)); }
+  function disabled(entry) { const capability = capabilityFor(local?.capabilities, entry.id); return entry.backend.includes("local") && (capability?.available !== true || !supportsOperation(local?.capabilities, entry.id, "build", "snapshot")); }
   function disabledOutput(output) {
     if (preferences.backend !== "local") return format === "markdown" || format === "quarto" ? output !== "html" : false;
     const capability = capabilityFor(local?.capabilities, preferences.tool);
@@ -40,7 +28,7 @@
   }
   const statusMessage = $derived(({ unknown: "Checking for the local companion…", unreachable: "Local companion unavailable.", denied: "Local network access was blocked by the browser.", reachable: "Local companion is running; connect this document.", unauthorized: "Connect this document to use local tools.", incompatible: "Update the local companion to use these tools.", connected: "Local companion connected." })[local?.state] || "");
   function version(entry) { return capabilityFor(local?.capabilities, entry.id)?.version; }
-  function protocolUnavailable(entry) { return entry.minProtocol && Math.max(...(local?.protocol || [1])) < entry.minProtocol; }
+  function engineLabel(engine) { return engine === "pdflatex" ? "pdfLaTeX" : engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"; }
   const savedMissing = $derived(preferences.selection === "tool" && preferences.tool && !builders.some((entry) => entry.id === preferences.tool) ? preferences.tool : "");
   const selectedPreset = $derived(preferences.preset ? presets.find((item) => item.id === preferences.preset) : null);
   const presetSchema = $derived(Object.entries(selectedPreset?.option_schema || {}).map(([name, schema]) => ({ name, ...schema })));
@@ -56,7 +44,7 @@
   }
   function optionValue(backend, id) { return `${backend}:${id}`; }
   function chooseOption(value) {
-    if (value === "automatic") return choose("automatic", "auto");
+    if (value === "automatic") return onpreferences?.(update(scope(), format, { selection: "automatic", backend: "auto" }));
     const [backend, id, ...rest] = value.split(":");
     const preset = id === "preset" ? rest.join(":") : "";
     const engine = id === "tex" ? rest[0] : "";
@@ -72,7 +60,7 @@
     if (preferences.preset && !compatible.some((item) => item.id === preferences.preset)) {
       compatible.push({ id: preferences.preset, name: `${preferences.preset} (unavailable)`, available: false });
     }
-    return compatible.map((preset) => ({ ...preset, available: preset.available !== false && local?.state === "connected" && local?.protocol?.includes(2) && capabilityFor(local?.capabilities, preset.base_adapter)?.available === true }));
+    return compatible.map((preset) => ({ ...preset, available: preset.available !== false && local?.state === "connected" && capabilityFor(local?.capabilities, preset.base_adapter)?.available === true }));
   });
 </script>
 
@@ -84,16 +72,14 @@
     <option value="automatic">Automatic</option>
     {#if browserBuilders.length}<optgroup label="Browser">
       {#each browserBuilders as entry (entry.id)}
-        {#if entry.id === "tex"}
-          <option value="browser:tex:pdflatex">pdfLaTeX</option><option value="browser:tex:xelatex">XeLaTeX</option>
+        {#if entry.engines.length}
+          {#each entry.engines as engine}<option value={`browser:${entry.id}:${engine}`}>{engineLabel(engine)}</option>{/each}
         {:else}<option value={optionValue("browser", entry.id)}>{entry.label}</option>{/if}
       {/each}
     </optgroup>{/if}
     {#if localBuilders.length}<optgroup label="Local companion">
       {#each localBuilders as entry (entry.id)}
-        {#if entry.id === "tex"}
-          {#each ["pdflatex", "xelatex", "lualatex"] as engine}<option value={`local:tex:${engine}`} disabled={disabledEngine(entry, engine)}>{engine === "pdflatex" ? "pdfLaTeX" : engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"}{version(entry) ? ` (${version(entry)})` : ""}{protocolUnavailable(entry) ? " (Update companion)" : disabledEngine(entry, engine) ? " (unavailable)" : ""}</option>{/each}
-        {:else}<option value={optionValue("local", entry.id)} disabled={disabled(entry)}>{entry.label}{version(entry) ? ` (${version(entry)})` : ""}{protocolUnavailable(entry) ? " (Update companion)" : disabled(entry) ? " (unavailable)" : ""}</option>{/if}
+        <option value={optionValue("local", entry.id)} disabled={disabled(entry)}>{entry.label}{version(entry) ? ` (${version(entry)})` : ""}{disabled(entry) ? " (unavailable)" : ""}</option>
       {/each}
     </optgroup>{/if}
     {#if presets.length}<optgroup label="Custom presets">
@@ -103,24 +89,16 @@
   </select>
 </SettingRow>
 
-<SettingRow title="Local tools" description="Refresh installed tools and companion presets.">
+<!-- LaTeX has no local builder to configure. Its companion use is the
+     automatic Biber and native fallback, which needs no pairing surface here. -->
+{#if format !== "latex"}<SettingRow title="Local tools" description="Refresh installed tools and companion presets.">
   <span class="setting-description" role="status">{statusMessage}</span>
   {#if ["unknown", "unreachable", "denied"].includes(local?.state)}<button type="button" class="btn btn-sm preset-filled-primary-500" onclick={connect}>Open companion</button>{/if}
   {#if ["unauthorized", "reachable"].includes(local?.state)}<button type="button" class="btn btn-sm preset-filled-primary-500" onclick={connect}>Connect</button>{/if}
   {#if local?.state !== "connected"}<a class="btn btn-sm preset-outlined-surface-300-700" href="https://github.com/LibrePaper/librepaper/releases/latest" target="_blank" rel="noreferrer">Install companion</a>{/if}
   <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => localBridge.probe({ force: true })}>Retry</button>
   <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={local?.state !== "connected"} onclick={rescan}>Rescan</button>
-</SettingRow>
-
-{#if preferences.selection === "tool" && preferences.tool === "latexmk" && !preferences.preset}
-  <SettingRow id="build-engine" title="Engine" description="Choose the engine used by this build tool.">
-    <select class="select setting-select" aria-label="Build engine" value={preferences.engine || "pdflatex"} onchange={(event) => chooseEngine(event.currentTarget.value)}>
-      {#each (preferences.tool === "tex" && preferences.backend === "browser" ? ["pdflatex", "xelatex"] : ["pdflatex", "xelatex", "lualatex"]) as engine}
-        <option value={engine} disabled={disabledEngine({ id: "latexmk", backend: ["local"], minProtocol: 2 }, engine)}>{engine === "pdflatex" ? "pdfLaTeX" : engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"}</option>
-      {/each}
-    </select>
-  </SettingRow>
-{/if}
+</SettingRow>{/if}
 
 {#if selectedPreset && presetSchema.length}
   <fieldset class="setting-group" disabled={selectedPreset.available === false}>

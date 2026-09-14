@@ -67,10 +67,6 @@ tar = "0.4"
 # rustls reqwest already builds, so what it adds to the binary is the client
 # handshake and nothing else.
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-# Watching for a save. The one thing `sync` cannot do by polling without
-# either missing a save or spinning: inotify, FSEvents and
-# ReadDirectoryChangesW behind one interface.
-notify = "8"
 fs2 = "0.4"
 chacha20poly1305 = "0.10"
 # PostgreSQL is the production catalogue. SQLx supplies the async pool and

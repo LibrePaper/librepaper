@@ -20,31 +20,6 @@ const body = (start, end) => {
   return reader.slice(from, to);
 };
 
-const showCheckpoint = body("  async function showCheckpoint(sha)", "  async function nameCheckpoint");
-// History no longer starts comparisons from preview readiness. The full
-// Reader browser test covers preview events during pending source navigation.
-const backToNow = body("  function backToNow()", "  async function nameCheckpoint");
-for (const stale of [false, true]) {
-  let finish;
-  const pending = new Promise((resolve) => { finish = resolve; });
-  const delivered = [];
-  const ctx = vm.createContext({
-    historyController: { capturedCurrent: { sha: "captured", main: "main.md", texts: { "main.md": "frozen" } } },
-    navigationGeneration: 0, issued: 0, readerDisposed: false, viewing: null, compact: false,
-    renderingStore: { invalidate: () => {} }, dropHeldRendering: () => {}, showMobileView: () => {},
-    passages: { renderTree: () => pending }, SLUG: "doc", KEY: "", keyHeaders: () => ({}),
-    framePreview: { publish: (value) => delivered.push(value) },
-    renderCoordinator: { invalidate() {} },
-    paintPreview: () => { throw new Error("captured targets must not depend on the live preview queue"); },
-  });
-  vm.runInContext(body("  async function showCapturedCurrent()", "  let restoring"), ctx);
-  const showing = ctx.showCapturedCurrent();
-  if (stale) ctx.navigationGeneration++;
-  finish({ html: "<p>frozen</p>" });
-  await showing;
-  assert.equal(delivered.length, stale ? 0 : 1);
-  if (!stale) assert.equal(delivered[0].sha, "captured");
-}
 // `updatePreviewTarget` points the local app at this document through a small
 // helper now, so that helper is sliced in wherever the function is exercised.
 const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which of Quarto's own live preview");
@@ -170,14 +145,8 @@ const context = (values) => {
     SLUG: "doc",
     buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
     session: null,
-    viewing: null,
-    historyController: { noteLiveChange: () => {} },
-    checkpointNavigationPending: 0,
     diagnosticContext,
     snapshotDigest: async () => "test-render-digest",
-    historyDiffGeneration: 0,
-    historyComparePoint: null,
-    historyChanges: null,
     write: () => {},
     ...values,
   });
@@ -208,50 +177,6 @@ const context = (values) => {
   };
   return ctx;
 };
-
-// Selecting A and then B must leave B selected if A's history response is late.
-{
-  const a = deferred();
-  const b = deferred();
-  const ctx = context({
-    navigationGeneration: 0, renderingRequest: 0, issued: 0, viewing: null,
-    historyController: { invalidateChanges: () => {} },
-    renderingStore: { invalidate: () => {}, cancelPoll: () => {}, reset: () => {}, schedulePoll: () => {} },
-    historyProblem: "", frameShowsCheckpoint: false,
-    SLUG: "doc", KEY: "key", keyHeaders: () => ({}), dropHeldRendering: () => {},
-    paintPreview: () => Promise.resolve(),
-    history: { checkpoint: (_slug, sha) => (sha === "A" ? a.promise : b.promise) },
-  });
-  vm.runInContext(`${showCheckpoint}\n${backToNow}`, ctx);
-  const pa = vm.runInContext("showCheckpoint('A')", ctx);
-  const pb = vm.runInContext("showCheckpoint('B')", ctx);
-  b.resolve({ sha: "B" });
-  await pb;
-  a.resolve({ sha: "A" });
-  await pa;
-  assert.equal(ctx.viewing.sha, "B");
-}
-
-// Back-to-now invalidates an in-flight checkpoint before its response arrives.
-{
-  const a = deferred();
-  const ctx = context({
-    navigationGeneration: 0, renderingRequest: 0, issued: 0, viewing: null,
-    historyController: { invalidateChanges: () => {} },
-    renderingStore: { invalidate: () => {}, cancelPoll: () => {}, reset: () => {}, schedulePoll: () => {} },
-    historyProblem: "", frameShowsCheckpoint: false, editing: false,
-    sourceFormat: "html", framedSource: "live",
-    SLUG: "doc", KEY: "key", keyHeaders: () => ({}), dropHeldRendering: () => {},
-    paintPreview: () => Promise.resolve(), navigateFrame: () => {},
-    history: { checkpoint: () => a.promise },
-  });
-  vm.runInContext(`${showCheckpoint}\n${backToNow}`, ctx);
-  const pending = vm.runInContext("showCheckpoint('A')", ctx);
-  vm.runInContext("backToNow()", ctx);
-  a.resolve({ sha: "A" });
-  await pending;
-  assert.equal(ctx.viewing, null);
-}
 
 // A compiler result with neither html nor pdf leaves the existing preview up.
 {
@@ -474,19 +399,20 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(ctx.renderCoordinator.running, false);
 }
 
-// Peer updates notify history without repainting the frozen preview.
+// A peer's edit advances the source generation the history panel reads, so a
+// comparison against "current" knows it was taken before that edit.
 {
-  let notified = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, viewing: { sha: "old" }, mayEdit: true, publishedPublication: null,
-    outlineRevision: 0,
-    historyController: { noteLiveChange: () => notified++ },
-    diagnosticPainter: { typed: () => assert.fail("historical preview must remain stable") },
+    sourceGeneration: 0, historyLiveVersion: 0, mayEdit: true, publishedPublication: null,
+    outlineRevision: 0, sourceFormat: "", editing: false,
+    previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
+    setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
+    diagnosticPainter: { typed: () => {} },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
-  assert.equal(notified, 1);
   assert.equal(ctx.sourceGeneration, 1);
+  assert.equal(ctx.historyLiveVersion, 1);
 }
 
 // Further keystrokes must not postpone an editor's already scheduled preview.
@@ -578,56 +504,6 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(compiled, 1, "a Quarto document with no live preview compiles its own draft");
   assert.equal(published[0].kind, "html");
   assert.equal(published[0].html, "<p>draft</p>");
-}
-
-// A historical endpoint uses the contemporary HTML renderer with its captured
-// tree, never the editor's ordinary renderer/PDF path. Settings and captured
-// asset bytes must reach that endpoint unchanged.
-{
-  const sourceAsset = Uint8Array.of(4, 5, 6);
-  const sourceTree = {
-    main: "paper.typ",
-    texts: { "paper.typ": "= Historical" },
-    digests: { "figure.png": "digest-history" },
-    settings: { release: "r1", engine: "typst" },
-  };
-  let renderedTree = null;
-  let ordinaryRendererCalls = 0;
-  const ctx = context({
-    displayedFormat: "typst", sourceFormat: "typst", pdfOutput: false,
-    compilesHere: false, paintsTheFrame: true, editing: false,
-    issued: 0, painted: 0, viewing: { sha: "checkpoint" },
-    navigationGeneration: 0, sourceGeneration: 0,
-    previewPaintBusy: false, previewPaintQueued: false, previewTimer: null,
-    everPainted: true, latestPreview: null,
-    SLUG: "history-doc", KEY: "", authHeaders: () => ({}),
-    keyHeaders: () => ({}),
-    treeNow: () => sourceTree,
-    headingOf: async () => "Historical",
-    figures: {
-      gather: async () => ({ assets: { "figure.png": sourceAsset.slice() }, urls: { "figure.png": "blob:history" } }),
-    },
-    passages: {
-      renderTree: async (_slug, tree) => {
-        renderedTree = tree;
-        return { html: "<p>historical</p>", diagnostics: [] };
-      },
-    },
-    renderers: {
-      formatOf: () => "typst", producesPdf: () => true,
-      render: () => { ordinaryRendererCalls += 1; return { pdf: Uint8Array.of(9), diagnostics: [] }; },
-    },
-    framePreview: { publish: (payload) => { ctx.published = payload; }, clear: () => {} },
-    renderingStore: { cancelPoll: () => {} },
-    diagnosticPainter: { rendered: () => {} }, say: () => {},
-  });
-  vm.runInContext(paintPreview, ctx);
-  await vm.runInContext("paintPreview()", ctx);
-  assert.equal(ordinaryRendererCalls, 0, "historical preview bypasses the ordinary compiler");
-  assert.ok(renderedTree, ctx.renderState.failureReason || "historical render did not run");
-  assert.equal(renderedTree.settings.release, "r1");
-  assert.deepEqual([...renderedTree.assets["figure.png"]], [4, 5, 6]);
-  assert.equal(ctx.published.html, "<p>historical</p>");
 }
 
 // Typst follows the PDF lifecycle too: one compile in flight, latest request
@@ -916,22 +792,6 @@ for (const latest of [
 }
 console.log('reader-races: explicit preview selection, auxiliary files, rename and deletion passed');
 
-// Initial live-file discovery must not cancel a historical link being fetched.
-{
-  const ctx = context({
-    session: { mainPath: () => 'main.md' }, files: [],
-    previewMain: '', sourceFormat: 'markdown', navigationGeneration: 7,
-    checkpointNavigationPending: 7, mayEdit: false,
-    location: { origin: 'https://app.test' },
-    localQuarto: { configure: () => {}, bindingId: () => 'hosted', probe: async () => {} },
-    renderers: { formatOf: () => 'markdown', warm: () => {} }, configureLatex: () => {},
-  });
-  vm.runInContext(`${pairLocalQuarto}\n${body('  function updatePreviewTarget()', '  function previewThisFile()')}`, ctx);
-  vm.runInContext('updatePreviewTarget()', ctx);
-  assert.equal(ctx.previewMain, 'main.md');
-  assert.equal(ctx.navigationGeneration, 7, 'pending checkpoint navigation retains ownership');
-}
-
 // Main and secondary previews never expose the retired rendering store.
 assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//);
 
@@ -960,3 +820,44 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   assert.match(reader, /icon="eye" label="Preview this file"/);
 }
 console.log('reader-races: View and compact menus expose the same explicit preview controls');
+
+// Restoring replaces every file in the project, so what it discards has to be
+// what the reader was shown. A write that lands while the dialog is open --
+// a collaborator's edit, or this reader in another tab -- must be confirmed
+// again rather than quietly thrown away.
+{
+  const restoreCheckpoint = body("  function restoreCheckpoint(sha)", "  async function confirmRestore()");
+  const confirmRestore = body("  async function confirmRestore()", "  async function nameCheckpoint");
+  const projectSignature = body("  const projectSignature = () =>", "  function restoreCheckpoint(sha)");
+  let tree = { main: "main.md", texts: { "main.md": "as confirmed" }, files: {} };
+  const posted = [];
+  const ctx = vm.createContext({
+    mayEdit: true, restoring: false, restoreSha: "", restoreBusy: false,
+    restoreBaseline: "", restoreMoved: false, checkpoints: [],
+    JSON, session: { tree: () => tree },
+    SLUG: "doc", KEY: "", authHeaders: () => ({}),
+    fetch: async (url, options) => {
+      posted.push({ url, body: options.body });
+      return { ok: true, json: async () => ({}) };
+    },
+    loadHistory: async () => {},
+    historySource: { select: async () => {} },
+    toastProblem: (message) => assert.fail(message),
+  });
+  vm.runInContext(`${projectSignature}\n${restoreCheckpoint}\n${confirmRestore}`, ctx);
+
+  vm.runInContext("restoreCheckpoint('sha-one')", ctx);
+  assert.equal(ctx.restoring, true);
+  tree = { main: "main.md", texts: { "main.md": "somebody else typed" }, files: {} };
+  await vm.runInContext("confirmRestore()", ctx);
+  assert.equal(posted.length, 0, "a project that moved is not restored over without a second look");
+  assert.equal(ctx.restoreMoved, true, "and the dialog says so");
+  assert.equal(ctx.restoring, true, "and stays open");
+
+  await vm.runInContext("confirmRestore()", ctx);
+  assert.equal(posted.length, 1, "confirming against what is now on the screen restores");
+  assert.equal(JSON.parse(posted[0].body).sha, "sha-one");
+  assert.equal(ctx.restoring, false);
+  assert.equal(ctx.restoreMoved, false);
+}
+console.log('reader-races: a restore is confirmed against the project it will replace');

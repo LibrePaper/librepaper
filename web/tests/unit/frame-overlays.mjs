@@ -43,17 +43,11 @@ assert.equal(overlays.annotations(comments), false);
 assert.equal(overlays.selection("passage"), true);
 assert.equal(overlays.selection("passage"), false);
 
-const redlines = { type: "redlines", items: [{ start: 1, end: 2 }] };
-assert.equal(overlays.history(redlines), true);
-assert.equal(overlays.history(redlines), false);
-
 overlays.resetAnnotations();
 assert.equal(overlays.annotations(comments), true);
 assert.equal(overlays.selection("passage"), false);
-assert.equal(overlays.history(redlines), false);
 
 overlays.reset();
 assert.equal(overlays.selection("passage"), true);
-assert.equal(overlays.history(redlines), true);
 
 console.log("frame overlay tests passed");

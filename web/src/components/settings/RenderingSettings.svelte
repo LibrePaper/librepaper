@@ -7,7 +7,7 @@
   import SettingRow from "./SettingRow.svelte";
   import { parseRenderOptions } from "../../lib/quarto-options.js";
 
-  let { options, viewing = null, onapplyoptions } = $props();
+  let { options, onapplyoptions } = $props();
 
   let draftProfile = $state("");
   let parametersText = $state("{}");
@@ -84,7 +84,7 @@
     }
   }
 
-  const disabled = $derived(Boolean(viewing) || applying);
+  const disabled = $derived(applying);
 </script>
 
 <SettingRow id="rendering-profile" title="Profile"
@@ -105,7 +105,7 @@
   {/if}
 </SettingRow>
 
-<SettingRow title="" description={viewing ? "Return to the current version to change these." : dirty ? "The preview restarts with the new settings." : ""}>
+<SettingRow title="" description={dirty ? "The preview restarts with the new settings." : ""}>
   <button class="btn btn-sm preset-filled-primary-500" type="button" onclick={() => void apply()}
           disabled={disabled || !dirty || Boolean(validationError)}>
     {applying ? "Applying…" : "Apply"}

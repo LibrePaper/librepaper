@@ -1,6 +1,6 @@
-// The file manager stays live while the document pane may show a checkpoint.
-// Keep this small check close to Reader because that distinction is easy to
-// lose when changing the history rendering code.
+// What a download is cut from: the live directory, and the file the preview
+// is pointed at. Keep this small check close to Reader, because the two trees
+// are easy to confuse when changing the preview code.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
@@ -18,11 +18,6 @@ const body = (start, end) => {
 const liveTreeNow = body("  function liveTreeNow()", "  function treeNow()");
 const treeNow = body("  function treeNow()", "  // Painting the preview");
 
-const checkpoint = {
-  main: "old.md",
-  texts: { "old.md": "checkpoint" },
-  files: { "old.md": { kind: "text" } },
-};
 const live = {
   main: "project/current.md",
   texts: { "project/current.md": "live", "project/new.md": "new live file" },
@@ -31,17 +26,19 @@ const live = {
 const context = vm.createContext({
   session: { tree: () => live, text: { toString: () => "fallback" } },
   sourceFormat: "markdown",
-  viewing: checkpoint,
-  checkpointTree: (point) => ({ main: point.main, texts: point.texts, digests: {} }),
+  editing: false,
+  previewMain: "project/new.md",
 });
 
 vm.runInContext(`${liveTreeNow}\n${treeNow}`, context);
-assert.deepEqual(vm.runInContext("liveTreeNow()", context), live);
-assert.deepEqual(vm.runInContext("treeNow()", context), {
-  main: checkpoint.main,
-  texts: checkpoint.texts,
-  digests: {},
-});
+assert.deepEqual(vm.runInContext("liveTreeNow()", context), live, "the directory is the live one");
+// Compared as data: `treeNow` builds its result inside the VM realm, whose
+// object prototype is not this one.
+assert.deepEqual(
+  JSON.parse(JSON.stringify(vm.runInContext("treeNow()", context))),
+  { ...live, main: "project/new.md" },
+  "the preview follows the explicitly previewed file",
+);
 
 // `downloadTree`/`downloadEntry` call this shared helper, so it has to be
 // evaluated alongside them rather than stubbed: the point of the check is the
@@ -79,8 +76,6 @@ async function runDownload(source, entry, mayEdit = true) {
     captured: null,
     entry,
     mayEdit,
-    viewing: checkpoint,
-    checkpointTree: (point) => ({ main: point.main, texts: point.texts, digests: {} }),
   });
   const executable = source.replaceAll(
     'const { zip } = await import("../lib/zip.js");',
@@ -118,7 +113,7 @@ await assert.rejects(
 // roles for which Reader sets `mayEdit`.
 assert.match(
   reader,
-  /\{#if mayEdit\}\s*<Menu\.Item value="download" class="menuitem">Download project<\/Menu\.Item>\s*\{\/if\}/,
+  /\{#if mayEdit\}(?:(?!\{#if|\{\/if\})[\s\S])*<Menu\.Item value="download" class="menuitem">Download project<\/Menu\.Item>[\s\S]*?\{\/if\}/,
   "the File menu only offers the project archive to editors and owners",
 );
 

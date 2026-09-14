@@ -44,7 +44,6 @@ not the same as sharing authority.
 | Choose the main file | file panel | `collab.js::setMain` | `Room::receive_update` |
 | Name an uploaded asset in the project | `Reader.svelte::addFigure` | blob upload followed by `collab.js::putAsset` | Blob route authorizes bytes; `Room::receive_update` admits the reference |
 | Record a live tracked change | `Editor.svelte`, `track-changes.js` | text and revision metadata in one Yjs transaction | Revision transition validation in `room/revisions.rs`, then `Room::receive_update` |
-| Synchronize filesystem edits | `cli/sync.rs` | `session::apply_edits`, `put_text`, `rename_path`, `remove_path`, `put_asset`, `remove_asset` on local yrs state | Sent as a Y update to `Room::receive_update` |
 
 All browser directory mutations are grouped in `web/src/lib/collab.js`. All
 native peer mutations above use `document/session.rs`. Their encoded document
@@ -92,7 +91,7 @@ identities is one implementation.
 | Capture browser render tree | local Yjs session | plain texts, asset digests, main path | Preview, download, assistant candidate preview, publication |
 | Render source | captured tree plus render options | HTML/PDF/DOCX, diagnostics and provenance | Browser renderer or local companion |
 | Build display bundle | rendered HTML plus captured assets | self-contained publication HTML and objects | Publication prepare/activate |
-| Compute history comparison | two immutable source trees | file and semantic differences | History UI and redlines; never changes live source |
+| Compute history comparison | one checkpoint tree and a captured current tree | per-file source differences | History panel; never changes live source |
 | Assemble project download | captured tree plus fetched assets | ZIP/blob | Browser download only |
 
 A snapshot transformation must not silently acquire permission or persistence
@@ -118,7 +117,7 @@ it.
 
 ### Already consolidated
 
-- CLI sync, restore, republish, agent edits, suggestion acceptance, and tracked
+- Restore, browser replacement, agent edits, suggestion acceptance, and tracked
   revision decisions ultimately mutate yrs documents through
   `document/session.rs`.
 - WebSocket and HTTP annotation operations share the same parsed `Command` and

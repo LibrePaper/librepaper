@@ -574,7 +574,7 @@ impl Server {
             // already have under one of these paths is gone: an upload is the
             // whole directory, so a chapter left out of it is a chapter
             // removed. ...but only when a directory was uploaded. A one-file
-            // publish -- the JSON body `librepaper publish paper.md` sends,
+            // source upload -- the JSON body a browser upload sends,
             // which names no main -- is a new version of the main file, not a
             // claim that the document has no other files, and it has never
             // emptied a directory it was published over.

@@ -256,19 +256,36 @@ const sourceComment = (revision) => ({
   check("transient renders retain the configuration they name", seen[0]?.modules.markdown === "renderer-a" && seen[1]?.modules.markdown === "renderer-b" && seen[2]?.modules.markdown === "renderer-b");
 }
 
-// Only captured, integrity-checked asset bytes become projection evidence.
-// The result carries path/digest/URL metadata without exposing the bytes.
+// A checkpoint renders only from captured, integrity-checked asset bytes.
 {
   const digest = "c".repeat(64);
+  let gathered = null;
   const result = await renderTree("asset-doc", {
     sha: "asset-sha", main: "main.md", texts: { "main.md": "![figure](fig.png)" },
     digests: { "fig.png": digest }, files: { "fig.png": { kind: "asset", sha: digest } },
   }, {}, {
-    figures: { gather: async () => ({ assets: { "fig.png": Uint8Array.of(4) }, urls: { "fig.png": "blob:captured#librepaper-asset=" + digest } }) },
+    figures: { gather: async (...args) => { gathered = args; return { assets: { "fig.png": Uint8Array.of(4) }, urls: { "fig.png": "blob:captured" } }; } },
     renderers: { render: async () => ({ html: "<p>figure</p>" }) },
   });
-  check("render results carry captured asset evidence", result.assetEvidence?.paths?.["fig.png"]?.digest === digest);
-  check("asset evidence does not carry bytes", !Object.prototype.hasOwnProperty.call(result.assetEvidence.paths["fig.png"], "bytes"));
+  check("a historical render gathers the figures the checkpoint named", gathered?.[1]?.["fig.png"] === digest);
+  check("a historical render is strict about them", gathered?.[3]?.strict === true);
+  check("the rendered page comes back", result.html === "<p>figure</p>");
+}
+
+{
+  let failed = "";
+  try {
+    await renderTree("asset-doc", {
+      sha: "asset-sha", main: "main.md", texts: { "main.md": "![figure](fig.png)" },
+      digests: { "fig.png": "d".repeat(64) }, files: {},
+    }, {}, {
+      figures: { gather: async () => ({ assets: {}, urls: {} }) },
+      renderers: { render: async () => ({ html: "<p>figure</p>" }) },
+    });
+  } catch (error) {
+    failed = error.message;
+  }
+  check("a checkpoint whose figures are gone is not rendered without them", failed.includes("unavailable"));
 }
 
 {

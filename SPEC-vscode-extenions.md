@@ -134,8 +134,8 @@ replacement cases need a concrete comparison and recovery action. Missing or
 corrupt sidecars trigger recovery/reattachment, not a guessed full replacement
 of the remote project.
 
-Detect another extension host or `librepaper sync` writing the same project.
-Enforce a single workspace adapter through a shared locking/ownership mechanism,
+Detect another extension host writing the same project. Enforce a single
+workspace adapter through a shared locking/ownership mechanism,
 or stop attachment with an actionable explanation. File-watcher feedback loops
 must not become duplicate edits. Handle atomic editor saves and exclude sidecar,
 credential, generated-output, and unrelated files from synchronization.
@@ -221,8 +221,8 @@ tests; a mock editor alone cannot validate event ordering or undo behavior.
   versions permit recovery from semantically confusing merges.
 - Rename with an open dirty buffer, concurrent rename, delete/edit, main-file
   change, and remote restore retain identities or expose unresolved outcomes.
-- External whole-file edits, atomic saves, corrupt/missing baseline, two VS Code
-  windows, and a competing CLI sync process cannot silently corrupt the project.
+- External whole-file edits, atomic saves, corrupt/missing baseline, and two VS
+  Code windows cannot silently corrupt the project.
 - Authentication expiry, revocation, recreated documents, server rejection, and
   local disk-full failures preserve work and produce truthful status.
 

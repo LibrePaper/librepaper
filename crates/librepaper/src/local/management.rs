@@ -161,14 +161,7 @@ pub(super) async fn handle(
 
     let caps = runner.capabilities(refresh).await;
     let mut tool_rows = String::new();
-    for (name, tool) in [
-        ("Quarto", &caps.quarto.tool),
-        ("pdfLaTeX", &caps.tools.pdflatex),
-        ("XeLaTeX", &caps.tools.xelatex),
-        ("LuaLaTeX", &caps.tools.lualatex),
-        ("BibTeX", &caps.tools.bibtex),
-        ("Biber", &caps.tools.biber),
-    ] {
+    for (name, tool) in [("Quarto", &caps.quarto.tool), ("Calepin", &caps.calepin)] {
         tool_rows.push_str(&format!(
             "<tr><th>{name}</th><td>{}</td><td>{}</td></tr>",
             if tool.available {
@@ -182,7 +175,7 @@ pub(super) async fn handle(
     for builder in caps
         .builders
         .iter()
-        .filter(|builder| builder.id != "tex" && builder.id != "quarto")
+        .filter(|builder| builder.id != "quarto" && builder.id != "calepin")
     {
         tool_rows.push_str(&format!(
             "<tr><th>{}</th><td>{}</td><td>{}</td></tr>",

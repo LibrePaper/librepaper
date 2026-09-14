@@ -1,12 +1,17 @@
-// One owner for history selection, mode, source endpoints, and request lifetime.
-// It deliberately has no dependency on preview rendering or the live editor.
+// One owner for history selection, the source endpoints behind it, and the
+// request lifetime of a comparison.
+//
+// There is one comparison: the selected version against the project as it
+// stands, captured when the comparison opens and again on request. It
+// deliberately has no dependency on preview rendering or the live editor.
 export function createHistorySource({ checkpoint, currentTree, checkpoints = () => [], preferredPath = () => "" }) {
-  const state = $state({ selected: "", mode: "current", path: "", loading: false, problem: "", result: null });
+  const state = $state({ selected: "", path: "", loading: false, problem: "", result: null });
   let generation = 0;
   let disposed = false;
 
   const snapshot = tree => ({ ...tree, texts: { ...tree.texts }, files: { ...tree.files } });
   const label = point => point.label || (point.at ? new Date(point.at).toLocaleString() : point.sha.slice(0, 7));
+
   async function readPoint(sha) {
     const listed = checkpoints().find(point => point.sha === sha);
     const point = { ...listed, ...(await checkpoint(sha)) };
@@ -16,56 +21,71 @@ export function createHistorySource({ checkpoint, currentTree, checkpoints = () 
     return snapshot(point);
   }
 
-  async function select(sha = state.selected, mode = state.mode, path = state.path || preferredPath()) {
+  // What a file is in a tree, without deciding yet whether it changed: the
+  // text it holds, or the digest of the bytes it is. A path a tree does not
+  // have answers `null`, which is what "added" and "removed" are read from.
+  function entryOf(tree, path) {
+    const file = tree.files?.[path];
+    if (file && file.kind !== "text") return { kind: "binary", sha: file.sha || "" };
+    const text = tree.texts?.[path];
+    if (typeof text === "string") return { kind: "text", text };
+    return file ? { kind: "text", text: "" } : null;
+  }
+
+  function statusOf(oldTree, newTree, path) {
+    const before = entryOf(oldTree, path);
+    const after = entryOf(newTree, path);
+    if (!before && !after) return "same";
+    if (!before) return "added";
+    if (!after) return "removed";
+    if (before.kind !== after.kind) return "changed";
+    return (before.kind === "binary" ? before.sha === after.sha : before.text === after.text)
+      ? "same"
+      : "changed";
+  }
+
+  async function select(sha = state.selected, path = state.path || preferredPath()) {
     if (disposed) return;
     const mine = ++generation;
     state.selected = sha;
-    state.mode = ["previous", "current", "checkpoint"].includes(mode) ? mode : "current";
     state.path = path;
     state.result = null;
     state.problem = "";
     state.loading = true;
-    const chosenMode = state.mode;
     try {
-      // Capture current source at selection time, before any network awaits.
-      // Always read the collaborative tree, never the displayed checkpoint.
-      let live = null;
-      if (!sha || chosenMode === "current") {
-        const available = currentTree();
-        live = snapshot(available?.then ? await available : available);
-      }
+      // Capture the current source at selection time, before any network
+      // awaits, and always from the collaborative tree.
+      const available = currentTree();
+      const live = snapshot(available?.then ? await available : available);
       if (disposed || mine !== generation) return;
       const point = sha ? await readPoint(sha) : null;
-      let oldTree = point || live;
-      let newTree = point || live;
-      let oldLabel = point ? label(point) : "Current version";
-      let newLabel = oldLabel;
-      let note = "";
-      if (point && chosenMode === "current") {
-        newTree = live;
-        newLabel = "Current version";
-      } else if (point && chosenMode === "previous") {
-        // A retention-reparented edge is not the previous edit. Only the
-        // original parent can establish that comparison.
-        const parent = point.original_parent || (!point.ancestry_gap ? point.parent : "");
-        if (point.ancestry_gap && !parent) throw new Error("The previous checkpoint is no longer available.");
-        if (parent) {
-          try { oldTree = await readPoint(parent); }
-          catch { throw new Error("The previous checkpoint is unavailable. Choose ‘vs current’ or ‘checkpoint’."); }
-          oldLabel = label(oldTree);
-        } else {
-          note = "First checkpoint: there is no previous version to compare.";
-        }
-      }
       if (disposed || mine !== generation) return;
+      const oldTree = point || live;
+      const newTree = live;
       const paths = [...new Set([
         ...Object.keys(oldTree.texts), ...Object.keys(newTree.texts),
         ...Object.keys(oldTree.files || {}), ...Object.keys(newTree.files || {}),
       ])].sort();
+      const status = Object.fromEntries(paths.map(name => [name, statusOf(oldTree, newTree, name)]));
+      const changed = paths.filter(name => status[name] !== "same");
+      // Land on a file the reader came for, then on one that actually
+      // differs, and only then on the document itself.
       state.path = paths.includes(path) ? path
-        : paths.includes(point?.main || newTree.main) ? (point?.main || newTree.main)
-          : paths[0] || "";
-      state.result = { oldTree, newTree, oldLabel, newLabel, paths, note, diff: Boolean(sha) && chosenMode !== "checkpoint" };
+        : changed[0]
+          || (paths.includes(point?.main || newTree.main) ? (point?.main || newTree.main) : paths[0] || "");
+      state.result = {
+        oldTree,
+        newTree,
+        oldLabel: point ? label(point) : "Current version",
+        newLabel: "Current version",
+        paths,
+        status,
+        changed,
+        binary: Object.fromEntries(paths.map(name =>
+          [name, (entryOf(oldTree, name) || entryOf(newTree, name))?.kind === "binary"])),
+        capturedAt: new Date().toISOString(),
+        diff: Boolean(sha),
+      };
     } catch (error) {
       if (!disposed && mine === generation) state.problem = error.message || "Could not load checkpoint source.";
     } finally {
@@ -85,7 +105,6 @@ export function createHistorySource({ checkpoint, currentTree, checkpoints = () 
   }
   return {
     get selected() { return state.selected; },
-    get mode() { return state.mode; },
     get path() { return state.path; },
     get loading() { return state.loading; },
     get problem() { return state.problem; },

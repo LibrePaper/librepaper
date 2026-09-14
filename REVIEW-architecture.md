@@ -31,7 +31,7 @@ The production mutation paths already converge at useful boundaries:
   `Room::apply_command_with_actor`.
 - Restore and source replacement share stable-identity reconciliation through
   `session::restore`.
-- Agent edits, suggestion acceptance, tracked-change decisions, CLI sync, and
+- Agent edits, suggestion acceptance, tracked-change decisions, and
   restore ultimately mutate yrs documents through `document/session.rs` and
   the room's checked-edit path.
 - Rust edit paths share the `wasm_helpers::text::Edit` representation and its
@@ -125,7 +125,7 @@ consumers.
 
 `Reader.svelte` currently coordinates collaboration, annotations, anchoring,
 history, rendering, publishing, local preview, file management, AI review,
-dictation, navigation, and pane layout. A change to one workflow can therefore
+navigation, and pane layout. A change to one workflow can therefore
 interact with unrelated state and lifecycle effects.
 
 Continue extracting stateful workflow controllers under `web/src/lib/reader/`.

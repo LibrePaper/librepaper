@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// The protocol versions this binary speaks.
-pub const PROTOCOL_VERSIONS: &[u32] = &[1, 2];
+/// The protocol versions this binary speaks. Version 1 carried the TeX and
+/// Biber jobs of the old browser fallback and is no longer spoken.
+pub const PROTOCOL_VERSIONS: &[u32] = &[2];
 
 /// The default loopback port. Configurable with `librepaper local start
 /// --port`.
@@ -115,21 +116,13 @@ pub struct Tool {
 /// Which engines and helpers the app found.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Tools {
-    pub pdflatex: Tool,
-    pub xelatex: Tool,
-    pub lualatex: Tool,
-    pub bibtex: Tool,
-    pub bibtex8: Tool,
-    pub biber: Tool,
-    pub makeindex: Tool,
     /// The Quarto CLI itself. Its path is deliberately never exposed.
     #[serde(default)]
     pub quarto: Tool,
 }
 
-/// A capability reported by a local Quarto installation. Keeping this
-/// separate from `Tools` makes older clients able to ignore the additive
-/// fields while still showing a useful TeX capability response.
+/// A capability reported by a local Quarto installation, kept separate from
+/// `Tools` so its richer shape does not have to fit the flat tool record.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct QuartoCapabilities {
     #[serde(default)]

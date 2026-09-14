@@ -17,14 +17,13 @@ fn lists_command(help: &str, command: &str) -> bool {
 }
 
 #[test]
-fn top_level_help_exposes_the_author_and_integration_workflows() {
+fn top_level_help_exposes_the_retained_workflows() {
     let output = cli(&["--help"]);
     assert!(output.status.success(), "{output:?}");
     let help = String::from_utf8_lossy(&output.stdout);
 
     for command in [
-        "skills", "login", "logout", "publish", "admin", "list", "open", "sync", "export", "local",
-        "quarto", "agent",
+        "login", "logout", "admin", "list", "export", "local", "agent",
     ] {
         assert!(
             lists_command(&help, command),
@@ -33,8 +32,8 @@ fn top_level_help_exposes_the_author_and_integration_workflows() {
     }
 
     for removed in [
-        "comment", "edit", "share", "transfer", "history", "diff", "restore", "label", "suggest",
-        "accept", "reject", "destroy",
+        "publish", "sync", "open", "skills", "quarto", "comment", "edit", "share", "transfer",
+        "history", "diff", "restore", "label", "suggest", "accept", "reject", "destroy",
     ] {
         assert!(
             !lists_command(&help, removed),
@@ -96,7 +95,6 @@ fn compound_resources_use_subcommand_namespaces() {
 #[test]
 fn operands_are_positional_and_modifiers_are_named() {
     for args in [
-        &["skills", "export", "--help"][..],
         &["admin", "backup", "create", "--help"][..],
         &["admin", "backup", "restore", "--help"][..],
         &["local", "quarto", "bind", "--help"][..],
@@ -112,15 +110,17 @@ fn operands_are_positional_and_modifiers_are_named() {
 
     let output = cli(&["export", "--help"]);
     let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("--output <FILE>"), "{help}");
+    assert!(help.contains("--output <PATH>"), "{help}");
+    assert!(help.contains("--comments"), "{help}");
+    assert!(help.contains("--project"), "{help}");
     assert!(!help.contains("--out "), "legacy --out survived:\n{help}");
 }
 
 #[test]
 fn removed_top_level_commands_are_rejected_by_the_parser() {
     for removed in [
-        "comment", "edit", "share", "transfer", "history", "diff", "restore", "label", "suggest",
-        "accept", "reject", "destroy",
+        "publish", "sync", "open", "skills", "quarto", "comment", "edit", "share", "transfer",
+        "history", "diff", "restore", "label", "suggest", "accept", "reject", "destroy",
     ] {
         let output = cli(&[removed]);
         assert!(

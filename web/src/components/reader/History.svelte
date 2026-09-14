@@ -1,8 +1,7 @@
 <script>
-  import { untrack } from "svelte";
   import { day as dayOf } from "../../lib/dates.js";
-  // Presentation only: the shared source controller owns selection and mode.
-  import { forFile, shortSha, timeline } from "../../lib/history.js";
+  // Presentation only: the shared source controller owns selection.
+  import { shortSha, timeline } from "../../lib/history.js";
   import IconButton from "../IconButton.svelte";
   import PanelHeader from "../PanelHeader.svelte";
   import CopyLink from "../CopyLink.svelte";
@@ -12,22 +11,14 @@
     durability = null,
     viewing = null,
     canEdit = false,
-    comparison = "current",
     onview,
-    onrestore,
     oncopy,
     problem = "",
     onname,
     currentLabel = "",
-    path = "",
   } = $props();
 
-  // The runs a reader has asked to see inside, by the SHA of the row that
-  // stands for them. Forgotten when the panel closes, which is the right
-  // lifetime: it is a glance, not a setting.
-  let opened = $state(new Set());
   let filter = $state("all");
-  let lastRevealed = $state("");
   let timezone = $state(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
 
   // The checkpoint being named, and what it is being named. One at a time,
@@ -36,56 +27,17 @@
   let draft = $state("");
   let field = $state(null);
 
-  // History follows the file currently open in the editor: see `forFile`,
-  // which owns that rule and is checked where the rest of the timeline's
-  // judgement is. Changing files changes this list without changing or
-  // discarding the document-wide manifest.
+  // One project-wide timeline. A version records the whole project, so
+  // scoping the list to the file open in the editor hid versions that were
+  // real; which files a version touched is answered inside the comparison.
   //
-  // The named/published filter is applied after that file scope. A selected
-  // checkpoint remains visible through those secondary filters, but never
-  // leaks into the history of a file it did not change.
-  const fileCheckpoints = $derived(forFile(checkpoints, path));
+  // A selected version stays visible through the named filter.
   const timelinePoints = $derived.by(() => {
-    if (filter === "all") return fileCheckpoints;
-    const selected = fileCheckpoints.find((point) => point.sha === viewing);
-    return fileCheckpoints.filter((point) =>
-      (filter === "named" ? point.label : point.why === "cli") || point.sha === selected?.sha,
-    );
+    if (filter === "all") return checkpoints;
+    return checkpoints.filter((point) => point.label || point.sha === viewing);
   });
   const days = $derived(timeline(timelinePoints, timezone));
-  const namedCount = $derived(fileCheckpoints.filter((point) => point.label).length);
-
-  function unfold(row) {
-    const next = new Set(opened);
-    next.add(row.first.sha);
-    opened = next;
-  }
-
-  function toggleFold(row) {
-    const next = new Set(opened);
-    if (next.has(row.first.sha)) next.delete(row.first.sha);
-    else next.add(row.first.sha);
-    opened = next;
-  }
-
-  // A direct link may point into a collapsed session. Reveal that row as soon
-  // as it becomes the selected preview.
-  $effect(() => {
-    if (!viewing) {
-      lastRevealed = "";
-      return;
-    }
-    const row = days.flatMap(({ rows }) => rows).find((candidate) =>
-      candidate.kind === "folded" && [candidate.first, ...candidate.hidden, candidate.last].some((point) => point.sha === viewing),
-    );
-    const key = row ? `${viewing}:${row.first.sha}` : "";
-    if (row && key !== lastRevealed) {
-      const next = new Set(untrack(() => opened));
-      next.add(row.first.sha);
-      opened = next;
-      lastRevealed = key;
-    }
-  });
+  const namedCount = $derived(checkpoints.filter((point) => point.label).length);
 
   // The time alone: the day is the heading above it, and repeating the date on
   // every row is thirty copies of what the reader just read.
@@ -128,12 +80,6 @@
     });
   }
 
-  function sessionSummary(row) {
-    const count = row.hidden.length + 2;
-    const range = `${clock(row.last.at)}–${clock(row.first.at)}`;
-    return `${range} · ${actor(row.first)} · ${count} versions`;
-  }
-
   // What a checkpoint was taken for, in words rather than in the manifest's
   // own vocabulary. `quiet` and `left` are the two nobody asked for, and
   // calling them "autosaved" would say the wrong thing about who was there:
@@ -146,6 +92,7 @@
     cli: "published",
     sync: "synced",
     restore: "restored",
+    superseded: "replaced by a restore",
     label: "named",
     recovered: "recovered",
     accept: "accepted a suggestion",
@@ -189,7 +136,7 @@
   <PanelHeader
     title="Version history"
     meta={checkpoints.length
-      ? `${fileCheckpoints.length} version${fileCheckpoints.length === 1 ? "" : "s"}`
+      ? `${checkpoints.length} version${checkpoints.length === 1 ? "" : "s"}`
       : undefined}
   >
     {#if problem}
@@ -199,29 +146,18 @@
         Nothing yet. A version is saved when the typing stops, when the last
         editor leaves, and whenever the document is published to.
       </p>
-    {:else if fileCheckpoints.length === 0}
-      <p class="panel-muted">No saved revisions for {path || "this file"}.</p>
     {/if}
   </PanelHeader>
   {#if durability?.live_save === "pending"}
     <p class="panel-muted px-2 py-1 text-xs" role="status">Live edits are still being saved.</p>
   {/if}
-  {#if fileCheckpoints.length > 0}
+  {#if checkpoints.length > 0}
     <div class="history-filter px-2 py-1">
-      <label>
-        <span class="sr-only">Compare selected checkpoint</span>
-        <select class="select" aria-label="Compare selected checkpoint" value={comparison} onchange={event => onview?.(viewing || "", event.currentTarget.value)}>
-          <option value="previous">vs previous</option>
-          <option value="current">vs current</option>
-          <option value="checkpoint">checkpoint</option>
-        </select>
-      </label>
       <label>
         <span class="sr-only">Filter version history</span>
         <select class="select" aria-label="Filter version history" bind:value={filter}>
           <option value="all">All versions</option>
           <option value="named">Named versions</option>
-          <option value="published">Published versions</option>
         </select>
       </label>
     </div>
@@ -235,11 +171,7 @@
       <li class="timeline-section"><h4>Current</h4></li>
       <!-- The live document is a row like the others, hollow because it is
            not a checkpoint yet. -->
-      <li
-        class="timeline-row timeline-now"
-
-
-      >
+      <li class="timeline-row timeline-now">
         {#if naming === "current"}
           {@render nameField("Name this version", "Name the current version")}
         {:else}<button
@@ -247,8 +179,8 @@
           class="timeline-point"
           class:timeline-here={!viewing}
           aria-current={!viewing ? "true" : undefined}
-          title="Show the live document"
-          onclick={() => onview?.("", comparison)}
+          title="Show the current source"
+          onclick={() => onview?.("")}
         >
           <span class="timeline-marker timeline-marker-current"></span>
           <span class="timeline-what"><strong>{currentLabel || "Current version"}</strong></span>
@@ -260,32 +192,12 @@
           </span>
         {/if}
       </li>
-      {#each days as { day, rows } (day)}
+      {#each days as { day, points } (day)}
         <li class="timeline-day-row">
           <h4 class="panel-section-title timeline-day sticky top-0 z-1">{dayLabel(day)}</h4>
         </li>
-        {#each rows as row (row.kind === "point" ? row.point.sha : row.first.sha)}
-          {#if row.kind === "point"}
-            {@render mark(row.point)}
-          {:else if opened.has(row.first.sha)}
-            {@render mark(row.first)}
-            {#each row.hidden as point (point.sha)}
-              {@render mark(point)}
-            {/each}
-            {@render mark(row.last)}
-            <li class="timeline-row timeline-fold">
-              <button type="button" class="timeline-folded" onclick={() => toggleFold(row)} aria-label="Collapse editing session">Collapse session</button>
-            </li>
-          {:else}
-            {@render mark(row.first)}
-            <li class="timeline-row timeline-fold">
-              <button type="button" class="timeline-folded" onclick={() => onview?.(row.first.sha, comparison)} title="Show the newest version in this session">
-                {sessionSummary(row)}
-              </button>
-              <IconButton icon="chevron-down" tone="plain" size="btn-icon-sm" label="Expand editing session" onclick={() => unfold(row)} />
-            </li>
-            {@render mark(row.last)}
-          {/if}
+        {#each points as point (point.sha)}
+          {@render mark(point)}
         {/each}
       {/each}
     </ol>
@@ -308,13 +220,7 @@
 {/snippet}
 
 {#snippet mark(point)}
-  <li
-    class="timeline-row"
-
-
-
-    data-sha={point.sha}
-  >
+  <li class="timeline-row" data-sha={point.sha}>
     {#if naming === point.sha}
       <!-- Naming happens where the name will appear, rather than in a dialog
            over the list: what is being named is the row under the cursor. -->
@@ -326,8 +232,8 @@
         class:timeline-named={Boolean(point.label)}
         class:timeline-here={viewing === point.sha}
         aria-current={viewing === point.sha ? "true" : undefined}
-        title="Show {point.label || actor(point)} from {stamp(point.at) || shortSha(point.sha)}"
-        onclick={() => onview?.(point.sha, comparison)}
+        title="Compare {point.label || actor(point)} from {stamp(point.at) || shortSha(point.sha)} with the current source"
+        onclick={() => onview?.(point.sha)}
       >
         <span class="timeline-marker" class:timeline-marker-important={important(point)}></span>
         <span class="timeline-when panel-meta">{clock(point.at)}</span>
@@ -346,7 +252,6 @@
               label={point.label ? "Rename this version" : "Name this version"}
               onclick={() => startNaming(point)}
             />
-            <IconButton icon="history" tone="plain" size="btn-icon-sm" label="Restore this version" onclick={() => onrestore?.(point.sha)} />
           {/if}
           <CopyLink href={oncopy?.(point.sha) || undefined} label="Copy the link to this version" tone="plain" />
         </span>

@@ -125,7 +125,7 @@ pub struct Message {
     pub chunks: usize,
     #[serde(default)]
     pub index: usize,
-    /// Why a checkpoint was asked for: `cli`, `sync`, `restore`, `label`. Only
+    /// Why a checkpoint was asked for: `cli`, `restore`, `label`. Only
     /// these four arrive from outside; the rest the server decides for itself.
     #[serde(default)]
     pub why: String,
@@ -394,7 +394,7 @@ pub enum Applied {
     /// Close the socket, with this refusal. Either it wrote past one of the
     /// document's ceilings, it wrote faster than a person can, or this server
     /// momentarily has no capacity to save what it wrote. The variant says
-    /// which, so the socket handler and `librepaper sync` never have to read
+    /// which, so socket and agent handlers never have to read
     /// the message to find out whether reconnecting is worth anything.
     Refuse(WriteError),
 }

@@ -65,17 +65,7 @@ try {
   assert.equal(await page.evaluate('document.querySelectorAll("p strong, p em, p a[href]").length'), 3);
   assert.equal(await page.evaluate('document.querySelector(".librepaper-suggestion-synthetic").textContent'), 'slow red dog');
   assert.equal(await page.evaluate('document.querySelector(".librepaper-suggestion-synthetic").getAttribute("aria-label")'), 'Suggested insertion: slow red dog');
-  await page.evaluate(`postMessage({librepaper:true,type:'redlines',items:[
-    {kind:'insert',start:window.trackedStart,end:window.trackedStart+15,who:'Editor'},
-    {kind:'delete',at:window.trackedStart,text:'old wording',who:'Editor'}
-  ]},'*')`);
-  await until("redlines painted", () => page.evaluate('Boolean(document.querySelector("mark.librepaper-del"))'), 5000);
-  assert.equal(await page.evaluate('[...document.querySelectorAll("mark.librepaper-ins")].map(m=>m.textContent).join("")'), 'quick brown fox');
-  assert.equal(await page.evaluate('getComputedStyle(document.querySelector("mark.librepaper-del"),"::before").content'), '"old wording"');
-  assert.equal(await page.evaluate('document.body.textContent.replace("slow red dog", "")'), original);
-  assert.equal(await page.evaluate('document.querySelectorAll(".librepaper-suggestion-synthetic").length'), 1);
-  await page.evaluate(`postMessage({librepaper:true,type:'redlines',items:[]},'*')`);
-  await until("redlines cleared", () => page.evaluate('!document.querySelector("mark.librepaper-ins, mark.librepaper-del")'), 5000);
+  assert.equal(await page.evaluate('document.body.textContent.replace("slow red dog", "")'), original, "a suggestion adds only its proposed text");
   assert.equal(await page.evaluate('document.querySelectorAll("mark[data-librepaper~=comment]").length'), 1);
   assert.equal(await page.evaluate('document.body.textContent.replace("slow red dog", "")'), original);
   const readyBeforePoint = await page.evaluate('window.published.length');
@@ -116,7 +106,7 @@ try {
   await until("suggestions cleared", () => page.evaluate('!document.querySelector("mark[data-librepaper]")'), 5000);
   assert.equal(await page.evaluate('document.body.textContent'), original);
   assert.equal(await page.evaluate('document.querySelectorAll(".librepaper-point-marker").length'), 0);
-  console.log("markdown-tracking: formatted suggestions, one proposal, overlapping comments, inline redlines, stable text and clearing passed");
+  console.log("markdown-tracking: formatted suggestions, one proposal, overlapping comments, stable text and clearing passed");
 } finally {
   await page?.close?.();
   server?.close();

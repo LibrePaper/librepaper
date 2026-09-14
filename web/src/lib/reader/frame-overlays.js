@@ -5,7 +5,6 @@ export function createFrameOverlays({ ready, send }) {
   let selected = null;
   let regions = null;
   let highlights = null;
-  let redlines = null;
 
   function deliver(payload, previous, remember) {
     if (!ready()) return false;
@@ -65,14 +64,9 @@ export function createFrameOverlays({ ready, send }) {
     return paintedRegions || paintedHighlights;
   }
 
-  function history(message) {
-    return deliver(message, () => redlines, (value) => (redlines = value));
-  }
-
   return {
     selection,
     annotations,
-    history,
     resetAnnotations() {
       regions = null;
       highlights = null;
@@ -81,7 +75,6 @@ export function createFrameOverlays({ ready, send }) {
       selected = null;
       regions = null;
       highlights = null;
-      redlines = null;
     },
   };
 }

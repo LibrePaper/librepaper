@@ -502,13 +502,6 @@ async fn doctor(tex_path: Vec<PathBuf>) {
     }
     println!();
     println!("tools:");
-    print_tool("pdflatex", &capabilities.tools.pdflatex);
-    print_tool("xelatex", &capabilities.tools.xelatex);
-    print_tool("lualatex", &capabilities.tools.lualatex);
-    print_tool("bibtex", &capabilities.tools.bibtex);
-    print_tool("bibtex8", &capabilities.tools.bibtex8);
-    print_tool("biber", &capabilities.tools.biber);
-    print_tool("makeindex", &capabilities.tools.makeindex);
     print_tool("calepin", &capabilities.calepin);
     print_tool("quarto", &capabilities.quarto.tool);
     if !capabilities.quarto.formats.is_empty() {
@@ -573,16 +566,16 @@ async fn rescan(tex_path: Vec<PathBuf>) {
     // source of truth either way.
     let capabilities = crate::local::discovery::discover(true, &tex_path).await;
     let found = [
-        ("pdflatex", capabilities.tools.pdflatex.available),
-        ("xelatex", capabilities.tools.xelatex.available),
-        ("lualatex", capabilities.tools.lualatex.available),
-        ("bibtex", capabilities.tools.bibtex.available),
-        ("bibtex8", capabilities.tools.bibtex8.available),
-        ("biber", capabilities.tools.biber.available),
-        ("makeindex", capabilities.tools.makeindex.available),
+        ("calepin", capabilities.calepin.available),
         ("quarto", capabilities.quarto.tool.available),
     ]
     .into_iter()
+    .chain(
+        capabilities
+            .builders
+            .iter()
+            .map(|builder| (builder.id.as_str(), builder.available)),
+    )
     .filter(|(_, available)| *available)
     .map(|(name, _)| name)
     .collect::<Vec<_>>();

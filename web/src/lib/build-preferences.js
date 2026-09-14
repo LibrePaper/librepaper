@@ -32,7 +32,15 @@ export function read(scope, format = "") {
     const allowed = ["automatic", "tool"];
     if (!allowed.includes(value.selection)) return fallback;
     if (value.backend && !["auto", "browser", "local"].includes(value.backend)) return fallback;
-    return { ...fallback, ...value, format: format || value.format || "" };
+    const result = { ...fallback, ...value, format: format || value.format || "" };
+    // LaTeX has no local builder. A stored preference from another format, or
+    // from an older build of the app, is read back as the browser engine
+    // rather than as a choice the menu can no longer offer.
+    if (format === "latex") {
+      result.backend = result.backend === "local" ? "browser" : result.backend;
+      if (result.tool !== "tex") { result.tool = "tex"; delete result.preset; }
+    }
+    return result;
   } catch { return fallback; }
 }
 

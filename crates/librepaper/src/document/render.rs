@@ -3,15 +3,18 @@
 //! same pinned renderer libraries, so documents published here and edited there are
 //! rendered by the same code.
 
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 
-use wasm_helpers::diagnostic::{Compiled, Diagnostic};
+#[cfg(test)]
+use wasm_helpers::diagnostic::Compiled;
 use wasm_markdown::markdown;
 use wasm_typst::typst;
 
 use super::html;
 #[cfg(test)]
 use super::needs;
+#[cfg(test)]
 use super::needs::Cache;
 
 pub fn is_markdown(name: &str) -> bool {
@@ -241,6 +244,7 @@ pub fn read_and_note(file: &Path, source: &str, title: &str) -> (Compiled, Vec<S
 /// A typst compile, with what it read beside it and what it could not find:
 /// the siblings `publish` warns about, and the packages and fonts the caller
 /// fetches before compiling again.
+#[cfg(test)]
 #[derive(Debug)]
 pub struct Noted {
     pub compiled: Compiled,
@@ -249,6 +253,7 @@ pub struct Noted {
     pub needs: typst::Needs,
 }
 
+#[cfg(test)]
 impl Noted {
     fn failed(why: String) -> Noted {
         Noted {
@@ -268,6 +273,7 @@ impl Noted {
 /// by, and is not a file the document read: it is not in the tree and will
 /// not be uploaded. The fonts are the root's own font files and `library`,
 /// the ones fetched for the families the document names.
+#[cfg(test)]
 pub fn compile_in_root(
     root: &Path,
     name: &str,
@@ -331,6 +337,8 @@ pub fn read_and_note_in_root(
 /// a file changing on disk from making the PDF disagree with the uploaded
 /// tree. The font files among `files` are the document's own fonts;
 /// `library` are the ones fetched for the families it names.
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn compile_from_files(
     name: &str,
     source: &str,
@@ -378,10 +386,11 @@ pub fn compile_from_files(
 
 /// Where a file's compile is rooted and what the compiler calls it: the file's
 /// own directory, and its name within it.
+#[cfg(test)]
 pub fn root_and_name(file: &Path) -> Result<(PathBuf, String), String> {
     // `Path::new("paper.typ").parent()` is `Some("")` rather than `None`, and
-    // an empty path cannot be made absolute -- so `librepaper publish
-    // paper.typ`, run from the directory the file is in, failed with "cannot
+    // an empty path cannot be made absolute -- so the former single-file
+    // publisher, run from the directory the file was in, failed with "cannot
     // make an empty path absolute" and reported the document as not compiling.
     // The empty parent is the current directory, which is what it always
     // meant.
@@ -401,6 +410,7 @@ pub fn root_and_name(file: &Path) -> Result<(PathBuf, String), String> {
 /// document brings beside itself. Hidden directories and build outputs are
 /// skipped, and the walk stops at a few hundred files, since a project is not
 /// a font library.
+#[cfg(test)]
 fn fonts_under(root: &Path) -> Vec<(String, Vec<u8>)> {
     const MOST: usize = 256;
     let mut fonts = Vec::new();
@@ -440,30 +450,12 @@ fn fonts_under(root: &Path) -> Vec<(String, Vec<u8>)> {
 /// Prints what a compile had to say the way every editor since `grep -n`
 /// expects to be told: `file:line:column: severity: message`, with the hints
 /// indented under it. A diagnostic without a span prints without the location.
-pub fn report(diagnostics: &[Diagnostic], document: &str) {
-    for diagnostic in diagnostics {
-        eprintln!("{}", diagnostic.to_line(document));
-        for hint in &diagnostic.hints {
-            eprintln!("  hint: {hint}");
-        }
-    }
-}
-
-/// How many errors and warnings there are, in the words a summary line uses.
-pub fn counted(count: usize, thing: &str) -> String {
-    if count == 1 {
-        format!("1 {thing}")
-    } else {
-        format!("{count} {thing}s")
-    }
-}
-
 /// What a filename says a document is written in, or `None` when it names no
 /// format this renders.
 ///
 /// One place decides, because three predicates in a row is three places to
 /// forget when a fourth format arrives -- which is exactly what nearly
-/// happened to `librepaper publish <directory>`, whose choice of main file asked
+/// happened to the former directory publisher, whose choice of main file asked
 /// `is_typst || is_markdown || is_html` and would have refused a directory
 /// whose document was a `.tex`. A format added here is a format every caller
 /// of this already knows about.
@@ -513,6 +505,7 @@ pub fn main_path_for(named: &str, format: &str) -> String {
 /// Reads a file under `root`, and nothing outside it. The path typst asks for
 /// is already normalised -- no `..` survives its own resolution -- but the
 /// containment is checked rather than trusted, the same as every key is.
+#[cfg(test)]
 fn read_within(root: &Path, path: &Path) -> Option<Vec<u8>> {
     let mut resolved = PathBuf::from(root);
     for part in path.components() {

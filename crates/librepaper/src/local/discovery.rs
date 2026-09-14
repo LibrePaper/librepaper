@@ -25,35 +25,18 @@ use super::protocol::{
 };
 
 /// The tool names this module discovers, in the order `Tools` lists them.
-const TOOL_NAMES: &[&str] = &[
-    "pdflatex",
-    "xelatex",
-    "lualatex",
-    "bibtex",
-    "bibtex8",
-    "biber",
-    "makeindex",
-    "latexmk",
-    "tectonic",
-    "typst",
-    "pandoc",
-    "calepin",
-];
+const TOOL_NAMES: &[&str] = &["typst", "pandoc", "calepin"];
 
 /// How long a `--version` probe is allowed to run. A hung or misbehaving
 /// binary must not hang discovery.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The resolved, absolute paths `native.rs` runs -- never sent to the
+/// The resolved, absolute paths the builders run -- never sent to the
 /// browser. Built from the same cache `discover` maintains.
 #[derive(Clone, Debug, Default)]
 pub struct ToolPaths {
     tools: BTreeMap<String, PathBuf>,
     versions: BTreeMap<String, String>,
-    /// The directory `PATH` should put first for a spawned tool, so a
-    /// sibling binary (e.g. `biber` beside `pdflatex`) resolves the same
-    /// distribution rather than a stray one earlier on the real `PATH`.
-    bin_dir: Option<PathBuf>,
 }
 
 impl ToolPaths {
@@ -67,14 +50,6 @@ impl ToolPaths {
     pub(crate) fn version(&self, tool: &str) -> String {
         self.versions.get(tool).cloned().unwrap_or_default()
     }
-    pub fn get(&self, tool: &str) -> Option<&Path> {
-        self.tools.get(tool).map(PathBuf::as_path)
-    }
-
-    pub fn bin_dir(&self) -> Option<&Path> {
-        self.bin_dir.as_deref()
-    }
-
     pub(crate) fn all(&self) -> BTreeMap<String, PathBuf> {
         self.tools.clone()
     }
@@ -526,62 +501,6 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
     let snapshot = || vec!["snapshot".to_string()];
     let builders = vec![
         BuilderCapability {
-            id: "tex".into(),
-            available: available("pdflatex") || available("xelatex") || available("lualatex"),
-            version: version("pdflatex")
-                .or_else(|| version("xelatex"))
-                .or_else(|| version("lualatex")),
-            source_formats: vec!["latex".into()],
-            outputs: vec!["pdf".into()],
-            engines: ["pdflatex", "xelatex", "lualatex"]
-                .into_iter()
-                .filter(|name| available(name))
-                .map(str::to_string)
-                .collect(),
-            operations: vec![BuilderOperation {
-                kind: "build".into(),
-                workspace_modes: snapshot(),
-            }],
-            preview: false,
-            presets: false,
-            note: String::new(),
-        },
-        BuilderCapability {
-            id: "latexmk".into(),
-            available: available("latexmk")
-                && (available("pdflatex") || available("xelatex") || available("lualatex")),
-            version: version("latexmk"),
-            source_formats: vec!["latex".into()],
-            outputs: vec!["pdf".into()],
-            engines: ["pdflatex", "xelatex", "lualatex"]
-                .into_iter()
-                .filter(|name| available(name))
-                .map(str::to_string)
-                .collect(),
-            operations: vec![BuilderOperation {
-                kind: "build".into(),
-                workspace_modes: snapshot(),
-            }],
-            preview: false,
-            presets: true,
-            note: String::new(),
-        },
-        BuilderCapability {
-            id: "tectonic".into(),
-            available: available("tectonic"),
-            version: version("tectonic"),
-            source_formats: vec!["latex".into()],
-            outputs: vec!["pdf".into()],
-            engines: Vec::new(),
-            operations: vec![BuilderOperation {
-                kind: "build".into(),
-                workspace_modes: snapshot(),
-            }],
-            preview: false,
-            presets: true,
-            note: String::new(),
-        },
-        BuilderCapability {
             id: "typst".into(),
             available: available("typst"),
             version: version("typst"),
@@ -614,13 +533,6 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
     ];
     Capabilities {
         tools: Tools {
-            pdflatex: get("pdflatex"),
-            xelatex: get("xelatex"),
-            lualatex: get("lualatex"),
-            bibtex: get("bibtex"),
-            bibtex8: get("bibtex8"),
-            biber: get("biber"),
-            makeindex: get("makeindex"),
             quarto: Tool::default(),
         },
         confinement: cache.confinement.clone(),
@@ -656,7 +568,6 @@ fn tool_paths_from(cache: &Cache) -> ToolPaths {
                     .map(|version| (name.clone(), version))
             })
             .collect(),
-        bin_dir: cache.bin_dir.clone(),
     }
 }
 

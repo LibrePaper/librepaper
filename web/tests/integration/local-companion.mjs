@@ -18,7 +18,7 @@ function setup(claim) {
     wait: async () => { now += 700; },
     fetch: async (url, init) => {
       if (url.includes("connect/claim")) { claimBody = JSON.parse(init.body); return claim(++attempts); }
-      if (url.includes("health")) return response(200, { service: "librepaper-local", protocol: [1], instance: "restart" });
+      if (url.includes("health")) return response(200, { service: "librepaper-local", protocol: [2], instance: "restart" });
       if (url.includes("capabilities")) return response(200, { tools: {} });
       throw new Error(`Unexpected request ${url}`);
     },
