@@ -733,8 +733,12 @@ impl Server {
                             continue 'reader;
                         }
                     }
-                    let _publication_guard = room.publication_write.lock().await;
                     if incoming.kind == "revision-decide" {
+                        // `decide_revision` owns the publication gate for its
+                        // complete validate, persist, and broadcast sequence.
+                        // Taking it here as well deadlocks this socket because
+                        // Tokio's mutex is not reentrant, leaving the browser's
+                        // review action pending forever.
                         let result = room
                             .decide_revision(
                                 &incoming.revision_id,
@@ -749,6 +753,7 @@ impl Server {
                         }
                         continue 'reader;
                     }
+                    let _publication_guard = room.publication_write.lock().await;
                     let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
                         let by = who.attribution();
                         self.decide_suggestion(&room, &incoming, may_edit, &by, self.annotation_mutation_actor(&who,true))

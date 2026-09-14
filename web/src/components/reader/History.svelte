@@ -168,7 +168,10 @@
     if (!point?.by || point.by === "system") return "Autosaved";
     return uuid.test(point.by) ? "Unknown editor" : point.by;
   };
-  const important = (point) => Boolean(point.label) || !QUIET.has(point.why);
+  // A name already makes its checkpoint prominent through bold type. Reserve
+  // the marker for notable unnamed events, so a named row is not emphasized
+  // twice for the same reason.
+  const important = (point) => !point.label && !QUIET.has(point.why);
 
   async function startNaming(point) {
     naming = point.sha;

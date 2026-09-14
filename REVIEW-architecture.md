@@ -1,258 +1,247 @@
-# The document model is the architecture
+# The collaborative editor is the architecture
 
-*2026-09-13. Started as "would this have been better in Go?" That turned out
-to be the wrong question, and the right one is underneath it.*
+*2026-09-13. Architectural directions after reviewing the code and clarifying
+the product priority. These are proposals to investigate, not an approved
+implementation plan.*
 
-## The wrong question
+## Product premise
 
-The server language is the least consequential decision in this system.
+LibrePaper is primarily a collaborative editor. Publishing, review, history,
+AI assistance, and local compilation should grow out of that editor. The
+README's emphasis on publishing and collecting comments understates this
+priority.
 
-The two hard problems -- the document model and typesetting -- both have to run
-in a browser, so both are forced to JS or wasm. Once they are, what remains on
-the server is durability, authorization, fanout, identity and billing, which
-any competent language handles. Arguing Rust versus Go versus Node for that
-layer is optimizing the easy part.
+The central question is: **how do we build one excellent editing engine that
+the browser UI, AI agents, CLI tools, history, and review all operate through?**
 
-See "Is this simpler? Is it more robust?" below before acting on any of this.
+Implementation churn is acceptable. Simplification should preserve or improve
+the editing experience. The collaborative editor remains the core product.
 
-The consequential decision is whether **the document model is one artifact or
-a compatibility surface**. Today it is a compatibility surface. Everything
-below follows from that.
+**Comments and tracked changes must carry forward to the current version.**
+They cannot be confined to the publication or snapshot where they originated,
+and carrying them forward is not an optional import step. Preserve their
+identity, authorship, discussion, and review history as the document evolves.
+When a target is deleted or cannot be mapped confidently, keep the record
+visible in the current review workflow with an explicit conflict or unresolved
+anchor, rather than dropping it or guessing a new target.
 
-## First principles
+## What the current architecture tells us
 
-### 1. What must the server actually do?
+The document model spans browser JavaScript and server Rust.
+`document/session.rs` exposes the server representation, while
+`web/src/lib/collab.js` and `web/src/lib/track-changes.js` work directly with
+Yjs. The browser also uses `y-codemirror.next`. Sharing the implementation
+would require editor integration work, not just packaging Rust as wasm.
 
-Rendering happens in the browser, through wasm. Native TeX happens on the
-author's machine, through `local`. Merging is a CRDT, which is by definition
-something peers do without a coordinator.
+The server has legitimate document responsibilities. `Room::receive_update`
+validates revisions, enforces document and encoded snapshot limits, repairs
+structure, and applies updates. `Room::decide_revision` can change text as
+well as review state. Making the server ignorant of documents is not itself
+a useful objective.
 
-Strip those out and the server's irreducible jobs are durability,
-authorization, fanout, identity and billing. That is a small, boring server.
+Useful boundaries already exist: immutable source versions in
+`storage/source.rs`, publication staging and activation in
+`storage/publication.rs`, and durable collaboration recovery in
+`storage/collaboration.rs`.
 
-Ours is ~67k lines:
+The earlier application line count included CLI and local tooling. It was
+not a server size measurement. Architecture changes need evidence about
+coupling, correctness, and development cost rather than a target line count.
 
-```
-local     16292   loopback service, tool discovery, subprocess running, pairing
-server    15799   HTTP, routes, quota, cost, serve
-cli       10461
-room       8341   <- Yjs
-storage    6472   Postgres, blob, worker, maintenance
-document   4744   <- Yjs
-auth       2627
-```
+## Candidate directions
 
-This is not a language problem. The server was *able* to know about documents,
-so over time it did. `document/session.rs` exposes ~35 functions over the
-`Doc`, called from ~125 server-side sites.
+### 1. One editing engine, several entry points
 
-### 2. The browser is the only hard constraint
+Define project-changing operations once: creating and renaming files,
+applying edits, accepting proposals, restoring content, and capturing
+snapshots. Browser UI, AI agents, and CLI tools should use the same operation
+semantics and conflict rules.
 
-A browser runs JS or wasm and nothing else.
+This is a shared contract and ownership boundary first. It does not require
+a network request for every keystroke: interactive typing stays local and
+responsive, with the CRDT coordinating concurrent edits. Authoritative
+operations still enforce permissions and validate the state they change.
 
-The document model -- what a document is, how paths and texts and assets map
-onto Y types, repair, merge -- is needed by three hosts: the browser, the
-server, and the command line. Anything three hosts need should be **one
-artifact**, not three implementations kept in step.
+A shared Rust document crate, compiled natively for the server and to wasm
+for the browser, is one implementation candidate. Requiring every host to
+execute identical wasm bytes needs its own justification. Existing Yjs editor
+bindings are a major part of any prototype.
 
-`document/session.rs` describes itself as "a compatibility surface: what is
-encoded here is decoded there," and `tests/yjs.rs` exists to run a real browser
-Yjs against it. The vendored word diff shared across the `wasm-*` repos is the
-same problem in a second place. Those tests are the price of having answered
-this question the other way.
+**Potential gain:** fewer implementations of editing rules and fewer special
+mutation paths for automation, review, and restore.
 
-The document model's language is therefore forced. Every other language choice
-in the system is downstream of it.
+**Tradeoffs:** preserve editor transactions, undo, selection, and responsiveness.
+Shared code still needs compatibility tests for old browser sessions,
+persisted documents, and host bindings. It reduces implementation drift;
+it does not eliminate version skew.
 
-### 3. Do not own the CRDT
+### 2. Keep the CRDT focused on live editing
 
-CRDT bugs are silent, they corrupt data, and they do not reproduce. This is the
-one component where a defect unnoticed for a month is unrecoverable.
+Keep collaborative editing central, using the existing Yjs/yrs family rather
+than inventing a CRDT. Give the editing engine responsibility for producing
+ordinary project snapshots containing files and assets.
 
-Use an implementation with years of adversarial use behind it -- Yjs or yrs.
-Treat any third option as risk taken in the worst available place.
+Publishing, export, and durable version history should consume snapshots
+wherever they do not need live collaboration semantics. The CRDT update log
+remains necessary for recovering acknowledged edits between snapshots.
+A source snapshot alone cannot replace that recovery log.
 
-### 4. Authorization cannot live in a structure clients write to
+Snapshots also cannot sever review continuity. Any boundary around the CRDT
+must preserve the identities and mappings needed to carry comments and tracked
+changes into the current document, including after restore or replacement of
+source files.
 
-An invariant, not a preference.
+Permissions and authoritative review decisions need explicit ownership
+outside arbitrary client mutations. Moving decisions to Postgres is a
+candidate, but does not delete all validation: the current validator also
+protects authorship, immutable proposal fields, anchors, and deletion rights.
+Accepting, rejecting, or undoing a revision may modify live text. A migration
+must define how that change and the database decision commit, retry, recover,
+and appear together to clients.
 
-From `room/revisions.rs`:
+**Potential gain:** fewer features depend on CRDT internals while retaining
+the collaborative editor.
 
-> Revision values deliberately live in the Yjs `revisions` map as JSON
-> strings. This keeps the browser and Rust representations byte-compatible,
-> while allowing the server to validate transitions before relaying an update.
-> Decision transitions are performed by the server command path; clients must
-> not be able to forge accepted/rejected history in a raw `y-update`.
+**Tradeoffs:** snapshot boundaries, revision identity, recovery, and consistency
+between stores must be explicit. The server still understands documents where
+correctness requires it.
 
-The forging surface exists because the decisions are in the CRDT. Byte
-compatibility was the convenience; server-side transition validation inside a
-`TransactionMut` is the bill.
+### 3. Explore proposed patches as a common editing operation
 
-### 5. A room is a pure function of a log
+A proposal could identify a base version, an expected passage, and its
+replacement. Acceptance checks the current document and either applies the
+change or presents a conflict. Rejecting an unapplied proposal never requires
+reversing text that somebody else has subsequently changed.
 
-Durable ordered log, plus stateless fanout. That is infrastructure, not
-application code.
+Browser suggestions, AI edits, and reviewer changes could share this
+representation and acceptance path. Prototype it inside the editor, with an
+inline preview and a comparison when the target has changed.
 
-From `room/mod.rs`:
+A proposal's base version supplies provenance, not a place to leave it behind.
+Pending proposals and existing tracked changes must remain available against
+the current version, with explicit conflicts when their targets change.
 
-> One process, so the mutex plays the part a single-threaded actor would.
+**Potential gain:** one proposal mechanism across several editing workflows,
+with clearer conflict behavior.
 
-A documented scaling ceiling, and a hand-built actor standing in for one the
-language does not provide.
+**Tradeoffs:** this is not an automatic replacement for tracked changes.
+Live tracked changes may provide the better authoring experience. Test typing,
+overlapping suggestions, undo, and collaborative review before deciding which
+workflows should use patches. Familiar behavior should change only if the
+editing experience improves.
 
-### 6. Enforcement does not have to be synchronous
+### 4. Make review continuity part of the document model
 
-`admit_update(doc, update, ceiling, max_files)` parses a document on the hot
-path to enforce a quota. A byte ceiling does not need a parsed document, and
-structural limits do not need per-update precision -- they need the abuser
-stopped within seconds.
+Comments and tracked changes follow the evolving document. Collaborators can
+edit and review the live draft without publishing first. External reviewers
+may read a fixed publication, but their comments must also enter the current
+version's review workflow, retaining the publication and passage they saw.
 
-## The system that falls out
+Use stable review-record identities and explicit mappings between original
+targets and current targets. Ordinary edits, file moves, restores, source
+replacement, and any future branch merges must preserve that continuity.
+When mapping fails, retain the comment or tracked change and expose the
+unresolved target for attention. Carrying a tracked change forward does not
+mean automatically accepting it or applying its text to a guessed location.
 
-**One document artifact.** The document model over `yrs`, compiled to wasm and
-published beside `wasm-typst`, `wasm-markdown`, `wasm-bibliography` and
-`wasm-helpers`. The browser loads it. Every server host loads the same bytes.
-Drift stops being something we test for and becomes something that cannot
-happen.
+Historical publications can remain immutable views of what was reviewed.
+They cannot be the only home of a review record. A static reader may avoid
+loading a live editing session, but review storage and mapping still need to
+connect its annotations to the current document.
 
-**A small stateless server.** Auth, log, blob, fanout, quota, billing.
-Perhaps 10-15k lines once it knows nothing about documents. Chosen for ops and
-contributors, because at that size nothing else distinguishes the candidates.
+**Potential gain:** one continuous review workflow across editing and
+publishing, with provenance explaining both the original and current context.
 
-**Postgres holds what must not be forged.** Review decisions, permissions,
-quota, publication state.
+**Tradeoffs:** this retains substantial coupling between editing and review.
+Identity, anchor mapping, and tracked-change semantics need an explicit design;
+frozen publications do not remove that work. Quote selectors can be ambiguous
+when passages repeat. Client-side resolution is useful for display, but
+authoritative text edits still need checks against current state, as
+`revisions::guarded_inverse` does today.
 
-**Three clients, one artifact.** Browser, command line, and the local TeX
-daemon. `local` is a separate product -- different users, different platform
-matrix, different security model, different release cadence -- and belongs in
-its own binary and probably its own repo.
+### 5. One publication package across renderers
 
-## Consequences, in order of independence
+Have Markdown, Typst, LaTeX, and Quarto builders produce a common package:
+rendered output, assets, diagnostics, and optional mappings back to source.
+The package identifies the source snapshot it was built from. The reader
+and publication storage consume that contract.
 
-These are derivations, not a wish list. The first three need no decision about
-languages or runtimes and are worth doing regardless.
+Source mappings should be optional capabilities. Without them, a reader may
+annotate output but cannot automatically apply a source edit. The contract
+must accommodate HTML and PDF without pretending their navigation and
+selection models are identical.
 
-1. **Move review decisions out of the CRDT into Postgres.** (From principle 4.)
-   Deletes the forging surface rather than defending it. Cost: offline edits
-   can no longer carry decisions, which may be a product constraint we want.
-2. **Split quota into wire-level and structural.** (From principle 6.) Count
-   bytes on the socket synchronously; materialize periodically in a worker for
-   `max_files` and structural limits.
-3. **Split `local` into its own binary.** (From the system above.) Also the
-   direct fix for the build loop: the 12-minute suite, the timeout flakes
-   under load, the worktree strategy and the `debug = "line-tables-only"`
-   profile are all symptoms of one very large test binary. Decomposition fixes
-   that; a debuginfo flag manages it.
-4. **Resolve anchors on the client.** (From principle 1.)
-   `sticky_index_at_path` and `offsets_of_sticky_indices` resolve against live
-   state server-side, but we already store a TextQuoteSelector -- `exact`,
-   `prefix`, `suffix` -- per the W3C model `room/mod.rs` follows. That anchor
-   is durable and position-independent, and the browser already holds the
-   document.
-5. **Make the room a log plus stateless fanout.** (From principle 5.) Removes
-   the single-process ceiling.
-6. **Publish the document model as wasm.** (From principle 2.) The one that
-   needs a real decision, because it is the one that reopens the server
-   language for the other 80% of the code.
+**Potential gain:** fewer format-specific branches through publication and
+review, and a clearer route for improving or adding renderers.
 
-Note the closing move: after (2), the server never parses an update on the hot
-path. It needs the document only for batch work -- publish, restore,
-checkpoint, export. At that point wasm execution cost is irrelevant, in-process
-versus sidecar is irrelevant, and the server language is irrelevant. The
-sequence is self-unblocking.
+**Tradeoffs:** preserve source navigation, figure annotations, incremental
+preview, and format-specific capabilities. A common interface should not force
+every keystroke to produce and upload a complete publication bundle.
 
-## Is this simpler? Is it more robust?
+### 6. Make the local companion a build worker with a narrow contract
 
-Written last, and less flattering than the rest of the document. The honest
-answer is **more correct, not much simpler.**
+A project snapshot and build request go in; a publication package and
+diagnostics come out. Tool discovery, subprocess management, and platform
+details live behind that boundary. Browser builders can satisfy the same
+logical contract, despite different execution and permissions.
 
-### Three of the six simplify. Three are trades.
+Folder access, pairing, cancellation, and incremental builds remain explicit
+capabilities. Preserve the interactive preview loop. A future remote worker
+could implement this contract, but is not necessary to justify it.
 
-Simplifying:
+Extract `local` into a separate workspace crate with a deliberate dependency
+boundary. A separate binary may follow; a separate repository is not required.
+Adding a binary that still links the entire application library would not
+deliver the intended build isolation.
 
-- **(3) Split `local`.** 16k lines leave the compile unit, the one very large
-  test binary breaks up, the build loop stops hurting. Unambiguous.
-- **(1) Decisions to Postgres.** Deletes code rather than moving it: the
-  forging surface and the validation defending it both go.
-- **(2) Quota split.** Deletes a document parse from the hot path.
+**Potential gain:** independent development and testing of native tooling,
+with less platform-specific coupling in the editor and server.
 
-Trades, and they should not be described as simplifications:
+**Tradeoffs:** protocol evolution and shared dependencies still need management.
+Measure compile/link time separately from test execution. The current timeout
+configuration identifies scheduling under load as a source of flakes; crate
+extraction cannot promise to fix those failures.
 
-- **(5) Log plus fanout** replaces a mutex with a distributed log. A single
-  process holding a mutex cannot have split-brain, duplicate delivery, replay
-  bugs or compaction. All four arrive with the log, in exchange for a ceiling
-  we may not be near.
-- **(6) Wasm artifact** relocates the document logic behind a boundary rather
-  than removing it, and adds a server-side wasm packaging pipeline plus
-  cross-repo version coordination to a project that already has ABI drift held
-  together by convention.
-- Total line count probably barely moves. Fewer lines in the server, more
-  parts in the system.
+## Supporting investigations
 
-### Robustness is bought, not free
+### Quota and admission
 
-Removed as classes of bug: drift between the browser and server
-implementations, forged review decisions, the documented single-process
-ceiling.
+Distinguish incoming wire bytes, visible project size, encoded CRDT size,
+and stored assets. They measure different things. Cheap synchronous bounds
+may reduce work; some product limits might tolerate eventual enforcement.
 
-Added: every failure mode a distributed log has, and a host boundary that can
-version-skew. Consequence 2 also trades exact quota enforcement for eventual
--- a window in which someone exceeds a limit.
+Do not defer a limit without defining what happens when already accepted
+edits exceed it. Persistence and resource limits need stronger guarantees
+than a billing allowance might. Moving quota checks alone does not remove
+document parsing from the update path: revision validation, structural repair,
+and encoded snapshot admission also inspect document state.
 
-### What to actually do
+### Distribution
 
-- **(3) first, and alone.** It is the largest practical improvement in this
-  document, and it is a build-speed fix rather than an architectural insight.
-- **(1) and (2) next.** Small, self-funding.
-- **(4) when convenient.**
-- **(5) not yet.** Insurance against a problem we may never have, priced in
-  permanent operational complexity. Revisit when the ceiling is real.
-- **(6) is the only genuine bet**, and the case for it is not the language
-  question. It is that the drift problem is already real: a vendored word diff
-  coupled across repos by convention, and an interop suite that exists because
-  two implementations must agree. If that is costing us now, do it. If it is
-  not, the elegance of the argument is not a reason.
+Keep distributed rooms deferred until capacity or availability requirements
+justify them. A durable log already supports collaboration recovery; it does
+not by itself make room ownership, fanout, or authoritative commands stateless.
+A future distribution design must address fencing, replay, compaction,
+delivery, and decision ordering. Replacing a mutex is not sufficient.
 
-## Appendix: the language post-mortem
+## What to explore first
 
-Kept because the reasoning was wrong in instructive ways.
+1. **Extract local tooling into a workspace crate.** Measure the build loop
+   before and after, and use the extraction to clarify dependencies.
+2. **Specify the editing engine's operation boundary.** Follow representative
+   browser, AI, CLI, review, and restore operations through the current code.
+   Identify which rules can actually have one implementation.
+3. **Prototype the common build/publication contract.** Exercise a browser
+   builder and a native builder, including preview and source navigation.
+4. **Prototype proposals inside the editor.** Compare the experience with live
+   tracked changes before choosing a shared representation or migration.
+5. **Design snapshot and review ownership together.** Require comments and
+   tracked changes to carry forward through edits, publication, restore, and
+   source replacement, preserving provenance and exposing mapping conflicts.
 
-**Go with a Node sidecar.** Dismissed at first on the grounds that ~125
-server-side call sites touch the document, so the boundary would have to sit
-between the server and the document rather than between the server and the
-socket. True of the current structure, false of the one above. Sorting the
-calls shows a clean seam:
-
-- *Hot path, per update or per connect:* `apply_update`, `encode_state`,
-  `encode_vector`, `encode_diff`, `admit_update`, `rehearsed_encoded_len`.
-  This is the sync protocol, and `y-websocket` already implements it.
-- *Coarse and latency-tolerant:* `texts_of`, `assets_of`, `text_of`,
-  `put_text`, `restore`, `repair`, `replace_text`, `put_asset`, `paths_of`,
-  `main_path`. Publish, restore, checkpoint, export, seed.
-
-`room` + `document` is 13k of 67k, and consequences 1 and 4 move part of that
-out. A Node component would be ~6-8k lines, roughly 10% of the system -- a
-component, not the app.
-
-**Typst is not an obstacle.** The server never compiles Typst. Its entire use
-of the engine crates is `is_font`, `families_in`, `render_body`, `no_assets`
-and one `citations::compile` -- pure functions over bytes. PDF compilation is
-already in the browser.
-
-**Go does have Yjs.** An earlier claim that it would need a second runtime was
-false. `reearth/ygo` is pure Go, with every Y-type, v1 and v2 wire formats,
-subdocs, y-protocols awareness, a byte-level conformance suite run in CI
-against `yjs@13.6.30` fixtures in both directions, and a differential
-convergence fuzzer. `dbesio/ygo` and `ProlificLabs/autosync` wrap y-crdt's own
-`yffi` over cgo, so the CRDT is the `yrs` we already run.
-
-Two caveats. cgo costs exactly what Go was for: `CGO_ENABLED=1` means
-per-target toolchains, the problem rustls-over-OpenSSL was chosen to avoid.
-And `ygo` documents neither `OffsetKind::Utf16` nor StickyIndex, which
-`session.rs` names as the whole of what interoperability required -- UTF-8
-offsets silently misplace edits past non-ASCII characters and panic past
-astral ones. Principle 3 says not to take the risk regardless.
-
-**The real alternative to Rust was TypeScript on Node**, not Go -- Yjs native,
-one language across server and browser. What decided against it was assumed to
-be Typst, and Typst turns out not to decide anything.
+The strongest architectural bet is a common editing engine, a CRDT focused on
+live collaboration, and clear snapshot/build boundaries around it. Proposed
+patches and database-owned decisions remain candidates requiring concrete
+interaction and recovery designs. Language changes and server-side wasm are
+implementation choices to revisit only when those boundaries demonstrate a
+need.

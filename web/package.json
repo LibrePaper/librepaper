@@ -6,6 +6,7 @@
     "build": "node tests/unit/vocabulary.js && vite build && vite build --config vite.agent.config.js && node tools/vendor-katex.mjs",
     "dev": "vite build --watch",
     "check:track-changes": "node tests/unit/track-changes.mjs && node tests/browser/live-tracking-browser.mjs",
+    "check:frame-overlays": "node tests/unit/frame-overlays.mjs",
     "check:upload": "node tests/unit/zip.mjs && node tests/unit/project-upload.mjs && node tests/unit/landing.mjs && node tests/browser/upload-browser.mjs",
     "check:synctex": "node tests/unit/synctex.mjs",
     "precheck": "node tests/unit/synctex.mjs && node tests/unit/build-preferences.mjs && node tests/unit/build-catalog.mjs && node tests/integration/build-local.mjs && node tests/integration/renderers-local-build.mjs && node tests/unit/track-changes.mjs && node tests/unit/collab-awareness.mjs",

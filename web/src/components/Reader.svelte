@@ -78,6 +78,7 @@
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
+  import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createLocalPreview } from "../lib/reader/local-preview.js";
   import { HIGHLIGHT_COLORS } from "../lib/annotation-colors.js";
   import DictationButton from "./DictationButton.svelte";
@@ -292,6 +293,7 @@
   }
 
   const tell = (message, transfer) => preview?.tell(message, transfer);
+  const frameOverlays = createFrameOverlays({ ready: () => frameReady, send: tell });
   // Initialized after the derived frame kind is available. The controller's
   // callbacks still update the small bits of component state used by the
   // template and annotation code.
@@ -302,67 +304,17 @@
   // idempotent. Each is sent only when its payload actually differs from the
   // last one sent -- reset when the frame republishes its text, since the
   // agent's DOM was rebuilt then and needs the full repaint regardless.
-  let lastRegions = null;
-  let lastHighlight = null;
-  let lastRedlines = null;
   // The annotation singled out last, from either side: a card clicked in the
   // sidebar or a mark clicked in the document. Its card wears a ring and the
   // frame rings its passage, and both stay until another one is chosen.
   let selectedAnnotation = $state("");
-  let lastSelected = null;
   function applySelection() {
-    if (!frameReady || selectedAnnotation === lastSelected) return;
-    lastSelected = selectedAnnotation;
-    tell({ type: "select", id: selectedAnnotation });
+    frameOverlays.selection(selectedAnnotation);
   }
   $effect(() => { void selectedAnnotation; applySelection(); });
 
   function applyHighlights() {
-    if (!frameReady) return;
-    const regions = JSON.stringify(
-      comments
-        .filter((comment) => comment.region)
-        .map((comment) => ({
-          id: comment.id,
-          point: Boolean(comment.point),
-          digest: comment.region.image_digest,
-          index: comment.region.image_index,
-          x: comment.region.x,
-          y: comment.region.y,
-          w: comment.region.w,
-          h: comment.region.h,
-          motivation: comment.motivation,
-          resolved: Boolean(comment.resolved),
-        })),
-    );
-    if (regions !== lastRegions) {
-      lastRegions = regions;
-      tell({ type: "regions", regions: JSON.parse(regions) });
-    }
-
-    const highlight = JSON.stringify(
-      comments
-        .filter((comment) => !comment.orphaned && comment.start != null)
-        .map((comment) => ({
-          id: comment.id,
-          point: Boolean(comment.point),
-          start: comment.start,
-          end: comment.end,
-          motivation: comment.motivation,
-          resolved: Boolean(comment.resolved),
-          // Only meaningful for a suggestion, but sent for every comment: the
-          // frame paints them only where `motivation` is `editing`, and a
-          // constant shape here keeps the JSON comparison above from firing
-          // on fields that never change.
-          proposed: comment.proposed ?? "",
-          outcome: comment.outcome || "",
-          color: comment.color || undefined,
-        })),
-    );
-    if (highlight !== lastHighlight) {
-      lastHighlight = highlight;
-      tell({ type: "highlight", ranges: JSON.parse(highlight) });
-    }
+    frameOverlays.annotations(comments);
   }
 
   // The "Show in document" toggle in the history panel. Items are sent only
@@ -400,11 +352,7 @@
       targetProjection: historyController.projection,
       hunks: historyChanges,
     } : { type: "redlines", items };
-    const payload = JSON.stringify(message);
-    if (payload !== lastRedlines) {
-      lastRedlines = payload;
-      tell(JSON.parse(payload));
-    }
+    frameOverlays.history(message);
   }
 
   // Whether a comment's passage is lost is answered from two anchors, not
@@ -539,7 +487,7 @@
         if (first && !publishedMode) replayPreview();
         tell({ type: "tool", tool });
         // Whatever was painted before is gone with the rebuilt DOM.
-        lastRegions = lastHighlight = lastRedlines = lastSelected = null;
+        frameOverlays.reset();
         reanchor();
         applySelection();
         revealPendingHistory();
@@ -2055,7 +2003,7 @@
       docxArtifact = null;
       deliveredHistorySha = null;
       activeSynctex = null;
-      lastRegions = lastHighlight = null;
+      frameOverlays.resetAnnotations();
     },
     onDelivered: (payload) => {
       deliveredHistorySha = payload.kind === "html" ? payload.sha || "" : null;
