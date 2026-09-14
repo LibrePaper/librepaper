@@ -1,6 +1,7 @@
 // The reader's initial metadata load. It owns the two requests it starts and
 // invalidates their callbacks when the reader is torn down or restarted.
 import { keyHeaders, me as defaultWhoami } from "../api.js";
+import { preparedProject } from "../offline-projects.js";
 
 
 export function createReaderBoot({
@@ -8,6 +9,7 @@ export function createReaderBoot({
   key = "",
   fetcher = globalThis.fetch,
   whoami = defaultWhoami,
+  findLocal = preparedProject,
   onIdentity = () => {},
   onDocument = () => {},
   onError = () => {},
@@ -28,7 +30,15 @@ export function createReaderBoot({
       const document_ = await response.json();
       if (!disposed && current === generation) onDocument(document_);
     } catch (error) {
-      if (error?.name !== "AbortError" && !disposed && current === generation) onError(error);
+      if (error?.name === "AbortError" || disposed || current !== generation) return;
+      try {
+        const cached = await findLocal({ server: globalThis.location?.origin, slug });
+        if (cached && !disposed && current === generation) {
+          onDocument({ ...cached.document, offline_prepared: true });
+          return;
+        }
+      } catch { /* unavailable local storage falls through to the normal error */ }
+      if (!disposed && current === generation) onError(error);
     } finally {
       controllers.delete(controller);
     }

@@ -1040,6 +1040,148 @@ mod tests {
 
         catalog.close().await;
     }
+
+    /// A version carries what it holds and what it moved, or says it cannot.
+    ///
+    /// Both answers come back from the catalogue rather than from the memory
+    /// of the process that wrote them, which is the whole point of the
+    /// columns: a server that has just loaded a timeline must be able to tell
+    /// that the live document is the one the newest version already holds,
+    /// and a reader must be able to scope a file's history without opening
+    /// two archives per row.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_version_records_its_tree_and_the_paths_it_moved() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        sqlx::query(
+            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
+             document_versions,document_assets,replies,annotations,share_links,grants,documents,
+             accounts CASCADE",
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        let account = catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some("one".into()),
+                handle: "owner".into(),
+                display_name: "Owner".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let document = catalog
+            .create_document(NewDocument {
+                slug: "paper".into(),
+                owner_id: account.id,
+                ownership_mode: "owned".into(),
+                title: "A Paper".into(),
+                source_format: "latex".into(),
+                main_path: "paper.tex".into(),
+                settings: json!({"version":1}),
+            })
+            .await
+            .unwrap();
+
+        let object_root = tempfile::tempdir().unwrap();
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+        let sources = SourceStorage::new(
+            Arc::new(catalog.clone()),
+            blobs.clone(),
+            ArchiveLimits::default(),
+        );
+        let source = |body: &str| crate::storage::source_archive::SourceArchive {
+            source_format: "latex".into(),
+            main_path: "paper.tex".into(),
+            files: vec![crate::storage::source_archive::SourceFile::Inline {
+                path: "paper.tex".into(),
+                bytes: body.as_bytes().to_vec(),
+            }],
+        };
+
+        // A commit that was given files rather than a tree cannot answer, and
+        // says so rather than claiming that nothing moved.
+        sources
+            .commit_project(CommitProject {
+                document_id: document.id,
+                files: vec![ProjectFile {
+                    path: "paper.tex".into(),
+                    bytes: b"\\documentclass{article}\n".to_vec(),
+                    media_type: "text/x-tex".into(),
+                }],
+                through_update_sequence: 0,
+                project_generation: 0,
+                reason: "created".into(),
+                label: None,
+                author_account_id: Some(account.id),
+                author_label: "Owner".into(),
+                make_current: true,
+            })
+            .await
+            .unwrap();
+
+        let tree_digest = [7_u8; 32];
+        let committed = sources
+            .commit_archive(crate::storage::source::CommitArchive {
+                document_id: document.id,
+                archive: source("\\documentclass{article}\n\\begin{document}\n"),
+                through_update_sequence: 0,
+                project_generation: 0,
+                tree_digest: Some(tree_digest),
+                changed_paths: Some(vec!["paper.tex".into()]),
+                reason: "quiet".into(),
+                label: None,
+                author_account_id: Some(account.id),
+                author_label: "Owner".into(),
+                make_current: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            committed.version.tree_digest.as_deref(),
+            Some(&tree_digest[..])
+        );
+
+        let versions = catalog.versions(document.id, 10).await.unwrap();
+        assert_eq!(versions.len(), 2);
+        let (newest, first) = (&versions[0], &versions[1]);
+        assert_eq!(newest.tree_digest.as_deref(), Some(&tree_digest[..]));
+        assert_eq!(
+            newest.changed_paths.as_deref(),
+            Some(&["paper.tex".to_string()][..]),
+            "the paths a version moved survive the catalogue"
+        );
+        // A publish hands storage files rather than a tree, and storage names
+        // the tree itself: the version is still recognisable as the document
+        // it holds. What it moved stays unanswered, and must read back as
+        // unknown rather than as "nothing".
+        let published = crate::storage::source_archive::tree_of(
+            &crate::storage::source_archive::SourceArchive {
+                source_format: "latex".into(),
+                main_path: "paper.tex".into(),
+                files: vec![crate::storage::source_archive::SourceFile::Inline {
+                    path: "paper.tex".into(),
+                    bytes: b"\\documentclass{article}\n".to_vec(),
+                }],
+            },
+        )
+        .0;
+        assert_eq!(
+            first.tree_digest.as_deref(),
+            Some(&published.digest_bytes()[..]),
+            "a version is named by what it holds, however it was written"
+        );
+        assert!(first.changed_paths.is_none());
+
+        catalog.close().await;
+    }
 }
 
 #[cfg(test)]

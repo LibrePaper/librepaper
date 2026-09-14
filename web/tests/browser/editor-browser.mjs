@@ -31,6 +31,7 @@ import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEdi
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
+import { prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
 const session = joinSession({ send: () => {}, mayEdit: true });
@@ -228,7 +229,12 @@ window.collabCacheCheck = async () => {
     const opened = await cached("first-creation");
     await opened.start(snapshot(server));
     opened.text.insert(0, "new offline ");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await opened.persist();
+    await prepareOfflineProject({
+      server: location.origin, slug, created_at: "first-creation",
+      title: "Cached paper", source_format: "markdown", role: "owner",
+    });
+    const manifest = await preparedProject({ server: location.origin, slug });
     opened.leave();
     const reopened = await cached("first-creation");
     await reopened.start(snapshot(server));
@@ -242,6 +248,7 @@ window.collabCacheCheck = async () => {
     recreated.text.insert(0, "edited ");
     const result = {
       recovered,
+      prepared: manifest?.document?.title,
       files: recreated.list().length,
       main: recreated.mainId() === newMain,
       preview: recreated.tree().texts["main.md"],
@@ -449,6 +456,7 @@ try {
   console.log("editor-browser: diagnostics, hints, source links and empty state passed");
   const cache = await evaluate("collabCacheCheck()");
   assert.equal(cache.recovered, "new offline server");
+  assert.equal(cache.prepared, "Cached paper");
   assert.equal(cache.files, 1);
   assert.equal(cache.main, true);
   assert.equal(cache.preview, "edited reseeded");

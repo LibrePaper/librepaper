@@ -8,6 +8,7 @@ import { diagnosticContext } from "../../src/lib/assistant-review.js";
 import { createReaderBoot } from "../../src/lib/reader/boot.js";
 import { createPendingChat } from "../../src/lib/reader/chat.js";
 import { createReaderCollaboration } from "../../src/lib/reader/collaboration.js";
+import { createRenderCoordinator } from "../../src/lib/reader/render-coordinator.js";
 import { needsSourceRefresh } from "../../src/lib/reader/source-events.js";
 
 const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
@@ -33,6 +34,7 @@ for (const stale of [false, true]) {
     renderingStore: { invalidate: () => {} }, dropHeldRendering: () => {}, showMobileView: () => {},
     passages: { renderTree: () => pending }, SLUG: "doc", KEY: "", keyHeaders: () => ({}),
     framePreview: { publish: (value) => delivered.push(value) },
+    renderCoordinator: { invalidate() {} },
     paintPreview: () => { throw new Error("captured targets must not depend on the live preview queue"); },
   });
   vm.runInContext(body("  async function showCapturedCurrent()", "  let restoring"), ctx);
@@ -43,14 +45,10 @@ for (const stale of [false, true]) {
   assert.equal(delivered.length, stale ? 0 : 1);
   if (!stale) assert.equal(delivered[0].sha, "captured");
 }
-// `paintPreview` delegates its staleness guard and its figure fetch to two
-// helpers defined next to it. They are sliced in with it so the five contexts
-// below exercise the real guard rather than a stand-in -- which is the whole
-// point of the coalescing and invalidation cases further down.
-const previewHelpers = body("  function superseded(mine", "  // Outline reads the same live text");
 // `updatePreviewTarget` points the local app at this document through a small
 // helper now, so that helper is sliced in wherever the function is exercised.
 const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which of Quarto's own live preview");
+const previewHelpers = body("  async function gatherFigures(digests)", "  // Outline reads the same live text");
 const paintPreview = `${previewHelpers}\n${body("  async function paintPreview()", "  // A source that is not actively")}`;
 
 // Initial Quarto setup must configure the companion as active for an editor.
@@ -132,37 +130,84 @@ const deferred = () => {
   assert.equal(callbacks, 0);
 }
 
-const context = (values) => vm.createContext({
-  clearTimeout,
-  setTimeout,
-  queueMicrotask,
-  Promise,
-  Uint8Array,
-  ArrayBuffer,
-  readerDisposed: false,
-  mayEdit: true,
-  publishedPublication: null,
-  editing: true,
-  latexOutput: "pdf",
-  outlineRevision: 0,
-  sourceFormat: "",
-  typstOutput: "pdf",
-  previewMain: "",
-  previewFile: "",
-  SLUG: "doc",
-  buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
-  session: null,
-  viewing: null,
-  historyController: { noteLiveChange: () => {} },
-  checkpointNavigationPending: 0,
-  diagnosticContext,
-  snapshotDigest: async () => "test-render-digest",
-  historyDiffGeneration: 0,
-  historyComparePoint: null,
-  historyChanges: null,
-  write: () => {},
-  ...values,
-});
+// A failed metadata request can open an explicitly prepared local project;
+// an ordinary cache miss still follows the normal error path.
+{
+  const documents = [];
+  const errors = [];
+  const boot = createReaderBoot({
+    slug: "offline",
+    fetcher: async () => { throw new Error("network down"); },
+    whoami: async () => ({}),
+    findLocal: async () => ({ document: { title: "Local paper", role: "editor" } }),
+    onDocument: (value) => documents.push(value),
+    onError: (error) => errors.push(error.message),
+  });
+  await boot.start();
+  assert.equal(documents[0].title, "Local paper");
+  assert.equal(documents[0].offline_prepared, true);
+  assert.deepEqual(errors, []);
+}
+
+const context = (values) => {
+  const ctx = vm.createContext({
+    clearTimeout,
+    setTimeout,
+    queueMicrotask,
+    Promise,
+    Uint8Array,
+    ArrayBuffer,
+    readerDisposed: false,
+    mayEdit: true,
+    publishedPublication: null,
+    editing: true,
+    latexOutput: "pdf",
+    outlineRevision: 0,
+    sourceFormat: "",
+    typstOutput: "pdf",
+    previewMain: "",
+    previewFile: "",
+    SLUG: "doc",
+    buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
+    session: null,
+    viewing: null,
+    historyController: { noteLiveChange: () => {} },
+    checkpointNavigationPending: 0,
+    diagnosticContext,
+    snapshotDigest: async () => "test-render-digest",
+    historyDiffGeneration: 0,
+    historyComparePoint: null,
+    historyChanges: null,
+    write: () => {},
+    ...values,
+  });
+  ctx.renderCoordinator = createRenderCoordinator({
+    navigation: () => ctx.navigationGeneration,
+    source: () => ctx.sourceGeneration,
+    main: () => ctx.treeNow?.().main || "",
+    render: (ticket) => ctx.renderPreview(ticket),
+  });
+  ctx.renderState = {
+    compiling: false, lastCompile: 0, failure: false, failureReason: "",
+    lastLatexResult: null, provenance: null, docxArtifact: null,
+  };
+  ctx.renderStatus = {
+    begin: ({ clearFailure = false } = {}) => {
+      ctx.renderState.compiling = true;
+      if (clearFailure) ctx.renderState.failure = false;
+    },
+    finish: () => { ctx.renderState.compiling = false; },
+    succeeded: () => { ctx.renderState.failure = false; ctx.renderState.failureReason = ""; },
+    failed: (reason) => { ctx.renderState.failure = true; ctx.renderState.failureReason = String(reason || "could not render"); },
+    resetFailure: () => { ctx.renderState.failure = false; ctx.renderState.failureReason = ""; },
+    recordDuration: (seconds) => { if (seconds) ctx.renderState.lastCompile = seconds; },
+    recordLatex: (result) => { ctx.renderState.lastLatexResult = result; },
+    recordProvenance: (value) => { ctx.renderState.provenance = value; },
+    recordDocx: (value) => { ctx.renderState.docxArtifact = value; },
+    clearDocx: () => { ctx.renderState.docxArtifact = null; },
+  };
+  return ctx;
+};
 
 // Selecting A and then B must leave B selected if A's history response is late.
 {
@@ -241,7 +286,7 @@ const context = (values) => vm.createContext({
   await pending;
   assert.equal(ctx.latestPreview, old);
   assert.equal(sent.length, 0);
-  assert.equal(ctx.previewPaintBusy, false);
+  assert.equal(ctx.renderCoordinator.running, false);
 }
 
 console.log("reader-races: all checks passed");
@@ -426,7 +471,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   second.resolve({ html: "latest", diagnostics: [] });
   await new Promise(setImmediate);
   assert.equal(delivered.at(-1), "latest");
-  assert.equal(ctx.previewPaintBusy, false);
+  assert.equal(ctx.renderCoordinator.running, false);
 }
 
 // Peer updates notify history without repainting the frozen preview.
@@ -579,6 +624,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   vm.runInContext(paintPreview, ctx);
   await vm.runInContext("paintPreview()", ctx);
   assert.equal(ordinaryRendererCalls, 0, "historical preview bypasses the ordinary compiler");
+  assert.ok(renderedTree, ctx.renderState.failureReason || "historical render did not run");
   assert.equal(renderedTree.settings.release, "r1");
   assert.deepEqual([...renderedTree.assets["figure.png"]], [4, 5, 6]);
   assert.equal(ctx.published.html, "<p>historical</p>");
@@ -662,7 +708,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   });
   vm.runInContext(paintPreview, ctx);
   await vm.runInContext("paintPreview()", ctx);
-  assert.equal(ctx.pdfFailure, true, "structured Typst diagnostics set the PDF failure state");
+  assert.equal(ctx.renderState.failure, true, "structured Typst diagnostics set the PDF failure state");
   assert.equal(ctx.latestPreview, null, "a failed first Typst compile leaves no blank success preview");
 
   // A compiler setup failure has neither a TeX log nor source diagnostics.
@@ -673,14 +719,13 @@ for (const invalidate of [null, "navigation", "main"]) {
   ctx.renderers.formatOf = () => "latex";
   ctx.renderers.render = async () => ({ pdf: null, log: "", diagnostics: [], failure: { message: "The mirror has no engine release" } });
   await vm.runInContext("paintPreview()", ctx);
-  assert.equal(ctx.pdfFailureReason, "The mirror has no engine release");
+  assert.equal(ctx.renderState.failureReason, "The mirror has no engine release");
 
   // HTML conversion errors belong to the source snapshot that caused them.
   const pendingHtml = deferred();
   ctx.latexOutput = "html";
   ctx.pdfOutput = false;
-  ctx.pdfFailure = false;
-  ctx.pdfFailureReason = "";
+  ctx.renderStatus.resetFailure();
   ctx.renderers.render = (_tree, _title, options) => {
     assert.equal(options.format, "html");
     return pendingHtml.promise;
@@ -690,13 +735,12 @@ for (const invalidate of [null, "navigation", "main"]) {
   ctx.sourceGeneration++;
   pendingHtml.reject(new Error("old conversion failed"));
   await htmlPaint;
-  assert.equal(ctx.pdfFailure, false, "an old HTML error cannot mark a newer edit failed");
-  assert.equal(ctx.pdfFailureReason, "");
+  assert.equal(ctx.renderState.failure, false, "an old HTML error cannot mark a newer edit failed");
+  assert.equal(ctx.renderState.failureReason, "");
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
-// Ctrl-S says "saved on the server" only when that is true: never while
-// updates are pending, never while the connection is down.
+// Ctrl-S distinguishes server durability from an offline device save.
 {
   const said = [];
   const ctx = context({
@@ -711,7 +755,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.deepEqual(said, ["saved on the server"]);
   ctx.connected = false;
   vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, ["saved on the server"]);
+  assert.deepEqual(said, ["saved on the server", "saved on this device"]);
 }
 
 // Reconnect metadata is checked before the old session can send its CRDT.

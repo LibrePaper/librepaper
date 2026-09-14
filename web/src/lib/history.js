@@ -259,6 +259,24 @@ export function isMilestone(point) {
   return MILESTONE_REASONS.has(point?.why);
 }
 
+/// The checkpoints a timeline shows while `path` is the file being edited:
+/// those that moved it, and those that cannot say what they moved.
+///
+/// A checkpoint records the paths whose contents differ from its parent's, so
+/// an edit confined to references.bib does not appear while manuscript.tex is
+/// open. Where that evidence is missing -- a version written before the
+/// catalogue recorded it, or one whose list was too long to be worth keeping
+/// -- the checkpoint is shown. Absence of evidence is not evidence that the
+/// file was untouched, and a history that hides a real revision is worse than
+/// one that shows an extra row.
+export function forFile(checkpoints = [], path = "") {
+  if (!path) return checkpoints;
+  return checkpoints.filter((point) => {
+    const changed = point?.changed;
+    return !Array.isArray(changed) || changed.length === 0 || changed.includes(path);
+  });
+}
+
 /// The newest-first manifest as a list somebody reads, grouped by day, and
 /// with runs of unlabelled checkpoints by one person folded to their first and
 /// last. A run is also split by a fifteen-minute gap or a milestone.

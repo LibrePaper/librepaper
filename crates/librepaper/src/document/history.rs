@@ -139,20 +139,82 @@ impl Tree {
         self
     }
 
-    /// The name of this tree: the sha256 of the JSON that is stored, so that
-    /// naming it and writing it can never disagree.
+    /// The name of this tree: the sha256 of what it says.
     pub fn digest(&self) -> String {
-        hex::encode(Sha256::digest(self.to_bytes()))
+        hex::encode(self.digest_bytes())
     }
 
+    /// The same name, as the catalogue stores it.
+    pub fn digest_bytes(&self) -> [u8; 32] {
+        Sha256::digest(self.to_bytes()).into()
+    }
+
+    /// What this tree says, canonically: which file is the document, what it
+    /// is compiled with, and every path with the digest of what is at it.
+    ///
+    /// Deliberately not the whole stored object. A text's `id` is which
+    /// shared object holds it, minted afresh whenever a file is created, so a
+    /// document rebuilt from its own archive carries different ids than the
+    /// session that wrote it; an entry's `size` follows from its bytes.
+    /// Neither is part of what the document says, and naming a tree after
+    /// them made two identical documents impossible to recognise as one --
+    /// which is exactly the question a checkpoint has to answer before
+    /// writing itself down again.
     pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).unwrap_or_default()
+        #[derive(Serialize)]
+        struct Content<'a> {
+            main: &'a str,
+            files: BTreeMap<&'a str, (&'a str, &'a str)>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            settings: Option<&'a CompileSettings>,
+        }
+        serde_json::to_vec(&Content {
+            main: &self.main,
+            files: self
+                .files
+                .iter()
+                .map(|(path, entry)| (path.as_str(), (entry.kind.as_str(), entry.sha.as_str())))
+                .collect(),
+            settings: self
+                .settings
+                .as_ref()
+                .filter(|settings| !settings.is_empty()),
+        })
+        .unwrap_or_default()
     }
 
     /// The size a checkpoint counts against the quota: the sum over the tree,
     /// assets included, because that is what the document costs to keep.
     pub fn size(&self) -> i64 {
         self.files.values().map(|entry| entry.size).sum()
+    }
+
+    /// The paths at which this tree differs from the one before it: added,
+    /// removed, or holding different bytes. This is what a checkpoint records
+    /// so that the timeline can say which files a moment touched without
+    /// opening two trees for every row it draws.
+    ///
+    /// Identity is the content digest alone. A text re-created at the same
+    /// path with the same body is a new object in the shared document and
+    /// nothing at all in the history of what the document said.
+    pub fn changed_from(&self, parent: &Tree) -> Vec<String> {
+        let mut paths: Vec<String> = self
+            .files
+            .iter()
+            .filter(|(path, entry)| {
+                parent.files.get(*path).map(|before| &before.sha) != Some(&entry.sha)
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        paths.extend(
+            parent
+                .files
+                .keys()
+                .filter(|path| !self.files.contains_key(*path))
+                .cloned(),
+        );
+        paths.sort();
+        paths
     }
 }
 
@@ -167,5 +229,65 @@ pub struct Manifest {
 impl Manifest {
     pub fn latest(&self) -> Option<&Checkpoint> {
         self.checkpoints.last()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tree(files: &[(&str, &str)]) -> Tree {
+        Tree {
+            main: files
+                .first()
+                .map(|(path, _)| (*path).into())
+                .unwrap_or_default(),
+            files: files
+                .iter()
+                .map(|(path, sha)| {
+                    (
+                        (*path).to_string(),
+                        TreeEntry {
+                            kind: "text".into(),
+                            sha: (*sha).into(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+            settings: None,
+        }
+    }
+
+    #[test]
+    fn a_tree_names_the_paths_that_moved() {
+        let before = tree(&[("paper.tex", "a"), ("references.bib", "b")]);
+        let after = tree(&[("paper.tex", "a2"), ("references.bib", "b")]);
+        assert_eq!(after.changed_from(&before), vec!["paper.tex".to_string()]);
+    }
+
+    #[test]
+    fn an_added_or_removed_file_is_a_change_at_its_own_path() {
+        let before = tree(&[("paper.tex", "a")]);
+        let after = tree(&[("paper.tex", "a"), ("sections/one.tex", "c")]);
+        assert_eq!(
+            after.changed_from(&before),
+            vec!["sections/one.tex".to_string()]
+        );
+        assert_eq!(
+            before.changed_from(&after),
+            vec!["sections/one.tex".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_tree_that_says_the_same_thing_moved_nothing() {
+        let before = tree(&[("paper.tex", "a"), ("references.bib", "b")]);
+        let mut after = before.clone();
+        // A file re-created at the same path with the same body: a new object
+        // in the shared document, and nothing in the history of the text.
+        after.files.get_mut("paper.tex").unwrap().id = "fresh".into();
+        assert!(after.changed_from(&before).is_empty());
+        assert!(before.changed_from(&before).is_empty());
     }
 }

@@ -17,6 +17,7 @@
   import { day as isoDay } from "../lib/dates.js";
   import { unzip } from "../lib/zip.js";
   import { archiveProject, archiveSelection } from "../lib/project-upload.js";
+  import { preparedProjects } from "../lib/offline-projects.js";
 
   let me = $state({});
   // Replaced by the server's own on load; this is only what the drop zone
@@ -189,10 +190,26 @@
       counts = counted;
       paths = listed;
     } catch (error) {
-      problem(error?.message || "Could not refresh projects.");
+      if (navigator.onLine !== false) problem(error?.message || "Could not refresh projects.");
       return false;
     }
     return true;
+  }
+
+  async function showOfflineProjects() {
+    try {
+      const local = await preparedProjects();
+      const bySlug = new Map(documents.map((document_) => [document_.slug, document_]));
+      for (const record of local) {
+        if (bySlug.has(record.identity.slug)) continue;
+        bySlug.set(record.identity.slug, {
+          ...record.document,
+          updated_at: record.preparedAt,
+          offline_prepared: true,
+        });
+      }
+      documents = [...bySlug.values()];
+    } catch { /* the online project list remains useful without local storage */ }
   }
 
   async function deleteSelected() {
@@ -392,10 +409,14 @@
   }
 
   $effect(() => {
+    void showOfflineProjects();
     loadConfig().then((found) => (config = found)).catch(() => {});
     whoami().then(async (who) => {
       me = who;
-      if (who.can_publish) await showList();
+      if (who.can_publish) {
+        await showList();
+        await showOfflineProjects();
+      }
     });
   });
 </script>
@@ -595,6 +616,7 @@
                   <td>
                     <Row gap={2}>
                       <a class="anchor" href="/docs/{doc.slug}">{doc.title}</a>
+                      {#if doc.offline_prepared}<span class="text-surface-600-400 text-xs">Offline</span>{/if}
                       <!-- The file the search found, when it was not the
                            title. Opening it opens the project on that file. -->
                       {#if found(doc, needle).path}

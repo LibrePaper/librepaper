@@ -37,6 +37,8 @@ mod command;
 mod comments;
 pub(crate) mod error;
 mod figures;
+#[cfg(test)]
+mod idle_room_tests;
 pub(crate) mod outgoing;
 mod resident;
 pub(crate) mod revisions;
@@ -221,6 +223,10 @@ pub struct Session {
     /// against `generation` to say whether the document has changed since
     /// then, so an idle room is not re-hashed every second to answer that.
     pub checkpoint_generation: u64,
+    /// The newest checkpoint's tree, once this room has seen it: what the next
+    /// checkpoint is diffed against to record the paths it moved. `None` until
+    /// a load establishes it or a checkpoint writes one.
+    pub checkpoint_tree: Option<crate::document::history::Tree>,
     /// When the last update arrived, and who sent it. Both feed the quiet
     /// checkpoint, whose `by` is the editor whose update last landed. The
     /// stable account travels with the display name so an automatic
@@ -259,6 +265,16 @@ impl Session {
         // one. `receive_update` re-establishes it explicitly after this, with
         // the bytes it actually admitted.
         self.encoded_bound = None;
+    }
+
+    /// Record that the newest checkpoint covers what the document says now.
+    /// Taken by the checkpoint that wrote the tree and by the one that found
+    /// it already written: both leave the document covered, and a covered
+    /// document is not asked for a checkpoint again until it changes.
+    pub(super) fn cover_checkpoint(&mut self, tree: crate::document::history::Tree) {
+        self.checkpoint_generation = self.generation;
+        self.pending_checkpoint_since = 0;
+        self.checkpoint_tree = Some(tree);
     }
 
     /// The exact encoded length, learned from an encode that just happened.
@@ -719,6 +735,7 @@ impl RoomSet {
                     encoded_size: None,
                     encoded_bound: None,
                     checkpoint_generation: 0,
+                    checkpoint_tree: None,
                     updated_at: 0,
                     by: Attribution::system(),
                     asked: None,
@@ -1334,6 +1351,38 @@ impl Room {
         state.session.last_persist_at = now_unix().saturating_sub(15);
         drop(state);
         self.load_asset_sizes().await;
+        self.adopt_checkpoint_baseline().await;
+    }
+
+    /// Whether the document this room just recovered is the document the
+    /// newest checkpoint already holds, and if so, saying so.
+    ///
+    /// The sweeper decides whether to take a checkpoint by comparing two
+    /// counters, which costs nothing per second. But a recovered session
+    /// starts with a generation taken from its update sequence and a coverage
+    /// of zero, so without this every room would open believing it had
+    /// unmarked edits: one checkpoint a second after every load, of a
+    /// document nobody had touched.
+    ///
+    /// The comparison is against content, once, here -- the only place where
+    /// reading the whole tree is both necessary and affordable. Leaving the
+    /// counters apart is the safe direction: it costs a checkpoint of a
+    /// document that is already checkpointed, where the reverse would lose
+    /// edits that a crash left in the update log and no version covers.
+    async fn adopt_checkpoint_baseline(&self) {
+        let mut state = self.state.lock().await;
+        let Some(point) = state.manifest.latest().cloned() else {
+            return;
+        };
+        if point.tree_sha.is_empty() {
+            return;
+        }
+        let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
+        if tree.digest() != point.tree_sha {
+            return;
+        }
+        state.session.last_checkpoint = point.sha;
+        state.session.cover_checkpoint(tree);
     }
 
     /// What each of this document's figures weighs, read once when the room is

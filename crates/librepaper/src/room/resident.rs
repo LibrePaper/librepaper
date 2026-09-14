@@ -167,9 +167,19 @@ impl RoomState {
         // nothing to recompute and so cannot go stale.
         let comments = self.comments.bytes();
         let manifest = self.manifest.bytes();
+        // The retained checkpoint tree is one entry per path, like the asset
+        // map above, and is counted the same way: from cardinality, which
+        // cannot go stale.
+        let checkpoint_tree = self
+            .session
+            .checkpoint_tree
+            .as_ref()
+            .map_or(0, |tree| tree.files.len())
+            * std::mem::size_of::<(String, crate::document::history::TreeEntry)>();
         session
             .saturating_add(comments)
             .saturating_add(manifest)
+            .saturating_add(checkpoint_tree)
             .saturating_add(self.session.asset_sizes.len() * std::mem::size_of::<(String, i64)>())
     }
 }

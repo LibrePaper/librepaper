@@ -7,7 +7,7 @@
 // checked here, because they are what a careless change would break silently:
 // the panel would still render, and the history would just be harder to read.
 
-import { coalesce, loadWithStatus, sizeDelta, timeline } from "../../src/lib/history.js";
+import { coalesce, forFile, loadWithStatus, sizeDelta, timeline } from "../../src/lib/history.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -175,5 +175,33 @@ const shas = (rows) =>
   check("a large paste draws a wider one", large.width > small.width);
 }
 
+/* ------------------------------------------------------- the file in hand */
+
+{
+  // A project's timeline is document-wide; the panel beside an open file is
+  // not. What a checkpoint moved is what says whether it belongs there.
+  const tex = { sha: "a".padEnd(64, "0"), why: "quiet", changed: ["paper.tex"] };
+  const bib = { sha: "b".padEnd(64, "0"), why: "quiet", changed: ["references.bib"] };
+  const both = { sha: "c".padEnd(64, "0"), why: "cli", changed: ["paper.tex", "references.bib"] };
+  // Written before the catalogue recorded what moved, or by a version whose
+  // list of paths was too long to be worth keeping.
+  const silent = { sha: "d".padEnd(64, "0"), why: "quiet" };
+  const restored = { sha: "e".padEnd(64, "0"), why: "restore", changed: [] };
+  const all = [tex, bib, both, silent, restored];
+
+  check(
+    "a file's history holds what moved it",
+    forFile(all, "paper.tex").map((point) => point.sha).join() ===
+      [tex, both, silent, restored].map((point) => point.sha).join(),
+  );
+  check("an edit to another file stays out of it", !forFile(all, "paper.tex").includes(bib));
+  check(
+    "a checkpoint that cannot say what it moved is never hidden",
+    forFile(all, "sections/one.tex").map((point) => point.sha).join() ===
+      [silent, restored].map((point) => point.sha).join(),
+  );
+  check("no open file scopes nothing", forFile(all, "").length === all.length);
+}
+
 if (failures) process.exit(1);
-console.log("timeline: the newest first, runs folded, and a named point never hidden");
+console.log("timeline: the newest first, runs folded, a named point never hidden, and one file's own");

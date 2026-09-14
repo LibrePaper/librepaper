@@ -36,6 +36,13 @@ pub struct CommitArchive {
     pub archive: SourceArchive,
     pub through_update_sequence: i64,
     pub project_generation: i64,
+    /// What this version holds, when the caller already has the tree in hand.
+    /// Left out, it is derived from the archive itself, which names the same
+    /// tree: nothing outside the files is part of that name.
+    pub tree_digest: Option<[u8; 32]>,
+    /// The paths whose contents differ from the parent version's. `None` when
+    /// the writer could not answer -- which is not an answer of "nothing".
+    pub changed_paths: Option<Vec<String>>,
     pub reason: String,
     pub label: Option<String>,
     pub author_account_id: Option<Uuid>,
@@ -172,6 +179,11 @@ impl SourceStorage {
             },
             through_update_sequence: input.through_update_sequence,
             project_generation: input.project_generation,
+            // A project commit is given files rather than a tree, and has no
+            // parent tree to diff against: `commit_archive` names what this
+            // holds, and what it moved stays unanswered.
+            tree_digest: None,
+            changed_paths: None,
             reason: input.reason,
             label: input.label,
             author_account_id: input.author_account_id,
@@ -198,6 +210,16 @@ impl SourceStorage {
             ));
         }
         let parent_id = document.current_version_id;
+        // Every version is named by what it holds, whether or not its writer
+        // had a tree in hand: a version with no name is one that a later
+        // reader cannot recognise as the document already in front of it, and
+        // it is that failure to recognise which used to write a whole
+        // duplicate archive each time a document was opened.
+        let tree_digest = Some(
+            input
+                .tree_digest
+                .unwrap_or_else(|| source_archive::tree_of(&input.archive).0.digest_bytes()),
+        );
         let encoded = source_archive::encode(input.archive, self.limits)?;
         self.catalog
             .check_storage_admission(input.document_id, encoded.bytes.len() as i64)
@@ -226,6 +248,8 @@ impl SourceStorage {
                 archive_digest: encoded.digest,
                 archive_bytes: encoded.bytes.len() as i64,
                 logical_bytes: encoded.logical_bytes as i64,
+                tree_digest,
+                changed_paths: input.changed_paths,
                 reason: input.reason,
                 label: input.label,
                 author_account_id: input.author_account_id,

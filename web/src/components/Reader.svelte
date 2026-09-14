@@ -6,7 +6,6 @@
   import * as sync from "../lib/sync.js";
   import * as renderers from "../lib/renderers.js";
   import * as quarto from "../lib/engines/quarto.js";
-  import * as diagnosticsRule from "../lib/diagnostics.js";
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
   import { createHistoryController } from "../lib/reader/history.svelte.js";
@@ -27,6 +26,8 @@
   import { createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
+  import { prepareOfflineProject, preparedProject } from "../lib/offline-projects.js";
+  import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { createPublicationPublisher, createPublicationReader, sha256 } from "../lib/publication.js";
   import { buildDisplayBundle } from "../lib/publication-builder.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
@@ -79,6 +80,9 @@
   import { extractOutline } from "../lib/outline.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
+  import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
+  import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
+  import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
   import { createLocalPreview } from "../lib/reader/local-preview.js";
   import { HIGHLIGHT_COLORS } from "../lib/annotation-colors.js";
   import DictationButton from "./DictationButton.svelte";
@@ -104,6 +108,8 @@
   let publishedPublication = $state(null);
   let publicationUpdate = $state(false);
   let publicationStatus = $state(false);
+  let offlinePrepared = $state(false);
+  let preparingOffline = $state(false);
   // An existing publication makes the expected-publication pointer part of a
   // publish request. The Share panel remains available while it arrives, but
   // its publish control must wait for that pointer.
@@ -227,8 +233,7 @@
     frameShowsCheckpoint = false;
     everPainted = false;
     everPaintedShown = false;
-    pdfFailure = false;
-    pdfFailureReason = "";
+    renderStatus.resetFailure();
     clearTimeout(previewTimer);
     previewTimer = null;
     await tick();
@@ -1117,7 +1122,7 @@
 
   // A close is only worth interrupting when the work has reached neither this
   // browser's storage nor the server.
-  const atRisk = $derived(Boolean(mayEdit && persistence.pending && !persistence.local));
+  const atRisk = $derived(Boolean(mayEdit && (persistence.localError || (persistence.pending && !persistence.local))));
 
   // What the editor has to say about an event -- a render that finished, a
   // download that failed, a lock with nowhere to go -- is said in a toast,
@@ -1413,7 +1418,7 @@
     const target = historyController.capturedCurrent;
     if (!target) return;
     const mine = ++navigationGeneration;
-    issued += 1;
+    renderCoordinator.invalidate();
     viewing = target;
     if (compact) showMobileView("document");
     // The controller has already rendered this immutable target. Deliver
@@ -1484,7 +1489,7 @@
     const mine = ++navigationGeneration;
     checkpointNavigationPending = mine;
     historyController.invalidateChanges();
-    issued += 1;
+    renderCoordinator.invalidate();
     try {
       const point = await history.checkpoint(SLUG, sha, keyHeaders(KEY));
       if (mine !== navigationGeneration) return;
@@ -1505,7 +1510,7 @@
     const wasCheckpoint = Boolean(viewing) || frameShowsCheckpoint;
     navigationGeneration += 1;
     checkpointNavigationPending = 0;
-    issued += 1;
+    renderCoordinator.invalidate();
     if (!wasCheckpoint) return;
     viewing = null;
     frameShowsCheckpoint = false;
@@ -1629,24 +1634,13 @@
   // and a document belongs on the documents origin, not in this page. The
   // agent republishes its text from there, which re-anchors every comment
   // against what was just typed.
-  let issued = 0;
-  let painted = 0;
   let sourceGeneration = 0;
-
-  /// The staleness guard a paint checks before it commits: true once a newer
-  /// paint has already landed, the reader has navigated since this one was
-  /// captured, the source has changed underneath a renderer slow enough (or
-  /// quirky enough, for Quarto) to care, or the tree painted is no longer the
-  /// live main file. Shared by the two guard points in the paint pipeline so
-  /// they cannot drift apart.
-  function superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree) {
-    return (
-      mine <= painted ||
-      snapshotNavigation !== navigationGeneration ||
-      (!viewing && (slow || format === "quarto") && snapshotSource !== sourceGeneration) ||
-      tree.main !== treeNow().main
-    );
-  }
+  const renderCoordinator = createRenderCoordinator({
+    navigation: () => navigationGeneration,
+    source: () => sourceGeneration,
+    main: () => treeNow().main,
+    render: renderPreview,
+  });
 
   /// Fetches the figures a tree's digests point to and reports which of the
   /// requested digests the server did not have, so a caller can decide
@@ -1678,8 +1672,6 @@
   // Keep one render in flight and coalesce requests into the latest tree.
   // This bounds the worker queue while typing, and keeps each LaTeX PDF
   // tied to the snapshot digest of the tree that produced it.
-  let previewPaintBusy = false;
-  let previewPaintQueued = false;
   let previewTimer = null;
 
   // What the last compile said. When it is painted is `diagnostics.js`'s
@@ -1688,11 +1680,13 @@
   // length to it. From clean to red at reading speed, from red to clean at
   // typing speed.
   let diagnostics = $state([]);
-  let renderDiagnostics = [];
-  let bibliographyDiagnostics = [];
-  const diagnosticPainter = diagnosticsRule.painter({
-    paint: (list) => paintDiagnostics(list),
+  const diagnosticsController = createRenderDiagnostics({
+    active: () => editing,
+    local: () => localAppDiagnostics,
+    update: (list) => (diagnostics = list),
+    deliver: (list) => editor?.setDiagnostics?.(list),
   });
+  const diagnosticPainter = diagnosticsController.painter;
   // Whether the frame has ever shown a page. Until it has, a document that
   // does not compile has nothing to keep on the screen.
   let everPainted = false;
@@ -1719,28 +1713,8 @@
   // them, and a red badge for a typo in somebody else's editing session would
   // only interrupt reading. The source and the current transient page remain
   // available while the editor works.
-  function paintDiagnostics(list) {
-    if (!editing) return;
-    renderDiagnostics = list;
-    paintCombinedDiagnostics();
-  }
-
-  function paintCombinedDiagnostics() {
-    if (!editing) return;
-    const seen = new Set();
-    diagnostics = [...renderDiagnostics, ...bibliographyDiagnostics, ...localAppDiagnostics].filter((item) => {
-      const key = JSON.stringify([item.file, item.line, item.column, item.message]);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-    editor?.setDiagnostics?.(diagnostics);
-  }
-
   function bibliographyAnalyzed(result, request) {
-    bibliographyDiagnostics = (result?.diagnostics || []).map((item) =>
-      diagnosticContext(item, { main: request?.main || "", texts: request?.texts || {} }, ""));
-    paintCombinedDiagnostics();
+    diagnosticsController.bibliography(result, request);
   }
 
   function diagnosticFile(item) {
@@ -1807,13 +1781,8 @@
   // How long the last compile took, and whether one is running now. Paged
   // formats expose the same short-lived loading state; the elapsed time is
   // especially useful for LaTeX, whose compiler can take seconds.
-  let compiling = $state(false);
-  let lastCompile = $state(0);
-  let pdfFailure = $state(false);
-  // Why, when the Diagnostics list has nothing to say: the compiler's own
-  // words when it threw, or the tail of its log when it produced neither a
-  // PDF nor an error the parser could name. Empty when the list says it.
-  let pdfFailureReason = $state("");
+  const renderStatus = createRenderStatus();
+  const renderState = renderStatus.state;
 
   // The project's LaTeX settings, mirrored into state because the Yjs `meta`
   // map they live in is not itself reactive: the Compiler settings need to redraw
@@ -1903,9 +1872,6 @@
   // for Diagnostics' "Compiled with" block and "Earlier attempts" list
   // (preserve both attempts' logs when a browser failure
   // led to a local attempt). Null for every other format.
-  let lastLatexResult = $state(null);
-  let lastBuildProvenance = $state(null);
-
   // Set by the "Compile now" button and read once, at the next
   // `renderers.render` call: the plainest way to ask for
   // `latex.compile(tree, {manual: true})` semantics without `renderers.js`
@@ -1924,15 +1890,15 @@
   // Readers use the same source renderer as editors. A missing compiler is
   // reported as a tool requirement instead of opening a retained result.
   const compilesHere = $derived(renderers.compilerAvailable(sourceFormat));
-  const unrendered = $derived(pdfOutput && !everPaintedShown && !pdfFailure);
-  const failedBeforeRender = $derived(pdfFailure && !everPaintedShown);
+  const unrendered = $derived(pdfOutput && !everPaintedShown && !renderState.failure);
+  const failedBeforeRender = $derived(renderState.failure && !everPaintedShown);
 
   // A paged compile that is running says so, and says how long the last one
   // took once there has been one. Before the first, there is no honest number
   // to give. LaTeX has its own, richer status detail -- `LatexStatus.svelte`,
   // fed straight from `latex.subscribe` -- so this badge is Typst's alone.
   const compileBadge = $derived(
-    !compiling ? "" : lastCompile ? `compiling… (last took ${lastCompile.toFixed(1)}s)` : "compiling…",
+    !renderState.compiling ? "" : renderState.lastCompile ? `compiling… (last took ${renderState.lastCompile.toFixed(1)}s)` : "compiling…",
   );
 
   // Whether `LatexStatus` has anything to draw. It draws nothing while the
@@ -1979,7 +1945,7 @@
   $effect(() => {
     void localAppDiagnostics;
     void editing;
-    untrack(() => paintCombinedDiagnostics());
+    untrack(() => diagnosticsController.refresh());
   });
 
   let frameShowsCheckpoint = false;
@@ -1987,7 +1953,6 @@
   // "" since the last navigation. `framePreview.preview()` knows the same,
   // but not reactively, and the File menu's download items follow this.
   let deliveredKind = $state("");
-  let docxArtifact = $state(null);
   let deliveredHistorySha = null;
   let activeSynctex = null;
   framePreview = createFramePreview({
@@ -1998,9 +1963,9 @@
     send: tell,
     onNavigate: () => {
       frameReady = false;
-      issued += 1;
+      renderCoordinator.invalidate();
       deliveredKind = "";
-      docxArtifact = null;
+      renderStatus.clearDocx();
       deliveredHistorySha = null;
       activeSynctex = null;
       frameOverlays.resetAnnotations();
@@ -2042,13 +2007,13 @@
       || compileBadge || quartoPreviewStarting || quartoRendering || calepinRendering,
   ));
   const previewProblem = $derived(Boolean(
-    (sourceFormat === "latex" && (latexHtmlPreview ? pdfFailure : latexPhase === "failed")) || quartoPreviewError || (!typstHtmlPreview && calepinPreviewError)
+    (sourceFormat === "latex" && (latexHtmlPreview ? renderState.failure : latexPhase === "failed")) || quartoPreviewError || (!typstHtmlPreview && calepinPreviewError)
       || quartoNeedsLocalApp || typstNeedsLocalApp || typstNeedsCalepinCommand,
   ));
   const previewStatusLabel = $derived(
     previewProblem ? "Preview needs attention"
       : previewBusy ? (sourceFormat === "quarto" ? "Rendering Quarto" : sourceFormat === "typst" ? "Rendering Typst" : "Compiling")
-      : !everPaintedShown && !pdfFailure ? "Rendering from source" : "",
+      : !everPaintedShown && !renderState.failure ? "Rendering from source" : "",
   );
 
   let previousConnected = null;
@@ -2058,6 +2023,10 @@
   });
 
   async function paintPreview() {
+    return renderCoordinator.request();
+  }
+
+  async function renderPreview(mine) {
     try {
       if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: paint requested", sourceFormat, Boolean(session));
     } catch { /* diagnostics are optional */ }
@@ -2090,7 +2059,6 @@
       refreshFramedPage();
       return;
     }
-    const mine = ++issued;
     const tree = treeNow();
     const snapshotViewing = viewing;
     const snapshotNavigation = navigationGeneration;
@@ -2107,11 +2075,15 @@
     const htmlPreview = Boolean(snapshotViewing) || editing && ((format === "typst" && typstOutput === "html") || (format === "latex" && latexOutput === "html"));
     const paged = renderers.producesPdf(format) && !htmlPreview;
     const slow = format === "latex";
-    if (previewPaintBusy) {
-      previewPaintQueued = true;
-      return;
-    }
-    previewPaintBusy = true;
+    // Shared by both guard points so asset fetching and compilation reject
+    // against the same captured navigation, source policy, and main path.
+    const renderGuard = {
+      ticket: mine,
+      capturedNavigation: snapshotNavigation,
+      capturedSource: snapshotSource,
+      strictSource: !snapshotViewing && (slow || format === "quarto"),
+      capturedMain: tree.main,
+    };
     try {
       // The figures, if this document has any. A figure not yet here is
       // awaited before the first compile that needs it, and the page that is
@@ -2123,7 +2095,7 @@
         try {
           if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: assets", Object.keys(held.assets || {}).length, missing);
         } catch { /* diagnostics are optional */ }
-        if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
+        if (renderCoordinator.superseded(renderGuard)) return;
         // A historical Markdown page remains useful when an old image blob is
         // unavailable: render its text and let the image appear missing. The
         // strict comparison renderer will independently decline semantic
@@ -2145,8 +2117,7 @@
       // an author who is typing has something to look at, which is the whole
       // difference between this and a pane that blanks for four seconds.
       if (paged || htmlPreview) {
-        compiling = true;
-        if (!everPainted) pdfFailure = false;
+        renderStatus.begin({ clearFailure: !everPainted });
       }
       // Keep a transient source identity for diagnostics and race checks. It
       // is never sent to the server as a rendering name or persisted result.
@@ -2185,38 +2156,37 @@
       } finally {
         // Only the newest compile owns the badge. An older one finishing
         // afterwards must not turn the spinner off under a newer one.
-        if ((paged || htmlPreview) && mine > painted) compiling = false;
+        if ((paged || htmlPreview) && renderCoordinator.isNewer(mine)) renderStatus.finish();
       }
       if (readerDisposed) return;
-      if (format === "latex" && !htmlPreview) lastLatexResult = rendered;
+      if (format === "latex" && !htmlPreview) renderStatus.recordLatex(rendered);
       const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, seconds, log, provenance } = rendered;
       const contextualDiagnostics = (said || []).map((item) => diagnosticContext(item, tree, snapshotIdentity));
       // An in-flight preview may finish after another keystroke: HTML and
       // Typst may show that intermediate progress while the queued render
       // catches up. Navigation and main-file changes still invalidate it;
       // LaTeX keeps its strict source guard.
-      if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) {
+      if (renderCoordinator.superseded(renderGuard)) {
         // Collaboration can emit a bookkeeping-only Yjs transaction while a
         // slow compile is running. Accept the result when the canonical tree
         // is still byte-for-byte the one that produced it.
-        const sameLatexTree = format === "latex" && mine > painted &&
+        const sameLatexTree = format === "latex" && renderCoordinator.isNewer(mine) &&
           snapshotNavigation === navigationGeneration &&
           snapshotIdentity === await snapshotDigest(treeNow());
         if (!sameLatexTree) return;
       }
-      painted = mine;
+      renderCoordinator.commit(mine);
       if (artifact && artifactKind === "docx" && rendered.ok !== false) {
         const buffer = artifact.buffer ? artifact.buffer.slice(artifact.byteOffset, artifact.byteOffset + artifact.byteLength) : artifact;
-        docxArtifact = { bytes: new Uint8Array(buffer.slice(0)), snapshot: snapshotIdentity, source: snapshotSource, navigation: snapshotNavigation };
-      } else if (artifactKind !== "docx") docxArtifact = null;
-      lastBuildProvenance = { backend: "browser", builder: format === "quarto" ? "Markdown draft" : format, ...provenance, snapshot: snapshotIdentity };
-      if ((paged || htmlPreview) && seconds) lastCompile = seconds;
+        renderStatus.recordDocx({ bytes: new Uint8Array(buffer.slice(0)), snapshot: snapshotIdentity, source: snapshotSource, navigation: snapshotNavigation });
+      } else if (artifactKind !== "docx") renderStatus.clearDocx();
+      renderStatus.recordProvenance({ backend: "browser", builder: format === "quarto" ? "Markdown draft" : format, ...provenance, snapshot: snapshotIdentity });
+      if (paged || htmlPreview) renderStatus.recordDuration(seconds);
       // A render carries `html` or `pdf`, and the reader posts whichever it
       // has. The bytes are transferred rather than copied: a PDF is megabytes
       // and this page has no further use for it once the frame has it.
       if (pdf) {
-        pdfFailure = false;
-        pdfFailureReason = "";
+        renderStatus.succeeded();
         const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
         if (typeof activeSynctex !== "undefined") activeSynctex = null;
         const preview = { kind: "pdf", sha: snapshotIdentity, bytes: new Uint8Array(buffer.slice(0)) };
@@ -2229,7 +2199,7 @@
         // awaiting them here left a finished PDF behind the placeholder.
         if (format === "latex" && synctex && typeof parseSynctex === "function") {
           void parseSynctex(synctex, Object.keys(tree.texts || {})).then((parsed) => {
-            if (!readerDisposed && mine === painted &&
+            if (!readerDisposed && renderCoordinator.isCommitted(mine) &&
                 snapshotNavigation === navigationGeneration && snapshotSource === sourceGeneration) {
               activeSynctex = parsed;
             }
@@ -2240,8 +2210,7 @@
         return;
       }
       if (typeof html === "string") {
-        pdfFailure = false;
-        pdfFailureReason = "";
+        renderStatus.succeeded();
         // The page is what the document says now, so every error said about an
         // earlier state of it is cleared at once. The warnings that came with
         // this page are painted on the same slow schedule the errors are, so
@@ -2254,28 +2223,27 @@
         return;
       }
       if (artifactKind === "docx" && artifact && rendered.ok !== false) {
-        pdfFailure = false;
-        pdfFailureReason = "";
+        renderStatus.succeeded();
         diagnosticPainter.rendered({ page: null, diagnostics: contextualDiagnostics });
         return;
       }
       // No new page: an already painted page stays up transiently while the
       // diagnostics for the current source settle.
       if (snapshotSource !== sourceGeneration) return;
-      pdfFailure = true;
       // A log the parser found nothing in is still the only account there
       // is of what happened, and its last lines are where an engine says
       // why it stopped.
       const hasError = contextualDiagnostics.some((item) => item.severity !== "warning");
-      pdfFailureReason = hasError
+      const failureReason = hasError
         ? ""
         : rendered.failure?.message || (log || "").trim().split("\n").slice(-12).join("\n") ||
           "the compiler produced no preview and no log";
       const failureDiagnostics = hasError
         ? contextualDiagnostics
-        : [...contextualDiagnostics, diagnosticContext({ severity: "error", message: pdfFailureReason }, tree, snapshotIdentity)];
+        : [...contextualDiagnostics, diagnosticContext({ severity: "error", message: failureReason }, tree, snapshotIdentity)];
+      renderStatus.failed(failureReason);
       diagnosticPainter.rendered({ page: null, diagnostics: failureDiagnostics });
-      if (pdfFailureReason) console.error(`${format}: could not render:`, pdfFailureReason);
+      if (failureReason) console.error(`${format}: could not render:`, failureReason);
       // Unless nothing was ever painted, the frame gets a transient failure
       // page for flow formats; paged formats use the source and diagnostics
       // pane below.
@@ -2283,27 +2251,20 @@
         const page = await renderers
           .failurePage(await headingOf(tree), format)
           .catch(() => null);
-        if (!readerDisposed && page && mine >= painted && snapshotNavigation === navigationGeneration) tell({ type: "preview", html: page });
+        if (!readerDisposed && page && renderCoordinator.atLeastCommitted(mine) && snapshotNavigation === navigationGeneration) tell({ type: "preview", html: page });
       }
     } catch (error) {
       // Not a document that did not compile: a renderer that could not be
       // fetched, which is this page's problem rather than the author's.
       const currentSnapshot = snapshotNavigation === navigationGeneration &&
         (!(paged || slow) || snapshotSource === sourceGeneration);
-      if (mine > painted && currentSnapshot && error.name !== "Superseded") {
-        pdfFailure = true;
-        pdfFailureReason = error.message || "could not render";
+      if (renderCoordinator.isNewer(mine) && currentSnapshot && error.name !== "Superseded") {
+        renderStatus.failed(error.message || "could not render");
         console.error(`${format}: could not render:`, error);
         diagnosticPainter.rendered({
           page: null,
-          diagnostics: [diagnosticContext({ severity: "error", message: pdfFailureReason }, tree, snapshotIdentity)],
+          diagnostics: [diagnosticContext({ severity: "error", message: renderState.failureReason }, tree, snapshotIdentity)],
         });
-      }
-    } finally {
-      previewPaintBusy = false;
-      if (previewPaintQueued) {
-        previewPaintQueued = false;
-        void paintPreview();
       }
     }
   }
@@ -2770,8 +2731,9 @@
   // rest open the panels a person looks for under File. The Files panel is
   // mounted on its first visit and draws the name field it focuses, so the
   // panel is opened and the DOM given a turn before the panel is asked.
-  const FILE_COMMANDS = ["new-file", "new-folder", "upload", "download-pdf", "download-html", "download-docx", "download", "share", "history"];
+  const FILE_COMMANDS = ["new-file", "new-folder", "upload", "offline", "download-pdf", "download-html", "download-docx", "download", "share", "history"];
   async function chooseFileCommand(value) {
+    if (value === "offline") return makeAvailableOffline();
     if (value === "download") return downloadTree();
     if (value === "download-docx") return downloadDocx();
     if (value === "download-pdf" || value === "download-html") return downloadRendering(value.slice(9));
@@ -2791,7 +2753,7 @@
     displayedFormat,
   }));
 
-  const docxDownload = $derived(docxArtifact && docxArtifact.source === sourceGeneration && docxArtifact.navigation === navigationGeneration && !viewing ? docxArtifact : null);
+  const docxDownload = $derived(renderState.docxArtifact && renderState.docxArtifact.source === sourceGeneration && renderState.docxArtifact.navigation === navigationGeneration && !viewing ? renderState.docxArtifact : null);
 
   function downloadDocx() {
     if (!docxDownload) return;
@@ -2974,13 +2936,12 @@
     // two selected files use the same renderer or both produce PDFs.
     navigationGeneration += 1;
     const mine = navigationGeneration;
-    issued += 1;
+    renderCoordinator.invalidate();
     framePreview.clear();
     frameShowsCheckpoint = false;
     everPainted = false;
     everPaintedShown = false;
-    pdfFailure = false;
-    pdfFailureReason = "";
+    renderStatus.resetFailure();
     if (docsOrigin) navigateFrame(true);
     void tick().then(() => {
       if (!readerDisposed && mine === navigationGeneration) void paintPreview();
@@ -3262,7 +3223,11 @@
         }
       },
       onPeers: (count) => (peers = Math.max(peers, count)),
-      onState: (state_) => (persistence = state_),
+      onState: (state_) => {
+        const newlyFailed = state_.localError && state_.localError !== persistence.localError;
+        persistence = state_;
+        if (newlyFailed) toastProblem(`${state_.localError}. Download the project to keep a recovery copy.`);
+      },
       onSession: (active) => {
         session = active;
         tracking = createRevisionController({
@@ -3321,6 +3286,12 @@
     // Quarto documents; configuring before this assignment leaves the
     // companion inactive and the pane stuck on its Markdown fallback.
     mayEdit = Boolean(allowed);
+    offlinePrepared = Boolean(document_.offline_prepared);
+    if (mayEdit && !offlinePrepared) {
+      void preparedProject({ server: location.origin, slug: SLUG })
+        .then((record) => { offlinePrepared = Boolean(record); })
+        .catch(() => {});
+    }
     if (mayEdit) {
       publicationMetadataReady = false;
       publicationMetadataFailed = false;
@@ -3477,7 +3448,7 @@
       // this browser letting go of its half.
       readerDisposed = true;
       stopQuartoStatus();
-      issued += 1;
+      renderCoordinator.invalidate();
       navigationGeneration += 1;
       renderers.cancelPreview();
       publicationReader?.dispose();
@@ -3504,8 +3475,29 @@
   // claim that pending writes are saved, so it says what is actually true.
   function reportPersistence() {
     // Never claim pending or disconnected writes have reached the server.
-    if (!connected || persistence.pending) return;
+    if (persistence.localError || persistence.localPending) return;
+    if (!connected) {
+      if (persistence.local) say("saved on this device");
+      return;
+    }
+    if (persistence.pending) return;
     say("saved on the server");
+  }
+
+  async function makeAvailableOffline() {
+    if (!mayEdit || !session || preparingOffline) return;
+    preparingOffline = true;
+    try {
+      await session.persist();
+      await cacheCurrentShell();
+      await prepareOfflineProject({ ...doc, slug: SLUG, server: location.origin });
+      offlinePrepared = true;
+      toastDone("Available offline on this device");
+    } catch (error) {
+      toastProblem(error?.message || "Could not make this project available offline");
+    } finally {
+      preparingOffline = false;
+    }
   }
 
   // There is no save, so a close is almost never worth interrupting: the
@@ -3582,6 +3574,9 @@
   {/if}
   <Menu.Item value="download-docx" class="menuitem" disabled={!docxDownload}>Download DOCX</Menu.Item>
   {#if mayEdit}
+    <Menu.Item value="offline" class="menuitem" disabled={offlinePrepared || preparingOffline || Boolean(persistence.localError)}>
+      {offlinePrepared ? "Available offline" : preparingOffline ? "Preparing offline copy…" : "Make available offline"}
+    </Menu.Item>
     <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
   {/if}
   {#if mayEdit && pendingRevisionCount && !viewing}
@@ -3791,7 +3786,7 @@
     {historyProblem} historyBaseline={historyBaseline} historyChanges={historyChanges}
     historyChangedPaths={historyChangedPaths} historyRedlines={historyRedlines} {fileDiff}
     historyComparePoint={historyComparePoint} localAppDiagnostics={localAppDiagnostics}
-    previewMain={previewMain || session?.mainPath() || ""} {lastLatexResult} compact={compact}
+    previewMain={previewMain || session?.mainPath() || ""} lastLatexResult={renderState.lastLatexResult} compact={compact}
     {outbox} {collaboration} panes={panes} sidebarPane={PANES.sidebar}
     onselectpanel={selectPanel} oncyclelayout={cycleLayout} bind:onfilelist={fileList}
     onopen={openTheFile} onadd={addFile} onmkdir={(path) => session.addFolder(path, rules)}
@@ -3876,11 +3871,11 @@
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">Could not render</h2>
-        {#if pdfFailureReason}
+        {#if renderState.failureReason}
           <p class="text-surface-700-300 text-sm">
             The compiler produced no {pdfOutput ? (latexHtmlPreview ? "HTML preview" : "PDF") : "HTML preview"}, and Diagnostics has nothing to show for it. What it said:
           </p>
-          <pre class="text-surface-700-300 text-xs">{pdfFailureReason}</pre>
+          <pre class="text-surface-700-300 text-xs">{renderState.failureReason}</pre>
         {:else}
           <p class="text-surface-700-300 text-sm">
             {#if !compilesHere}
@@ -3922,12 +3917,12 @@
        would reload the document and lose the reader's place in it. -->
   {#snippet previewStatusDetails()}
     <div class="preview-status-details">
-      {#if lastBuildProvenance}
-        <p>Built with {lastBuildProvenance.builder} · {lastBuildProvenance.backend}{lastBuildProvenance.engine ? ` · ${lastBuildProvenance.engine}` : ""}{lastBuildProvenance.version ? ` · ${lastBuildProvenance.version}` : ""}{lastBuildProvenance.preset ? ` · preset ${lastBuildProvenance.preset}` : ""}</p>
+      {#if renderState.provenance}
+        <p>Built with {renderState.provenance.builder} · {renderState.provenance.backend}{renderState.provenance.engine ? ` · ${renderState.provenance.engine}` : ""}{renderState.provenance.version ? ` · ${renderState.provenance.version}` : ""}{renderState.provenance.preset ? ` · preset ${renderState.provenance.preset}` : ""}</p>
       {/if}
       {#if latexHtmlPreview}
         {#if compileBadge}<p>{compileBadge}</p>{/if}
-        {#if pdfFailureReason}<p>{pdfFailureReason}</p>{/if}
+        {#if renderState.failureReason}<p>{renderState.failureReason}</p>{/if}
       {:else if sourceFormat === "latex" && editing}
         <LatexStatus onconnect={() => openSettings("local")} onretrybrowser={() => void paintPreview()} />
       {:else if sourceFormat === "typst" && compileBadge}

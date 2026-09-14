@@ -365,6 +365,7 @@ mod tests {
             stem: String::new(),
             quarto: None,
             manifest: Vec::new(),
+            source: None,
             options: Default::default(),
             builder: None,
             workspace: None,

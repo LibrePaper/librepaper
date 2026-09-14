@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, watch};
 
 use super::engine_adapter::{self, QuartoInvocationPlan};
 use super::protocol::{
-    self, JobOutcome, JobRequest, JobStatus, OutputEntry, Provenance, QuartoBundleSummary,
+    self, BuildProvenance, JobOutcome, JobRequest, JobStatus, OutputEntry, QuartoBundleSummary,
     QuartoCoverage, QuartoJobOptions, QuartoRenderPolicy, Tool, ToolVersions, Workspace,
     MAX_LOG_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_QUARTO_OUTPUT_FILES, QUARTO_COLLECTOR_VERSION,
 };
@@ -1450,7 +1450,7 @@ pub async fn run_job_with_bindings(
             generation: request.generation,
             log_tail: log,
             outputs,
-            provenance: Provenance {
+            provenance: BuildProvenance {
                 backend: "local".into(),
                 builder: "quarto".into(),
                 version: bundle.provenance.quarto_version.clone().unwrap_or_default(),
@@ -1462,6 +1462,16 @@ pub async fn run_job_with_bindings(
                 confinement: "none".into(),
                 preset: request.preset.clone(),
                 snapshot: request.snapshot.clone(),
+                main_path: request
+                    .source
+                    .as_ref()
+                    .map(|source| source.main_path.clone())
+                    .unwrap_or_else(|| options.main.clone()),
+                input_manifest_sha256: request
+                    .source
+                    .as_ref()
+                    .map(|source| source.manifest_sha256.clone())
+                    .unwrap_or_default(),
             },
             bundle: Some(summary),
             ..Default::default()

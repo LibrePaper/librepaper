@@ -23,8 +23,8 @@ use tokio::sync::{mpsc, watch, Semaphore};
 
 use super::discovery::{self, ToolPaths};
 use super::protocol::{
-    safe_relative_path, JobOutcome, JobRequest, JobStatus, OutputEntry, Provenance, ToolVersions,
-    Workspace, MAX_LOG_BYTES, MAX_PDF_BYTES,
+    safe_relative_path, BuildProvenance, JobOutcome, JobRequest, JobStatus, OutputEntry,
+    ToolVersions, Workspace, MAX_LOG_BYTES, MAX_PDF_BYTES,
 };
 use super::texlog;
 
@@ -223,7 +223,7 @@ impl Ctx<'_> {
         let _ = self.progress.send(status.clone());
     }
 
-    fn provenance(&self, engine: &str, confinement: &str) -> Provenance {
+    fn provenance(&self, engine: &str, confinement: &str) -> BuildProvenance {
         let tools = ToolVersions {
             tex: self.tool_info(engine),
             bibtex: self.tool_info("bibtex"),
@@ -231,7 +231,7 @@ impl Ctx<'_> {
             makeindex: self.tool_info("makeindex"),
             distribution: None,
         };
-        Provenance {
+        BuildProvenance {
             backend: "local".to_string(),
             builder: "tex".to_string(),
             version: self.tool_info(engine).unwrap_or_default(),
@@ -240,6 +240,18 @@ impl Ctx<'_> {
             confinement: confinement.to_string(),
             preset: None,
             snapshot: self.request.snapshot.clone(),
+            main_path: self
+                .request
+                .source
+                .as_ref()
+                .map(|source| source.main_path.clone())
+                .unwrap_or_else(|| self.request.main.clone()),
+            input_manifest_sha256: self
+                .request
+                .source
+                .as_ref()
+                .map(|source| source.manifest_sha256.clone())
+                .unwrap_or_default(),
         }
     }
 

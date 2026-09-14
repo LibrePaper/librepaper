@@ -171,7 +171,7 @@ pub async fn run(
         generation: request.generation,
         ..Default::default()
     };
-    status.provenance = protocol::Provenance {
+    status.provenance = protocol::BuildProvenance {
         backend: "local".into(),
         version: tools.version(if builder_name == "tex" {
             engine.as_deref().unwrap_or("pdflatex")
@@ -182,6 +182,16 @@ pub async fn run(
         engine: engine.unwrap_or_default(),
         preset: request.preset.clone(),
         snapshot: request.snapshot.clone(),
+        main_path: request
+            .source
+            .as_ref()
+            .map(|source| source.main_path.clone())
+            .unwrap_or_else(|| entrypoint.to_owned()),
+        input_manifest_sha256: request
+            .source
+            .as_ref()
+            .map(|source| source.manifest_sha256.clone())
+            .unwrap_or_default(),
         confinement: "none".into(),
         ..Default::default()
     };

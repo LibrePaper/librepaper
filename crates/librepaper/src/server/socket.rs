@@ -817,7 +817,12 @@ impl Server {
                     room.slug
                 );
             }
-            let _ = room.checkpoint("left", who.attributed_as(&author)).await;
+            // Only if there is something to mark. A visit that read the
+            // document and closed the tab wrote nothing, and a version of
+            // nothing is a row a reader opens to find the document unchanged.
+            if room.history_durability().await.checkpoint_pending {
+                let _ = room.checkpoint("left", who.attributed_as(&author)).await;
+            }
         }
         room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
             .await;

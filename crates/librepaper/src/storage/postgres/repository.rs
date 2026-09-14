@@ -98,6 +98,12 @@ pub struct NewVersion {
     pub archive_digest: [u8; 32],
     pub archive_bytes: i64,
     pub logical_bytes: i64,
+    /// The digest of the canonical file tree this version holds, when the
+    /// writer knew it. It is what says two versions are the same document.
+    pub tree_digest: Option<[u8; 32]>,
+    /// The paths whose contents differ from the parent version's. `None` when
+    /// the writer could not answer, which is not the same as "nothing moved".
+    pub changed_paths: Option<Vec<String>>,
     pub reason: String,
     pub label: Option<String>,
     pub author_account_id: Option<Uuid>,
@@ -118,6 +124,8 @@ pub struct VersionRecord {
     pub archive_digest: Vec<u8>,
     pub archive_bytes: i64,
     pub logical_bytes: i64,
+    pub tree_digest: Option<Vec<u8>>,
+    pub changed_paths: Option<Vec<String>>,
     pub reason: String,
     pub label: Option<String>,
     pub author_account_id: Option<Uuid>,
@@ -779,8 +787,8 @@ impl PostgresCatalog {
         }
         sqlx::query(
             "WITH ranked AS (
-               SELECT id,
-                      row_number() OVER (ORDER BY sequence DESC,id DESC) AS rank
+               SELECT v.id,
+                      row_number() OVER (ORDER BY v.sequence DESC,v.id DESC) AS rank
                FROM document_versions v
                JOIN documents d ON d.id=v.document_id
                WHERE v.document_id=$1
@@ -839,8 +847,8 @@ impl PostgresCatalog {
             "INSERT INTO document_versions
              (id,document_id,sequence,parent_id,through_update_sequence,project_generation,
               archive_key,archive_encoding_version,archive_digest,archive_bytes,logical_bytes,
-              reason,label,author_account_id,author_label)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *",
+              tree_digest,changed_paths,reason,label,author_account_id,author_label)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *",
         )
         .bind(id)
         .bind(input.document_id)
@@ -853,6 +861,8 @@ impl PostgresCatalog {
         .bind(input.archive_digest.as_slice())
         .bind(input.archive_bytes)
         .bind(input.logical_bytes)
+        .bind(input.tree_digest.map(|digest| digest.to_vec()))
+        .bind(input.changed_paths)
         .bind(input.reason)
         .bind(input.label)
         .bind(input.author_account_id)

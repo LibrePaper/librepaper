@@ -919,6 +919,12 @@ async function buildQuartoForm({ job, tree, options = {} }) {
     kind: options.kind || "render", inputRevision: options.inputRevision, inputDigest: options.inputDigest,
     files: manifest,
   });
+  const source = await sourceSnapshot(
+    request.snapshot,
+    request.quarto.main,
+    manifest,
+  );
+  if (source) request.source = source;
   // One-shot renders use a fresh temporary project copy. The binding
   // authorizes which local inputs may be copied; only live previews run in
   // the bound working directory.
@@ -943,6 +949,19 @@ async function manifestOf(files) {
     manifest.push({ path, sha256: await sha256hex(bytes), size: bytes.byteLength });
   }
   return manifest;
+}
+
+// Identity of the immutable project materialized for a runner. The CRDT tree
+// digest and exact byte inventory have different meanings and travel as such.
+async function sourceSnapshot(treeDigest, main, manifest) {
+  const digest = String(treeDigest || "");
+  if (!/^[0-9a-f]{64}$/.test(digest)) return null;
+  const canonical = [...manifest].sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    tree_sha256: digest,
+    main_path: relativePath(main),
+    manifest_sha256: await sha256hex(new TextEncoder().encode(JSON.stringify(canonical))),
+  };
 }
 
 async function buildBiberForm(request) {
@@ -1103,6 +1122,8 @@ export async function runBuild({ job = {}, tree, builder, engine, output = "pdf"
     builder, workspace: { mode: "snapshot", ...(bindingId ? { binding_id: bindingId } : {}) }, entrypoint: relativePath(tree.main), output,
     ...(preset ? { preset } : {}), options: { ...options, ...(engine ? { engine } : {}) }, manifest,
   };
+  const source = await sourceSnapshot(job.snapshot, tree.main, manifest);
+  if (source) request.source = source;
   onProgress?.({ done: 0, total: 1, scope: `local ${builder}` });
   const { id, status: jobStatus } = await submitAndAwait(pairing, formOf(request, files), signal);
   if (builder === "quarto") return collectQuartoOutputs(id, jobStatus, pairing, { format: output }, { onProgress }, job);
@@ -1256,6 +1277,8 @@ export async function startLocalPreview({ engine = "quarto", job = {}, tree, opt
       manifest: request.manifest,
       options: engine === "quarto" ? { ...(details.profile ? { profile: details.profile } : {}), parameters: details.parameters || {}, policy: details.policy || "project-defaults" } : {},
     };
+    const source = await sourceSnapshot(request.snapshot, entrypoint, request.manifest);
+    if (source) v2.source = source;
     Object.keys(request).forEach((key) => delete request[key]);
     Object.assign(request, v2);
   }

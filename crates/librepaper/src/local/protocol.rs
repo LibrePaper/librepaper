@@ -226,6 +226,34 @@ pub struct ManifestEntry {
     pub size: u64,
 }
 
+/// Identity of the immutable project snapshot handed to a runner. The tree
+/// digest identifies collaborative source; the manifest digest identifies the
+/// exact bytes materialized in the runner workspace.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SourceSnapshot {
+    pub tree_sha256: String,
+    pub main_path: String,
+    pub manifest_sha256: String,
+}
+
+impl SourceSnapshot {
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("source tree digest", &self.tree_sha256),
+            ("source manifest digest", &self.manifest_sha256),
+        ] {
+            if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(format!("{name} must be a SHA-256 digest"));
+            }
+        }
+        if !safe_relative_path(&self.main_path) {
+            return Err("source main path must be a safe project-relative path".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct JobOptions {
     #[serde(default = "default_deadline")]
@@ -276,6 +304,8 @@ pub struct JobRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quarto: Option<QuartoJobOptions>,
     pub manifest: Vec<ManifestEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceSnapshot>,
     #[serde(default)]
     pub options: JobOptions,
     /// Protocol v2 stable builder identifier; absent on v1 requests.
@@ -364,6 +394,8 @@ pub struct BuildRequestV2 {
     pub max_passes: Option<u32>,
     #[serde(default)]
     pub manifest: Vec<ManifestEntry>,
+    #[serde(default)]
+    pub source: Option<SourceSnapshot>,
 }
 
 impl BuildRequestV2 {
@@ -390,6 +422,15 @@ impl BuildRequestV2 {
             return Err("output must be a valid stable identifier".into());
         }
         self.workspace.validate()?;
+        if let Some(source) = &self.source {
+            source.validate()?;
+            if source.tree_sha256 != self.snapshot {
+                return Err("source tree digest does not match the job snapshot".into());
+            }
+            if source.main_path != self.entrypoint {
+                return Err("source main path does not match the job entrypoint".into());
+            }
+        }
         if self.options.len() > 128 {
             return Err("too many builder options".into());
         }
@@ -497,6 +538,8 @@ pub struct PreviewRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calepin: Option<CalepinJobOptions>,
     pub manifest: Vec<ManifestEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceSnapshot>,
     /// Protocol v2 preview declaration. Managed previews require a bound
     /// workspace; snapshot previews are intentionally rejected.
     #[serde(default)]
@@ -563,6 +606,7 @@ pub fn decode_preview(mut raw: serde_json::Value) -> Result<PreviewRequest, Stri
         quarto,
         calepin,
         manifest: request.manifest,
+        source: request.source,
         workspace: Some(request.workspace),
         builder: Some(request.builder),
         output: Some(request.output),
@@ -866,7 +910,7 @@ pub struct ToolVersions {
 
 /// Who and what produced a result. `backend` is always `local` here.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct Provenance {
+pub struct BuildProvenance {
     pub backend: String,
     #[serde(default)]
     pub builder: String,
@@ -878,6 +922,10 @@ pub struct Provenance {
     pub preset: Option<String>,
     #[serde(default)]
     pub snapshot: String,
+    #[serde(default)]
+    pub main_path: String,
+    #[serde(default)]
+    pub input_manifest_sha256: String,
     #[serde(default)]
     pub tools: ToolVersions,
     /// Retained for wire compatibility; trusted local execution reports `none`.
@@ -910,7 +958,7 @@ pub struct JobStatus {
     #[serde(default)]
     pub diagnostics: Vec<Diagnostic>,
     #[serde(default)]
-    pub provenance: Provenance,
+    pub provenance: BuildProvenance,
     /// Biber found a control-file version it does not speak.
     #[serde(default)]
     pub incompatible: bool,
@@ -1020,6 +1068,28 @@ mod tests {
         .expect("parses");
         assert_eq!(request.options.deadline_seconds, DEFAULT_DEADLINE_SECONDS);
         assert_eq!(request.options.max_passes, DEFAULT_MAX_PASSES);
+    }
+
+    #[test]
+    fn source_snapshot_distinguishes_tree_and_materialized_input_identity() {
+        let source = SourceSnapshot {
+            tree_sha256: "a".repeat(64),
+            main_path: "chapters/paper.qmd".into(),
+            manifest_sha256: "b".repeat(64),
+        };
+        source.validate().expect("valid source snapshot");
+        assert!(SourceSnapshot {
+            manifest_sha256: "not-a-digest".into(),
+            ..source.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(SourceSnapshot {
+            main_path: "../paper.qmd".into(),
+            ..source
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]

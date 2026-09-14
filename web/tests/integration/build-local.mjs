@@ -23,13 +23,17 @@ client._testing.inject({ fetch: async (url, init = {}) => {
   throw new Error(`unexpected request ${url}`);
 } });
 await client.probe({ force: true });
-const result = await client.runBuild({ job: { snapshot: "source", generation: 4 }, tree: { main: "paper.tex", texts: { "paper.tex": "\\documentclass{article}" }, assets: {} }, builder: "latexmk", engine: "xelatex", output: "pdf", options: { shell_escape: false } });
+const sourceTreeDigest = "a".repeat(64);
+const result = await client.runBuild({ job: { snapshot: sourceTreeDigest, generation: 4 }, tree: { main: "paper.tex", texts: { "paper.tex": "\\documentclass{article}" }, assets: {} }, builder: "latexmk", engine: "xelatex", output: "pdf", options: { shell_escape: false } });
 assert.equal(result.ok, true);
 assert.equal(submitted.protocol, 2);
 assert.equal(submitted.builder, "latexmk");
 assert.deepEqual(submitted.workspace, { mode: "snapshot" });
 assert.equal(submitted.entrypoint, "paper.tex");
 assert.equal(submitted.options.engine, "xelatex");
+assert.equal(submitted.source.tree_sha256, sourceTreeDigest);
+assert.equal(submitted.source.main_path, "paper.tex");
+assert.match(submitted.source.manifest_sha256, /^[0-9a-f]{64}$/);
 assert.deepEqual([...result.artifact], [...artifact]);
 
 client._testing.inject({ fetch: async (url, init = {}) => {

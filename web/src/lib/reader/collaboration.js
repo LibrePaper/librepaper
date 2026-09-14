@@ -4,6 +4,7 @@
 import { openRoom as defaultOpenRoom } from "../room.js";
 import * as defaultCollab from "../collab.js";
 import { keyHeaders } from "../api.js";
+import { assertSameProject, projectIdentity } from "../project-identity.js";
 
 const capability = (document_) => JSON.stringify([
   document_?.role ?? null,
@@ -118,8 +119,17 @@ export function createReaderCollaboration({
       if (!response.ok) return changed("document");
       const latest = await response.json();
       if (disposed || current !== reconnectGeneration || session !== active) return;
-      if ((document_.created_at && latest.created_at !== document_.created_at)
-          || capability(latest) !== capability(document_)) return changed("capability");
+      if (document_.created_at || latest.created_at) {
+        try {
+          assertSameProject(
+            projectIdentity({ server: globalThis.location?.origin, slug, createdAt: document_.created_at }),
+            projectIdentity({ server: globalThis.location?.origin, slug, createdAt: latest.created_at }),
+          );
+        } catch {
+          return changed("document");
+        }
+      }
+      if (capability(latest) !== capability(document_)) return changed("capability");
       if (sourceSync) room?.send(active.open());
       onConnected(true);
     } catch (error) {
@@ -132,16 +142,29 @@ export function createReaderCollaboration({
     }
   }
 
-  function start(nextDocument) {
+  function openLocal(nextDocument) {
     if (disposed) return null;
-    if (room) return session;
+    if (session) return session;
     document_ = nextDocument;
+    return join(nextDocument);
+  }
+
+  function connect() {
+    if (disposed || room) return session;
+    if (!document_) throw new Error("open the local project before connecting");
     room = openRoom(slug, {
       onMessage: (event) => { if (!disposed) onMessage(event); },
       onConnected: reconnect,
       key,
     });
-    return join(nextDocument);
+    if (sourceSync) room.send(session.open());
+    return session;
+  }
+
+  function start(nextDocument) {
+    openLocal(nextDocument);
+    connect();
+    return session;
   }
 
   function close() {

@@ -105,14 +105,51 @@ impl Room {
             let state = self.state.lock().await;
             tree_of(&state.session.doc, &state.session.asset_sizes)
         };
+        let digest = tree.digest();
         let last = self.state.lock().await.manifest.latest().cloned();
+        // Saying the same thing again is not an event. A checkpoint whose tree
+        // is the newest checkpoint's tree writes no version and no archive:
+        // what it would record is already recorded, under a name that is
+        // already the digest of these bytes.
+        //
+        // The comparison needs the newest checkpoint's own tree digest, which
+        // is why it is a column and not just an in-memory field. A checkpoint
+        // read back from a catalogue that predates that column cannot answer,
+        // and one duplicate is written -- once per such document, since the
+        // version it writes carries its digest.
         if !force
             && last
                 .as_ref()
-                .is_some_and(|point| point.tree_sha == tree.digest())
+                .is_some_and(|point| !point.tree_sha.is_empty() && point.tree_sha == digest)
         {
+            let mut state = self.state.lock().await;
+            state.session.cover_checkpoint(tree);
             return Ok(last.map(|p| p.sha));
         }
+        // What this checkpoint moved, answered here because here is where both
+        // trees are in hand: the one being written, and the one this room last
+        // wrote. After a load the parent is read back once, from the version
+        // that names it.
+        let parent = match self.state.lock().await.session.checkpoint_tree.clone() {
+            Some(cached) => Some(cached),
+            None => match last.as_ref() {
+                Some(point) => self
+                    .checkpoint_texts(point)
+                    .await
+                    .ok()
+                    .map(|(tree, _)| tree),
+                // Nothing before this: every path in it is new.
+                None => Some(crate::document::history::Tree::default()),
+            },
+        };
+        // A list longer than this says less than the tree it came from, and is
+        // no longer worth a column. `None` is the honest answer: unknown, so
+        // the timeline shows the checkpoint wherever it is looked for.
+        const MAX_CHANGED_PATHS: usize = 512;
+        let changed = parent
+            .as_ref()
+            .map(|parent| tree.changed_from(parent))
+            .filter(|paths| paths.len() <= MAX_CHANGED_PATHS);
         let digests: Vec<_> = tree
             .files
             .values()
@@ -168,6 +205,8 @@ impl Room {
                 },
                 through_update_sequence: document.update_sequence,
                 project_generation: document.project_generation,
+                tree_digest: Some(tree.digest_bytes()),
+                changed_paths: changed,
                 reason: why.into(),
                 label: None,
                 author_account_id: account,
@@ -176,13 +215,12 @@ impl Room {
             })
             .await
             .map_err(|e| WriteError::Storage(e.to_string()))?;
-        let mut point = checkpoint_from_version(&stored.version);
-        point.tree_sha = tree.digest();
+        let point = checkpoint_from_version(&stored.version);
         let sha = point.sha.clone();
         let mut state = self.state.lock().await;
         state.session.last_checkpoint = sha.clone();
         state.session.last_checkpoint_at = now_unix();
-        state.session.checkpoint_generation = state.session.generation;
+        state.session.cover_checkpoint(tree);
         state.manifest.checkpoints.push(point);
         Ok(Some(sha))
     }
@@ -192,7 +230,7 @@ impl Room {
         point: &Checkpoint,
     ) -> Result<(crate::document::history::Tree, HashMap<String, String>), String> {
         let project = self.project_at(point).await?;
-        Ok(project_to_tree(&project.archive))
+        Ok(crate::storage::source_archive::tree_of(&project.archive))
     }
     pub async fn checkpoint_by_sha(&self, sha: &str) -> Result<Option<Checkpoint>, String> {
         let Ok(id) = uuid::Uuid::parse_str(sha) else {
@@ -354,7 +392,13 @@ impl Room {
 pub(crate) fn checkpoint_from_version(v: &crate::storage::postgres::VersionRecord) -> Checkpoint {
     Checkpoint {
         sha: v.id.to_string(),
-        tree_sha: String::new(),
+        // Absent on versions written before the catalogue recorded a tree
+        // digest; `content_sha` names what such a checkpoint falls back to.
+        tree_sha: v
+            .tree_digest
+            .as_deref()
+            .map(hex::encode)
+            .unwrap_or_default(),
         parent: v.parent_id.map(|id| id.to_string()).unwrap_or_default(),
         at: crate::util::format_unix(v.created_at.unix_timestamp()),
         by: v.author_label.clone(),
@@ -362,55 +406,12 @@ pub(crate) fn checkpoint_from_version(v: &crate::storage::postgres::VersionRecor
         why: v.reason.clone(),
         source_format: String::new(),
         size: v.logical_bytes,
+        // Empty means either "moved nothing" or "never asked"; the timeline
+        // reads both the same way, as no evidence to scope this row by.
+        changed: v.changed_paths.clone().unwrap_or_default(),
         label: v.label.clone().unwrap_or_default(),
         seq: v.sequence,
         tree: true,
         ..Default::default()
     }
-}
-fn project_to_tree(
-    archive: &SourceArchive,
-) -> (crate::document::history::Tree, HashMap<String, String>) {
-    use crate::document::history::{Tree, TreeEntry};
-    let mut tree = Tree {
-        main: archive.main_path.clone(),
-        ..Default::default()
-    };
-    let mut bodies = HashMap::new();
-    for file in &archive.files {
-        match file {
-            SourceFile::Inline { path, bytes } => {
-                let sha = crate::document::store::digest_of_bytes(bytes);
-                tree.files.insert(
-                    path.clone(),
-                    TreeEntry {
-                        kind: "text".into(),
-                        sha: sha.clone(),
-                        size: bytes.len() as i64,
-                        ..Default::default()
-                    },
-                );
-                if let Ok(body) = String::from_utf8(bytes.clone()) {
-                    bodies.insert(sha, body);
-                }
-            }
-            SourceFile::Asset {
-                path,
-                digest,
-                bytes,
-                ..
-            } => {
-                tree.files.insert(
-                    path.clone(),
-                    TreeEntry {
-                        kind: "asset".into(),
-                        sha: hex::encode(digest),
-                        size: *bytes as i64,
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-    }
-    (tree, bodies)
 }

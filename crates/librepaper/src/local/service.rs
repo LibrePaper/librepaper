@@ -231,7 +231,7 @@ impl Runner for FakeRunner {
                 generation: request.generation,
                 log_tail: "fake compile ok".to_string(),
                 outputs,
-                provenance: protocol::Provenance {
+                provenance: protocol::BuildProvenance {
                     backend: "local".to_string(),
                     engine: request.engine,
                     confinement: "none".to_string(),
@@ -264,6 +264,12 @@ fn manifest_tree_digest(manifest: &[ManifestEntry], uploads: &[(String, Vec<u8>)
         }
     }
     hex::encode(digest.finalize())
+}
+
+fn input_manifest_digest(manifest: &[ManifestEntry]) -> String {
+    let mut entries = manifest.to_vec();
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    hex_sha256(&serde_json::to_vec(&entries).expect("manifest entries serialize"))
 }
 
 /// One job's live state: what `GET jobs/<id>` answers with, plus everything
@@ -1887,6 +1893,7 @@ async fn handle_jobs_post(
             stem: String::new(),
             quarto,
             manifest: request.manifest,
+            source: request.source,
             options: JobOptions {
                 deadline_seconds: request
                     .deadline_seconds
@@ -1940,6 +1947,24 @@ async fn handle_jobs_post(
         .is_none_or(|total| total > MAX_UPLOAD_BYTES as u64)
     {
         return write_json(413, &json!({"error": "manifest exceeds upload limits"}));
+    }
+    if let Some(source) = &job.source {
+        if let Err(error) = source.validate() {
+            return write_json(400, &json!({"error": error}));
+        }
+        let main = job.entrypoint.as_deref().unwrap_or(&job.main);
+        if source.tree_sha256 != job.snapshot || source.main_path != main {
+            return write_json(
+                400,
+                &json!({"error": "source snapshot identity does not match the build request"}),
+            );
+        }
+        if source.manifest_sha256 != input_manifest_digest(&job.manifest) {
+            return write_json(
+                400,
+                &json!({"error": "source manifest digest does not match the materialized inputs"}),
+            );
+        }
     }
     if job.protocol == 2 {
         let (Some(builder), Some(workspace), Some(entrypoint), Some(output)) = (
@@ -2748,6 +2773,16 @@ async fn handle_preview(
     {
         return plain(400, "invalid preview request");
     }
+    if let Some(source) = &job.source {
+        let main = job.entrypoint.as_deref().unwrap_or(&source.main_path);
+        if source.validate().is_err()
+            || source.tree_sha256 != job.snapshot
+            || source.main_path != main
+            || source.manifest_sha256 != input_manifest_digest(&job.manifest)
+        {
+            return plain(400, "preview source snapshot does not match its inputs");
+        }
+    }
     let mut previews = inner.previews.lock().await;
     let active_pairings = inner.pairing.active_pairings();
     previews
@@ -2838,7 +2873,8 @@ async fn handle_preview_page(
 
 #[cfg(test)]
 mod recovery_tests {
-    use super::recovered_finished_at;
+    use super::{input_manifest_digest, recovered_finished_at};
+    use crate::local::protocol::ManifestEntry;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -2848,5 +2884,18 @@ mod recovery_tests {
         let now = Instant::now();
         assert!(started <= finished && finished <= now);
         assert!(now.duration_since(finished) <= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn materialized_manifest_digest_matches_the_client_contract() {
+        let entry = ManifestEntry {
+            path: "paper.tex".into(),
+            sha256: "c".repeat(64),
+            size: 3,
+        };
+        assert_eq!(
+            input_manifest_digest(&[entry]),
+            "f2345adfd5a4ed686a4fe787ce78ff6a1edc3c180ccd246395f7b4ebc1c13d8d"
+        );
     }
 }

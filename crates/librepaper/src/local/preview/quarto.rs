@@ -271,6 +271,7 @@ mod tests {
                 sha256: crate::quarto::sha256(source),
                 size: source.len() as u64,
             }],
+            source: None,
             workspace: None,
             builder: None,
             output: None,

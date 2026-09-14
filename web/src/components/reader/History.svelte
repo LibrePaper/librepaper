@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import { day as dayOf } from "../../lib/dates.js";
   // Presentation only: the shared source controller owns selection and mode.
-  import { shortSha, timeline } from "../../lib/history.js";
+  import { forFile, shortSha, timeline } from "../../lib/history.js";
   import IconButton from "../IconButton.svelte";
   import PanelHeader from "../PanelHeader.svelte";
   import CopyLink from "../CopyLink.svelte";
@@ -36,23 +36,15 @@
   let draft = $state("");
   let field = $state(null);
 
-  // History follows the file currently open in the editor when the manifest
-  // carries per-checkpoint `changed` paths. A checkpoint is relevant only
-  // when those paths include that file, so an edit confined to references.bib
-  // does not appear while manuscript.tex is selected. Changing files changes
-  // this list without changing or discarding the document-wide manifest.
-  // PostgreSQL manifests created before path summaries were added omit that
-  // evidence entirely; show their checkpoints rather than presenting an
-  // empty history and falsely implying that revisions were never saved.
+  // History follows the file currently open in the editor: see `forFile`,
+  // which owns that rule and is checked where the rest of the timeline's
+  // judgement is. Changing files changes this list without changing or
+  // discarding the document-wide manifest.
   //
   // The named/published filter is applied after that file scope. A selected
   // checkpoint remains visible through those secondary filters, but never
   // leaks into the history of a file it did not change.
-  const hasFileScope = $derived(checkpoints.some((point) =>
-    Array.isArray(point.changed) && point.changed.length > 0));
-  const fileCheckpoints = $derived(path && hasFileScope
-    ? checkpoints.filter((point) => Array.isArray(point.changed) && point.changed.includes(path))
-    : checkpoints);
+  const fileCheckpoints = $derived(forFile(checkpoints, path));
   const timelinePoints = $derived.by(() => {
     if (filter === "all") return fileCheckpoints;
     const selected = fileCheckpoints.find((point) => point.sha === viewing);
