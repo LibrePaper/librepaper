@@ -259,7 +259,7 @@
           onclick={() => onview?.("", comparison)}
         >
           <span class="timeline-marker timeline-marker-current"></span>
-          <span class="timeline-what"><strong>{currentLabel || "Current version"}</strong><span class="timeline-who">Live draft</span></span>
+          <span class="timeline-what"><strong>{currentLabel || "Current version"}</strong></span>
         </button>
         {/if}
         {#if canEdit && !viewing && naming !== "current"}
