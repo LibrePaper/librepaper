@@ -207,21 +207,6 @@ mod proxy_tests {
     }
 }
 
-/// True for the addresses a reverse proxy in front of this process connects
-/// from: the loopback interface, or a private network alongside it.
-pub fn local_peer(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return local_peer(IpAddr::V4(v4));
-            }
-            let first = v6.segments()[0];
-            v6.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
-        }
-    }
-}
-
 pub(super) fn set(response: &mut Reply, name: &'static str, value: &str) {
     if let Ok(value) = HeaderValue::from_str(value) {
         response.headers_mut().insert(name, value);

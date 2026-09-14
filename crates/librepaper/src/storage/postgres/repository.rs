@@ -125,6 +125,26 @@ pub struct VersionRecord {
 }
 
 impl PostgresCatalog {
+    pub async fn runtime_state(&self, name: &str) -> Result<Option<serde_json::Value>> {
+        sqlx::query_scalar("SELECT value FROM server_runtime_state WHERE name=$1")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Error::from)
+    }
+
+    pub async fn set_runtime_state(&self, name: &str, value: serde_json::Value) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO server_runtime_state(name,value) VALUES($1,$2)
+             ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=now()",
+        )
+        .bind(name)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn begin_account_erasure(
         &self,
         account_id: Uuid,
@@ -391,6 +411,76 @@ impl PostgresCatalog {
             .bind(owner_id).bind(limit).fetch_all(&self.pool).await.map_err(Error::from)
     }
 
+    pub async fn documents_by_owner_page(
+        &self,
+        owner_id: Uuid,
+        before: Option<(OffsetDateTime, Uuid)>,
+        limit: i64,
+    ) -> Result<Vec<DocumentRecord>> {
+        if !(1..=200).contains(&limit) {
+            return Err(Error::Invalid("document page limit must be 1..=200".into()));
+        }
+        sqlx::query_as::<_, DocumentRecord>(
+            "SELECT * FROM documents WHERE owner_id=$1 AND status='active'
+             AND ($2::timestamptz IS NULL OR (updated_at,id)<($2,$3))
+             ORDER BY updated_at DESC,id DESC LIMIT $4",
+        )
+        .bind(owner_id)
+        .bind(before.map(|value| value.0))
+        .bind(before.map(|value| value.1))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    pub async fn visible_documents(
+        &self,
+        account_id: Option<Uuid>,
+        before: Option<(OffsetDateTime, Uuid)>,
+        limit: i64,
+        include_examples: bool,
+    ) -> Result<Vec<DocumentRecord>> {
+        if !(1..=200).contains(&limit) {
+            return Err(Error::Invalid("document page limit must be 1..=200".into()));
+        }
+        sqlx::query_as::<_, DocumentRecord>(
+            "SELECT d.* FROM documents d
+             WHERE d.status='active'
+               AND (d.owner_id=$1 OR EXISTS (
+                    SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=$1
+                      AND (g.source_link_hash IS NULL OR EXISTS (
+                        SELECT 1 FROM share_links l WHERE l.document_id=d.id
+                          AND l.token_hash=g.source_link_hash AND l.revoked_at IS NULL
+                          AND (l.expires_at IS NULL OR l.expires_at>now())
+                      ))
+               ) OR ($4 AND d.ownership_mode='example'))
+               AND ($2::timestamptz IS NULL OR (d.updated_at,d.id) < ($2,$3))
+             ORDER BY d.updated_at DESC,d.id DESC LIMIT $5",
+        )
+        .bind(account_id)
+        .bind(before.map(|value| value.0))
+        .bind(before.map(|value| value.1))
+        .bind(include_examples)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    pub async fn document_counts_by_owner(&self, owner_id: Uuid) -> Result<(i64, i64)> {
+        sqlx::query_as(
+            "SELECT count(DISTINCT d.id)::bigint,
+                    count(v.id)::bigint
+             FROM documents d LEFT JOIN document_versions v ON v.document_id=d.id
+             WHERE d.owner_id=$1 AND d.status='active'",
+        )
+        .bind(owner_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
     pub async fn complete_asset(&self, input: NewAsset) -> Result<(AssetRecord, bool)> {
         self.complete_asset_with_limit(input, i64::MAX).await
     }
@@ -497,7 +587,10 @@ impl PostgresCatalog {
         }
         let owner_usage:i64=sqlx::query_scalar("SELECT COALESCE(sum(bytes),0)::bigint FROM (SELECT a.byte_length bytes FROM document_assets a JOIN documents d ON d.id=a.document_id WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1) UNION ALL SELECT v.archive_bytes FROM document_versions v JOIN documents d ON d.id=v.document_id WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1) UNION ALL SELECT f.byte_length FROM publication_files f JOIN publications p ON p.id=f.publication_id JOIN documents d ON d.id=p.document_id WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1)) q")
             .bind(document_id).fetch_one(&mut *tx).await?;
-        let deployment_usage:i64=sqlx::query_scalar("SELECT COALESCE(sum(bytes),0)::bigint FROM (SELECT byte_length bytes FROM document_assets UNION ALL SELECT archive_bytes FROM document_versions UNION ALL SELECT byte_length FROM publication_files) q").fetch_one(&mut *tx).await?;
+        let deployment_usage: i64 =
+            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *tx)
+                .await?;
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
             return Err(Error::Conflict("account storage quota exceeded".into()));
         }
@@ -737,15 +830,10 @@ impl PostgresCatalog {
         .bind(input.document_id)
         .fetch_one(&mut *tx)
         .await?;
-        let deployment_usage: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(sum(bytes),0)::bigint FROM (
-               SELECT byte_length bytes FROM document_assets
-               UNION ALL SELECT archive_bytes FROM document_versions
-               UNION ALL SELECT byte_length FROM publication_files
-             ) usage",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let deployment_usage: i64 =
+            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *tx)
+                .await?;
         if owner_usage.saturating_add(input.archive_bytes) > self.policy.owner_bytes {
             return Err(Error::Conflict("account storage quota exceeded".into()));
         }
@@ -872,11 +960,17 @@ impl PostgresCatalog {
     }
 
     pub async fn usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
+        if account_id.is_none() {
+            return sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(Error::from);
+        }
         sqlx::query_scalar(
             "SELECT COALESCE(sum(bytes),0)::bigint FROM (
-               SELECT v.archive_bytes AS bytes FROM document_versions v JOIN documents d ON d.id=v.document_id WHERE ($1::uuid IS NULL OR d.owner_id=$1)
-               UNION ALL SELECT a.byte_length FROM document_assets a JOIN documents d ON d.id=a.document_id WHERE ($1::uuid IS NULL OR d.owner_id=$1)
-               UNION ALL SELECT f.byte_length FROM publication_files f JOIN publications p ON p.id=f.publication_id JOIN documents d ON d.id=p.document_id WHERE ($1::uuid IS NULL OR d.owner_id=$1)
+               SELECT v.archive_bytes AS bytes FROM document_versions v JOIN documents d ON d.id=v.document_id WHERE d.owner_id=$1
+               UNION ALL SELECT a.byte_length FROM document_assets a JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
+               UNION ALL SELECT f.byte_length FROM publication_files f JOIN publications p ON p.id=f.publication_id JOIN documents d ON d.id=p.document_id WHERE d.owner_id=$1
              ) usage",
         ).bind(account_id).fetch_one(&self.pool).await.map_err(Error::from)
     }

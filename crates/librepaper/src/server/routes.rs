@@ -43,7 +43,11 @@ pub(super) async fn dispatch(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request<Body>,
 ) -> Reply {
-    let arrival = Arrival::from_peer(request.headers(), peer.ip());
+    let arrival = Arrival::from_peer(
+        request.headers(),
+        peer.ip(),
+        &server.config.cost.trusted_proxies,
+    );
     let path = request.uri().path().to_string();
     let method = request.method().clone();
     let parts = segments(&path);
@@ -563,26 +567,12 @@ pub(super) async fn dispatch(
                     .iter()
                     .any(|guest| guest.id == who.id.id && guest.link == who.link)
             {
-                let guest = Guest {
-                    id: who.id.id.clone(),
-                    name: who.id.name.clone(),
-                    since: crate::util::timestamp(),
-                    link: who.link.clone(),
-                };
                 // Not a reason to refuse the document: the pin is bookkeeping
                 // about the visit, and the visit itself is what matters.
-                let _ =
-                    server
-                        .store
-                        .modify(slug, |entry| {
-                            if !entry.guests.iter().any(|existing| {
-                                existing.id == guest.id && existing.link == guest.link
-                            }) {
-                                entry.guests.push(guest.clone());
-                            }
-                            Ok(())
-                        })
-                        .await;
+                let _ = server
+                    .store
+                    .pin_link_guest(slug, &who.id.id, &who.link, who.role)
+                    .await;
             }
             let mut body = json!({
                 "slug": entry.slug, "title": entry.title,
@@ -897,6 +887,7 @@ impl Server {
             set(&mut response, "etag", &etag);
             set(&mut response, "cache-control", cache_control);
             set(&mut response, "referrer-policy", "no-referrer");
+            set(&mut response, "x-content-type-options", "nosniff");
             if is_html {
                 set(&mut response, "vary", "Accept-Encoding");
             }
@@ -908,6 +899,7 @@ impl Server {
         set(&mut response, "etag", &etag);
         set(&mut response, "cache-control", cache_control);
         set(&mut response, "referrer-policy", "no-referrer");
+        set(&mut response, "x-content-type-options", "nosniff");
         if gzip {
             set(&mut response, "content-encoding", "gzip");
         }
@@ -975,7 +967,7 @@ impl Server {
         let Ok(generation) = generation.parse::<i64>() else {
             return false;
         };
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=$2 LEFT JOIN grants g ON g.document_id=d.id AND g.account_id=a.id WHERE d.slug=$1 AND d.status='active' AND a.status='active' AND a.session_generation=$3 AND (d.owner_id=a.id OR g.account_id IS NOT NULL))")
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=$2 LEFT JOIN grants g ON g.document_id=d.id AND g.account_id=a.id AND (g.source_link_hash IS NULL OR EXISTS (SELECT 1 FROM share_links l WHERE l.document_id=d.id AND l.token_hash=g.source_link_hash AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>now()))) WHERE d.slug=$1 AND d.status='active' AND a.status='active' AND a.session_generation=$3 AND (d.owner_id=a.id OR g.account_id IS NOT NULL))")
             .bind(&slug).bind(account_id).bind(generation).fetch_one(catalog.pool()).await.unwrap_or(false)
     }
 

@@ -38,7 +38,7 @@ for (const stale of [false, true]) {
   const delivered = [];
   const ctx = vm.createContext({
     historyController: { capturedCurrent: { sha: "captured", main: "main.md", texts: { "main.md": "frozen" } } },
-    navigationGeneration: 0, issued: 0, readerDisposed: false, viewing: null,
+    navigationGeneration: 0, issued: 0, readerDisposed: false, viewing: null, compact: false,
     renderingStore: { invalidate: () => {} }, dropHeldRendering: () => {}, showMobileView: () => {},
     passages: { renderTree: () => pending }, SLUG: "doc", KEY: "", keyHeaders: () => ({}),
     framePreview: { publish: (value) => delivered.push(value) },

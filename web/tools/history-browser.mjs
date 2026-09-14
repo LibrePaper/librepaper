@@ -108,9 +108,9 @@ for (const name of browsers) {
     await until("reader history", () => reader.evaluate('document.body.innerText.includes("Original draft")'));
     await reader.evaluate('window.historyFrameMessages = []; addEventListener("message", event => { if (event.data?.type?.startsWith("semantic-redlines-")) historyFrameMessages.push(event.data); });');
     await reader.evaluate(`(() => {
-      const button = document.querySelector('li[data-sha=${JSON.stringify(first.sha)}] button[aria-label="Compare since this version"]');
-      if (!button) throw new Error('missing compare control');
-      button.click();
+      const row = document.querySelector('li[data-sha=${JSON.stringify(first.sha)}] .timeline-point');
+      if (!row) throw new Error('missing version row');
+      row.click();
     })()`);
     await until("visible word diff", () => reader.evaluate(`(() => {
       const text = document.querySelector('.history-hunks')?.textContent || '';
@@ -152,9 +152,9 @@ for (const name of browsers) {
     assert.equal(copied.hash, historical.hash, "copied checkpoint retains share key");
 
     // Comparing from an old preview must capture the actual current tree.
-    await until("current comparison control", () => reader.evaluate(`([...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Compare with current'))`));
+    await until("current comparison control", () => reader.evaluate(`([...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Show everything changed since this version'))`));
     await reader.evaluate(`(() => {
-      const button = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Compare with current');
+      const button = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Show everything changed since this version');
       if (!button) throw new Error('missing current comparison');
       button.click();
     })()`);

@@ -135,12 +135,15 @@ impl Room {
         if !self.hold().await {
             return Err(self.fenced().client_message());
         }
+        if !actor.policy_editor && actor.account_id.is_empty() && actor.link_hash.is_empty() {
+            return Err("edit access changed".into());
+        }
         let resolved_at = timestamp();
         let updated = {
-            let mut state = self.state.lock().await;
+            let state = self.state.lock().await;
             let item = state
                 .comments
-                .iter_mut()
+                .iter()
                 .find(|item| item.id == comment_id)
                 .ok_or("unknown comment")?;
             if item.motivation != "editing" {
@@ -152,15 +155,19 @@ impl Room {
             if item.outcome == "rejected" {
                 return Ok(json!(item));
             }
-            item.outcome = "rejected".into();
-            item.resolved = true;
-            item.resolved_at = Some(resolved_at);
-            item.clone()
+            let mut updated = item.clone();
+            updated.outcome = "rejected".into();
+            updated.resolved = true;
+            updated.resolved_at = Some(resolved_at);
+            updated
         };
         if let Some(catalog) = self.catalog.get() {
             let row = catalog_comment_row(&self.slug, &updated)?;
             update_comment_row(catalog, row, actor).await?;
         }
+        let mut state = self.state.lock().await;
+        install_comment(&mut state, updated.clone());
+        drop(state);
         self.broadcast(&json!({"type":"resolve","comment":updated}))
             .await;
         Ok(json!(updated))

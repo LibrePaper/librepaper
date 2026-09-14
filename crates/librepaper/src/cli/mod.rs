@@ -654,6 +654,8 @@ pub(crate) enum BackupCommand {
     },
     /// Restore a verified backup into a new deployment directory.
     Restore {
+        #[command(flatten)]
+        storage: StorageFlags,
         /// Backup directory to read
         backup: String,
         /// New deployment directory to create
@@ -1025,8 +1027,13 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                 .await
         }
         AdminCommand::Backup {
-            command: BackupCommand::Restore { backup, directory },
-        } => crate::storage::backup::restore_cli(backup, directory).await,
+            command:
+                BackupCommand::Restore {
+                    storage,
+                    backup,
+                    directory,
+                },
+        } => crate::storage::backup::restore_cli(storage.options(), backup, directory).await,
     }
 }
 

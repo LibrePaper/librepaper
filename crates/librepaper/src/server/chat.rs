@@ -71,6 +71,9 @@ impl Server {
             return plain(404, "not found");
         }
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
+        let link_expires = entry
+            .live_link(&who.link, crate::util::now_unix())
+            .and_then(|link| crate::util::parse_timestamp(&link.until));
         let connection = Connection {
             slug: slug.into(),
             network: client_network(&address),
@@ -81,7 +84,9 @@ impl Server {
             may_edit: who.at_least(Role::Editor),
             can_comment: who.at_least(Role::Commenter),
             link: who.link,
+            link_expires,
             comment_budget: who.comment_budget,
+            authorized_at: tokio::time::Instant::now(),
             chat: Some(id.into()),
             tx: Sender::channel(1, 64 * 1024, None, None).0,
         };
@@ -399,6 +404,9 @@ struct Channel {
     touched_at: i64,
     browser: Option<Peer>,
     agent: Option<Peer>,
+    /// Capability issued to the currently attached runner. A replacement
+    /// runner receives a fresh value, fencing HTTP work from the old one.
+    agent_epoch: Option<String>,
     requests: VecDeque<(String, String)>,
     events: VecDeque<i64>,
     render_waiters: HashMap<String, oneshot::Sender<Value>>,
@@ -459,6 +467,7 @@ impl Hub {
                 touched_at: current,
                 browser: None,
                 agent: None,
+                agent_epoch: None,
                 requests: VecDeque::new(),
                 events: VecDeque::new(),
                 render_waiters: HashMap::new(),
@@ -497,8 +506,14 @@ impl Hub {
             return Err((409, "participant is already connected"));
         }
         *participant = Some(Peer { socket, tx });
+        if role == "agent" {
+            channel.agent_epoch = Some(random());
+        }
         channel.touched_at = now();
-        let ready = json!({"type":"ready","browser":channel.browser.is_some(),"agent":channel.agent.is_some()});
+        let mut ready = json!({"type":"ready","browser":channel.browser.is_some(),"agent":channel.agent.is_some()});
+        if role == "agent" {
+            ready["execution_epoch"] = json!(channel.agent_epoch);
+        }
         channel.announce();
         Ok(ready)
     }
@@ -507,6 +522,18 @@ impl Hub {
             [&channel.browser, &channel.agent]
                 .iter()
                 .any(|peer| peer.as_ref().is_some_and(|peer| peer.socket == socket))
+        })
+    }
+
+    pub async fn valid_agent_lease(&self, slug: &str, id: &str, epoch: &str) -> bool {
+        if id.is_empty() || epoch.is_empty() {
+            return false;
+        }
+        self.channels.lock().await.get(id).is_some_and(|channel| {
+            channel.slug == slug
+                && channel.agent.is_some()
+                && channel.agent_epoch.as_deref() == Some(epoch)
+                && !channel.expired(now())
         })
     }
 
@@ -1026,6 +1053,27 @@ mod tests {
             .attach("paper", &id, &token, "user", 3, mpsc::channel(4).0)
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn replacement_agent_epoch_fences_the_detached_runner() {
+        let (hub, id, token) = channel().await;
+        let first = hub
+            .attach("paper", &id, &token, "agent", 1, mpsc::channel(4).0)
+            .await
+            .unwrap();
+        let first_epoch = first["execution_epoch"].as_str().unwrap().to_owned();
+        assert!(hub.valid_agent_lease("paper", &id, &first_epoch).await);
+        hub.detach(&id, 1).await;
+        assert!(!hub.valid_agent_lease("paper", &id, &first_epoch).await);
+        let second = hub
+            .attach("paper", &id, &token, "agent", 2, mpsc::channel(4).0)
+            .await
+            .unwrap();
+        let second_epoch = second["execution_epoch"].as_str().unwrap();
+        assert_ne!(second_epoch, first_epoch);
+        assert!(!hub.valid_agent_lease("paper", &id, &first_epoch).await);
+        assert!(hub.valid_agent_lease("paper", &id, second_epoch).await);
     }
 
     #[tokio::test]

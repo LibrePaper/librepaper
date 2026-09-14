@@ -301,6 +301,9 @@ pub async fn serve(options: ServeOptions) {
         }
     };
     let instance = Arc::new(instance);
+    if let Err(error) = instance.cost.restore().await {
+        eprintln!("warning: transfer checkpoint could not be restored: {error}");
+    }
 
     println!("librepaper serving http://localhost{address}");
     println!("  documents on http://{DOCS_PREFIX}localhost{address}");
@@ -396,15 +399,15 @@ pub async fn serve(options: ServeOptions) {
     // A link's expiry is not a request anything hangs off of -- nobody asks
     // the server "has this key gone stale yet". A socket that dialed in while
     // it was still live would otherwise keep answering after it lapsed, so
-    // this reruns every open socket's authorization once a second the same
-    // way a sharing change or a transfer does on the spot.
+    // this revisits only sockets whose known link deadline has elapsed. A
+    // sharing change or transfer still reauthorizes its document on the spot.
     let reauthorizer = instance.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            reauthorizer.reauthorize_all().await;
+            reauthorizer.reauthorize_expired_links().await;
         }
     });
 

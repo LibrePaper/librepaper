@@ -106,9 +106,7 @@ impl CollaborationStorage {
         self.blobs
             .put_new(&key, encoded.clone(), "application/zstd")
             .await?;
-        if self.blobs.length(&key).await? != encoded.len() as u64
-            || Sha256::digest(self.blobs.get(&key).await?).as_slice() != digest
-        {
+        if self.blobs.length(&key).await? != encoded.len() as u64 {
             return Err(Error::Invalid(
                 "collaboration base failed verification".into(),
             ));

@@ -89,8 +89,17 @@ window.mergeCheck = async () => {
   const controlsAfterRevoke = document.querySelectorAll(".cm-merge-revert button").length;
   const editableAfterRevoke = [...document.querySelectorAll(".cm-merge-b .cm-content")]
     .some((node) => node.getAttribute("contenteditable") !== "false");
+  // History's sole Diff control changes presentation, not the selected
+  // checkpoint. Off means one read-only editor containing the old source;
+  // on means the checkpoint-versus-current merge view.
+  component.$set({ diff: false });
+  await tick();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const rawEditors = document.querySelectorAll(".cm-editor").length;
+  const rawSource = document.querySelector(".cm-content")?.textContent;
+  const rawHasMerge = Boolean(document.querySelector(".cm-mergeView"));
   component.$destroy();
-  return { afterPeer, afterPeerEdit, switched, afterSwitch, controlsAfterRevoke, editableAfterRevoke };
+  return { afterPeer, afterPeerEdit, switched, afterSwitch, controlsAfterRevoke, editableAfterRevoke, rawEditors, rawSource, rawHasMerge };
 };
 `;
 
@@ -136,7 +145,10 @@ try {
   assert.equal(result.afterSwitch, "alpha\nold sentence\nomega\none\ntwo\nthree\nfour\nfive peer\npeer note", "the switched snapshot remains independently applicable");
   assert.equal(result.controlsAfterRevoke, 0, "permission revocation removes revert controls");
   assert.equal(result.editableAfterRevoke, false, "permission revocation makes the live side read-only");
-  console.log("history merge: hunk restore, peer edits, snapshot switching, and revocation passed");
+  assert.equal(result.rawEditors, 1, "turning Diff off leaves one source editor");
+  assert.match(result.rawSource, /old sentence/, "raw history displays the selected checkpoint source");
+  assert.equal(result.rawHasMerge, false, "raw history does not retain the comparison view");
+  console.log("history merge: diff/raw source, hunk restore, peer edits, snapshot switching, and revocation passed");
 } finally {
   await tab?.close();
   server?.close();

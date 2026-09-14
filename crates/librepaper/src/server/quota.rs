@@ -126,21 +126,13 @@ impl Server {
             .usage_bytes(Some(id))
             .await
             .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?;
-        let documents = catalog
-            .documents_by_owner(id, 200)
+        let (document_count, checkpoints) = catalog
+            .document_counts_by_owner(id)
             .await
             .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?;
-        let mut checkpoints = 0i64;
-        for document in &documents {
-            checkpoints += catalog
-                .versions(document.id, 1000)
-                .await
-                .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?
-                .len() as i64;
-        }
         Ok(AccountStorageUsage {
             charged_bytes,
-            document_count: documents.len() as i64,
+            document_count,
             checkpoint_count: checkpoints,
         })
     }
@@ -215,25 +207,43 @@ impl Server {
         let preview: Result<(usize, usize), crate::storage::postgres::Error> = async {
             let id = uuid::Uuid::parse_str(&account_id)
                 .map_err(|_| crate::storage::postgres::Error::Invalid("invalid account".into()))?;
-            let docs = catalog.documents_by_owner(id, 200).await?;
             let mut removed = 0;
             let mut protected = 0;
-            for doc in docs {
-                let mut rows = catalog.versions(doc.id, 1000).await?;
-                rows.reverse();
-                let points = rows
-                    .iter()
-                    .map(crate::room::checkpoint::checkpoint_from_version)
-                    .collect::<Vec<_>>();
-                let selected = select_retained(
-                    &points,
-                    now,
-                    &asked.preferences,
-                    &policy_bounds,
-                    &std::collections::BTreeSet::new(),
-                );
-                removed += selected.removed.len();
-                protected += selected.protected.len();
+            let mut document_cursor = None;
+            loop {
+                let docs = catalog
+                    .documents_by_owner_page(id, document_cursor, 200)
+                    .await?;
+                if docs.is_empty() {
+                    break;
+                }
+                for doc in &docs {
+                    let mut rows = Vec::new();
+                    let mut version_cursor = None;
+                    loop {
+                        let page = catalog.version_page(doc.id, version_cursor, 200).await?;
+                        if page.is_empty() {
+                            break;
+                        }
+                        version_cursor = page.last().map(|version| version.sequence);
+                        rows.extend(page);
+                    }
+                    rows.reverse();
+                    let points = rows
+                        .iter()
+                        .map(crate::room::checkpoint::checkpoint_from_version)
+                        .collect::<Vec<_>>();
+                    let selected = select_retained(
+                        &points,
+                        now,
+                        &asked.preferences,
+                        &policy_bounds,
+                        &std::collections::BTreeSet::new(),
+                    );
+                    removed += selected.removed.len();
+                    protected += selected.protected.len();
+                }
+                document_cursor = docs.last().map(|doc| (doc.updated_at, doc.id));
             }
             Ok((removed, protected))
         }
@@ -298,11 +308,20 @@ impl Server {
                 ));
             }
             let next = revision + 1;
-            sqlx::query("UPDATE accounts SET preferences=$2 WHERE id=$1")
-                .bind(id)
-                .bind(json!({"revision":next,"value":payload}))
-                .execute(catalog.pool())
-                .await?;
+            let changed = sqlx::query(
+                "UPDATE accounts SET preferences=$2
+                 WHERE id=$1 AND COALESCE((preferences->>'revision')::bigint,0)=$3",
+            )
+            .bind(id)
+            .bind(json!({"revision":next,"value":payload}))
+            .bind(revision)
+            .execute(catalog.pool())
+            .await?;
+            if changed.rows_affected() != 1 {
+                return Err(crate::storage::postgres::Error::Conflict(
+                    "preference revision is stale".into(),
+                ));
+            }
             Ok(next)
         }
         .await;

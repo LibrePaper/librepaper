@@ -210,10 +210,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn postgres_v3_contract() {
-        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-            return;
-        };
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
         let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
             .await
             .unwrap();
@@ -318,9 +318,11 @@ mod tests {
                 link_hash,
                 "review".into(),
                 None,
+                Some(5),
             )
             .await
             .unwrap();
+        assert_eq!(link.comment_budget, Some(5));
         assert_eq!(
             catalog
                 .access_role(first.id, None, Some(link_hash), OffsetDateTime::now_utc())
@@ -328,10 +330,46 @@ mod tests {
                 .unwrap(),
             Some(AccessRole::Commenter)
         );
+        catalog
+            .pin_link_guest(first.id, collaborator.id, AccessRole::Commenter, link_hash)
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog
+                .access_role(
+                    first.id,
+                    Some(collaborator.id),
+                    None,
+                    OffsetDateTime::now_utc()
+                )
+                .await
+                .unwrap(),
+            Some(AccessRole::Commenter)
+        );
+        let visible = catalog
+            .visible_documents(Some(collaborator.id), None, 200, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            visible.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![first.id]
+        );
         assert!(catalog.revoke_share_link(first.id, link.id).await.unwrap());
         assert_eq!(
             catalog
                 .access_role(first.id, None, Some(link_hash), OffsetDateTime::now_utc())
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            catalog
+                .access_role(
+                    first.id,
+                    Some(collaborator.id),
+                    None,
+                    OffsetDateTime::now_utc()
+                )
                 .await
                 .unwrap(),
             None

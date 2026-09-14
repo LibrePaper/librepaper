@@ -4,9 +4,8 @@
   import { day as dayOf } from "../../lib/dates.js";
   // The timeline, as a column beside the document.
   //
-  // A history is read backwards -- what happened, then what happened before
-  // that -- so the newest day is at the top and the newest mark within it,
-  // with the live document above them all. A labelled checkpoint is what
+  // A history starts with the current document and reads backwards through
+  // progressively older versions. A labelled checkpoint is what
   // somebody came here to find, so it is the one thing in the column that is
   // not grey; a working afternoon of quiet marks by one author is folded to
   // its first and last, because thirty rows of the same name say less than
@@ -61,13 +60,15 @@
     onback,
     onname,
     currentLabel = "",
+    path = "",
   } = $props();
 
   // The runs a reader has asked to see inside, by the SHA of the row that
   // stands for them. Forgotten when the panel closes, which is the right
   // lifetime: it is a glance, not a setting.
   let opened = $state(new Set());
-  let namedOnly = $state(false);
+  let filter = $state("all");
+  let comparison = $state("current");
   let lastRevealed = $state("");
   let timezone = $state("UTC");
   onMount(() => {
@@ -87,15 +88,33 @@
   let draft = $state("");
   let field = $state(null);
 
-  // Filtering affects the rows a reader sees, while the selected checkpoint
-  // remains in the list so its preview never disappears under the filter.
+  // History follows the file currently open in the editor when the manifest
+  // carries per-checkpoint `changed` paths. A checkpoint is relevant only
+  // when those paths include that file, so an edit confined to references.bib
+  // does not appear while manuscript.tex is selected. Changing files changes
+  // this list without changing or discarding the document-wide manifest.
+  // PostgreSQL manifests created before path summaries were added omit that
+  // evidence entirely; show their checkpoints rather than presenting an
+  // empty history and falsely implying that revisions were never saved.
+  //
+  // The named/published filter is applied after that file scope. A selected
+  // checkpoint remains visible through those secondary filters, but never
+  // leaks into the history of a file it did not change.
+  const hasFileScope = $derived(checkpoints.some((point) =>
+    Array.isArray(point.changed) && point.changed.length > 0));
+  const fileCheckpoints = $derived(path && hasFileScope
+    ? checkpoints.filter((point) => Array.isArray(point.changed) && point.changed.includes(path))
+    : checkpoints);
   const timelinePoints = $derived.by(() => {
-    if (!namedOnly) return checkpoints;
-    const selected = checkpoints.find((point) => point.sha === viewing);
-    return checkpoints.filter((point) => point.label || point.sha === viewing);
+    if (filter === "all") return fileCheckpoints;
+    const selected = fileCheckpoints.find((point) => point.sha === viewing);
+    return fileCheckpoints.filter((point) =>
+      (filter === "named" ? point.label : point.why === "cli") || point.sha === selected?.sha,
+    );
   });
   const days = $derived(timeline(timelinePoints, timezone));
-  const namedCount = $derived(checkpoints.filter((point) => point.label).length);
+  const namedCount = $derived(fileCheckpoints.filter((point) => point.label).length);
+  const selectedPoint = $derived(checkpoints.find((point) => point.sha === viewing) || null);
 
   // Where each checkpoint stands in the manifest, oldest first, so that the
   // range can be drawn: every row strictly after the baseline and up to the
@@ -115,18 +134,6 @@
     const at = order.get(sha);
     return baselineAt >= 0 && at !== undefined && at >= baselineAt && at < targetAt;
   };
-
-  // A colour per author, in the order they first appear, so that the dot
-  // beside a row says who without a word. Five is more people than a
-  // document usually has; a sixth shares the first's colour.
-  const authors = $derived.by(() => {
-    const seen = new Map();
-    for (const point of checkpoints) {
-      if (point.by && !seen.has(point.by)) seen.set(point.by, seen.size % 5);
-    }
-    return seen;
-  });
-  const swatch = (by) => `author-${authors.get(by) ?? 0}`;
 
   function unfold(row) {
     const next = new Set(opened);
@@ -204,7 +211,7 @@
   function sessionSummary(row) {
     const count = row.hidden.length + 2;
     const range = `${clock(row.last.at)}–${clock(row.first.at)}`;
-    return `${range} · event by ${row.first.by || "the system"} · ${count} versions`;
+    return `${range} · ${actor(row.first)} · ${count} versions`;
   }
 
   // What a checkpoint was taken for, in words rather than in the manifest's
@@ -226,6 +233,14 @@
   const QUIET = new Set(["quiet", "left", "automatic", "sync"]);
   const reason = (why) => WHY[why] || why;
   const said = (point) => (QUIET.has(point.why) ? "" : reason(point.why));
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const actor = (point) => {
+    if (point?.label) return "";
+    if (QUIET.has(point?.why) && !point?.label) return "Autosaved";
+    if (!point?.by || point.by === "system") return "Autosaved";
+    return uuid.test(point.by) ? "Unknown editor" : point.by;
+  };
+  const important = (point) => Boolean(point.label) || !QUIET.has(point.why);
 
   async function startNaming(point) {
     naming = point.sha;
@@ -250,11 +265,6 @@
   const groups = $derived(coalesce(visibleChanges));
   const paths = $derived([...new Set([...(changedPaths || []), ...visibleChanges.map((hunk) => hunk.path).filter(Boolean)])]);
   const name = (point) => (point ? point.label || stamp(point.at) || "Unnamed version" : "");
-
-  // The row the comparison hangs under: the version being looked at, or the
-  // baseline when the reader set one without leaving the live document. One
-  // row at a time carries detail, so the rest of the column stays an index.
-  const detailSha = $derived(viewing || baseline?.sha || "");
 
   // The words around a change, a few of them: the diff keeps six on each
   // side so that a deletion still has a place, but a row in a narrow column
@@ -307,42 +317,52 @@
      between them, is the reader's. -->
 <div class="panel timeline">
   <PanelHeader
-    title="History"
+    title="Version history"
     meta={checkpoints.length
-      ? `${checkpoints.length} version${checkpoints.length === 1 ? "" : "s"}`
+      ? `${fileCheckpoints.length} version${fileCheckpoints.length === 1 ? "" : "s"}`
       : undefined}
   >
-    {#if problem}
+    {#if problem && checkpoints.length === 0}
       <p class="text-error-500" role="status">{problem}</p>
     {:else if checkpoints.length === 0}
       <p class="panel-muted">
         Nothing yet. A version is saved when the typing stops, when the last
         editor leaves, and whenever the document is published to.
       </p>
+    {:else if fileCheckpoints.length === 0}
+      <p class="panel-muted">No saved revisions for {path || "this file"}.</p>
     {/if}
   </PanelHeader>
   {#if durability?.live_save === "pending"}
     <p class="panel-muted px-2 py-1 text-xs" role="status">Live edits are still being saved.</p>
   {/if}
-  {#if durability?.history_checkpoint === "pending"}
-    <p class="panel-muted px-2 py-1 text-xs" role="status">Historical checkpoint pending; live-save status is separate.</p>
-  {/if}
-  <p class="panel-muted px-2 py-1 text-xs">Edits are saved promptly. History follows your retention policy. The latest version, named versions, and versions referenced by unresolved comments or suggestions remain protected. Times shown in {timezone}.</p>
-
-  {#if checkpoints.length > 0}
-    <label class="history-switch label px-2 py-1">
-      <input type="checkbox" class="checkbox" bind:checked={namedOnly} />
-      <span class="label-text text-xs">Named versions only</span>
-    </label>
-    {#if namedOnly && namedCount === 0}
+  {#if fileCheckpoints.length > 0}
+    <div class="history-filter px-2 py-1">
+      <label>
+        <span class="sr-only">Compare selected checkpoint</span>
+        <select class="select" aria-label="Compare selected checkpoint" bind:value={comparison} onchange={() => viewing && onview?.(viewing, comparison)}>
+          <option value="previous">vs previous</option>
+          <option value="current">vs current</option>
+          <option value="checkpoint">checkpoint</option>
+        </select>
+      </label>
+      <label>
+        <span class="sr-only">Filter version history</span>
+        <select class="select" aria-label="Filter version history" bind:value={filter}>
+          <option value="all">All versions</option>
+          <option value="named">Named versions</option>
+          <option value="published">Published versions</option>
+        </select>
+      </label>
+    </div>
+    {#if filter === "named" && namedCount === 0}
       <p class="panel-muted px-2 py-1 text-sm" role="status">No named versions yet. Name a version to find it here.</p>
-    {:else if namedOnly && viewing && !checkpoints.find((point) => point.sha === viewing)?.label}
-      <p class="panel-muted px-2 py-1 text-sm" role="status">The selected version is shown below even though it is unnamed.</p>
     {/if}
   {/if}
 
   {#if checkpoints.length > 0}
     <ol class="timeline-list">
+      <li class="timeline-section"><h4>Current</h4></li>
       <!-- The live document is a row like the others, hollow because it is
            not a checkpoint yet. -->
       <li
@@ -360,13 +380,12 @@
           title="Show the live document"
           onclick={() => onview?.("")}
         >
-          <span class="timeline-dot timeline-dot-now"></span>
-          <span class="timeline-when panel-meta">now</span>
-          <span class="timeline-what">{#if currentLabel}<strong>{currentLabel}</strong>{/if}<span class="timeline-who">Current version</span></span>
+          <span class="timeline-marker timeline-marker-current"></span>
+          <span class="timeline-what"><strong>{currentLabel || "Current version"}</strong><span class="timeline-who">Saved just now</span></span>
         </button>
         {/if}
-        {#if canEdit && naming !== "current"}
-          <span class="timeline-actions">
+        {#if canEdit && !viewing && naming !== "current"}
+          <span class="timeline-inline-action">
             <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label="Name the current version" onclick={() => startNaming({ sha: "current", label: currentLabel })} />
           </span>
         {/if}
@@ -437,38 +456,31 @@
         class:timeline-named={Boolean(point.label)}
         class:timeline-here={viewing === point.sha}
         aria-current={viewing === point.sha ? "true" : undefined}
-        title="Show version from {stamp(point.at) || shortSha(point.sha)} (event by {point.by || "the system"}; {reason(point.why)})"
-        onclick={() => onview?.(point.sha)}
+        title="Show {point.label || actor(point)} from {stamp(point.at) || shortSha(point.sha)}"
+        onclick={() => onview?.(point.sha, comparison)}
       >
-        <span class="timeline-dot {swatch(point.by)}"></span>
+        <span class="timeline-marker" class:timeline-marker-important={important(point)}></span>
         <span class="timeline-when panel-meta">{clock(point.at)}</span>
         <span class="timeline-what">
           {#if point.label}<strong>{point.label}</strong>{/if}
-          <span class="timeline-who">Event by {point.by || "the system"}</span>
-          {#if said(point)}<span class="timeline-why panel-meta">{said(point)}</span>{/if}
+          {#if actor(point)}<span class="timeline-who">{actor(point)}{#if said(point)} · {said(point)}{/if}</span>{/if}
         </span>
       </button>
-      <span class="timeline-actions">
-        <IconButton
-          icon="diff"
-          tone={baseline?.sha === point.sha ? "tonal" : "plain"}
-          size="btn-icon-sm"
-          label="Compare since this version"
-          pressed={baseline?.sha === point.sha}
-          onclick={() => oncompare?.(point.sha)}
-        />
-        {#if canEdit}
-          <IconButton
-            icon="pencil"
-            tone="plain"
-            size="btn-icon-sm"
-            label={point.label ? "Rename this point" : "Name this point"}
-            onclick={() => startNaming(point)}
-          />
-          <IconButton icon="history" tone="plain" size="btn-icon-sm" label="Restore this version" onclick={() => onrestore?.(point.sha)} />
-        {/if}
-        <CopyLink href={oncopy?.(point.sha) || undefined} label="Copy the link to this version" tone="plain" />
-      </span>
+      {#if viewing === point.sha}
+        <span class="timeline-inline-actions">
+          {#if canEdit}
+            <IconButton
+              icon="pencil"
+              tone="plain"
+              size="btn-icon-sm"
+              label={point.label ? "Rename this version" : "Name this version"}
+              onclick={() => startNaming(point)}
+            />
+            <IconButton icon="history" tone="plain" size="btn-icon-sm" label="Restore this version" onclick={() => onrestore?.(point.sha)} />
+          {/if}
+          <CopyLink href={oncopy?.(point.sha) || undefined} label="Copy the link to this version" tone="plain" />
+        </span>
+      {/if}
     {/if}
   </li>
   {#if viewing === point.sha && point.parent && point.changed?.length > 1}
@@ -480,7 +492,6 @@
       {/each}
     </li>
   {/if}
-{#if baseline && point.sha === detailSha}{@render versionDetail()}{/if}
 {/snippet}
 
 {#snippet versionDetail()}
@@ -490,21 +501,28 @@
        reaches, how many changes are in it, and the files they touched. The
        changes themselves are still read in the document, where they are
        painted in place. -->
-  <li class="timeline-row timeline-detail-row">
+  <section class="timeline-detail-row" aria-label="Selected version details">
     <div class="timeline-detail">
+      {#if selectedPoint}
+        <div class="history-selection">
+          <strong>{stamp(selectedPoint.at)}</strong>
+          <span class="panel-muted">{selectedPoint.label || actor(selectedPoint)}</span>
+        </div>
+      {/if}
       <p class="history-span panel-meta">
-        {#if target}Compared with <strong>{name(target)}</strong>
-        {:else if comparingCurrent}Compared with <strong>Current version</strong>
+        {#if selectedPoint && !comparingCurrent}Changes made in this version
+        {:else if comparingCurrent}Changes since <strong>{name(baseline)}</strong>
+        {:else if target}Compared with <strong>{name(target)}</strong>
         {:else}Changes since <strong>{name(baseline)}</strong>{/if}
       </p>
-      {#if viewing && !comparingCurrent}
-        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => oncomparecurrent?.(viewing)}>Compare with current</button>
+      {#if selectedPoint && !comparingCurrent}
+        <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => oncomparecurrent?.(selectedPoint.sha)}>Show everything changed since this version</button>
       {:else if comparingCurrent && newerEdits}
         <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onrefreshcurrent?.()}>Newer edits available · Refresh</button>
       {/if}
       <div class="history-nav">
         {#if problem}
-          <span class="panel-muted text-sm">The passage comparison is unavailable.</span>
+          <span class="panel-muted text-sm">{paths.length ? "The rendered comparison is unavailable. Showing source changes instead." : "This comparison is unavailable."}</span>
         {:else if viewing && !target}
           <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onback?.()}>Back to now to see changes</button>
         {:else if changes === null}
@@ -518,15 +536,14 @@
             <IconButton icon="chevron-down" tone="plain" size="btn-icon-sm" label="Next change (])" onclick={() => goTo(step + 1)} />
           </span>
         {/if}
-        <label class="history-switch label">
-          <input
-            type="checkbox"
-            class="checkbox"
-            checked={redlines}
-            onchange={(event) => onredlines?.(event.currentTarget.checked)}
-          />
-          <span class="label-text text-xs">Show changes</span>
-        </label>
+        {#if groups.length}
+          <button
+            type="button"
+            class="btn btn-sm preset-outlined-surface-300-700"
+            aria-pressed={redlines}
+            onclick={() => onredlines?.(!redlines)}
+          >{redlines ? "Hide highlights" : "Show highlights"}</button>
+        {/if}
       </div>
       {#if groups.length}
         <details class="history-changes">
@@ -586,5 +603,5 @@
         </section>
       {/if}
     </div>
-  </li>
+  </section>
 {/snippet}

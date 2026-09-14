@@ -96,9 +96,9 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid suggestion acceptance".into()));
         }
         let mut tx = self.pool.begin().await?;
+        Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, true).await?;
         self.lock_collaboration_capacity(&mut tx, input.document_id, bytes.len())
             .await?;
-        Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, true).await?;
         let changed = sqlx::query(
             "UPDATE annotations SET body=$3,author_account_id=$4,author_key=$5,author_label=$6,
              selector=$7,context=$8,publication_id=$9,proposed_text=$10,
@@ -273,13 +273,28 @@ impl PostgresCatalog {
     ) -> Result<bool> {
         validate(&input)?;
         let mut tx = self.pool.begin().await?;
-        Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, false).await?;
-        let changed = sqlx::query("UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6,selector=$7,context=$8,publication_id=$9,proposed_text=$10,suggestion_state=CASE WHEN $2='suggestion' THEN CASE WHEN $11 AND $8->>'outcome' IN ('accepted','rejected') THEN $8->>'outcome' ELSE COALESCE(suggestion_state,'proposed') END ELSE NULL END,resolved_at=CASE WHEN $11 THEN COALESCE(resolved_at,now()) ELSE NULL END,updated_at=now() WHERE id=$1 AND document_id=$12")
+        let deciding_suggestion = input.kind == "suggestion"
+            && resolved
+            && input
+                .context
+                .get("outcome")
+                .and_then(Value::as_str)
+                .is_some_and(|outcome| matches!(outcome, "accepted" | "rejected"));
+        Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, deciding_suggestion)
+            .await?;
+        let changed = sqlx::query("UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6,selector=$7,context=$8,publication_id=$9,proposed_text=$10,suggestion_state=CASE WHEN $2='suggestion' THEN CASE WHEN $11 AND $8->>'outcome' IN ('accepted','rejected') THEN $8->>'outcome' ELSE COALESCE(suggestion_state,'proposed') END ELSE NULL END,resolved_at=CASE WHEN $11 THEN COALESCE(resolved_at,now()) ELSE NULL END,updated_at=now() WHERE id=$1 AND document_id=$12 AND (NOT $13 OR suggestion_state='proposed')")
             .bind(id).bind(input.kind).bind(input.body).bind(input.author_account_id).bind(input.author_key)
             .bind(input.author_label).bind(input.selector).bind(input.context).bind(input.publication_id)
-            .bind(input.proposed_text).bind(resolved).bind(input.document_id).execute(&mut *tx).await?.rows_affected()==1;
+            .bind(input.proposed_text).bind(resolved).bind(input.document_id).bind(deciding_suggestion).execute(&mut *tx).await?.rows_affected()==1;
+        if !changed {
+            return Err(if deciding_suggestion {
+                Error::Conflict("suggestion changed".into())
+            } else {
+                Error::NotFound
+            });
+        }
         tx.commit().await?;
-        Ok(changed)
+        Ok(true)
     }
 
     pub async fn delete_annotation_authorized(
@@ -289,20 +304,24 @@ impl PostgresCatalog {
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
         let document_id: Uuid =
-            sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1")
+            sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1 FOR UPDATE")
                 .bind(id)
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or(Error::NotFound)?;
         Self::authorize_annotation_mutation(&mut tx, document_id, actor, false).await?;
-        let changed = sqlx::query("DELETE FROM annotations WHERE id=$1")
+        let changed = sqlx::query("DELETE FROM annotations WHERE id=$1 AND document_id=$2")
             .bind(id)
+            .bind(document_id)
             .execute(&mut *tx)
             .await?
             .rows_affected()
             == 1;
+        if !changed {
+            return Err(Error::NotFound);
+        }
         tx.commit().await?;
-        Ok(changed)
+        Ok(true)
     }
 
     pub async fn create_reply_authorized(
@@ -315,7 +334,7 @@ impl PostgresCatalog {
         }
         let mut tx = self.pool.begin().await?;
         let document_id: Uuid =
-            sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1")
+            sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1 FOR KEY SHARE")
                 .bind(input.annotation_id)
                 .fetch_optional(&mut *tx)
                 .await?
@@ -382,13 +401,16 @@ impl PostgresCatalog {
                 "too many annotation replies requested".into(),
             ));
         }
-        sqlx::query_as::<_, ReplyRecord>(
-            "SELECT * FROM replies WHERE annotation_id=ANY($1) ORDER BY created_at,id",
+        let rows = sqlx::query_as::<_, ReplyRecord>(
+            "SELECT * FROM replies WHERE annotation_id=ANY($1) ORDER BY created_at,id LIMIT 5001",
         )
         .bind(annotation_ids)
         .fetch_all(&self.pool)
-        .await
-        .map_err(Error::from)
+        .await?;
+        if rows.len() > 5_000 {
+            return Err(Error::Conflict("annotation reply limit exceeded".into()));
+        }
+        Ok(rows)
     }
 }
 

@@ -78,6 +78,9 @@ pub struct IndexEntry {
     /// guest of anything any more.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guests: Vec<Guest>,
+    /// Explicit account grants which are not derived from a share-link visit.
+    #[serde(skip)]
+    pub account_grants: std::collections::HashMap<String, Role>,
     /// The live share-link hash resolved from the request.
     /// This is populated only for a bounded listing page and is never
     /// persisted or used as a reverse guest index.  The server still passes
@@ -99,9 +102,9 @@ pub struct Guest {
 
 /// One link that carries a role. `hash` is the SHA-256 of the key in hex, and
 /// `until` is an expiry -- empty for none -- past which the link answers as no
-/// link at all. `key` is the key itself, kept so the owner can copy the link
-/// again rather than only ever seeing it once. Listings deliberately leave
-/// `key` empty to avoid exposing credentials. `label` is the owner's memo.
+/// link at all. `key` exists only on the response which mints the link: the
+/// catalogue stores its digest and cannot recover the credential later.
+/// `label` is the owner's memo.
 /// `budget` is the number of comment actions this link may make in one clock
 /// hour; absent uses the deployment's ordinary numeric comment limit.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -188,6 +191,13 @@ impl IndexEntry {
             return Role::Owner;
         }
         let mut role = Role::Reader;
+        if let Some(granted) = self.account_grants.get(caller_id).copied() {
+            if granted == Role::Editor && ceiling.edit {
+                role = role.max(Role::Editor);
+            } else if granted.at_least(Role::Commenter) && ceiling.comment {
+                role = role.max(Role::Commenter);
+            }
+        }
         // A link asks the deployment ceiling because it is a caller with no
         // name: an
         // editor link edits under exactly the switch that lets an anonymous
@@ -272,7 +282,9 @@ impl IndexEntry {
     /// Whether a caller is on this document at all: its owner or the holder of
     /// a live link.
     pub fn names(&self, owner_key: &str, caller_id: &str, link_hash: &str, now: i64) -> bool {
-        self.owned_by(owner_key, caller_id) || self.link_role(link_hash, now).is_some()
+        self.owned_by(owner_key, caller_id)
+            || self.account_grants.contains_key(caller_id)
+            || self.link_role(link_hash, now).is_some()
     }
 
     /// Whether a caller may read this document at all: its owner and whoever
@@ -505,20 +517,44 @@ impl Store {
 
     pub async fn visible_page_with_options(
         &self,
-        _account_id: Option<&str>,
+        account_id: Option<&str>,
         _owner_key: Option<&str>,
         cursor: Option<(&str, &str)>,
         limit: u32,
-        _include_examples: bool,
+        include_examples: bool,
     ) -> Result<Vec<IndexEntry>, CatalogError> {
-        let after = cursor.map(|(_, slug)| slug);
-        Ok(self
-            .list_result()
+        let catalog = self
+            .catalog
+            .as_ref()
+            .ok_or_else(|| CatalogError::Invalid("PostgreSQL catalog required".into()))?;
+        let account_id = account_id
+            .map(uuid::Uuid::parse_str)
+            .transpose()
+            .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
+        let before = match cursor {
+            Some((updated, slug)) => {
+                if crate::util::parse_timestamp(updated).is_none() {
+                    return Err(CatalogError::Invalid("invalid listing cursor".into()));
+                }
+                let document = catalog
+                    .document_by_slug(slug)
+                    .await?
+                    .ok_or_else(|| CatalogError::Invalid("invalid listing cursor".into()))?;
+                // The wire timestamp is second-precision. Use the row's exact
+                // value so documents updated within the same second are not
+                // skipped between pages.
+                Some((document.updated_at, document.id))
+            }
+            None => None,
+        };
+        let mut result = Vec::new();
+        for document in catalog
+            .visible_documents(account_id, before, i64::from(limit), include_examples)
             .await?
-            .into_iter()
-            .filter(|entry| after.is_none_or(|slug| entry.slug.as_str() < slug))
-            .take(limit as usize)
-            .collect())
+        {
+            result.push(entry_from_document(catalog, &document).await?);
+        }
+        Ok(result)
     }
 
     pub async fn put_directory_as_actor(
@@ -645,6 +681,41 @@ impl Store {
         self.modify_inner(slug, None, change).await
     }
 
+    pub async fn pin_link_guest(
+        &self,
+        slug: &str,
+        account_id: &str,
+        link_hash: &str,
+        role: Role,
+    ) -> Result<(), ModifyError> {
+        let catalog = self
+            .catalog
+            .as_ref()
+            .ok_or_else(|| ModifyError::Storage("PostgreSQL catalog required".into()))?;
+        let document = catalog
+            .document_by_slug(slug)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))?
+            .ok_or(ModifyError::NotFound)?;
+        let account_id = uuid::Uuid::parse_str(account_id)
+            .map_err(|_| ModifyError::Refused("invalid guest account".into()))?;
+        let raw = hex::decode(link_hash)
+            .map_err(|_| ModifyError::Refused("invalid link digest".into()))?;
+        let hash: [u8; 32] = raw
+            .try_into()
+            .map_err(|_| ModifyError::Refused("invalid link digest".into()))?;
+        let role = match role {
+            Role::Reader => crate::storage::postgres::AccessRole::Reader,
+            Role::Commenter => crate::storage::postgres::AccessRole::Commenter,
+            Role::Editor => crate::storage::postgres::AccessRole::Editor,
+            Role::Owner => return Err(ModifyError::Refused("invalid guest role".into())),
+        };
+        catalog
+            .pin_link_guest(document.id, account_id, role, hash)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))
+    }
+
     pub async fn modify_as_owner<F>(
         &self,
         slug: &str,
@@ -711,24 +782,27 @@ impl Store {
                     crate::util::parse_timestamp(&link.until)
                         .and_then(|seconds| time::OffsetDateTime::from_unix_timestamp(seconds).ok())
                 };
-                Ok((link.role.clone(), hash, link.label.clone(), expiry))
+                Ok((
+                    link.role.clone(),
+                    hash,
+                    link.label.clone(),
+                    expiry,
+                    link.budget,
+                ))
             })
             .collect::<Result<Vec<_>, ModifyError>>()?;
         catalog
             .replace_share_links(document.id, &links)
             .await
             .map_err(|e| ModifyError::Storage(e.to_string()))?;
-        let grants = entry
-            .guests
+        let live_hashes = entry
+            .links
             .iter()
-            .filter_map(|guest| {
-                uuid::Uuid::parse_str(&guest.id)
-                    .ok()
-                    .map(|id| (id, crate::storage::postgres::AccessRole::Commenter))
-            })
+            .filter(|link| link.live_at(crate::util::now_unix()))
+            .filter_map(|link| hex::decode(&link.hash).ok())
             .collect::<Vec<_>>();
         catalog
-            .replace_grants(document.id, &grants)
+            .prune_link_grants(document.id, &live_hashes)
             .await
             .map_err(|e| ModifyError::Storage(e.to_string()))?;
         self.get_result(slug)
@@ -752,7 +826,7 @@ async fn entry_from_document(
             role: link.role,
             key: String::new(),
             label: link.label,
-            budget: None,
+            budget: link.comment_budget,
             since: crate::util::format_unix(link.created_at.unix_timestamp()),
             until: link
                 .expires_at
@@ -760,6 +834,25 @@ async fn entry_from_document(
                 .unwrap_or_default(),
         })
         .collect();
+    let mut guests = Vec::new();
+    let mut account_grants = std::collections::HashMap::new();
+    for grant in catalog.grants(document.id).await? {
+        let Some(hash) = grant.source_link_hash else {
+            if let Some(role) = Role::parse(&grant.role) {
+                account_grants.insert(grant.account_id.to_string(), role);
+            }
+            continue;
+        };
+        let Some(account) = catalog.account(grant.account_id).await? else {
+            continue;
+        };
+        guests.push(Guest {
+            id: grant.account_id.to_string(),
+            name: account.display_name,
+            since: crate::util::format_unix(grant.created_at.unix_timestamp()),
+            link: hex::encode(hash),
+        });
+    }
     Ok(IndexEntry {
         slug: document.slug.clone(),
         storage_id: document.id.to_string(),
@@ -779,7 +872,8 @@ async fn entry_from_document(
         source_format: document.source_format.clone(),
         main: document.main_path.clone(),
         links,
-        guests: Vec::new(),
+        guests,
+        account_grants,
         bookmark_link_hash: None,
     })
 }

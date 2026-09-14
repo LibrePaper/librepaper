@@ -16,6 +16,7 @@
     liveText = null,
     awareness = null,
     editable = false,
+    diff = true,
     targetLabel = "Live document",
     // A stale suggestion opens this editor with an explanation of why: the
     // passage it named no longer matches, so the header carries that reason
@@ -43,25 +44,30 @@
     // the permission and no stale revert control remains actionable.
     void editable;
     if (!host) return;
-    merge = new MergeView({
-      a: { doc: String(oldText || ""), extensions: extensions(true) },
-      b: {
-        doc: liveText?.toString() ?? String(newText || ""),
-        extensions: [
-          ...extensions(!editable, Boolean(editable && liveText)),
-          // Binding the editable side to the live Y.Text means a revert
-          // button inserts only its hunk and preserves a coauthor's update
-          // that landed while this view was open.
-          ...(editable && liveText ? [yCollab(liveText, awareness)] : []),
-        ],
-      },
-      orientation: "a-b",
-      ...(editable ? { revertControls: "a-to-b" } : {}),
-      highlightChanges: true,
-      gutter: true,
-      collapseUnchanged: { margin: 3, minSize: 4 },
-      parent: host,
-    });
+    merge = diff
+      ? new MergeView({
+        a: { doc: String(oldText || ""), extensions: extensions(true) },
+        b: {
+          doc: liveText?.toString() ?? String(newText || ""),
+          extensions: [
+            ...extensions(!editable, Boolean(editable && liveText)),
+            // Binding the editable side to the live Y.Text means a revert
+            // button inserts only its hunk and preserves a coauthor's update
+            // that landed while this view was open.
+            ...(editable && liveText ? [yCollab(liveText, awareness)] : []),
+          ],
+        },
+        orientation: "a-b",
+        ...(editable ? { revertControls: "a-to-b" } : {}),
+        highlightChanges: true,
+        gutter: true,
+        collapseUnchanged: { margin: 3, minSize: 4 },
+        parent: host,
+      })
+      : new EditorView({
+        state: EditorState.create({ doc: String(oldText || ""), extensions: extensions(true) }),
+        parent: host,
+      });
     return () => {
       merge?.destroy();
       merge = null;
@@ -72,7 +78,7 @@
 <section class="merge-editor flex h-full flex-col" aria-label="Compare checkpoint with live document">
   <header class="merge-toolbar flex items-center justify-between gap-2 border-surface-200-800 border-b p-2">
     <div class="truncate text-sm">
-      <strong>{path || "document"}</strong><span class="panel-muted"> · checkpoint on the left, {targetLabel} on the right</span>
+      <strong>{path || "document"}</strong><span class="panel-muted">{diff ? ` · checkpoint on the left, ${targetLabel} on the right` : " · checkpoint source"}</span>
       {#if note}<span class="panel-muted"> — {note}</span>{/if}
     </div>
     {#if onlive}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onlive()}>Compare with live to restore passages</button>{/if}

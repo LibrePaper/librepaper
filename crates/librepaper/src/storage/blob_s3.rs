@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutOptions};
@@ -141,6 +141,37 @@ impl BlobStore for S3Store {
             })
             .collect())
     }
+    async fn list_page(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> BlobResult<Vec<BlobInfo>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let prefix = if prefix.is_empty() {
+            None
+        } else {
+            Some(Self::path(prefix)?)
+        };
+        let offset = Self::path(after.unwrap_or(prefix.as_ref().map_or("", Path::as_ref)))?;
+        let rows = self
+            .inner
+            .list_with_offset(prefix.as_ref(), &offset)
+            .take(limit)
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(map_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| BlobInfo {
+                key: row.location.to_string(),
+                size: i64::try_from(row.size).unwrap_or(i64::MAX),
+                modified_at: Some(row.last_modified.into()),
+            })
+            .collect())
+    }
     fn describe(&self) -> String {
         self.description.clone()
     }
@@ -151,10 +182,10 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_S3_ENDPOINT"]
     async fn s3_immutable_blob_contract() {
-        let Ok(endpoint) = std::env::var("LIBREPAPER_TEST_S3_ENDPOINT") else {
-            return;
-        };
+        let endpoint = std::env::var("LIBREPAPER_TEST_S3_ENDPOINT")
+            .expect("set LIBREPAPER_TEST_S3_ENDPOINT to run the S3 contract");
         let bucket =
             std::env::var("LIBREPAPER_TEST_S3_BUCKET").unwrap_or_else(|_| "librepaper-test".into());
         let store = S3Store::new(Some(&endpoint), "us-east-1", &bucket, true).unwrap();

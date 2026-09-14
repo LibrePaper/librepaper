@@ -47,7 +47,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
             destination.display()
         ));
     }
-    std::fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+    create_private_dir(destination)?;
     let started_at = now()?;
     let catalog = PostgresCatalog::connect(PostgresOptions::new(&options.database_url))
         .await
@@ -95,10 +95,11 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     }
     let references = by_key.into_values().collect::<Vec<_>>();
     let dump = destination.join("database.dump");
+    write_private_file(&dump, &[])?;
     let status = tokio::process::Command::new("pg_dump")
         .args(["--format=custom", "--snapshot", &snapshot, "--file"])
         .arg(&dump)
-        .arg(&options.database_url)
+        .env("PGDATABASE", &options.database_url)
         .status()
         .await
         .map_err(|e| format!("could not run pg_dump: {e}"))?;
@@ -124,9 +125,9 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         }
         let target = safe_target(&object_root, &reference.key)?;
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            create_private_dir(parent)?;
         }
-        std::fs::write(target, body).map_err(|e| e.to_string())?;
+        write_private_file(&target, &body)?;
     }
     let dump_bytes = std::fs::read(&dump).map_err(|e| e.to_string())?;
     let manifest = Manifest {
@@ -145,21 +146,20 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         references,
         verified: true,
     };
-    std::fs::write(
-        destination.join("manifest.json"),
-        serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    write_private_file(
+        &destination.join("manifest.json"),
+        &serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
+    )?;
     println!("created verified backup {}", destination.display());
     Ok(())
 }
 
-pub async fn restore_cli(backup: String, directory: String) {
-    if let Err(e) = restore(Path::new(&backup), Path::new(&directory)).await {
+pub async fn restore_cli(options: StorageOptions, backup: String, directory: String) {
+    if let Err(e) = restore(options, Path::new(&backup), Path::new(&directory)).await {
         crate::util::die(e)
     }
 }
-async fn restore(backup: &Path, destination: &Path) -> Result<(), String> {
+async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> Result<(), String> {
     let manifest_bytes = std::fs::read(backup.join("manifest.json")).map_err(|e| e.to_string())?;
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|e| e.to_string())?;
     if manifest.format != "librepaper-postgres-backup-v1" || !manifest.verified {
@@ -178,8 +178,7 @@ async fn restore(backup: &Path, destination: &Path) -> Result<(), String> {
             destination.display()
         ));
     }
-    let database_url = std::env::var("LIBREPAPER_DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql:///librepaper".into());
+    let database_url = options.database_url;
     let catalog = PostgresCatalog::connect(PostgresOptions::new(&database_url))
         .await
         .map_err(|e| e.to_string())?;
@@ -187,7 +186,7 @@ async fn restore(backup: &Path, destination: &Path) -> Result<(), String> {
     if occupied {
         return Err("restore requires an empty PostgreSQL database".into());
     }
-    std::fs::create_dir_all(destination.join("objects")).map_err(|e| e.to_string())?;
+    create_private_dir(&destination.join("objects"))?;
     for reference in &manifest.references {
         let source = safe_target(&backup.join(&manifest.objects), &reference.key)?;
         let body = std::fs::read(&source)
@@ -200,13 +199,13 @@ async fn restore(backup: &Path, destination: &Path) -> Result<(), String> {
         }
         let target = safe_target(&destination.join("objects"), &reference.key)?;
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            create_private_dir(parent)?;
         }
-        std::fs::write(target, body).map_err(|e| e.to_string())?;
+        write_private_file(&target, &body)?;
     }
     let status = tokio::process::Command::new("pg_restore")
-        .args(["--no-owner", "--dbname"])
-        .arg(&database_url)
+        .arg("--no-owner")
+        .env("PGDATABASE", &database_url)
         .arg(dump)
         .status()
         .await
@@ -224,6 +223,30 @@ async fn restore(backup: &Path, destination: &Path) -> Result<(), String> {
     }
     println!("restored verified backup {}", manifest.id);
     Ok(())
+}
+
+fn create_private_dir(path: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|error| error.to_string())?;
+    file.write_all(bytes).map_err(|error| error.to_string())
 }
 fn safe_target(root: &Path, key: &str) -> Result<PathBuf, String> {
     super::blob::validate_object_key(key).map_err(|e| e.to_string())?;

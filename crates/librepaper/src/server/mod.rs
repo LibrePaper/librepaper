@@ -21,6 +21,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+tokio::task_local! {
+    static REQUEST_AUTHENTICATION: std::cell::RefCell<Option<Result<Identity, AuthenticationFailure>>>;
+}
+
 use crate::auth::pseudonym::pseudonym_for;
 use crate::auth::{
     cookie_name, normalized, now_unix, pkce_verifier, random_token, read_device, read_session,
@@ -32,8 +36,8 @@ use crate::auth::{
 use crate::config::Configuration;
 use crate::document::render::{title_from_html, title_from_markdown};
 use crate::document::store::{
-    random_suffix, slugify, Ceiling, Guest, IndexEntry, LinkGrant, ModifyError, Publication,
-    PutError, Role, Store,
+    random_suffix, slugify, Ceiling, IndexEntry, LinkGrant, ModifyError, Publication, PutError,
+    Role, Store,
 };
 use crate::room::{
     decode_update, encode_update, AcceptError, Accepted, Applied, Command, Message as RoomMessage,
@@ -378,6 +382,9 @@ impl Server {
         headers: &HeaderMap,
         arrival: &Arrival,
     ) -> Result<Identity, AuthenticationFailure> {
+        if let Ok(Some(cached)) = REQUEST_AUTHENTICATION.try_with(|slot| slot.borrow_mut().take()) {
+            return cached;
+        }
         let authorization = header_of(headers, "authorization");
         let bearer = authorization
             .as_deref()
@@ -459,6 +466,15 @@ impl Server {
             Ok(None) => Err(AuthenticationFailure::Invalid),
             Err(_) => Err(AuthenticationFailure::Unavailable),
         }
+    }
+
+    async fn with_request_authentication<F: std::future::Future>(
+        authentication: Result<Identity, AuthenticationFailure>,
+        future: F,
+    ) -> F::Output {
+        REQUEST_AUTHENTICATION
+            .scope(std::cell::RefCell::new(Some(authentication)), future)
+            .await
     }
 
     /// The key a caller's uploads belong to. A signed-in caller is their
@@ -590,7 +606,18 @@ impl Server {
         } else {
             self.owner(headers, arrival, &id)
         };
-        let presented_link = self.link_hash(headers, query);
+        let mut presented_link = self.link_hash(headers, query);
+        // A signed-in link holder is pinned after their first visit. On later
+        // bare-URL opens, recover only the digest of the still-live link they
+        // originally presented; the raw capability is never stored.
+        if !automation && presented_link.is_empty() && id.is_signed_in() {
+            presented_link = entry
+                .guests
+                .iter()
+                .find(|guest| guest.id == id.id)
+                .map(|guest| guest.link.clone())
+                .unwrap_or_default();
+        }
         let now = crate::util::now_unix();
         let ceiling = self.ceiling_for(&id);
         let mut role = if automation {

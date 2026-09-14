@@ -113,6 +113,27 @@ pub struct CostMeter {
 }
 
 impl CostMeter {
+    pub async fn restore(&self) -> Result<(), String> {
+        let Some(catalog) = &self.catalog else {
+            return Ok(());
+        };
+        let Some(value) = catalog
+            .runtime_state("cost-meter-v2")
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(());
+        };
+        let durable: Durable = serde_json::from_value(value.get("state").cloned().unwrap_or(value))
+            .map_err(|error| format!("invalid transfer checkpoint: {error}"))?;
+        let mut state = self.state();
+        state.durable = durable;
+        Self::expire(&mut state, now_unix());
+        state.durable.policy = self.config.effective_policy();
+        self.refresh_mode(&mut state);
+        Ok(())
+    }
+
     pub fn new(
         config: &Arc<Configuration>,
         catalog: Option<Arc<crate::storage::postgres::PostgresCatalog>>,
@@ -332,16 +353,17 @@ impl CostMeter {
         let Some(catalog) = &self.catalog else {
             return Ok(());
         };
-        let _saved = {
+        let saved = {
             let mut state = self.state();
             Self::expire(&mut state, now_unix());
             self.refresh_mode(&mut state);
             state.durable.policy = self.config.effective_policy();
-            serde_json::to_string(&json!({"version":2,"state":state.durable}))
-                .map_err(|e| e.to_string())?
+            json!({"version":2,"state":state.durable})
         };
-        let _ = catalog;
-        Ok(())
+        catalog
+            .set_runtime_state("cost-meter-v2", saved)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub fn snapshot(&self) -> Value {
@@ -655,7 +677,11 @@ pub(super) async fn handle(
         &server.config.cost.trusted_proxies,
     ));
     // Keys stay internal and bounded; no identity becomes a metric label.
-    let arrival = Arrival::from_peer(request.headers(), peer.ip());
+    let arrival = Arrival::from_peer(
+        request.headers(),
+        peer.ip(),
+        &server.config.cost.trusted_proxies,
+    );
     if !server.cost.admit_request(&network, "", document, class)
         && !(is_emergency && server.cost.admit_emergency_request(&network))
     {
@@ -668,7 +694,10 @@ pub(super) async fn handle(
         );
     }
     // Authenticate only after network/deployment admission bounds external work.
-    let identity = server.whoami(request.headers(), &arrival).await;
+    let authentication = server
+        .authenticated_identity(request.headers(), &arrival)
+        .await;
+    let identity = authentication.clone().unwrap_or_default();
     let principal_allowed = identity.id.is_empty() || {
         server.cost.state().requests.consume(&[(
             format!("p:{}", identity.id),
@@ -730,10 +759,13 @@ pub(super) async fn handle(
     } else if path == "/health" {
         write_json(200, &json!({"ok":true}))
     } else {
-        dispatch(
-            axum::extract::State(server.clone()),
-            ConnectInfo(peer),
-            request,
+        Server::with_request_authentication(
+            authentication,
+            dispatch(
+                axum::extract::State(server.clone()),
+                ConnectInfo(peer),
+                request,
+            ),
         )
         .await
     };
@@ -891,7 +923,7 @@ pub(super) async fn blob_response(
                 if offset >= end {
                     return None;
                 }
-                let next = offset.saturating_add(64 * 1024).min(end);
+                let next = offset.saturating_add(1024 * 1024).min(end);
                 match blobs.get_range(&key, offset..next).await {
                     Ok(bytes) => Some((Ok::<_, std::io::Error>(bytes), (blobs, key, next))),
                     Err(error) => Some((

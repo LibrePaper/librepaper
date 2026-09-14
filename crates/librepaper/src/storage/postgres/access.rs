@@ -34,6 +34,7 @@ pub struct GrantRecord {
     pub document_id: Uuid,
     pub account_id: Uuid,
     pub role: String,
+    pub source_link_hash: Option<Vec<u8>>,
     pub created_at: OffsetDateTime,
 }
 
@@ -44,6 +45,7 @@ pub struct ShareLinkRecord {
     pub role: String,
     pub token_hash: Vec<u8>,
     pub label: String,
+    pub comment_budget: Option<i64>,
     pub generation: i64,
     pub created_at: OffsetDateTime,
     pub expires_at: Option<OffsetDateTime>,
@@ -64,43 +66,46 @@ impl PostgresCatalog {
         found.map(|_| ()).ok_or(Error::NotFound)
     }
 
+    #[allow(clippy::type_complexity)]
     pub async fn replace_share_links(
         &self,
         document_id: Uuid,
-        links: &[(String, [u8; 32], String, Option<OffsetDateTime>)],
+        links: &[(
+            String,
+            [u8; 32],
+            String,
+            Option<OffsetDateTime>,
+            Option<i64>,
+        )],
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
         sqlx::query("UPDATE share_links SET revoked_at=now(),generation=generation+1 WHERE document_id=$1 AND revoked_at IS NULL")
             .bind(document_id).execute(&mut *tx).await?;
-        for (role, hash, label, expires) in links {
-            sqlx::query("INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at) VALUES($1,$2,$3,$4,$5,$6)")
-                .bind(new_id()).bind(document_id).bind(role).bind(hash.as_slice()).bind(label).bind(expires)
+        for (role, hash, label, expires, budget) in links {
+            sqlx::query("INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget) VALUES($1,$2,$3,$4,$5,$6,$7)")
+                .bind(new_id()).bind(document_id).bind(role).bind(hash.as_slice()).bind(label).bind(expires).bind(budget)
                 .execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
     }
 
-    pub async fn replace_grants(
+    pub async fn prune_link_grants(
         &self,
         document_id: Uuid,
-        grants: &[(Uuid, AccessRole)],
+        live_hashes: &[Vec<u8>],
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
-        sqlx::query("DELETE FROM grants WHERE document_id=$1")
-            .bind(document_id)
-            .execute(&mut *tx)
-            .await?;
-        for (account, role) in grants {
-            sqlx::query("INSERT INTO grants(document_id,account_id,role) VALUES($1,$2,$3)")
-                .bind(document_id)
-                .bind(account)
-                .bind(role.persisted()?)
-                .execute(&mut *tx)
-                .await?;
-        }
+        sqlx::query(
+            "DELETE FROM grants WHERE document_id=$1 AND source_link_hash IS NOT NULL
+             AND NOT (source_link_hash=ANY($2))",
+        )
+        .bind(document_id)
+        .bind(live_hashes)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -114,8 +119,8 @@ impl PostgresCatalog {
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
         let row = sqlx::query_as::<_, GrantRecord>(
-            "INSERT INTO grants(document_id,account_id,role) VALUES($1,$2,$3)
-             ON CONFLICT(document_id,account_id) DO UPDATE SET role=excluded.role
+            "INSERT INTO grants(document_id,account_id,role,source_link_hash) VALUES($1,$2,$3,NULL)
+             ON CONFLICT(document_id,account_id) DO UPDATE SET role=excluded.role,source_link_hash=NULL
              RETURNING *",
         )
         .bind(document_id)
@@ -125,6 +130,31 @@ impl PostgresCatalog {
         .await?;
         tx.commit().await?;
         Ok(row)
+    }
+
+    pub async fn pin_link_guest(
+        &self,
+        document_id: Uuid,
+        account_id: Uuid,
+        role: AccessRole,
+        source_link_hash: [u8; 32],
+    ) -> Result<()> {
+        let role = role.persisted()?;
+        let mut tx = self.pool.begin().await?;
+        Self::lock_active_document(&mut tx, document_id).await?;
+        sqlx::query(
+            "INSERT INTO grants(document_id,account_id,role,source_link_hash) VALUES($1,$2,$3,$4)
+             ON CONFLICT(document_id,account_id) DO UPDATE SET
+               role=excluded.role,source_link_hash=excluded.source_link_hash",
+        )
+        .bind(document_id)
+        .bind(account_id)
+        .bind(role)
+        .bind(source_link_hash.as_slice())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn remove_grant(&self, document_id: Uuid, account_id: Uuid) -> Result<bool> {
@@ -158,6 +188,7 @@ impl PostgresCatalog {
         token_hash: [u8; 32],
         label: String,
         expires_at: Option<OffsetDateTime>,
+        comment_budget: Option<i64>,
     ) -> Result<ShareLinkRecord> {
         let role = role.persisted()?;
         if label.len() > 80 {
@@ -166,8 +197,8 @@ impl PostgresCatalog {
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
         let row = sqlx::query_as::<_, ShareLinkRecord>(
-            "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at)
-             VALUES($1,$2,$3,$4,$5,$6) RETURNING *",
+            "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
+             VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
         )
         .bind(new_id())
         .bind(document_id)
@@ -175,6 +206,7 @@ impl PostgresCatalog {
         .bind(token_hash.as_slice())
         .bind(label)
         .bind(expires_at)
+        .bind(comment_budget)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -205,7 +237,11 @@ impl PostgresCatalog {
     ) -> Result<Option<AccessRole>> {
         let row: Option<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT d.owner_id,
-                (SELECT role FROM grants g WHERE g.document_id=d.id AND g.account_id=$2),
+                (SELECT role FROM grants g WHERE g.document_id=d.id AND g.account_id=$2
+                   AND (g.source_link_hash IS NULL OR EXISTS (
+                     SELECT 1 FROM share_links gl WHERE gl.document_id=d.id
+                       AND gl.token_hash=g.source_link_hash AND gl.revoked_at IS NULL
+                       AND (gl.expires_at IS NULL OR gl.expires_at>$4)))),
                 (SELECT role FROM share_links l WHERE l.document_id=d.id AND l.token_hash=$3
                     AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>$4))
              FROM documents d WHERE d.id=$1 AND d.status='active'",

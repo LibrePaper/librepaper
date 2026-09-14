@@ -721,6 +721,22 @@
 
   async function revealAnnotation(comment) {
     selectedAnnotation = String(comment.id);
+    if (comment.motivation === "editing") {
+      if (viewing) return;
+      await startEditing();
+      showMobileView("source");
+      await tick();
+      if (comment.sourceStart == null) {
+        toastProblem("This proposed change cannot be located in the current source. Its retained text is available in Changes.");
+        return;
+      }
+      const id = session?.idOf(comment.sourcePath);
+      if (id) {
+        openFile = id;
+        editor?.goToIn(id, comment.sourceStart);
+      } else editor?.goTo(comment.sourceStart);
+      return;
+    }
     if (comment.start != null || comment.region) {
       showMobileView("document");
       await tick();
@@ -1131,6 +1147,7 @@
       return;
     }
     await startEditing();
+    showMobileView("source");
     openTheFile({ id: location.file_id, kind: "text" });
     await tick();
     editor?.goToIn(location.file_id, location.offset);
@@ -1329,7 +1346,7 @@
     editing: () => editing,
     onRedlines: () => applyRedlines(),
     onTargetReady: async (target) => {
-      if (target?._current && viewing?.sha !== target.sha && historyController.capturedCurrent?.sha === target.sha) await showCapturedCurrent();
+      if (panel !== "history" && target?._current && viewing?.sha !== target.sha && historyController.capturedCurrent?.sha === target.sha) await showCapturedCurrent();
     },
     onMerge: async (target, current) => {
       if (!target) {
@@ -1352,10 +1369,20 @@
   let historyChanges = $derived(historyController.changes);
   let historyChangedPaths = $derived(historyController.changedPaths);
   let historyRedlines = $derived(historyController.redlines);
+  // Selection is a user-interface fact, not proof that rendering or diffing
+  // succeeded. Keep it independently so a missing asset or renderer failure
+  // cannot make a clicked checkpoint appear unselected.
+  let historySelectedSha = $state("");
   // The PDF viewer exposes the same text offsets as the HTML frame.
   const redlinesDisabledReason = "";
-  function setHistoryRedlines(on) {
-    historyController.setRedlines(Boolean(on) && !redlinesDisabledReason);
+  async function setHistoryRedlines(on) {
+    const enabled = Boolean(on) && !redlinesDisabledReason;
+    historyController.setRedlines(enabled);
+    const selected = historyController.baseline?.sha || (!viewing?._current ? viewing?.sha : "");
+    if (!selected) return;
+    if (enabled) {
+      await compareWithCurrent(selected);
+    }
   }
   let fileDiff = $derived(historyController.fileDiff);
   $effect(() => () => historyController.dispose());
@@ -1387,7 +1414,6 @@
     return historyController.chooseTarget(sha);
   };
   const computeHistoryChanges = (point) => historyController.computeChanges(point);
-
   // Stepping through the changes. A change is named by its offset into the
   // text the frame published -- the same offset its redlines were painted at
   // -- so finding it is asking the frame to scroll there. The frame has to
@@ -1420,22 +1446,57 @@
     }
   }
 
-  // The timeline's two gestures. Clicking a row shows the document as it was
-  // then, with the changes since the baseline painted into it: the row is
-  // the compare end of the range. The row's "compare since" action makes it
-  // the start instead. Either way the document pane and the range agree,
-  // which is what lets the painted offsets be trusted.
-  async function viewPoint(sha) {
-    showMobileView("document");
+  // Selecting a history row opens its source diff against a captured copy of
+  // the current draft. History is a source workspace: it does not render the
+  // selected checkpoint in the document preview.
+  async function viewPoint(sha, comparison = "current") {
+    // On a compact screen the history list occupies the whole workspace, so
+    // move to the source after choosing a row. History deliberately has no
+    // rendered-preview mode: Diff only switches the source pane between the
+    // untouched checkpoint and checkpoint-versus-current.
+    if (mayEdit && !editing) await startEditing();
+    if (compact || mayEdit) showMobileView("source");
     if (!sha) {
+      historySelectedSha = "";
+      historyController.closeFileDiff();
       backToNow();
       await chooseHistoryTarget("");
       return;
     }
-    await showCheckpoint(sha);
-    if ((viewing?.sha || "") !== sha) return;
-    historyNavigationProblem = "";
-    await historyController.compareTo(sha);
+    historySelectedSha = sha;
+    if (comparison === "current") {
+      historyController.setRedlines(true);
+      await compareWithCurrent(sha);
+      return;
+    }
+    const mine = ++navigationGeneration;
+    if (comparison === "previous") {
+      historyController.setRedlines(true);
+      await historyController.compareTo(sha);
+      const target = historyController.target;
+      if (mine !== navigationGeneration || historySelectedSha !== sha || target?.sha !== sha) return;
+      viewing = target;
+      const path = session?.paths?.get(openFile) || target.main;
+      if (path) await historyController.openFileDiff(path);
+      return;
+    }
+    await historyController.chooseBaseline(sha, { compute: false });
+    const point = historyController.baseline;
+    if (mine !== navigationGeneration || historySelectedSha !== sha || point?.sha !== sha) return;
+    historyController.closeFileDiff();
+    viewing = point;
+    const path = session?.paths?.get(openFile) || point.main;
+    if (!path) return;
+    mergeTarget = {
+      path,
+      oldText: point.texts?.[path] ?? "",
+      newText: point.texts?.[path] ?? "",
+      liveText: null,
+      awareness: null,
+      editable: false,
+      targetLabel: point.label || history.shortSha(point.sha),
+    };
+    historyController.setRedlines(false);
   }
 
   async function compareSince(sha) {
@@ -1449,7 +1510,12 @@
     const mine = ++navigationGeneration;
     await historyController.compareWithCurrent(sha);
     if (mine !== navigationGeneration || !historyController.capturedCurrent) return;
-    if (viewing?.sha !== historyController.capturedCurrent.sha) await showCapturedCurrent();
+    const captured = historyController.capturedCurrent;
+    if (panel === "history") {
+      viewing = captured;
+      const path = session?.paths?.get(openFile) || captured.main;
+      if (path) await historyController.openFileDiff(path);
+    } else if (viewing?.sha !== captured.sha) await showCapturedCurrent();
   }
 
   async function refreshHistoryCurrent() {
@@ -1465,7 +1531,7 @@
     const mine = ++navigationGeneration;
     issued += 1;
     viewing = target;
-    showMobileView("document");
+    if (compact) showMobileView("document");
     // The controller has already rendered this immutable target. Deliver
     // that same cached HTML directly: a busy live-preview queue is not an
     // acknowledgement that a selected history target has reached the frame.
@@ -1640,12 +1706,6 @@
       replacements = nextReplacements;
     }
   }
-
-  // What the bar over the document calls what it is showing: the name somebody
-  // gave the moment, or the digest, which is the name it has anyway.
-  const viewingName = $derived(
-    !viewing ? "" : `${viewing.label ? `${viewing.label} · ` : ""}${new Date(viewing.at).toLocaleString()}`,
-  );
 
   // The document as a renderer takes it: every text in it, the figures by
   // digest, and which file is the document. A compiler given only the main
@@ -2181,7 +2241,12 @@
           if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: assets", Object.keys(held.assets || {}).length, missing);
         } catch { /* diagnostics are optional */ }
         if (superseded(mine, snapshotNavigation, snapshotSource, slow, format, tree)) return;
-        if (snapshotViewing || paged || (format === "latex" && htmlPreview)) {
+        // A historical Markdown page remains useful when an old image blob is
+        // unavailable: render its text and let the image appear missing. The
+        // strict comparison renderer will independently decline semantic
+        // redlines and offer the source diff, whose integrity does not depend
+        // on binary assets. Paged formats still require a complete tree.
+        if ((snapshotViewing && !["markdown", "html"].includes(format)) || paged || (format === "latex" && htmlPreview)) {
           if (missing.length) {
             throw new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
           }
@@ -2588,7 +2653,6 @@
   // Mount panels on their first visit and retain them across view changes.
   // This preserves scroll positions, expanded folders and unsent chat drafts.
   let visitedPanels = $state([]);
-  let workspaceBannerHeight = $state(0);
   $effect(() => {
     if (settled && shown.comments && panel && !visitedPanels.includes(panel)) visitedPanels = [...visitedPanels, panel];
   });
@@ -2641,12 +2705,30 @@
   // Opening it is what fetches the manifest.
   function showPanel(name, remembered = true) {
     if (panel === "history" && name !== "history") {
+      historySelectedSha = "";
+      historyController.closeFileDiff();
       const hadCheckpoint = Boolean(viewing);
       backToNow();
       if (!hadCheckpoint) navigationGeneration += 1;
     }
-    if (name === "history" && panel !== "history") setHistoryRedlines(true);
+    // Opening History establishes its default without pretending the user
+    // clicked the Diff control. A comparison starts only after a row exists
+    // to serve as its baseline.
+    if (name === "history" && panel !== "history") historyController.setRedlines(true);
     panel = name;
+    if (name === "history" && mayEdit) {
+      void startEditing().then(() => {
+        if (panel === "history") showMobileView("source");
+      });
+    }
+    // Changes is a source-review queue. On desktop, opening it establishes a
+    // source-only workspace; on compact screens the sidebar remains visible
+    // until the reviewer chooses a row, which then moves to source.
+    if (name === "changes" && mayEdit && !compact) {
+      void startEditing().then(() => {
+        if (panel === "changes") showMobileView("source");
+      });
+    }
     if (compact) mobileView = name ? "sidebar" : "document";
     if (remembered) write(PANEL, name);
     // Leaving the history panel clears whatever redlines were painted; the
@@ -2675,7 +2757,9 @@
     : mobileView === "sidebar" && !panel ? "document" : mobileView);
   const splitTight = $derived(width < PANES.editor.min + DOCUMENT_MIN + GRIP
     + (panel ? PANES.sidebar.min + GRIP : ACTIVITY_WIDTH));
-  const effectiveLayout = $derived(compact
+  const effectiveLayout = $derived(!compact && panel === "history" && editing
+    ? "source"
+    : compact
     ? (activeMobileView === "source" ? "source" : "document")
     : layout === "split" && splitTight ? preferredPane : layout);
 
@@ -3801,24 +3885,11 @@
   {/snippet}
 </Nav>
 
-<div bind:clientHeight={workspaceBannerHeight}>
-{#if viewing}
-  <div class="workspace-banner preset-tonal-warning" role="region" aria-label="Historical version">
-    <span title={new Date(viewing.at).toLocaleString()}>Showing {viewingName}</span>
-    <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => viewPoint("")}>Back to current</button>
-    {#if !viewing._current}
-      {#if mayEdit}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => restoreCheckpoint(viewing.sha)}>Restore this version</button>{/if}
-      <CopyLink href={checkpointLink(viewing.sha)} label="Copy the link to this version" />
-    {/if}
-  </div>
-{/if}
-</div>
-
 <main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact || (splitTight && layout === "split")}
-      style="height: calc(100dvh - var(--librepaper-bar) - {workspaceBannerHeight}px); --librepaper-activity: {ACTIVITY_WIDTH}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar)); --librepaper-activity: {ACTIVITY_WIDTH}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <ReaderSidebar
     {trackingState} {selectedRevision} ontracking={setTrackingEnabled}
     onmarkup={(value) => tracking?.setShowMarkup(value)} onrevisionreveal={revealRevision}
@@ -3837,7 +3908,7 @@
     revision={pending?.revision || ""} request={assistantRequest} {comments} {figureAt} {identity}
     commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
     {liveChat} {connected} {mayChat} {unreadChat} bind:collaborationTab
-    {checkpoints} {viewing} historyDurability={historyDurability} {historyController}
+    {checkpoints} {viewing} {historySelectedSha} historyDurability={historyDurability} {historyController}
     {historyProblem} historyBaseline={historyBaseline} historyChanges={historyChanges}
     historyChangedPaths={historyChangedPaths} historyRedlines={historyRedlines} {fileDiff}
     historyComparePoint={historyComparePoint} localAppDiagnostics={localAppDiagnostics}
@@ -3878,6 +3949,7 @@
       {#if mergeTarget && MergeEditor}
         <MergeEditor path={mergeTarget.path} oldText={mergeTarget.oldText} newText={mergeTarget.newText}
                      liveText={mergeTarget.liveText} awareness={mergeTarget.awareness}
+                     diff={panel !== "history" || historyRedlines}
                      editable={mergeTarget.editable !== false && mayEdit && editing}
                      targetLabel={mergeTarget.targetLabel}
                      note={mergeTarget.note || ""}
@@ -4215,7 +4287,6 @@
     font-size: var(--text-sm);
   }
   .compact-workspace-menu { display: none; }
-  .workspace-banner { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); padding: calc(var(--spacing) * 2) calc(var(--spacing) * 4); border-bottom: 1px solid var(--color-divider); }
   .presence { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-surface-600-400); font-size: var(--text-xs); }
   .connection-dot { width: .5rem; height: .5rem; margin-inline: var(--spacing); border-radius: 50%; background: var(--color-success-500); }
   .connection-dot.offline { background: var(--color-warning-500); }

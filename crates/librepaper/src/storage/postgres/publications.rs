@@ -124,15 +124,10 @@ impl PostgresCatalog {
         .bind(input.document_id)
         .fetch_one(&mut *tx)
         .await?;
-        let deployment_usage: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(sum(bytes),0)::bigint FROM (
-               SELECT byte_length bytes FROM document_assets
-               UNION ALL SELECT archive_bytes FROM document_versions
-               UNION ALL SELECT byte_length FROM publication_files
-             ) usage",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let deployment_usage: i64 =
+            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *tx)
+                .await?;
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
             return Err(Error::Conflict("account storage quota exceeded".into()));
         }

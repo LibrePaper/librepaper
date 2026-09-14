@@ -500,15 +500,22 @@ impl Server {
                 "runner conversation is missing",
             ));
         }
+        let epoch = runner_execution_epoch(headers);
+        if epoch.is_empty() {
+            return Err(Failure::new(
+                "permission_changed",
+                "runner execution lease is missing",
+            ));
+        }
+        if !self
+            .chat
+            .valid_agent_lease(slug, conversation, &epoch)
+            .await
         {
-            let epoch = runner_execution_epoch(headers);
-            if epoch.is_empty() {
-                return Err(Failure::new(
-                    "permission_changed",
-                    "runner execution lease is missing",
-                ));
-            }
-            let _ = (conversation, epoch);
+            return Err(Failure::new(
+                "permission_changed",
+                "runner execution lease has expired",
+            ));
         }
         Ok(who)
     }

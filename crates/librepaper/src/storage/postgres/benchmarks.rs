@@ -22,6 +22,9 @@ fn micros(start: Instant) -> u64 {
 
 fn percentiles(mut values: Vec<u64>) -> Value {
     values.sort_unstable();
+    if values.is_empty() {
+        return json!({"samples":0,"p50_us":null,"p95_us":null,"p99_us":null});
+    }
     let pick = |percent: usize| values[(values.len() - 1) * percent / 100];
     json!({"samples":values.len(),"p50_us":pick(50),"p95_us":pick(95),"p99_us":pick(99)})
 }
@@ -136,7 +139,7 @@ async fn catalog_v3_release_benchmark() {
             })
             .await
             .expect("source version");
-        source_results.push(json!({"inline_bytes":bytes,"elapsed_us":micros(started),"archive_bytes":stored.version.archive_bytes}));
+        source_results.push(json!({"source_bytes":bytes,"elapsed_us":micros(started),"archive_bytes":stored.version.archive_bytes}));
     }
 
     let mut asset_results = Vec::new();

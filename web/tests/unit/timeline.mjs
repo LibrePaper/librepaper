@@ -84,10 +84,11 @@ const shas = (rows) =>
 
 {
   // A fifteen-minute pause starts another session, even with the same author
-  // and calendar day. The manifest is oldest first; timeline reverses it.
+  // and calendar day.
   const points = marks("05", "vincent", 7);
-  points[3].at = "2026-09-05T09:20:00Z";
-  points[4].at = "2026-09-05T09:19:00Z";
+  for (let at = 3; at < points.length; at += 1) {
+    points[at].at = `2026-09-05T09:${17 + at}:00Z`;
+  }
   const rows = rowsOf(timeline(points));
   check("a fifteen-minute gap starts a new session", rows.length === 2 && rows.every((row) => row.kind === "folded"));
   check("the gap split preserves every checkpoint", shas(rows).length === points.length);

@@ -106,6 +106,7 @@ impl Server {
         {
             let hour = crate::util::now_unix() / 3600;
             let mut counts = self.asset_uploads.lock().await;
+            counts.retain(|_, (seen_hour, _)| *seen_hour == hour);
             let seen = counts.entry(who.key.clone()).or_insert((hour, 0));
             if seen.0 != hour {
                 *seen = (hour, 0);

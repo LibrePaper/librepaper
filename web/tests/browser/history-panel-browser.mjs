@@ -21,24 +21,36 @@ const points = Array.from({ length: 5 }, (_, index) => ({
   by: "Vincent",
   why: "quiet",
   label: index === 4 ? "Submitted draft" : index === 0 ? "Earlier draft" : "",
+  changed: ["main.md"],
   parent: index ? String(index).padStart(64, "0") : undefined,
 }));
+const otherFilePoint = {
+  sha: "9".padStart(64, "0"), at: "2026-09-11T09:00:00Z", by: "Vincent",
+  why: "quiet", label: "", changed: ["references.bib"], parent: points[4].sha,
+};
 
 const source = `
 import History from ${JSON.stringify(join(root, "web/src/components/reader/History.svelte"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 const points = ${JSON.stringify(points)};
+const otherFilePoint = ${JSON.stringify(otherFilePoint)};
 const events = [];
 const component = createClassComponent({ component: History, target: document.body, props: {
-  checkpoints: points, canEdit: true, changes: [{ position: 0, old: "old", insert: "new", currentBefore: "", currentAfter: "text", path: "main.md" }], currentLabel: "",
-  onview: (sha) => events.push(["view", sha]), onstep: () => events.push(["step"]),
+  checkpoints: [...points, otherFilePoint], path: "main.md", canEdit: true, changes: [{ position: 0, old: "old", insert: "new", currentBefore: "", currentAfter: "text", path: "main.md" }], currentLabel: "",
+  onview: (sha, comparison) => events.push(["view", sha, comparison]), onstep: () => events.push(["step"]),
+  onredlines: (shown) => events.push(["redlines", shown]),
   onname: (sha, label) => events.push(["name", sha, label]),
 } });
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 30)); await tick(); };
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 window.historyPanelCheck = async () => {
   await flush();
+  check(!document.querySelector('li[data-sha="' + otherFilePoint.sha + '"]'),
+    'history excludes checkpoints that did not change the selected file');
+  const namedRow = document.querySelector('li[data-sha="' + points[4].sha + '"]');
+  check(namedRow?.textContent.includes('Submitted draft') && !namedRow?.textContent.includes('Vincent') && !namedRow?.textContent.includes('Autosaved') && !namedRow?.textContent.includes('Named version'),
+    'a named revision is presented only with its explicit name');
   check(document.querySelector('.timeline-folded'), 'routine checkpoints are grouped');
   const session = document.querySelector('.timeline-folded');
   check(session.textContent.includes('3 versions'), 'group displays a readable version count');
@@ -46,14 +58,29 @@ window.historyPanelCheck = async () => {
   check(events.some((event) => event[0] === 'view' && event[1] === points[3].sha), 'session label previews newest version');
   document.querySelector('[aria-label="Expand editing session"]').click(); await flush();
   check(document.querySelectorAll('.timeline-point').length >= 6, 'expansion reveals every version');
+  check(!document.querySelector('[aria-label="Name this version"]'),
+    'unselected revisions do not expose row actions');
   component.$set({ viewing: points[1].sha }); await flush();
+  check(document.querySelector('[aria-label="Name this version"]') && document.querySelector('[aria-label="Restore this version"]') && document.querySelector('[aria-label="Copy the link to this version"]'),
+    'the selected revision exposes naming, restore, and link actions');
+  const comparison = document.querySelector('[aria-label="Compare selected checkpoint"]');
+  check(comparison?.value === 'current', 'history defaults to checkpoint versus current');
+  comparison.value = 'checkpoint'; comparison.dispatchEvent(new Event('change', { bubbles: true })); await flush();
+  check(events.some((event) => event[0] === 'view' && event[1] === points[1].sha && event[2] === 'checkpoint'),
+    'the comparison control reloads the selected checkpoint as source');
+  const currentRow = document.querySelector('.timeline-now .timeline-point');
+  const currentBox = currentRow.getBoundingClientRect();
+  check(document.elementFromPoint(currentBox.left + 10, currentBox.top + currentBox.height / 2)?.closest('.timeline-point') === currentRow,
+    'selected-version details do not intercept timeline controls');
   check(document.querySelector('[aria-label="Collapse editing session"]'), 'selecting a hidden version reveals its session');
   document.querySelector('[aria-label="Collapse editing session"]').click(); await flush();
   check(document.querySelector('[aria-label="Expand editing session"]') && !document.querySelector('[aria-label="Collapse editing session"]'), 'session can collapse again without being reopened');
-  document.querySelector('.history-switch input').click(); await flush();
+  const filter = document.querySelector('[aria-label="Filter version history"]');
+  filter.value = 'named'; filter.dispatchEvent(new Event('change', { bubbles: true })); await flush();
   const filtered = [...document.querySelectorAll('[data-sha]')].map((node) => node.dataset.sha);
   check(filtered.length === 3 && filtered[0] === points[4].sha && filtered[1] === points[1].sha && filtered[2] === points[0].sha, 'named filter preserves chronological order across days');
-  document.querySelector('.history-switch input').click(); await flush();
+  filter.value = 'all'; filter.dispatchEvent(new Event('change', { bubbles: true })); await flush();
+  component.$set({ viewing: '' }); await flush();
   const currentName = document.querySelector('[aria-label="Name the current version"]');
   check(currentName, 'current version has a naming action'); currentName.click(); await flush();
   const input = document.querySelector('[aria-label="Name the current version"]');
@@ -63,6 +90,9 @@ window.historyPanelCheck = async () => {
   check(events.some((event) => event[0] === 'name' && event[1] === 'current' && event[2] === 'Working draft'), 'current naming reports the current pseudo-version');
   window.dispatchEvent(new KeyboardEvent('keydown', { key: ']' })); await flush();
   check(events.some((event) => event[0] === 'step'), 'keyboard change navigation remains active');
+  component.$set({ checkpoints: points.map(({ changed, ...point }) => point), path: 'main.md' }); await flush();
+  check(document.querySelectorAll('[data-sha]').length > 0,
+    'legacy manifests without changed-path metadata do not look like an empty history');
   component.$destroy();
   return true;
 };

@@ -273,8 +273,17 @@ impl SourceStorage {
                 SourceFile::Inline { .. } => None,
             })
             .collect();
-        let records = self.catalog.assets(version.document_id, &ids).await?;
-        if records.len() != ids.len() {
+        let distinct_ids: Vec<_> = ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let records = self
+            .catalog
+            .assets(version.document_id, &distinct_ids)
+            .await?;
+        if records.len() != distinct_ids.len() {
             return Err(Error::Invalid(
                 "source archive references a missing asset".into(),
             ));
@@ -389,19 +398,13 @@ impl SourceStorage {
         key: &str,
         body: Vec<u8>,
         media_type: &str,
-        digest: [u8; 32],
+        _digest: [u8; 32],
     ) -> Result<(), Error> {
         let expected_length = body.len() as u64;
         self.blobs.put_new(key, body, media_type).await?;
         if self.blobs.length(key).await? != expected_length {
             return Err(Error::Invalid(
                 "blob length changed after immutable write".into(),
-            ));
-        }
-        let persisted = self.blobs.get(key).await?;
-        if Sha256::digest(&persisted).as_slice() != digest {
-            return Err(Error::Invalid(
-                "blob digest changed after immutable write".into(),
             ));
         }
         Ok(())

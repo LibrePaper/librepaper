@@ -2,7 +2,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -366,7 +365,7 @@ impl Drop for FsSpaceReservation {
             reserved.bytes = reserved.bytes.saturating_sub(self.bytes);
             if reserved.bytes == 0 {
                 // Releasing the process-local final reservation also releases
-                // the inter-process lock shared with backup staging.
+                // the inter-process lock shared with other filesystem writers.
                 reserved.lock.take();
             }
         }
@@ -408,9 +407,8 @@ fn reserve_fs_space(
 ) -> BlobResult<FsSpaceReservation> {
     let budget = rounded_write_budget(body_len)?;
     let ancestor = nearest_existing_ancestor(path).map_err(BlobError::from)?;
-    // Backup staging takes this same lock for the live object directory.  A
-    // separate FsStore handle (or another process) therefore cannot spend
-    // the free-space margin while a backup has admitted its scratch files.
+    // A separate FsStore handle (or another process) takes this same lock and
+    // therefore cannot spend the free-space margin concurrently.
     std::fs::create_dir_all(capacity_root).map_err(BlobError::from)?;
     let capacity_root = capacity_root.canonicalize().map_err(BlobError::from)?;
     // Serialize measurement with reservation release: a completed writer
@@ -478,9 +476,9 @@ impl BlobStore for FsStore {
 
     async fn get_range(&self, key: &str, range: std::ops::Range<u64>) -> BlobResult<Vec<u8>> {
         let path = self.path_for(key)?;
-        if range.start > range.end || range.end - range.start > 64 * 1024 {
+        if range.start > range.end || range.end - range.start > 1024 * 1024 {
             return Err(BlobError::Other(
-                "object range exceeds the 64 KiB read bound".into(),
+                "object range exceeds the 1 MiB read bound".into(),
             ));
         }
         self.blocking(move || {
@@ -874,13 +872,13 @@ fn is_atomic_temporary_name(name: &std::ffi::OsStr) -> bool {
     let Some((_, suffix)) = name.rsplit_once(".tmp-") else {
         return false;
     };
-    let Some((pid, serial)) = suffix.split_once('-') else {
-        return false;
-    };
-    !pid.is_empty()
-        && !serial.is_empty()
-        && pid.bytes().all(|byte| byte.is_ascii_digit())
-        && serial.bytes().all(|byte| byte.is_ascii_digit())
+    uuid::Uuid::parse_str(suffix).is_ok()
+        || suffix.split_once('-').is_some_and(|(pid, serial)| {
+            !pid.is_empty()
+                && !serial.is_empty()
+                && pid.bytes().all(|byte| byte.is_ascii_digit())
+                && serial.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 fn is_capacity_lock_name(name: &std::ffi::OsStr) -> bool {
@@ -913,13 +911,11 @@ fn write_file_immutable(name: &Path, body: &[u8], durable: bool) -> std::io::Res
     if let Some(parent) = name.parent() {
         durable_create_dir_all(parent, durable)?;
     }
-    static TEMPORARY: AtomicU64 = AtomicU64::new(0);
-    let serial = TEMPORARY.fetch_add(1, Ordering::Relaxed);
     let basename = name
         .file_name()
         .map(|part| part.to_string_lossy())
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("object"));
-    let temporary = name.with_file_name(format!(".{basename}.tmp-{}-{serial}", std::process::id()));
+    let temporary = name.with_file_name(format!(".{basename}.tmp-{}", uuid::Uuid::now_v7()));
     let result = write_private_file(&temporary, body, durable).and_then(|_| {
         // A hard link is the atomic no-replace publication primitive on local
         // filesystems: it fails if another allocation already claimed name.

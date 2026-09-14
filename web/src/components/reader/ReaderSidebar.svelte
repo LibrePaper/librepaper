@@ -72,6 +72,7 @@
     collaborationTab = $bindable("comments"),
     checkpoints = [],
     viewing = null,
+    historySelectedSha = "",
     historyDurability = null,
     historyController,
     historyProblem = "",
@@ -237,7 +238,8 @@
               onopen={onopendiagnostic} provenance={lastLatexResult?.provenance || null}
               attempts={lastLatexResult?.attempts || []} />
           {:else if tab.id === "history"}
-            <History {checkpoints} viewing={viewing?.sha || null} canEdit={mayEdit} durability={historyDurability}
+            <History {checkpoints} {path} viewing={historySelectedSha || viewing?.sha || null}
+              canEdit={mayEdit} durability={historyDurability}
               comparingCurrent={historyController?.comparingCurrent} newerEdits={historyController?.newerEdits}
               oncomparecurrent={oncomparecurrent} onrefreshcurrent={onrefreshcurrent} problem={historyProblem}
               baseline={historyBaseline} changes={historyChanges} changedPaths={historyChangedPaths}

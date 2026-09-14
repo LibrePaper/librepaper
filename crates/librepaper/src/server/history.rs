@@ -63,30 +63,28 @@ impl Server {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
         };
-        let page = query.and_then(|raw| {
-            let values: HashMap<_, _> = url::form_urlencoded::parse(raw.as_bytes())
-                .into_owned()
-                .collect();
-            if !values.contains_key("after") && !values.contains_key("limit") {
-                return None;
-            }
-            let after = values
-                .get("after")
-                .and_then(|value| value.parse::<i64>().ok());
-            let limit = values
-                .get("limit")
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(64)
-                .clamp(1, 200);
-            Some((after, limit))
-        });
-        let (checkpoints, next_cursor) = if let Some((after, limit)) = page {
+        let page = query
+            .map(|raw| {
+                let values: HashMap<_, _> = url::form_urlencoded::parse(raw.as_bytes())
+                    .into_owned()
+                    .collect();
+                let after = values
+                    .get("after")
+                    .and_then(|value| value.parse::<i64>().ok());
+                let limit = values
+                    .get("limit")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or(64)
+                    .clamp(1, 200);
+                (after, limit)
+            })
+            .unwrap_or((None, 64));
+        let (checkpoints, next_cursor) = {
+            let (after, limit) = page;
             match room.checkpoint_page(after, limit).await {
                 Ok(result) => result,
                 Err(error) => return write_json(503, &json!({"error": error})),
             }
-        } else {
-            (room.manifest().await.checkpoints, None)
         };
         let checkpoints: Vec<_> = checkpoints.iter().map(checkpoint_wire).collect();
         let durability = room.history_durability().await;

@@ -307,17 +307,16 @@ impl Server {
                 Ok(entry) => entry,
                 Err(response) => return response,
             };
-            // A revision changes the text and not the sharing: the read link
-            // it hands back is the one the document already has, or none if
-            // the owner took it away, which is theirs to have done.
-            let share_url = Self::read_link_of(&entry);
+            // Share-link credentials are stored only as digests, so a
+            // revision cannot reproduce an existing URL. It also must not
+            // silently rotate the link merely to manufacture one.
             return write_json(
                 201,
                 &json!({
                     "slug": entry.slug, "title": entry.title, "sha": entry.sha,
                     "created_at": entry.created_at, "updated_at": entry.updated_at,
                     "url": format!("/docs/{}", entry.slug),
-                    "share_url": share_url,
+                    "share_url": Value::Null,
                 }),
             );
         }

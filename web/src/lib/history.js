@@ -249,7 +249,7 @@ export function isMilestone(point) {
   return MILESTONE_REASONS.has(point?.why);
 }
 
-/// The manifest as a list somebody reads: newest first, grouped by day, and
+/// The newest-first manifest as a list somebody reads, grouped by day, and
 /// with runs of unlabelled checkpoints by one person folded to their first and
 /// last. A run is also split by a fifteen-minute gap or a milestone.
 ///
@@ -263,7 +263,8 @@ export function isMilestone(point) {
 /// or `{ kind: "folded", first, last, hidden }` -- `hidden` being the
 /// checkpoints between them, which the panel offers to open.
 export function timeline(checkpoints, timeZone) {
-  const newest = [...(checkpoints || [])].reverse();
+  const newest = [...(checkpoints || [])].sort((left, right) =>
+    new Date(right.at).getTime() - new Date(left.at).getTime());
   const days = [];
   for (const point of newest) {
     const day = dayOf(point.at, timeZone);

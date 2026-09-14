@@ -224,22 +224,36 @@ impl Worker {
             return Err("maintenance payload is outside its bounded limits".into());
         }
         let maintenance = Maintenance::new(self.catalog.clone(), self.blobs.clone());
-        maintenance
+        let mut failures = Vec::new();
+        if let Err(error) = maintenance
             .delete_superseded_bases(payload.base_cleanup_batch)
-            .await?;
-        maintenance
+            .await
+        {
+            failures.push(error);
+        }
+        if let Err(error) = maintenance
             .delete_orphans(
                 payload.orphan_scan_batch,
                 Duration::hours(payload.orphan_grace_hours),
             )
-            .await?;
-        self.catalog
+            .await
+        {
+            failures.push(error);
+        }
+        if let Err(error) = self
+            .catalog
             .prune_jobs(
                 OffsetDateTime::now_utc() - Duration::days(payload.completed_job_retention_days),
                 payload.completed_job_batch,
             )
             .await
-            .map_err(|error| error.to_string())?;
-        Ok(())
+        {
+            failures.push(error.to_string());
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
     }
 }

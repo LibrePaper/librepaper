@@ -4,6 +4,8 @@ use uuid::Uuid;
 
 use super::{new_id, Error, PostgresCatalog, Result};
 
+const MAX_RECOVERABLE_UPDATE_BYTES: i64 = 128 * 1024 * 1024;
+
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct PersistedUpdate {
     pub id: i64,
@@ -51,7 +53,11 @@ impl PostgresCatalog {
         .await?;
         let (count, stored) = backlog.ok_or(Error::NotFound)?;
         if count >= self.policy.max_uncompacted_updates
-            || stored.saturating_add(incoming_bytes as i64) > self.policy.max_uncompacted_bytes
+            || stored.saturating_add(incoming_bytes as i64)
+                > self
+                    .policy
+                    .max_uncompacted_bytes
+                    .min(MAX_RECOVERABLE_UPDATE_BYTES)
         {
             return Err(Error::Conflict(
                 "collaboration backlog requires compaction".into(),
@@ -105,11 +111,16 @@ impl PostgresCatalog {
     pub async fn collaboration_state(&self, document_id: Uuid) -> Result<CollaborationState> {
         let mut tx = self.pool.begin().await?;
         let document =
-            sqlx::query("SELECT update_sequence,project_generation FROM documents WHERE id=$1")
+            sqlx::query("SELECT update_sequence,project_generation,uncompacted_update_bytes FROM documents WHERE id=$1")
                 .bind(document_id)
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or(Error::NotFound)?;
+        if document.get::<i64, _>("uncompacted_update_bytes") > MAX_RECOVERABLE_UPDATE_BYTES {
+            return Err(Error::Conflict(
+                "collaboration backlog exceeds recovery memory bound".into(),
+            ));
+        }
         let base = sqlx::query_as::<_, CollaborationBase>(
             "SELECT * FROM document_bases WHERE document_id=$1",
         )

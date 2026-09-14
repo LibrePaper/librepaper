@@ -26,15 +26,31 @@ impl Maintenance {
             "SELECT document_id,previous_snapshot_key FROM document_bases WHERE previous_delete_after<=now() ORDER BY previous_delete_after LIMIT $1",
         ).bind(batch).fetch_all(self.catalog.pool()).await.map_err(|e|e.to_string())?;
         let mut removed = 0;
+        let mut failures = Vec::new();
         for (document_id, key) in rows {
-            self.blobs
-                .delete(std::slice::from_ref(&key))
+            let outcome = self
+                .blobs
+                .delete_each(std::slice::from_ref(&key))
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| error.to_string())?
+                .pop()
+                .ok_or("blob store returned no deletion outcome")?;
+            if !outcome.confirmed() {
+                failures.push(format!("{key}: {}", outcome.why()));
+                continue;
+            }
             removed+=sqlx::query("UPDATE document_bases SET previous_snapshot_key=NULL,previous_delete_after=NULL WHERE document_id=$1 AND previous_snapshot_key=$2")
                 .bind(document_id).bind(key).execute(self.catalog.pool()).await.map_err(|e|e.to_string())?.rows_affected() as usize;
         }
-        Ok(removed)
+        if failures.is_empty() {
+            Ok(removed)
+        } else {
+            Err(format!(
+                "failed to delete {} superseded base(s): {}",
+                failures.len(),
+                failures.join("; ")
+            ))
+        }
     }
 
     /// Remove old immutable objects which have no domain-row reference.

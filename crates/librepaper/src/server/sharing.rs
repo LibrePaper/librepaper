@@ -159,18 +159,6 @@ impl Server {
         Ok(format!("/docs/{slug}#k={key}"))
     }
 
-    /// The read link a document already has, as a path, when it is live and
-    /// its key was kept; what a revision hands back so the command line can
-    /// print something worth sending without minting anything.
-    pub(super) fn read_link_of(entry: &IndexEntry) -> Value {
-        let now = crate::util::now_unix();
-        match entry.link_for(Role::Reader) {
-            Some(link) if link.live_at(now) && !link.key.is_empty() => {
-                Value::String(format!("/docs/{}#k={}", entry.slug, link.key))
-            }
-            _ => Value::Null,
-        }
-    }
     /// Who a document is shared with, and -- for its owner -- the changes to
     /// that. Reading takes a place on the document by name, so a commenter can
     /// see who else is in the room; a reader who arrived by link is not shown
@@ -349,12 +337,14 @@ impl Server {
         // to what it is holding.
         self.reauthorize(slug).await;
         let mut answer = self.sharing_json(&entry);
-        if let Some((key, _)) = minted {
-            // The document keeps this link's key from here on -- see
-            // `LinkGrant::key` -- but it is worth putting at the top level too,
-            // since this is the response the dialog and the command line are
-            // actually looking at right after asking for it.
+        if let Some((key, link)) = minted {
+            // This response is the only time the raw capability exists. Put
+            // it both in the compatibility field and in the role row the
+            // dialog renders; later GETs intentionally expose metadata only.
+            let url = format!("/docs/{slug}#k={key}");
             answer["key"] = json!(key);
+            answer["links"][link.role.as_str()]["key"] = json!(key);
+            answer["links"][link.role.as_str()]["url"] = json!(url);
         }
         write_json(200, &answer)
     }

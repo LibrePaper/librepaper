@@ -118,7 +118,9 @@ pub(super) struct Connection {
     pub(super) can_comment: bool,
     pub(super) chat: Option<String>,
     pub(super) link: String,
+    pub(super) link_expires: Option<i64>,
     pub(super) comment_budget: Option<i64>,
+    pub(super) authorized_at: tokio::time::Instant,
     pub(super) tx: Sender,
 }
 
@@ -182,6 +184,9 @@ impl Server {
         // What this caller may do here, asked once: the `y-*` gate and the
         // moderation of anyone else's comment are both the editor rung.
         let may_edit = who.at_least(Role::Editor);
+        let link_expires = entry
+            .live_link(&who.link, crate::util::now_unix())
+            .and_then(|link| crate::util::parse_timestamp(&link.until));
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
         let identity = crate::server::socket_budget::SocketIdentity {
             network: client_network(&address),
@@ -231,6 +236,7 @@ impl Server {
                         headers,
                         arrival,
                         query,
+                        link_expires,
                         socket_permit,
                     )
                     .await;
@@ -250,6 +256,7 @@ impl Server {
         headers: HeaderMap,
         arrival: Arrival,
         query: Option<String>,
+        link_expires: Option<i64>,
         _socket_permit: crate::server::socket_budget::SocketPermit,
     ) {
         let socket_id = _socket_permit.id();
@@ -278,7 +285,9 @@ impl Server {
                 can_comment: who.at_least(Role::Commenter),
                 chat: None,
                 link: who.link.clone(),
+                link_expires,
                 comment_budget: who.comment_budget,
+                authorized_at: tokio::time::Instant::now(),
                 tx: tx.clone(),
             },
         );
@@ -852,6 +861,15 @@ impl Server {
     /// frames use this sender-specific path so an expensive catalogue lookup
     /// cannot make every other socket pay the same PostgreSQL query cost.
     pub async fn reauthorize_connection(&self, slug: &str, socket_id: u64) -> bool {
+        let cached = {
+            let connections = self.connections.lock().await;
+            connections.get(&socket_id).cloned()
+        };
+        if cached.as_ref().is_some_and(|connection| {
+            connection.slug == slug && connection.authorized_at.elapsed() < Duration::from_secs(1)
+        }) {
+            return true;
+        }
         let entry = match self.store.get_result(slug).await {
             Ok(entry) => entry,
             Err(error) => {
@@ -894,6 +912,8 @@ impl Server {
         };
         if !allowed {
             self.disconnect_connection(slug, socket_id).await;
+        } else if let Some(connection) = self.connections.lock().await.get_mut(&socket_id) {
+            connection.authorized_at = tokio::time::Instant::now();
         }
         allowed
     }
@@ -1008,6 +1028,24 @@ impl Server {
             let connections = self.connections.lock().await;
             connections
                 .values()
+                .map(|connection| connection.slug.clone())
+                .collect()
+        };
+        for slug in slugs {
+            self.reauthorize(&slug).await;
+        }
+    }
+
+    /// Recheck only sockets whose presented link has reached its known
+    /// expiry. Sharing mutations and ownership changes already invoke the
+    /// targeted `reauthorize` path immediately.
+    pub async fn reauthorize_expired_links(&self) {
+        let now = crate::util::now_unix();
+        let slugs: std::collections::HashSet<String> = {
+            let connections = self.connections.lock().await;
+            connections
+                .values()
+                .filter(|connection| connection.link_expires.is_some_and(|until| until <= now))
                 .map(|connection| connection.slug.clone())
                 .collect()
         };
