@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until } from "../../tools/browser-driver.mjs";
+import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-history-reader-"));
@@ -25,7 +26,7 @@ const points = sources.map((text, i) => ({
 for (let i = 1; i < points.length; i++) points[i].parent = points[i - 1].sha;
 
 writeFileSync(room, `
-import { LoroDoc, LoroText } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
+import { LoroDoc, LoroText } from "loro-crdt";
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 const decode = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
 const server = new LoroDoc();
@@ -70,7 +71,7 @@ const json = (response, value, status = 200) => {
   response.statusCode = status; response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value));
 };
 try {
-  await build({ configFile:false, root:join(root, "web"), plugins:[tailwindcss(), svelte(), {
+  await build({ configFile:false, root:join(root, "web"), resolve:{alias:loroAlias}, plugins:[tailwindcss(), svelte(), {
     name:"history-test-room", enforce:"pre", resolveId(id) {
       if (id === "../lib/room.js" || id === "../room.js" || id.endsWith("/src/lib/room.js")) return room;
     },
@@ -103,7 +104,7 @@ try {
     }
     try {
       const file = join(out, url.pathname.slice(1));
-      response.setHeader("content-type", file.endsWith(".css") ? "text/css" : "text/javascript"); response.end(readFileSync(file));
+      response.setHeader("content-type", contentType(file)); response.end(readFileSync(file));
     } catch { response.statusCode = 404; response.end(); }
   });
   await new Promise((resolve, reject) => { http.once("error", reject); http.listen(0, "127.0.0.1", resolve); });

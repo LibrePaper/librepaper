@@ -1,7 +1,6 @@
 import {
     type ChangeSpec,
     EditorSelection,
-    StateEffect,
     StateField,
 } from "@codemirror/state";
 import { EditorView, type PluginValue, ViewUpdate } from "@codemirror/view";
@@ -14,26 +13,39 @@ import {
 } from "loro-crdt";
 import { loroSyncAnnotation } from "./sync.ts";
 
-export const undoEffect = StateEffect.define();
-export const redoEffect = StateEffect.define();
+// `undoEffect` and `redoEffect` were exported here and are gone. Dispatching
+// one is how upstream asked for an undo, and with the state field no longer
+// acting on them that would be a no-op export -- a call that compiles, runs,
+// and does nothing. Anyone who dispatched them should call `undo(view)` or
+// `redo(view)`, which is what the keymap has always done.
+
+// Holds the manager, and does nothing else.
+//
+// Upstream undid the document from inside this `update`, which is the fifth
+// fault in this binding and the one that survived the other four. A state
+// field's update has to be a pure function of what it is handed: CodeMirror
+// calls it while it is computing the new state, before that state exists.
+// `UndoManager.undo()` is not pure -- it writes to the document, and Loro
+// delivers the resulting event synchronously, so `UndoPluginValue`'s
+// subscriber called `view.dispatch` from inside the dispatch that was still
+// being computed.
+//
+// The inner transaction then updated the view against a state the outer one
+// was about to replace, and the two disagreed by exactly the text that had
+// been undone. What the user saw was a crash from deep inside CodeMirror's
+// view -- "Cannot destructure property 'tile'", thrown while walking a tile
+// tree whose length no longer matched the document it was drawn from -- with
+// nothing in it naming Loro, undo, or this file.
+//
+// So the undo happens in the commands below, where there is no transaction in
+// flight and the change arrives as a dispatch of its own.
 export const undoManagerStateField = StateField.define<UndoManager | undefined>(
     {
         create(state) {
             return undefined;
         },
 
-        update(value, transaction) {
-            for (const effect of transaction.effects) {
-                if (effect.is(undoEffect)) {
-                    if (value && value.canUndo()) {
-                        value.undo();
-                    }
-                } else if (effect.is(redoEffect)) {
-                    if (value && value.canRedo()) {
-                        value.redo();
-                    }
-                }
-            }
+        update(value) {
             return value;
         },
     }
@@ -159,17 +171,23 @@ export class UndoPluginValue implements PluginValue {
     }
 }
 
+// Ask the manager directly. A command runs between transactions, which is the
+// one place it is safe to move the document: the event Loro sends back becomes
+// a dispatch of its own rather than one nested inside this one.
+//
+// `false` when there is nothing to undo, so the key falls through to whatever
+// is bound behind it, which is what a CodeMirror command is expected to do.
 export const undo = (view: EditorView): boolean => {
-    view.dispatch({
-        effects: [undoEffect.of(null)],
-    });
+    const manager = view.state.field(undoManagerStateField, false);
+    if (!manager?.canUndo()) return false;
+    manager.undo();
     return true;
 };
 
 export const redo = (view: EditorView): boolean => {
-    view.dispatch({
-        effects: [redoEffect.of(null)],
-    });
+    const manager = view.state.field(undoManagerStateField, false);
+    if (!manager?.canRedo()) return false;
+    manager.redo();
     return true;
 };
 

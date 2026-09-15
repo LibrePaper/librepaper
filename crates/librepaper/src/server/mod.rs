@@ -991,7 +991,7 @@ impl Server {
     /// the REST comments route, so the two speak identical JSON.
     ///
     /// Unlike `apply_from`, an accept can itself change the live document, so
-    /// its Yjs update is relayed here, the way `handle_restore` relays a
+    /// its document update is relayed here, the way `handle_restore` relays a
     /// restore's -- to every socket, sender included, since nobody's own copy
     /// already has an edit the server made on their behalf.
     fn annotation_mutation_actor(

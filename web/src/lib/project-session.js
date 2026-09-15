@@ -30,8 +30,24 @@ import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries
 // receive limit. Base64 expands the binary update by a third, and the JSON
 // envelope adds a little more, so the chunk is deliberately smaller than the
 // apparent limit. The server reassembles these chunks before applying them as
-// one Yjs update.
+// one document update.
 const UPDATE_CHUNK_BYTES = 600_000;
+
+// The origin every change to the directory is committed under: a file added,
+// renamed, moved or removed, and the folders that hold them.
+//
+// It exists so the editor's undo manager can be told to leave those alone.
+// The manager is one per document -- it has to be, because a person's edits
+// are spread across the files they have open -- and it merges everything
+// within a second into a single step. Creating a file and typing the first
+// word into it falls inside that second, so one Ctrl-Z took the file away
+// along with the word: `textOf` returned null and the file left the list,
+// which reads as data loss rather than as an undo.
+//
+// `Editor.svelte` names this prefix in `excludeOriginPrefixes`. The origin is
+// not persisted (Loro keeps `message`, not `origin`), so this is a runtime
+// label for the local undo manager and nothing that reaches the wire.
+export const DIRECTORY_ORIGIN = "directory";
 
 // Carets can change once per editor transaction. Awareness is ephemeral, so
 // sending the latest state at this rate is enough for a smooth cursor while
@@ -395,7 +411,7 @@ export function createProjectSession({
       if (!mayEdit) throw new Error("This project is read-only.");
       path = checkPlacement(rules, { kind: "folder", path }, this.list(), this.folders());
       meta.set(`folder:${path}`, true);
-      doc.commit();
+      doc.commit({ origin: DIRECTORY_ORIGIN });
       return path;
     },
 
@@ -410,7 +426,7 @@ export function createProjectSession({
       }
       for (const path of plan.oldFolders) meta.delete(`folder:${path}`);
       for (const path of [...plan.folders, ...plan.parents]) meta.set(`folder:${path}`, true);
-      doc.commit();
+      doc.commit({ origin: DIRECTORY_ORIGIN });
       return plan;
     },
 
@@ -435,7 +451,7 @@ export function createProjectSession({
         const parent = parentPath(entry.path);
         if (parent) meta.set(`folder:${parent}`, true);
       }
-      doc.commit();
+      doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
     duplicateEntry(entry, path, rules) {
@@ -516,7 +532,7 @@ export function createProjectSession({
       }
       files.setContainer(id, text);
       paths.set(id, path);
-      doc.commit();
+      doc.commit({ origin: DIRECTORY_ORIGIN });
       return id;
     },
 
@@ -529,12 +545,12 @@ export function createProjectSession({
         const sha = assets.get(id);
         assets.delete(id);
         assets.set(path, sha);
-        doc.commit();
+        doc.commit({ origin: DIRECTORY_ORIGIN });
         return;
       }
       if (kind === "text" || (kind === undefined && paths.has(id))) {
         paths.set(id, path);
-        doc.commit();
+        doc.commit({ origin: DIRECTORY_ORIGIN });
       }
     },
 
@@ -543,7 +559,7 @@ export function createProjectSession({
     removeFile(id) {
       files.delete(id);
       paths.delete(id);
-      doc.commit();
+      doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
     removeAsset(path) {

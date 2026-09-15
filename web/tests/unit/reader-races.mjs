@@ -138,6 +138,9 @@ const context = (values) => {
     Uint8Array,
     ArrayBuffer,
     readerDisposed: false,
+    // Recomputing the review is part of what an edit does now; the blocks
+    // that care override this to count the calls.
+    refreshReview: () => {},
     mayEdit: true,
     publishedPublication: null,
     editing: true,
@@ -580,18 +583,27 @@ for (const invalidate of [null, "navigation", "main"]) {
 
 // A peer's edit advances the source generation the history panel reads, so a
 // comparison against "current" knows it was taken before that edit.
+//
+// It also recomputes the review. A hunk's offsets are a claim about the
+// proposal's base, so an edit underneath one does not move it -- it makes it
+// a claim about text that is no longer there, which is the difference between
+// a card marked stale and a card still offering to replace words nobody is
+// looking at.
 {
+  let reviewed = 0;
   const ctx = context({
     sourceGeneration: 0, historyLiveVersion: 0, mayEdit: true, publishedPublication: null,
     outlineRevision: 0, sourceFormat: "", editing: false,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
     diagnosticPainter: { typed: () => {} },
+    refreshReview: () => { reviewed += 1; },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
   assert.equal(ctx.sourceGeneration, 1);
   assert.equal(ctx.historyLiveVersion, 1);
+  assert.equal(reviewed, 1, "an edit under a proposal recomputes its hunks");
 }
 
 // Further keystrokes must not postpone an editor's already scheduled preview.
@@ -630,7 +642,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(scheduled, 1, "Typst preview timer remains bounded during typing");
 }
 
-// Yjs may notify the main-text observer from inside CodeMirror's update
+// Loro may notify the main-text observer from inside CodeMirror's update
 // listener. Diagnostic painting must wait until that update has returned;
 // otherwise Editor.setDiagnostics dispatches a forbidden nested update.
 {

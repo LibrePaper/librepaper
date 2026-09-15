@@ -1077,7 +1077,7 @@ impl Server {
         // The signature says this link was minted here; it does not say who is
         // holding it. Who may read is asked again, from the request itself,
         // which is the same rule the socket answers `y-open` under.
-        // Full Yjs state is a source synchronization transport. Readers and
+        // Full document state is a source synchronization transport. Readers and
         // commenters receive the rendered publication and annotation channel.
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");

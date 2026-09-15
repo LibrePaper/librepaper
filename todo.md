@@ -1,33 +1,75 @@
-  The migration itself is essentially done
+# What is left
 
-  Four of five phases pass their gates. yrs, yjs, y-protocols, y-codemirror.next, y-indexeddb are gone; the server, editor, persistence, presence and fuzz targets all run on Loro; §1.2's
-  four proposal mechanisms are one.
+Written 2026-09-15, after finishing the work the previous version of this file
+described. `SPEC-loro.md` §6 is the record of the migration itself; this is
+only the queue of what has not been done.
 
-  Phase 2 is the only one open, on a single scenario in editor-browser.mjs.
+## Done since the last version of this file
 
-  What's actually left
+**Phase 2's gate passes.** `editor-browser.mjs` passes whole, and so does
+`insert-browser.mjs`. Three separate faults were in the way, none of them
+about Loro, all recorded in §6 Phase 2: the undo command moved the document
+from inside a CodeMirror state field; `MergeEditor` built its `UndoManager`
+from a text rather than from the document; and the browser tests held two wasm
+modules, so a version vector handed from one to the other was a pointer into
+the wrong memory.
 
-  1. Two browser tests. editor (one scenario, in the forked binding) and insert (a menu destructuring a tile off an empty list — not a collaboration bug). 22 of 24 pass.
+Two more came out with them, and neither had anything to do with the
+substrate:
 
-  2. The review UI is half-built, and the half that exists isn't connected. This is the biggest gap, and I should be blunt that it's bigger than my last summaries implied:
+- **One Ctrl-Z after creating a file deleted the file.** The undo manager is
+  one per document and merges everything within a second, so creating a file
+  and typing the first word into it were one undo step. Directory changes now
+  commit under `DIRECTORY_ORIGIN` and the manager is told to leave them alone.
+- **An insertion touching the open file wrote to the document and not to the
+  editor.** `applyInsertResult` keyed its per-file plans on the `LoroText`
+  handle, and `session.textOf` returns a fresh wrapper each call, so the file
+  on screen was filed twice; the second copy bypassed CodeMirror. Enabling a
+  Quarto table of contents put the frontmatter in the file and showed none of
+  it.
 
-  - proposal-marks.js is written and tested — but grep says it's referenced zero times in Editor.svelte. It renders nothing today.
-  - Changes.svelte still carries 19 references to the deleted revision mechanism, and has no test coverage. That's where the margin cards belong.
-  - So: a reviewer still cannot see or act on a proposal. The model is complete and tested; the interface is a layer with no caller.
+**The review interface exists.** `proposal-marks.js` is wired into
+`Editor.svelte` and draws what a proposal would add and take out, in the text
+it would change. The Reader computes each open proposal's hunks (§5.2 — both
+sides compute, neither sends) and hands them to the Changes panel as one card
+per hunk, which is the unit a decision names. A stale hunk is shown and cannot
+be answered.
 
-  3. Tracked editing is still dead. It has been since the cutover — deliberately, since the branch model replaced it, but nothing has restored the user-facing behaviour.
+**`Changes.svelte` is about proposals.** The 22 references to the deleted
+revision mechanism are gone, along with the undo-a-decision menu item that was
+wired to a callback nothing passed. It has a browser test now —
+`changes-browser.mjs` — which it never had while it was the panel this all
+depended on.
 
-  4. Three §9 follow-ups, all genuinely deferrable: evaluate LoroTree to collapse files+paths; reconsider checkpoint density now every intermediate state is reachable; and the last of the
-  max_encoded_snapshot_bytes machinery.
+**Tracked editing works again.** The Track changes switch opens a branch and
+the editor binds to it; switching it off flushes and leaves the proposal with
+the server. `proposals.js` had three protocol faults that made this dead code
+regardless: it never read the id back from `proposal-opened`, its updates
+omitted `proposal_id` and `tip`, and `decide` used camelCase keys the server
+does not read and refused to run at all unless the reviewer happened to have a
+proposal of their own open.
 
-  5. The fork needs sending upstream. web/vendor/loro-codemirror/ has four fixes and a README saying what to delete when a release contains them. I haven't opened that PR — pushing to
-  someone else's repo is yours to decide.
+## What is actually left
 
-  What I'd do next
+1. **The client→server proposal round trip has no automated coverage.** Every
+   piece is tested apart — hunk grouping against `hunks.rs`, the marks, the
+   panel, the server's own `room/proposals.rs` tests — and nothing exercises
+   open → update → decide → resolve across a socket. That gap is exactly the
+   shape of the one Phase 2 kept falling into, and it needs Postgres, so it
+   belongs with the `#[ignore]`d Postgres tests rather than in `make test`.
 
-  Wire proposal-marks into the editor and build the cards. Everything else is finishing touches; this is the difference between a working review model and one nobody can use.
+2. **`proposal-open` carries a base the server ignores.** §5.1 says the
+   message carries the branch's base frontier; `room.open_proposal` forks at
+   its own `state_frontiers()` instead. The two agree in a quiet room and
+   diverge under concurrent edits, which would put somebody else's words
+   inside a proposal. Either honour the client's base or drop it from the
+   message and say why.
 
-  And before touching Changes.svelte, write a browser test for that panel — it has no coverage, 19 stale references, and this project has now shown repeatedly that untested UI here is
-  where things quietly stop working.
+3. **Three §9 follow-ups**, still deliberately deferred: evaluate `LoroTree`
+   to collapse `files` + `paths`; reconsider checkpoint density now that
+   contract 6 makes every intermediate state reachable; and delete
+   `max_encoded_snapshot_bytes`'s speculative-encode machinery.
 
-✻ Worked for 10s · done 9:28 AM
+4. **The fork has not been sent upstream.** `web/vendor/loro-codemirror/` now
+   carries five fixes, and its README says what to delete when a release
+   contains them. Pushing to someone else's repository is yours to decide.

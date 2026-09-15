@@ -22,6 +22,20 @@ import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
 
 /// The proposals to draw, and which hunk is being looked at.
+///
+/// The shape is written out below in a block comment rather than in these
+/// ones: `///` is this file's prose, and TypeScript reads only `/** */`.
+/// Without it `define()` infers an effect carrying `null`, and every caller
+/// is then an error at the point of use rather than here.
+/**
+ * @typedef {{index: number, start: number, deleted: number, inserted: string, file: string | null}} Hunk
+ * @typedef {{id: string, author?: string, hunks: Hunk[]}} DrawableProposal
+ * @type {import("@codemirror/state").StateEffectType<{
+ *   proposals?: DrawableProposal[],
+ *   showing?: string,
+ *   selected?: {proposal: string, hunk: number} | null,
+ * }>}
+ */
 export const setProposalMarks = StateEffect.define();
 
 /// Text a proposal would remove. Shown rather than hidden: the decision is

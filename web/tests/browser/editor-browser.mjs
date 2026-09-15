@@ -1,7 +1,7 @@
 // A browser-level regression check for the source editor.
 //
 // This deliberately exercises the component through its public props and DOM,
-// while Yjs supplies the same shared-text changes a peer would make. It does
+// while Loro supplies the same shared-text changes a peer would make. It does
 // not inspect the component's state cache or effects.
 
 import assert from "node:assert/strict";
@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
@@ -23,7 +24,7 @@ const entry = join(temporary, "entry.js");
 const port = 19000 + Math.floor(Math.random() * 1000);
 
 const source = `
-import { LoroDoc } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
+import { LoroDoc } from "loro-crdt";
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
 import { undoManagerStateField } from ${JSON.stringify(join(root, "web/vendor/loro-codemirror/undo.ts"))};
@@ -32,7 +33,7 @@ import { undoManagerStateField } from ${JSON.stringify(join(root, "web/vendor/lo
 // they ask that instead.
 // A change from somebody else, arriving the way one actually does: made on a
 // separate document and imported. Editing this browser's own document instead
-// would be a local change, which the binding rightly ignores -- the old Yjs
+// would be a local change, which the binding rightly ignores -- the old
 // version could label a local transaction "remote", and Loro has no such
 // pretence.
 const fromAPeer = (target, edit) => {
@@ -351,6 +352,7 @@ try {
   await build({
     configFile: false,
     root: join(root, "web"),
+    resolve: { alias: loroAlias },
     plugins: [svelte()],
     logLevel: "error",
     build: {
@@ -363,7 +365,7 @@ try {
   server = createServer((request, response) => {
     const file = join(output, request.url.slice(1));
     if (request.url !== "/" && existsSync(file)) {
-      response.setHeader("Content-Type", "text/javascript");
+      response.setHeader("Content-Type", contentType(file));
       response.end(readFileSync(file));
       return;
     }

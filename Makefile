@@ -134,9 +134,9 @@ fmt:  ## Format every crate
 # the code under test is safe Rust, the oracle is the assertions, and the
 # sanitizer doubles the build time to find nothing the panics do not.
 FUZZ_SECONDS ?= 60
-# Every target unless told otherwise. `update` is known to fail on a panic
-# inside yrs (the ignored test in crates/librepaper/src/tests/directories.rs
-# reproduces it), so CI runs the other three until that is settled.
+# Every target unless told otherwise. `update` used to be held back for a
+# panic inside yrs, reproduced by an ignored test that went with the
+# substrate; there is no yrs now and nothing is excluded.
 FUZZ_TARGETS ?= $(shell cargo fuzz list --fuzz-dir tools/fuzz)
 # The global export would evaluate this for every recipe, even outside fuzz.
 unexport FUZZ_TARGETS

@@ -1449,7 +1449,7 @@ impl Room {
 
     /// Relays source synchronization frames only to editor peers. Reader and
     /// commenter sockets share this room for annotations, but must never see
-    /// Yjs updates from the editable project.
+    /// Document updates from the editable project.
     pub async fn broadcast_editors_except(&self, skip: Option<u64>, payload: &Value) {
         let message = payload.to_string();
         let mut state = self.state.lock().await;
@@ -1916,7 +1916,7 @@ impl Room {
     }
 }
 
-/// Populate a Yjs project from its immutable source archive. With
+/// Populate a Loro project from its immutable source archive. With
 /// `missing_only`, this repairs the one-update state written by releases that
 /// seeded only the main file and preserves any edit already made to that file.
 fn starter_bibliography(

@@ -1,4 +1,4 @@
-// Owns one room and one Yjs collaboration session. Reader keeps the domain
+// Owns one room and one Loro collaboration session. Reader keeps the domain
 // callbacks and rendering state; this module owns sockets, retries, metadata
 // checks, and all observers attached to the session.
 //
@@ -61,7 +61,7 @@ export function createReaderCollaboration({
   }
 
   function send(message) {
-    // Y updates made while a socket is reconnecting remain in the local Yjs
+    // Updates made while a socket is reconnecting remain in the local
     // document. `start()` catches them up after the server identity check.
     if (message.type?.startsWith("doc-update") && !session?.joined) return undefined;
     return room?.send(message);
@@ -100,7 +100,7 @@ export function createReaderCollaboration({
     onSession(active);
     // Reader/commenter sessions use this socket only for rendered
     // annotations. They receive the initial comment hello, but never send a
-    // Yjs open request or receive source state.
+    // document open request or receive source state.
     if (sourceSync) room?.send(active.open());
     return active;
   }

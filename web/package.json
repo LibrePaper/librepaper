@@ -8,7 +8,7 @@
     "preview:site": "vite preview --config vite.site.config.js --open",
     "dev": "vite build --watch",
     "check:types": "svelte-check --tsconfig ./jsconfig.json --output human",
-    "check:track-changes": "node tests/unit/track-changes.mjs && node tests/browser/live-tracking-browser.mjs",
+    "check:review": "node tests/unit/proposal-marks.mjs && node tests/browser/changes-browser.mjs",
     "check:frame-overlays": "node tests/unit/frame-overlays.mjs",
     "check:render-diagnostics": "node tests/unit/render-diagnostics.mjs",
     "check:project-session": "node tests/unit/project-session.mjs && node tests/unit/collab-awareness.mjs && node tests/unit/reader-races.mjs",

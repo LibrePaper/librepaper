@@ -92,8 +92,8 @@
   // same LoroDoc, and each file has a LoroText within it. Two people typing
   // in the same sentence converge without either waiting for the other, and
   // each of them keeps their own caret, selection and undo history.
-  import { EditorState, Transaction, StateField, StateEffect } from "@codemirror/state";
-  import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, dropCursor, rectangularSelection, drawSelection, Decoration, WidgetType } from "@codemirror/view";
+  import { EditorState, Transaction } from "@codemirror/state";
+  import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, dropCursor, rectangularSelection, drawSelection } from "@codemirror/view";
   import { defaultKeymap, indentWithTab, selectAll } from "@codemirror/commands";
   import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, startCompletion } from "@codemirror/autocomplete";
   import { searchKeymap, highlightSelectionMatches, openSearchPanel } from "@codemirror/search";
@@ -107,10 +107,6 @@
     openLintPanel,
   } from "@codemirror/lint";
   import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "../../vendor/loro-codemirror/index.ts";
-  // The annotation the binding stamps on the transactions it applies itself,
-  // which is how a person's typing is told apart from a change arriving from
-  // a peer.
-  import { loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
   import { UndoManager } from "loro-crdt";
 
   import { typstLanguage } from "../lib/typst-mode.js";
@@ -118,43 +114,49 @@
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
   import { hasPairing, searchZotero, zoteroItem } from "../lib/companion/client.js";
   import { createProposals } from "../lib/proposals.js";
+  import { proposalMarks, setProposalMarks } from "../lib/proposal-marks.js";
+  import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { untrack } from "svelte";
 
-  let { session, format = "", file = "", keys = "default", editable = true, tracking = null, selectedRevision = null, analyze = analyzeBibliography, send = null, onproposal = null, onchange, oncaret, onfilechange, onbibliography, onrevision, onsave, onquit } = $props();
+  let { session, format = "", file = "", keys = "default", editable = true,
+    // Whether what is typed here goes into a proposal rather than into the
+    // paper. A branch is opened the moment it is switched on, and the editor
+    // binds to that branch's copy of the file (§3.3).
+    tracking = false,
+    analyze = analyzeBibliography, send = null, onproposal = null,
+    // What is being proposed for this document, and which hunk of it the
+    // reviewer is looking at. `review` is the list the Reader keeps from
+    // `proposal-list`, each entry `{id, author, hunks}` with hunks already in
+    // this browser's UTF-16 basis; `reviewing` is `{proposal, hunk}` or null.
+    //
+    // These are drawn, never applied: a proposal reaches the document when
+    // the server resolves it (§5.1a), and until then the text on screen still
+    // says what it said.
+    review = [], reviewing = null,
+    onchange, oncaret, onfilechange, onbibliography, onsave, onquit } = $props();
 
-  const selectedRevisionEffect = StateEffect.define();
-  class DeletedRevisionWidget extends WidgetType {
-    constructor(record, selected) { super(); this.record = record; this.selected = selected; }
-    toDOM() {
-      const node = document.createElement("span");
-      node.className = `cm-revision-deletion${this.selected ? " cm-revision-selected" : ""}`;
-      node.dataset.revisionId = this.record.id;
-      node.textContent = this.record.before || "␡";
-      node.setAttribute("aria-label", `Deleted text: ${this.record.before || "empty"}`);
-      return node;
-    }
-    ignoreEvent() { return false; }
+  // One field instance for the component, because it is one editor: a state
+  // field is identified by the object, so building a fresh one per file would
+  // make each file's state carry a field the view's other states do not have.
+  const proposalReview = proposalMarks();
+
+  /// Redraw the proposals over whichever file is on screen.
+  ///
+  /// Everything is recomputed rather than mapped: a hunk's offsets are a claim
+  /// about the proposal's base, and moving them through an edit would quietly
+  /// turn them into a claim about something else. `proposal-marks.js` drops
+  /// its decorations on any document change for the same reason, so this has
+  /// to run again after one.
+  function drawProposals() {
+    if (!view) return;
+    view.dispatch({
+      effects: setProposalMarks.of({
+        proposals: review || [],
+        showing,
+        selected: reviewing,
+      }),
+    });
   }
-  const revisionMarks = StateField.define({
-    create: () => Decoration.none,
-    update(value, transaction) {
-      for (const effect of transaction.effects) if (effect.is(selectedRevisionEffect)) {
-        const payload = effect.value || {};
-        const records = payload.showMarkup === false ? [] : (payload.records || []);
-        return Decoration.set(records.filter((record) => record.file_id === showing).flatMap((record) => {
-          const from = Math.max(0, Math.min(transaction.state.doc.length, record.position ?? record.start_offset ?? 0));
-          const to = Math.max(from, Math.min(transaction.state.doc.length, record.end_position ?? record.end_offset ?? from));
-          const selected = payload.selected === record.id;
-          const kind = record.kind === "delete" ? "cm-revision-deletion" : record.kind === "replace" ? "cm-revision-replacement" : "cm-revision-insertion";
-          if (record.kind === "delete") return [Decoration.widget({ widget: new DeletedRevisionWidget(record, selected), side: 0 }).range(from)];
-          const mark = Decoration.mark({ class: `${kind}${selected ? " cm-revision-selected" : ""}`, "data-revision-id": record.id }).range(from, Math.max(from + 1, to));
-          return [mark];
-        }));
-      }
-      return value.map(transaction.changes);
-    },
-    provide: (field) => EditorView.decorations.from(field),
-  });
 
   let parsedBibliography = $state(null);
   const insertTargets = new Map();
@@ -173,15 +175,41 @@
     });
   });
 
-  // Start tracking changes as a proposal. Opens a branch and starts sending
-  // edits to the server.
+  /// Rebind the editor to whichever text it should now be writing into.
+  ///
+  /// Switching tracking on or off changes which LoroText the binding is
+  /// attached to -- the branch's copy of the file, or the room's -- and that
+  /// is fixed when the state is built. So the state is thrown away and made
+  /// again. Everything held in it goes with it: the caret, the scroll
+  /// position and the undo history. That is the honest cost of the switch,
+  /// because an undo history over one text cannot be replayed onto another.
+  function rebind() {
+    if (!view || !showing) return;
+    const id = showing;
+    states.delete(id);
+    showing = "";
+    show(id);
+  }
+
+  /// Start proposing rather than editing. Forks the document, and from here
+  /// what is typed accumulates on the branch and is flushed to the server
+  /// instead of reaching the paper.
   export function startTracking() {
-    if (!proposals) return;
+    if (!proposals || proposals.drafting()) return;
     proposals.start();
-    // Trigger a rebuild of the editor state to bind to the proposal's text
-    if (showing && states.has(showing)) {
-      states.delete(showing);
-    }
+    rebind();
+  }
+
+  /// Stop, leaving the branch with the server.
+  ///
+  /// What has been typed is not discarded and not applied: it is a proposal,
+  /// and it waits for somebody to answer it (§5.1a). Anything not yet sent
+  /// goes up before the local branch is let go.
+  export function stopTracking() {
+    if (!proposals || !proposals.drafting()) return;
+    proposals.flush();
+    proposals.stop();
+    rebind();
   }
 
   // When proposal messages arrive, apply them. The Reader's receive function
@@ -336,17 +364,6 @@
 
   let host = $state(null);
   let view = null;
-  let unsubscribeTracking = null;
-
-  function revisionPayload(selected = selectedRevision) {
-    const snapshot = tracking?.snapshot?.() || { revisions: tracking?.records?.() || [], showMarkup: true };
-    const records = snapshot.revisions.map((record) => {
-      const range = tracking?.range?.(record) || {};
-      return { ...record, position: range.start ?? record.start_offset, end_position: range.end ?? record.end_offset };
-    });
-    return { selected, records, showMarkup: snapshot.showMarkup !== false };
-  }
-
   // One editor state per file, made the first time that file is opened and
   // kept afterwards. Switching files swaps the state rather than rebuilding
   // it, so a visit to another chapter costs nothing and leaves the undo
@@ -631,7 +648,20 @@
     const to = loroText.convertPos(Math.max(fromPos, toPos), "unicode", "utf16") ?? 0;
 
     if (loroText.toString().slice(from, to) !== target.capturedText) return false;
-    const plans = new Map([[loroText, []]]);
+    // One plan per file, keyed by container id rather than by the handle.
+    //
+    // `session.textOf` builds a fresh JS wrapper around the same LoroText on
+    // every call, so `===` between two of them is false even when they are
+    // the same text. Keying on the handle filed an edit to the file on screen
+    // under a second key: it was left out of the transaction the view was
+    // given and written straight into the document by the loop below, which
+    // is the one path here that bypasses CodeMirror. The document took the
+    // change and the editor never saw it -- enabling a Quarto table of
+    // contents wrote the frontmatter into the file and showed none of it --
+    // and the two stayed apart until something else rebuilt the state.
+    const keyOf = (text) => String(text.id);
+    const showingKey = keyOf(loroText);
+    const plans = new Map([[showingKey, { text: loroText, edits: [] }]]);
     const mapOffset = (offset, snapshot, current) => {
       if (snapshot === current) return offset;
       let prefix = 0, suffix = 0;
@@ -648,25 +678,28 @@
       const snapshot = path === capturedContext.path ? capturedContext.text : capturedContext.files?.find(file => file.path === path)?.text;
       if (!fileText || typeof snapshot !== "string" || edit.from < 0 || edit.to < edit.from || edit.to > snapshot.length) return false;
       const editFrom = mapOffset(edit.from, snapshot, fileText.toString()), editTo = mapOffset(edit.to, snapshot, fileText.toString());
-      if (editFrom == null || editTo == null || (fileText === loroText && editFrom < to && editTo > from)) return false;
-      if (!plans.has(fileText)) plans.set(fileText, []);
-      plans.get(fileText).push({ from: editFrom, to: editTo, insert: edit.insert });
+      const key = keyOf(fileText);
+      if (editFrom == null || editTo == null || (key === showingKey && editFrom < to && editTo > from)) return false;
+      if (!plans.has(key)) plans.set(key, { text: fileText, edits: [] });
+      plans.get(key).edits.push({ from: editFrom, to: editTo, insert: edit.insert });
     }
-    const changes = plans.get(loroText);
+    const changes = plans.get(showingKey).edits;
     const shift = changes.filter(edit => edit.to <= from).reduce((sum, edit) => sum + edit.insert.length - (edit.to - edit.from), 0);
     changes.push({ from, to, insert: result.text });
-    for (const edits of plans.values()) {
-      edits.sort((a, b) => a.from - b.from || a.to - b.to);
-      for (let i = 1; i < edits.length; i++) if (edits[i - 1].to > edits[i].from) return false;
+    for (const plan of plans.values()) {
+      plan.edits.sort((a, b) => a.from - b.from || a.to - b.to);
+      for (let i = 1; i < plan.edits.length; i++) if (plan.edits[i - 1].to > plan.edits[i].from) return false;
     }
     const selection = result.selection;
     const offset = value => from + shift + Math.max(0, Math.min(result.text.length, Number.isInteger(value) ? value : result.text.length));
     const anchor = offset(selection?.anchor), head = offset(selection?.head);
     view.dispatch({ changes, selection: { anchor, head }, effects: EditorView.scrollIntoView(head) });
-    for (const [text, edits] of plans) if (text !== loroText) {
-      for (const edit of [...edits].reverse()) {
-        if (edit.to > edit.from) text.delete(edit.from, edit.to - edit.from);
-        if (edit.insert) text.insert(edit.from, edit.insert);
+    // Every other file the insertion touches. The one on screen went through
+    // the transaction above; writing it here as well would apply it twice.
+    for (const [key, plan] of plans) if (key !== showingKey) {
+      for (const edit of [...plan.edits].reverse()) {
+        if (edit.to > edit.from) plan.text.delete(edit.from, edit.to - edit.from);
+        if (edit.insert) plan.text.insert(edit.from, edit.insert);
       }
     }
     session.doc.commit();
@@ -701,9 +734,15 @@
     // document and tracks the operations this peer made anywhere in it.
     // Handing it a text is a type error the binding reports as a failure to
     // mount, with nothing said about which argument was wrong.
-    const undoManager = undoManagers.get(session.doc) || new UndoManager(session.doc, {});
+    // Undo takes back what was typed, and not the existence of the file it was
+    // typed into. A directory change is committed under its own origin
+    // (`DIRECTORY_ORIGIN`) and named here, because this manager is one per
+    // document and merges everything within a second: without the exclusion,
+    // creating a file and typing into it are one undo step, and taking it
+    // back deletes the file.
+    const undoManager = undoManagers.get(session.doc)
+      || new UndoManager(session.doc, { excludeOriginPrefixes: [DIRECTORY_ORIGIN] });
     undoManagers.set(session.doc, undoManager);
-    tracking?.registerUndoManager?.(undoManager, id);
 
     // Who the caret belongs to. The session publishes {name, color, tab}; the
     // binding wants {name, colorClassName}, and paints through a class rather
@@ -749,17 +788,8 @@
         // underline and the hover the lint extension draws.
         lintGutter(),
         EditorView.lineWrapping,
-        revisionMarks,
-        EditorView.domEventHandlers({
-          click(event, target) {
-            if (!tracking || !onrevision) return false;
-            const position = target.posAtCoords({ x: event.clientX, y: event.clientY });
-            if (position == null) return false;
-            const record = tracking.records?.().find((item) => item.file_id === showing && (item.position ?? item.start_offset ?? 0) <= position && (item.end_position ?? item.end_offset ?? 0) >= position);
-            if (record) { onrevision(record); return true; }
-            return false;
-          },
-        }),
+        // What somebody has proposed, drawn in the text it would change.
+        proposalReview,
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
@@ -780,6 +810,11 @@
         // open on different files at once; they all share the same LoroDoc.
         LoroExtensions(session.doc, session.ephemeral && { user: { name: userName, colorClassName }, ephemeral: session.ephemeral }, undoManager, () => text),
         EditorView.updateListener.of((update) => {
+          // A document change clears the proposal decorations, because the
+          // offsets they were placed at have moved. Drawing them again from
+          // the hunks is the only honest way back, and it has to happen after
+          // the transaction rather than inside it.
+          if (update.docChanged && (review || []).length) queueMicrotask(drawProposals);
           if (update.docChanged) onchange?.();
           // Only a deliberate move counts: typing moves the caret constantly,
           // and scrolling the document on every keystroke would make the
@@ -835,7 +870,6 @@
   /// files does not flash.
   function show(id) {
     if (!view || !id || id === showing) return;
-    tracking?.breakGroup?.();
     if (showing) states.set(showing, view.state);
     if (!states.has(id)) states.set(id, stateFor(id));
     const state = states.get(id);
@@ -893,23 +927,14 @@
       view = new EditorView({
         state: initial.state,
         parent: host,
-        dispatchTransactions(transactions) {
-          const editableChanges = transactions.filter((transaction) => transaction.docChanged && !transaction.annotation(loroSyncAnnotation));
-          const changes = editableChanges.flatMap((transaction) => {
-            const entries = [];
-            transaction.changes.iterChanges((from, to, _fromB, _toB, insert) => entries.push({ from, to, insert: insert.toString() }));
-            return entries;
-          });
-          const userEvent = editableChanges.map((transaction) => transaction.annotation(Transaction.userEvent)).find(Boolean) || "input";
-          const apply = () => view.update(transactions);
-          if (tracking?.capture && changes.length) tracking.capture(showing, changes, apply, { userEvent });
-          else apply();
-          if (transactions.some((transaction) => transaction.selectionSet && !transaction.docChanged)) tracking?.breakGroup?.();
-        },
+        // No `dispatchTransactions` here. There was one, and all it did was
+        // hand each edit to the deleted revision mechanism before applying
+        // it; with that gone it called `view.update(transactions)`, which is
+        // exactly what CodeMirror does when nothing is supplied. A proposal
+        // is not intercepted on its way through the editor -- what is typed
+        // goes into whichever text the binding is attached to, and which text
+        // that is was decided when the state was built (see `getTextFromDoc`).
       });
-      unsubscribeTracking = tracking?.onChange?.(() => queueMicrotask(() => {
-        if (view) view.dispatch({ effects: selectedRevisionEffect.of(revisionPayload()) });
-      }));
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
       if (initial.first) session.inFile?.(initial.first);
@@ -922,8 +947,6 @@
         clearTimeout(bibliographyTimer);
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         if (view) viewCallbacks.delete(view);
-        unsubscribeTracking?.();
-        unsubscribeTracking = null;
         view?.destroy();
         insertTargets.clear();
         undoManagers.clear();
@@ -950,6 +973,16 @@
     if (view) scheduleBibliography();
   });
 
+  // Draw the review whenever the list, the selection or the file on screen
+  // changes. Showing another file is a swap of the view's state, and a state
+  // carries no decorations until something puts them there.
+  $effect(() => {
+    void review;
+    void reviewing;
+    void file;
+    if (view) drawProposals();
+  });
+
   // `:w` and `:q` run through the WeakMap rather than closing over this
   // component, so it is kept current with whichever callbacks the reader
   // passed in this render.
@@ -965,34 +998,11 @@
     if (view) syncKeys(view);
   });
 
-  $effect(() => {
-    const record = selectedRevision;
-    if (view) view.dispatch({ effects: selectedRevisionEffect.of(revisionPayload(record)) });
-  });
 </script>
 
 <div class="editorhost" bind:this={host}></div>
 
-<style>
-  :global(.cm-revision-insertion) {
-    text-decoration-line: underline;
-    text-decoration-style: double;
-    text-decoration-thickness: .12em;
-    text-decoration-color: var(--color-success-600-400);
-    background: color-mix(in srgb, var(--color-success-500) 12%, transparent);
-  }
-  :global(.cm-revision-replacement) {
-    text-decoration: underline .12em var(--color-warning-600-400);
-    background: color-mix(in srgb, var(--color-warning-500) 15%, transparent);
-  }
-  :global(.cm-revision-deletion) {
-    color: var(--color-error-600-400);
-    text-decoration: line-through .12em;
-    background: color-mix(in srgb, var(--color-error-500) 12%, transparent);
-    cursor: pointer;
-  }
-  :global(.cm-revision-selected) {
-    outline: 2px solid var(--color-primary-500);
-    outline-offset: 1px;
-  }
-</style>
+<!-- A proposal is painted by `.proposal-added`, `.proposal-removed` and
+     `.proposal-selected` in `styles/librepaper.css`, beside the rest of the
+     review. The rules that used to be here dressed the deleted revision
+     mechanism, and nothing wore them. -->

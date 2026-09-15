@@ -1,5 +1,6 @@
 <script>
   import { newRequestKey } from "../lib/request-key.js";
+  import { decodeProposal, hunksOfProposal } from "../lib/proposals.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { anchorAll, anchorAllSources, anchorOne, flatten } from "../lib/anchor.js";
@@ -641,7 +642,7 @@
   }
 
   // Candidate previews are rendered from the runner's immutable file snapshot
-  // in this browser. Nothing is written to the shared Yjs tree; only the
+  // in this browser. Nothing is written to the shared document; only the
   // diagnostics and output kind go back over the private assistant channel.
   async function previewAssistant(request) {
     // Capture before the first await. Asset fetching and compilation may take
@@ -964,16 +965,144 @@
   // is only the list, which the reader needs to draw cards and to decide.
   const openProposals = new Map();
   function proposalTip(id) {
-    return openProposals.get(id)?.tip || "";
+    return openProposals.get(id)?.tipBytes || "";
+  }
+
+  // The same proposals as something to look at: `review` is what the editor
+  // draws over the text, and `reviewRows` is one card per hunk for the
+  // Changes panel. Both are computed here rather than sent, because the
+  // server counts text in code points and this browser in UTF-16, and §5.2
+  // keeps offsets off the wire for exactly that reason.
+  let review = $state([]);
+  let reviewRows = $state([]);
+  // Which hunk the reviewer is looking at, as `{proposal, hunk}`.
+  let reviewing = $state(null);
+
+  /// Recompute the hunks of every open proposal.
+  ///
+  /// A hunk is a claim about the proposal's base, so an edit underneath it
+  /// does not move the hunk, it invalidates it. A hunk that no longer fits
+  /// the file it names is kept in the queue and marked, rather than dropped
+  /// -- a reviewer who was told about a change and then shown nothing has no
+  /// way to tell that from the change having been dealt with.
+  function recomputeReview() {
+    if (readerDisposed) return;
+    if (!session || !openProposals.size) {
+      review = [];
+      reviewRows = [];
+      return;
+    }
+    const drawn = [];
+    const rows = [];
+    for (const proposal of openProposals.values()) {
+      const hunks = hunksOfProposal(session.doc, proposal);
+      drawn.push({ id: proposal.id, author: proposal.author, hunks });
+      for (const hunk of hunks) {
+        const text = hunk.file ? session.textOf?.(hunk.file) : null;
+        const body = text ? text.toString() : null;
+        const fits = body !== null && hunk.start >= 0 && hunk.start + hunk.deleted <= body.length;
+        rows.push({
+          // The proposal and the index within it are the decision; the joined
+          // id is only so the list has something to key rows on.
+          id: `${proposal.id}#${hunk.index}`,
+          proposal: proposal.id,
+          hunk: hunk.index,
+          author: proposal.author,
+          file_id: hunk.file || "",
+          path: (hunk.file && session.paths?.get(hunk.file)) || "",
+          position: hunk.start,
+          before: fits ? body.slice(hunk.start, hunk.start + hunk.deleted) : "",
+          after: hunk.inserted,
+          stale: fits ? "" : "The text this was written against has changed.",
+        });
+      }
+    }
+    review = drawn;
+    reviewRows = rows;
+  }
+
+  // Recomputing costs a fork and a diff per open proposal, and the thing that
+  // asks for it most often is a keystroke. So typing coalesces: the hunks a
+  // reviewer is reading do not have to follow every character somebody else
+  // types, only settle once they stop. A decision arriving over the socket
+  // calls `recomputeReview` directly, because that is rare and the queue
+  // should answer at once.
+  const REVIEW_COALESCE_MS = 200;
+  let reviewTimer = null;
+  function refreshReview() {
+    clearTimeout(reviewTimer);
+    reviewTimer = setTimeout(recomputeReview, REVIEW_COALESCE_MS);
+  }
+
+  // Whether what this browser types goes into a proposal rather than into the
+  // paper. The switch is in the Changes panel; the branch is in the editor,
+  // which is where the text is.
+  let tracking = $state(false);
+  function setTracking(on) {
+    if (!editor) return;
+    if (on) editor.startTracking(); else editor.stopTracking();
+    tracking = Boolean(on);
+  }
+
+  /// Look at a hunk: open the file it belongs to, put the caret where it
+  /// starts, and mark it as the one being reviewed so the editor outlines it.
+  async function revealProposal(row) {
+    if (!row) return;
+    reviewing = { proposal: row.proposal, hunk: row.hunk };
+    if (!row.file_id || !editing) return;
+    showMobileView("source");
+    await tick();
+    if (shown.source && editor) {
+      ws.openFile = row.file_id;
+      editor.goToIn(row.file_id, row.position);
+    }
+  }
+
+  /// A reviewer answers one hunk. The tip travels with it so that a decision
+  /// about a diff the author has typed past is refused rather than applied to
+  /// text nobody read (§5.1).
+  function decideProposal(row, action) {
+    const tip = proposalTip(row.proposal);
+    if (!tip) return Promise.reject(new Error("That proposal is no longer open."));
+    const request_id = newRequestKey();
+    const promise = new Promise((resolve, reject) => suggestionDecisions.set(request_id, { commentId: "", resolve, reject }));
+    let sent;
+    try {
+      sent = collaboration?.send({
+        type: "proposal-decide",
+        proposal_id: row.proposal,
+        hunk: row.hunk,
+        accepted: action === "accept",
+        tip,
+        request_id,
+      });
+    } catch (error) {
+      suggestionDecisions.delete(request_id);
+      return Promise.reject(error);
+    }
+    if (sent === undefined || sent === false) {
+      suggestionDecisions.delete(request_id);
+      return Promise.reject(new Error("Review transport is unavailable."));
+    }
+    return promise;
   }
 
   function receive(event) {
     if (event.type?.startsWith("proposal-") || (event.type === "error" && event.stale)) {
       if (event.type === "proposal-list") {
         openProposals.clear();
-        for (const open of event.proposals || []) openProposals.set(open.id, open);
+        for (const open of event.proposals || []) {
+          const decoded = decodeProposal(open);
+          if (decoded) openProposals.set(decoded.id, decoded);
+        }
+        recomputeReview();
       } else if (event.type === "proposal-decided" && event.resolved) {
+        // A proposal leaves the queue when it resolves, not when one of its
+        // hunks is answered: until every hunk has an answer the document has
+        // not moved and the rest are still to be decided (§5.1a).
         openProposals.delete(event.proposal_id);
+        if (reviewing?.proposal === event.proposal_id) reviewing = null;
+        recomputeReview();
       }
       // Whoever asked for this decision is waiting on it. The reply used to be
       // an `accept` or `reject` frame; it is a decided proposal now, and a
@@ -1080,7 +1209,7 @@
       session
         ?.start(event)
         .then(() => {
-          // Binding the initial Yjs tree does not produce an observed source
+          // Binding the initial tree does not produce an observed source
           // edit. Publication metadata must therefore begin only after this
           // state has been applied, rather than waiting for a later edit.
           if (mayEdit && publication.begin()) void refreshPublicationMetadata();
@@ -1151,7 +1280,7 @@
   let Editor = $state(null);
   let MergeEditor = $state(null);
   let editor = $state(null);
-  // Raw on purpose: the session is a bag of Yjs types and functions, and the
+  // Raw on purpose: the session is a bag of Loro types and functions, and the
   // collaboration module hands the same object back in its callbacks, which
   // are compared to this by identity. A deep proxy would never be equal to it.
   let session = $state.raw(null);
@@ -1462,7 +1591,7 @@
     if (!session) return { main: "", texts: {}, digests: {} };
     const tree = session.tree();
     if (!tree.main) return tree;
-    // CodeMirror owns the active Yjs binding and exposes the text it is
+    // CodeMirror owns the active Loro binding and exposes the text it is
     // displaying. During a local transaction its view can be one tick ahead
     // of the directory observer, so use that current source for snapshots
     // taken by the preview scheduler.
@@ -1506,7 +1635,7 @@
   }
 
   // Outline reads the same live text as the editor. The revision dependency
-  // is explicit because Yjs changes happen outside Svelte's normal tracking;
+  // is explicit because document changes happen outside Svelte's normal tracking;
   // both local and remote source observers increment it.
   const outlineSource = $derived.by(() => {
     void outlineRevision;
@@ -1966,6 +2095,11 @@
     if (readerDisposed) return;
     sourceGeneration += 1;
     historyLiveVersion += 1;
+    // A hunk is a claim about the proposal's base, so an edit underneath it
+    // does not move it -- it invalidates it. Recomputing here is what turns
+    // that into a card marked stale rather than a card that still offers to
+    // replace words nobody is looking at any more.
+    refreshReview();
     if (mayEdit && publishedPublication?.source_sha256) {
       void refreshPublicationStatus();
     }
@@ -1984,7 +2118,7 @@
       const parsed = quarto.parseQuarto(session.textOf(id)?.toString?.() || session.text.toString(), { path: main });
       const nextDiagnostics = parsed.diagnostics.map((item) => diagnosticContext(item, { main, texts: { [main]: parsed.source } }, ""));
       const diagnosticsGeneration = sourceGeneration;
-      // Yjs can notify this observer from inside CodeMirror's update
+      // Loro can notify this observer from inside CodeMirror's update
       // listener. Editor.setDiagnostics dispatches another update, which
       // CodeMirror rejects while the first one is still in progress. Source
       // invalidation stays synchronous, but the editor repaint waits until
@@ -2021,7 +2155,7 @@
   let stepTimer = null;
   function outlineTextChanged() {
     // CodeMirror has applied the local or remote transaction by this point.
-    // The Yjs source observer can run before its caret has been mapped.
+    // The source observer can run before its caret has been mapped.
     outlineActiveFrom = editor?.caret?.() ?? null;
   }
   function outlineCaretChanged() {
@@ -2519,7 +2653,7 @@
   // A file added, renamed, removed, or made the main one: the list is redrawn
   // and the document is rendered again, because every one of those changes
   // what a compiler would produce. Main-text edits also arrive through the
-  // source watcher; skip them here so one Yjs transaction does not schedule
+  // source watcher; skip them here so one commit does not schedule
   // the same diagnostics and preview twice. Included-file edits still need a
   // source change of their own because they can alter a Quarto render without
   // changing the main Y.Text.
@@ -2694,7 +2828,7 @@
         workspace.attach(active);
         refreshFiles();
         refreshPeers();
-        // A restored Yjs document can already contain its complete tree when
+        // A restored document can already contain its complete tree when
         // the session is handed over, so no later source event is guaranteed.
         // Render once from that hydrated tree after Svelte has applied the
         // format and file-list state.
@@ -2798,7 +2932,7 @@
     // transient and does not create a server-side result.
     renderers.warm(format);
     await startCollaboration(document_);
-    // `onSource` starts publication metadata only after the initial Yjs state
+    // `onSource` starts publication metadata only after the initial document state
     // has populated the source tree. A session object alone is not a snapshot.
     // No chooser and no saved distribution: `latex.configure` tells the
     // controller which project this is and what it is allowed to do, and the
@@ -2876,6 +3010,7 @@
       navigationGeneration += 1;
       renderers.cancelPreview();
       publication.dispose();
+      clearTimeout(reviewTimer);
       clearTimeout(previewTimer);
       previewTimer = null;
       boot.dispose();
@@ -3189,11 +3324,15 @@
   {/snippet}
 
   {#snippet changesPanel()}
-    <Changes {comments} {files} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"}
+    <Changes proposals={reviewRows} {comments} {files} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"}
       {canModerate} canReview={mayEdit} {tool}
+      {tracking} canTrack={mayEdit && editing} ontracking={setTracking}
       {went} {replacements} canComment={mayChat} ontool={chooseTool} onreveal={revealAnnotation}
       selected={selectedAnnotation} onresolve={resolve} ondelete={askDelete}
       ondeletemany={askDeleteMany} onreply={reply}
+      selectedProposal={reviewing ? `${reviewing.proposal}#${reviewing.hunk}` : ""}
+      onproposaldecide={decideProposal}
+      onproposalreveal={revealProposal}
       onaccept={(comment) => decideSuggestion(comment, "accept")}
       onreject={(comment) => decideSuggestion(comment, "reject")}
       onrejectconfirmed={rejectConfirmed}
@@ -3281,7 +3420,7 @@
       {:else if Editor && session?.text}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} editable={mayEdit}
-                  send={collaboration?.sendLive}
+                  send={collaboration?.sendLive} {review} {reviewing} {tracking}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; }} />
         {/key}

@@ -22,7 +22,7 @@ function compareUtf8(left, right) {
 
 /// Returns the server's canonical digest for a renderer tree. `tree.files`,
 /// when present, is the session's path-to-entry metadata and supplies the
-/// stable Yjs id and asset size. The fallback shape remains useful for old
+/// stable file id and asset size. The fallback shape remains useful for old
 /// sessions, but a live text without its id cannot equal a server checkpoint.
 export async function snapshotDigest(tree, assets = tree?.assets || {}) {
   const texts = tree?.texts || {};

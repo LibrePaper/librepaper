@@ -4,10 +4,10 @@
 //! caller supplies a source tree identity and immutable byte ranges; the
 //! validator produces a new source without ever guessing an anchor.  The
 //! room implementation below persists the operation before it changes
-//! Yjs and commits the receipt only after the resulting snapshot is durable.
+//! Loro and commits the receipt only after the resulting snapshot is durable.
 //!
 //! The room integration applies a validated batch across all text files in a
-//! single Yjs transaction. Candidate storage can therefore share the same
+//! single Loro commit. Candidate storage can therefore share the same
 //! operation and conflict rules without a main-file special case.
 
 use std::collections::BTreeMap;

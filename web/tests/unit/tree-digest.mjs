@@ -74,7 +74,7 @@ check(
   numericDigest,
 );
 
-// Exercise the producer used by Reader, including the stable Yjs file ids,
+// Exercise the producer used by Reader, including the stable file ids,
 // rather than only handing the helper a hand-written renderer tree.
 const sent = [];
 const session = join({ send: (message) => sent.push(message), slug: "digest-check", mayEdit: true });

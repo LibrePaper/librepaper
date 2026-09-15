@@ -10,13 +10,14 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until } from "../../tools/browser-driver.mjs";
+import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-publication-editor-"));
 const entry = join(temp, "entry.js"), room = join(temp, "room.js"), out = join(temp, "build");
 
 writeFileSync(room, `
-import { LoroDoc, LoroText } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
+import { LoroDoc, LoroText } from "loro-crdt";
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 const decode = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
 const server = new LoroDoc(), files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
@@ -73,7 +74,7 @@ function json(response, value, status = 200) {
 }
 
 try {
-  await build({ configFile:false, root:join(root, "web"), plugins:[tailwindcss(), svelte(), {
+  await build({ configFile:false, root:join(root, "web"), resolve:{alias:loroAlias}, plugins:[tailwindcss(), svelte(), {
     name:"publication-editor-room", enforce:"pre", resolveId(id) {
       if (id === "../lib/room.js" || id === "../room.js" || id.endsWith("/src/lib/room.js")) return room;
     },
@@ -113,7 +114,7 @@ try {
       return response.end('<!doctype html><html data-theme="librepaper"><body><script type="module" src="/check.js"></script></body></html>');
     }
     const file = join(out, url.pathname.slice(1));
-    try { response.setHeader("content-type", file.endsWith(".css") ? "text/css" : "text/javascript"); response.end(readFileSync(file)); }
+    try { response.setHeader("content-type", contentType(file)); response.end(readFileSync(file)); }
     catch { response.statusCode = 404; response.end(); }
   });
   await new Promise((resolve, reject) => { http.once("error", reject); http.listen(0, "127.0.0.1", resolve); });

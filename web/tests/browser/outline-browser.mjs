@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until } from "../../tools/browser-driver.mjs";
+import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-outline-browser-"));
@@ -26,7 +27,7 @@ const out = join(temp, "build");
 // a child heading, and a later top-level heading to exercise active-heading
 // resets as well as parsing.
 writeFileSync(room, `
-import { LoroDoc, LoroText } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
+import { LoroDoc, LoroText } from "loro-crdt";
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 const decode = text => Uint8Array.from(atob(text), c => c.charCodeAt(0));
 const rooms = new Map();
@@ -154,6 +155,7 @@ try {
   await build({
     configFile: false,
     root: join(root, "web"),
+    resolve: { alias: loroAlias },
     plugins: [
       tailwindcss(),
       svelte(),
@@ -177,7 +179,7 @@ try {
     }
     const file = join(out, request.url?.split("?")[0].slice(1) || "");
     try {
-      response.setHeader("content-type", file.endsWith(".css") ? "text/css" : "text/javascript");
+      response.setHeader("content-type", contentType(file));
       response.end(readFileSync(file));
     } catch {
       response.statusCode = 404;
@@ -310,7 +312,7 @@ try {
   assert.equal(await tab.evaluate("window.resizeNotifications"), resizeNotifications, "pane layout settles without a continuing resize loop");
   assert.equal(await tab.evaluate("document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight"), true, "mobile outline navigation keeps the page inside the viewport");
   assert.deepEqual(await tab.evaluate("window.testErrors"), []);
-  console.log("outline-browser: five source formats, caret jumps, file switching, live Yjs updates, empty files, responsive reveal and accessibility passed");
+  console.log("outline-browser: five source formats, caret jumps, file switching, live remote updates, empty files, responsive reveal and accessibility passed");
 } finally {
   await tab?.close();
   httpServer?.close();

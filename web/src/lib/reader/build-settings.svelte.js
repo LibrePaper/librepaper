@@ -4,7 +4,7 @@
 // supplies source files and never this preference, so two people reading the
 // same project can compile it with different tools without arguing about it.
 // The LaTeX settings beside it are the opposite -- they live in the project's
-// Yjs `meta` map, shared, and are mirrored into state here because that map
+// shared `meta` map, shared, and are mirrored into state here because that map
 // is not itself reactive.
 //
 // This owns both, the outputs and preview modes that follow from them, and

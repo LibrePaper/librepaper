@@ -163,7 +163,7 @@ export function openRoom(slug, { onMessage, onConnected, key = "" }) {
         socket.send(JSON.stringify(message));
         return { ok: true, via: "socket" };
       }
-      // Yjs messages must be delivered by the room socket. Sending a Yjs
+      // Document messages must be delivered by the room socket. Sending a document
       // update through the comments endpoint would return an error and, more
       // dangerously, make callers believe that the document was persisted.
       if (message.type?.startsWith("doc-")) {

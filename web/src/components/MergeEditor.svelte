@@ -8,6 +8,7 @@
   import { MergeView } from "@codemirror/merge";
   import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "../../vendor/loro-codemirror/index.ts";
   import { UndoManager } from "loro-crdt";
+  import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import IconButton from "./IconButton.svelte";
 
   let {
@@ -59,7 +60,14 @@
     // the permission and no stale revert control remains actionable.
     void editable;
     if (!host) return;
-    const undoManager = editable && liveText && loroDoc ? new UndoManager(liveText) : null;
+    // An undo manager is built from the document, not from one text in it:
+    // it records the operations this peer made, and a peer makes them across
+    // files. Handing it the text threw "expected instance of LoroDoc" from
+    // inside wasm while the effect was running, which Svelte reported as an
+    // unhandled rejection naming neither this line nor the argument.
+    const undoManager = editable && liveText && loroDoc
+      ? new UndoManager(loroDoc, { excludeOriginPrefixes: [DIRECTORY_ORIGIN] })
+      : null;
     merge = diff
       ? new MergeView({
         a: { doc: String(oldText || ""), extensions: extensions(true, false, baselineLabel) },

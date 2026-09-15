@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until } from "../../tools/browser-driver.mjs";
+import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-reader-responsive-"));
@@ -17,7 +18,7 @@ const entry = join(temp, "entry.js");
 const room = join(temp, "room.js");
 const out = join(temp, "build");
 writeFileSync(room, `
-import { LoroDoc, LoroText } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
+import { LoroDoc, LoroText } from "loro-crdt";
 const encode = b => btoa(String.fromCharCode(...b));
 const server = new LoroDoc();
 const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
@@ -77,7 +78,7 @@ mount(Reader, {target:document.body});
 `);
 let serverHttp, b;
 try {
-  await build({ configFile:false, root:join(root,"web"), plugins:[tailwindcss(), svelte(), {name:"mock-room", enforce:"pre", resolveId(id){ if(id === '../lib/room.js' || id === '../room.js' || id.endsWith('/src/lib/room.js')) return room; }}], build:{outDir:out,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"check.js"}}, logLevel:"error" });
+  await build({ configFile:false, root:join(root,"web"), resolve:{alias:loroAlias}, plugins:[tailwindcss(), svelte(), {name:"mock-room", enforce:"pre", resolveId(id){ if(id === '../lib/room.js' || id === '../room.js' || id.endsWith('/src/lib/room.js')) return room; }}], build:{outDir:out,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"check.js"}}, logLevel:"error" });
   serverHttp=createServer((req,res)=>{
     if(req.url==="/docs/paper") {
       res.setHeader("content-type","text/html");
@@ -90,7 +91,7 @@ try {
       return;
     }
     const file=join(out,req.url.split("?")[0].slice(1));
-    try { res.setHeader("content-type",file.endsWith(".css")?"text/css":"text/javascript");res.end(readFileSync(file)); }
+    try { res.setHeader("content-type",contentType(file));res.end(readFileSync(file)); }
     catch { res.statusCode=404;res.end(); }
   });
   await new Promise((resolve,reject)=>{serverHttp.once("error",reject);serverHttp.listen(0,"127.0.0.1",resolve)});

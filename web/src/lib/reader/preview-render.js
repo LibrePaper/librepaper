@@ -84,7 +84,7 @@ export function createPreviewRenderer({
     let identity = "";
     const format = renderers.formatOf(source.main);
     debug("preview: tree", source.main, format, Object.keys(source.texts || {}).length);
-    // The collaboration session exists before its first Yjs state arrives.
+    // The collaboration session exists before its first document state arrives.
     // Rendering that placeholder used to call the renderer registry with an
     // empty format and permanently consume the initial paint.
     if (!source.main || !format) return;
@@ -174,7 +174,7 @@ export function createPreviewRenderer({
       // catches up. Navigation and main-file changes still invalidate it;
       // LaTeX keeps its strict source guard.
       if (coordinator.superseded(guard)) {
-        // Collaboration can emit a bookkeeping-only Yjs transaction while a
+        // Collaboration can emit a bookkeeping-only commit while a
         // slow compile is running. Accept the result when the canonical tree
         // is still byte-for-byte the one that produced it.
         const unchanged = format === "latex" && coordinator.isNewer(ticket)

@@ -1,8 +1,8 @@
 # loro-codemirror, forked
 
 Upstream is <https://github.com/loro-dev/loro-codemirror> at 0.3.3, MIT, and the
-LICENSE beside this file is theirs. This is that package's `src/` with one
-change.
+LICENSE beside this file is theirs. This is that package's `src/` with five
+changes to it.
 
 ## Why it is forked
 
@@ -58,24 +58,51 @@ transaction, was written a second time.
 
 Every transaction is now asked.
 
+### Five, in `undo.ts`: the undo happened inside a state field
+
+`undoManagerStateField.update` called `UndoManager.undo()`. A state field's
+update has to be a pure function of what it is handed — CodeMirror runs it
+while it is computing the new state, before that state exists — and
+`UndoManager.undo()` writes to the document. Loro delivers the resulting event
+synchronously, so `UndoPluginValue`'s subscriber called `view.dispatch` from
+inside the dispatch that was still being computed.
+
+The inner transaction then updated the view against a state the outer one was
+about to replace, and the two ended up apart by exactly the text that had been
+undone. What a user saw was a crash from deep inside CodeMirror's view —
+`Cannot destructure property 'tile' of 'o.pop(...)'`, thrown while walking a
+tile tree whose length no longer matched its document — with nothing in it
+naming Loro, undo, or this package.
+
+`undo()` and `redo()` now ask the manager directly. They are commands, so they
+run between transactions, which is the one place it is safe to move the
+document; the change comes back as a dispatch of its own. They also return
+`false` when there is nothing to undo, so the key falls through, which is what
+a CodeMirror command is expected to do.
+
+With the field no longer acting on them, `undoEffect` and `redoEffect` would
+be exports that compile, run and do nothing, so they are removed rather than
+left as a trap. Anyone dispatching one should call `undo(view)` or
+`redo(view)`, which is what the keymap already did.
+
 
 Each change carries a comment at the point of it saying what upstream does and
 why it is wrong here.
 
 ## Why a fork and not a patch on disk
 
-The change is in `src/`, which is what upstream would take, rather than in the
-built `dist/` that a patch tool would edit. Keeping the source means the fix can
+The changes are in `src/`, which is what upstream would take, rather than in the
+built `dist/` that a patch tool would edit. Keeping the source means they can
 be sent upstream unchanged, and means the next person reads TypeScript rather
 than bundled output.
 
 ## What to do with it
 
-Send it upstream. Until it lands, this is what the editor imports — see
+Send them upstream. Until they land, this is what the editor imports — see
 `web/src/components/Editor.svelte`. Note that upstream has not published since
 October 2025 while `loro-prosemirror` has moved in that time, so a reply may be
 slow; that is the reason for forking rather than waiting.
 
-When a release contains the fix: delete this directory, restore the dependency
-in `web/package.json`, and point the two imports in `Editor.svelte` back at the
-package name.
+When a release contains the fixes: delete this directory, restore the dependency
+in `web/package.json`, and point the imports in `Editor.svelte` and
+`MergeEditor.svelte` back at the package name.

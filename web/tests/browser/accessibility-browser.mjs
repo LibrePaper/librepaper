@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until } from "../../tools/browser-driver.mjs";
+import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-accessibility-"));
@@ -50,7 +51,7 @@ const UNMEASURABLE = new Set(["color-contrast", "region"]);
 
 const room = join(temp, "room.js");
 writeFileSync(room, `
-import { LoroDoc, LoroText } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
+import { LoroDoc, LoroText } from "loro-crdt";
 const encode = b => btoa(String.fromCharCode(...b));
 const server = new LoroDoc();
 const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
@@ -149,7 +150,7 @@ try {
     const entry = join(temp, `${name}.js`);
     writeFileSync(entry, screen.entry);
     await build({
-      configFile: false, root: join(root, "web"),
+      configFile: false, root: join(root, "web"), resolve: { alias: loroAlias },
       plugins: [tailwindcss(), svelte(), { name: "mock-room", enforce: "pre", resolveId(id) { if (/(^|\/)room\.js$/.test(id)) return room; } }],
       build: { outDir: out, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "check.js" } },
       logLevel: "error",
@@ -171,7 +172,7 @@ try {
       if (path === "/axe.js") { response.setHeader("content-type", "text/javascript"); response.end(axeSource); return; }
       if (path.startsWith("/raw/")) { response.setHeader("content-type", "text/html"); response.end("<body>A paragraph of source.</body>"); return; }
       try {
-        response.setHeader("content-type", path.endsWith(".css") ? "text/css" : "text/javascript");
+        response.setHeader("content-type", contentType(path));
         response.end(readFileSync(join(out, path.slice(1))));
       } catch { response.statusCode = 404; response.end(); }
     });

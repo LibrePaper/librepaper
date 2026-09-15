@@ -3,12 +3,15 @@
   import ExplorerMenu from "../ExplorerMenu.svelte";
 
   let {
-    revisions = [], comments = [], files = [], tracking = false, markup = true, showMarkup,
-    canTrack = true, canReview = true, selected = "", selectedRevision = "", filters = {},
+    // One row per hunk. A decision names a proposal and an index within it
+    // (SPEC-loro.md §5.2), so the unit of the queue is a hunk and not a
+    // proposal: an agent run that touches four passages is four answers.
+    proposals = [], comments = [], files = [], tracking = false, markup = true, showMarkup,
+    canTrack = true, canReview = true, selected = "", selectedProposal = "", filters = {},
     authors = [], sessions = [], ontracking, onmarkup, onfilter, onselect,
-    onaccept, onreject, onbulk, onrevisionreveal, onrevisiondecide, onrevisionundo,
-    onundo, onprevious, onnext, onreveal, onresolve, ondelete, onreply, onhistory,
-    onrevisionresolve, identity = "", commentingAs = "Anonymous", canModerate = false,
+    onaccept, onreject, onbulk, onproposalreveal, onproposaldecide,
+    onprevious, onnext, onreveal, onresolve, ondelete, onreply, onhistory,
+    identity = "", commentingAs = "Anonymous", canModerate = false,
     went = {}, replacements = {},
   } = $props();
 
@@ -17,12 +20,11 @@
   let deciding = $state(new Set());
   let localFilters = $state({ status: "pending", author: "", file: "", session: "" });
   let feedback = $state("");
-  let undoBatch = $state(null);
   let filtersOpen = $state(false);
 
   const value = (item, ...keys) => keys.map((key) => item?.[key])
     .find((answer) => answer !== undefined && answer !== null && answer !== "") ?? "";
-  const idOf = (item) => String(value(item, "id", "revisionId", "revision_id"));
+  const idOf = (item) => String(value(item, "id", "proposalId", "proposal_id"));
   const rowId = (item) => item.__kind === "suggestion" ? `suggestion:${idOf(item)}` : idOf(item);
   const pathOf = (item) => value(item, "path", "file", "filePath", "sourcePath") || "Untitled";
   const authorOf = (item) => value(item, "author", "authorName", "creator") || "Unknown author";
@@ -50,10 +52,19 @@
     if (Math.abs(hours) < 24) return formatter.format(hours, "hour");
     return formatter.format(Math.round(hours / 24), "day");
   };
-  const sessionOf = (item) => value(item, "session", "sessionId", "revisionSession");
+  const sessionOf = (item) => value(item, "session", "sessionId");
   const statusOf = (item) => value(item, "status", "outcome") || (item.resolved ? (item.outcome || "accepted") : "pending");
   const pending = (item) => statusOf(item) === "pending";
-  const positionOf = (item) => { const n = Number(value(item, "position", "start_offset", "start", "from")); return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER; };
+  // A row with no offset sorts last within its file, not first. `value`
+  // answers "" when it finds nothing and `Number("")` is 0, so the fallback
+  // below was unreachable and anything without a position -- a suggestion
+  // anchored by its words rather than by an offset -- claimed the top of the
+  // file it belonged to.
+  const positionOf = (item) => {
+    const raw = value(item, "position", "start_offset", "start", "from");
+    const n = Number(raw);
+    return raw !== "" && Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+  };
 
   // session.list() is the stable file order. File identity wins over path so
   // renames do not reshuffle an existing review queue.
@@ -65,7 +76,7 @@
     return order;
   });
   const allRows = $derived([
-    ...revisions.map((revision) => ({ ...revision, __kind: "revision" })),
+    ...proposals.map((row) => ({ ...row, __kind: "proposal" })),
     ...comments.filter((comment) => comment.motivation === "editing").map((comment) => ({ ...comment, __kind: "suggestion" })),
   ]);
   const orderOf = (item) => fileOrder.get(String(value(item, "file_id", "fileId") || pathOf(item))) ?? Number.MAX_SAFE_INTEGER;
@@ -80,7 +91,7 @@
   const pendingRows = $derived(filteredRows.filter(pending));
   const allPending = $derived(allRows.filter(pending).length);
   const selectedRows = $derived(filteredRows.filter((item) => checked.has(rowId(item))));
-  const active = $derived(filteredRows.some((item) => rowId(item) === expanded) ? expanded : filteredRows.some((item) => rowId(item) === String(selectedRevision)) ? String(selectedRevision) : filteredRows.some((item) => rowId(item) === `suggestion:${String(selected)}`) ? `suggestion:${String(selected)}` : filteredRows[0] ? rowId(filteredRows[0]) : "");
+  const active = $derived(filteredRows.some((item) => rowId(item) === expanded) ? expanded : filteredRows.some((item) => rowId(item) === String(selectedProposal)) ? String(selectedProposal) : filteredRows.some((item) => rowId(item) === `suggestion:${String(selected)}`) ? `suggestion:${String(selected)}` : filteredRows[0] ? rowId(filteredRows[0]) : "");
   const markupVisible = $derived(showMarkup === undefined ? markup : showMarkup);
   const derivedAuthors = $derived(authors.length ? authors : [...new Set(allRows.map(authorOf))]);
   const derivedFiles = $derived(files.length ? files.map((file) => file.path || file.id).filter(Boolean) : [...new Set(allRows.map(pathOf))]);
@@ -96,11 +107,18 @@
   });
   $effect(() => { if (expanded && !filteredRows.some((item) => rowId(item) === expanded)) expanded = ""; });
 
+  /// Why this change cannot be answered, or "" when it can.
+  ///
+  /// The one case that matters is a hunk whose base has moved: a proposal's
+  /// base goes stale by design (§5.1), and the words now at those offsets are
+  /// not the words the author offered to change. The server refuses such a
+  /// decision anyway; saying so here means the reviewer finds out before
+  /// clicking rather than after, and is not invited to agree to something
+  /// nobody wrote.
   function blocker(item) {
     if (!item) return "";
-    const ids = item.affectedRevisionIds || item.dependencies || [];
+    if (item.stale) return typeof item.stale === "string" ? item.stale : "The text this was written against has changed.";
     if (item.conflict) return typeof item.conflict === "string" ? item.conflict : "Concurrent edits need attention.";
-    if (item.dependency || ids.length) return typeof item.dependency === "string" ? item.dependency : "This change depends on another revision.";
     return "";
   }
   function updateFilter(key, event) { const next = { ...localFilters, [key]: event.currentTarget.value }; localFilters = next; onfilter?.(next); }
@@ -108,15 +126,18 @@
   function activate(item, { focus = false } = {}) {
     if (!item) return;
     expanded = rowId(item); onselect?.(item);
-    if (item.__kind === "suggestion") onreveal?.(item); else onrevisionreveal?.(item);
+    if (item.__kind === "suggestion") onreveal?.(item); else onproposalreveal?.(item);
     if (focus) focusRow(rowId(item));
   }
   function reveal(item) { activate(item); }
   function toggleChecked(item) { const id = rowId(item); const next = new Set(checked); next.has(id) ? next.delete(id) : next.add(id); checked = next; }
   function decisionPromise(item, action) {
-    const callback = item.__kind === "suggestion" ? (action === "accept" ? onaccept : onreject) : onrevisiondecide;
+    const callback = item.__kind === "suggestion" ? (action === "accept" ? onaccept : onreject) : onproposaldecide;
     if (!callback) return Promise.reject(new Error("Review action is unavailable."));
-    return item.__kind === "suggestion" ? callback(item) : callback(idOf(item), action);
+    // A proposal row is handed back whole: the decision needs the proposal it
+    // belongs to and the hunk index within it, and the row id joins the two
+    // only so the DOM has something to key on.
+    return item.__kind === "suggestion" ? callback(item) : callback(item, action);
   }
   function addBusy(id) { deciding = new Set([...deciding, id]); }
   function removeBusy(id) { deciding = new Set([...deciding].filter((current) => current !== id)); }
@@ -132,7 +153,6 @@
       const operation = decisionPromise(item, action);
       if (operation === undefined || operation === false) throw new Error("Review action is unavailable.");
       await operation;
-      undoBatch = item.__kind === "revision" ? { action, ids: [id] } : null;
       const next = nextAfter(ids, oldIndex);
       if (next) activate(next, { focus: true }); else { expanded = ""; requestAnimationFrame(() => document.querySelector(".changes-panel")?.focus()); }
     } catch (error) { feedback = error?.message || `Could not ${action} this change.`; focusRow(id); }
@@ -148,7 +168,7 @@
     if (!eligible.length) { feedback = `${excluded.length} selected change${excluded.length === 1 ? "" : "s"} excluded because it needs attention.`; return; }
     const ids = eligible.map(idOf); eligible.forEach((item) => addBusy(rowId(item))); checked = new Set();
     try {
-      const supplied = onbulk?.({ action, decision: action, ids: [...ids], revisions: [...eligible] });
+      const supplied = onbulk?.({ action, decision: action, ids: [...ids], changes: [...eligible] });
       let report;
       if (supplied !== undefined) report = await supplied;
       else if (onbulk) throw new Error("Bulk review did not return a confirmation report.");
@@ -161,36 +181,25 @@
       const failed = Array.isArray(report) ? report.filter((entry) => entry.status === "rejected").length : (report?.failed?.length ?? 0);
       const omitted = excluded.length + Math.max(0, eligible.length - succeeded - failed);
       feedback = failed || omitted ? `${succeeded} ${action}ed; ${failed} failed; ${omitted} excluded or still pending.` : `${succeeded} change${succeeded === 1 ? "" : "s"} ${action}ed.`;
-      const doneIds = Array.isArray(report)
-        ? report.flatMap((entry, index) => entry.status === "fulfilled" ? [ids[index]] : [])
-        : Array.isArray(report?.succeeded) ? report.succeeded : ids.slice(0, succeeded);
-      const liveIds = doneIds.map(String).filter((doneId) => eligible.some((item) => item.__kind === "revision" && idOf(item) === doneId));
-      if (liveIds.length) undoBatch = { action, ids: liveIds };
     } catch (error) { feedback = error?.message || `Could not ${action} the selected changes.`; }
     finally { eligible.forEach((item) => removeBusy(rowId(item))); }
   }
-  async function undo() {
-    const batch = undoBatch; if (!batch) return; undoBatch = null;
-    const undoAction = onrevisionundo || onundo;
-    if (!undoAction) { feedback = "Review undo is unavailable for this action."; return; }
-    const settled = await Promise.allSettled(batch.ids.map((id) => {
-      const operation = undoAction(id);
-      return operation === undefined || operation === false
-        ? Promise.reject(new Error("Review undo did not return a confirmation.")) : operation;
-    }));
-    const failed = settled.filter((entry) => entry.status === "rejected");
-    feedback = failed.length ? `${batch.ids.length - failed.length} undone; ${failed.length} could not be undone. The affected changes remain pending.` : `Undid ${batch.action === "accept" ? "acceptance" : "rejection"}${batch.ids.length > 1 ? "s" : ""}.`;
-  }
+  // There is no undoing a decision from here. A decision is recorded and
+  // broadcast at once (§5.1), and what it eventually does to the document is
+  // a merge the server makes when the proposal resolves -- so taking one back
+  // is an ordinary edit to the paper, not a review action. The menu used to
+  // offer it against the deleted revision mechanism, wired to a callback
+  // nothing passed.
   function chooseMenuItem(value) {
     if (value === "markup") onmarkup?.(!markupVisible);
-    else if (value === "undo") void undo();
   }
   function move(offset) { const index = filteredRows.findIndex((item) => rowId(item) === active); const item = filteredRows[index + offset] || filteredRows[index]; if (item) activate(item, { focus: true }); }
+  // A stale hunk has one way forward: look at the passage as it stands now.
+  // The author has to offer the change again against the text that is there,
+  // which is theirs to do and not the reviewer's.
   function resolve(item) {
-    const ids = item.affectedRevisionIds || item.dependencies || [idOf(item)];
-    onrevisionreveal?.(item);
-    if (onrevisionresolve) onrevisionresolve(ids);
-    else feedback = "Source-based resolution is unavailable for this conflict; review the affected passages individually.";
+    activate(item);
+    feedback = "This change was written against text that has since moved. Ask its author to offer it again.";
   }
   function keydown(event) {
     if (event.defaultPrevented || event.isComposing || event.target.closest("input,select,textarea,[contenteditable=true],details,[data-scope='menu']")) return;
@@ -245,9 +254,6 @@
           <Menu.Item value="markup" class="menuitem" disabled={!onmarkup}>
             <span class="w-4">{markupVisible ? "✓" : ""}</span>Markup
           </Menu.Item>
-          {#if undoBatch}
-            <Menu.Item value="undo" class="menuitem"><span class="w-4"></span>Undo last decision</Menu.Item>
-          {/if}
           <hr class="hr my-1" />
           <div class="changes-menu-label">Keyboard shortcuts</div>
           <div class="changes-menu-hint">J/K or ↑/↓ to move<br />A to accept · R to reject</div>
@@ -268,7 +274,7 @@
         <div class="row-head"><button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-author">{authorLabel(item)}{timeLabel(item) ? ` · ${timeLabel(item)}` : ""}</span><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}{shortDiff(item)}{/if}</span>{#if derivedFiles.length > 1}<span class="row-context">{pathOf(item)}</span>{/if}{#if statusOf(item) !== "pending"}<span class="row-status">{statusOf(item)}</span>{/if}</button></div>
         <div class="row-footer"><span></span>{#if pending(item)}<span class="row-actions"><button type="button" class="btn btn-sm row-action reject" aria-label={`Reject change in ${pathOf(item)}`} title={why || "Reject this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button><button type="button" class="btn btn-sm row-action accept" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button></span>{/if}</div>
         {#if isOpen && why}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
-          <div class="conflict" role="alert"><strong>Needs attention</strong><p>{why}</p><button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => resolve(item)}>Resolve dependency</button></div>
+          <div class="conflict" role="alert"><strong>Needs attention</strong><p>{why}</p><button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => resolve(item)}>Show the passage</button></div>
         </div>{#if item.replies?.length}<details class="discussion"><summary>Discussion ({item.replies.length})</summary><ul>{#each item.replies as reply (reply.id)}<li><strong>{reply.creator || "Author"}:</strong> {reply.body}</li>{/each}</ul></details>{/if}{/if}
       </article>
     {/each}

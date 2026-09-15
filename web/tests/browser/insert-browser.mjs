@@ -9,6 +9,7 @@ import { join, extname } from "node:path";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until } from "../../tools/browser-driver.mjs";
+import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-insert-browser-"));
@@ -23,7 +24,7 @@ import { undo as loroUndo } from ${imp("vendor/loro-codemirror/undo.ts")};
 import Editor from ${imp("src/components/Editor.svelte")};
 import InsertMenu from ${imp("src/components/InsertMenu.svelte")};
 import { join as joinSession } from ${imp("src/lib/collab.js")};
-import { LoroDoc } from ${imp("node_modules/loro-crdt/bundler/index.js")};
+import { LoroDoc } from "loro-crdt";
 // A change from somebody else, arriving the way one actually does: made on
 // another document and imported. Editing this browser's own document is a
 // local change, which the binding rightly ignores -- the old library let a
@@ -90,12 +91,12 @@ window.insertReady=true;
 `);
 let server, page;
 try {
-  await build({configFile:false,root,plugins:[svelte()],logLevel:"error",build:{outDir:output,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"insert-check.js"}}});
+  await build({configFile:false,root,plugins:[svelte()],logLevel:"error",resolve:{alias:loroAlias},build:{outDir:output,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"insert-check.js"}}});
   server=createServer((request,response)=>{
     const pathname = new URL(request.url,"http://localhost").pathname;
     const file=join(output,pathname);
     if(pathname!=="/" && existsSync(file)) {
-      response.setHeader("Content-Type",extname(file)===".css"?"text/css":"text/javascript");response.end(readFileSync(file));
+      response.setHeader("Content-Type",contentType(file));response.end(readFileSync(file));
     } else response.end('<!doctype html><html><head><meta charset="utf-8"></head><body><div id="menu"></div><div id="editor"></div><script type="module" src="/insert-check.js"></script></body></html>');
   });
   await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",resolve);});

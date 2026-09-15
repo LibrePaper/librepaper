@@ -33,7 +33,7 @@ export function createPublication({
   /// The source as it stands, for publishing: the editor's own text included.
   liveTree,
   /// The source as the collaboration session has committed it. Status runs
-  /// from the Yjs source observer, and CodeMirror can still be displaying its
+  /// from the source observer, and CodeMirror can still be displaying its
   /// previous transaction at that point, so the committed tree is the honest
   /// one to compare against.
   committedTree,

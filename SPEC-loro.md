@@ -427,7 +427,7 @@ the dependency list in this phase, not later.
 round-trip rather than cross-implementation agreement; the suite passes; and
 `yrs` appears nowhere in the tree, not in a manifest and not in a comment.
 
-### Phase 2 — Editor binding — **forked the binding; one test still failing**
+### Phase 2 — Editor binding — **done**
 
 `yCollab` is replaced in `components/Editor.svelte`, `MergeEditor.svelte`
 follows it, and the IndexedDB persistence that `y-indexeddb` used to provide —
@@ -437,23 +437,41 @@ here.
 The binding itself cost less than feared: `loroSyncAnnotation` stands in for
 `ySyncAnnotation`, and `ySyncFacet` needed no equivalent because the component
 already holds the document rather than fetching it from editor state. What it
-cost is named: `UndoManager` takes only the text, so it cannot be handed the
-tracking state the old one was; and `MergeEditor` now needs the document and
-the presence store passed in.
+cost is named: `UndoManager` is built from the document rather than from one
+text in it, so it cannot be handed the tracking state the old one was; and
+`MergeEditor` now needs the document and the presence store passed in.
 
-*Gate: not quite passed, and it has been wrongly called passed twice now.*
-One scenario of `web/tests/browser/editor-browser.mjs` still fails. The fork
-fixed what it was for -- a peer changing one file while this browser looks at
-another, which that test now gets through -- but the file does not pass, and a
-test that does not pass is a test that does not pass.
+*Gate: passed.* `web/tests/browser/editor-browser.mjs` passes whole — cursors,
+remote edits, undo grouping, multi-file switching, the merge panes, and the
+Vim and Emacs undo keys.
 
-It was wrongly marked passed once
-before. Everything the unit tests and the offline check could see was fine, and
-neither of them mounts the editor; a browser test does, and it did not come up.
-That is the lesson worth keeping from this phase — the gate asks that cursors,
-remote edits, undo grouping and multi-file switching behave as today, and
-nothing that ran was capable of telling us whether they did. A suite that is
-green while the editor cannot mount is measuring the wrong thing.
+It was called passed twice before it was. Three things had to be true and were
+not, and each is worth keeping, because none of them is about Loro:
+
+* **The undo ran inside a state field.** `undoManagerStateField.update` called
+  `UndoManager.undo()`, so a state field moved the document while CodeMirror
+  was still computing the state that move belonged to. Loro delivers the event
+  synchronously, so the binding dispatched from inside the dispatch, and the
+  view updated against a state that was about to be replaced. What it looked
+  like was `Cannot destructure property 'tile'` thrown from deep inside
+  CodeMirror's view — a tile tree whose length no longer matched the document
+  it was drawn from, naming neither Loro, nor undo, nor the plugin. The
+  commands ask the manager directly now, between transactions, where a
+  command belongs.
+* **`MergeEditor` built its undo manager from a text.** `expected instance of
+  LoroDoc`, thrown inside a Svelte effect and reported as an unhandled
+  rejection naming neither the line nor the argument.
+* **The test harness held two wasm modules.** The test imported
+  `loro-crdt/bundler/index.js` by path while the components resolved the
+  package by name, so a `VersionVector` passed from one to the other was a
+  pointer into the wrong memory: "memory access out of bounds" on a good day,
+  a plausible wrong answer on a bad one. `web/tests/helpers/loro.mjs` now
+  gives every browser test one module, and records why it must.
+
+The lesson from the two false passes stands. The gate asks that cursors,
+remote edits, undo grouping and multi-file switching behave as today, and for
+a long time nothing that ran was capable of saying whether they did. A suite
+that is green while the editor cannot mount is measuring the wrong thing.
 
 **The fork.** `loro-codemirror` 0.3.3 cannot keep several editors on one
 document in step, and the fault is inside a private loop, so no caller can work
@@ -461,10 +479,11 @@ around it. A LibrePaper document is a map of files, so this is not an edge case
 here — it is every update. The package has not moved since October 2025 while
 its ProseMirror sibling has, so §10's "adopted as-is" met something it could
 not give up, and the package now lives at `web/vendor/loro-codemirror/` with
-upstream's MIT licence beside it. Its README records the three faults and the
+upstream's MIT licence beside it. Its README records the five faults and the
 fix; briefly, the import loop `return`s where it should `continue` and
-dispatches inside the loop rather than once for the batch, and the undo plugin
-repeats the first of those.
+dispatches inside the loop rather than once for the batch, the undo plugin
+repeats both, `update()` asks only the first transaction of a `ViewUpdate`,
+and the undo command moves the document from inside a state field.
 
 Offline edits survive a reload, and that is checked in a real browser rather
 than argued from a unit test: `web/tests/browser/offline-reload-browser.mjs`
