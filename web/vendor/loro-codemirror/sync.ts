@@ -105,14 +105,17 @@ export class LoroSyncPluginValue implements PluginValue {
             return;
         }
 
-        if (
-            !update.docChanged ||
-            (update.transactions.length > 0 &&
-                (update.transactions[0].annotation(loroSyncAnnotation) ===
-                    this ||
-                    update.transactions[0].annotation(loroSyncAnnotation) ===
-                        "undo"))
-        ) {
+        // Every transaction is asked, not just the first. A ViewUpdate can
+        // carry several, and upstream only looked at `transactions[0]` -- so a
+        // change this plugin had already written to the document, arriving
+        // behind another transaction, was written a second time. The document
+        // then held the text twice while the view held it once, and the next
+        // edit was dispatched at a position past the end of the view.
+        const ours = update.transactions.some((transaction) => {
+            const mark = transaction.annotation(loroSyncAnnotation);
+            return mark === this || mark === "undo";
+        });
+        if (!update.docChanged || ours) {
             return;
         }
         let adj = 0;

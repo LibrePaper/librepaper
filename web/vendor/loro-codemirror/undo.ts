@@ -57,16 +57,21 @@ export class UndoPluginValue implements PluginValue {
         this.sub = doc.subscribe((e) => {
             if (e.origin !== "undo") return;
 
-            let changes: ChangeSpec[] = [];
+            // Same shape as the fix in sync.ts: skip an event that is not ours
+            // rather than abandoning the batch, and dispatch once for it.
+            //
+            // Upstream returned on the first event that was not this editor's
+            // text, so undoing anything in a document that holds a map of files
+            // never reached the view at all -- the document undid and the view
+            // did not, and they were then out of step by exactly the text that
+            // had been undone.
+            const changes: ChangeSpec[] = [];
             let pos = 0;
-            for (let { diff, target } of e.events) {
-                const text = this.getTextFromDoc(this.doc);
-                // Skip if the event is not a text event
-                if (diff.type !== "text") return;
-                // Skip if the event is not for the current document
-                if (target !== text.id) return;
-                const textDiff = diff.diff;
-                for (const delta of textDiff) {
+            const text = this.getTextFromDoc(this.doc);
+            for (const { diff, target } of e.events) {
+                if (diff.type !== "text") continue;
+                if (target !== text.id) continue;
+                for (const delta of diff.diff) {
                     if (delta.insert) {
                         changes.push({
                             from: pos,
@@ -83,6 +88,8 @@ export class UndoPluginValue implements PluginValue {
                         pos += delta.retain;
                     }
                 }
+            }
+            if (changes.length > 0) {
                 this.view.dispatch({
                     changes,
                     annotations: [loroSyncAnnotation.of("undo")],
