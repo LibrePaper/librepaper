@@ -88,8 +88,11 @@ export function createPreviewRenderer({
     // Rendering that placeholder used to call the renderer registry with an
     // empty format and permanently consume the initial paint.
     if (!source.main || !format) return;
-    const htmlPreview = start.editing
-      && ((format === "typst" && start.typstOutput === "html") || (format === "latex" && start.latexOutput === "html"));
+    // The paged formats produce a flow page unless this browser has asked for
+    // pages. Whether the source pane is open does not come into it: HTML is
+    // the default output, and a reader is shown what an author is shown.
+    const htmlPreview = (format === "typst" && start.typstOutput === "html")
+      || (format === "latex" && start.latexOutput === "html");
     const paged = renderers.producesPdf(format) && !htmlPreview;
     const slow = format === "latex";
     // Shared by both guard points so asset fetching and compilation reject

@@ -81,6 +81,7 @@
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
   import { createGeneration } from "../lib/reader/generation.js";
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
+  import { createSteadyBusy } from "../lib/reader/steady-busy.js";
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import { correctedLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
@@ -1624,18 +1625,21 @@
   const displayedFormat = $derived(
     sourceFormat,
   );
-  // This browser-only choice affects the pane and is never published.
+  // This browser-only choice affects the pane and is never published. It is
+  // not conditioned on the source pane being open: HTML is the default output
+  // of every format, so somebody who only reads the document gets the same
+  // page its author is looking at rather than a paged fallback.
   const previewFormat = $derived(
-    editing && ((displayedFormat === "typst" && typstOutput === "html") ||
+    ((displayedFormat === "typst" && typstOutput === "html") ||
       (displayedFormat === "latex" && latexOutput === "html")) ? "html" : displayedFormat,
   );
   const previewOutputKind = $derived(
-    editing && ["markdown", "quarto"].includes(displayedFormat) && buildPreferences.output === "pdf"
+    ["markdown", "quarto"].includes(displayedFormat) && buildPreferences.output === "pdf"
       ? "pdf"
       : renderers.outputKind(previewFormat),
   );
-  const typstHtmlPreview = $derived(displayedFormat === "typst" && editing && typstOutput === "html");
-  const latexHtmlPreview = $derived(displayedFormat === "latex" && editing && latexOutput === "html");
+  const typstHtmlPreview = $derived(displayedFormat === "typst" && typstOutput === "html");
+  const latexHtmlPreview = $derived(displayedFormat === "latex" && latexOutput === "html");
   const paintsTheFrame = $derived(!publishedMode);
 
   /* -------------------------------------------------------------- LaTeX */
@@ -1855,10 +1859,25 @@
     framePreview.refresh(session.text.toString());
   }
 
-  const previewBusy = $derived(Boolean(
+  const compiling = $derived(Boolean(
     (sourceFormat === "latex" && !latexHtmlPreview && ["loading", "compiling", "browser-biber"].includes(latexPhase))
       || compileBadge || quartoPreviewStarting || quartoRendering || calepinRendering,
   ));
+  // What the header draws: the same fact, at reading speed. A Typst or
+  // Markdown render finishes in tens of milliseconds, and a control that
+  // mounts and unmounts with each one strobes the whole row while somebody
+  // types. `steady-busy.js` holds it: nothing appears until a render has
+  // lasted long enough to be worth saying, and what appears stays long
+  // enough to be read.
+  let previewBusy = $state(false);
+  const steadyBusy = createSteadyBusy({ onchange: (shown) => (previewBusy = shown) });
+  // One subscription to `compiling`, feeding the one smoother. The smoother
+  // is made outside the effect: rebuilding it per change would reset the hold
+  // it exists to keep.
+  $effect(() => {
+    steadyBusy.set(compiling);
+  });
+  $effect(() => () => steadyBusy.stop());
   const previewProblem = $derived(Boolean(
     (sourceFormat === "latex" && (latexHtmlPreview ? renderState.failure : latexPhase === "failed")) || quartoPreviewError || (!typstHtmlPreview && calepinPreviewError)
       || quartoNeedsLocalApp || typstNeedsLocalApp || typstNeedsCalepinCommand,
@@ -1897,7 +1916,6 @@
       navigation: navigationGeneration,
       source: sourceGeneration,
       everPainted,
-      editing,
       format: sourceFormat,
       hasSession: Boolean(session),
       paintsTheFrame,
@@ -2358,9 +2376,12 @@
   }
 
   // Which of the rendering downloads the File menu can honour: the one for
-  // this document's output kind, once there is something to hand over.
+  // what the preview is producing, once there is something to hand over. What
+  // it is producing rather than what the source format ultimately produces,
+  // because a LaTeX document previewing as HTML has a page to hand over and
+  // no PDF.
   const downloads = $derived(availableDownloads({
-    outputKind: renderers.outputKind(displayedFormat),
+    outputKind: previewOutputKind,
     deliveredKind,
     displayedFormat,
   }));
@@ -2934,7 +2955,7 @@
   <!-- One of the two, never both: a document renders to a PDF or to a page.
        Greyed out, not hidden, while there is nothing to download yet, so the
        menu says what the document will offer. -->
-  {#if renderers.outputKind(displayedFormat) === "pdf"}
+  {#if previewOutputKind === "pdf"}
     <Menu.Item value="download-pdf" class="menuitem" disabled={!downloads.pdf}>Download PDF</Menu.Item>
   {:else}
     <Menu.Item value="download-html" class="menuitem" disabled={!downloads.html}>Download HTML</Menu.Item>

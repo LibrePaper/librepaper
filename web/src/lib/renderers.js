@@ -176,7 +176,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
     // from this request's complete manifest. A user-granted folder is only
     // needed when the document deliberately depends on unshared local files.
     const job = { snapshot: digest, generation: Date.now(), binding: usesWorkspace ? localBridge.bindingId() : "", inputRevision: digest };
-    const output = buildPreferences.output || (format === "typst" ? "pdf" : "html");
+    const output = buildPreferences.output || "html";
     activeLocalAbort?.abort();
     const abort = new AbortController();
     activeLocalAbort = abort;

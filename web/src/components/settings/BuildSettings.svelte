@@ -34,8 +34,14 @@
   const savedMissing = $derived(preferences.selection === "tool" && preferences.tool && !builders.some((entry) => entry.id === preferences.tool) ? preferences.tool : "");
   const selectedPreset = $derived(preferences.preset ? presets.find((item) => item.id === preferences.preset) : null);
   const presetSchema = $derived(Object.entries(selectedPreset?.option_schema || {}).map(([name, schema]) => ({ name, ...schema })));
+  // What the chosen builder can produce. A local tool answers for itself; in
+  // the browser only Typst offers the paged output beside the flow one.
+  function supportedOutputs(backend, tool) {
+    if (backend === "local") return capabilityFor(local?.capabilities, tool)?.outputs || [];
+    return format === "typst" ? ["pdf", "html"] : ["html"];
+  }
   const outputChoices = $derived.by(() => {
-    const supported = preferences.backend === "local" ? capabilityFor(local?.capabilities, preferences.tool)?.outputs || [] : format === "typst" ? ["pdf", "html"] : ["html"];
+    const supported = supportedOutputs(preferences.backend, preferences.tool);
     const choices = [...supported];
     if (preferences.output && !choices.includes(preferences.output)) choices.unshift(preferences.output);
     return choices;
@@ -51,7 +57,12 @@
     const preset = id === "preset" ? rest.join(":") : "";
     const engine = id === "tex" ? rest[0] : "";
     const entry = preset && presets.find((item) => item.id === preset);
-    const next = update(scope(), format, { selection: "tool", backend, tool: preset ? (entry?.base_adapter || "") : id, output: ["latex", "typst"].includes(format) ? "pdf" : "html", ...(engine ? { engine } : {}), ...(preset ? { preset } : {}) });
+    const tool = preset ? (entry?.base_adapter || "") : id;
+    // HTML is every format's default output, so a tool starts on HTML unless
+    // it is one that cannot produce a flow page at all.
+    const outputs = supportedOutputs(backend, tool);
+    const output = !outputs.length || outputs.includes("html") ? "html" : outputs[0];
+    const next = update(scope(), format, { selection: "tool", backend, tool, output, ...(engine ? { engine } : {}), ...(preset ? { preset } : {}) });
     onpreferences?.(next);
   }
   async function rescan() { try { await localBridge.capabilities({ rescan: true }); } catch { /* status explains failure */ } }
@@ -130,7 +141,7 @@
 
 {#if ["typst", "quarto", "markdown"].includes(format) && outputChoices.length > 1}
   <SettingRow id="build-output" title="Output" description="Choose the preview or export format for this browser.">
-    <select class="select setting-select" aria-label="Build output" value={preferences.output || (format === "typst" ? "pdf" : "html")} onchange={(event) => chooseOutput(event.currentTarget.value)}>
+    <select class="select setting-select" aria-label="Build output" value={preferences.output || "html"} onchange={(event) => chooseOutput(event.currentTarget.value)}>
       {#each outputChoices as output}<option value={output} disabled={disabledOutput(output)}>{output.toUpperCase()}</option>{/each}
     </select>
   </SettingRow>

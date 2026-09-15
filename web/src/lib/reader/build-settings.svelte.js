@@ -38,13 +38,15 @@ export function createBuildSettings({
     // it. These follow from the preference and are kept beside it: they used
     // to live in the page, which meant this module had to hand them back
     // through a callback to set values it had just worked out.
-    latexOutput: "pdf",
-    typstOutput: "pdf",
+    latexOutput: "html",
+    typstOutput: "html",
     quartoPreviewMode: "quarto",
     typstPreviewMode: "typst",
   });
 
-  const outputOf = (preference) => (preference.output === "html" ? "html" : "pdf");
+  // HTML unless a reader has asked for pages: the default is flow for every
+  // format, so only the explicit "pdf" reads as one.
+  const outputOf = (preference) => (preference.output === "pdf" ? "pdf" : "html");
 
   /// What a preference says about the outputs and preview modes.
   ///
@@ -80,7 +82,7 @@ export function createBuildSettings({
     engine: preference.engine || "auto",
     backend: preference.backend || "auto",
     tool: preference.tool || "tex",
-    output: preference.output || "pdf",
+    output: preference.output || "html",
     preset: preference.preset || "",
   });
 

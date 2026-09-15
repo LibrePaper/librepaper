@@ -192,7 +192,6 @@ const preview = (values = {}) => {
     navigation: 0,
     source: 0,
     everPainted: false,
-    editing: true,
     format: "",
     hasSession: true,
     paintsTheFrame: true,
@@ -284,6 +283,29 @@ const preview = (values = {}) => {
   // free to start: a failure must not leave the latch held.
   assert.equal(harness.coordinator.running, false);
   assert.equal(harness.state.compiling, false);
+}
+
+// HTML is every format's default output, and a render does not ask whether
+// the source pane is open before honouring it: somebody who only reads a
+// LaTeX document is handed the same flow page as the author typing it.
+{
+  const asked = [];
+  const harness = preview({
+    facts: { format: "latex", latexOutput: "html" },
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
+    heading: async () => "",
+    renderers: {
+      formatOf: () => "latex",
+      producesPdf: () => true,
+      render: (_tree, _title, options) => {
+        asked.push(options.format);
+        return Promise.resolve({ html: "<p>page</p>", diagnostics: [] });
+      },
+    },
+  });
+  await harness.paint();
+  assert.deepEqual(asked, ["html"], "the default output is asked for, editing or not");
+  assert.equal(harness.published.at(-1)?.kind, "html", "and a flow page is what reaches the frame");
 }
 
 // A live preview owns the pane: this browser's own compile stays out of it.
@@ -497,11 +519,13 @@ console.log("reader-races: all checks passed");
   assert.equal(settings.state.typstPreviewMode, "calepin");
 
   // The output each format produces follows the preference it was loaded or
-  // chosen with, and anything that is not HTML is a PDF.
+  // chosen with, and anything that is not a PDF is a flow page.
   settings.choose({ ...calepin, output: "html" }, "typst");
   assert.equal(settings.state.typstOutput, "html");
+  settings.choose({ ...calepin, output: "pdf" }, "typst");
+  assert.equal(settings.state.typstOutput, "pdf");
   settings.choose({ ...calepin, output: "docx" }, "typst");
-  assert.equal(settings.state.typstOutput, "pdf", "an output this format cannot page is still paged");
+  assert.equal(settings.state.typstOutput, "html", "an output that is not paged falls back to the default flow page");
   settings.choose({ selection: "tool", backend: "browser", tool: "tex", output: "html" }, "latex");
   assert.equal(settings.state.latexOutput, "html");
 }

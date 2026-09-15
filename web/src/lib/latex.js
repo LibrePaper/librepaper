@@ -192,7 +192,7 @@ function normalizeSettings(next = {}) {
   const backend = ["auto", "browser", "local"].includes(next.backend) ? next.backend : "auto";
   const tool = typeof next.tool === "string" && next.tool ? next.tool : "tex";
   const engine = ["auto", "pdflatex", "xelatex", "lualatex"].includes(next.engine) ? next.engine : "auto";
-  return { engine, backend, tool, output: next.output || "pdf", preset: typeof next.preset === "string" ? next.preset : "", options: next.options && typeof next.options === "object" ? { ...next.options } : {} };
+  return { engine, backend, tool, output: next.output || "html", preset: typeof next.preset === "string" ? next.preset : "", options: next.options && typeof next.options === "object" ? { ...next.options } : {} };
 }
 
 /// An engine change clears the bibliography cache and starts a fresh routing
@@ -770,6 +770,16 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   });
 }
 
+/// What the status says once nothing is running: the last compile's verdict,
+/// or an idle store when no compile has finished in this session.
+function settled(result) {
+  if (!result) return { phase: "idle", message: "" };
+  return {
+    phase: result.ok ? "ready" : "failed",
+    message: result.ok ? "Current preview ready" : "Compilation failed; previous preview shown",
+  };
+}
+
 // --- The queue ---------------------------------------------------------------
 
 function pump() {
@@ -791,8 +801,7 @@ function pump() {
         newestResolvedGeneration = result.job.generation;
         statusStore.set({
           lastResult: result,
-          phase: result.ok ? "ready" : "failed",
-          message: result.ok ? "Current preview ready" : "Compilation failed; previous preview shown",
+          ...settled(result),
           backend: result.provenance?.backend || null,
           progress: null,
         });
@@ -835,6 +844,7 @@ export function compile(tree, { manual = false } = {}) {
 /// is discarded by the same token every checkpoint above already checks.
 export function cancel() {
   const error = supersededError();
+  const discarded = Boolean(queued) || Boolean(activeToken && !activeToken.cancelled);
   if (queued) {
     for (const reject of queued.failing) reject(error);
     queued = null;
@@ -846,6 +856,16 @@ export function cancel() {
     activeCallbacks = null;
     running = false;
     activeToken = null;
+  }
+  // A cancelled run is the one thing that never reaches the resolution above,
+  // and the phase it set on its way in -- "loading", "compiling",
+  // "browser-biber" -- is what the preview pane reads as "still compiling".
+  // Leaving it there is what made that indicator outlive every compile in the
+  // session. The status goes back to what the last finished compile said, or
+  // to idle when there has not been one.
+  if (discarded) {
+    const last = statusStore.get().lastResult;
+    statusStore.set({ ...settled(last), progress: null });
   }
   pump();
 }

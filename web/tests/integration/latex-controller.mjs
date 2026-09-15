@@ -770,6 +770,16 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
   latex.cancel();
   assert.equal((await rejected).name, 'Superseded');
   assert.equal(aborted, true);
+  // A cancelled run is the one that never reaches the resolution that writes
+  // a terminal phase, so cancelling has to write one itself. The preview pane
+  // reads 'loading'/'compiling'/'browser-biber' as "still compiling", and a
+  // busy phase left behind here is what made that indicator outlive every
+  // compile in the session.
+  assert.ok(
+    !['loading', 'compiling', 'browser-biber'].includes(latex.status().phase),
+    'a cancelled job leaves a quiet phase behind',
+  );
+  assert.equal(latex.status().phase, 'ready', 'namely what the last finished compile said');
   latex._testing.reset();
   console.log('latex controller: release-provided Biber, cache reuse, provenance, and cancellation checked');
 }

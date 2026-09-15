@@ -20,7 +20,12 @@ function key({ origin = globalThis.location?.origin || "", user = "anonymous", d
   return `${PREFIX}:${JSON.stringify([String(origin), String(user || "anonymous"), String(document)])}`;
 }
 
-export function defaults(format = "") { return { ...DEFAULTS, format, output: ["latex", "typst"].includes(format) ? "pdf" : "html" }; }
+/// HTML for every format. A preview is read on a screen, and a flow page
+/// reflows to the pane it is read in, arrives faster than a paged compile, and
+/// is what the annotation layer can place a highlight in. A paged PDF is what
+/// LaTeX and Typst are ultimately for, so it stays one choice away in the
+/// build settings -- but it is a choice, not the starting point.
+export function defaults(format = "") { return { ...DEFAULTS, format, output: "html" }; }
 
 export function read(scope, format = "") {
   const fallback = defaults(format);

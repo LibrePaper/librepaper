@@ -15,9 +15,11 @@ test("build preferences are scoped and automatic clears tool options", () => {
     const selected = update(scope, "latex", { selection: "tool", backend: "browser", tool: "tex", engine: "xelatex" });
     assert.equal(selected.tool, "tex");
     const automatic = update(scope, "latex", { selection: "automatic" });
-    assert.deepEqual(automatic, { selection: "automatic", backend: "auto", output: "pdf", format: "latex" });
+    assert.deepEqual(automatic, { selection: "automatic", backend: "auto", output: "html", format: "latex" });
     assert.equal(read({ ...scope, user: "bob" }, "latex").selection, "automatic");
-    assert.deepEqual(defaults("typst"), { selection: "automatic", backend: "auto", output: "pdf", format: "typst" });
+    // Every format starts on HTML, the paged ones included.
+    assert.deepEqual(defaults("typst"), { selection: "automatic", backend: "auto", output: "html", format: "typst" });
+    assert.deepEqual(defaults("markdown"), { selection: "automatic", backend: "auto", output: "html", format: "markdown" });
   } finally { globalThis.localStorage = previous; }
 });
 

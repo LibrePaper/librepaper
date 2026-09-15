@@ -87,13 +87,15 @@ is published and another way when it is edited.
 The Typst module contains the compiler and embedded fonts. Renderer URLs include
 their content digest and are cached for a year.
 
-Typst defaults to its paged PDF exporter, preserving page layout, columns, headers,
-footers, and typography. The shared PDF viewer supplies selectable text for
-comments and highlights. Source navigation matches visible text; generated
+Every format previews as HTML by default, Typst and LaTeX included: a flowing
+page reflows to the pane it is read in and arrives without waiting for a paged
+compile. Typst's paged PDF exporter preserves page layout, columns, headers,
+footers, and typography, and is one choice away. The shared PDF viewer supplies
+selectable text for comments and highlights. Source navigation matches visible text; generated
 text and formulas can have no match. Existing project-file and package
 resolution limits still apply.
 
-Use **View → Typst HTML preview (experimental)** for a flowing preview, or
+**View → Typst HTML preview (experimental)** is what a document starts on; use
 **Typst PDF preview** to check the printed layout. The choice is remembered
 for this document in this browser. HTML supports semantic text, tables,
 citations, embedded images, and MathML equations, but does not reproduce all
