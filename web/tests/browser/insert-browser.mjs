@@ -23,6 +23,18 @@ import { undo as loroUndo } from ${imp("vendor/loro-codemirror/undo.ts")};
 import Editor from ${imp("src/components/Editor.svelte")};
 import InsertMenu from ${imp("src/components/InsertMenu.svelte")};
 import { join as joinSession } from ${imp("src/lib/collab.js")};
+import { LoroDoc } from ${imp("node_modules/loro-crdt/bundler/index.js")};
+// A change from somebody else, arriving the way one actually does: made on
+// another document and imported. Editing this browser's own document is a
+// local change, which the binding rightly ignores -- the old library let a
+// local transaction be labelled "remote", and Loro has no such pretence.
+const fromAPeer = (target, edit) => {
+  const peer = new LoroDoc();
+  peer.import(target.export({ mode: "update" }));
+  edit(peer);
+  peer.commit();
+  target.import(peer.export({ mode: "update", from: target.oplogVersion() }));
+};
 window.testErrors=[];addEventListener("error",e=>window.testErrors.push(e.message));addEventListener("unhandledrejection",e=>window.testErrors.push(String(e.reason)));
 const session = joinSession({send: () => {}, mayEdit: true});
 const entries = [{key:'smith2020',authors:['Jane Smith'],title:'A Study of Rivers',year:'2020'}, {key:'jones2021',authors:['Alice Jones'],title:'Mountains',year:'2021'}];
@@ -45,7 +57,7 @@ window.setupInsert = async (format, source = null) => {
 const view=()=>EditorView.findFromDOM(document.querySelector('.cm-editor'));
 window.insertState=()=>({text:view().state.doc.toString(),selection:view().state.sliceDoc(view().state.selection.main.from,view().state.selection.main.to),focused:view().hasFocus});
 window.selectInsert=(from,to=from)=>{view().dispatch({selection:{anchor:from,head:to}});view().focus();};
-window.remoteInsert=async()=>{ session.textOf(file).insert(0,'REMOTE '); session.doc.commit(); await tick(); };
+window.remoteInsert=async()=>{ fromAPeer(session.doc, (peer)=>peer.getMap("files").get(file).insert(0,'REMOTE ')); await tick(); };
 window.undoInsert=()=>loroUndo(view());
 window.targetChecks=async()=>{
   const context=component.getInsertContext();
@@ -70,7 +82,7 @@ window.atomicSetupCheck=async()=>{
   window.undoInsert();await tick();
   const undone=session.textOf(chapter).toString()==='BEFORE AFTER'&&session.textOf(main).toString()===oldMain;
   view().dispatch({selection:{anchor:0,head:6}});const selectionContext=component.getInsertContext();
-  session.textOf(chapter).insert(3,'PEER'); session.doc.commit(); await tick();
+  fromAPeer(session.doc, (peer)=>peer.getMap("files").get(chapter).insert(3,'PEER')); await tick();
   const conflict=component.applyInsertResult({text:'BAD'},selectionContext);
   return {applied,undone,conflict,text:session.textOf(chapter).toString()};
 };
