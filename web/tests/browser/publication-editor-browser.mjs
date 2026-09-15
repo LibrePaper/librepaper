@@ -14,37 +14,37 @@ import { browser, until } from "../../tools/browser-driver.mjs";
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-publication-editor-"));
 const entry = join(temp, "entry.js"), room = join(temp, "room.js"), out = join(temp, "build");
-const yjs = join(root, "web/node_modules/yjs/dist/yjs.mjs");
 
 writeFileSync(room, `
-import * as Y from ${JSON.stringify(yjs)};
+import { LoroDoc, LoroText } from "loro-crdt";
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 const decode = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
-const server = new Y.Doc(), files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
+const server = new LoroDoc(), files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
 const saved = localStorage.getItem("publication-editor-state");
-if (saved) Y.applyUpdate(server, decode(saved));
+if (saved) server.import(decode(saved));
 let text = files.get("main");
-if (!(text instanceof Y.Text)) {
-  text = new Y.Text(); text.insert(0, "<h1>Published editor</h1><p>first version</p>");
-  files.set("main", text); paths.set("main", "main.html"); meta.set("main", "main");
+if (text?.kind?.() !== "Text") {
+  text = new LoroText(); text.insert(0, "<h1>Published editor</h1><p>first version</p>");
+  files.setContainer("main", text); paths.set("main", "main.html"); meta.set("main", "main");
+  server.commit();
 }
-const persist = () => localStorage.setItem("publication-editor-state", encode(Y.encodeStateAsUpdate(server)));
+const persist = () => localStorage.setItem("publication-editor-state", encode(server.export({ mode: "update" })));
 persist();
 let callback = null, initial = true;
-server.on("update", update => { persist(); if (!initial && callback) callback({type:"y-update", update:encode(update)}); });
+let updateSub = server.subscribeLocalUpdates(update => { persist(); if (!initial && callback) callback({type:"doc-update", update:encode(update)}); });
 export function openRoom(_slug, {onMessage, onConnected}) {
   callback = onMessage; window.roomSent = []; window.roomControl = {
-    append(value) { text.insert(text.length, value); }, source() { return text.toString(); }
+    append(value) { text.insert(text.length, value); server.commit(); }, source() { return text.toString(); }
   };
   queueMicrotask(() => onConnected(true));
   return {
     send(message) {
       window.roomSent.push(message);
-      if (message.type === "y-open") queueMicrotask(() => { initial = false; onMessage({type:"y-state",update:encode(Y.encodeStateAsUpdate(server)),count:1}); });
-      if (message.type === "y-update") Y.applyUpdate(server, decode(message.update), "browser");
+      if (message.type === "doc-open") queueMicrotask(() => { initial = false; onMessage({type:"doc-state",update:encode(server.export({ mode: "update" })),count:1}); });
+      if (message.type === "doc-update") server.import(decode(message.update));
       return {ok:true};
     },
-    sendLive(message) { window.roomSent.push(message); return {ok:true}; }, close() { callback = null; }
+    sendLive(message) { window.roomSent.push(message); return {ok:true}; }, close() { callback = null; updateSub?.(); }
   };
 }`);
 

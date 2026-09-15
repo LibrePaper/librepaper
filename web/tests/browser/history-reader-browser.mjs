@@ -25,29 +25,31 @@ const points = sources.map((text, i) => ({
 for (let i = 1; i < points.length; i++) points[i].parent = points[i - 1].sha;
 
 writeFileSync(room, `
-import * as Y from ${JSON.stringify(join(root, "web/node_modules/yjs/dist/yjs.mjs"))};
+import { LoroDoc, LoroText } from "loro-crdt";
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 const decode = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
-const server = new Y.Doc();
+const server = new LoroDoc();
 const saved = localStorage.getItem('history-test-source');
-if (saved) Y.applyUpdate(server, decode(saved));
+if (saved) server.import(decode(saved));
 let text = server.getMap('files').get('main');
 if (!text) {
-  text = new Y.Text(); text.insert(0, ${JSON.stringify(current)});
-  server.getMap('files').set('main', text); server.getMap('paths').set('main', 'main.html');
+  text = new LoroText(); text.insert(0, ${JSON.stringify(current)});
+  server.getMap('files').setContainer('main', text); server.getMap('paths').set('main', 'main.html');
   server.getMap('meta').set('main', 'main');
+  server.commit();
 }
-const persist = () => localStorage.setItem('history-test-source', encode(Y.encodeStateAsUpdate(server)));
-persist(); server.on('update', persist);
+const persist = () => localStorage.setItem('history-test-source', encode(server.export({ mode: "update" })));
+persist();
+let updateSub = server.subscribeLocalUpdates(() => persist());
 export function openRoom(_slug, {onMessage, onConnected}) {
   window.historyLive = { source: () => text.toString(), append: value => text.insert(text.length, value) };
-  server.on('update', update => onMessage({type:'y-update', update:encode(update)}));
+  let updateSub2 = server.subscribeLocalUpdates(update => onMessage({type:'doc-update', update:encode(update)}));
   queueMicrotask(() => onConnected(true));
   return { send(message) {
-    if (message.type === 'y-open') setTimeout(() => onMessage({type:'y-state',update:encode(Y.encodeStateAsUpdate(server)),count:1}), location.search.includes('slowjoin') ? 350 : 0);
-    if (message.type === 'y-update') Y.applyUpdate(server, decode(message.update));
+    if (message.type === 'doc-open') setTimeout(() => onMessage({type:'doc-state',update:encode(server.export({ mode: "update" })),count:1}), location.search.includes('slowjoin') ? 350 : 0);
+    if (message.type === 'doc-update') server.import(decode(message.update));
     return {ok:true};
-  }, sendLive() { return {ok:true}; }, close() {} };
+  }, sendLive() { return {ok:true}; }, close() { updateSub2?.(); } };
 }`);
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};

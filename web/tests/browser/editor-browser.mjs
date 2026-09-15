@@ -23,7 +23,7 @@ const entry = join(temporary, "entry.js");
 const port = 19000 + Math.floor(Math.random() * 1000);
 
 const source = `
-import * as Y from ${JSON.stringify(join(root, "web/node_modules/yjs/dist/yjs.mjs"))};
+// Yjs import removed - using Loro now
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
 import { undoDepth } from ${JSON.stringify(join(root, "web/node_modules/y-codemirror.next/src/y-undomanager.js"))};
@@ -214,7 +214,10 @@ window.collabCacheCheck = async () => {
     sessions.push(value);
     return value;
   };
-  const snapshot = (value) => ({ update: btoa(String.fromCharCode(...Y.encodeStateAsUpdate(value.doc))) });
+  const snapshot = (value) => {
+    const update = value.doc.export({ mode: "update" });
+    return { update: btoa(String.fromCharCode(...new Uint8Array(update))) };
+  };
   const cached = async (createdAt) => {
     let ready;
     const local = new Promise((resolve) => { ready = resolve; });

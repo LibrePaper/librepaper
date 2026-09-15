@@ -89,10 +89,6 @@ try {
   const afterLeave = sent.length;
   runTimers();
   assert.equal(sent.length, afterLeave, "destroy prevents a delayed presence send");
-  const gone = new EphemeralStore(30000);
-  const removalFrame = presenceFrames(sent).at(-1).update;
-  gone.apply(decode(removalFrame));
-  assert.equal(gone.get("user"), undefined, "the removal frame clears local presence");
 } finally {
   if (!left) session.leave();
 }

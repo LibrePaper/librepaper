@@ -1,5 +1,5 @@
 // Real Reader responsive smoke test. The room is the only module replaced: its
-// y-state is a genuine Yjs directory, so Reader, Editor, Files and CSS mount.
+// doc-state is a genuine Loro directory, so Reader, Editor, Files and CSS mount.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -16,16 +16,16 @@ const temp = mkdtempSync(join(tmpdir(), "librepaper-reader-responsive-"));
 const entry = join(temp, "entry.js");
 const room = join(temp, "room.js");
 const out = join(temp, "build");
-const yjs = join(root, "web/node_modules/yjs/dist/yjs.mjs");
 writeFileSync(room, `
-import * as Y from ${JSON.stringify(yjs)};
+import { LoroDoc, LoroText } from "loro-crdt";
 const encode = b => btoa(String.fromCharCode(...b));
-const server = new Y.Doc();
+const server = new LoroDoc();
 const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
-const id = "main"; const text = new Y.Text(); text.insert(0, Array.from({length: 180}, (_, i) => "line " + i + " source content").join("\\n"));
-files.set(id, text); paths.set(id, "main.html"); meta.set("main", id);
-for (let i = 0; i < 70; i++) { const file = new Y.Text(); file.insert(0, 'chapter ' + i); files.set('chapter-' + i, file); paths.set('chapter-' + i, 'chapter-' + i + '.html'); }
-const update = encode(Y.encodeStateAsUpdate(server));
+const id = "main"; const text = new LoroText(); text.insert(0, Array.from({length: 180}, (_, i) => "line " + i + " source content").join("\\n"));
+files.setContainer(id, text); paths.set(id, "main.html"); meta.set("main", id);
+for (let i = 0; i < 70; i++) { const file = new LoroText(); file.insert(0, 'chapter ' + i); files.setContainer('chapter-' + i, file); paths.set('chapter-' + i, 'chapter-' + i + '.html'); }
+server.commit();
+const update = encode(server.export({ mode: "update" }));
 export function openRoom(slug, {onMessage, onConnected}) {
   window.roomReceive = onMessage;
   window.roomSent = [];
@@ -33,7 +33,7 @@ export function openRoom(slug, {onMessage, onConnected}) {
   return {
     send(message) {
       window.roomSent.push(message);
-      if (message.type === "y-open") queueMicrotask(() => onMessage({type:"y-state", update, count:1}));
+      if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", update, count:1}));
       return {ok:true};
     },
     sendLive(message) { window.roomSent.push(message); return {ok:true}; },
