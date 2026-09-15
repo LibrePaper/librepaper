@@ -32,7 +32,7 @@
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { prepareOfflineProject, preparedProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
-  import { createPublicationPublisher, createPublicationReader, sha256 } from "../lib/publication.js";
+  import { createPublication } from "../lib/reader/publication.svelte.js";
   import { buildDisplayBundle } from "../lib/publication-builder.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import {
@@ -111,19 +111,29 @@
   let docsOrigin = $state(null);
   let frameSrc = $state(null);
   let publishedMode = $state(false);
-  let publishedPublication = $state(null);
-  let publicationUpdate = $state(false);
-  let publicationStatus = $state(false);
   let offlinePrepared = $state(false);
   let preparingOffline = $state(false);
-  // An existing publication makes the expected-publication pointer part of a
-  // publish request. The Share panel remains available while it arrives, but
-  // its publish control must wait for that pointer.
-  let publicationMetadataReady = $state(false);
-  let publicationMetadataFailed = $state(false);
-  let publicationSourceReady = false;
-  let publicationReader;
-  const publicationPublisher = createPublicationPublisher({ slug: SLUG, key: KEY });
+  // The published version, whether the source has moved past it, and what
+  // publishing a new one involves. An existing publication makes the
+  // expected-publication pointer part of a publish request, so the Share
+  // panel stays available while that pointer arrives but its publish control
+  // waits for it.
+  const publication = createPublication({
+    slug: SLUG,
+    key: KEY,
+    liveTree: () => liveTreeNow(),
+    committedTree: () => session?.tree?.() || liveTreeNow(),
+    heading: (tree) => headingOf(tree),
+    gather: (digests) => figures.gather(SLUG, digests, authHeaders(KEY), { strict: true }),
+    facts: () => ({ canEdit: mayEdit, hasSession: Boolean(session), source: sourceGeneration }),
+    say,
+    disposed: () => readerDisposed,
+  });
+  const publishedPublication = $derived(publication.state.publication);
+  const publicationUpdate = $derived(publication.state.update);
+  const publicationStatus = $derived(publication.state.stale);
+  const publicationMetadataReady = $derived(publication.state.metadataReady);
+  const publicationMetadataFailed = $derived(publication.state.metadataFailed);
   let me = $state({});
   // The displayed name, since this is what goes on a comment and what the
   // reader is shown commenting as. A Google account's handle is its email and
@@ -161,7 +171,7 @@
     anchor: anchorComments,
     repaint: applyHighlights,
     send: (message) => collaboration?.send(message),
-    publicationId: () => publishedPublication?.publication_id || publishedPublication?.id || "",
+    publicationId: () => publication.id(),
   });
   const comments = $derived(annotations.state.comments);
   const unconfirmed = $derived(annotations.state.unconfirmed);
@@ -985,10 +995,7 @@
           // Binding the initial Yjs tree does not produce an observed source
           // edit. Publication metadata must therefore begin only after this
           // state has been applied, rather than waiting for a later edit.
-          if (mayEdit && !publicationSourceReady) {
-            publicationSourceReady = true;
-            void refreshPublicationMetadata();
-          }
+          if (mayEdit && publication.begin()) void refreshPublicationMetadata();
           return paintPreview();
         })
         .catch((error) => say(error.message || "could not open the document", true));
@@ -1026,7 +1033,7 @@
     }
 
     if (event.type === "publication-updated") {
-      publicationReader?.announce({ publication_id: event.publication_id });
+      publication.announce({ publication_id: event.publication_id });
       return;
     }
 
@@ -1869,42 +1876,8 @@
   // A publication records both the complete source tree and the HTML renderer
   // identity. `document.sha` is only the main source file's digest, so it
   // cannot answer whether a multi-file project is still the one published.
-  async function refreshPublicationStatus(publication = publishedPublication) {
-    if (!mayEdit || !publication?.source_sha256) {
-      publicationStatus = false;
-      return;
-    }
-    const generation = sourceGeneration;
-    try {
-      // This runs from the Yjs source observer. CodeMirror can still display
-      // its previous transaction at that point, so status must use the
-      // committed collaboration tree rather than liveTreeNow's editor overlay.
-      const tree = capturePreviewTree(session?.tree?.() || liveTreeNow());
-      const source = await snapshotDigest(tree);
-      const configuration = await renderers.htmlConfiguration(tree);
-      const renderConfig = await sha256(JSON.stringify(configuration.identity || {}));
-      if (generation !== sourceGeneration || publication !== publishedPublication) return;
-      publicationStatus = source !== publication.source_sha256 ||
-        renderConfig !== publication.render_config_sha256;
-    } catch {
-      // If the local renderer identity cannot be resolved, do not claim that
-      // the source matches the publication.
-      if (generation === sourceGeneration && publication === publishedPublication) publicationStatus = true;
-    }
-  }
-
-  async function refreshPublicationMetadata() {
-    if (!publicationReader) return null;
-    publicationMetadataReady = false;
-    publicationMetadataFailed = false;
-    const publication = await publicationReader.refresh();
-    if (readerDisposed || !mayEdit) return null;
-    if (!publicationMetadataFailed) {
-      await refreshPublicationStatus(publication);
-      publicationMetadataReady = true;
-    }
-    return publication;
-  }
+  const refreshPublicationStatus = (against) => publication.refreshStatus(against);
+  const refreshPublicationMetadata = () => publication.refreshMetadata();
 
   function sourceChanged() {
     if (readerDisposed) return;
@@ -2339,50 +2312,7 @@
     }
   }
 
-  async function publishCurrent() {
-    if (!mayEdit || !session) throw new Error("Only the current editable document can be published.");
-    if (!publicationMetadataReady) throw new Error("Checking the published version. Try again in a moment.");
-    const tree = capturePreviewTree(liveTreeNow());
-    const sourceRevision = await snapshotDigest(tree);
-    const configuration = await renderers.htmlConfiguration(tree);
-    const gathered = await figures.gather(SLUG, tree.digests, authHeaders(KEY), { strict: true });
-    tree.assets = { ...tree.assets, ...gathered.assets };
-    tree.urls = { ...tree.urls, ...gathered.urls };
-    say("Preparing publication…");
-    const rendered = await renderers.render(tree, await headingOf(tree), { format: "html", manual: true, configuration });
-    if (!rendered?.html || rendered.ok === false || rendered.diagnostics?.some((item) => item.severity === "error")) {
-      throw new Error("The captured document could not be rendered as HTML. Fix its render errors and publish again.");
-    }
-    const bundle = await buildDisplayBundle(rendered.html, tree);
-    let publication;
-    try {
-      publication = await publicationPublisher.publish({
-        ...bundle,
-        sourceRevision,
-        renderConfig: configuration.identity,
-        expectedPublicationId: publishedPublication?.id || null,
-        onProgress: ({ phase }) => say(phase === "published" ? "Published update." : `Publishing: ${phase}…`),
-      });
-    } catch (error) {
-      if (error?.status === 409) {
-        await refreshPublicationMetadata();
-        throw new Error("A newer published version is now current. Review it, then choose Publish update again.");
-      }
-      throw error;
-    }
-    publishedPublication = publication;
-    publicationUpdate = false;
-    const generation = sourceGeneration;
-    const liveTree = capturePreviewTree(liveTreeNow());
-    const [liveRevision, liveConfiguration] = await Promise.all([
-      snapshotDigest(liveTree), renderers.htmlConfiguration(liveTree),
-    ]);
-    const liveRenderConfig = await sha256(JSON.stringify(liveConfiguration.identity || {}));
-    publicationStatus = generation !== sourceGeneration || liveRevision !== sourceRevision ||
-      liveRenderConfig !== await sha256(JSON.stringify(configuration.identity || {}));
-    return publication;
-  }
-
+  const publishCurrent = () => publication.publish();
   // Open a panel from the menu: unlike the activity bar, choosing an item
   // that is already open leaves it open rather than closing the column.
   function openPanel(name) {
@@ -2681,10 +2611,9 @@
         });
       },
       onSource: (active) => {
-        if (mayEdit && !publicationSourceReady) {
-          publicationSourceReady = true;
-          void refreshPublicationMetadata();
-        }
+        // The first source of a session is what says the document exists to
+        // be compared against a publication; later ones are edits.
+        if (mayEdit && publication.begin()) void refreshPublicationMetadata();
         sourceChanged();
       },
       onSwap: () => (sourceEpoch += 1),
@@ -2719,22 +2648,7 @@
         .then((record) => { offlinePrepared = Boolean(record); })
         .catch(() => {});
     }
-    if (mayEdit) {
-      publicationMetadataReady = false;
-      publicationMetadataFailed = false;
-      publicationSourceReady = false;
-      publicationReader?.dispose();
-      publicationReader = createPublicationReader({
-        slug: SLUG, key: KEY,
-        onPublication: (value) => {
-          publishedPublication = value;
-        },
-        onError: (error) => {
-          publicationMetadataFailed = true;
-          say(error.message || "Could not load the published version.", true);
-        },
-      });
-    }
+    if (mayEdit) publication.watchAsEditor();
     // Reader and commenter links receive the current immutable display bundle.
     // They never join the source room, ask for a snapshot, or start a local
     // renderer. The publication URL is an authenticated server response and
@@ -2742,35 +2656,26 @@
     if (!mayEdit) {
       publishedMode = true;
       startCollaboration(document_, { sourceSync: false });
-      publicationReader?.dispose();
-      publicationReader = createPublicationReader({
-        slug: SLUG,
-        key: KEY,
+      const visitor = publication.watchAsVisitor({
+        // Where the published bundle is served from. Checked against the
+        // origin this document names: a URL from anywhere else is refused
+        // rather than loaded into the frame.
         onPublication: (value) => {
-          if (value?.pending_id && value.pending_id !== publishedPublication?.id) {
-            publicationUpdate = true;
+          if (!value?.html_url) return;
+          const source = value.html_url;
+          if (typeof source !== "string" || !/^https?:\/\//.test(source)) return;
+          const resolved = new URL(source);
+          if (document_.docs_origin && resolved.origin !== document_.docs_origin) {
+            say("The published document URL was refused.", true);
             return;
           }
-          publishedPublication = value;
-          publicationUpdate = false;
-          if (value?.html_url) {
-            const source = value.html_url;
-            if (typeof source === "string" && /^https?:\/\//.test(source)) {
-              const resolved = new URL(source);
-              if (document_.docs_origin && resolved.origin !== document_.docs_origin) {
-                say("The published document URL was refused.", true);
-                return;
-              }
-              frameSrc = resolved.href;
-              docsOrigin = resolved.origin;
-            }
-            everPainted = true;
-            everPaintedShown = true;
-          }
+          frameSrc = resolved.href;
+          docsOrigin = resolved.origin;
+          everPainted = true;
+          everPaintedShown = true;
         },
-        onError: (error) => say(error.message || "Could not load the published version.", true),
       });
-      await publicationReader.refresh();
+      await visitor.refresh();
       // No publication is an explicit state, never a reason to fall back to
       // source rendering. Keep the document pane available for the notice.
       sourceFormat = "html";
@@ -2878,8 +2783,7 @@
       renderCoordinator.invalidate();
       navigationGeneration += 1;
       renderers.cancelPreview();
-      publicationReader?.dispose();
-      publicationReader = null;
+      publication.dispose();
       clearTimeout(previewTimer);
       previewTimer = null;
       boot.dispose();
@@ -3072,7 +2976,7 @@
 <Nav {me} documentation={false}>
   {#snippet tools()}
     {#if publishedMode && publicationUpdate}
-      <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => { publicationUpdate = false; void publicationReader?.refresh(); }}>
+      <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void publication.acceptUpdate()}>
         New published version available · Refresh
       </button>
     {/if}
