@@ -1,6 +1,6 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
-  import * as localBridge from "../../lib/latex/local.js";
+  import * as localBridge from "../../lib/companion/client.js";
   import { buildersFor, capabilityFor, supportsOperation } from "../../lib/build-catalog.js";
   import { update } from "../../lib/build-preferences.js";
 

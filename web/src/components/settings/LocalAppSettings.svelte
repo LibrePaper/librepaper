@@ -3,7 +3,7 @@
   // it, how to connect, and what it can do. Shared by LaTeX, which uses it for
   // an installed TeX, and Quarto, which uses it for every local render.
   import SettingRow from "./SettingRow.svelte";
-  import * as localBridge from "../../lib/latex/local.js";
+  import * as localBridge from "../../lib/companion/client.js";
 
   let { sourceFormat = "", main = "", bindingId = "", onbindingid } = $props();
   const quarto = $derived(sourceFormat === "quarto");

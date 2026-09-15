@@ -42,7 +42,7 @@ let pagePort = 0;
 const appAddress = `http://127.0.0.1:${appPort}/`;
 
 writeFileSync(entry, `
-import * as local from ${JSON.stringify(join(root, "web/src/lib/latex/local.js"))};
+import * as local from ${JSON.stringify(join(root, "web/src/lib/companion/client.js"))};
 window.local = local;
 window.errors = [];
 addEventListener("error", (event) => window.errors.push(String(event.message)));

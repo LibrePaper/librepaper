@@ -2,7 +2,7 @@
 // local app, keep its workspace in sync as the document changes, poll its
 // rendered page and its own status, and tear it down. Quarto's own preview
 // and a Typst document previewed through Calepin are the same shape of job
-// to `web/src/lib/latex/local.js` (`startLocalPreview`, `stopLocalPreview`,
+// to `web/src/lib/companion/client.js` (`startLocalPreview`, `stopLocalPreview`,
 // `localPreviewStatus`, `localPreviewPage`, `syncWorkspace`) -- this module is
 // the one lifecycle both engines run through, parameterized by `engine`.
 //

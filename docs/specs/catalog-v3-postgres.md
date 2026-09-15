@@ -209,7 +209,6 @@ create table documents (
     owner_id uuid not null references accounts(id),
     ownership_mode text not null check (ownership_mode in ('owned', 'open', 'example')),
     title text not null,
-    title_key text not null,
     status text not null check (status in ('active', 'deleting')),
     source_format text not null check (source_format in ('markdown','html','typst','latex','quarto')),
     main_path text not null,
@@ -246,9 +245,11 @@ create table share_links (
 );
 ```
 
-The application derives `title_key` by Unicode normalization, trimming, and
-case folding for search and sorting. Titles are display labels and need not be
-unique within an account. Document IDs and slugs provide identity.
+Titles are display labels and need not be unique within an account. Document
+IDs and slugs provide identity. An earlier draft carried a normalized
+`title_key` beside the title, for a search and sort that was never built;
+migration 0007 drops it, since it is a pure function of `title` and a search
+feature can derive it again in one backfill.
 
 A share token is a random bearer secret. PostgreSQL stores only its hash; there
 is no encrypted token to reseal and no key-rotation workflow. The owner may

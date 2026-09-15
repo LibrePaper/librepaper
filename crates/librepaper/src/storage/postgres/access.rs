@@ -189,6 +189,25 @@ impl PostgresCatalog {
         Ok(changed)
     }
 
+    /// Every grant on each of `document_ids`, in one round trip. The rows carry
+    /// their own `document_id`, so the caller groups them without a query per
+    /// document. Ordered so that grouping preserves the per-document order
+    /// [`grants`] returns.
+    pub async fn grants_for_documents(&self, document_ids: &[Uuid]) -> Result<Vec<GrantRecord>> {
+        if document_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as!(
+            GrantRecord,
+            "SELECT document_id,account_id,role,source_link_hash,created_at
+             FROM grants WHERE document_id=ANY($1) ORDER BY document_id,created_at,account_id",
+            document_ids,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
     pub async fn grants(&self, document_id: Uuid) -> Result<Vec<GrantRecord>> {
         sqlx::query_as!(
             GrantRecord,
@@ -234,6 +253,28 @@ impl PostgresCatalog {
         .await?;
         tx.commit().await?;
         Ok(row)
+    }
+
+    /// The live share links on each of `document_ids`, in one round trip.
+    /// Grouped by the caller the same way [`grants_for_documents`] is.
+    pub async fn share_links_for_documents(
+        &self,
+        document_ids: &[Uuid],
+    ) -> Result<Vec<ShareLinkRecord>> {
+        if document_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as!(
+            ShareLinkRecord,
+            "SELECT id,document_id,role,token_hash,label,comment_budget,generation,
+                    created_at,expires_at,revoked_at
+             FROM share_links WHERE document_id=ANY($1) AND revoked_at IS NULL
+             ORDER BY document_id,created_at,id",
+            document_ids,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
     }
 
     pub async fn share_links(&self, document_id: Uuid) -> Result<Vec<ShareLinkRecord>> {

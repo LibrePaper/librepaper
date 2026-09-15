@@ -7,7 +7,6 @@ const MAX_RECOVERABLE_UPDATE_BYTES: i64 = 128 * 1024 * 1024;
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct PersistedUpdate {
-    pub id: i64,
     pub document_id: Uuid,
     pub update_sequence: i64,
     pub update_bytes: Vec<u8>,
@@ -109,7 +108,7 @@ impl PostgresCatalog {
         }
         sqlx::query_as!(
             PersistedUpdate,
-            "SELECT id,document_id,update_sequence,update_bytes,created_at
+            "SELECT document_id,update_sequence,update_bytes,created_at
              FROM document_updates WHERE document_id=$1 AND update_sequence>$2
              ORDER BY update_sequence LIMIT $3",
             document_id,
@@ -149,7 +148,7 @@ impl PostgresCatalog {
         let after = base.as_ref().map_or(0, |base| base.through_update_sequence);
         let updates = sqlx::query_as!(
             PersistedUpdate,
-            "SELECT id,document_id,update_sequence,update_bytes,created_at
+            "SELECT document_id,update_sequence,update_bytes,created_at
              FROM document_updates WHERE document_id=$1 AND update_sequence>$2
              ORDER BY update_sequence",
             document_id,

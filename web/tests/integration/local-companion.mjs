@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import * as local from "../../src/lib/latex/local.js";
+import * as local from "../../src/lib/companion/client.js";
 
 const response = (status, body) => ({ status, ok: status >= 200 && status < 300,
   json: async () => body, clone() { return response(status, body); } });

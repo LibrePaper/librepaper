@@ -502,11 +502,8 @@ impl Store {
 
     pub async fn list_result(&self) -> Result<Vec<IndexEntry>, CatalogError> {
         let catalog = &self.catalog;
-        let mut result = Vec::new();
-        for document in catalog.list_documents(None, 200).await? {
-            result.push(entry_from_document(catalog, &document).await?);
-        }
-        Ok(result)
+        let documents = catalog.list_documents(None, 200).await?;
+        entries_from_documents(catalog, &documents).await
     }
 
     pub async fn visible_page_with_options(
@@ -538,14 +535,10 @@ impl Store {
             }
             None => None,
         };
-        let mut result = Vec::new();
-        for document in catalog
+        let documents = catalog
             .visible_documents(account_id, before, i64::from(limit), include_examples)
-            .await?
-        {
-            result.push(entry_from_document(catalog, &document).await?);
-        }
-        Ok(result)
+            .await?;
+        entries_from_documents(catalog, &documents).await
     }
 
     pub async fn put_directory_as_actor(
@@ -799,66 +792,137 @@ async fn entry_from_document(
     catalog: &Catalog,
     document: &crate::storage::postgres::DocumentRecord,
 ) -> Result<IndexEntry, CatalogError> {
-    let owner = catalog.account(document.owner_id).await?;
-    let links = catalog
-        .share_links(document.id)
+    Ok(
+        entries_from_documents(catalog, std::slice::from_ref(document))
+            .await?
+            .into_iter()
+            .next()
+            .expect("one document yields one entry"),
+    )
+}
+
+/// Builds the listing entry for a whole page of documents in one pass.
+///
+/// An entry needs the owner account, the document's live share links, and its
+/// grants -- plus the account behind each link-sourced grant, for the guest's
+/// display name. Asked per document that was four queries a row and one more
+/// per guest, so rendering a 200-document page cost upwards of a thousand
+/// round trips. Each of the three collections is read once for the whole page
+/// and indexed in memory here instead.
+async fn entries_from_documents(
+    catalog: &Catalog,
+    documents: &[crate::storage::postgres::DocumentRecord],
+) -> Result<Vec<IndexEntry>, CatalogError> {
+    use std::collections::HashMap;
+
+    if documents.is_empty() {
+        return Ok(Vec::new());
+    }
+    let document_ids: Vec<uuid::Uuid> = documents.iter().map(|document| document.id).collect();
+    let links = catalog.share_links_for_documents(&document_ids).await?;
+    let grants = catalog.grants_for_documents(&document_ids).await?;
+
+    // Owners, plus the guests named by a link-sourced grant: the only accounts
+    // any entry on this page can mention.
+    let mut account_ids: Vec<uuid::Uuid> =
+        documents.iter().map(|document| document.owner_id).collect();
+    account_ids.extend(
+        grants
+            .iter()
+            .filter(|grant| grant.source_link_hash.is_some())
+            .map(|grant| grant.account_id),
+    );
+    account_ids.sort_unstable();
+    account_ids.dedup();
+    let accounts: HashMap<uuid::Uuid, _> = catalog
+        .accounts_by_ids(&account_ids)
         .await?
         .into_iter()
-        .map(|link| LinkGrant {
-            hash: hex::encode(link.token_hash),
-            role: link.role,
-            key: String::new(),
-            label: link.label,
-            budget: link.comment_budget,
-            since: crate::util::format_unix(link.created_at.unix_timestamp()),
-            until: link
-                .expires_at
-                .map(|at| crate::util::format_unix(at.unix_timestamp()))
-                .unwrap_or_default(),
-        })
+        .map(|account| (account.id, account))
         .collect();
-    let mut guests = Vec::new();
-    let mut account_grants = std::collections::HashMap::new();
-    for grant in catalog.grants(document.id).await? {
-        let Some(hash) = grant.source_link_hash else {
-            if let Some(role) = Role::parse(&grant.role) {
-                account_grants.insert(grant.account_id.to_string(), role);
-            }
-            continue;
-        };
-        let Some(account) = catalog.account(grant.account_id).await? else {
-            continue;
-        };
-        guests.push(Guest {
-            id: grant.account_id.to_string(),
-            name: account.display_name,
-            since: crate::util::format_unix(grant.created_at.unix_timestamp()),
-            link: hex::encode(hash),
-        });
+
+    let mut links_by_document: HashMap<uuid::Uuid, Vec<_>> = HashMap::new();
+    for link in links {
+        links_by_document
+            .entry(link.document_id)
+            .or_default()
+            .push(link);
     }
-    Ok(IndexEntry {
-        slug: document.slug.clone(),
-        storage_id: document.id.to_string(),
-        title: document.title.clone(),
-        sha: document
-            .current_version_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
-        created_at: crate::util::format_unix(document.created_at.unix_timestamp()),
-        updated_at: crate::util::format_unix(document.updated_at.unix_timestamp()),
-        example: document.ownership_mode == "example",
-        unowned: document.ownership_mode == "open",
-        publisher: owner.as_ref().map(|a| a.handle.clone()).unwrap_or_default(),
-        publisher_id: document.owner_id.to_string(),
-        publisher_name: owner.map(|a| a.display_name).unwrap_or_default(),
-        size: 0,
-        source_format: document.source_format.clone(),
-        main: document.main_path.clone(),
-        links,
-        guests,
-        account_grants,
-        bookmark_link_hash: None,
-    })
+    let mut grants_by_document: HashMap<uuid::Uuid, Vec<_>> = HashMap::new();
+    for grant in grants {
+        grants_by_document
+            .entry(grant.document_id)
+            .or_default()
+            .push(grant);
+    }
+
+    Ok(documents
+        .iter()
+        .map(|document| {
+            let owner = accounts.get(&document.owner_id);
+            let links = links_by_document
+                .remove(&document.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|link| LinkGrant {
+                    hash: hex::encode(link.token_hash),
+                    role: link.role,
+                    key: String::new(),
+                    label: link.label,
+                    budget: link.comment_budget,
+                    since: crate::util::format_unix(link.created_at.unix_timestamp()),
+                    until: link
+                        .expires_at
+                        .map(|at| crate::util::format_unix(at.unix_timestamp()))
+                        .unwrap_or_default(),
+                })
+                .collect();
+            let mut guests = Vec::new();
+            let mut account_grants = HashMap::new();
+            for grant in grants_by_document.remove(&document.id).unwrap_or_default() {
+                let Some(hash) = grant.source_link_hash else {
+                    if let Some(role) = Role::parse(&grant.role) {
+                        account_grants.insert(grant.account_id.to_string(), role);
+                    }
+                    continue;
+                };
+                // A grant whose account has since been erased names nobody, and
+                // is skipped exactly as the per-row lookup skipped a miss.
+                let Some(account) = accounts.get(&grant.account_id) else {
+                    continue;
+                };
+                guests.push(Guest {
+                    id: grant.account_id.to_string(),
+                    name: account.display_name.clone(),
+                    since: crate::util::format_unix(grant.created_at.unix_timestamp()),
+                    link: hex::encode(hash),
+                });
+            }
+            IndexEntry {
+                slug: document.slug.clone(),
+                storage_id: document.id.to_string(),
+                title: document.title.clone(),
+                sha: document
+                    .current_version_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_default(),
+                created_at: crate::util::format_unix(document.created_at.unix_timestamp()),
+                updated_at: crate::util::format_unix(document.updated_at.unix_timestamp()),
+                example: document.ownership_mode == "example",
+                unowned: document.ownership_mode == "open",
+                publisher: owner.map(|a| a.handle.clone()).unwrap_or_default(),
+                publisher_id: document.owner_id.to_string(),
+                publisher_name: owner.map(|a| a.display_name.clone()).unwrap_or_default(),
+                size: 0,
+                source_format: document.source_format.clone(),
+                main: document.main_path.clone(),
+                links,
+                guests,
+                account_grants,
+                bookmark_link_hash: None,
+            }
+        })
+        .collect())
 }
 
 pub fn random_suffix(config: &Configuration) -> String {

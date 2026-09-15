@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO documents\n             (id,slug,owner_id,ownership_mode,title,title_key,status,source_format,main_path,settings)\n             VALUES($1,$2,$3,$4,$5,$6,'active',$7,$8,$9)\n             RETURNING id,slug,owner_id,ownership_mode,title,title_key,status,source_format,\n                       main_path,update_sequence,project_generation,current_version_id,\n                       current_publication_id,settings,created_at,updated_at,deleted_at",
+  "query": "INSERT INTO documents\n             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path,settings)\n             VALUES($1,$2,$3,$4,$5,'active',$6,$7,$8)\n             RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,\n                       main_path,update_sequence,project_generation,current_version_id,\n                       current_publication_id,settings,created_at,updated_at,deleted_at",
   "describe": {
     "columns": [
       {
@@ -30,61 +30,56 @@
       },
       {
         "ordinal": 5,
-        "name": "title_key",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 6,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "source_format",
         "type_info": "Text"
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "main_path",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "update_sequence",
         "type_info": "Int8"
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "project_generation",
         "type_info": "Int8"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "current_version_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "current_publication_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "settings",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 14,
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 15,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 16,
+        "ordinal": 15,
         "name": "deleted_at",
         "type_info": "Timestamptz"
       }
@@ -94,7 +89,6 @@
         "Uuid",
         "Text",
         "Uuid",
-        "Text",
         "Text",
         "Text",
         "Text",
@@ -113,7 +107,6 @@
       false,
       false,
       false,
-      false,
       true,
       true,
       false,
@@ -122,5 +115,5 @@
       true
     ]
   },
-  "hash": "ba6111a2734f980e176fa981a48d070c2164145474498a7ecc40e4e082ab17a8"
+  "hash": "f99f2ec33ff8dd7996b50835d37e3f833f99271abe04133341efdeaa1b87d4d7"
 }

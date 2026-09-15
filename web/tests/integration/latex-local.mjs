@@ -1,6 +1,6 @@
 // The local bridge client, against a fake local LibrePaper.
 //
-// `local.js` never touches `fetch` or `localStorage` directly -- everything
+// The companion client never touches `fetch` or `localStorage` directly -- everything
 // ambient goes through its `_testing.inject`-able `deps` -- so this check
 // drives the exact production module under Node with a small fake HTTP
 // service and an in-memory store, and controls the wall clock so the
@@ -8,7 +8,7 @@
 
 import { createHash } from "node:crypto";
 
-import * as local from "../../src/lib/latex/local.js";
+import * as local from "../../src/lib/companion/client.js";
 
 // The client verifies every build output against the digest the job status
 // announced, so the fake service has to announce real ones.

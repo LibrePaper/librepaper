@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,selector,\n                    context,source_version_id,source_update_sequence,source_project_generation,\n                    source_state_vector,publication_id,proposed_text,suggestion_state,resolved_at,\n                    created_at,updated_at\n             FROM annotations WHERE document_id=$1 AND ($2::uuid IS NULL OR publication_id=$2)\n             AND ($3::timestamptz IS NULL OR (created_at,id)>($3,$4))\n             ORDER BY created_at,id LIMIT $5",
+  "query": "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,selector,\n                            context,source_version_id,source_update_sequence,source_project_generation,\n                            source_state_vector,publication_id,proposed_text,suggestion_state,resolved_at,\n                            created_at,updated_at\n                     FROM annotations\n                     WHERE document_id=$1 AND publication_id=$2\n                       AND (created_at,id) > (COALESCE($3::timestamptz,'-infinity'),\n                                              COALESCE($4::uuid,'00000000-0000-0000-0000-000000000000'))\n                     ORDER BY created_at,id LIMIT $5",
   "describe": {
     "columns": [
       {
@@ -130,5 +130,5 @@
       false
     ]
   },
-  "hash": "f8fd8eb8dca437a562c4df697acabd04e26128732dc102b8e976038b5c525785"
+  "hash": "4f4cfc85e2031756fe8c1e7a1d0073392326d6807c540969ebfd20fd7bb95b04"
 }

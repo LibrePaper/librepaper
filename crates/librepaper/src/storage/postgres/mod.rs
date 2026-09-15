@@ -344,6 +344,78 @@ mod tests {
                 .unwrap(),
             Some(AccessRole::Commenter)
         );
+        // Reading a page of documents batches the three per-document lookups
+        // that assembling a listing entry needs. Each batch must return exactly
+        // what the per-document call returns, grouped to the right document:
+        // getting that wrong would show one document's guests on another.
+        let pages = [first.id, second.id];
+        let batched_grants = catalog.grants_for_documents(&pages).await.unwrap();
+        let batched_links = catalog.share_links_for_documents(&pages).await.unwrap();
+        for document_id in pages {
+            let grants: Vec<_> = batched_grants
+                .iter()
+                .filter(|grant| grant.document_id == document_id)
+                .map(|grant| {
+                    (
+                        grant.account_id,
+                        grant.role.clone(),
+                        grant.source_link_hash.clone(),
+                    )
+                })
+                .collect();
+            let expected: Vec<_> = catalog
+                .grants(document_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|grant| (grant.account_id, grant.role, grant.source_link_hash))
+                .collect();
+            assert_eq!(grants, expected, "grants for {document_id}");
+
+            let links: Vec<_> = batched_links
+                .iter()
+                .filter(|link| link.document_id == document_id)
+                .map(|link| link.id)
+                .collect();
+            let expected: Vec<_> = catalog
+                .share_links(document_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|link| link.id)
+                .collect();
+            assert_eq!(links, expected, "share links for {document_id}");
+        }
+        // Only `first` was shared, so the grouping is load-bearing here.
+        assert!(batched_grants.iter().any(|g| g.document_id == first.id));
+        assert!(!batched_grants.iter().any(|g| g.document_id == second.id));
+
+        let mut accounts: Vec<_> = catalog
+            .accounts_by_ids(&[account.id, collaborator.id])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|found| found.id)
+            .collect();
+        accounts.sort();
+        let mut expected = vec![account.id, collaborator.id];
+        expected.sort();
+        assert_eq!(accounts, expected);
+        // An id that names nothing is skipped, not an error: a listing entry
+        // whose guest was erased still renders.
+        assert!(catalog
+            .accounts_by_ids(&[uuid::Uuid::from_u128(0)])
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(catalog.accounts_by_ids(&[]).await.unwrap().is_empty());
+        assert!(catalog.grants_for_documents(&[]).await.unwrap().is_empty());
+        assert!(catalog
+            .share_links_for_documents(&[])
+            .await
+            .unwrap()
+            .is_empty());
+
         let visible = catalog
             .visible_documents(Some(collaborator.id), None, 200, false)
             .await

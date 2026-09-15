@@ -14,7 +14,7 @@ const rendering = await read("RenderingSettings.svelte");
 // and its native fallback is routed by `latex.js` rather than configured here.
 assert.match(registry, /const local = \(\{ format, mayEdit \}\) => \["typst", "markdown", "quarto"\]\.includes\(format\) && mayEdit;/);
 assert.match(registry, /id: "local", says: "Local app", offered: local,/);
-assert.match(local, /import \* as localBridge from "\.\.\/\.\.\/lib\/latex\/local\.js"/);
+assert.match(local, /import \* as localBridge from "\.\.\/\.\.\/lib\/companion\/client\.js"/);
 assert.match(local, /localBridge\.subscribe\(\(status\) => \(local = status\)\)/);
 assert.doesNotMatch(local, /latex\.local\.(status|address|connect|disconnect|retry|capabilities)/);
 assert.match(local, /\["quarto", "typst", "markdown"\]\.includes\(sourceFormat\)/);

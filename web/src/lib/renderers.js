@@ -16,7 +16,7 @@ import { needsBibliography } from "./bibliography-engine.js";
 import * as latex from "./latex.js";
 import * as latexHtml from "./latex/html.js";
 import * as quarto from "./engines/quarto.js";
-import * as localBridge from "./latex/local.js";
+import * as localBridge from "./companion/client.js";
 import { snapshotDigest } from "./tree-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";

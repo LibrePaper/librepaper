@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,\n                    main_path,update_sequence,project_generation,current_version_id,\n                    current_publication_id,settings,created_at,updated_at,deleted_at\n             FROM documents WHERE id=$1",
+  "query": "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,\n                    main_path,update_sequence,project_generation,current_version_id,\n                    current_publication_id,settings,created_at,updated_at,deleted_at\n             FROM documents WHERE slug=$1",
   "describe": {
     "columns": [
       {
@@ -30,72 +30,66 @@
       },
       {
         "ordinal": 5,
-        "name": "title_key",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 6,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "source_format",
         "type_info": "Text"
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "main_path",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "update_sequence",
         "type_info": "Int8"
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "project_generation",
         "type_info": "Int8"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "current_version_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "current_publication_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "settings",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 14,
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 15,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 16,
+        "ordinal": 15,
         "name": "deleted_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
-      false,
       false,
       false,
       false,
@@ -114,5 +108,5 @@
       true
     ]
   },
-  "hash": "f46de739c81c0e64c925857e5a4c59da9ac9412c8d0f62ae777b1a035020c4bb"
+  "hash": "abd3c347ab3eba19cacc49e933fa02a03bf2e86e48b42cf19bf03c4d6b95072a"
 }

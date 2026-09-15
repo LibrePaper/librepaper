@@ -17,7 +17,7 @@
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
   import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
-  import * as localQuarto from "../lib/latex/local.js";
+  import * as localQuarto from "../lib/companion/client.js";
   import { checkPlacement, basename, inside } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
   import { createAnnotations } from "../lib/reader/annotations.js";

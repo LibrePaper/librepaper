@@ -290,8 +290,8 @@ async fn catalog_v3_release_benchmark() {
             .expect("clear scale content");
     }
     sqlx::query!(
-        "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,source_format,main_path)
-         SELECT gen_random_uuid(),'scale-'||n,$1,'owned','Scale '||n,'scale '||n,'active','markdown','paper.md'
+        "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
+         SELECT gen_random_uuid(),'scale-'||n,$1,'owned','Scale '||n,'active','markdown','paper.md'
          FROM generate_series(1,9900) n",
         owner.id,
     )

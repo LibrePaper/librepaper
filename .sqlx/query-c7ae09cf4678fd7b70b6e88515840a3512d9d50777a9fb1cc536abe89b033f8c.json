@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,\n                    archive_key,archive_encoding_version,archive_digest,archive_bytes,\n                    logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,\n                    author_label,created_at\n             FROM document_versions WHERE document_id=$1\n             AND ($2::bigint IS NULL OR sequence<$2) ORDER BY sequence DESC,id DESC LIMIT $3",
+  "query": "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,\n                    archive_key,archive_encoding_version,archive_digest,archive_bytes,\n                    logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,\n                    author_label,created_at\n             FROM document_versions WHERE document_id=$1\n             ORDER BY sequence DESC LIMIT $2",
   "describe": {
     "columns": [
       {
@@ -97,7 +97,6 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Int8",
         "Int8"
       ]
     },
@@ -122,5 +121,5 @@
       false
     ]
   },
-  "hash": "46d80c770f0c4b75702846116eafe1184d0087772c2f578422077d03df9b5720"
+  "hash": "c7ae09cf4678fd7b70b6e88515840a3512d9d50777a9fb1cc536abe89b033f8c"
 }

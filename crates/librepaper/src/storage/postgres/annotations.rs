@@ -471,23 +471,60 @@ impl PostgresCatalog {
                 "annotation page limit must be 1..=500".into(),
             ));
         }
-        sqlx::query_as!(
-            AnnotationRecord,
-            "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,selector,
-                    context,source_version_id,source_update_sequence,source_project_generation,
-                    source_state_vector,publication_id,proposed_text,suggestion_state,resolved_at,
-                    created_at,updated_at
-             FROM annotations WHERE document_id=$1 AND ($2::uuid IS NULL OR publication_id=$2)
-             AND ($3::timestamptz IS NULL OR (created_at,id)>($3,$4))
-             ORDER BY created_at,id LIMIT $5",
-            document_id,
-            publication_id,
-            after.map(|v| v.0),
-            after.map(|v| v.1),
-            limit,
-        )
-        .fetch_all(&self.pool)
-        .await
+        // Two queries rather than one with `($2 IS NULL OR publication_id=$2)`:
+        // the timeline and the publication-scoped timeline have a purpose-built
+        // index each, and a predicate that is sometimes a constant and
+        // sometimes a match cannot be planned against either.
+        //
+        // The cursor stays a single predicate. `-infinity` and the nil UUID sort
+        // below every row, so an absent cursor starts the same index scan from
+        // the beginning instead of turning the range into an OR the planner
+        // cannot use as a scan bound.
+        let after_time = after.map(|v| v.0);
+        let after_id = after.map(|v| v.1);
+        match publication_id {
+            Some(publication_id) => {
+                sqlx::query_as!(
+                    AnnotationRecord,
+                    "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,selector,
+                            context,source_version_id,source_update_sequence,source_project_generation,
+                            source_state_vector,publication_id,proposed_text,suggestion_state,resolved_at,
+                            created_at,updated_at
+                     FROM annotations
+                     WHERE document_id=$1 AND publication_id=$2
+                       AND (created_at,id) > (COALESCE($3::timestamptz,'-infinity'),
+                                              COALESCE($4::uuid,'00000000-0000-0000-0000-000000000000'))
+                     ORDER BY created_at,id LIMIT $5",
+                    document_id,
+                    publication_id,
+                    after_time,
+                    after_id,
+                    limit,
+                )
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query_as!(
+                    AnnotationRecord,
+                    "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,selector,
+                            context,source_version_id,source_update_sequence,source_project_generation,
+                            source_state_vector,publication_id,proposed_text,suggestion_state,resolved_at,
+                            created_at,updated_at
+                     FROM annotations
+                     WHERE document_id=$1
+                       AND (created_at,id) > (COALESCE($2::timestamptz,'-infinity'),
+                                              COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'))
+                     ORDER BY created_at,id LIMIT $4",
+                    document_id,
+                    after_time,
+                    after_id,
+                    limit,
+                )
+                .fetch_all(&self.pool)
+                .await
+            }
+        }
         .map_err(Error::from)
     }
 

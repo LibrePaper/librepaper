@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { cellFingerprint, composeDraft, contextId, contextFingerprint, escapeHtml, mapQuartoDiagnostics, parseQuarto, virtualTree } from "../../src/lib/engines/quarto.js";
 import { formatOf, outputKind } from "../../src/lib/renderers.js";
-import { quartoRequest } from "../../src/lib/latex/local.js";
+import { quartoRequest } from "../../src/lib/companion/client.js";
 
 const source = [
   "---", "title: Example", "execute:", "  echo: false", "---", "",

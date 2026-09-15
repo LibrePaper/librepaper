@@ -1,6 +1,5 @@
 use serde_json::Value;
 use time::OffsetDateTime;
-use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use super::{new_id, Error, PostgresCatalog, Result};
@@ -50,7 +49,6 @@ pub struct DocumentRecord {
     pub owner_id: Uuid,
     pub ownership_mode: String,
     pub title: String,
-    pub title_key: String,
     pub status: String,
     pub source_format: String,
     pub main_path: String,
@@ -322,11 +320,10 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid document metadata".into()));
         }
         Ok(sqlx::query!(
-            "UPDATE documents SET title=$2,title_key=$3,owner_id=$4,ownership_mode=$5,
+            "UPDATE documents SET title=$2,owner_id=$3,ownership_mode=$4,
              updated_at=now() WHERE id=$1 AND status='active'",
             id,
             title,
-            title_key(title),
             owner_id,
             ownership_mode,
         )
@@ -389,6 +386,26 @@ impl PostgresCatalog {
         .ok_or_else(|| Error::Conflict("account is not active".into()))
     }
 
+    /// The accounts named by `ids`, in one round trip, skipping any that no
+    /// longer exist. Listing a page of documents needs an owner and a display
+    /// name for each guest on it; asking row by row made the cost of a page
+    /// proportional to the people on it rather than to the page.
+    pub async fn accounts_by_ids(&self, ids: &[Uuid]) -> Result<Vec<AccountRecord>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as!(
+            AccountRecord,
+            "SELECT id,kind,provider,provider_subject,handle,display_name,email,status,
+                    session_generation,preferences,created_at,last_seen_at
+             FROM accounts WHERE id=ANY($1)",
+            ids,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
     pub async fn account(&self, id: Uuid) -> Result<Option<AccountRecord>> {
         sqlx::query_as!(
             AccountRecord,
@@ -405,13 +422,12 @@ impl PostgresCatalog {
     pub async fn create_document(&self, input: NewDocument) -> Result<DocumentRecord> {
         validate_document(&input)?;
         let id = new_id();
-        let title_key = title_key(&input.title);
         sqlx::query_as!(
             DocumentRecord,
             "INSERT INTO documents
-             (id,slug,owner_id,ownership_mode,title,title_key,status,source_format,main_path,settings)
-             VALUES($1,$2,$3,$4,$5,$6,'active',$7,$8,$9)
-             RETURNING id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path,settings)
+             VALUES($1,$2,$3,$4,$5,'active',$6,$7,$8)
+             RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,
                        main_path,update_sequence,project_generation,current_version_id,
                        current_publication_id,settings,created_at,updated_at,deleted_at",
             id,
@@ -419,7 +435,6 @@ impl PostgresCatalog {
             input.owner_id,
             input.ownership_mode,
             input.title,
-            title_key,
             input.source_format,
             input.main_path,
             input.settings,
@@ -432,7 +447,7 @@ impl PostgresCatalog {
     pub async fn document_by_slug(&self, slug: &str) -> Result<Option<DocumentRecord>> {
         sqlx::query_as!(
             DocumentRecord,
-            "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+            "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,project_generation,current_version_id,
                     current_publication_id,settings,created_at,updated_at,deleted_at
              FROM documents WHERE slug=$1",
@@ -446,7 +461,7 @@ impl PostgresCatalog {
     pub async fn document(&self, id: Uuid) -> Result<Option<DocumentRecord>> {
         sqlx::query_as!(
             DocumentRecord,
-            "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+            "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,project_generation,current_version_id,
                     current_publication_id,settings,created_at,updated_at,deleted_at
              FROM documents WHERE id=$1",
@@ -467,12 +482,13 @@ impl PostgresCatalog {
         }
         sqlx::query_as!(
             DocumentRecord,
-            "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+            "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,project_generation,current_version_id,
                     current_publication_id,settings,created_at,updated_at,deleted_at
              FROM documents
              WHERE status='active'
-               AND ($1::timestamptz IS NULL OR (updated_at,id) < ($1,$2))
+               AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
+                                      COALESCE($2::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
              ORDER BY updated_at DESC,id DESC LIMIT $3",
             before.map(|value| value.0),
             before.map(|value| value.1),
@@ -493,7 +509,7 @@ impl PostgresCatalog {
         }
         sqlx::query_as!(
             DocumentRecord,
-            "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+            "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,project_generation,current_version_id,
                     current_publication_id,settings,created_at,updated_at,deleted_at
              FROM documents WHERE owner_id=$1 AND status='active'
@@ -517,11 +533,12 @@ impl PostgresCatalog {
         }
         sqlx::query_as!(
             DocumentRecord,
-            "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+            "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,project_generation,current_version_id,
                     current_publication_id,settings,created_at,updated_at,deleted_at
              FROM documents WHERE owner_id=$1 AND status='active'
-             AND ($2::timestamptz IS NULL OR (updated_at,id)<($2,$3))
+             AND (updated_at,id) < (COALESCE($2::timestamptz,'infinity'),
+                                    COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
              ORDER BY updated_at DESC,id DESC LIMIT $4",
             owner_id,
             before.map(|value| value.0),
@@ -545,7 +562,7 @@ impl PostgresCatalog {
         }
         sqlx::query_as!(
             DocumentRecord,
-            "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.title_key,d.status,
+            "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
                     d.source_format,d.main_path,d.update_sequence,d.project_generation,
                     d.current_version_id,d.current_publication_id,d.settings,d.created_at,
                     d.updated_at,d.deleted_at
@@ -559,7 +576,8 @@ impl PostgresCatalog {
                           AND (l.expires_at IS NULL OR l.expires_at>now())
                       ))
                ) OR ($4 AND d.ownership_mode='example'))
-               AND ($2::timestamptz IS NULL OR (d.updated_at,d.id) < ($2,$3))
+               AND (d.updated_at,d.id) < (COALESCE($2::timestamptz,'infinity'),
+                                            COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
              ORDER BY d.updated_at DESC,d.id DESC LIMIT $5",
             account_id,
             before.map(|value| value.0),
@@ -574,10 +592,15 @@ impl PostgresCatalog {
 
     pub async fn document_counts_by_owner(&self, owner_id: Uuid) -> Result<(i64, i64)> {
         let row = sqlx::query!(
-            r#"SELECT count(DISTINCT d.id)::bigint AS "documents!",
-                      count(v.id)::bigint AS "versions!"
-               FROM documents d LEFT JOIN document_versions v ON v.document_id=d.id
-               WHERE d.owner_id=$1 AND d.status='active'"#,
+            // Counted separately rather than over a join: joining documents to
+            // their versions multiplies one side by the other only to collapse
+            // it again with DISTINCT, and materializes a row per version to
+            // count the documents.
+            r#"SELECT (SELECT count(*) FROM documents d
+                       WHERE d.owner_id=$1 AND d.status='active')::bigint AS "documents!",
+                      (SELECT count(*) FROM document_versions v
+                       JOIN documents d ON d.id=v.document_id
+                       WHERE d.owner_id=$1 AND d.status='active')::bigint AS "versions!""#,
             owner_id,
         )
         .fetch_one(&self.pool)
@@ -1034,7 +1057,7 @@ impl PostgresCatalog {
                     logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,
                     author_label,created_at
              FROM document_versions WHERE document_id=$1
-             ORDER BY sequence DESC,id DESC LIMIT $2",
+             ORDER BY sequence DESC LIMIT $2",
             document_id,
             limit,
         )
@@ -1075,7 +1098,7 @@ impl PostgresCatalog {
                     logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,
                     author_label,created_at
              FROM document_versions WHERE document_id=$1
-             AND ($2::bigint IS NULL OR sequence<$2) ORDER BY sequence DESC,id DESC LIMIT $3",
+             AND sequence < COALESCE($2::bigint, 9223372036854775807) ORDER BY sequence DESC LIMIT $3",
             document_id,
             after_sequence,
             limit,
@@ -1135,10 +1158,6 @@ impl PostgresCatalog {
         };
         owner_usage_bytes(&self.pool, account_id).await
     }
-}
-
-fn title_key(value: &str) -> String {
-    value.nfc().collect::<String>().trim().to_lowercase()
 }
 
 fn validate_account(input: &NewAccount) -> Result<()> {

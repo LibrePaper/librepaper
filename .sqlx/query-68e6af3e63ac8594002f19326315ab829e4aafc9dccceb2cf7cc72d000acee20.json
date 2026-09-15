@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,\n                    main_path,update_sequence,project_generation,current_version_id,\n                    current_publication_id,settings,created_at,updated_at,deleted_at\n             FROM documents WHERE owner_id=$1 AND status='active'\n             ORDER BY updated_at DESC,id DESC LIMIT $2",
+  "query": "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,\n                    main_path,update_sequence,project_generation,current_version_id,\n                    current_publication_id,settings,created_at,updated_at,deleted_at\n             FROM documents WHERE owner_id=$1 AND status='active'\n             AND (updated_at,id) < (COALESCE($2::timestamptz,'infinity'),\n                                    COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))\n             ORDER BY updated_at DESC,id DESC LIMIT $4",
   "describe": {
     "columns": [
       {
@@ -30,61 +30,56 @@
       },
       {
         "ordinal": 5,
-        "name": "title_key",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 6,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "source_format",
         "type_info": "Text"
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "main_path",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "update_sequence",
         "type_info": "Int8"
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "project_generation",
         "type_info": "Int8"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "current_version_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "current_publication_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "settings",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 14,
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 15,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 16,
+        "ordinal": 15,
         "name": "deleted_at",
         "type_info": "Timestamptz"
       }
@@ -92,11 +87,12 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Timestamptz",
+        "Uuid",
         "Int8"
       ]
     },
     "nullable": [
-      false,
       false,
       false,
       false,
@@ -115,5 +111,5 @@
       true
     ]
   },
-  "hash": "94a460e0226feab61d9c5b522066cac8ef8d2c6d9378201321dd7a9674cb3623"
+  "hash": "68e6af3e63ac8594002f19326315ab829e4aafc9dccceb2cf7cc72d000acee20"
 }

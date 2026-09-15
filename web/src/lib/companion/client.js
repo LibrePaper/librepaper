@@ -1188,8 +1188,8 @@ async function collectQuartoOutputs(id, status, pairing, options, { onProgress, 
   };
 }
 
-/** Start a live preview on either engine. For `quarto` this produces exactly
- * the JSON `startQuartoPreview` always has; for `calepin`, `options` is the
+/** Start a live preview on either engine. For `quarto` this produces the
+ * Quarto preview JSON; for `calepin`, `options` is the
  * `{ entrypoint, format }` pair validated by `calepinOptions`. */
 export async function startLocalPreview({ engine = "quarto", job = {}, tree, options = {} } = {}) {
   const pairing = requirePairing();
@@ -1218,23 +1218,14 @@ export async function startLocalPreview({ engine = "quarto", job = {}, tree, opt
   const response = await send("POST", "previews", { token:pairing.token, jsonBody:request });
   return response.json();
 }
-export async function startQuartoPreview(input) {
-  return startLocalPreview({ engine: "quarto", ...input });
-}
 export async function stopLocalPreview(id) {
   const pairing = requirePairing();
   await send("DELETE", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
-}
-export async function stopQuartoPreview(id) {
-  return stopLocalPreview(id);
 }
 export async function localPreviewStatus(id) {
   const pairing = requirePairing();
   const response = await send("GET", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
   return response.json();
-}
-export async function quartoPreviewStatus(id) {
-  return localPreviewStatus(id);
 }
 
 // Every response on this route -- 200, 304 and 404 alike -- carries
@@ -1310,10 +1301,6 @@ export async function localPreviewPage(id, { etag } = {}) {
   const html = await response.text();
   return { kind: "html", html, etag: etagOut, rendering };
 }
-export async function quartoPreviewPage(id, opts) {
-  return localPreviewPage(id, opts);
-}
-
 // -------------------------------------------------------------- workspace sync
 
 async function buildWorkspaceForm(tree) {

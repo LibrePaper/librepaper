@@ -1,30 +1,25 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,document_id,update_sequence,update_bytes,created_at\n             FROM document_updates WHERE document_id=$1 AND update_sequence>$2\n             ORDER BY update_sequence",
+  "query": "SELECT document_id,update_sequence,update_bytes,created_at\n             FROM document_updates WHERE document_id=$1 AND update_sequence>$2\n             ORDER BY update_sequence",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
-        "type_info": "Int8"
-      },
-      {
-        "ordinal": 1,
         "name": "document_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 2,
+        "ordinal": 1,
         "name": "update_sequence",
         "type_info": "Int8"
       },
       {
-        "ordinal": 3,
+        "ordinal": 2,
         "name": "update_bytes",
         "type_info": "Bytea"
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
@@ -39,9 +34,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "50bc84c119d713100b464b54b19fc1caac6de92692821af9b0e4754f52a2f8a2"
+  "hash": "359b99f39775ffb7a7350280a707f134a6e8a44ddf73bf2c20dba44b21030bbb"
 }
