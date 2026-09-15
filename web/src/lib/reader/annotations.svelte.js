@@ -1,11 +1,28 @@
 import { submissions } from "../submissions.js";
 import { applyDecision } from "../suggestions.js";
 
-// The annotation list stays reactive in the reader. This controller owns its
-// optimistic commands and their reconciliation with the authoritative room.
-// Anchoring is supplied by the reader because it depends on the visible frame.
-export function createAnnotations({ slug, list, update, anchor, repaint, send, changed, publicationId = () => "" }) {
-  const outbox = submissions({ slug, changed });
+// Everything said about the document, and the optimistic commands that add
+// to it before the room has confirmed them.
+//
+// The list is owned here. It used to live in the page, with this controller
+// holding a getter and a setter for it, which meant the one thing the module
+// is about was the one thing it did not have. Anchoring and repainting are
+// still the page's, and genuinely so: both depend on the visible frame, which
+// this module cannot see.
+export function createAnnotations({ slug, anchor, repaint, send, publicationId = () => "" }) {
+  const state = $state({
+    comments: [],
+    // What this browser has said and the server has not yet acknowledged.
+    // Offered back from the collaboration panel, so work is never only in a
+    // failed request.
+    unconfirmed: [],
+  });
+  const outbox = submissions({ slug, changed: (items) => (state.unconfirmed = items) });
+  const list = () => state.comments;
+  const update = (next) => (state.comments = next);
+  /// Say that the list changed. A no-op assignment, which is what it has
+  /// always been: the items are reactive on their own, and this is the line
+  /// that says so out loud at the sites that mutate one in place.
   const publish = () => update(list());
 
   function submit(message) {
@@ -99,6 +116,9 @@ export function createAnnotations({ slug, list, update, anchor, repaint, send, c
   }
 
   return {
+    state, publish,
+    /// The authoritative list, as the room states it on joining.
+    replace(next) { update(next); },
     outbox, submit, comment, reply, receive, removePending,
     discard(id) { outbox.discard(id); removePending(id); },
     resolve(item) {

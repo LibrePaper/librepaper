@@ -20,7 +20,7 @@
   import * as localQuarto from "../lib/companion/client.js";
   import { basename } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
-  import { createAnnotations } from "../lib/reader/annotations.js";
+  import { createAnnotations } from "../lib/reader/annotations.svelte.js";
   import { createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
@@ -81,6 +81,7 @@
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
+  import { correctedLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import InsertMenu from "./InsertMenu.svelte";
   import ReaderSidebar from "./reader/ReaderSidebar.svelte";
   import PanelRail from "./reader/PanelRail.svelte";
@@ -148,22 +149,22 @@
 
   /* --------------------------------------------------------------- anchoring */
 
-  let comments = $state([]);
   // Legacy suggestion decisions are acknowledged over the room event, just
   // like live revision decisions. Keeping a waiter here lets the Changes pane
   // advance only after the server confirms the apply-on-accept operation.
   const suggestionDecisions = new Map();
-  let unconfirmed = $state([]);
+  // Everything said about the document is the annotations' to own. Anchoring
+  // and repainting stay here: both depend on the frame, which that module
+  // cannot see.
   const annotations = createAnnotations({
     slug: SLUG,
-    list: () => comments,
-    update: (next) => (comments = next),
     anchor: anchorComments,
     repaint: applyHighlights,
     send: (message) => collaboration?.send(message),
-    changed: (items) => (unconfirmed = items),
     publicationId: () => publishedPublication?.publication_id || publishedPublication?.id || "",
   });
+  const comments = $derived(annotations.state.comments);
+  const unconfirmed = $derived(annotations.state.unconfirmed);
   const outbox = annotations.outbox;
   const sendAnnotation = annotations.submit;
   const discardAnnotation = annotations.discard;
@@ -402,7 +403,7 @@
   function reanchor() {
     if (!frameReady || !commentsReady || docText === null) return;
     anchorComments(comments);
-    comments = comments;
+    annotations.publish();
     applyHighlights();
     tracePassages();
     // The frame's own `ready` is what re-anchors after the source changes --
@@ -427,7 +428,7 @@
         comment.regionUnplaceableReason = String(reason || "figure-unavailable");
       }
     }
-    comments = comments;
+    annotations.publish();
   }
 
   function fromFrame(message) {
@@ -658,17 +659,20 @@
     }
   }
 
+  // Measuring is here, because the selection, the frame and the bar are all
+  // things on a screen; where the numbers put the bar is `annotation-bar.js`.
   function placeBar(rect) {
     if (rect && !matchMedia("(max-width:760px)").matches) {
-      const frameRect = document.querySelector(".viewport").getBoundingClientRect();
-      const width = barElement?.offsetWidth || 250;
-      const middle = frameRect.left + rect.left + (rect.right - rect.left) / 2;
+      const frame = document.querySelector(".viewport").getBoundingClientRect();
       bar = {
         shown: true,
-        left: withinWindow(middle - width / 2, width),
-        // Clear of the bar at the top of the window, which is where this
-        // number comes from rather than from a constant beside it.
-        top: Math.max(belowTheBar(), frameRect.top + rect.top - 42),
+        ...placeSelectionBar({
+          rect,
+          frame,
+          width: barElement?.offsetWidth || 250,
+          minTop: belowTheBar(),
+          windowWidth: innerWidth,
+        }),
       };
       return;
     }
@@ -676,7 +680,6 @@
   }
 
   let barElement = $state(null);
-  const BAR_MARGIN = 8;
 
   // How far down the window anything is allowed to start: the height of the
   // bar at the top, taken from the stylesheet that sets it rather than from a
@@ -687,18 +690,14 @@
     return Math.round(height) + 9;
   }
 
-  const withinWindow = (left, width) =>
-    Math.max(BAR_MARGIN, Math.min(innerWidth - width - BAR_MARGIN, left));
-
   // The tool decides how wide the bar is -- highlighting adds five swatches --
   // and the width is only knowable once it is drawn, so the placing above is
   // made good here, after it is.
   $effect(() => {
     if (!bar.shown || !barElement) return;
     void tool;
-    const width = barElement.offsetWidth;
-    const left = withinWindow(bar.left, width);
-    if (Math.abs(left - bar.left) > 1) bar = { ...bar, left };
+    const left = correctedLeft({ left: bar.left, width: barElement.offsetWidth, windowWidth: innerWidth });
+    if (left !== null) bar = { ...bar, left };
   });
 
   function chooseTool(which) {
@@ -777,7 +776,7 @@
   // retries automatically, so a fresh one per click is enough.
   function decideSuggestion(comment, action) {
     suggestions.beginDeciding(comment, action);
-    comments = comments;
+    annotations.publish();
     const request_id = newRequestKey();
     const promise = new Promise((resolve, reject) => suggestionDecisions.set(request_id, { commentId: comment.id, resolve, reject }));
     let sent;
@@ -785,13 +784,13 @@
     catch (error) {
       suggestionDecisions.delete(request_id);
       suggestions.clearDeciding(comment);
-      comments = comments;
+      annotations.publish();
       return Promise.reject(error);
     }
     if (sent === undefined || sent === false) {
       suggestionDecisions.delete(request_id);
       suggestions.clearDeciding(comment);
-      comments = comments;
+      annotations.publish();
       return Promise.reject(new Error("Review transport is unavailable."));
     }
     if (sent?.then) sent.then((result) => {
@@ -800,14 +799,14 @@
       if (!pendingDecision) return;
       suggestionDecisions.delete(request_id);
       suggestions.clearDeciding(comment);
-      comments = comments;
+      annotations.publish();
       pendingDecision.reject(result.error instanceof Error ? result.error : new Error(result.error || "Suggestion decision failed."));
     }).catch((error) => {
       const pendingDecision = suggestionDecisions.get(request_id);
       if (!pendingDecision) return;
       suggestionDecisions.delete(request_id);
       suggestions.clearDeciding(comment);
-      comments = comments;
+      annotations.publish();
       pendingDecision.reject(error);
     });
     return promise;
@@ -916,7 +915,7 @@
     }
     if (event.type === "hello") {
       outbox.reconcile(event.comments);
-      comments = event.comments;
+      annotations.replace(event.comments);
       commentsReady = true;
       reanchor();
       if (panel === "history" && !checkpoints.length) void loadHistory();
@@ -942,7 +941,7 @@
       const deciding = event.comment_id && comments.find((item) => item.id === event.comment_id);
       if (deciding?.deciding) {
         suggestions.clearDeciding(deciding);
-        comments = comments;
+        annotations.publish();
         // Stale is not a refusal to show as an error toast: the merge editor
         // it opens says what happened, and the suggestion stays pending
         // rather than being rolled back to nothing.
@@ -1042,7 +1041,7 @@
       comment.source = event.source;
       anchorAllSources(treeNow(), [comment]);
       applyAnchorFlags(comment);
-      comments = comments;
+      annotations.publish();
       applyHighlights();
       return;
     }
