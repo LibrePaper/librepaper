@@ -1,6 +1,11 @@
 <script>
+  // The comparison editor is fetched when there is something to compare, not
+  // when the reader is built. A static import here would undo the dynamic one
+  // Reader.svelte makes for the same component: it puts CodeMirror and the
+  // CRDT on the critical path of every reader, including everyone who never
+  // opens a version.
   let MergeEditor = $state(null);
-  $effect(() => { void import("../MergeEditor.svelte").then((m) => (MergeEditor = m.default)); });
+  let mergeFailed = $state(false);
   let { source, canEdit = false, onrestore } = $props();
   const result = $derived(source.result);
   const path = $derived(source.path);
@@ -8,6 +13,17 @@
   const newText = $derived(result?.newTree.texts?.[path]);
   const status = $derived(result?.status?.[path] || "same");
   const binary = $derived(Boolean(result?.binary?.[path]));
+  // Asked for once. A failure is remembered rather than retried on every
+  // redraw: an import that failed because the chunk is not there will fail
+  // the same way a moment later, and the reader is told instead.
+  $effect(() => {
+    if (MergeEditor || mergeFailed || !result || binary) return;
+    import("../MergeEditor.svelte").then(
+      (module) => (MergeEditor = module.default),
+      () => (mergeFailed = true),
+    );
+  });
+
   // What the file selector says about each file, so the choice itself carries
   // the answer to "what changed?" rather than making the reader open each one.
   const MARK = { added: "added", removed: "removed", changed: "changed" };
@@ -57,9 +73,15 @@
     {:else if oldText === undefined && newText === undefined}
       <p role="status">{path ? "This file has no text source to display." : "This version has no source files."}</p>
     {:else}
-      {#if MergeEditor}<MergeEditor {path} oldText={oldText ?? ""} newText={newText ?? ""}
-        diff={result.diff} editable={false} baselineLabel={result.oldLabel} targetLabel={result.newLabel}
-        note={fileNote} />{/if}
+      {#if MergeEditor}
+        <MergeEditor {path} oldText={oldText ?? ""} newText={newText ?? ""}
+          diff={result.diff} editable={false} baselineLabel={result.oldLabel} targetLabel={result.newLabel}
+          note={fileNote} />
+      {:else if mergeFailed}
+        <p role="alert">The comparison could not be loaded. Check your connection and reopen this version.</p>
+      {:else}
+        <p role="status">Loading the comparison…</p>
+      {/if}
     {/if}
   {:else}
     <p role="status">Select a version to compare it with the current source.</p>

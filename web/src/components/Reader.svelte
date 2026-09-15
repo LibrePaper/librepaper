@@ -142,6 +142,9 @@
   let identity = $derived(me.name || "");
   let canModerate = $derived(Boolean(doc.can_moderate));
   let connected = $state(true);
+  // Whether this tab is the one in front of the reader. Only background work
+  // consults it; nothing about the document depends on being looked at.
+  let hidden = $state(typeof document !== "undefined" && document.visibilityState === "hidden");
   let liveChat = $state([]);
   let unreadChat = $state(false);
   let pendingChat;
@@ -2110,8 +2113,26 @@
   // column is drawn empty rather than as one audience's and then the other's.
   let settled = $state(false);
 
+  // Kept current for the background work that consults it.
   $effect(() => {
-    if (panel !== "history") return;
+    const track = () => (hidden = document.visibilityState === "hidden");
+    document.addEventListener("visibilitychange", track);
+    return () => document.removeEventListener("visibilitychange", track);
+  });
+
+  // The history panel refreshes itself while it is open. It polls rather than
+  // listening because a checkpoint is written by the server and there is no
+  // room event that says so.
+  //
+  // Only while the panel is open, only while this tab is the one being looked
+  // at, and only while the room socket is up: a backgrounded tab polling a
+  // list nobody can see is a request every fifteen seconds for as long as the
+  // tab exists, and a disconnected one is a request that is going to fail
+  // anyway. Coming back to the tab refreshes once, immediately, so what is on
+  // screen is current rather than up to fifteen seconds stale.
+  $effect(() => {
+    if (panel !== "history" || !connected || hidden) return;
+    void loadHistory();
     const timer = setInterval(() => void loadHistory(), 15000);
     return () => clearInterval(timer);
   });
