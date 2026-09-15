@@ -517,7 +517,7 @@ impl Server {
                                     // same-origin URL to fetch it from, and
                                     // catches up on whatever arrived during
                                     // the fetch by sending its state vector
-                                    // back as `y-sync`.
+                                    // back as `doc-sync`.
                                     json!({
                                         "type": "doc-state",
                                         "ref": self.state_reference(&room.slug),
@@ -543,6 +543,27 @@ impl Server {
                                 }
                                 room.broadcast(&json!({"type": "doc-peers", "count": room.editors().await}))
                                     .await;
+                                // Whoever has just joined needs to know what is
+                                // awaiting review, not only what the text says.
+                                // Pushing it here rather than waiting to be asked
+                                // saves a round trip on every join, and a client
+                                // that renders proposals cannot draw anything
+                                // useful until it has them anyway.
+                                if let Ok(open) = room.open_proposals().await {
+                                    if !open.is_empty() {
+                                        let _ = send_outgoing(
+                                            &tx,
+                                            Outgoing::Text(
+                                                json!({
+                                                    "type": "proposal-list", "proposals": open,
+                                                    "version": 1, "protocol": "librepaper.room.v1",
+                                                })
+                                                .to_string(),
+                                            ),
+                                        )
+                                        .await;
+                                    }
+                                }
                             }
                             // Where everyone's caret is, and what they are called.
                             // Relayed and not remembered: it describes who is here
