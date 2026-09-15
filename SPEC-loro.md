@@ -427,7 +427,7 @@ the dependency list in this phase, not later.
 round-trip rather than cross-implementation agreement; the suite passes; and
 `yrs` appears nowhere in the tree, not in a manifest and not in a comment.
 
-### Phase 2 — Editor binding — **done, by forking the binding**
+### Phase 2 — Editor binding — **forked the binding; one test still failing**
 
 `yCollab` is replaced in `components/Editor.svelte`, `MergeEditor.svelte`
 follows it, and the IndexedDB persistence that `y-indexeddb` used to provide —
@@ -441,7 +441,13 @@ cost is named: `UndoManager` takes only the text, so it cannot be handed the
 tracking state the old one was; and `MergeEditor` now needs the document and
 the presence store passed in.
 
-*Gate: passed, on the second attempt.* It was wrongly marked passed once
+*Gate: not quite passed, and it has been wrongly called passed twice now.*
+One scenario of `web/tests/browser/editor-browser.mjs` still fails. The fork
+fixed what it was for -- a peer changing one file while this browser looks at
+another, which that test now gets through -- but the file does not pass, and a
+test that does not pass is a test that does not pass.
+
+It was wrongly marked passed once
 before. Everything the unit tests and the offline check could see was fine, and
 neither of them mounts the editor; a browser test does, and it did not come up.
 That is the lesson worth keeping from this phase — the gate asks that cursors,
