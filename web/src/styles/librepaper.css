@@ -466,6 +466,13 @@ main.reader.no-preview:not(.editing) .sidebar {
   padding: --spacing(8);
   max-width: 40rem;
 }
+/* The card's own actions sit on one line and wrap rather than stack, so a
+   narrow pane does not turn three buttons into three rows. */
+.latexpane .notyet .notyet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: --spacing(2);
+}
 main.reader.source-right .latexpane {
   order: 1;
 }

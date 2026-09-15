@@ -54,6 +54,16 @@ assert.match(readerSource, /Quarto can execute arbitrary code[\s\S]*?Run Quarto 
 // answer, not a tooltip a mouse might hover over.
 assert.match(readerSource, /\{#snippet previewStatusControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !quartoExecutionApproved\}[\s\S]*?<button[\s\S]*?quartoConsent = true[\s\S]*?>Run Quarto locally<\/button>/);
 assert.match(readerSource, /<Modal bind:open=\{quartoConsent\}[\s\S]*?QUARTO_WARNING[\s\S]*?runQuartoLocally\(\)/);
+// A PDF from Markdown or Quarto source is a local build, and the preview
+// header -- where the gesture that starts one lives -- is hidden for as long
+// as nothing has been painted. So the card standing in for the missing page
+// has to carry it itself, rather than claim a browser render is under way
+// that can never finish.
+assert.match(readerSource, /const pdfNeedsLocalTool = \$derived\(\s*pdfOutput && \["markdown", "quarto"\]\.includes\(sourceFormat\)/);
+assert.match(readerSource, /\{#if pdfNeedsLocalTool\}[\s\S]*?<h2 class="h4">PDF needs[\s\S]*?\{#if pdfNeedsQuartoConsent\}[\s\S]*?quartoConsent = true[\s\S]*?>Run Quarto locally<\/button>[\s\S]*?Preview as HTML instead<\/button>[\s\S]*?\{:else\}\s*<h2 class="h4">Not yet rendered<\/h2>/);
+// Choosing Quarto's own preview is a choice of tool, not of output: a PDF
+// that was asked for survives enabling the thing that can produce it.
+assert.match(readerSource, /async function setQuartoPreviewMode\(mode\)[\s\S]*?output: mode === "markdown" \? "html" : \(buildPreferences\.output \|\| "html"\)/);
 // A Quarto document nobody approved for execution is drawn as the Markdown
 // it is. The condition used to carry a `typeof` guard, because the only way
 // to test it was to slice it out of the component into a context that had

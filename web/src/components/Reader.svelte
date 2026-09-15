@@ -241,8 +241,13 @@
     if (!readerDisposed) void paintPreview();
   }
 
+  // Switching between the browser's Markdown draft and Quarto's own preview
+  // is a choice of tool, not of output. The browser draft is HTML and nothing
+  // else, so that direction pins the output; the other keeps whatever output
+  // was already asked for, or a PDF preview would quietly become an HTML one
+  // at the moment local rendering was enabled to produce it.
   async function setQuartoPreviewMode(mode) {
-    setBuildPreferences(updateBuildPreferences(buildScope(), "quarto", { selection: "tool", backend: mode === "markdown" ? "browser" : "local", tool: mode === "markdown" ? "markdown" : "quarto", output: "html" }));
+    setBuildPreferences(updateBuildPreferences(buildScope(), "quarto", { selection: "tool", backend: mode === "markdown" ? "browser" : "local", tool: mode === "markdown" ? "markdown" : "quarto", output: mode === "markdown" ? "html" : (buildPreferences.output || "html") }));
     navigationGeneration += 1;
     buildSettings.state.quartoPreviewMode = mode === "markdown" ? "markdown" : "quarto";
     if (quartoPreviewMode === "markdown") {
@@ -1677,6 +1682,29 @@
   const quartoReaderNeedsLocalTool = $derived(
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !mayEdit,
   );
+
+  // A PDF from Markdown or Quarto source is only ever produced by a tool on
+  // this computer: this browser's own renderer makes HTML and nothing else.
+  // Until that tool is running the PDF frame has nothing to show, and the
+  // "not yet rendered" card would otherwise claim a render is under way that
+  // can never finish -- which is exactly the state an author lands in by
+  // choosing PDF output and then closing, or never installing, the local app.
+  const pdfNeedsLocalTool = $derived(
+    pdfOutput && ["markdown", "quarto"].includes(sourceFormat) && mayEdit &&
+      (localAppStatus.state !== "connected" || (sourceFormat === "quarto" && !quartoExecutionApproved)),
+  );
+  // The gesture that is missing, told apart so the card offers one action
+  // rather than a menu: Quarto has to be allowed to run this document's code
+  // before anything else is worth suggesting.
+  const pdfNeedsQuartoConsent = $derived(pdfNeedsLocalTool && sourceFormat === "quarto" && !quartoExecutionApproved);
+
+  // The way out for an author who wants to keep reading rather than install
+  // anything: the browser's own HTML preview, which every one of these
+  // formats has.
+  function previewAsHtml() {
+    setBuildPreferences(updateBuildPreferences(buildScope(), sourceFormat, { output: "html" }));
+    void paintPreview();
+  }
 
   // The same two banner cases, for a Typst document with Calepin preview
   // chosen: not yet connected to the local app, or connected but without the
@@ -3221,15 +3249,33 @@
   {:else if shown.document && unrendered}
     <section class="latexpane">
       <div class="notyet">
-        <h2 class="h4">Not yet rendered</h2>
-        <p class="text-surface-700-300 text-sm">
-          This {sourceFormat === "typst" ? "Typst" : "paged"} document is being rendered from source in this browser.
-        </p>
-        {#if !compilesHere && session?.text}
-          <details open>
-            <summary>View source · {session.mainPath?.() || "document"}</summary>
-            <pre>{session.text.toString()}</pre>
-          </details>
+        {#if pdfNeedsLocalTool}
+          <h2 class="h4">PDF needs {sourceFormat === "quarto" ? "Quarto" : "a local build"} on this computer</h2>
+          <p class="text-surface-700-300 text-sm">
+            This browser renders {sourceFormat === "quarto" ? "Quarto" : "Markdown"} to HTML only. The PDF is produced by
+            {sourceFormat === "quarto" ? "Quarto itself" : "Pandoc or Quarto"}, run through the local LibrePaper app,
+            so the preview stays empty until that is connected{sourceFormat === "quarto" ? " and allowed to run this document" : ""}.
+          </p>
+          <div class="notyet-actions">
+            {#if pdfNeedsQuartoConsent}
+              <button class="btn btn-sm preset-filled-primary-500" title={QUARTO_WARNING} onclick={() => (quartoConsent = true)}>Run Quarto locally</button>
+            {:else}
+              <button class="btn btn-sm preset-filled-primary-500" onclick={() => void ensureLocalApp()}>Connect the local app</button>
+            {/if}
+            <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => openSettings("local")}>Install or configure companion</button>
+            <button class="btn btn-sm preset-outlined-surface-300-700" onclick={previewAsHtml}>Preview as HTML instead</button>
+          </div>
+        {:else}
+          <h2 class="h4">Not yet rendered</h2>
+          <p class="text-surface-700-300 text-sm">
+            This {sourceFormat === "typst" ? "Typst" : "paged"} document is being rendered from source in this browser.
+          </p>
+          {#if !compilesHere && session?.text}
+            <details open>
+              <summary>View source · {session.mainPath?.() || "document"}</summary>
+              <pre>{session.text.toString()}</pre>
+            </details>
+          {/if}
         {/if}
       </div>
     </section>
