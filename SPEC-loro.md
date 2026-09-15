@@ -236,62 +236,130 @@ update log, with periodic compaction (`storage/collaboration.rs:1`).
 
 ## 5. Wire protocol
 
-The message set is preserved so the relay and offline paths are not
-simultaneously redesigned: `y-open`, `y-sync`, `y-state`, `y-update`,
-`y-update-start`/`-chunk`/`-end`, `y-ack`, `y-awareness`, `y-peers`,
-`y-checkpoint`. Payload semantics change from Yjs encodings to Loro's, and
-`y-awareness` carries `EphemeralStore` bytes.
+Nothing has shipped, so there is no compatibility window to protect and no
+reason to carry Yjs's names on Loro's payloads. The `y-*` prefix goes in the
+same change as the substrate: `doc-open`, `doc-sync`, `doc-state`,
+`doc-update`, `doc-update-start`/`-chunk`/`-end`, `doc-ack`, `doc-presence`,
+`doc-peers`, `doc-checkpoint`. `doc-presence` carries `EphemeralStore` bytes.
 
-The names are retained during migration and renamed in a follow-up sweep, so
-that a protocol rename and a substrate change are never debugged together.
+This reverses the original plan of renaming later. That plan existed to avoid
+debugging a rename and a substrate change together, which is sound when the two
+are separable — but a hard cutover makes them one change anyway, and leaving
+`y-` on the wire would be exactly the kind of vestige §6 now forbids.
 
-New messages for proposals — open, update, accept, decline — are specified in
-Phase 2 once the review interaction is settled.
+### 5.1 Proposal messages
+
+The review interaction is modelled on Google Docs' suggesting mode, which fixes
+the message shapes:
+
+| message | direction | carries |
+|---|---|---|
+| `proposal-open` | client → server | the branch's base frontier |
+| `proposal-update` | client → server | branch update bytes |
+| `proposal-list` | server → client | open proposals, each with author, base and tip |
+| `proposal-decide` | client → server | proposal id, hunk index, accept or decline, and the tip the decision was computed against |
+| `proposal-decided` | server → clients | the outcome, and the room update it produced |
+
+Three properties follow from the Google Docs model, and each one costs
+something:
+
+**Decisions stream; they are not batched.** Clicking accept applies
+immediately and broadcasts. There is no review session to submit, so
+`proposal-decide` names one hunk, not a set.
+
+**The author keeps typing while a proposal is open.** A proposal is therefore
+never frozen, and a decision can race an edit to the same branch. This is why
+`proposal-decide` carries the tip it was computed against: a decision against a
+stale tip is refused and the client recomputes, rather than accepting text that
+has since changed underneath the reviewer.
+
+**Main keeps moving too.** A proposal's base goes stale by design, which is the
+case `document::hunks`' stale-base test covers.
+
+### 5.2 Diffs are computed on both sides, and never exchanged
+
+Suggestions render inline in the editor, so the browser needs hunk boundaries
+in its own UTF-16 basis, while the server needs them in its own to apply a
+decision. Per §3.2 the two bases disagree, and there is no conversion.
+
+Each side therefore computes the diff it needs from the document state it
+already has. A `DiffBatch`, or any delta run, never crosses the wire in either
+direction. `proposal-decide` names a hunk by **index within the diff of a named
+tip against a named base** — three identifiers, no offsets — which is the one
+way to name a hunk that means the same thing on both sides.
+
+### 5.3 What branching makes possible, which suggesting mode does not
+
+*Provisional. §5.1 is a floor, not a ceiling; this section records what the
+substrate opens up so the protocol does not accidentally close it.*
+
+Google Docs' suggesting mode is a flat overlay: every suggestion is an
+annotation on one linear document. That is why two people rewriting the same
+sentence produces a tangle rather than a choice, and why there is no way to ask
+what the document would read like with some suggestions taken and others not.
+Neither limitation is essential. Both come from not having real branches.
+
+**Contending proposals are alternatives, not a collision.** Two branches that
+touch the same passage are not a merge conflict to be resolved — they are two
+answers to the same question, and the useful presentation is side by side with
+one choice to make. This is the normal case in a co-authored paper: two people
+who disagree about a sentence, or a coauthor and an agent who have rewritten
+the same paragraph. The server can identify contention without being told, by
+testing whether two proposals' hunks overlap on their common base, so this is a
+presentation decision rather than a protocol one.
+
+**A speculative reading of the paper.** Because a branch is a fork and not an
+annotation, any *subset* of open proposals can be merged into a scratch
+document and read as finished prose — "show me the paper with Alice's
+introduction and Bob's conclusion" — without committing to either. Reviewing a
+paragraph in isolation is how you accept a sentence that ruins the paragraph
+after it; reading the result is how you catch that. This is the one capability
+here that needs a message, so §5.1 gains:
+
+| message | direction | carries |
+|---|---|---|
+| `proposal-preview` | client → server | a set of proposal ids and the tip of each |
+| `proposal-preview-state` | server → client | the document text as those proposals would leave it |
+
+It returns text, not a document and not a delta: it is a reading, nothing syncs
+to it, and nothing is persisted. A preview that returned a `DiffBatch` would
+violate §5.2.
+
+**Blame that survives review.** Contract 4 keeps attribution correct through a
+partial accept and §3.6 keeps every intermediate state reachable. Together
+those answer a question no tool answers well today: after a chain of proposals,
+each partly accepted, who actually wrote the sentence that is in the paper now?
+That is not an extra feature to build so much as something the substrate stops
+throwing away — the work is in asking for it, not in keeping it.
+
+None of this blocks Phase 2. What Phase 2 must not do is bake in the assumption
+that a proposal is an overlay on one document: the hunk identity in §5.2 —
+proposal, base, tip, index — is deliberately independent of any particular
+rendering, and `document::hunks` has no notion of where a hunk is displayed.
 
 ## 6. Implementation phases
 
 Each phase has an exit gate. A failed gate stops work at that phase rather than
 proceeding.
 
-### Phase 0 — Review interaction prototype *(no repository changes)*
+### Phase 0 — Review interaction prototype — **done**
 
-Build the branch model against throwaway Loro documents: fork, edit, diff,
-hunk grouping, whole-branch merge, merge-then-revert partial accept. Exercise
-multi-file branches, a branch whose base has moved on, and two branches
-touching the same paragraph.
+Built against throwaway Loro documents and landed as `document::hunks`: hunk
+grouping, whole-branch merge, and merge-then-revert partial accept, with the
+branch-base-has-moved-on case covered. §11 records the results, including the
+`diff` indexing defect the prototype found.
 
-*Gate:* merge-then-revert produces correct text and correct attribution in all
-of the above, including when the branch base is stale relative to main.
+*Gate: passed.*
 
-### Phase 1 — Editor binding
+### Phase 1 — Server substrate
 
-Replace `yCollab` with `loro-codemirror` in `components/Editor.svelte`. The
-current integration reaches into `ySyncFacet`, `ySyncAnnotation` and
-`yUndoManagerKeymap`; the equivalent reach into a younger binding is what this
-phase measures. `MergeEditor.svelte` follows.
+This runs first. The original ordering put the editor binding ahead of the
+server, but Phase 2's gate asks that remote edits behave as today, and only a
+server that speaks Loro can make that true.
 
-*Gate:* cursors, remote edits, undo grouping, and multi-file switching behave
-as today, without patching the binding. If patches are required, they are
-upstreamed or the binding is forked deliberately, not vendored silently.
-
-### Phase 2 — Proposal model
-
-Implement branches end to end for **one** entry point — tracked edits — behind
-a flag. Postgres schema for review state, server command path for accept and
-decline, branch storage, and the proposal wire messages.
-`web/src/lib/track-changes.js` is rewritten against it rather than ported: its
-dependence on observers firing during transaction cleanup so their writes join
-the same update has no Loro equivalent, and is replaced by explicit commit
-boundaries.
-
-*Gate:* tracked edits work end to end on Loro with review state in Postgres,
-and the rehearsal at `room/mod.rs:1757` is deleted rather than ported.
-
-### Phase 3 — Server substrate
-
-Port the remaining Rust. `document/session.rs` has 36 public functions and is
-the core of the work; `room/mod.rs`, `room/revisions.rs`, `cli/peer.rs` and
-`tools/fuzz` follow.
+Port the Rust. `document/session.rs` has 35 public functions and is the core of
+the work; `room/mod.rs`, `cli/peer.rs` and `tools/fuzz` follow. `yrs` leaves
+the dependency list in this phase, not later.
 
 - `encode_state` → `export(updates from empty VV)`; `encode_vector` →
   `oplog_vv`; `encode_diff` → `export(updates from vv)`.
@@ -299,42 +367,85 @@ the core of the work; `room/mod.rs`, `room/revisions.rs`, `cli/peer.rs` and
   `LoroResult` rather than panicking. Malformed input must still be refused,
   not partially imported.
 - `admit_decoded_update`'s size and file-count bounds are recomputed against
-  Loro encodings.
+  Loro encodings. The `yrs`-era constants are not carried over untested.
 - `edit_candidate`'s scratch-document pattern is replaced by `fork`.
-- Awareness moves to `EphemeralStore` (§3.8).
+- Presence moves to `EphemeralStore` (§3.8), and the hand-rolled `y-protocols`
+  encoder at `cli/peer.rs:559` is deleted.
+- The wire messages are renamed off the `y-` prefix (§5).
 - The Rust crate and the npm wasm build are pinned to one version from one
-  place, and CI fails if they diverge.
+  place, and CI fails if they diverge. `tools/check-loro-pin.sh` does this.
 
 *Gate:* the fuzz target passes, now asserting one implementation's round-trip
-rather than cross-implementation agreement; the full suite passes.
+rather than cross-implementation agreement; the full suite passes; `yrs` does
+not appear in `Cargo.toml`.
+
+### Phase 2 — Editor binding
+
+Replace `yCollab` with `loro-codemirror` in `components/Editor.svelte`, and
+write the IndexedDB persistence that replaces `y-indexeddb` — no such package
+exists for Loro, and contracts 1 and 7 rest on it. `MergeEditor.svelte`
+follows.
+
+The current integration reaches into `ySyncFacet`, `ySyncAnnotation` and
+`yUndoManagerKeymap`, including a Vim `u` remap through `vimUndoKeymap[0].run`.
+`loro-codemirror` is younger and has sat at 0.3.3 since October 2025, so some
+of that reach has no equivalent.
+
+*Gate:* cursors, remote edits, undo grouping and multi-file switching work, and
+every behaviour the binding cannot support is listed and deliberately dropped.
+A silently lost behaviour fails this gate; a named and accepted loss does not.
+Offline edits survive a reload.
+
+### Phase 3 — Proposal model
+
+Implement branches end to end for **one** entry point — tracked edits.
+No flag gates it: §10 rules out coexistence, so the old mechanism is deleted in
+the same change. Postgres schema for review state, server command path for
+accept and decline, branch storage, and the proposal wire messages of §5.1.
+
+`web/src/lib/track-changes.js` is rewritten against it rather than ported: its
+dependence on observers firing during transaction cleanup so their writes join
+the same update has no Loro equivalent, and is replaced by explicit commit
+boundaries.
+
+The hunk identity that §5.2 fixes — proposal, base, tip, index — must not
+acquire a dependency on how a hunk is rendered, so that §5.3 stays reachable.
+
+*Gate:* tracked edits work end to end on Loro with review state in Postgres;
+the rehearsal at `room/mod.rs:1757` is deleted rather than ported; and no delta
+run crosses the wire in either direction.
 
 ### Phase 4 — Fold in the other proposal paths
 
 Migrate comment suggestions (`room/suggestions.rs`) and agent proposals
 (`room/agent.rs`) onto branches. Delete `room/revisions.rs` and the
 `revisions` container. This is where §1.2's consolidation is realized; Phases
-2–3 only make it possible.
+1 and 3 only make it possible.
 
 *Gate:* one proposal mechanism remains. `revisions.rs`, `suggestions.rs` and
 the agent's pending-record path are removed, not merely bypassed.
 
-### Phase 5 — Data migration
+### Phase 5 — Existing documents are not carried across
 
-Per document, with the room drained: read the `yrs` base and update log,
-extract texts, paths, assets and meta, build the `LoroDoc`, export a base,
-write it under the new key. Comment anchors are resolved from `StickyIndex` to
-an index in the `yrs` document and re-minted as a `Cursor`. Pending revision
-records become branches; accepted and declined ones become Postgres review
-rows with no branch.
+LibrePaper is unreleased. That is the premise the hard cutover rests on, and it
+settles this phase by removing it: `yrs` bases are dropped, the next open of a
+document starts a fresh `LoroDoc`, and no migration code is written.
 
-Yjs causal history is not preserved — peer identities and operation ids do not
-carry across. Content, paths, anchors and review outcomes do. Source archives
-are untouched.
+This is worth stating rather than leaving implicit, because a migration is the
+single most expensive thing in the original plan and the only remaining reason
+to keep `yrs` in the tree at all. Writing one would mean a `yrs` build-time
+dependency, golden fixtures from production-shaped documents, anchor re-minting
+across two CRDT libraries, and an idempotent resumable runner — all to serve
+documents that no user has.
 
-*Gate:* for every migrated document, text, paths, assets, meta, resolved anchor
-offsets and review outcomes are identical before and after; migration is
-idempotent and resumable; a document whose migration fails is left on the old
-base and serving.
+Source archives are untouched and remain the format-independent record
+(contract 8). A document whose content genuinely matters is recoverable from
+its archive, which is exactly the property §4 keeps archives for, and it is
+recovered by importing the archive into a fresh document rather than by
+decoding a `yrs` base.
+
+*Gate:* `yrs` appears nowhere in the tree — not in `Cargo.toml`, not in a tool,
+not behind a feature. `grep -r yrs` finds only prose.
 
 ## 7. Measurements
 
@@ -426,21 +537,58 @@ is not yet in the repository; landing it under `tools/` is tracked in §9.
 5. Delete `max_encoded_snapshot_bytes`'s speculative-encode machinery
    (`room/mod.rs:210-284`) if Loro's bounds make it unnecessary.
 
-## 10. Decisions still open
+## 10. Decisions taken
 
-These do not block Phase 0 and must be closed before the phase named.
+*Closed 2026-09-15.*
 
-- **Before Phase 2** — where branch blobs live: Postgres alongside review
-  state, or the blob store. Size and lifetime argue for Postgres; symmetry
-  with bases argues for blobs.
-- **Before Phase 2** — whether a tracked edit opens one branch per edit or one
-  long-lived branch per author per session. The second is far fewer objects;
-  the first makes per-hunk decline trivial.
-- **Before Phase 4** — whether agent runs get a branch per run or per proposed
-  change, given a run may touch many files.
-- **Before Phase 5** — whether pending revision records migrate as branches or
-  are declined in place with a user-visible note. Migrating them is more
-  faithful and materially harder.
+**Branch blobs live in Postgres**, alongside review state. §3.4 requires
+merge-then-revert to be one atomic operation; one transaction over one store is
+how that is actually achieved. Symmetry with bases argued for the blob store,
+but bases are large, long-lived and read on cold start, and branches are none of
+those things.
+
+**A tracked edit opens one long-lived branch per author per session.** The
+argument for a branch per edit was that per-hunk decline would be easier. Phase
+0 removed it: `document::hunks` declines one hunk of a two-hunk branch and keeps
+attribution straight either way, so the cheaper object count wins on an even
+footing.
+
+**An agent run is one branch**, matching §3.3's "a branch with many hunks". A
+run that touches many files is still one decision a person is making about one
+piece of work.
+
+**Pending revision records are not migrated**, because nothing is migrated
+(Phase 5). This supersedes the earlier decision to carry them across as
+branches, which was taken while a migration was still expected. Unreleased
+means there is no unreviewed work to preserve.
+
+**The cutover is hard, with no coexistence.** Nothing has shipped, so breaking
+changes cost nothing and there is no reason to pay for a migration window.
+`yrs`, `yjs`, `y-protocols`, `y-codemirror.next` and `y-indexeddb` are removed
+in the same change that adds Loro. No feature flag gates the proposal model, no
+adapter translates between the two encodings, and no code path survives to read
+a `yrs` base outside the one-shot migration in Phase 5. This is what §6's phases
+are now sequenced against, and it is why §5 renames the wire messages
+immediately rather than sweeping later.
+
+**Review starts from Google Docs' suggesting mode**, which settles the
+interaction §5 was waiting on: suggestions render inline, decisions are per hunk
+and apply on click, and both the author and the rest of the room keep editing
+throughout. §5.1 draws out what that costs. It is a floor rather than a
+settled design: §5.3 records what real branches make possible that a flat
+overlay cannot, and Phase 2 is required to keep that door open even though it
+need not walk through it.
+
+**Browser offline persistence is ours to write.** `loro-indexeddb` does not
+exist. Loro exports and imports update blobs, so the shim is small, and
+contracts 1 and 7 are not worth regressing in the meantime.
+
+**`loro-codemirror` is adopted as-is, and the editor gives up what it cannot
+do.** Phase 1's gate is relaxed accordingly: rather than requiring that every
+current behaviour survive without patching the binding, it requires that what
+the binding cannot support is *deliberately dropped and named*, not silently
+lost. The reach into `ySyncFacet`, `ySyncAnnotation` and `yUndoManagerKeymap` —
+including the Vim `u` remap — is where that bill comes due.
 
 ## 11. Phase 0 results
 
