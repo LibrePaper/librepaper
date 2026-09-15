@@ -427,7 +427,7 @@ the dependency list in this phase, not later.
 round-trip rather than cross-implementation agreement; the suite passes; and
 `yrs` appears nowhere in the tree, not in a manifest and not in a comment.
 
-### Phase 2 — Editor binding — **done**
+### Phase 2 — Editor binding — **not done; two runtime faults found**
 
 Replace `yCollab` with `loro-codemirror` in `components/Editor.svelte`, and
 write the IndexedDB persistence that replaces `y-indexeddb` — no such package
@@ -439,7 +439,28 @@ The current integration reaches into `ySyncFacet`, `ySyncAnnotation` and
 `loro-codemirror` is younger and has sat at 0.3.3 since October 2025, so some
 of that reach has no equivalent.
 
-*Gate: passed.* The binding turned out to cost less than feared:
+*Gate: NOT passed, and it was wrongly marked passed before.* Everything the
+unit tests and the offline check could see was fine, and neither of them mounts
+the editor. A browser test does, and it does not come up:
+
+- `new UndoManager(text)` — the binding takes `(LoroDoc, UndoConfig)`, so this
+  was a type error reported as a failure to mount, with nothing said about
+  which argument was wrong. Fixed; an undo manager belongs to a document rather
+  than to one of its files, which is also why keying them per text was wrong.
+- `session.doc.transact(...)` survived in the editor's own browser test. Loro
+  has no transaction wrapper; the commit boundary is the transaction.
+- Past both, a remote edit arriving during the test raises `Invalid position 15
+  in document of length 10` from CodeMirror. **Unresolved.** It is the sync
+  plugin applying a position against a document that has moved, which is either
+  a real fault in how the editor is wired or a test that edits before the view
+  has caught up. Until that is known, the binding is not shown to work.
+
+The lesson is worth keeping: the gate says cursors, remote edits, undo grouping
+and multi-file switching behave as today, and nothing that ran was capable of
+telling us whether they did. A suite that is green while the editor cannot
+mount is measuring the wrong thing.
+
+*Once this is fixed, the rest of the gate:* the binding turned out to cost less than feared:
 `loroSyncAnnotation` stands in for `ySyncAnnotation`, and `ySyncFacet` needed no
 equivalent because the component already holds the document rather than
 fetching it from editor state. What it does cost is named: `UndoManager` takes

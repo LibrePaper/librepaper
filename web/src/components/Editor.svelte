@@ -510,8 +510,7 @@
   export function editAvailability() {
     if (!view) return {};
     const selected = !view.state.selection.main.empty;
-    const text = session.textOf?.(showing) || session.text;
-    const manager = undoManagers.get(text);
+    const manager = undoManagers.get(session.doc);
     return {
       undo: editable && (manager?.canUndo?.() ?? false),
       redo: editable && (manager?.canRedo?.() ?? false),
@@ -700,8 +699,12 @@
   function stateFor(id) {
     const text = getTextFromDoc(id);
     const path = session.paths?.get(id) || "";
-    const undoManager = undoManagers.get(text) || new UndoManager(text);
-    undoManagers.set(text, undoManager);
+    // One per document, not per file: the undo manager is constructed from the
+    // document and tracks the operations this peer made anywhere in it.
+    // Handing it a text is a type error the binding reports as a failure to
+    // mount, with nothing said about which argument was wrong.
+    const undoManager = undoManagers.get(session.doc) || new UndoManager(session.doc, {});
+    undoManagers.set(session.doc, undoManager);
     tracking?.registerUndoManager?.(undoManager, id);
 
     // Who the caret belongs to. The session publishes {name, color, tab}; the

@@ -26,7 +26,11 @@ const source = `
 // Yjs import removed - using Loro now
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
-import { undoDepth } from ${JSON.stringify(join(root, "web/node_modules/y-codemirror.next/src/y-undomanager.js"))};
+import { undoManagerStateField } from ${JSON.stringify(join(root, "web/node_modules/loro-codemirror/dist/undo.js"))};
+// The binding offers whether an undo is available, not how many are stacked
+// up. What these checks are really about is whether the history survived, so
+// they ask that instead.
+const undoDepth = (state) => Boolean(state.field(undoManagerStateField, false)?.canUndo());
 import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEditor.svelte"))};
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
@@ -62,7 +66,8 @@ window.editorCheck = async () => {
   const secondText = EditorView.findFromDOM(document.querySelector(".cm-editor")).state.doc.toString();
 
   // A peer changes A while this browser is looking at B.
-  session.doc.transact(() => session.textOf(firstFile).insert(0, "REMOTE "), "remote");
+  session.textOf(firstFile).insert(0, "REMOTE ");
+  session.doc.commit();
   component.$set({ file: firstFile });
   await tick();
   await tick();
@@ -91,7 +96,8 @@ window.remoteUndoCheck = async () => {
   await tick();
   const view = EditorView.findFromDOM(document.querySelectorAll(".cm-editor")[1]);
   const remoteOrigin = {};
-  value.doc.transact(() => text.insert(0, "REMOTE "), remoteOrigin);
+  text.insert(0, "REMOTE ");
+  value.doc.commit();
   await tick();
   view.focus();
   const press = (key, options = {}) => view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
@@ -187,7 +193,8 @@ window.mergeUndoCheck = async () => {
   const errors = [];
   const onError = (event) => errors.push(event.message);
   window.addEventListener("error", onError);
-  value.doc.transact(() => text.insert(0, "REMOTE "), "remote");
+  text.insert(0, "REMOTE ");
+  value.doc.commit();
   press(views[0], "z");
   press(views[1], "z");
   const remoteOnly = text.toString();
@@ -414,8 +421,8 @@ try {
   const result = await evaluate("editorCheck()");
   assert.equal(result.sameView, true);
   assert.equal(result.secondText, "beta");
-  assert.equal(result.before.undo, 1);
-  assert.equal(result.after.undo, 1);
+  assert.equal(result.before.undo, true);
+  assert.equal(result.after.undo, true, "the undo history did not survive switching files");
   assert.equal(result.before.caret + 7, result.after.caret);
   assert.equal(result.after.text, "REMOTE LOCAL alpha");
   console.log("editor-browser: file state, undo, caret, and inactive remote text preserved");
