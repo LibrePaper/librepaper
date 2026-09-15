@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 
 use crate::cli::{server_or_die, stored_token_for};
 use crate::config::Configuration;
-use crate::document::render::{is_latex, is_markdown, is_typst, render_markdown_document};
+use crate::document::render::{document_format, render_markdown_document};
 use crate::document::store::{example_suffix, slugify, Publication, Store};
 use crate::http::{detail_of, get_json, post_directory, post_json, text};
 use crate::room::{Message, Region, SourceAnchor};
@@ -108,22 +108,18 @@ pub fn read_seed_document(document: &SeedDocument) -> (String, String, String) {
             document.file
         ))
     });
-    if is_markdown(&document.file) {
-        return (
+    match document_format(&document.file) {
+        Some("markdown") => (
             render_markdown_document(&raw, document.title),
             raw,
             "markdown".into(),
-        );
+        ),
+        Some("typst") => (raw.clone(), raw, "typst".into()),
+        Some("latex") => (latex_prose(&raw), raw, "latex".into()),
+        // HTML and unknown examples are their own source through the identity
+        // renderer, as they were before format detection was centralised.
+        _ => (raw.clone(), raw, "html".into()),
     }
-    if is_typst(&document.file) {
-        return (raw.clone(), raw, "typst".into());
-    }
-    if is_latex(&document.file) {
-        return (latex_prose(&raw), raw, "latex".into());
-    }
-    // An HTML example is its own source, through the identity renderer, and is
-    // as editable as the other two.
-    (raw.clone(), raw, "html".into())
 }
 
 /// The words of a LaTeX source, near enough: comments dropped, and whitespace

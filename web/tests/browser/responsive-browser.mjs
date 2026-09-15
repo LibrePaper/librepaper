@@ -115,6 +115,65 @@ try {
   assert.equal(await visible('.editorpane'),true);
   assert.equal(await visible('.viewport'),true);
   await bounded();
+
+  // Every panel at the narrowest column a reader can drag to. A panel that
+  // asks to be wider than the column it is in does not get a wider column: it
+  // gets a header scrolling sideways and a menu pushed out under the sidebar's
+  // own clipping, which is why this measures each of them rather than trusting
+  // one row of tabs to speak for all of them. The width is the panel's own:
+  // the rail of icons is added to it, not taken out of it, so 240 here is 240
+  // of panel. This runs before the test takes hold of the editor below, since
+  // the History panel puts its own workspace where the source is.
+  // Put back afterwards rather than removed: the Reader writes this variable
+  // on the element, and taking it off is what every selector here looks for.
+  const columnWas = await b.evaluate(`document.querySelector('[style*="--librepaper-sidebar"]').style.getPropertyValue("--librepaper-sidebar")`);
+  const panelAt = async (label, width) => {
+    await b.evaluate(`document.querySelector('[style*="--librepaper-sidebar"]').style.setProperty("--librepaper-sidebar", "${width}px")`);
+    await flush();
+    return b.evaluate(`(() => {
+      const slot = [...document.querySelectorAll('.panel-slot')].find(node => !node.hidden);
+      if (!slot) return { label: ${JSON.stringify(label)}, open: false };
+      const box = slot.getBoundingClientRect();
+      const wide = [...slot.querySelectorAll('*')].filter(node => {
+        if (!node.getClientRects().length) return false;
+        const style = getComputedStyle(node);
+        if (style.position === 'fixed' || style.position === 'absolute') return false;
+        return node.getBoundingClientRect().right > box.right + 1;
+      }).map(node => node.tagName + '.' + String(node.className).slice(0, 40));
+      return { label: ${JSON.stringify(label)}, open: true, width: Math.round(box.width),
+        scroll: slot.scrollWidth - slot.clientWidth, wide: wide.slice(0, 5) };
+    })()`);
+  };
+  for (const name of ['Outline', 'Collaboration', 'Changes', 'Agent', 'History', 'Diagnostics', 'Share']) {
+    const button = `.sidebar-activity [aria-label^="${name}"]`;
+    assert.equal(await b.evaluate(`Boolean(document.querySelector(${JSON.stringify(button)}))`), true, name + ' has an icon');
+    await click(button);
+    if (name === 'Changes') {
+      // With its filters and its ••• menu open, which is the widest it gets.
+      await b.evaluate(`(() => { const more = [...document.querySelectorAll('.filter-bar button')].find(node => node.textContent.trim().startsWith('Filter'));
+        more?.click(); const menu = document.querySelector('.changes-menu'); if (menu) menu.open = true; })()`);
+      await flush();
+    }
+    const panel = await panelAt(name, 240);
+    assert.equal(panel.open, true, name + ' opens its panel: ' + JSON.stringify(panel));
+    assert.ok(panel.width >= 239, 'the panel gets the width the column was dragged to: ' + JSON.stringify(panel));
+    assert.ok(panel.scroll <= 1, name + ' fits the narrowest column: ' + JSON.stringify(panel));
+    assert.deepEqual(panel.wide, [], name + ' keeps everything inside the column: ' + JSON.stringify(panel));
+  }
+  // A short window: the icons scroll rather than the workspace controls being
+  // clipped off the bottom of the rail with no sign they were ever there.
+  await b.resize(1280, 420); await flush();
+  const rail = await b.evaluate(`(() => { const bar = document.querySelector('.sidebar-activity');
+    const bottom = document.querySelector('.activity-bottom');
+    return { fits: bottom.getBoundingClientRect().bottom <= bar.getBoundingClientRect().bottom + 1,
+      scrolls: document.querySelector('.activity-sections').scrollHeight > document.querySelector('.activity-sections').clientHeight }; })()`);
+  assert.equal(rail.fits, true, 'the workspace controls stay inside the rail: ' + JSON.stringify(rail));
+  await b.resize(1280, 900); await flush();
+  await click('.sidebar-activity [aria-label="Files"]');
+  await b.evaluate(`document.querySelector('[style*="--librepaper-sidebar"]').style.setProperty("--librepaper-sidebar", ${JSON.stringify(columnWas)})`);
+  await flush();
+  await until('the source comes back', () => b.evaluate("Boolean(document.querySelector('.cm-editor'))"), 10000);
+
   await b.evaluate(`(() => {
     window.savedEditor = document.querySelector('.cm-editor');
     window.savedFrame = document.querySelector('.viewport iframe');
@@ -256,7 +315,7 @@ try {
   }
 
   await click('.sidebar-activity [aria-label="Changes"]');
-  assert.equal(await b.evaluate('document.querySelector(".sidebar").innerText.includes("Suggest a change")'), true);
+  assert.equal(await b.evaluate('document.querySelector(".sidebar").innerText.includes("Track changes")'), true);
   await click('.sidebar-activity [aria-label="Files"]');
   assert.equal(await b.evaluate('document.querySelector(".explorer-scroll").scrollTop'), filesTop);
   assert.equal(await b.evaluate('document.querySelector(".filelist .panel-actions").getBoundingClientRect().bottom <= document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
@@ -322,5 +381,5 @@ try {
     await bounded();
   }
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('responsive-browser: collaboration tabs, point comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds and saved layouts passed');
+  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, point comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds and saved layouts passed');
 } finally { await b?.close(); serverHttp?.close(); rmSync(temp,{recursive:true,force:true}); }

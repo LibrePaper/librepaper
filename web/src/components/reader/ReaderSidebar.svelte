@@ -11,6 +11,7 @@
   import History from "./History.svelte";
   import PendingAnnotations from "./PendingAnnotations.svelte";
   import Grip from "../Grip.svelte";
+  import { iconFor } from "../../lib/panels.js";
 
   let {
     shown,
@@ -126,27 +127,24 @@
     ondiscardannotation,
   } = $props();
 
-  const iconFor = (id) => id === "files" ? "folder"
-    : id === "outline" ? "list"
-      : id === "collaboration" ? "comment"
-        : id === "changes" ? "pencil"
-          : id === "agent" ? "bot"
-            : id === "history" ? "history"
-              : id === "share" ? "users" : "sliders";
+  // The panel each icon opens, so a button can say what it controls and
+  // whether it is open rather than only that it is the one that is on.
+  const slotId = (id) => `sidebar-panel-${id}`;
 </script>
 
 <!-- The sidebar owns panel selection and panel-specific wiring. Reader keeps
      document state and actions; this component only presents those features. -->
-<aside class="sidebar" class:collapsed={!shown.comments}
+<aside class="sidebar" class:collapsed={!shown.comments} aria-label="Sidebar"
        ondragover={(event) => event.preventDefault()} ondrop={ondrop}>
   <div class="sidebar-activity">
     <div class="activity-sections" role="group" aria-label="Sidebar sections">
       {#each tabs as tab (tab.id)}
         {#if tab.id === "diagnostics"}
           <div class="activity-diagnostics">
-            <IconButton icon="triangle-alert"
+            <IconButton icon={iconFor(tab.id)}
               label={diagnosticBadge ? `${tab.says}: ${diagnosticBadge}` : tab.says}
               pressed={panel === tab.id}
+              controls={slotId(tab.id)} expanded={panel === tab.id && shown.comments}
               onclick={() => onselectpanel?.(tab.id)} />
             {#if diagnostics.length}
               <span class="activity-counts" aria-hidden="true">
@@ -158,11 +156,14 @@
         {:else if tab.id === "changes"}
           <div class="activity-tracking">
             <IconButton icon={iconFor(tab.id)} label={trackingState.enabled ? "Changes — tracking on" : tab.says}
-              pressed={panel === tab.id} onclick={() => onselectpanel?.(tab.id)} />
+              pressed={panel === tab.id} controls={slotId(tab.id)}
+              expanded={panel === tab.id && shown.comments}
+              onclick={() => onselectpanel?.(tab.id)} />
             {#if trackingState.enabled}<span class="tracking-indicator" aria-hidden="true"></span>{/if}
           </div>
         {:else}
           <IconButton icon={iconFor(tab.id)} label={tab.says} pressed={panel === tab.id}
+            controls={slotId(tab.id)} expanded={panel === tab.id && shown.comments}
             onclick={() => onselectpanel?.(tab.id)} />
         {/if}
       {/each}
@@ -180,7 +181,8 @@
   {#if settled}
     <div class="sidebar-content">
       {#each tabs.filter((tab) => visitedPanels.includes(tab.id) || (tab.id === "collaboration" && unconfirmed.length)) as tab (tab.id)}
-        <div class="panel-slot" hidden={panel !== tab.id || !shown.comments}>
+        <div id={slotId(tab.id)} class="panel-slot" role="region" aria-label={tab.says}
+             hidden={panel !== tab.id || !shown.comments}>
           {#if tab.id === "files" && mayEdit}
             <Files bind:this={onfilelist} {files} {folders} open={openFile} peers={peersByFile}
               {mayEdit} {rules} onopen={onopen} onadd={onadd} onmkdir={onmkdir} onrelocate={onrelocate}
@@ -240,15 +242,23 @@
 
 {#if shown.comments && !compact}
   <Grip pane={sidebarPane} label="Resize the left-hand column" {panes}
+    controls={panel ? slotId(panel) : undefined}
     onsize={onsize} onguide={onguide} ongrab={ongrab} />
 {/if}
 
 <style>
   .sidebar { flex-direction: row; }
   .sidebar.collapsed { flex: 0 0 var(--librepaper-activity); }
-  .sidebar-activity { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--spacing); width: var(--librepaper-activity); padding-block: calc(var(--spacing) * 3); border-right: 1px solid var(--color-divider); }
-  .activity-bottom { display: flex; flex-direction: column; align-items: center; gap: var(--spacing); margin-top: auto; }
-  .activity-sections { display: flex; flex-direction: column; align-items: center; gap: var(--spacing); }
+  .sidebar-activity { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--spacing); width: var(--librepaper-activity); min-height: 0; padding-block: calc(var(--spacing) * 3); border-right: 1px solid var(--color-divider); }
+  .activity-bottom { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--spacing); margin-top: auto; }
+  /* Eight panels and three workspace controls are taller than a short window,
+     and the column clips what it cannot fit -- so the panels scroll and the
+     controls below them stay put, rather than the home and help buttons
+     disappearing off the bottom of a laptop in landscape with no sign that
+     they were ever there. The bar is hidden because it would be most of the
+     rail's width; the wheel, a drag and the keyboard all still reach it. */
+  .activity-sections { display: flex; flex-direction: column; align-self: stretch; align-items: center; gap: var(--spacing); min-height: 0; overflow-y: auto; scrollbar-width: none; }
+  .activity-sections::-webkit-scrollbar { display: none; }
   .activity-sections :global(.icon-control) { position: relative; width: 2rem; height: 2rem; border-radius: var(--radius-base); }
   .activity-sections :global(.icon-control[aria-pressed="true"]) { background: var(--color-primary-100-900); color: var(--color-primary-700-300); }
   .activity-sections :global(.icon-control[aria-pressed="true"]::before) { content: ""; position: absolute; left: calc((2rem - var(--librepaper-activity)) / 2 + 1px); top: .375rem; bottom: .375rem; width: 3px; border-radius: 0 2px 2px 0; background: var(--color-primary-500); }

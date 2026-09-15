@@ -20,6 +20,12 @@
     title = label,
     href = null,
     pressed = null,
+    // For a button that reveals something: what it reveals, and whether it is
+    // showing. A pressed icon says the control is on; these say what the page
+    // did about it, which is the part a reader who cannot see the panel open
+    // has no other way to learn.
+    controls = null,
+    expanded = null,
     disabled = false,
     tone = null,
     size = null,
@@ -53,6 +59,8 @@
           type="button"
           class={classes}
           aria-label={label}
+          aria-controls={controls ?? undefined}
+          aria-expanded={expanded === null ? undefined : expanded}
           aria-pressed={pressed === null ? undefined : pressed}
           {disabled}
           {onclick}

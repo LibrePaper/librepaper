@@ -35,23 +35,25 @@ function openOfflineDatabase(indexedDB_ = globalThis.indexedDB) {
   });
 }
 
-async function readStore(store, key, indexedDB_) {
+async function withDatabase(indexedDB_, action) {
   const database = await openOfflineDatabase(indexedDB_);
   try {
-    return await requestResult(database.transaction(store, "readonly").objectStore(store).get(key));
+    return await action(database);
   } finally {
     database.close();
   }
 }
 
+async function readStore(store, key, indexedDB_) {
+  return withDatabase(indexedDB_, (database) =>
+    requestResult(database.transaction(store, "readonly").objectStore(store).get(key)));
+}
+
 export async function preparedProjects(indexedDB_ = globalThis.indexedDB) {
-  const database = await openOfflineDatabase(indexedDB_);
-  try {
+  return withDatabase(indexedDB_, async (database) => {
     const records = await requestResult(database.transaction(PROJECTS, "readonly").objectStore(PROJECTS).getAll());
     return records.filter((record) => record?.prepared).sort((a, b) => String(b.preparedAt).localeCompare(String(a.preparedAt)));
-  } finally {
-    database.close();
-  }
+  });
 }
 
 export async function preparedProject({ server, slug }, indexedDB_ = globalThis.indexedDB) {
@@ -84,14 +86,11 @@ export async function prepareOfflineProject(metadata, indexedDB_ = globalThis.in
       offline_prepared: true,
     },
   };
-  const database = await openOfflineDatabase(indexedDB_);
-  try {
+  await withDatabase(indexedDB_, async (database) => {
     const transaction = database.transaction(PROJECTS, "readwrite");
     transaction.objectStore(PROJECTS).put(record);
     await transactionDone(transaction);
-  } finally {
-    database.close();
-  }
+  });
   return record;
 }
 

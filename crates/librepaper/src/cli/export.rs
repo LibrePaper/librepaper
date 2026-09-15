@@ -841,21 +841,23 @@ fn rendered_checkpoint_text(point: &Value) -> Option<String> {
         .cloned()
         .unwrap_or_default();
     let source = texts.get(&main).and_then(Value::as_str)?;
-    let page = if crate::document::render::is_quarto(&main) {
-        let texts = texts
-            .iter()
-            .filter_map(|(path, text)| text.as_str().map(|text| (path.clone(), text.to_string())))
-            .collect();
-        let compiled = crate::document::quarto::compile(&main, source, "", &texts);
-        compiled.output.as_ref()?.html()?.to_string()
-    } else if crate::document::render::is_markdown(&main) {
-        crate::document::render::render_markdown_document(source, "")
-    } else if crate::document::render::is_html(&main) {
-        source.to_string()
-    } else {
+    let page = match crate::document::render::document_format(&main)? {
+        "quarto" => {
+            let texts = texts
+                .iter()
+                .filter_map(|(path, text)| {
+                    text.as_str().map(|text| (path.clone(), text.to_string()))
+                })
+                .collect();
+            let compiled = crate::document::quarto::compile(&main, source, "", &texts);
+            compiled.output.as_ref()?.html()?.to_string()
+        }
+        "markdown" => crate::document::render::render_markdown_document(source, ""),
+        "html" => source.to_string(),
         // Native Typst emits PDF, not HTML. Source text cannot stand in for
         // the rendered quotation, and LaTeX likewise has no text renderer here.
-        return None;
+        "typst" | "latex" => return None,
+        _ => return None,
     };
     Some(crate::seed::visible_text(&page))
 }

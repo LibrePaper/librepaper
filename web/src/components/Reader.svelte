@@ -49,7 +49,8 @@
     takeKeyFromFragment,
     write,
   } from "../lib/storage.js";
-  import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, LAYOUTS, PANES, RATIOS, clamp, pixels, remember, showing, stored } from "../lib/panes.js";
+  import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, LAYOUTS, PANES, RATIOS, clamp, measure, pixels, px, remember, showing, stored } from "../lib/panes.js";
+  import { iconFor } from "../lib/panels.js";
 
   import { tick, untrack } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
@@ -2384,12 +2385,18 @@
   // and a measurement taken once is a layout that is right until the window
   // moves.
   let width = $state(innerWidth);
+  // And what a rem is worth, since every limit in panes.js is one. It moves
+  // when the reader changes their text size or zooms, which is a resize; it is
+  // held here rather than read where it is used so that what depends on it is
+  // worked out again when it does.
+  let unit = $state(measure());
   const compact = $derived(width <= 760);
   const activeMobileView = $derived(panel === "history" && mobileView === "document" ? "source"
     : mobileView === "source" && !editing && panel !== "history" ? "document"
     : mobileView === "sidebar" && !panel ? "document" : mobileView);
-  const splitTight = $derived(width < PANES.editor.min + DOCUMENT_MIN + GRIP
-    + (panel ? PANES.sidebar.min + GRIP : ACTIVITY_WIDTH));
+  const splitTight = $derived(width < px(ACTIVITY_WIDTH, unit) + px(PANES.editor.min, unit)
+    + px(DOCUMENT_MIN, unit) + px(GRIP, unit)
+    + (panel ? px(PANES.sidebar.min, unit) + px(GRIP, unit) : 0));
   const effectiveLayout = $derived(!compact && panel === "history"
     ? "source"
     : compact
@@ -2407,6 +2414,10 @@
     sourceSide,
     sizes,
     width,
+    // Passed so that a change of text size reaches everything measured in rem,
+    // which is every limit there is: `px` holds the measurement itself, and
+    // what is never seen to read it is never worked out again.
+    unit,
   });
   const shown = $derived(compact ? {
     source: (editing || panel === "history") && activeMobileView === "source",
@@ -3314,7 +3325,7 @@
   }
 </script>
 
-<svelte:window bind:innerWidth={width} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
+<svelte:window bind:innerWidth={width} onresize={() => (unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
 
 {#snippet fileItems()}
   {#if mayEdit}
@@ -3520,7 +3531,7 @@
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact || (splitTight && layout === "split")}
-      style="height: calc(100dvh - var(--librepaper-bar)); --librepaper-activity: {ACTIVITY_WIDTH}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar)); --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <ReaderSidebar
     {trackingState} {selectedRevision} ontracking={setTrackingEnabled}
     onmarkup={(value) => tracking?.setShowMarkup(value)} onrevisionreveal={revealRevision}
@@ -3567,7 +3578,7 @@
 
   {#if editing || panel === "history"}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <section class="editorpane" class:away={!shown.source}
+    <section id="reader-source" class="editorpane" class:away={!shown.source}
              ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
@@ -3607,6 +3618,7 @@
   <!-- A separator only where there are two things to separate. -->
   {#if shown.source && shown.document}
     <Grip pane={PANES.editor} label="Split between the source and the document" panes={panes}
+          controls="reader-source"
           onsize={(size) => setSize(PANES.editor, size)}
           onguide={(where) => (guide = where)}
           ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}>
@@ -3719,9 +3731,9 @@
                   onclick={() => showMobileView("source")} />
     {/if}
     {#each compact ? tabs : [] as tab (tab.id)}
-      <IconButton
-        icon={tab.id === "files" ? "folder" : tab.id === "outline" ? "list" : tab.id === "collaboration" ? "comment" : tab.id === "changes" ? "pencil" : tab.id === "agent" ? "bot" : tab.id === "history" ? "history" : tab.id === "diagnostics" ? "triangle-alert" : tab.id === "share" ? "users" : "sliders"}
-        label={tab.says} pressed={shown.comments && panel === tab.id}
+      <IconButton icon={iconFor(tab.id)} label={tab.says}
+        pressed={shown.comments && panel === tab.id}
+        controls={`sidebar-panel-${tab.id}`} expanded={shown.comments && panel === tab.id}
         onclick={() => selectPanel(tab.id)} />
     {/each}
   </nav>
