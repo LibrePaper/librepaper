@@ -23,7 +23,7 @@
 // CRDT across client restarts; on reconnect the whole local state is sent and
 // merged, so changes made on either side of the gap reach the other.
 
-import { LoroDoc, LoroText, EphemeralStore } from "loro-crdt";
+import { LoroDoc, LoroText, EphemeralStore, VersionVector } from "loro-crdt";
 import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
 
 // Keep each JSON WebSocket frame comfortably below the server's one-megabyte
@@ -316,10 +316,11 @@ export function createProjectSession({
     // servers omit it, so the bounded full-history path remains compatible.
     let whole;
     if (vector) {
-      const decodedVector = decode(vector);
-      // Import the server's state vector to decode which operations are needed
-      // Then export only the missing operations
-      whole = doc.export({ mode: "update", from: decodedVector });
+      // And the mirror of the above: what arrives is bytes, and what `from`
+      // wants is a version vector. Handing it the bytes is not an error --
+      // it reads as an empty vector and resends the whole history, which is
+      // correct but is the thing this branch exists to avoid.
+      whole = doc.export({ mode: "update", from: VersionVector.decode(decode(vector)) });
     } else {
       // Export the full history from an empty version vector
       whole = doc.export({ mode: "update" });
@@ -640,9 +641,11 @@ export function createProjectSession({
     /// What to send to join, or to rejoin: what this browser already has, so
     /// the server answers with the rest and nothing more.
     open() {
-      // Get the operation log version vector and encode it for transport
-      const vv = doc.oplogVersion();
-      return { type: "doc-open", vector: encode(vv) };
+      // A version vector is an object, not bytes. It has to be encoded before
+      // it can be base64'd for the wire -- spreading it straight into the
+      // encoder threw "not iterable", which is what made opening a document
+      // fail before it had sent anything.
+      return { type: "doc-open", vector: encode(doc.oplogVersion().encode()) };
     },
 
     /// The server's answer to `doc-open`: the document, or -- when it is too

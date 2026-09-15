@@ -121,7 +121,7 @@ try {
   tab = await browser("chromium", join(temp, "profile"), 35000 + Math.floor(Math.random() * 1000));
   await tab.resize(1280, 900); await tab.navigate(`${origin}/docs/paper`);
   const flush = () => tab.evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
-  await until("source state", () => tab.evaluate("window.roomSent?.some(message=>message.type==='y-open')"), 10000);
+  await until("source state", () => tab.evaluate("window.roomSent?.some(message=>message.type==='doc-open')"), 10000);
   await flush();
   await tab.evaluate("document.querySelector('.sidebar-activity [aria-label=Share]').click()"); await flush();
   await until("metadata request", () => Promise.resolve(typeof metadataRelease === "function"), 10000);
@@ -137,7 +137,7 @@ try {
   await until("published without edits", () => tab.evaluate("document.body.innerText.includes('Published') && !document.body.innerText.includes('Unpublished changes')"), 10000);
   assert.equal(activateBody.expected_publication_id, null, "first explicit publish has no expected predecessor");
   await tab.navigate(`${origin}/docs/paper`);
-  await until("reloaded source state", () => tab.evaluate("window.roomSent?.some(message=>message.type==='y-open')"), 10000);
+  await until("reloaded source state", () => tab.evaluate("window.roomSent?.some(message=>message.type==='doc-open')"), 10000);
   await tab.evaluate("document.querySelector('.sidebar-activity [aria-label=Share]').click()"); await flush();
   try {
     await until("reloaded unchanged publication", () => tab.evaluate("[...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Published' || button.textContent.trim()==='Publish update')"), 10000);

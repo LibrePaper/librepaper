@@ -91,7 +91,7 @@ try {
   assert.equal(await tab.evaluate("document.querySelector('.viewport iframe').src.startsWith("+JSON.stringify(docsOrigin)+")"),true,"published HTML is on its separate documents origin");
   assert.equal(await tab.evaluate("Boolean(document.querySelector('.editorpane'))"),false,"commenter has no source pane");
   assert.equal(await tab.evaluate("document.body.innerText.includes('Download project')"),false,"commenter has no project download");
-  assert.equal(await tab.evaluate("window.roomSent.some(message=>message.type==='y-open')"),false,"commenter does not open source state");
+  assert.equal(await tab.evaluate("window.roomSent.some(message=>message.type==='doc-open')"),false,"commenter does not open source state");
   assert.ok(shellRequests.every(path=>!/\/(?:source|snapshot|state|history)$/.test(path)), "restricted requests: "+shellRequests);
 
   await select();await until("selection bar",()=>tab.evaluate("Boolean(document.querySelector('#selectionbar'))"),3000);

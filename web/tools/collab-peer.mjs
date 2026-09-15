@@ -41,12 +41,12 @@ function connect() {
   socket.onopen = () => session && send(session.open());
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
-    if (message.type === "y-state") session?.start(message).catch(() => {});
-    else if (message.type === "y-update") session?.apply(message.update);
-    else if (message.type === "y-ack") {
+    if (message.type === "doc-state") session?.start(message).catch(() => {});
+    else if (message.type === "doc-update") session?.apply(message.update);
+    else if (message.type === "doc-ack") {
       acknowledged = Math.max(acknowledged, message.seq || 0);
       session?.acknowledge(message.seq || 0);
-    } else if (message.type === "y-peers") peers = message.count || 1;
+    } else if (message.type === "doc-peers") peers = message.count || 1;
   };
   socket.onclose = () => session?.disconnected();
 }

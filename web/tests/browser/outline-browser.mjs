@@ -275,7 +275,7 @@ try {
   await until("remote outline update", () => tab.evaluate("[...document.querySelectorAll('.outline .outline-heading')].some(node => node.textContent.includes('Remote heading'))"), 5000);
   await tab.insert("\n\n# Local heading\n");
   await until("local outline update", () => tab.evaluate("[...document.querySelectorAll('.outline .outline-heading')].some(node => node.textContent.includes('Local heading'))"), 5000);
-  assert.equal(await tab.evaluate("window.roomSent.some(message => message.type === 'y-update')"), true, "local edits use the Yjs room");
+  assert.equal(await tab.evaluate("window.roomSent.some(message => message.type === 'doc-update')"), true, "local edits go out on the shared document");
   assert.match(await tab.evaluate("window.roomControl.snapshot('notes.md')"), /Local heading/);
   if (process.env.OUTLINE_SCREENSHOT) {
     const screenshot = await tab.command("Page.captureScreenshot", {format: "png"});
