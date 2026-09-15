@@ -609,7 +609,7 @@
   function languageOf(path, fallback) {
     const lower = (path || "").toLowerCase();
     if (lower.endsWith(".typ")) return language("typst");
-    if (lower.endsWith(".md") || lower.endsWith(".markdown")) return language("markdown");
+    if (lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".qmd")) return language("markdown");
     if (lower.endsWith(".html") || lower.endsWith(".htm")) return language("html");
     // A file with no mode of its own -- .bib, .sty, .csv -- is shown as plain
     // text rather than coloured by the document's format, which would be a
