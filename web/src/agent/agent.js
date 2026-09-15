@@ -14,7 +14,14 @@ import { createMathTypesetter } from "../lib/math.js";
 import { sha256HexOfText } from "../lib/digest.js";
 
 (() => {
-  const READER = new URL(document.currentScript.src).searchParams.get("reader") || "*";
+  // Where this agent is allowed to speak. It is injected into a document on
+  // the documents origin, and what it sends back is the document's own text:
+  // the passage under the caret, the selection, the projection of the page.
+  // Falling back to "*" meant that a page framed by anyone at all was handed
+  // all of it. There is exactly one reader entitled to hear from this agent,
+  // it is named when the script is injected, and without that name the agent
+  // says nothing rather than saying it to everybody.
+  const READER = new URL(document.currentScript.src).searchParams.get("reader");
   let table = null; // {nodes, starts, index, offsets, joined}
 
   // The observer that republishes on the document's own edits (armed in
@@ -181,6 +188,7 @@ import { sha256HexOfText } from "../lib/digest.js";
   const edge = ([hue, saturation]) => `hsl(${hue} ${Math.min(saturation + 10, 60)}% 45%)`;
 
   function post(message) {
+    if (!READER) return;
     parent.postMessage({ librepaper: true, ...message }, READER);
   }
 
