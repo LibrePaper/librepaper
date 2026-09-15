@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context)\n           SELECT gen_random_uuid(),$1,'comment','benchmark',$2,'benchmark','Benchmark','{}'::jsonb,'{\"version\":1}'::jsonb\n           FROM generate_series(1,500)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cf313977d04f0ff2b8a54cf5dcf073d21c90d1d6b8c47c0b2f43a96d0a66dad1"
+}

@@ -1,5 +1,4 @@
 use serde_json::Value;
-use sqlx::Row;
 use time::OffsetDateTime;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
@@ -135,20 +134,19 @@ pub struct VersionRecord {
 
 impl PostgresCatalog {
     pub async fn runtime_state(&self, name: &str) -> Result<Option<serde_json::Value>> {
-        sqlx::query_scalar("SELECT value FROM server_runtime_state WHERE name=$1")
-            .bind(name)
+        sqlx::query_scalar!("SELECT value FROM server_runtime_state WHERE name=$1", name,)
             .fetch_optional(&self.pool)
             .await
             .map_err(Error::from)
     }
 
     pub async fn set_runtime_state(&self, name: &str, value: serde_json::Value) -> Result<()> {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO server_runtime_state(name,value) VALUES($1,$2)
              ON CONFLICT(name) DO UPDATE SET value=excluded.value,updated_at=now()",
+            name,
+            value,
         )
-        .bind(name)
-        .bind(value)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -160,11 +158,12 @@ impl PostgresCatalog {
         recovery_grace: time::Duration,
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let status: Option<String> =
-            sqlx::query_scalar("SELECT status FROM accounts WHERE id=$1 FOR UPDATE")
-                .bind(account_id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let status = sqlx::query_scalar!(
+            "SELECT status FROM accounts WHERE id=$1 FOR UPDATE",
+            account_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
         match status.as_deref() {
             None => return Err(Error::NotFound),
             Some("active") => {}
@@ -174,52 +173,54 @@ impl PostgresCatalog {
             }
             Some(_) => return Err(Error::Conflict("account is blocked".into())),
         }
-        sqlx::query(
-            "UPDATE accounts SET status='erasing',session_generation=session_generation+1 WHERE id=$1",
+        sqlx::query!(
+            "UPDATE accounts SET status='erasing',session_generation=session_generation+1
+             WHERE id=$1",
+            account_id,
         )
-        .bind(account_id)
         .execute(&mut *tx)
         .await?;
-        let document_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM documents WHERE owner_id=$1 ORDER BY id FOR UPDATE")
-                .bind(account_id)
-                .fetch_all(&mut *tx)
-                .await?;
-        sqlx::query(
+        let document_ids = sqlx::query_scalar!(
+            "SELECT id FROM documents WHERE owner_id=$1 ORDER BY id FOR UPDATE",
+            account_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        sqlx::query!(
             "UPDATE documents SET status='deleting',deleted_at=COALESCE(deleted_at,now()),updated_at=now()
              WHERE owner_id=$1 AND status='active'",
+            account_id,
         )
-        .bind(account_id)
         .execute(&mut *tx)
         .await?;
         let delete_after = OffsetDateTime::now_utc() + recovery_grace;
         for document_id in document_ids {
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO jobs(id,kind,document_id,account_id,scope_key,dedupe_key,payload,status,priority,max_attempts,run_after)
                  VALUES($1,'document_deletion',$2,$3,$4,'delete',$5,'queued',0,100,$6)
                  ON CONFLICT (kind,scope_key,dedupe_key)
                  WHERE dedupe_key IS NOT NULL AND status IN ('queued','running') DO NOTHING",
+                new_id(),
+                document_id,
+                account_id,
+                format!("document:{document_id}"),
+                serde_json::json!({"document_id":document_id}),
+                delete_after,
             )
-            .bind(new_id())
-            .bind(document_id)
-            .bind(account_id)
-            .bind(format!("document:{document_id}"))
-            .bind(serde_json::json!({"document_id":document_id}))
-            .bind(delete_after)
             .execute(&mut *tx)
             .await?;
         }
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO jobs(id,kind,account_id,scope_key,dedupe_key,payload,status,priority,max_attempts,run_after)
              VALUES($1,'account_deletion',$2,$3,'delete',$4,'queued',0,100,$5)
              ON CONFLICT (kind,scope_key,dedupe_key)
              WHERE dedupe_key IS NOT NULL AND status IN ('queued','running') DO NOTHING",
+            new_id(),
+            account_id,
+            format!("account:{account_id}"),
+            serde_json::json!({"account_id":account_id}),
+            delete_after + time::Duration::minutes(5),
         )
-        .bind(new_id())
-        .bind(account_id)
-        .bind(format!("account:{account_id}"))
-        .bind(serde_json::json!({"account_id":account_id}))
-        .bind(delete_after + time::Duration::minutes(5))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -228,32 +229,55 @@ impl PostgresCatalog {
 
     pub async fn finish_account_erasure(&self, account_id: Uuid) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM documents WHERE owner_id=$1")
-            .bind(account_id)
-            .fetch_one(&mut *tx)
-            .await?;
+        let remaining = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "count!" FROM documents WHERE owner_id=$1"#,
+            account_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         if remaining != 0 {
             return Err(Error::Conflict(
                 "account still has documents awaiting deletion".into(),
             ));
         }
-        sqlx::query("DELETE FROM grants WHERE account_id=$1")
-            .bind(account_id)
+        sqlx::query!("DELETE FROM grants WHERE account_id=$1", account_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE annotations SET author_account_id=NULL,author_key='erased',author_label='Deleted user' WHERE author_account_id=$1")
-            .bind(account_id).execute(&mut *tx).await?;
-        sqlx::query("UPDATE replies SET author_account_id=NULL,author_key='erased',author_label='Deleted user' WHERE author_account_id=$1")
-            .bind(account_id).execute(&mut *tx).await?;
-        sqlx::query("UPDATE document_versions SET author_account_id=NULL,author_label='Deleted user' WHERE author_account_id=$1")
-            .bind(account_id).execute(&mut *tx).await?;
-        sqlx::query("UPDATE publications SET publisher_account_id=NULL,publisher_label='Deleted user' WHERE publisher_account_id=$1")
-            .bind(account_id).execute(&mut *tx).await?;
-        let deleted = sqlx::query("DELETE FROM accounts WHERE id=$1 AND status='erasing'")
-            .bind(account_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
+        sqlx::query!(
+            "UPDATE annotations SET author_account_id=NULL,author_key='erased',
+             author_label='Deleted user' WHERE author_account_id=$1",
+            account_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!(
+            "UPDATE replies SET author_account_id=NULL,author_key='erased',
+             author_label='Deleted user' WHERE author_account_id=$1",
+            account_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!(
+            "UPDATE document_versions SET author_account_id=NULL,author_label='Deleted user'
+             WHERE author_account_id=$1",
+            account_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!(
+            "UPDATE publications SET publisher_account_id=NULL,publisher_label='Deleted user'
+             WHERE publisher_account_id=$1",
+            account_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+        let deleted = sqlx::query!(
+            "DELETE FROM accounts WHERE id=$1 AND status='erasing'",
+            account_id,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
             == 1;
         tx.commit().await?;
         Ok(deleted)
@@ -267,12 +291,13 @@ impl PostgresCatalog {
         if incoming_bytes < 0 {
             return Err(Error::Invalid("invalid incoming byte count".into()));
         }
-        let owner_id: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1 AND status='active'")
-                .bind(document_id)
-                .fetch_optional(&self.pool)
-                .await?
-                .ok_or(Error::NotFound)?;
+        let owner_id = sqlx::query_scalar!(
+            "SELECT owner_id FROM documents WHERE id=$1 AND status='active'",
+            document_id,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(Error::NotFound)?;
         let owner_usage = self.usage_bytes(Some(owner_id)).await?;
         let deployment_usage = self.usage_bytes(None).await?;
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
@@ -296,26 +321,39 @@ impl PostgresCatalog {
         if title.is_empty() || !matches!(ownership_mode, "owned" | "open" | "example") {
             return Err(Error::Invalid("invalid document metadata".into()));
         }
-        Ok(sqlx::query("UPDATE documents SET title=$2,title_key=$3,owner_id=$4,ownership_mode=$5,updated_at=now() WHERE id=$1 AND status='active'")
-            .bind(id).bind(title).bind(title_key(title)).bind(owner_id).bind(ownership_mode)
-            .execute(&self.pool).await?.rows_affected()==1)
+        Ok(sqlx::query!(
+            "UPDATE documents SET title=$2,title_key=$3,owner_id=$4,ownership_mode=$5,
+             updated_at=now() WHERE id=$1 AND status='active'",
+            id,
+            title,
+            title_key(title),
+            owner_id,
+            ownership_mode,
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1)
     }
 
     pub async fn create_account(&self, input: NewAccount) -> Result<AccountRecord> {
         validate_account(&input)?;
         let id = new_id();
-        sqlx::query_as::<_, AccountRecord>(
+        sqlx::query_as!(
+            AccountRecord,
             "INSERT INTO accounts
              (id,kind,provider,provider_subject,handle,display_name,email,status)
-             VALUES($1,$2,$3,$4,$5,$6,$7,'active') RETURNING *",
+             VALUES($1,$2,$3,$4,$5,$6,$7,'active')
+             RETURNING id,kind,provider,provider_subject,handle,display_name,email,status,
+                       session_generation,preferences,created_at,last_seen_at",
+            id,
+            input.kind,
+            input.provider,
+            input.provider_subject,
+            input.handle,
+            input.display_name,
+            input.email,
         )
-        .bind(id)
-        .bind(input.kind)
-        .bind(input.provider)
-        .bind(input.provider_subject)
-        .bind(input.handle)
-        .bind(input.display_name)
-        .bind(input.email)
         .fetch_one(&self.pool)
         .await
         .map_err(Error::from)
@@ -328,62 +366,95 @@ impl PostgresCatalog {
                 "only registered accounts can be upserted".into(),
             ));
         }
-        sqlx::query_as::<_,AccountRecord>(
+        sqlx::query_as!(
+            AccountRecord,
             "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status)
              VALUES($1,'registered',$2,$3,$4,$5,$6,'active')
              ON CONFLICT(provider,provider_subject) WHERE kind='registered' DO UPDATE SET
                handle=excluded.handle,display_name=excluded.display_name,email=excluded.email,last_seen_at=now()
-             WHERE accounts.status='active' RETURNING accounts.*",
-        ).bind(new_id()).bind(input.provider).bind(input.provider_subject).bind(input.handle)
-         .bind(input.display_name).bind(input.email).fetch_optional(&self.pool).await?
-         .ok_or_else(||Error::Conflict("account is not active".into()))
+             WHERE accounts.status='active'
+             RETURNING accounts.id,accounts.kind,accounts.provider,accounts.provider_subject,
+                       accounts.handle,accounts.display_name,accounts.email,accounts.status,
+                       accounts.session_generation,accounts.preferences,accounts.created_at,
+                       accounts.last_seen_at",
+            new_id(),
+            input.provider,
+            input.provider_subject,
+            input.handle,
+            input.display_name,
+            input.email,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::Conflict("account is not active".into()))
     }
 
     pub async fn account(&self, id: Uuid) -> Result<Option<AccountRecord>> {
-        sqlx::query_as::<_, AccountRecord>("SELECT * FROM accounts WHERE id=$1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Error::from)
+        sqlx::query_as!(
+            AccountRecord,
+            "SELECT id,kind,provider,provider_subject,handle,display_name,email,status,
+                    session_generation,preferences,created_at,last_seen_at
+             FROM accounts WHERE id=$1",
+            id,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Error::from)
     }
 
     pub async fn create_document(&self, input: NewDocument) -> Result<DocumentRecord> {
         validate_document(&input)?;
         let id = new_id();
         let title_key = title_key(&input.title);
-        sqlx::query_as::<_, DocumentRecord>(
+        sqlx::query_as!(
+            DocumentRecord,
             "INSERT INTO documents
              (id,slug,owner_id,ownership_mode,title,title_key,status,source_format,main_path,settings)
-             VALUES($1,$2,$3,$4,$5,$6,'active',$7,$8,$9) RETURNING *",
+             VALUES($1,$2,$3,$4,$5,$6,'active',$7,$8,$9)
+             RETURNING id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+                       main_path,update_sequence,project_generation,current_version_id,
+                       current_publication_id,settings,created_at,updated_at,deleted_at",
+            id,
+            input.slug,
+            input.owner_id,
+            input.ownership_mode,
+            input.title,
+            title_key,
+            input.source_format,
+            input.main_path,
+            input.settings,
         )
-        .bind(id)
-        .bind(input.slug)
-        .bind(input.owner_id)
-        .bind(input.ownership_mode)
-        .bind(input.title)
-        .bind(title_key)
-        .bind(input.source_format)
-        .bind(input.main_path)
-        .bind(input.settings)
         .fetch_one(&self.pool)
         .await
         .map_err(Error::from)
     }
 
     pub async fn document_by_slug(&self, slug: &str) -> Result<Option<DocumentRecord>> {
-        sqlx::query_as::<_, DocumentRecord>("SELECT * FROM documents WHERE slug=$1")
-            .bind(slug)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Error::from)
+        sqlx::query_as!(
+            DocumentRecord,
+            "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+                    main_path,update_sequence,project_generation,current_version_id,
+                    current_publication_id,settings,created_at,updated_at,deleted_at
+             FROM documents WHERE slug=$1",
+            slug,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Error::from)
     }
 
     pub async fn document(&self, id: Uuid) -> Result<Option<DocumentRecord>> {
-        sqlx::query_as::<_, DocumentRecord>("SELECT * FROM documents WHERE id=$1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Error::from)
+        sqlx::query_as!(
+            DocumentRecord,
+            "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+                    main_path,update_sequence,project_generation,current_version_id,
+                    current_publication_id,settings,created_at,updated_at,deleted_at
+             FROM documents WHERE id=$1",
+            id,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Error::from)
     }
 
     pub async fn list_documents(
@@ -394,15 +465,19 @@ impl PostgresCatalog {
         if !(1..=200).contains(&limit) {
             return Err(Error::Invalid("document page limit must be 1..=200".into()));
         }
-        sqlx::query_as::<_, DocumentRecord>(
-            "SELECT * FROM documents
+        sqlx::query_as!(
+            DocumentRecord,
+            "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+                    main_path,update_sequence,project_generation,current_version_id,
+                    current_publication_id,settings,created_at,updated_at,deleted_at
+             FROM documents
              WHERE status='active'
                AND ($1::timestamptz IS NULL OR (updated_at,id) < ($1,$2))
              ORDER BY updated_at DESC,id DESC LIMIT $3",
+            before.map(|value| value.0),
+            before.map(|value| value.1),
+            limit,
         )
-        .bind(before.map(|value| value.0))
-        .bind(before.map(|value| value.1))
-        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
@@ -416,8 +491,19 @@ impl PostgresCatalog {
         if !(1..=200).contains(&limit) {
             return Err(Error::Invalid("document page limit must be 1..=200".into()));
         }
-        sqlx::query_as::<_,DocumentRecord>("SELECT * FROM documents WHERE owner_id=$1 AND status='active' ORDER BY updated_at DESC,id DESC LIMIT $2")
-            .bind(owner_id).bind(limit).fetch_all(&self.pool).await.map_err(Error::from)
+        sqlx::query_as!(
+            DocumentRecord,
+            "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+                    main_path,update_sequence,project_generation,current_version_id,
+                    current_publication_id,settings,created_at,updated_at,deleted_at
+             FROM documents WHERE owner_id=$1 AND status='active'
+             ORDER BY updated_at DESC,id DESC LIMIT $2",
+            owner_id,
+            limit,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
     }
 
     pub async fn documents_by_owner_page(
@@ -429,15 +515,19 @@ impl PostgresCatalog {
         if !(1..=200).contains(&limit) {
             return Err(Error::Invalid("document page limit must be 1..=200".into()));
         }
-        sqlx::query_as::<_, DocumentRecord>(
-            "SELECT * FROM documents WHERE owner_id=$1 AND status='active'
+        sqlx::query_as!(
+            DocumentRecord,
+            "SELECT id,slug,owner_id,ownership_mode,title,title_key,status,source_format,
+                    main_path,update_sequence,project_generation,current_version_id,
+                    current_publication_id,settings,created_at,updated_at,deleted_at
+             FROM documents WHERE owner_id=$1 AND status='active'
              AND ($2::timestamptz IS NULL OR (updated_at,id)<($2,$3))
              ORDER BY updated_at DESC,id DESC LIMIT $4",
+            owner_id,
+            before.map(|value| value.0),
+            before.map(|value| value.1),
+            limit,
         )
-        .bind(owner_id)
-        .bind(before.map(|value| value.0))
-        .bind(before.map(|value| value.1))
-        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
@@ -453,8 +543,13 @@ impl PostgresCatalog {
         if !(1..=200).contains(&limit) {
             return Err(Error::Invalid("document page limit must be 1..=200".into()));
         }
-        sqlx::query_as::<_, DocumentRecord>(
-            "SELECT d.* FROM documents d
+        sqlx::query_as!(
+            DocumentRecord,
+            "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.title_key,d.status,
+                    d.source_format,d.main_path,d.update_sequence,d.project_generation,
+                    d.current_version_id,d.current_publication_id,d.settings,d.created_at,
+                    d.updated_at,d.deleted_at
+             FROM documents d
              WHERE d.status='active'
                AND (d.owner_id=$1 OR EXISTS (
                     SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=$1
@@ -466,28 +561,28 @@ impl PostgresCatalog {
                ) OR ($4 AND d.ownership_mode='example'))
                AND ($2::timestamptz IS NULL OR (d.updated_at,d.id) < ($2,$3))
              ORDER BY d.updated_at DESC,d.id DESC LIMIT $5",
+            account_id,
+            before.map(|value| value.0),
+            before.map(|value| value.1),
+            include_examples,
+            limit,
         )
-        .bind(account_id)
-        .bind(before.map(|value| value.0))
-        .bind(before.map(|value| value.1))
-        .bind(include_examples)
-        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
     }
 
     pub async fn document_counts_by_owner(&self, owner_id: Uuid) -> Result<(i64, i64)> {
-        sqlx::query_as(
-            "SELECT count(DISTINCT d.id)::bigint,
-                    count(v.id)::bigint
-             FROM documents d LEFT JOIN document_versions v ON v.document_id=d.id
-             WHERE d.owner_id=$1 AND d.status='active'",
+        let row = sqlx::query!(
+            r#"SELECT count(DISTINCT d.id)::bigint AS "documents!",
+                      count(v.id)::bigint AS "versions!"
+               FROM documents d LEFT JOIN document_versions v ON v.document_id=d.id
+               WHERE d.owner_id=$1 AND d.status='active'"#,
+            owner_id,
         )
-        .bind(owner_id)
         .fetch_one(&self.pool)
-        .await
-        .map_err(Error::from)
+        .await?;
+        Ok((row.documents, row.versions))
     }
 
     pub async fn complete_asset(&self, input: NewAsset) -> Result<(AssetRecord, bool)> {
@@ -533,22 +628,29 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid retained asset limit".into()));
         }
         let mut tx = self.pool.begin().await?;
-        let status: Option<String> =
-            sqlx::query_scalar("SELECT status FROM documents WHERE id=$1 FOR UPDATE")
-                .bind(document_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-        match status.as_deref() {
-            None => return Err(Error::NotFound),
-            Some("active") => {}
-            Some(_) => return Err(Error::Conflict("document is being deleted".into())),
+        // The owner is read under the same lock that guards the document's
+        // status, so the quota below is measured against the owner this
+        // document still has when the assets are written.
+        let document = sqlx::query!(
+            "SELECT status,owner_id FROM documents WHERE id=$1 FOR UPDATE",
+            document_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let document = document.ok_or(Error::NotFound)?;
+        match document.status.as_str() {
+            "active" => {}
+            _ => return Err(Error::Conflict("document is being deleted".into())),
         }
         let digests: Vec<Vec<u8>> = inputs.iter().map(|input| input.digest.to_vec()).collect();
-        let existing = sqlx::query_as::<_, AssetRecord>(
-            "SELECT * FROM document_assets WHERE document_id=$1 AND digest=ANY($2)",
+        let existing = sqlx::query_as!(
+            AssetRecord,
+            "SELECT id,document_id,storage_key,digest,byte_length,media_type,original_name,
+                    created_at
+             FROM document_assets WHERE document_id=$1 AND digest=ANY($2)",
+            document_id,
+            &digests,
         )
-        .bind(document_id)
-        .bind(&digests)
         .fetch_all(&mut *tx)
         .await?;
         let existing_keys: std::collections::HashSet<_> = existing
@@ -575,15 +677,22 @@ impl PostgresCatalog {
                 })
                 .collect());
         }
-        let uploads:i64=sqlx::query_scalar("SELECT count(*) FROM document_assets a JOIN documents d ON d.id=a.document_id WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1) AND a.created_at>=now()-interval '1 hour'")
-            .bind(document_id).fetch_one(&mut *tx).await?;
+        let uploads = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "count!" FROM document_assets a
+               JOIN documents d ON d.id=a.document_id
+               WHERE d.owner_id=$1 AND a.created_at>=now()-interval '1 hour'"#,
+            document.owner_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         if uploads.saturating_add(new_inputs.len() as i64) > self.policy.asset_uploads_per_hour {
             return Err(Error::Conflict("account asset upload rate exceeded".into()));
         }
-        let retained: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(sum(byte_length),0)::bigint FROM document_assets WHERE document_id=$1",
+        let retained = sqlx::query_scalar!(
+            r#"SELECT COALESCE(sum(byte_length),0)::bigint AS "total!"
+               FROM document_assets WHERE document_id=$1"#,
+            document_id,
         )
-        .bind(document_id)
         .fetch_one(&mut *tx)
         .await?;
         let incoming_bytes = new_inputs.iter().fold(0_i64, |total, input| {
@@ -594,10 +703,9 @@ impl PostgresCatalog {
                 "retained document asset quota exceeded".into(),
             ));
         }
-        let owner_usage:i64=sqlx::query_scalar("SELECT COALESCE(sum(bytes),0)::bigint FROM (SELECT a.byte_length bytes FROM document_assets a JOIN documents d ON d.id=a.document_id WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1) UNION ALL SELECT v.archive_bytes FROM document_versions v JOIN documents d ON d.id=v.document_id WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1) UNION ALL SELECT f.byte_length FROM publication_files f JOIN publications p ON p.id=f.publication_id JOIN documents d ON d.id=p.document_id WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1)) q")
-            .bind(document_id).fetch_one(&mut *tx).await?;
-        let deployment_usage: i64 =
-            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+        let owner_usage = owner_usage_bytes(&mut *tx, document.owner_id).await?;
+        let deployment_usage =
+            sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
                 .fetch_one(&mut *tx)
                 .await?;
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
@@ -626,27 +734,38 @@ impl PostgresCatalog {
             .iter()
             .map(|input| input.original_name.clone())
             .collect();
-        let inserted = sqlx::query_as::<_, AssetRecord>(
+        let inserted = sqlx::query_as!(
+            AssetRecord,
             "INSERT INTO document_assets
              (id,document_id,storage_key,digest,byte_length,media_type,original_name)
              SELECT input.id,$1,input.storage_key,input.digest,input.byte_length,input.media_type,input.original_name
              FROM unnest($2::uuid[],$3::text[],$4::bytea[],$5::bigint[],$6::text[],$7::text[])
                AS input(id,storage_key,digest,byte_length,media_type,original_name)
              ON CONFLICT (document_id,digest,byte_length) DO NOTHING
-             RETURNING *",
+             RETURNING id,document_id,storage_key,digest,byte_length,media_type,original_name,
+                       created_at",
+            document_id,
+            &ids,
+            &keys,
+            &new_digests,
+            &lengths,
+            &media_types,
+            &names as &[Option<String>],
         )
-        .bind(document_id).bind(ids).bind(keys).bind(new_digests).bind(lengths).bind(media_types).bind(names)
         .fetch_all(&mut *tx)
         .await?;
         let inserted_keys: std::collections::HashSet<_> = inserted
             .iter()
             .map(|asset| (asset.digest.clone(), asset.byte_length))
             .collect();
-        let all = sqlx::query_as::<_, AssetRecord>(
-            "SELECT * FROM document_assets WHERE document_id=$1 AND digest=ANY($2)",
+        let all = sqlx::query_as!(
+            AssetRecord,
+            "SELECT id,document_id,storage_key,digest,byte_length,media_type,original_name,
+                    created_at
+             FROM document_assets WHERE document_id=$1 AND digest=ANY($2)",
+            document_id,
+            &digests,
         )
-        .bind(document_id)
-        .bind(&digests)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -667,10 +786,11 @@ impl PostgresCatalog {
     }
 
     pub async fn retained_asset_bytes(&self, document_id: Uuid) -> Result<i64> {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COALESCE(sum(byte_length),0)::bigint FROM document_assets WHERE document_id=$1",
+        sqlx::query_scalar!(
+            r#"SELECT COALESCE(sum(byte_length),0)::bigint AS "total!"
+               FROM document_assets WHERE document_id=$1"#,
+            document_id,
         )
-        .bind(document_id)
         .fetch_one(&self.pool)
         .await
         .map_err(Error::from)
@@ -680,11 +800,14 @@ impl PostgresCatalog {
         if ids.len() > 4096 {
             return Err(Error::Invalid("too many assets requested".into()));
         }
-        sqlx::query_as::<_, AssetRecord>(
-            "SELECT * FROM document_assets WHERE document_id=$1 AND id=ANY($2)",
+        sqlx::query_as!(
+            AssetRecord,
+            "SELECT id,document_id,storage_key,digest,byte_length,media_type,original_name,
+                    created_at
+             FROM document_assets WHERE document_id=$1 AND id=ANY($2)",
+            document_id,
+            ids,
         )
-        .bind(document_id)
-        .bind(ids)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
@@ -704,11 +827,17 @@ impl PostgresCatalog {
                 hex::decode(digest).map_err(|_| Error::Invalid("invalid asset digest".into()))
             })
             .collect::<Result<_>>()?;
-        let rows: Vec<(Vec<u8>,i64)> = sqlx::query_as("SELECT digest,byte_length FROM document_assets WHERE document_id=$1 AND digest=ANY($2)")
-            .bind(document_id).bind(&decoded).fetch_all(&self.pool).await?;
+        let rows = sqlx::query!(
+            "SELECT digest,byte_length FROM document_assets
+             WHERE document_id=$1 AND digest=ANY($2)",
+            document_id,
+            &decoded,
+        )
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows
             .into_iter()
-            .map(|(digest, size)| (hex::encode(digest), size))
+            .map(|row| (hex::encode(row.digest), row.byte_length))
             .collect())
     }
 
@@ -726,23 +855,31 @@ impl PostgresCatalog {
                 hex::decode(digest).map_err(|_| Error::Invalid("invalid asset digest".into()))
             })
             .collect::<Result<_>>()?;
-        sqlx::query_as::<_, AssetRecord>(
-            "SELECT * FROM document_assets WHERE document_id=$1 AND digest=ANY($2)",
+        sqlx::query_as!(
+            AssetRecord,
+            "SELECT id,document_id,storage_key,digest,byte_length,media_type,original_name,
+                    created_at
+             FROM document_assets WHERE document_id=$1 AND digest=ANY($2)",
+            document_id,
+            &decoded,
         )
-        .bind(document_id)
-        .bind(&decoded)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
     }
 
     pub async fn current_version(&self, document_id: Uuid) -> Result<Option<VersionRecord>> {
-        sqlx::query_as::<_, VersionRecord>(
-            "SELECT v.* FROM documents d
+        sqlx::query_as!(
+            VersionRecord,
+            "SELECT v.id,v.document_id,v.sequence,v.parent_id,v.through_update_sequence,
+                    v.project_generation,v.archive_key,v.archive_encoding_version,v.archive_digest,
+                    v.archive_bytes,v.logical_bytes,v.tree_digest,v.changed_paths,v.reason,
+                    v.label,v.author_account_id,v.author_label,v.created_at
+             FROM documents d
              JOIN document_versions v ON v.id=d.current_version_id
              WHERE d.id=$1 AND d.status='active'",
+            document_id,
         )
-        .bind(document_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Error::from)
@@ -753,30 +890,32 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid source version".into()));
         }
         let mut tx = self.pool.begin().await?;
-        let document = sqlx::query(
-            "SELECT update_sequence,project_generation,status FROM documents WHERE id=$1 FOR UPDATE",
+        let document = sqlx::query!(
+            "SELECT update_sequence,project_generation,status,owner_id FROM documents
+             WHERE id=$1 FOR UPDATE",
+            input.document_id,
         )
-        .bind(input.document_id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(Error::NotFound)?;
-        if document.get::<String, _>("status") != "active" {
+        if document.status != "active" {
             return Err(Error::Conflict("document is being deleted".into()));
         }
-        if input.through_update_sequence > document.get::<i64, _>("update_sequence") {
+        if input.through_update_sequence > document.update_sequence {
             return Err(Error::Conflict("version is ahead of durable source".into()));
         }
-        if input.project_generation > document.get::<i64, _>("project_generation") {
+        if input.project_generation > document.project_generation {
             return Err(Error::Conflict(
                 "version is ahead of project structure".into(),
             ));
         }
         if let Some(parent_id) = input.parent_id {
-            let belongs: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM document_versions WHERE id=$1 AND document_id=$2)",
+            let belongs = sqlx::query_scalar!(
+                r#"SELECT EXISTS(SELECT 1 FROM document_versions WHERE id=$1 AND document_id=$2)
+                   AS "exists!""#,
+                parent_id,
+                input.document_id,
             )
-            .bind(parent_id)
-            .bind(input.document_id)
             .fetch_one(&mut *tx)
             .await?;
             if !belongs {
@@ -785,7 +924,7 @@ impl PostgresCatalog {
                 ));
             }
         }
-        sqlx::query(
+        sqlx::query!(
             "WITH ranked AS (
                SELECT v.id,
                       row_number() OVER (ORDER BY v.sequence DESC,v.id DESC) AS rank
@@ -799,33 +938,28 @@ impl PostgresCatalog {
              USING ranked r
              WHERE v.id = r.id
                AND (r.rank > $2 OR v.created_at < now() - make_interval(days => $3))",
+            input.document_id,
+            i64::from(DEFAULT_ROUTINE_VERSION_COUNT),
+            DEFAULT_ROUTINE_VERSION_AGE_DAYS,
         )
-        .bind(input.document_id)
-        .bind(i64::from(DEFAULT_ROUTINE_VERSION_COUNT))
-        .bind(DEFAULT_ROUTINE_VERSION_AGE_DAYS)
         .execute(&mut *tx)
         .await?;
-        let recent:i64=sqlx::query_scalar("SELECT count(*) FROM document_versions v JOIN documents d ON d.id=v.document_id WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1) AND v.created_at>=now()-interval '1 hour'").bind(input.document_id).fetch_one(&mut *tx).await?;
+        let recent = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "count!" FROM document_versions v
+               JOIN documents d ON d.id=v.document_id
+               WHERE d.owner_id=$1 AND v.created_at>=now()-interval '1 hour'"#,
+            document.owner_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         if recent >= self.policy.versions_per_hour {
             return Err(Error::Conflict(
                 "account version creation rate exceeded".into(),
             ));
         }
-        let owner_usage: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(sum(bytes),0)::bigint FROM (
-               SELECT a.byte_length bytes FROM document_assets a JOIN documents d ON d.id=a.document_id
-                 WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1)
-               UNION ALL SELECT v.archive_bytes FROM document_versions v JOIN documents d ON d.id=v.document_id
-                 WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1)
-               UNION ALL SELECT f.byte_length FROM publication_files f JOIN publications p ON p.id=f.publication_id
-                 JOIN documents d ON d.id=p.document_id WHERE d.owner_id=(SELECT owner_id FROM documents WHERE id=$1)
-             ) usage",
-        )
-        .bind(input.document_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let deployment_usage: i64 =
-            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+        let owner_usage = owner_usage_bytes(&mut *tx, document.owner_id).await?;
+        let deployment_usage =
+            sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
                 .fetch_one(&mut *tx)
                 .await?;
         if owner_usage.saturating_add(input.archive_bytes) > self.policy.owner_bytes {
@@ -836,45 +970,54 @@ impl PostgresCatalog {
                 "deployment storage threshold exceeded".into(),
             ));
         }
-        let sequence: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(max(sequence),0)+1 FROM document_versions WHERE document_id=$1",
+        let sequence = sqlx::query_scalar!(
+            r#"SELECT COALESCE(max(sequence),0)+1 AS "sequence!"
+               FROM document_versions WHERE document_id=$1"#,
+            input.document_id,
         )
-        .bind(input.document_id)
         .fetch_one(&mut *tx)
         .await?;
         let id = new_id();
-        let version = sqlx::query_as::<_, VersionRecord>(
+        let tree_digest = input.tree_digest.map(|digest| digest.to_vec());
+        let version = sqlx::query_as!(
+            VersionRecord,
             "INSERT INTO document_versions
              (id,document_id,sequence,parent_id,through_update_sequence,project_generation,
               archive_key,archive_encoding_version,archive_digest,archive_bytes,logical_bytes,
               tree_digest,changed_paths,reason,label,author_account_id,author_label)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *",
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+             RETURNING id,document_id,sequence,parent_id,through_update_sequence,project_generation,
+                       archive_key,archive_encoding_version,archive_digest,archive_bytes,
+                       logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,
+                       author_label,created_at",
+            id,
+            input.document_id,
+            sequence,
+            input.parent_id,
+            input.through_update_sequence,
+            input.project_generation,
+            input.archive_key,
+            input.archive_encoding_version,
+            input.archive_digest.as_slice(),
+            input.archive_bytes,
+            input.logical_bytes,
+            tree_digest,
+            input.changed_paths.as_deref(),
+            input.reason,
+            input.label,
+            input.author_account_id,
+            input.author_label,
         )
-        .bind(id)
-        .bind(input.document_id)
-        .bind(sequence)
-        .bind(input.parent_id)
-        .bind(input.through_update_sequence)
-        .bind(input.project_generation)
-        .bind(input.archive_key)
-        .bind(input.archive_encoding_version)
-        .bind(input.archive_digest.as_slice())
-        .bind(input.archive_bytes)
-        .bind(input.logical_bytes)
-        .bind(input.tree_digest.map(|digest| digest.to_vec()))
-        .bind(input.changed_paths)
-        .bind(input.reason)
-        .bind(input.label)
-        .bind(input.author_account_id)
-        .bind(input.author_label)
         .fetch_one(&mut *tx)
         .await?;
         if input.make_current {
-            sqlx::query("UPDATE documents SET current_version_id=$2,updated_at=now() WHERE id=$1")
-                .bind(input.document_id)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query!(
+                "UPDATE documents SET current_version_id=$2,updated_at=now() WHERE id=$1",
+                input.document_id,
+                id,
+            )
+            .execute(&mut *tx)
+            .await?;
         }
         tx.commit().await?;
         Ok(version)
@@ -884,23 +1027,33 @@ impl PostgresCatalog {
         if !(1..=1000).contains(&limit) {
             return Err(Error::Invalid("version page limit must be 1..=1000".into()));
         }
-        sqlx::query_as::<_, VersionRecord>(
-            "SELECT * FROM document_versions WHERE document_id=$1
+        sqlx::query_as!(
+            VersionRecord,
+            "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,
+                    archive_key,archive_encoding_version,archive_digest,archive_bytes,
+                    logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,
+                    author_label,created_at
+             FROM document_versions WHERE document_id=$1
              ORDER BY sequence DESC,id DESC LIMIT $2",
+            document_id,
+            limit,
         )
-        .bind(document_id)
-        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
     }
 
     pub async fn version(&self, document_id: Uuid, id: Uuid) -> Result<Option<VersionRecord>> {
-        sqlx::query_as::<_, VersionRecord>(
-            "SELECT * FROM document_versions WHERE document_id=$1 AND id=$2",
+        sqlx::query_as!(
+            VersionRecord,
+            "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,
+                    archive_key,archive_encoding_version,archive_digest,archive_bytes,
+                    logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,
+                    author_label,created_at
+             FROM document_versions WHERE document_id=$1 AND id=$2",
+            document_id,
+            id,
         )
-        .bind(document_id)
-        .bind(id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Error::from)
@@ -915,8 +1068,21 @@ impl PostgresCatalog {
         if !(1..=200).contains(&limit) {
             return Err(Error::Invalid("version page limit must be 1..=200".into()));
         }
-        sqlx::query_as::<_,VersionRecord>("SELECT * FROM document_versions WHERE document_id=$1 AND ($2::bigint IS NULL OR sequence<$2) ORDER BY sequence DESC,id DESC LIMIT $3")
-            .bind(document_id).bind(after_sequence).bind(limit).fetch_all(&self.pool).await.map_err(Error::from)
+        sqlx::query_as!(
+            VersionRecord,
+            "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,
+                    archive_key,archive_encoding_version,archive_digest,archive_bytes,
+                    logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,
+                    author_label,created_at
+             FROM document_versions WHERE document_id=$1
+             AND ($2::bigint IS NULL OR sequence<$2) ORDER BY sequence DESC,id DESC LIMIT $3",
+            document_id,
+            after_sequence,
+            limit,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
     }
 
     pub async fn label_version(
@@ -925,50 +1091,49 @@ impl PostgresCatalog {
         id: Uuid,
         label: Option<&str>,
     ) -> Result<bool> {
-        Ok(
-            sqlx::query("UPDATE document_versions SET label=$3 WHERE document_id=$1 AND id=$2")
-                .bind(document_id)
-                .bind(id)
-                .bind(label.filter(|v| !v.is_empty()))
-                .execute(&self.pool)
-                .await?
-                .rows_affected()
-                == 1,
+        Ok(sqlx::query!(
+            "UPDATE document_versions SET label=$3 WHERE document_id=$1 AND id=$2",
+            document_id,
+            id,
+            label.filter(|v| !v.is_empty()),
         )
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1)
     }
 
     pub async fn mark_document_deleting(&self, document_id: Uuid) -> Result<bool> {
-        Ok(sqlx::query(
-            "UPDATE documents SET status='deleting',deleted_at=COALESCE(deleted_at,now()),updated_at=now()
-             WHERE id=$1 AND status='active'",
-        ).bind(document_id).execute(&self.pool).await?.rows_affected()==1)
+        Ok(sqlx::query!(
+            "UPDATE documents SET status='deleting',deleted_at=COALESCE(deleted_at,now()),
+             updated_at=now() WHERE id=$1 AND status='active'",
+            document_id,
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1)
     }
 
     pub async fn finish_document_deletion(&self, document_id: Uuid) -> Result<bool> {
-        Ok(
-            sqlx::query("DELETE FROM documents WHERE id=$1 AND status='deleting'")
-                .bind(document_id)
-                .execute(&self.pool)
-                .await?
-                .rows_affected()
-                == 1,
+        Ok(sqlx::query!(
+            "DELETE FROM documents WHERE id=$1 AND status='deleting'",
+            document_id,
         )
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1)
     }
 
     pub async fn usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
-        if account_id.is_none() {
-            return sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton")
+        let Some(account_id) = account_id else {
+            return sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton")
                 .fetch_one(&self.pool)
                 .await
                 .map_err(Error::from);
-        }
-        sqlx::query_scalar(
-            "SELECT COALESCE(sum(bytes),0)::bigint FROM (
-               SELECT v.archive_bytes AS bytes FROM document_versions v JOIN documents d ON d.id=v.document_id WHERE d.owner_id=$1
-               UNION ALL SELECT a.byte_length FROM document_assets a JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
-               UNION ALL SELECT f.byte_length FROM publication_files f JOIN publications p ON p.id=f.publication_id JOIN documents d ON d.id=p.document_id WHERE d.owner_id=$1
-             ) usage",
-        ).bind(account_id).fetch_one(&self.pool).await.map_err(Error::from)
+        };
+        owner_usage_bytes(&self.pool, account_id).await
     }
 }
 
@@ -1004,4 +1169,34 @@ fn validate_document(input: &NewDocument) -> Result<()> {
         return Err(Error::Invalid("invalid document kind".into()));
     }
     Ok(())
+}
+
+/// Every byte an account is charged for: version archives, document assets,
+/// and published files. This is the single definition of what counts toward
+/// the owner quota -- it was copied into three call sites before, keyed two
+/// different ways, so a new kind of billable byte had to be remembered in
+/// three places to be counted in any of them.
+///
+/// Callers holding a document row pass its `owner_id` from whatever lock they
+/// already took, so the sum is measured against the owner the document has
+/// under that lock.
+pub(super) async fn owner_usage_bytes<'e, E>(executor: E, account_id: Uuid) -> Result<i64>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query_scalar!(
+        r#"SELECT COALESCE(sum(bytes),0)::bigint AS "total!" FROM (
+             SELECT v.archive_bytes AS bytes FROM document_versions v
+               JOIN documents d ON d.id=v.document_id WHERE d.owner_id=$1
+             UNION ALL SELECT a.byte_length FROM document_assets a
+               JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
+             UNION ALL SELECT f.byte_length FROM publication_files f
+               JOIN publications p ON p.id=f.publication_id
+               JOIN documents d ON d.id=p.document_id WHERE d.owner_id=$1
+           ) usage"#,
+        account_id,
+    )
+    .fetch_one(executor)
+    .await
+    .map_err(Error::from)
 }

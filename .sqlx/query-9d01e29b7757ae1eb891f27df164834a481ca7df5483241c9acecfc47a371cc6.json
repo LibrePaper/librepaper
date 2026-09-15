@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH generated AS (\n           SELECT gen_random_uuid() id,d.id document_id,n sequence\n           FROM documents d CROSS JOIN generate_series(1,50) n\n         ) INSERT INTO document_versions(id,document_id,sequence,through_update_sequence,project_generation,\n           archive_key,archive_encoding_version,archive_digest,archive_bytes,logical_bytes,reason,author_label)\n         SELECT id,document_id,sequence,0,0,'benchmark/versions/'||id,1,decode(repeat('00',32),'hex'),1024,2048,'scale','Benchmark'\n         FROM generated",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "9d01e29b7757ae1eb891f27df164834a481ca7df5483241c9acecfc47a371cc6"
+}

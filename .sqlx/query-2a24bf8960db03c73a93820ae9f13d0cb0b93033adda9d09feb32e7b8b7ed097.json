@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT update_sequence,project_generation,uncompacted_update_bytes\n             FROM documents WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "update_sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "project_generation",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "uncompacted_update_bytes",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2a24bf8960db03c73a93820ae9f13d0cb0b93033adda9d09feb32e7b8b7ed097"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE accounts SET status='erasing',session_generation=session_generation+1\n             WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "543120ec588a67b5aec88c2f2094e7eeb3da7e20607fc5adc7db3e1e59d3f69b"
+}

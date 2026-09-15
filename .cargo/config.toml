@@ -10,3 +10,15 @@
 # manager's equivalent; CI does) or drop the two lines below.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# The SQL in this workspace is checked against a real schema at compile time by
+# sqlx's `query!` macros. The answers are cached in `.sqlx/`, which is checked
+# in, so an ordinary build needs no database and no network -- that is what
+# offline means here.
+#
+# `force = false` lets the environment win, so re-checking against a live
+# server is `SQLX_OFFLINE=false DATABASE_URL=... cargo check`. After changing
+# any query or migration, regenerate the cache with `make sqlx-prepare`; CI
+# fails on a stale one (`make sqlx-check`).
+[env]
+SQLX_OFFLINE = { value = "true", force = false }

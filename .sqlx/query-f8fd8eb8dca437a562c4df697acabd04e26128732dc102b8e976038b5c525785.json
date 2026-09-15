@@ -1,0 +1,134 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,selector,\n                    context,source_version_id,source_update_sequence,source_project_generation,\n                    source_state_vector,publication_id,proposed_text,suggestion_state,resolved_at,\n                    created_at,updated_at\n             FROM annotations WHERE document_id=$1 AND ($2::uuid IS NULL OR publication_id=$2)\n             AND ($3::timestamptz IS NULL OR (created_at,id)>($3,$4))\n             ORDER BY created_at,id LIMIT $5",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "body",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "author_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "author_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "author_label",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "selector",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 8,
+        "name": "context",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "source_version_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "source_update_sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "source_project_generation",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "source_state_vector",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 13,
+        "name": "publication_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 14,
+        "name": "proposed_text",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "suggestion_state",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "resolved_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 18,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "f8fd8eb8dca437a562c4df697acabd04e26128732dc102b8e976038b5c525785"
+}

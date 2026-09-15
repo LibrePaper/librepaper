@@ -57,10 +57,10 @@ impl PostgresCatalog {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
     ) -> Result<()> {
-        let found: Option<Uuid> = sqlx::query_scalar(
+        let found = sqlx::query_scalar!(
             "SELECT id FROM documents WHERE id=$1 AND status='active' FOR UPDATE",
+            document_id,
         )
-        .bind(document_id)
         .fetch_optional(&mut **tx)
         .await?;
         found.map(|_| ()).ok_or(Error::NotFound)
@@ -80,12 +80,27 @@ impl PostgresCatalog {
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
-        sqlx::query("UPDATE share_links SET revoked_at=now(),generation=generation+1 WHERE document_id=$1 AND revoked_at IS NULL")
-            .bind(document_id).execute(&mut *tx).await?;
+        sqlx::query!(
+            "UPDATE share_links SET revoked_at=now(),generation=generation+1
+             WHERE document_id=$1 AND revoked_at IS NULL",
+            document_id,
+        )
+        .execute(&mut *tx)
+        .await?;
         for (role, hash, label, expires, budget) in links {
-            sqlx::query("INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget) VALUES($1,$2,$3,$4,$5,$6,$7)")
-                .bind(new_id()).bind(document_id).bind(role).bind(hash.as_slice()).bind(label).bind(expires).bind(budget)
-                .execute(&mut *tx).await?;
+            sqlx::query!(
+                "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
+                 VALUES($1,$2,$3,$4,$5,$6,$7)",
+                new_id(),
+                document_id,
+                role,
+                hash.as_slice(),
+                label,
+                *expires,
+                *budget,
+            )
+            .execute(&mut *tx)
+            .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -98,12 +113,12 @@ impl PostgresCatalog {
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
-        sqlx::query(
+        sqlx::query!(
             "DELETE FROM grants WHERE document_id=$1 AND source_link_hash IS NOT NULL
              AND NOT (source_link_hash=ANY($2))",
+            document_id,
+            live_hashes,
         )
-        .bind(document_id)
-        .bind(live_hashes)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -118,14 +133,15 @@ impl PostgresCatalog {
         let role = role.persisted()?;
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
-        let row = sqlx::query_as::<_, GrantRecord>(
+        let row = sqlx::query_as!(
+            GrantRecord,
             "INSERT INTO grants(document_id,account_id,role,source_link_hash) VALUES($1,$2,$3,NULL)
              ON CONFLICT(document_id,account_id) DO UPDATE SET role=excluded.role,source_link_hash=NULL
-             RETURNING *",
+             RETURNING document_id,account_id,role,source_link_hash,created_at",
+            document_id,
+            account_id,
+            role,
         )
-        .bind(document_id)
-        .bind(account_id)
-        .bind(role)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -142,15 +158,15 @@ impl PostgresCatalog {
         let role = role.persisted()?;
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO grants(document_id,account_id,role,source_link_hash) VALUES($1,$2,$3,$4)
              ON CONFLICT(document_id,account_id) DO UPDATE SET
                role=excluded.role,source_link_hash=excluded.source_link_hash",
+            document_id,
+            account_id,
+            role,
+            source_link_hash.as_slice(),
         )
-        .bind(document_id)
-        .bind(account_id)
-        .bind(role)
-        .bind(source_link_hash.as_slice())
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -160,22 +176,26 @@ impl PostgresCatalog {
     pub async fn remove_grant(&self, document_id: Uuid, account_id: Uuid) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
-        let changed = sqlx::query("DELETE FROM grants WHERE document_id=$1 AND account_id=$2")
-            .bind(document_id)
-            .bind(account_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
+        let changed = sqlx::query!(
+            "DELETE FROM grants WHERE document_id=$1 AND account_id=$2",
+            document_id,
+            account_id,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
             == 1;
         tx.commit().await?;
         Ok(changed)
     }
 
     pub async fn grants(&self, document_id: Uuid) -> Result<Vec<GrantRecord>> {
-        sqlx::query_as::<_, GrantRecord>(
-            "SELECT * FROM grants WHERE document_id=$1 ORDER BY created_at,account_id",
+        sqlx::query_as!(
+            GrantRecord,
+            "SELECT document_id,account_id,role,source_link_hash,created_at
+             FROM grants WHERE document_id=$1 ORDER BY created_at,account_id",
+            document_id,
         )
-        .bind(document_id)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
@@ -196,17 +216,20 @@ impl PostgresCatalog {
         }
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
-        let row = sqlx::query_as::<_, ShareLinkRecord>(
+        let row = sqlx::query_as!(
+            ShareLinkRecord,
             "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
-             VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
+             VALUES($1,$2,$3,$4,$5,$6,$7)
+             RETURNING id,document_id,role,token_hash,label,comment_budget,generation,
+                       created_at,expires_at,revoked_at",
+            new_id(),
+            document_id,
+            role,
+            token_hash.as_slice(),
+            label,
+            expires_at,
+            comment_budget,
         )
-        .bind(new_id())
-        .bind(document_id)
-        .bind(role)
-        .bind(token_hash.as_slice())
-        .bind(label)
-        .bind(expires_at)
-        .bind(comment_budget)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -214,16 +237,31 @@ impl PostgresCatalog {
     }
 
     pub async fn share_links(&self, document_id: Uuid) -> Result<Vec<ShareLinkRecord>> {
-        sqlx::query_as::<_, ShareLinkRecord>(
-            "SELECT * FROM share_links WHERE document_id=$1 AND revoked_at IS NULL ORDER BY created_at,id",
-        ).bind(document_id).fetch_all(&self.pool).await.map_err(Error::from)
+        sqlx::query_as!(
+            ShareLinkRecord,
+            "SELECT id,document_id,role,token_hash,label,comment_budget,generation,
+                    created_at,expires_at,revoked_at
+             FROM share_links WHERE document_id=$1 AND revoked_at IS NULL ORDER BY created_at,id",
+            document_id,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
     }
 
     pub async fn revoke_share_link(&self, document_id: Uuid, id: Uuid) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
-        let changed = sqlx::query("UPDATE share_links SET revoked_at=now(),generation=generation+1 WHERE document_id=$1 AND id=$2 AND revoked_at IS NULL")
-            .bind(document_id).bind(id).execute(&mut *tx).await?.rows_affected() == 1;
+        let changed = sqlx::query!(
+            "UPDATE share_links SET revoked_at=now(),generation=generation+1
+             WHERE document_id=$1 AND id=$2 AND revoked_at IS NULL",
+            document_id,
+            id,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
         tx.commit().await?;
         Ok(changed)
     }
@@ -235,30 +273,30 @@ impl PostgresCatalog {
         token_hash: Option<[u8; 32]>,
         now: OffsetDateTime,
     ) -> Result<Option<AccessRole>> {
-        let row: Option<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT d.owner_id,
+        let row = sqlx::query!(
+            r#"SELECT d.owner_id,
                 (SELECT role FROM grants g WHERE g.document_id=d.id AND g.account_id=$2
                    AND (g.source_link_hash IS NULL OR EXISTS (
                      SELECT 1 FROM share_links gl WHERE gl.document_id=d.id
                        AND gl.token_hash=g.source_link_hash AND gl.revoked_at IS NULL
-                       AND (gl.expires_at IS NULL OR gl.expires_at>$4)))),
+                       AND (gl.expires_at IS NULL OR gl.expires_at>$4)))) AS "grant_role?",
                 (SELECT role FROM share_links l WHERE l.document_id=d.id AND l.token_hash=$3
-                    AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>$4))
-             FROM documents d WHERE d.id=$1 AND d.status='active'",
+                    AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>$4)) AS "link_role?"
+             FROM documents d WHERE d.id=$1 AND d.status='active'"#,
+            document_id,
+            account_id,
+            token_hash.map(|v| v.to_vec()),
+            now,
         )
-        .bind(document_id)
-        .bind(account_id)
-        .bind(token_hash.map(|v| v.to_vec()))
-        .bind(now)
         .fetch_optional(&self.pool)
         .await?;
-        let Some((owner, grant, link)) = row else {
+        let Some(row) = row else {
             return Ok(None);
         };
-        if account_id == Some(owner) {
+        if account_id == Some(row.owner_id) {
             return Ok(Some(AccessRole::Owner));
         }
-        Ok(highest(grant.as_deref(), link.as_deref()))
+        Ok(highest(row.grant_role.as_deref(), row.link_role.as_deref()))
     }
 }
 

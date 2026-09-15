@@ -1158,8 +1158,25 @@ impl Server {
         let Ok(generation) = generation.parse::<i64>() else {
             return false;
         };
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM documents d JOIN accounts a ON a.id=$2 LEFT JOIN grants g ON g.document_id=d.id AND g.account_id=a.id AND (g.source_link_hash IS NULL OR EXISTS (SELECT 1 FROM share_links l WHERE l.document_id=d.id AND l.token_hash=g.source_link_hash AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>now()))) WHERE d.slug=$1 AND d.status='active' AND a.status='active' AND a.session_generation=$3 AND (d.owner_id=a.id OR g.account_id IS NOT NULL))")
-            .bind(&slug).bind(account_id).bind(generation).fetch_one(catalog.pool()).await.unwrap_or(false)
+        sqlx::query_scalar!(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM documents d JOIN accounts a ON a.id=$2
+                 LEFT JOIN grants g ON g.document_id=d.id AND g.account_id=a.id
+                   AND (g.source_link_hash IS NULL OR EXISTS (
+                     SELECT 1 FROM share_links l WHERE l.document_id=d.id
+                       AND l.token_hash=g.source_link_hash AND l.revoked_at IS NULL
+                       AND (l.expires_at IS NULL OR l.expires_at>now())))
+                 WHERE d.slug=$1 AND d.status='active' AND a.status='active'
+                   AND a.session_generation=$3
+                   AND (d.owner_id=a.id OR g.account_id IS NOT NULL)
+               ) AS "exists!""#,
+            slug,
+            account_id,
+            generation,
+        )
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap_or(false)
     }
 
     /// Which formats this deployment can render again in a reader, and so

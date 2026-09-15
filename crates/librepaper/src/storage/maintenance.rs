@@ -3,7 +3,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use time::Duration;
-use uuid::Uuid;
 
 use super::blob::BlobStore;
 use super::postgres::PostgresCatalog;
@@ -22,21 +21,28 @@ impl Maintenance {
         if !(1..=500).contains(&batch) {
             return Err("base cleanup batch must be 1..=500".into());
         }
-        let rows:Vec<(Uuid,String)>=sqlx::query_as(
-            "SELECT document_id,previous_snapshot_key FROM document_bases WHERE previous_delete_after<=now() ORDER BY previous_delete_after LIMIT $1",
-        ).bind(batch).fetch_all(self.catalog.pool()).await.map_err(|e|e.to_string())?;
+        let rows = sqlx::query!(
+            r#"SELECT document_id,previous_snapshot_key AS "previous_snapshot_key!"
+               FROM document_bases WHERE previous_delete_after<=now()
+               ORDER BY previous_delete_after LIMIT $1"#,
+            batch,
+        )
+        .fetch_all(self.catalog.pool())
+        .await
+        .map_err(|e| e.to_string())?;
         let mut removed = 0;
         let mut failures = Vec::new();
-        for (document_id, key) in rows {
+        for row in rows {
+            let (document_id, key) = (row.document_id, row.previous_snapshot_key);
             match self.blobs.delete(std::slice::from_ref(&key)).await {
                 Ok(()) => {
-                    removed += sqlx::query(
+                    removed += sqlx::query!(
                         "UPDATE document_bases
                          SET previous_snapshot_key=NULL, previous_delete_after=NULL
                          WHERE document_id=$1 AND previous_snapshot_key=$2",
+                        document_id,
+                        key,
                     )
-                    .bind(document_id)
-                    .bind(key)
                     .execute(self.catalog.pool())
                     .await
                     .map_err(|error| error.to_string())?
@@ -69,8 +75,7 @@ impl Maintenance {
             ("temporary_objects", "temporary/"),
         ] {
             let cursor: Option<String> =
-                sqlx::query_scalar("SELECT cursor FROM maintenance_cursors WHERE name=$1")
-                    .bind(name)
+                sqlx::query_scalar!("SELECT cursor FROM maintenance_cursors WHERE name=$1", name,)
                     .fetch_optional(self.catalog.pool())
                     .await
                     .map_err(|error| error.to_string())?
@@ -107,12 +112,12 @@ impl Maintenance {
             } else {
                 keys.last().cloned()
             };
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO maintenance_cursors(name,cursor) VALUES($1,$2)
                  ON CONFLICT(name) DO UPDATE SET cursor=excluded.cursor,updated_at=now()",
+                name,
+                next,
             )
-            .bind(name)
-            .bind(next)
             .execute(self.catalog.pool())
             .await
             .map_err(|error| error.to_string())?;
@@ -128,15 +133,16 @@ async fn referenced_keys(
     if keys.is_empty() {
         return Ok(HashSet::new());
     }
-    let found: Vec<String> = sqlx::query_scalar(
-        "SELECT storage_key FROM document_assets WHERE storage_key=ANY($1)
-         UNION SELECT archive_key FROM document_versions WHERE archive_key=ANY($1)
-         UNION SELECT manifest_key FROM publications WHERE manifest_key=ANY($1)
-         UNION SELECT storage_key FROM publication_files WHERE storage_key=ANY($1)
-         UNION SELECT snapshot_key FROM document_bases WHERE snapshot_key=ANY($1)
-         UNION SELECT previous_snapshot_key FROM document_bases WHERE previous_snapshot_key=ANY($1)",
+    let found = sqlx::query_scalar!(
+        r#"SELECT storage_key AS "key!" FROM document_assets WHERE storage_key=ANY($1)
+           UNION SELECT archive_key FROM document_versions WHERE archive_key=ANY($1)
+           UNION SELECT manifest_key FROM publications WHERE manifest_key=ANY($1)
+           UNION SELECT storage_key FROM publication_files WHERE storage_key=ANY($1)
+           UNION SELECT snapshot_key FROM document_bases WHERE snapshot_key=ANY($1)
+           UNION SELECT previous_snapshot_key FROM document_bases
+             WHERE previous_snapshot_key=ANY($1)"#,
+        keys,
     )
-    .bind(keys)
     .fetch_all(catalog.pool())
     .await
     .map_err(|error| error.to_string())?;

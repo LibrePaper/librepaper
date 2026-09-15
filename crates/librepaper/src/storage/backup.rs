@@ -6,7 +6,6 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::Row;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -53,34 +52,44 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         .await
         .map_err(|e| e.to_string())?;
     let mut connection = catalog.pool().acquire().await.map_err(|e| e.to_string())?;
+    // Transaction control cannot be prepared, so this one stays a runtime
+    // statement: the checked macros would fail to PREPARE it.
     sqlx::query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *connection)
         .await
         .map_err(|e| e.to_string())?;
-    let snapshot: String = sqlx::query_scalar("SELECT pg_export_snapshot()")
+    let snapshot = sqlx::query_scalar!(r#"SELECT pg_export_snapshot() AS "snapshot!""#)
         .fetch_one(&mut *connection)
         .await
         .map_err(|e| e.to_string())?;
-    let migration_version: i64 =
-        sqlx::query_scalar("SELECT COALESCE(max(version),0) FROM _sqlx_migrations WHERE success")
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(|e| e.to_string())?;
-    let rows=sqlx::query(
-        "SELECT archive_key key,archive_bytes bytes,encode(archive_digest,'hex') digest FROM document_versions
-         UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM document_assets
-         UNION ALL SELECT manifest_key,0,encode(manifest_digest,'hex') FROM publications
-         UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM publication_files
-         UNION ALL SELECT snapshot_key,snapshot_bytes,encode(snapshot_digest,'hex') FROM document_bases
-         UNION ALL SELECT previous_snapshot_key,0,'' FROM document_bases WHERE previous_snapshot_key IS NOT NULL"
-    ).fetch_all(&mut *connection).await.map_err(|e|e.to_string())?;
+    let migration_version = sqlx::query_scalar!(
+        r#"SELECT COALESCE(max(version),0) AS "version!" FROM _sqlx_migrations WHERE success"#
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|e| e.to_string())?;
+    let rows = sqlx::query!(
+        r#"SELECT archive_key AS "key!",archive_bytes AS "bytes!",
+                  encode(archive_digest,'hex') AS "digest!"
+           FROM document_versions
+           UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM document_assets
+           UNION ALL SELECT manifest_key,0,encode(manifest_digest,'hex') FROM publications
+           UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM publication_files
+           UNION ALL SELECT snapshot_key,snapshot_bytes,encode(snapshot_digest,'hex')
+             FROM document_bases
+           UNION ALL SELECT previous_snapshot_key,0,'' FROM document_bases
+             WHERE previous_snapshot_key IS NOT NULL"#
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|e| e.to_string())?;
     let mut by_key: std::collections::BTreeMap<String, Reference> =
         std::collections::BTreeMap::new();
     for row in rows {
         let reference = Reference {
-            key: row.get("key"),
-            bytes: row.get("bytes"),
-            sha256: row.get("digest"),
+            key: row.key,
+            bytes: row.bytes,
+            sha256: row.digest,
         };
         if let Some(existing) = by_key.get(&reference.key) {
             if existing.bytes != reference.bytes || existing.sha256 != reference.sha256 {
@@ -106,6 +115,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     if !status.success() {
         return Err(format!("pg_dump exited with {status}"));
     }
+    // As with BEGIN above, COMMIT cannot be prepared.
     sqlx::query("COMMIT")
         .execute(&mut *connection)
         .await
@@ -182,7 +192,13 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
     let catalog = PostgresCatalog::connect(PostgresOptions::new(&database_url))
         .await
         .map_err(|e| e.to_string())?;
-    let occupied:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r')").fetch_one(catalog.pool()).await.map_err(|e|e.to_string())?;
+    let occupied = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+             WHERE n.nspname='public' AND c.relkind='r') AS "exists!""#
+    )
+    .fetch_one(catalog.pool())
+    .await
+    .map_err(|e| e.to_string())?;
     if occupied {
         return Err("restore requires an empty PostgreSQL database".into());
     }
@@ -213,11 +229,12 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
     if !status.success() {
         return Err(format!("pg_restore exited with {status}"));
     }
-    let restored: i64 =
-        sqlx::query_scalar("SELECT COALESCE(max(version),0) FROM _sqlx_migrations WHERE success")
-            .fetch_one(catalog.pool())
-            .await
-            .map_err(|e| e.to_string())?;
+    let restored: i64 = sqlx::query_scalar!(
+        r#"SELECT COALESCE(max(version),0) AS "version!" FROM _sqlx_migrations WHERE success"#
+    )
+    .fetch_one(catalog.pool())
+    .await
+    .map_err(|e| e.to_string())?;
     if restored != manifest.migration_version {
         return Err("restored migration version does not match backup".into());
     }

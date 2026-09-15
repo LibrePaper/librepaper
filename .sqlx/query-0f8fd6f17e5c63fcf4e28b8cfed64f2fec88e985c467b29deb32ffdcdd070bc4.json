@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE annotations SET body=$3,author_account_id=$4,author_key=$5,author_label=$6,\n             selector=$7,context=$8,publication_id=$9,proposed_text=$10,\n             suggestion_state='accepted',resolved_at=COALESCE(resolved_at,now()),updated_at=now()\n             WHERE id=$1 AND document_id=$2 AND kind='suggestion' AND suggestion_state='proposed'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0f8fd6f17e5c63fcf4e28b8cfed64f2fec88e985c467b29deb32ffdcdd070bc4"
+}

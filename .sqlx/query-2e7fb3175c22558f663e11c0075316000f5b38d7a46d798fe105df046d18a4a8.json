@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE annotations SET author_account_id=NULL,author_key='erased',\n             author_label='Deleted user' WHERE author_account_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2e7fb3175c22558f663e11c0075316000f5b38d7a46d798fe105df046d18a4a8"
+}

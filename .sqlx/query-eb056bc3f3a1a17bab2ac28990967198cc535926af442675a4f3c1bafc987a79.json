@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH advanced AS (\n               UPDATE documents SET update_sequence=update_sequence+1,\n                 uncompacted_update_count=uncompacted_update_count+1,\n                 uncompacted_update_bytes=uncompacted_update_bytes+octet_length($2::bytea),\n                 updated_at=now()\n               WHERE id=$1 AND status='active' RETURNING id,update_sequence\n             ), inserted AS (\n               INSERT INTO document_updates(document_id,update_sequence,update_bytes)\n               SELECT id,update_sequence,$2 FROM advanced RETURNING update_sequence\n             ) SELECT update_sequence AS \"update_sequence!\" FROM inserted",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "update_sequence!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "eb056bc3f3a1a17bab2ac28990967198cc535926af442675a4f3c1bafc987a79"
+}

@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT archive_key AS \"key!\",archive_bytes AS \"bytes!\",\n                  encode(archive_digest,'hex') AS \"digest!\"\n           FROM document_versions\n           UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM document_assets\n           UNION ALL SELECT manifest_key,0,encode(manifest_digest,'hex') FROM publications\n           UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM publication_files\n           UNION ALL SELECT snapshot_key,snapshot_bytes,encode(snapshot_digest,'hex')\n             FROM document_bases\n           UNION ALL SELECT previous_snapshot_key,0,'' FROM document_bases\n             WHERE previous_snapshot_key IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "bytes!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "digest!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "cafa4b955de2162ffacd8b0fd64b536e3cdf74e5d977a81d49d65569be09fab7"
+}

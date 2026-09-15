@@ -292,3 +292,26 @@ $(WASM) $(BIB) $(CITES) $(TYPST) $(WASM_BR): | wasm
 wasm-update:  ## Update one renderer (REPO=wasm-markdown TAG=vX.Y.Z)
 	@test -n "$(REPO)" -a -n "$(TAG)" || { echo 'usage: make wasm-update REPO=wasm-markdown TAG=vX.Y.Z' >&2; exit 2; }
 	@node web/tools/update-module-pin.mjs --repo "$(REPO)" --tag "$(TAG)"
+
+# The compile-time-checked SQL cache. `.sqlx/` is what lets an ordinary build
+# verify every query without a database; it goes stale the moment a query or a
+# migration changes, so regenerating it is part of changing either.
+#
+# Both targets use their own database, separate from the one `make deploy`
+# keeps, because preparing applies every migration to it.
+SQLX_POSTGRES_DB  ?= librepaper_sqlx
+SQLX_DATABASE_URL := postgresql://postgres:$(DEV_POSTGRES_PASSWORD)@127.0.0.1:$(DEV_POSTGRES_PORT)/$(SQLX_POSTGRES_DB)
+
+.PHONY: sqlx-database
+sqlx-database: postgres-dev  ## Recreate the schema-only database the SQL checks run against
+	@docker exec $(DEV_POSTGRES_CONTAINER) psql -U postgres -c 'DROP DATABASE IF EXISTS $(SQLX_POSTGRES_DB)' >/dev/null
+	@docker exec $(DEV_POSTGRES_CONTAINER) psql -U postgres -c 'CREATE DATABASE $(SQLX_POSTGRES_DB)' >/dev/null
+	@DATABASE_URL='$(SQLX_DATABASE_URL)' sqlx migrate run --source crates/librepaper/migrations/postgres
+
+.PHONY: sqlx-prepare
+sqlx-prepare: sqlx-database  ## Regenerate .sqlx/ after changing any query or migration
+	@SQLX_OFFLINE=false DATABASE_URL='$(SQLX_DATABASE_URL)' cargo sqlx prepare --workspace -- --all-targets
+
+.PHONY: sqlx-check
+sqlx-check: sqlx-database  ## Fail if .sqlx/ no longer matches the queries in the tree
+	@SQLX_OFFLINE=false DATABASE_URL='$(SQLX_DATABASE_URL)' cargo sqlx prepare --check --workspace -- --all-targets

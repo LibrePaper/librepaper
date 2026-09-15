@@ -99,30 +99,30 @@ impl PostgresCatalog {
         Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, true).await?;
         self.lock_collaboration_capacity(&mut tx, input.document_id, bytes.len())
             .await?;
-        let changed = sqlx::query(
+        let changed = sqlx::query!(
             "UPDATE annotations SET body=$3,author_account_id=$4,author_key=$5,author_label=$6,
              selector=$7,context=$8,publication_id=$9,proposed_text=$10,
              suggestion_state='accepted',resolved_at=COALESCE(resolved_at,now()),updated_at=now()
              WHERE id=$1 AND document_id=$2 AND kind='suggestion' AND suggestion_state='proposed'",
+            id,
+            input.document_id,
+            input.body,
+            input.author_account_id,
+            input.author_key,
+            input.author_label,
+            input.selector,
+            input.context,
+            input.publication_id,
+            input.proposed_text,
         )
-        .bind(id)
-        .bind(input.document_id)
-        .bind(input.body)
-        .bind(input.author_account_id)
-        .bind(input.author_key)
-        .bind(input.author_label)
-        .bind(input.selector)
-        .bind(input.context)
-        .bind(input.publication_id)
-        .bind(input.proposed_text)
         .execute(&mut *tx)
         .await?
         .rows_affected();
         if changed != 1 {
             return Err(Error::Conflict("suggestion changed".into()));
         }
-        let sequence = sqlx::query_scalar::<_, i64>(
-            "WITH advanced AS (
+        let sequence = sqlx::query_scalar!(
+            r#"WITH advanced AS (
                UPDATE documents SET update_sequence=update_sequence+1,
                  uncompacted_update_count=uncompacted_update_count+1,
                  uncompacted_update_bytes=uncompacted_update_bytes+octet_length($2::bytea),
@@ -131,10 +131,10 @@ impl PostgresCatalog {
              ), inserted AS (
                INSERT INTO document_updates(document_id,update_sequence,update_bytes)
                SELECT id,update_sequence,$2 FROM advanced RETURNING update_sequence
-             ) SELECT update_sequence FROM inserted",
+             ) SELECT update_sequence AS "update_sequence!" FROM inserted"#,
+            input.document_id,
+            bytes,
         )
-        .bind(input.document_id)
-        .bind(bytes)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(Error::NotFound)?;
@@ -148,23 +148,24 @@ impl PostgresCatalog {
         actor: &MutationAuthorization,
         require_editor: bool,
     ) -> Result<()> {
-        let document: Option<(Uuid, String)> = sqlx::query_as(
+        let document = sqlx::query!(
             "SELECT owner_id,ownership_mode FROM documents
              WHERE id=$1 AND status='active' FOR SHARE",
+            document_id,
         )
-        .bind(document_id)
         .fetch_optional(&mut **tx)
         .await?;
-        let Some((owner_id, ownership_mode)) = document else {
+        let Some(document) = document else {
             return Err(Error::NotFound);
         };
+        let (owner_id, ownership_mode) = (document.owner_id, document.ownership_mode);
         if let Some(account_id) = actor.account_id {
-            let valid: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1 AND status='active'
-                 AND ($2::bigint IS NULL OR session_generation=$2))",
+            let valid = sqlx::query_scalar!(
+                r#"SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1 AND status='active'
+                   AND ($2::bigint IS NULL OR session_generation=$2)) AS "exists!""#,
+                account_id,
+                actor.session_generation,
             )
-            .bind(account_id)
-            .bind(actor.session_generation)
             .fetch_one(&mut **tx)
             .await?;
             if !valid {
@@ -173,22 +174,33 @@ impl PostgresCatalog {
         }
         let grant: Option<String> = match actor.account_id {
             Some(account_id) => {
-                sqlx::query_scalar("SELECT role FROM grants WHERE document_id=$1 AND account_id=$2")
-                    .bind(document_id)
-                    .bind(account_id)
-                    .fetch_optional(&mut **tx)
-                    .await?
+                // A grant a share link created lasts only as long as that
+                // link. Reading the row alone would let a guest keep editing
+                // comments after the link they arrived through was revoked --
+                // `access_role` has always checked this, and this path must
+                // agree with it or revoking a link only half works.
+                sqlx::query_scalar!(
+                    "SELECT role FROM grants g WHERE g.document_id=$1 AND g.account_id=$2
+                     AND (g.source_link_hash IS NULL OR EXISTS (
+                       SELECT 1 FROM share_links l WHERE l.document_id=g.document_id
+                         AND l.token_hash=g.source_link_hash AND l.revoked_at IS NULL
+                         AND (l.expires_at IS NULL OR l.expires_at>now())))",
+                    document_id,
+                    account_id,
+                )
+                .fetch_optional(&mut **tx)
+                .await?
             }
             None => None,
         };
         let link: Option<String> = match actor.token_hash {
             Some(token_hash) => {
-                sqlx::query_scalar(
+                sqlx::query_scalar!(
                     "SELECT role FROM share_links WHERE document_id=$1 AND token_hash=$2
-                 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())",
+                     AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())",
+                    document_id,
+                    token_hash.as_slice(),
                 )
-                .bind(document_id)
-                .bind(token_hash.as_slice())
                 .fetch_optional(&mut **tx)
                 .await?
             }
@@ -225,23 +237,48 @@ impl PostgresCatalog {
         Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, require_editor)
             .await?;
         let suggestion_state = (input.kind == "suggestion").then_some("proposed");
-        let row = sqlx::query_as::<_, AnnotationRecord>(
+        let row = sqlx::query_as!(
+            AnnotationRecord,
             "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context,source_version_id,source_update_sequence,source_project_generation,source_state_vector,publication_id,proposed_text,suggestion_state)
              VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-             ON CONFLICT(id) DO NOTHING RETURNING annotations.*",
-        ).bind(id).bind(input.document_id).bind(&input.kind).bind(&input.body).bind(input.author_account_id)
-         .bind(&input.author_key).bind(&input.author_label).bind(&input.selector).bind(&input.context)
-         .bind(input.source_version_id).bind(input.source_update_sequence).bind(input.source_project_generation)
-         .bind(&input.source_state_vector).bind(input.publication_id).bind(&input.proposed_text).bind(suggestion_state)
-         .fetch_optional(&mut *tx).await?;
+             ON CONFLICT(id) DO NOTHING
+             RETURNING id,document_id,kind,body,author_account_id,author_key,author_label,selector,
+                       context,source_version_id,source_update_sequence,source_project_generation,
+                       source_state_vector,publication_id,proposed_text,suggestion_state,
+                       resolved_at,created_at,updated_at",
+            id,
+            input.document_id,
+            input.kind,
+            input.body,
+            input.author_account_id,
+            input.author_key,
+            input.author_label,
+            input.selector,
+            input.context,
+            input.source_version_id,
+            input.source_update_sequence,
+            input.source_project_generation,
+            input.source_state_vector.as_deref(),
+            input.publication_id,
+            input.proposed_text,
+            suggestion_state,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
         let row = match row {
             Some(row) => row,
             None => {
-                let existing =
-                    sqlx::query_as::<_, AnnotationRecord>("SELECT * FROM annotations WHERE id=$1")
-                        .bind(id)
-                        .fetch_one(&mut *tx)
-                        .await?;
+                let existing = sqlx::query_as!(
+                    AnnotationRecord,
+                    "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,
+                            selector,context,source_version_id,source_update_sequence,
+                            source_project_generation,source_state_vector,publication_id,
+                            proposed_text,suggestion_state,resolved_at,created_at,updated_at
+                     FROM annotations WHERE id=$1",
+                    id,
+                )
+                .fetch_one(&mut *tx)
+                .await?;
                 if existing.document_id != input.document_id
                     || existing.kind != input.kind
                     || existing.body != input.body
@@ -282,10 +319,34 @@ impl PostgresCatalog {
                 .is_some_and(|outcome| matches!(outcome, "accepted" | "rejected"));
         Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, deciding_suggestion)
             .await?;
-        let changed = sqlx::query("UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6,selector=$7,context=$8,publication_id=$9,proposed_text=$10,suggestion_state=CASE WHEN $2='suggestion' THEN CASE WHEN $11 AND $8->>'outcome' IN ('accepted','rejected') THEN $8->>'outcome' ELSE COALESCE(suggestion_state,'proposed') END ELSE NULL END,resolved_at=CASE WHEN $11 THEN COALESCE(resolved_at,now()) ELSE NULL END,updated_at=now() WHERE id=$1 AND document_id=$12 AND (NOT $13 OR suggestion_state='proposed')")
-            .bind(id).bind(input.kind).bind(input.body).bind(input.author_account_id).bind(input.author_key)
-            .bind(input.author_label).bind(input.selector).bind(input.context).bind(input.publication_id)
-            .bind(input.proposed_text).bind(resolved).bind(input.document_id).bind(deciding_suggestion).execute(&mut *tx).await?.rows_affected()==1;
+        let changed = sqlx::query!(
+            "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,
+             author_label=$6,selector=$7,context=$8,publication_id=$9,proposed_text=$10,
+             suggestion_state=CASE WHEN $2::text='suggestion' THEN
+               CASE WHEN $11 AND $8::jsonb->>'outcome' IN ('accepted','rejected') THEN $8::jsonb->>'outcome'
+                    ELSE COALESCE(suggestion_state,'proposed') END
+               ELSE NULL END,
+             resolved_at=CASE WHEN $11 THEN COALESCE(resolved_at,now()) ELSE NULL END,
+             updated_at=now()
+             WHERE id=$1 AND document_id=$12 AND (NOT $13 OR suggestion_state='proposed')",
+            id,
+            input.kind,
+            input.body,
+            input.author_account_id,
+            input.author_key,
+            input.author_label,
+            input.selector,
+            input.context,
+            input.publication_id,
+            input.proposed_text,
+            resolved,
+            input.document_id,
+            deciding_suggestion,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
         if !changed {
             return Err(if deciding_suggestion {
                 Error::Conflict("suggestion changed".into())
@@ -303,19 +364,22 @@ impl PostgresCatalog {
         actor: &MutationAuthorization,
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let document_id: Uuid =
-            sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1 FOR UPDATE")
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or(Error::NotFound)?;
+        let document_id = sqlx::query_scalar!(
+            "SELECT document_id FROM annotations WHERE id=$1 FOR UPDATE",
+            id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
         Self::authorize_annotation_mutation(&mut tx, document_id, actor, false).await?;
-        let changed = sqlx::query("DELETE FROM annotations WHERE id=$1 AND document_id=$2")
-            .bind(id)
-            .bind(document_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
+        let changed = sqlx::query!(
+            "DELETE FROM annotations WHERE id=$1 AND document_id=$2",
+            id,
+            document_id,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
             == 1;
         if !changed {
             return Err(Error::NotFound);
@@ -333,24 +397,41 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid reply".into()));
         }
         let mut tx = self.pool.begin().await?;
-        let document_id: Uuid =
-            sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1 FOR KEY SHARE")
-                .bind(input.annotation_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or(Error::NotFound)?;
+        let document_id = sqlx::query_scalar!(
+            "SELECT document_id FROM annotations WHERE id=$1 FOR KEY SHARE",
+            input.annotation_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
         Self::authorize_annotation_mutation(&mut tx, document_id, actor, false).await?;
-        let row=sqlx::query_as::<_,ReplyRecord>("INSERT INTO replies(id,annotation_id,author_account_id,author_key,author_label,body) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING RETURNING *")
-            .bind(input.id).bind(input.annotation_id).bind(input.author_account_id).bind(&input.author_key).bind(&input.author_label).bind(&input.body)
-            .fetch_optional(&mut *tx).await?;
+        let row = sqlx::query_as!(
+            ReplyRecord,
+            "INSERT INTO replies(id,annotation_id,author_account_id,author_key,author_label,body)
+             VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING
+             RETURNING id,annotation_id,author_account_id,author_key,author_label,body,
+                       created_at,updated_at",
+            input.id,
+            input.annotation_id,
+            input.author_account_id,
+            input.author_key,
+            input.author_label,
+            input.body,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
         let row = match row {
             Some(row) => row,
             None => {
-                let existing =
-                    sqlx::query_as::<_, ReplyRecord>("SELECT * FROM replies WHERE id=$1")
-                        .bind(input.id)
-                        .fetch_one(&mut *tx)
-                        .await?;
+                let existing = sqlx::query_as!(
+                    ReplyRecord,
+                    "SELECT id,annotation_id,author_account_id,author_key,author_label,body,
+                            created_at,updated_at
+                     FROM replies WHERE id=$1",
+                    input.id,
+                )
+                .fetch_one(&mut *tx)
+                .await?;
                 if existing.annotation_id != input.annotation_id
                     || existing.author_account_id != input.author_account_id
                     || existing.author_key != input.author_key
@@ -369,11 +450,13 @@ impl PostgresCatalog {
     }
 
     pub async fn annotation_count(&self, document_id: Uuid) -> Result<i64> {
-        sqlx::query_scalar("SELECT count(*) FROM annotations WHERE document_id=$1")
-            .bind(document_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(Error::from)
+        sqlx::query_scalar!(
+            r#"SELECT count(*) AS "count!" FROM annotations WHERE document_id=$1"#,
+            document_id,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Error::from)
     }
 
     pub async fn annotations(
@@ -388,11 +471,24 @@ impl PostgresCatalog {
                 "annotation page limit must be 1..=500".into(),
             ));
         }
-        sqlx::query_as::<_, AnnotationRecord>(
-            "SELECT * FROM annotations WHERE document_id=$1 AND ($2::uuid IS NULL OR publication_id=$2)
-             AND ($3::timestamptz IS NULL OR (created_at,id)>($3,$4)) ORDER BY created_at,id LIMIT $5",
-        ).bind(document_id).bind(publication_id).bind(after.map(|v|v.0)).bind(after.map(|v|v.1)).bind(limit)
-         .fetch_all(&self.pool).await.map_err(Error::from)
+        sqlx::query_as!(
+            AnnotationRecord,
+            "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,selector,
+                    context,source_version_id,source_update_sequence,source_project_generation,
+                    source_state_vector,publication_id,proposed_text,suggestion_state,resolved_at,
+                    created_at,updated_at
+             FROM annotations WHERE document_id=$1 AND ($2::uuid IS NULL OR publication_id=$2)
+             AND ($3::timestamptz IS NULL OR (created_at,id)>($3,$4))
+             ORDER BY created_at,id LIMIT $5",
+            document_id,
+            publication_id,
+            after.map(|v| v.0),
+            after.map(|v| v.1),
+            limit,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
     }
 
     pub async fn replies(&self, annotation_ids: &[Uuid]) -> Result<Vec<ReplyRecord>> {
@@ -401,10 +497,13 @@ impl PostgresCatalog {
                 "too many annotation replies requested".into(),
             ));
         }
-        let rows = sqlx::query_as::<_, ReplyRecord>(
-            "SELECT * FROM replies WHERE annotation_id=ANY($1) ORDER BY created_at,id LIMIT 5001",
+        let rows = sqlx::query_as!(
+            ReplyRecord,
+            "SELECT id,annotation_id,author_account_id,author_key,author_label,body,
+                    created_at,updated_at
+             FROM replies WHERE annotation_id=ANY($1) ORDER BY created_at,id LIMIT 5001",
+            annotation_ids,
         )
-        .bind(annotation_ids)
         .fetch_all(&self.pool)
         .await?;
         if rows.len() > 5_000 {

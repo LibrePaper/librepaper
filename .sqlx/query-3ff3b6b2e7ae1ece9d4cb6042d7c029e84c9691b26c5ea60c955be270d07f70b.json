@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE jobs",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "3ff3b6b2e7ae1ece9d4cb6042d7c029e84c9691b26c5ea60c955be270d07f70b"
+}

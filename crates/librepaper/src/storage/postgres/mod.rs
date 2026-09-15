@@ -106,14 +106,12 @@ impl PostgresCatalog {
         // also keeps ownership unambiguous until migration completes.
         let mut connection = self.pool.acquire().await?;
         const MIGRATION_LOCK: i64 = 0x4c_50_43_41_54_56_33; // "LPCATV3"
-        sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(MIGRATION_LOCK)
-            .execute(&mut *connection)
+        sqlx::query!("SELECT pg_advisory_lock($1)", MIGRATION_LOCK)
+            .fetch_one(&mut *connection)
             .await?;
         let result = MIGRATOR.run(&mut *connection).await;
-        let unlock = sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(MIGRATION_LOCK)
-            .execute(&mut *connection)
+        let unlock = sqlx::query!("SELECT pg_advisory_unlock($1)", MIGRATION_LOCK)
+            .fetch_one(&mut *connection)
             .await;
         match (result, unlock) {
             (Err(error), _) => Err(error),
@@ -218,7 +216,7 @@ mod tests {
             .await
             .unwrap();
         catalog.migrate().await.unwrap();
-        sqlx::query(
+        sqlx::query!(
             "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
              document_versions,document_assets,replies,annotations,share_links,grants,documents,
              accounts CASCADE",
@@ -563,22 +561,28 @@ mod tests {
             limited.append_update(first.id, b"over-cap").await,
             Err(Error::Conflict(message)) if message.contains("requires compaction")
         ));
-        let durable: (i64, i64, i64) = sqlx::query_as(
+        let durable = sqlx::query!(
             "SELECT update_sequence,uncompacted_update_count,uncompacted_update_bytes
              FROM documents WHERE id=$1",
+            first.id,
         )
-        .bind(first.id)
         .fetch_one(catalog.pool())
         .await
         .unwrap();
-        assert_eq!(durable.0, 1, "a refused update must not advance the stream");
-        assert_eq!(durable.1, 1);
-        assert_eq!(durable.2, b"accepted-suggestion-update".len() as i64);
+        assert_eq!(
+            durable.update_sequence, 1,
+            "a refused update must not advance the stream"
+        );
+        assert_eq!(durable.uncompacted_update_count, 1);
+        assert_eq!(
+            durable.uncompacted_update_bytes,
+            b"accepted-suggestion-update".len() as i64
+        );
         let byte_limited = PostgresCatalog {
             pool: catalog.pool.clone(),
             policy: StoragePolicy {
                 max_uncompacted_updates: i64::MAX / 4,
-                max_uncompacted_bytes: durable.2,
+                max_uncompacted_bytes: durable.uncompacted_update_bytes,
                 ..catalog.policy
             },
         };
@@ -819,14 +823,20 @@ mod tests {
         assert_eq!(recovered.base.as_deref(), Some(b"base-state".as_slice()));
         assert_eq!(recovered.updates.len(), 1);
         assert_eq!(recovered.updates[0].update_bytes, b"update-two");
-        let backlog: (i64, i64) = sqlx::query_as(
+        let backlog = sqlx::query!(
             "SELECT uncompacted_update_count,uncompacted_update_bytes FROM documents WHERE id=$1",
+            first.id,
         )
-        .bind(first.id)
         .fetch_one(catalog.pool())
         .await
         .unwrap();
-        assert_eq!(backlog, (1, b"update-two".len() as i64));
+        assert_eq!(
+            (
+                backlog.uncompacted_update_count,
+                backlog.uncompacted_update_bytes
+            ),
+            (1, b"update-two".len() as i64)
+        );
         assert!(collaboration
             .compact(first.id, 0, 0, b"stale-base")
             .await
@@ -892,11 +902,13 @@ mod tests {
                 .await
                 .unwrap();
         }
-        sqlx::query("UPDATE jobs SET locked_at=now()-interval '10 minutes' WHERE id=$1")
-            .bind(stale.job.id)
-            .execute(catalog.pool())
-            .await
-            .unwrap();
+        sqlx::query!(
+            "UPDATE jobs SET locked_at=now()-interval '10 minutes' WHERE id=$1",
+            stale.job.id,
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
         assert_eq!(
             catalog
                 .recover_expired_jobs(OffsetDateTime::now_utc() - Duration::minutes(5), 10)
@@ -1058,7 +1070,7 @@ mod tests {
             .await
             .unwrap();
         catalog.migrate().await.unwrap();
-        sqlx::query(
+        sqlx::query!(
             "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
              document_versions,document_assets,replies,annotations,share_links,grants,documents,
              accounts CASCADE",

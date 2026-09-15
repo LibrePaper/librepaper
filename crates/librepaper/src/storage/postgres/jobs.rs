@@ -78,24 +78,28 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid job".into()));
         }
         let id = new_id();
-        let inserted = sqlx::query_as::<_, Job>(
+        let inserted = sqlx::query_as!(
+            Job,
             "INSERT INTO jobs
              (id,kind,document_id,account_id,scope_key,dedupe_key,payload,priority,max_attempts,run_after,status)
              VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'queued')
              ON CONFLICT (kind,scope_key,dedupe_key)
              WHERE dedupe_key IS NOT NULL AND status IN ('queued','running')
-             DO NOTHING RETURNING *",
+             DO NOTHING
+             RETURNING id,kind,document_id,account_id,scope_key,dedupe_key,payload,status,
+                       priority,attempts,max_attempts,run_after,locked_by,locked_at,claim_token,
+                       last_error,result,created_at,updated_at",
+            id,
+            input.kind,
+            input.document_id,
+            input.account_id,
+            input.scope_key,
+            input.dedupe_key.as_deref(),
+            input.payload,
+            input.priority,
+            input.max_attempts,
+            input.run_after,
         )
-        .bind(id)
-        .bind(&input.kind)
-        .bind(input.document_id)
-        .bind(input.account_id)
-        .bind(&input.scope_key)
-        .bind(&input.dedupe_key)
-        .bind(input.payload)
-        .bind(input.priority)
-        .bind(input.max_attempts)
-        .bind(input.run_after)
         .fetch_optional(&self.pool)
         .await?;
         if let Some(job) = inserted {
@@ -104,13 +108,17 @@ impl PostgresCatalog {
         let dedupe_key = input.dedupe_key.ok_or_else(|| {
             Error::Conflict("job insertion conflicted without a dedupe key".into())
         })?;
-        sqlx::query_as::<_, Job>(
-            "SELECT * FROM jobs WHERE kind=$1 AND scope_key=$2 AND dedupe_key=$3
+        sqlx::query_as!(
+            Job,
+            "SELECT id,kind,document_id,account_id,scope_key,dedupe_key,payload,status,
+                    priority,attempts,max_attempts,run_after,locked_by,locked_at,claim_token,
+                    last_error,result,created_at,updated_at
+             FROM jobs WHERE kind=$1 AND scope_key=$2 AND dedupe_key=$3
              AND status IN ('queued','running') ORDER BY created_at LIMIT 1",
+            input.kind,
+            input.scope_key,
+            dedupe_key,
         )
-        .bind(input.kind)
-        .bind(input.scope_key)
-        .bind(dedupe_key)
         .fetch_one(&self.pool)
         .await
         .map_err(Error::from)
@@ -121,7 +129,8 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid job claim".into()));
         }
         let token = new_id();
-        let jobs = sqlx::query_as::<_, Job>(
+        let jobs = sqlx::query_as!(
+            Job,
             "WITH candidates AS (
                SELECT id FROM jobs
                WHERE status='queued' AND run_after <= now()
@@ -130,11 +139,14 @@ impl PostgresCatalog {
              )
              UPDATE jobs j SET status='running',locked_by=$2,locked_at=now(),claim_token=$3,
                  attempts=j.attempts+1,updated_at=now()
-             FROM candidates c WHERE j.id=c.id RETURNING j.*",
+             FROM candidates c WHERE j.id=c.id
+             RETURNING j.id,j.kind,j.document_id,j.account_id,j.scope_key,j.dedupe_key,j.payload,
+                       j.status,j.priority,j.attempts,j.max_attempts,j.run_after,j.locked_by,
+                       j.locked_at,j.claim_token,j.last_error,j.result,j.created_at,j.updated_at",
+            limit,
+            worker,
+            token,
         )
-        .bind(limit)
-        .bind(worker)
-        .bind(token)
         .fetch_all(&self.pool)
         .await?;
         Ok(jobs
@@ -180,7 +192,7 @@ impl PostgresCatalog {
         if !(1..=1000).contains(&limit) {
             return Err(Error::Invalid("invalid job recovery limit".into()));
         }
-        let result = sqlx::query(
+        let result = sqlx::query!(
             "WITH expired AS (
                SELECT id FROM jobs WHERE status='running' AND locked_at < $1
                ORDER BY locked_at,id FOR UPDATE SKIP LOCKED LIMIT $2
@@ -190,23 +202,23 @@ impl PostgresCatalog {
                locked_by=NULL,locked_at=NULL,claim_token=NULL,
                last_error='worker claim expired',updated_at=now()
              FROM expired e WHERE j.id=e.id",
+            older_than,
+            limit,
         )
-        .bind(older_than)
-        .bind(limit)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
     }
 
     pub async fn prune_jobs(&self, before: OffsetDateTime, limit: i64) -> Result<u64> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             "DELETE FROM jobs WHERE id IN (
                SELECT id FROM jobs WHERE status IN ('succeeded','failed','cancelled')
                AND updated_at < $1 ORDER BY updated_at,id LIMIT $2
              )",
+            before,
+            limit,
         )
-        .bind(before)
-        .bind(limit)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
@@ -221,18 +233,22 @@ async fn finish_claim(
     error: Option<&str>,
     run_after: Option<OffsetDateTime>,
 ) -> Result<Job> {
-    sqlx::query_as::<_, Job>(
+    sqlx::query_as!(
+        Job,
         "UPDATE jobs SET status=$4,result=$5,last_error=$6,run_after=COALESCE($7,run_after),
          locked_by=NULL,locked_at=NULL,claim_token=NULL,updated_at=now()
-         WHERE id=$1 AND status='running' AND locked_by=$2 AND claim_token=$3 RETURNING *",
+         WHERE id=$1 AND status='running' AND locked_by=$2 AND claim_token=$3
+         RETURNING id,kind,document_id,account_id,scope_key,dedupe_key,payload,status,
+                   priority,attempts,max_attempts,run_after,locked_by,locked_at,claim_token,
+                   last_error,result,created_at,updated_at",
+        claim.job.id,
+        claim.worker,
+        claim.token,
+        status.as_str(),
+        result,
+        error,
+        run_after,
     )
-    .bind(claim.job.id)
-    .bind(&claim.worker)
-    .bind(claim.token)
-    .bind(status.as_str())
-    .bind(result)
-    .bind(error)
-    .bind(run_after)
     .fetch_optional(&catalog.pool)
     .await?
     .ok_or_else(|| Error::Conflict("job claim is no longer current".into()))

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE document_versions SET author_account_id=NULL,author_label='Deleted user'\n             WHERE author_account_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aac9100cf2cd336b501c47abac9598d9f80c7b708ae9faf3baab80d5efa4e846"
+}

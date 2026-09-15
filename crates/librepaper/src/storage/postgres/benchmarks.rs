@@ -46,7 +46,7 @@ async fn catalog_v3_release_benchmark() {
     };
     let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
     catalog.migrate().await.expect("migrate");
-    sqlx::query("TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,document_versions,document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE")
+    sqlx::query!("TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,document_versions,document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE")
         .execute(catalog.pool()).await.expect("empty benchmark database");
     let owner = catalog
         .create_account(NewAccount {
@@ -176,7 +176,7 @@ async fn catalog_v3_release_benchmark() {
 
     let mut job_results = Vec::new();
     for workers in [1_usize, 4, 16] {
-        sqlx::query("TRUNCATE jobs")
+        sqlx::query!("TRUNCATE jobs")
             .execute(catalog.pool())
             .await
             .expect("clear jobs");
@@ -254,10 +254,16 @@ async fn catalog_v3_release_benchmark() {
         "stored_files":catalog.publication_files(publication_at_byte_limit.id).await.expect("publication files").len()
     });
 
-    sqlx::query("INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context)
-        SELECT gen_random_uuid(),$1,'comment','benchmark',$2,'benchmark','Benchmark','{}'::jsonb,'{\"version\":1}'::jsonb
-        FROM generate_series(1,500)")
-        .bind(documents[3].id).bind(owner.id).execute(catalog.pool()).await.expect("timeline fixtures");
+    sqlx::query!(
+        r#"INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context)
+           SELECT gen_random_uuid(),$1,'comment','benchmark',$2,'benchmark','Benchmark','{}'::jsonb,'{"version":1}'::jsonb
+           FROM generate_series(1,500)"#,
+        documents[3].id,
+        owner.id,
+    )
+    .execute(catalog.pool())
+    .await
+    .expect("timeline fixtures");
     let timeline_started = Instant::now();
     let timeline = catalog
         .annotations(documents[3].id, None, None, 500)
@@ -266,7 +272,7 @@ async fn catalog_v3_release_benchmark() {
     let timeline_us = micros(timeline_started);
 
     let scale_started = Instant::now();
-    sqlx::query("UPDATE documents SET current_version_id=NULL,current_publication_id=NULL")
+    sqlx::query!("UPDATE documents SET current_version_id=NULL,current_publication_id=NULL")
         .execute(catalog.pool())
         .await
         .expect("clear scale heads");
@@ -276,27 +282,39 @@ async fn catalog_v3_release_benchmark() {
         "document_versions",
         "document_assets",
     ] {
+        // The table name is interpolated from the loop above, so this one
+        // cannot be a checked macro: they take a literal.
         sqlx::query(&format!("DELETE FROM {table}"))
             .execute(catalog.pool())
             .await
             .expect("clear scale content");
     }
-    sqlx::query("INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,source_format,main_path)
-        SELECT gen_random_uuid(),'scale-'||n,$1,'owned','Scale '||n,'scale '||n,'active','markdown','paper.md'
-        FROM generate_series(1,9900) n")
-        .bind(owner.id).execute(catalog.pool()).await.expect("scale documents");
-    sqlx::query("WITH generated AS (
-          SELECT gen_random_uuid() id,d.id document_id,n sequence
-          FROM documents d CROSS JOIN generate_series(1,50) n
-        ) INSERT INTO document_versions(id,document_id,sequence,through_update_sequence,project_generation,
-          archive_key,archive_encoding_version,archive_digest,archive_bytes,logical_bytes,reason,author_label)
-        SELECT id,document_id,sequence,0,0,'benchmark/versions/'||id,1,decode(repeat('00',32),'hex'),1024,2048,'scale','Benchmark'
-        FROM generated")
-        .execute(catalog.pool()).await.expect("scale versions");
-    let database_bytes: i64 = sqlx::query_scalar("SELECT pg_database_size(current_database())")
-        .fetch_one(catalog.pool())
-        .await
-        .expect("database size");
+    sqlx::query!(
+        "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,title_key,status,source_format,main_path)
+         SELECT gen_random_uuid(),'scale-'||n,$1,'owned','Scale '||n,'scale '||n,'active','markdown','paper.md'
+         FROM generate_series(1,9900) n",
+        owner.id,
+    )
+    .execute(catalog.pool())
+    .await
+    .expect("scale documents");
+    sqlx::query!(
+        "WITH generated AS (
+           SELECT gen_random_uuid() id,d.id document_id,n sequence
+           FROM documents d CROSS JOIN generate_series(1,50) n
+         ) INSERT INTO document_versions(id,document_id,sequence,through_update_sequence,project_generation,
+           archive_key,archive_encoding_version,archive_digest,archive_bytes,logical_bytes,reason,author_label)
+         SELECT id,document_id,sequence,0,0,'benchmark/versions/'||id,1,decode(repeat('00',32),'hex'),1024,2048,'scale','Benchmark'
+         FROM generated"
+    )
+    .execute(catalog.pool())
+    .await
+    .expect("scale versions");
+    let database_bytes =
+        sqlx::query_scalar!(r#"SELECT pg_database_size(current_database()) AS "bytes!""#)
+            .fetch_one(catalog.pool())
+            .await
+            .expect("database size");
     let listing_started = Instant::now();
     let listing = catalog
         .list_documents(None, 200)
@@ -306,7 +324,7 @@ async fn catalog_v3_release_benchmark() {
     let report = json!({
         "measured_at":OffsetDateTime::now_utc().to_string(),
         "profile":"release",
-        "postgres_version":sqlx::query_scalar::<_,String>("SHOW server_version").fetch_one(catalog.pool()).await.expect("version"),
+        "postgres_version":sqlx::query_scalar!(r#"SHOW server_version"#).fetch_one(catalog.pool()).await.expect("version"),
         "rooms":room_results,
         "source_versions":source_results,
         "asset_versions":asset_results,

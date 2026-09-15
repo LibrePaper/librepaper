@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO publications(id,document_id,source_version_id,request_key,request_digest,\n             manifest_key,manifest_digest,publisher_account_id,publisher_label)\n             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)\n             RETURNING id,document_id,source_version_id,request_key,request_digest,manifest_key,\n                       manifest_digest,publisher_account_id,publisher_label,created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "source_version_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "request_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "request_digest",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "manifest_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "manifest_digest",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "publisher_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "publisher_label",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Text",
+        "Bytea",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e3abc4408464acb8f31134a0a172d8ce44f55eb9cbe2b682f85417dec692ad7d"
+}

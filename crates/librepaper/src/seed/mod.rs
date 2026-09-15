@@ -159,7 +159,7 @@ pub async fn seed_with_backup(
             .unwrap_or_else(|e| die(e)),
     );
     catalog.migrate().await.unwrap_or_else(|e| die(e));
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM documents")
+    let count = sqlx::query_scalar!(r#"SELECT count(*) AS "count!" FROM documents"#)
         .fetch_one(catalog.pool())
         .await
         .unwrap_or_else(|e| die(e));
@@ -167,7 +167,7 @@ pub async fn seed_with_backup(
         die("refusing to reset a nonempty deployment without --backup <verified-point>")
     }
     if count > 0 {
-        sqlx::query("TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,document_versions,document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE").execute(catalog.pool()).await.unwrap_or_else(|e|die(e));
+        sqlx::query!("TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,document_versions,document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE").execute(catalog.pool()).await.unwrap_or_else(|e|die(e));
     }
     let handle = if owner.trim().is_empty() {
         "examples"

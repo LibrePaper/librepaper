@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) AS \"count!\" FROM document_versions v\n               JOIN documents d ON d.id=v.document_id\n               WHERE d.owner_id=$1 AND v.created_at>=now()-interval '1 hour'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f1d4be3086cf8514a60129c84bd0bd20f8b09c62eb850f2e8f2fa60eaab13e1b"
+}

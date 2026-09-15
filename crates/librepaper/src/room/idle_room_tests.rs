@@ -26,7 +26,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
             .unwrap(),
     );
     catalog.migrate().await.unwrap();
-    sqlx::query(
+    sqlx::query!(
         "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,
          publications,document_versions,document_assets,replies,annotations,share_links,
          grants,documents,accounts CASCADE",

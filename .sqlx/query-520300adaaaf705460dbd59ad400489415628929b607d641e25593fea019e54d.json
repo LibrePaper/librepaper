@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE publications SET publisher_account_id=NULL,publisher_label='Deleted user'\n             WHERE publisher_account_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "520300adaaaf705460dbd59ad400489415628929b607d641e25593fea019e54d"
+}
