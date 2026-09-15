@@ -220,8 +220,10 @@
   // this page session asks for and never remembers.
   //
   // Pairing grants the browser permission to ask, but never starts document
-  // code. Native Quarto execution begins only with that gesture.
-  let quartoExecutionApproved = $state(false);
+  // code. Quarto and Calepin execution begin only with that gesture, and it
+  // is never remembered: a shared document arrives with local execution off,
+  // whatever build preference this browser happens to have kept for it.
+  let localExecution = $state(false);
 
   async function setLatexOutput(format) {
     const next = format === "html" ? "html" : "pdf";
@@ -252,24 +254,63 @@
     navigationGeneration += 1;
     buildSettings.state.quartoPreviewMode = mode === "markdown" ? "markdown" : "quarto";
     if (quartoPreviewMode === "markdown") {
-      quartoExecutionApproved = false;
       await quartoPreviewController.stop();
       void paintPreview();
     }
   }
 
-  // What running Quarto here actually means. It was a title attribute on the
-  // button, which is to say it was invisible on a touch screen and delayed on
-  // every other: a consequence of this size is asked about, not hinted at.
-  const QUARTO_WARNING = "Quarto can execute arbitrary code from this document on your computer.";
-  let quartoConsent = $state(false);
+  // What running a document's code here actually means. It was a title
+  // attribute on a button, which is to say it was invisible on a touch screen
+  // and delayed on every other: a consequence of this size is asked about,
+  // not hinted at.
+  const LOCAL_EXECUTION_WARNING = "Quarto and Calepin execution can run arbitrary code from this document on your computer.";
+  let localExecutionConsent = $state(false);
 
-  async function runQuartoLocally() {
-    quartoConsent = false;
-    if (!await ensureLocalApp()) return;
-    await setQuartoPreviewMode("quarto");
-    quartoExecutionApproved = true;
+  // The formats whose local tool runs the document rather than only typesets
+  // it. The option can be turned on with anything else open -- it is a choice
+  // about this session, not about this file -- but there is no companion to
+  // reach for until one of these is what is being read.
+  const localExecutionRelevant = $derived(["quarto", "typst"].includes(sourceFormat) && mayEdit);
+
+  // Turning it on, once the dialog has been answered: put this format's
+  // engine on the local tool and reach the companion. A companion that cannot
+  // be reached leaves the choice standing and says why in Diagnostics, rather
+  // than silently undoing what was just asked for.
+  async function startLocalExecution() {
+    localExecutionConsent = false;
+    localExecution = true;
+    if (!localExecutionRelevant) return;
+    if (sourceFormat === "quarto") {
+      await setQuartoPreviewMode("quarto");
+      await ensureLocalApp();
+    } else if (sourceFormat === "typst") {
+      await setTypstPreviewMode("calepin");
+    }
   }
+
+  // Turning it off puts the browser's own renderer back and stops whatever
+  // the companion was running for this document.
+  async function stopLocalExecution() {
+    localExecution = false;
+    if (sourceFormat === "quarto") await setQuartoPreviewMode("markdown");
+    else if (sourceFormat === "typst") await setTypstPreviewMode("typst");
+  }
+
+  const toggleLocalExecution = () => {
+    if (localExecution) void stopLocalExecution();
+    else localExecutionConsent = true;
+  };
+
+  // The choice is about this session rather than about one file, so pointing
+  // the preview at a document in the other executable format puts the
+  // companion behind that one too, and checks that it is there, without
+  // asking again. Once the mode is set this settles: the guard reads it.
+  $effect(() => {
+    if (!localExecution || !localExecutionRelevant) return;
+    const running = sourceFormat === "quarto" ? quartoPreviewMode === "quarto" : typstPreviewMode === "calepin";
+    if (running) return;
+    untrack(() => void startLocalExecution());
+  });
 
   async function setTypstPreviewMode(mode) {
     setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { selection: "tool", backend: mode === "calepin" ? "local" : "browser", tool: mode === "calepin" ? "calepin" : "typst" }));
@@ -1156,7 +1197,7 @@
   // pane) is not required -- an editor who has not opened it yet still gets
   // the live pane the moment they are able to edit.
   const quartoLiveActive = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && quartoExecutionApproved && !buildPreferences.preset && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit &&
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && !buildPreferences.preset && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit &&
       localAppStatus.state === "connected",
   );
 
@@ -1165,7 +1206,7 @@
   // the calepin mode chosen, paired, connected, the calepin command itself
   // found, editable, and not looking at history.
   const calepinActive = $derived(
-    sourceFormat === "typst" && !typstHtmlPreview && typstPreviewMode === "calepin" && !buildPreferences.preset && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit &&
+    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && !buildPreferences.preset && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit &&
       localAppStatus.state === "connected" && localQuarto.calepinAvailable(),
   );
 
@@ -1652,7 +1693,7 @@
   // Quarto preview mode chosen, but not yet paired with the local app on
   // this computer: the pane shows the draft, and Diagnostics explains why.
   const quartoNeedsLocalApp = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && quartoExecutionApproved && mayEdit &&
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && mayEdit &&
       localAppStatus.state !== "connected",
   );
   // A read-only visitor cannot authorize the companion to receive a
@@ -1671,12 +1712,12 @@
   // choosing PDF output and then closing, or never installing, the local app.
   const pdfNeedsLocalTool = $derived(
     pdfOutput && ["markdown", "quarto"].includes(sourceFormat) && mayEdit &&
-      (localAppStatus.state !== "connected" || (sourceFormat === "quarto" && !quartoExecutionApproved)),
+      (localAppStatus.state !== "connected" || (sourceFormat === "quarto" && !localExecution)),
   );
   // The gesture that is missing, told apart so the card offers one action
   // rather than a menu: Quarto has to be allowed to run this document's code
   // before anything else is worth suggesting.
-  const pdfNeedsQuartoConsent = $derived(pdfNeedsLocalTool && sourceFormat === "quarto" && !quartoExecutionApproved);
+  const pdfNeedsLocalExecution = $derived(pdfNeedsLocalTool && sourceFormat === "quarto" && !localExecution);
 
   // The way out for an author who wants to keep reading rather than install
   // anything: the browser's own HTML preview, which every one of these
@@ -1690,11 +1731,11 @@
   // chosen: not yet connected to the local app, or connected but without the
   // calepin command itself.
   const typstNeedsLocalApp = $derived(
-    sourceFormat === "typst" && !typstHtmlPreview && typstPreviewMode === "calepin" && mayEdit &&
+    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && mayEdit &&
       localAppStatus.state !== "connected",
   );
   const typstNeedsCalepinCommand = $derived(
-    sourceFormat === "typst" && !typstHtmlPreview && typstPreviewMode === "calepin" && mayEdit &&
+    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && mayEdit &&
       localAppStatus.state === "connected" && !localQuarto.calepinAvailable(),
   );
 
@@ -1703,8 +1744,8 @@
     quartoNeedsLocalApp && !localConnectionError ? "Quarto preview needs the local LibrePaper app. Connect to execute code chunks." : "",
     typstNeedsLocalApp && !localConnectionError ? "Calepin preview needs the local LibrePaper app." : "",
     typstNeedsCalepinCommand ? "Calepin preview needs the calepin command on this computer." : "",
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" ? quartoPreviewError : "",
-    sourceFormat === "typst" && typstPreviewMode === "calepin" ? calepinPreviewError : "",
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? quartoPreviewError : "",
+    sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? calepinPreviewError : "",
   ].filter(Boolean).map((message) => ({ severity: "error", message, source: "local-app" })));
   $effect(() => {
     void localAppDiagnostics;
@@ -1824,7 +1865,7 @@
       latexOutput,
       typstOutput,
       buildPreferences,
-      quartoExecutionApproved,
+      localExecution,
       // A local tool's own preview owns the pane while it is running or
       // starting. Answered here because only this page knows which of the two
       // local previews a given format would be using.
@@ -2234,10 +2275,7 @@
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
     if (value === "preview-file") return previewThisFile();
-    if (value === "preview-markdown") return void setQuartoPreviewMode("markdown");
-    if (value === "preview-quarto") return void setQuartoPreviewMode("quarto");
-    if (value === "preview-typst") return void setTypstPreviewMode("typst");
-    if (value === "preview-calepin") return void setTypstPreviewMode("calepin");
+    if (value === "local-execution") return toggleLocalExecution();
     if (value === "preview-typst-pdf") return void setTypstOutput("pdf");
     if (value === "preview-typst-html") return void setTypstOutput("html");
     return chose(value);
@@ -2310,7 +2348,7 @@
   // The one menu a narrow screen has stands in for all of them.
   function chooseCompactCommand(value) {
     if (FILE_COMMANDS.includes(value)) return void chooseFileCommand(value);
-    if (value.startsWith("preview-") || value.startsWith("layout-") || value.startsWith("side-") || value.startsWith("ratio-") || value === "linked") return chooseViewCommand(value);
+    if (value.startsWith("preview-") || value.startsWith("layout-") || value.startsWith("side-") || value.startsWith("ratio-") || value === "linked" || value === "local-execution") return chooseViewCommand(value);
     return chooseToolCommand(value);
   }
 
@@ -2543,11 +2581,19 @@
     paintPreview();
   }
 
-  function startCollaboration(document_, { sourceSync = true } = {}) {
+  // The CRDT is loaded here and nowhere else. A reader with a link to a
+  // published document never joins the source room, so it never asks for the
+  // three megabytes of loro wasm behind it; an editor pays for them once, on
+  // the way in, rather than before the page has drawn.
+  async function startCollaboration(document_, { sourceSync = true } = {}) {
     collaboration?.close();
+    const collab = sourceSync ? await import("../lib/collab.js") : null;
+    // Awaiting the module gave the reader time to be torn down or replaced.
+    if (readerDisposed) return;
     collaboration = createReaderCollaboration({
       slug: SLUG,
       key: KEY,
+      collab,
       getIdentity: () => identity,
       getCanEdit: () => mayEdit,
       sourceSync,
@@ -2623,7 +2669,7 @@
     // remains useful even when there is no publication yet.
     if (!mayEdit) {
       publishedMode = true;
-      startCollaboration(document_, { sourceSync: false });
+      await startCollaboration(document_, { sourceSync: false });
       const visitor = publication.watchAsVisitor({
         // Where the published bundle is served from. Checked against the
         // origin this document names: a URL from anywhere else is refused
@@ -2673,7 +2719,7 @@
     // Load the browser renderer for readers as well as editors; this is all
     // transient and does not create a server-side result.
     renderers.warm(format);
-    startCollaboration(document_);
+    await startCollaboration(document_);
     // `onSource` starts publication metadata only after the initial Yjs state
     // has populated the source tree. A session object alone is not a snapshot.
     // No chooser and no saved distribution: `latex.configure` tells the
@@ -2884,29 +2930,21 @@
   <hr class="hr my-1" />
   <div class="menu-section-label">Engine</div>
   {#if sourceFormat === "quarto"}
-    <!-- Nothing rendered is ever uploaded: choosing "Quarto preview" runs
-         the document's code with Quarto on this computer, through the local
-         app, and shows its own page here; "Markdown preview" never runs any
-         code. The two are exclusive, with a check mark on whichever is
-         active. Local app settings remain reachable from Settings… below. -->
-    <Menu.Item value="preview-markdown" class="menuitem">
-      <span class="w-4">{quartoPreviewMode === "markdown" ? "✓" : ""}</span>Markdown
-    </Menu.Item>
-    <Menu.Item value="preview-quarto" class="menuitem">
-      <span class="w-4">{quartoPreviewMode === "quarto" ? "✓" : ""}</span>Quarto
+    <!-- Which engine is drawing follows from Local execution below, rather
+         than being chosen twice: with it off this is the browser's own
+         Markdown draft, which never runs any code; with it on, Quarto runs
+         the document on this computer through the local app and its own page
+         is what appears here. Nothing rendered is ever uploaded. -->
+    <Menu.Item value="engine-quarto" class="menuitem" disabled>
+      <span class="w-4">✓</span>{localExecution && quartoPreviewMode === "quarto" ? "Quarto" : "Markdown"}
     </Menu.Item>
   {:else if displayedFormat === "typst"}
-    <!-- The same two-way choice, for a Typst document: "Typst preview" is
-         this browser's own rendering (unchanged from before this choice
-         existed); "Calepin preview" runs the document's chunks with Calepin
-         on this computer, through the local app, and shows the PDF it
-         delivers. HTML is always the browser Typst renderer, even when the
-         remembered companion mode is Calepin. -->
-    <Menu.Item value="preview-typst" class="menuitem">
-      <span class="w-4">{typstPreviewMode === "typst" || typstOutput === "html" ? "✓" : ""}</span>Typst
-    </Menu.Item>
-    <Menu.Item value="preview-calepin" class="menuitem" disabled={typstOutput === "html"}>
-      <span class="w-4">{typstPreviewMode === "calepin" ? "✓" : ""}</span>Calepin
+    <!-- The same, for a Typst document: this browser's own Typst rendering,
+         or the PDF Calepin delivers after running the document's chunks on
+         this computer. HTML is always the browser Typst renderer, even while
+         local execution is on. -->
+    <Menu.Item value="engine-typst" class="menuitem" disabled>
+      <span class="w-4">✓</span>{localExecution && typstPreviewMode === "calepin" && typstOutput !== "html" ? "Calepin" : "Typst"}
     </Menu.Item>
   {:else if displayedFormat === "latex"}
     {#each [["auto", "Automatic"], ["pdflatex", "pdfLaTeX"], ["xelatex", "XeLaTeX"], ["lualatex", "LuaLaTeX"]] as [engine, label]}
@@ -2926,6 +2964,17 @@
   <Menu.Item value="preview-file" class="menuitem" disabled={!canPreviewFile}>Preview this file</Menu.Item>
   <hr class="hr my-1" />
   {@render previewItems()}
+  {#if mayEdit}
+    <!-- Off for every document every time it is opened, including one
+         somebody else shared: what a document may run on this computer is
+         answered by the person sitting at it, in this session, and is never
+         remembered or carried by the document. -->
+    <div class="menu-section-label">Local execution</div>
+    <Menu.Item value="local-execution" class="menuitem">
+      <span class="w-4">{localExecution ? "✓" : ""}</span>Run this document's code here
+    </Menu.Item>
+    <hr class="hr my-1" />
+  {/if}
   {@render layoutItems()}
 {/snippet}
 
@@ -3085,7 +3134,7 @@
 
   {#snippet diagnosticsPanel()}
     <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0}
-      onretrylocal={() => sourceFormat === "quarto" ? setQuartoPreviewMode("quarto") : sourceFormat === "typst" ? setTypstPreviewMode("calepin") : ensureLocalApp()}
+      onretrylocal={() => localExecutionRelevant ? startLocalExecution() : ensureLocalApp()}
       main={previewMain || session?.mainPath() || ""}
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
       provenance={renderState.lastLatexResult?.provenance || null}
@@ -3211,8 +3260,8 @@
             so the preview stays empty until that is connected{sourceFormat === "quarto" ? " and allowed to run this document" : ""}.
           </p>
           <div class="notyet-actions">
-            {#if pdfNeedsQuartoConsent}
-              <button class="btn btn-sm preset-filled-primary-500" title={QUARTO_WARNING} onclick={() => (quartoConsent = true)}>Run Quarto locally</button>
+            {#if pdfNeedsLocalExecution}
+              <button class="btn btn-sm preset-filled-primary-500" onclick={() => (localExecutionConsent = true)}>Turn on local execution</button>
             {:else}
               <button class="btn btn-sm preset-filled-primary-500" onclick={() => void ensureLocalApp()}>Connect the local app</button>
             {/if}
@@ -3252,7 +3301,7 @@
       {/if}
       {#if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
         <p>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Use Quarto on this computer to generate the full preview."}</p>
-        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void runQuartoLocally()}>
+        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void startLocalExecution()}>
           {quartoNeedsLocalApp ? "Enable local rendering" : "Retry Quarto preview"}
         </button>
         {#if quartoNeedsLocalApp}<button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => openSettings("local")}>Install or configure companion</button>{/if}
@@ -3284,8 +3333,8 @@
     {/if}
   {/snippet}
   {#snippet previewStatusControl()}
-    {#if sourceFormat === "quarto" && mayEdit && !quartoExecutionApproved}
-      <button class="btn btn-sm preset-filled-primary-500" title={QUARTO_WARNING} onclick={() => (quartoConsent = true)}>Run Quarto locally</button>
+    {#if sourceFormat === "quarto" && mayEdit && !localExecution}
+      <button class="btn btn-sm preset-filled-primary-500" onclick={() => (localExecutionConsent = true)}>Turn on local execution</button>
     {:else}
       <PreviewStatus label={previewStatusLabel} busy={previewBusy}
         tone={previewProblem ? "error" : "neutral"}>
@@ -3427,11 +3476,11 @@
   {/snippet}
 </Modal>
 
-<Modal bind:open={quartoConsent} title="Run Quarto on this computer?"
-  description="{QUARTO_WARNING} Only continue for a document whose authors you trust.">
+<Modal bind:open={localExecutionConsent} title="Run this document's code on this computer?"
+  description="{LOCAL_EXECUTION_WARNING} Only turn this on for a document whose authors you trust.">
   {#snippet footer()}
-    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (quartoConsent = false)}>Cancel</button>
-    <button type="button" class="btn preset-filled-primary-500" onclick={() => void runQuartoLocally()}>Run Quarto locally</button>
+    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (localExecutionConsent = false)}>Cancel</button>
+    <button type="button" class="btn preset-filled-primary-500" onclick={() => void startLocalExecution()}>OK</button>
   {/snippet}
 </Modal>
 

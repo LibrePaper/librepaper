@@ -455,6 +455,48 @@ the editor. A browser test does, and it does not come up:
   a real fault in how the editor is wired or a test that edits before the view
   has caught up. Until that is known, the binding is not shown to work.
 
+### 2.1 The binding is where this now stands
+
+`loro-codemirror` 0.3.3 cannot keep several editors on one document in step,
+and the fault is in the package rather than in how it is called. Its sync
+plugin, on an imported change (`dist/sync.js`):
+
+```js
+for (let { diff, target } of e.events) {
+    const text = this.getTextFromDoc(this.doc);
+    if (diff.type !== "text") return;      // not `continue`
+    if (target !== text.id) return;        // not `continue`
+    ...
+    this.view.dispatch({ changes, ... });  // inside the loop
+}
+```
+
+Three problems, in order of how much they matter:
+
+1. **`return` where `continue` belongs.** An import that touches anything other
+   than this editor's own text abandons the whole batch. Our documents are a
+   map of files, so almost every real update carries a map event alongside the
+   text one — and the text change is dropped.
+2. **The dispatch is inside the loop**, while `changes` and `pos` are declared
+   outside it. Two events for one text dispatch the accumulated list twice, so
+   the second application lands past the end of the document. That is the
+   `Invalid position 22 in document of length 17` the editor's browser test
+   still fails with.
+3. **`getTextFromDoc` is consulted per event but the plugin is not rebuilt when
+   the editor changes file**, so a view that has switched files can hold a
+   closure over the text it used to show.
+
+None of this is reachable from outside the package: the loop is private to the
+plugin. So §10's "adopted as-is, and the editor gives up what it cannot do" has
+met something it cannot give up — several editors on one document, in step, is
+the feature.
+
+The choice is the one §6 Phase 2's original gate named and that §10 tried to
+avoid: patch it and upstream, or fork it deliberately. It should be taken with
+the knowledge that the package has not moved since October 2025 while its
+ProseMirror sibling has, so an upstream fix may be slow to arrive even if it is
+accepted.
+
 The lesson is worth keeping: the gate says cursors, remote edits, undo grouping
 and multi-file switching behave as today, and nothing that ran was capable of
 telling us whether they did. A suite that is green while the editor cannot

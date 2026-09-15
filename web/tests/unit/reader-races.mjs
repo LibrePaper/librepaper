@@ -199,7 +199,7 @@ const preview = (values = {}) => {
     latexOutput: "pdf",
     typstOutput: "pdf",
     buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
-    quartoExecutionApproved: true,
+    localExecution: true,
     livePreviewOwnsPane: false,
     ...values.facts,
   };
@@ -657,7 +657,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 
   // And a reader who has not approved execution gets the Markdown it is,
   // rather than code this browser was never given permission to run.
-  harness.facts.quartoExecutionApproved = false;
+  harness.facts.localExecution = false;
   await harness.paint();
   assert.deepEqual(builds.at(-1), { selection: "tool", backend: "browser", tool: "markdown", output: "html" });
 }
@@ -940,22 +940,25 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   const commands = [];
   const ctx = context({
     previewThisFile: () => commands.push('file'),
-    setQuartoPreviewMode: mode => commands.push(mode),
-    setTypstPreviewMode: mode => commands.push(mode),
+    toggleLocalExecution: () => commands.push('local-execution'),
     setLatexOutput: mode => commands.push(`latex-${mode}`),
     chose: value => commands.push(value),
     FILE_COMMANDS: [], chooseToolCommand: () => { throw Error('preview dispatched to Tools'); },
   });
   vm.runInContext(body('  function chooseViewCommand(value)', '  // The File menu.'), ctx);
   vm.runInContext(body('  function chooseCompactCommand(value)', '  /* ------------------------------------------------------------------- boot */'), ctx);
-  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("preview-quarto"); chooseCompactCommand("preview-markdown"); chooseCompactCommand("preview-typst"); chooseCompactCommand("preview-calepin"); chooseViewCommand("layout-split")', ctx);
-  assert.deepEqual(commands, ['file','quarto','markdown','typst','calepin','layout-split']);
+  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("local-execution"); chooseCompactCommand("local-execution"); chooseViewCommand("layout-split")', ctx);
+  assert.deepEqual(commands, ['file','local-execution','local-execution','layout-split']);
   vm.runInContext('chooseViewCommand("preview-latex-html"); chooseCompactCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
   const view = body('{#snippet viewItems()}', '{#snippet toolItems()}');
   const tools = body('{#snippet toolItems()}', '<Nav {me} documentation={false}>');
   assert.match(view, /Preview this file/);
   assert.match(view, /@render previewItems\(\)/);
+  // Local execution is its own section of the View menu, not another engine.
+  assert.match(view, /menu-section-label">Local execution<\/div>/);
+  assert.match(view, /value="local-execution"/);
+  assert.doesNotMatch(reader, /preview-quarto|preview-calepin|preview-markdown|preview-typst"/);
   assert.doesNotMatch(tools, /preview-/);
   assert.match(reader, /icon="eye" label="Preview this file"/);
 }

@@ -31,6 +31,13 @@ export default defineConfig({
   // The pages are served from the site root by the Go-free Rust server, which
   // knows nothing about this build beyond where the files are.
   base: "/",
+  resolve: {
+    // Loro, to the build that does not block the main thread. See
+    // src/lib/loro-web.js for what the default resolution does instead. The
+    // pattern is anchored so the shim's own `loro-crdt/web` import, and
+    // `loro-crdt/base64`, are left alone.
+    alias: [{ find: /^loro-crdt$/, replacement: resolve(import.meta.dirname, "src/lib/loro-web.js") }],
+  },
   build: {
     outDir: resolve(import.meta.dirname, "dist"),
     emptyOutDir: false, // the wasm modules and the README live there too

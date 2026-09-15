@@ -143,11 +143,17 @@ export function createPreviewRenderer({
         const options = { ...(manual ? { manual: true } : {}) };
         if (htmlPreview) options.format = "html";
         const current = facts();
-        // A Quarto document nobody has approved for execution is drawn as the
-        // Markdown it is, rather than by running code this reader never
-        // agreed to run.
-        const build = format === "quarto" && !current.quartoExecutionApproved
-          ? { selection: "tool", backend: "browser", tool: "markdown", output: "html" }
+        // Local execution is a choice this page session makes and never
+        // remembers, so a remembered preference for a tool that runs the
+        // document -- Quarto, Calepin -- is ignored until it is turned on. A
+        // Quarto document is then drawn as the Markdown it is, and a Typst
+        // one by this browser's own renderer, rather than by running code
+        // this reader never agreed to run.
+        const executes = format === "quarto" || ["quarto", "calepin"].includes(current.buildPreferences.tool);
+        const build = executes && !current.localExecution
+          ? (format === "typst"
+              ? { selection: "tool", backend: "browser", tool: "typst", output: current.buildPreferences.output }
+              : { selection: "tool", backend: "browser", tool: "markdown", output: "html" })
           : current.buildPreferences;
         rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug });
         debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");

@@ -1,8 +1,15 @@
 // Owns one room and one Yjs collaboration session. Reader keeps the domain
 // callbacks and rendering state; this module owns sockets, retries, metadata
 // checks, and all observers attached to the session.
+//
+// `collab` is handed in rather than imported. It is the only door to
+// loro-crdt, and loro-crdt is three megabytes of wasm: importing it here would
+// put the CRDT on the critical path of every reader, including the ones who
+// have a published document and no source room to join at all. The caller
+// loads it -- with a dynamic `import()` -- on the one path that needs it, so
+// everything below stays synchronous and the bytes stay off a reader's first
+// paint.
 import { openRoom as defaultOpenRoom } from "../room.js";
-import * as defaultCollab from "../collab.js";
 import { keyHeaders } from "../api.js";
 import { assertSameProject, projectIdentity } from "../project-identity.js";
 import { createGeneration } from "./generation.js";
@@ -19,7 +26,7 @@ export function createReaderCollaboration({
   key = "",
   fetcher = globalThis.fetch,
   openRoom = defaultOpenRoom,
-  collab = defaultCollab,
+  collab,
   getIdentity = () => "",
   getCanEdit = () => false,
   onMessage = () => {},

@@ -23,13 +23,25 @@ const entry = join(temporary, "entry.js");
 const port = 19000 + Math.floor(Math.random() * 1000);
 
 const source = `
-// Yjs import removed - using Loro now
+import { LoroDoc } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
 import { undoManagerStateField } from ${JSON.stringify(join(root, "web/node_modules/loro-codemirror/dist/undo.js"))};
 // The binding offers whether an undo is available, not how many are stacked
 // up. What these checks are really about is whether the history survived, so
 // they ask that instead.
+// A change from somebody else, arriving the way one actually does: made on a
+// separate document and imported. Editing this browser's own document instead
+// would be a local change, which the binding rightly ignores -- the old Yjs
+// version could label a local transaction "remote", and Loro has no such
+// pretence.
+const fromAPeer = (target, edit) => {
+  const peer = new LoroDoc();
+  peer.import(target.export({ mode: "update" }));
+  edit(peer);
+  peer.commit();
+  target.import(peer.export({ mode: "update", from: target.oplogVersion() }));
+};
 const undoDepth = (state) => Boolean(state.field(undoManagerStateField, false)?.canUndo());
 import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEditor.svelte"))};
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
@@ -66,8 +78,7 @@ window.editorCheck = async () => {
   const secondText = EditorView.findFromDOM(document.querySelector(".cm-editor")).state.doc.toString();
 
   // A peer changes A while this browser is looking at B.
-  session.textOf(firstFile).insert(0, "REMOTE ");
-  session.doc.commit();
+  fromAPeer(session.doc, (peer) => peer.getMap("files").get(firstFile).insert(0, "REMOTE "));
   component.$set({ file: firstFile });
   await tick();
   await tick();
@@ -95,9 +106,7 @@ window.remoteUndoCheck = async () => {
   });
   await tick();
   const view = EditorView.findFromDOM(document.querySelectorAll(".cm-editor")[1]);
-  const remoteOrigin = {};
-  text.insert(0, "REMOTE ");
-  value.doc.commit();
+  fromAPeer(value.doc, (peer) => peer.getMap("files").get(textId).insert(0, "REMOTE "));
   await tick();
   view.focus();
   const press = (key, options = {}) => view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
@@ -178,7 +187,7 @@ window.mergeUndoCheck = async () => {
   const host = document.createElement("section");
   document.body.append(host);
   const mergeComponent = createClassComponent({ component: MergeEditor, target: host,
-    props: { oldText: "alpha", newText: "alpha", liveText: text, awareness: value.awareness, editable: true },
+    props: { oldText: "alpha", newText: "alpha", liveText: text, loroDoc: value.doc, ephemeral: value.ephemeral, editable: true },
   });
   await tick();
   const views = [...host.querySelectorAll(".cm-editor")].map((el) => EditorView.findFromDOM(el));
@@ -193,8 +202,7 @@ window.mergeUndoCheck = async () => {
   const errors = [];
   const onError = (event) => errors.push(event.message);
   window.addEventListener("error", onError);
-  text.insert(0, "REMOTE ");
-  value.doc.commit();
+  fromAPeer(value.doc, (peer) => peer.getMap("files").get(id).insert(0, "REMOTE "));
   press(views[0], "z");
   press(views[1], "z");
   const remoteOnly = text.toString();

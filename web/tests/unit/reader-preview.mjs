@@ -46,29 +46,38 @@ assert.doesNotMatch(readerSource, /nothing to jump to here/);
 // diagnostics rather than by blanking the frame. The render itself is a
 // module now, so this is asked of the module.
 assert.match(previewSource, /const failed = hasError[\s\S]*?severity: "error"[\s\S]*?diagnostics\.rendered\(\{ page: null, diagnostics: failed \}\)/);
-assert.match(readerSource, /let quartoExecutionApproved = \$state\(false\)/);
-assert.match(readerSource, /async function runQuartoLocally\(\)[\s\S]*?await setQuartoPreviewMode\("quarto"\)[\s\S]*?quartoExecutionApproved = true/);
-assert.match(readerSource, /quartoExecutionApproved = true;\n  \}/);
-assert.match(readerSource, /Quarto can execute arbitrary code[\s\S]*?Run Quarto locally/);
+// Running a document's code is one session-scoped choice covering both local
+// tools, off every time any document is opened -- including a shared one,
+// whose remembered build preference must not turn it on.
+assert.match(readerSource, /let localExecution = \$state\(false\)/);
+assert.match(readerSource, /async function startLocalExecution\(\)[\s\S]*?localExecution = true;[\s\S]*?setQuartoPreviewMode\("quarto"\)[\s\S]*?setTypstPreviewMode\("calepin"\)/);
+assert.match(readerSource, /async function stopLocalExecution\(\)\s*\{\s*localExecution = false;[\s\S]*?setQuartoPreviewMode\("markdown"\)[\s\S]*?setTypstPreviewMode\("typst"\)/);
+// It is offered under its own heading in the View menu, with a check mark,
+// and choosing it asks rather than acts.
+assert.match(readerSource, /menu-section-label">Local execution<\/div>\s*<Menu\.Item value="local-execution"[\s\S]*?\{localExecution \? "✓" : ""\}/);
+assert.match(readerSource, /const toggleLocalExecution = \(\) => \{\s*if \(localExecution\) void stopLocalExecution\(\);\s*else localExecutionConsent = true;/);
 // The control asks before it runs: the warning is a dialog somebody has to
 // answer, not a tooltip a mouse might hover over.
-assert.match(readerSource, /\{#snippet previewStatusControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !quartoExecutionApproved\}[\s\S]*?<button[\s\S]*?quartoConsent = true[\s\S]*?>Run Quarto locally<\/button>/);
-assert.match(readerSource, /<Modal bind:open=\{quartoConsent\}[\s\S]*?QUARTO_WARNING[\s\S]*?runQuartoLocally\(\)/);
+assert.match(readerSource, /\{#snippet previewStatusControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !localExecution\}[\s\S]*?<button[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>/);
+assert.match(readerSource, /<Modal bind:open=\{localExecutionConsent\}[\s\S]*?LOCAL_EXECUTION_WARNING[\s\S]*?>Cancel<\/button>[\s\S]*?startLocalExecution\(\)[\s\S]*?>OK<\/button>/);
+assert.match(readerSource, /const LOCAL_EXECUTION_WARNING = "Quarto and Calepin execution can run arbitrary code/);
 // A PDF from Markdown or Quarto source is a local build, and the preview
 // header -- where the gesture that starts one lives -- is hidden for as long
 // as nothing has been painted. So the card standing in for the missing page
 // has to carry it itself, rather than claim a browser render is under way
 // that can never finish.
 assert.match(readerSource, /const pdfNeedsLocalTool = \$derived\(\s*pdfOutput && \["markdown", "quarto"\]\.includes\(sourceFormat\)/);
-assert.match(readerSource, /\{#if pdfNeedsLocalTool\}[\s\S]*?<h2 class="h4">PDF needs[\s\S]*?\{#if pdfNeedsQuartoConsent\}[\s\S]*?quartoConsent = true[\s\S]*?>Run Quarto locally<\/button>[\s\S]*?Preview as HTML instead<\/button>[\s\S]*?\{:else\}\s*<h2 class="h4">Not yet rendered<\/h2>/);
+assert.match(readerSource, /\{#if pdfNeedsLocalTool\}[\s\S]*?<h2 class="h4">PDF needs[\s\S]*?\{#if pdfNeedsLocalExecution\}[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>[\s\S]*?Preview as HTML instead<\/button>[\s\S]*?\{:else\}\s*<h2 class="h4">Not yet rendered<\/h2>/);
 // Choosing Quarto's own preview is a choice of tool, not of output: a PDF
 // that was asked for survives enabling the thing that can produce it.
 assert.match(readerSource, /async function setQuartoPreviewMode\(mode\)[\s\S]*?output: mode === "markdown" \? "html" : \(buildPreferences\.output \|\| "html"\)/);
-// A Quarto document nobody approved for execution is drawn as the Markdown
-// it is. The condition used to carry a `typeof` guard, because the only way
-// to test it was to slice it out of the component into a context that had
-// never declared the name; it is an argument now.
-assert.match(previewSource, /format === "quarto" && !current\.quartoExecutionApproved[\s\S]*?backend: "browser", tool: "markdown"/);
+// A document nobody approved for execution is drawn by the browser: Quarto
+// as the Markdown it is, Typst by this browser's own renderer, whatever tool
+// a remembered preference asks for. The condition used to carry a `typeof`
+// guard, because the only way to test it was to slice it out of the component
+// into a context that had never declared the name; it is an argument now.
+assert.match(previewSource, /const executes = format === "quarto" \|\| \["quarto", "calepin"\]\.includes\(current\.buildPreferences\.tool\)/);
+assert.match(previewSource, /executes && !current\.localExecution[\s\S]*?backend: "browser", tool: "typst"[\s\S]*?backend: "browser", tool: "markdown"/);
 // The paged controls are the preview header's, and the frame is what says
 // what they should read: a zoom the frame could not honour -- a pane too
 // narrow for 150% -- must not leave the header claiming it did.
