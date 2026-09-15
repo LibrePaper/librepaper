@@ -59,7 +59,7 @@ try {
   await tab.resize(1100, 800);
   await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("landing upload form", () => tab.evaluate("Boolean(document.querySelector('input[type=file]'))"));
-  await tab.evaluate(`(() => { const raw = Uint8Array.from(atob(${JSON.stringify(encoded)}), c => c.charCodeAt(0)); const input = document.querySelector('input[type=file]'); const transfer = new DataTransfer(); transfer.items.add(new File([raw], 'project.zip', {type:'application/zip'})); input.files = transfer.files; input.dispatchEvent(new Event('change', {bubbles:true})); })()`);
+  await tab.evaluate(`(() => { const raw = Uint8Array.from(atob(${JSON.stringify(encoded)}), c => c.charCodeAt(0)); const input = document.querySelector('input[type=file]'); const transfer = new DataTransfer(); transfer.items.add(new File([raw], 'project.zip', {type:'application/zip'})); input.files = transfer.files; input.dispatchEvent(new Event('input', {bubbles:true})); input.dispatchEvent(new Event('change', {bubbles:true})); })()`);
   await until("archive main selector", () => tab.evaluate("Boolean(document.querySelector('select option[value=\"main.md\"]'))"));
   assert.equal(await tab.evaluate("document.querySelector('select').value"), "main.md");
   await tab.evaluate("document.querySelector('select').value='other.md'; document.querySelector('select').dispatchEvent(new Event('change',{bubbles:true}))");
@@ -75,7 +75,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("fresh upload form", () => tab.evaluate("Boolean(document.querySelector('input[type=file]'))"));
   const ambiguous = Buffer.from(await zip({ "first.md": "# First", "second.md": "# Second", "refs.bib": "@book{ref,title={Reference}}" }).arrayBuffer()).toString("base64");
-  await tab.evaluate(`(() => { const input = document.querySelector('input[type=file]'); const transfer = new DataTransfer(); transfer.items.add(new File([Uint8Array.from(atob(${JSON.stringify(ambiguous)}), c => c.charCodeAt(0))], 'ambiguous.zip')); input.files = transfer.files; input.dispatchEvent(new Event('change', {bubbles:true})); })()`);
+  await tab.evaluate(`(() => { const input = document.querySelector('input[type=file]'); const transfer = new DataTransfer(); transfer.items.add(new File([Uint8Array.from(atob(${JSON.stringify(ambiguous)}), c => c.charCodeAt(0))], 'ambiguous.zip')); input.files = transfer.files; input.dispatchEvent(new Event('input', {bubbles:true})); input.dispatchEvent(new Event('change', {bubbles:true})); })()`);
   await until("ambiguous selector", () => tab.evaluate("Boolean(document.querySelector('select option[value=\"second.md\"]'))"));
   assert.equal(await tab.evaluate("document.querySelector('select').value"), "");
   assert.equal(await tab.evaluate("document.querySelector('button[type=submit]').disabled"), true);
@@ -88,7 +88,7 @@ try {
   // The original single-file upload still sends the file without a main field.
   await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("single file form", () => tab.evaluate("Boolean(document.querySelector('input[type=file]'))"));
-  await tab.evaluate("(()=>{const input=document.querySelector('input[type=file]');const transfer=new DataTransfer();transfer.items.add(new File(['# Single document'],'single.md'));input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()");
+  await tab.evaluate("(()=>{const input=document.querySelector('input[type=file]');const transfer=new DataTransfer();transfer.items.add(new File(['# Single document'],'single.md'));input.files=transfer.files;input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));})()");
   await until("single file ready", () => tab.evaluate("Boolean(document.querySelector('button[type=submit]') && !document.querySelector('button[type=submit]').disabled)"));
   await tab.evaluate("document.querySelector('form').requestSubmit()");
   await until("single file uploaded", () => tab.evaluate("window.uploadEntries.length === 2"));

@@ -1,4 +1,5 @@
 <script>
+  import { SegmentedControl } from "@skeletonlabs/skeleton-svelte";
   import { day as dayOf } from "../../lib/dates.js";
   // Presentation only: the shared source controller owns selection.
   import { shortSha, timeline } from "../../lib/history.js";
@@ -18,6 +19,10 @@
     currentLabel = "",
   } = $props();
 
+  const FILTERS = [
+    { id: "all", label: "All versions" },
+    { id: "named", label: "Named versions" },
+  ];
   let filter = $state("all");
   let timezone = $state(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
 
@@ -168,14 +173,21 @@
     <p class="panel-muted px-2 py-1 text-xs" role="status">Live edits are still being saved.</p>
   {/if}
   {#if checkpoints.length > 0}
+    <!-- Two choices, both worth reading at a glance: a segmented control
+         rather than a menu that hides one of them behind a click. -->
     <div class="history-filter px-2 py-1">
-      <label>
-        <span class="sr-only">Filter version history</span>
-        <select class="select" aria-label="Filter version history" bind:value={filter}>
-          <option value="all">All versions</option>
-          <option value="named">Named versions</option>
-        </select>
-      </label>
+      <SegmentedControl class="history-filter-group" value={filter} onValueChange={({ value }) => (filter = value)}>
+        <SegmentedControl.Label class="sr-only">Filter version history</SegmentedControl.Label>
+        <SegmentedControl.Control class="history-filter-control">
+          <SegmentedControl.Indicator class="history-filter-indicator" />
+          {#each FILTERS as choice (choice.id)}
+            <SegmentedControl.Item class="history-filter-item" value={choice.id}>
+              <SegmentedControl.ItemText>{choice.label}</SegmentedControl.ItemText>
+              <SegmentedControl.ItemHiddenInput />
+            </SegmentedControl.Item>
+          {/each}
+        </SegmentedControl.Control>
+      </SegmentedControl>
     </div>
     {#if filter === "named" && namedCount === 0}
       <p class="panel-muted px-2 py-1 text-sm" role="status">No named versions yet. Name a version to find it here.</p>

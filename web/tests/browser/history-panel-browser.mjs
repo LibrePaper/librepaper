@@ -96,13 +96,18 @@ window.historyPanelCheck = async () => {
   const currentBox = currentRow.getBoundingClientRect();
   check(document.elementFromPoint(currentBox.left + 10, currentBox.top + currentBox.height / 2)?.closest('.timeline-point') === currentRow,
     'selected-version details do not intercept timeline controls');
-  const filter = document.querySelector('[aria-label="Filter version history"]');
-  check([...filter.options].map((option) => option.value).join() === 'all,named',
+  const group = document.querySelector('[role="radiogroup"]');
+  check(group && group.getAttribute('aria-labelledby')
+    && document.getElementById(group.getAttribute('aria-labelledby'))?.textContent.trim() === 'Filter version history',
+    'the filter names itself for a screen reader');
+  const choices = [...group.querySelectorAll('input[type="radio"]')];
+  check(choices.map((radio) => radio.value).join() === 'all,named',
     'the only filter left is the named one');
-  filter.value = 'named'; filter.dispatchEvent(new Event('change', { bubbles: true })); await flush();
+  const pick = (value) => { choices.find((radio) => radio.value === value).click(); };
+  pick('named'); await flush();
   const filtered = [...document.querySelectorAll('[data-sha]')].map((node) => node.dataset.sha);
   check(filtered.length === 3 && filtered[0] === points[4].sha && filtered[1] === points[1].sha && filtered[2] === points[0].sha, 'named filter preserves chronological order across days, and keeps the selected version');
-  filter.value = 'all'; filter.dispatchEvent(new Event('change', { bubbles: true })); await flush();
+  pick('all'); await flush();
   component.$set({ viewing: '' }); await flush();
   const currentName = document.querySelector('[aria-label="Name the current version"]');
   check(currentName, 'current version has a naming action'); currentName.click(); await flush();

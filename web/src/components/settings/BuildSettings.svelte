@@ -1,4 +1,5 @@
 <script>
+  import { Switch } from "@skeletonlabs/skeleton-svelte";
   import SettingRow from "./SettingRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
@@ -107,7 +108,14 @@
     {#each presetSchema as option (option.name)}
       <SettingRow title={option.label || option.name} description={option.description || ""}>
         {#if option.kind === "boolean"}
-          <input type="checkbox" aria-label={option.label || option.name} checked={Boolean(preferences.options?.[option.name])} onchange={(event) => setPresetOption(option.name, event.currentTarget.checked)} />
+          <!-- The row's title is the visible name, so the switch's own label
+               is there for a screen reader alone. -->
+          <Switch checked={Boolean(preferences.options?.[option.name])}
+                  onCheckedChange={({ checked }) => setPresetOption(option.name, checked)}>
+            <Switch.Label class="sr-only">{option.label || option.name}</Switch.Label>
+            <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
+            <Switch.HiddenInput />
+          </Switch>
         {:else if option.kind === "enum" && Array.isArray(option.values)}
           <select class="select setting-select" aria-label={option.label || option.name} value={preferences.options?.[option.name] ?? option.values[0]} onchange={(event) => setPresetOption(option.name, event.currentTarget.value)}>
             {#each option.values as value}<option value={value}>{value}</option>{/each}

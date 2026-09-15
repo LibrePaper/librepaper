@@ -730,7 +730,7 @@ impl Server {
                             })
                         };
                         let payload = match incoming.kind.as_str() {
-                            "proposal-open" => match room.open_proposal(&by, socket_id).await {
+                            "proposal-open" => match room.open_proposal(&by).await {
                                 Ok(id) => json!({
                                     "type": "proposal-opened", "proposal_id": id,
                                     "request_id": incoming.request_id,

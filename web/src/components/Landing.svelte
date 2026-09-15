@@ -2,6 +2,7 @@
   // The landing page: what you may publish, and the projects you have. A
   // project is a document and the directory around it -- its chapters and its
   // figures -- and it is found here by any of them.
+  import { FileUpload } from "@skeletonlabs/skeleton-svelte";
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -44,13 +45,11 @@
   let chosen = $state(null);
   let title = $state("");
   let busy = $state(false);
-  let dragging = $state(false);
   let shared = $state(null);
   let confirming = $state(false);
   let confirmText = $state("");
   let sharing = $state(false);
   let pendingDeletion = [];
-  let fileInput = $state(null);
   let titleInput = $state(null);
   let chooseSerial = 0;
   let parsing = $state(false);
@@ -367,9 +366,10 @@
     title = "";
   }
 
+  // A document dropped anywhere on the page, not only on the zone: the zone
+  // is where it says to drop one, not the only place that takes one.
   function drop(event) {
     event.preventDefault();
-    dragging = false;
     const file = event.dataTransfer?.files?.[0];
     if (file) choose(file);
   }
@@ -447,36 +447,33 @@
     {#if me.can_publish}
       <form onsubmit={submit}>
         {#if !chosen}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="card preset-outlined-surface-300-700 flex flex-col items-center gap-3 border-dashed p-8 text-center transition-colors {dragging
-              ? 'preset-tonal-primary'
-              : ''}"
-            ondragenter={(event) => { event.preventDefault(); dragging = true; }}
-            ondragover={(event) => { event.preventDefault(); dragging = true; }}
-            ondragleave={() => (dragging = false)}
-            ondrop={drop}
+          <!-- The zone, its button and its input are Skeleton's, which is
+               Zag's: the drag counting that a plain `dragleave` gets wrong
+               over child elements, the button that opens the picker without
+               reaching for the input, and the labelling between the three.
+               What a file has to be is still ours -- `valid` says why a file
+               was turned away in words, where `accept` and `maxFileSize`
+               would only say that it was. -->
+          <FileUpload
+            maxFiles={1}
+            accept={config.extensions.join(",") + ",.zip,text/html"}
+            onFileAccept={({ files }) => files[0] && choose(files[0])}
+            onFileReject={({ files }) => valid(files[0]?.file)}
           >
-            <Icon name="upload" size={28} />
-            <p class="text-lg">Drop a document here to start a project</p>
-            <button type="button" class="btn preset-filled-primary-500" onclick={() => fileInput.click()}>
-              Choose a file
-            </button>
-            <small class="text-surface-600-400">
-              {config.extensions.join(" or ")} files or .zip projects. Document text up to {maxLabel}.
-            </small>
-            {#if parsing}
-              <p class="text-sm text-surface-600-400" role="status">Reading project archive…</p>
-              <button type="button" class="btn preset-outlined-surface-300-700" onclick={cancelChoice}>Cancel</button>
-            {/if}
-            <input
-              type="file"
-              bind:this={fileInput}
-              hidden
-              accept={config.extensions.join(",") + ",.zip,text/html"}
-              onchange={(event) => event.currentTarget.files[0] && choose(event.currentTarget.files[0])}
-            />
-          </div>
+            <FileUpload.Dropzone disableClick class="card preset-outlined-surface-300-700 flex flex-col items-center gap-3 border-dashed p-8 text-center transition-colors data-[dragging]:preset-tonal-primary">
+              <Icon name="upload" size={28} />
+              <FileUpload.Label class="text-lg">Drop a document here to start a project</FileUpload.Label>
+              <FileUpload.Trigger class="btn preset-filled-primary-500">Choose a file</FileUpload.Trigger>
+              <small class="text-surface-600-400">
+                {config.extensions.join(" or ")} files or .zip projects. Document text up to {maxLabel}.
+              </small>
+              {#if parsing}
+                <p class="text-sm text-surface-600-400" role="status">Reading project archive…</p>
+                <button type="button" class="btn preset-outlined-surface-300-700" onclick={cancelChoice}>Cancel</button>
+              {/if}
+            </FileUpload.Dropzone>
+            <FileUpload.HiddenInput />
+          </FileUpload>
         {:else}
           <div class="card preset-outlined-surface-300-700 p-6">
             <Stack gap={3}>

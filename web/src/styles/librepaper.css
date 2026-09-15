@@ -433,7 +433,17 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
   font-weight: 500;
 }
 .history-filter { display: flex; justify-content: space-between; gap: --spacing(2); }
-.history-filter select { width: auto; min-height: 2rem; font-size: var(--panel-meta-size); }
+/* Both choices on the rail at once. The indicator is the moving pill Zag
+   measures and positions; the items sit above it, so the selected one reads
+   against the pill rather than behind it. */
+.history-filter-control { position: relative; display: flex; gap: --spacing(1); padding: --spacing(1); border-radius: var(--radius-container); background: var(--color-row-hover); font-size: var(--panel-meta-size); }
+/* Zag measures the checked item and publishes the rect as custom properties,
+   positioning the indicator's `left` itself; the other three are ours to
+   spend, so the pill takes the whole of the item it is under. */
+.history-filter-indicator { z-index: 0; top: var(--top); width: var(--width); height: var(--height); border-radius: var(--radius-base); background: var(--color-surface-50-950); box-shadow: var(--shadow-sm); }
+.history-filter-item { position: relative; z-index: 1; padding: --spacing(1) --spacing(3); border-radius: var(--radius-base); cursor: pointer; white-space: nowrap; color: var(--panel-muted); }
+.history-filter-item[data-state="checked"] { color: inherit; font-weight: 500; }
+.history-filter-item[data-focus-visible] { outline: 2px solid var(--color-primary-500); outline-offset: 1px; }
 
 /* Whatever is left when the document is not showing takes the room it would
    have had: the source if it is there, the comments otherwise. */
@@ -1041,6 +1051,20 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   outline: 2px solid var(--color-primary-500);
   outline-offset: -1px;
 }
+
+/* ------------------------------------------------------------- switches */
+/* The skin for Skeleton's switch, which is Zag's: a track and a thumb, and
+   every state read off a `data-` attribute rather than off the input, which
+   the machine hides. Written here rather than in either panel because the
+   changes panel and the settings dialog both wear it, and a switch that
+   differed between them would be two switches. */
+.switch { position: relative; flex: none; width: 1.8rem; height: 1rem; border-radius: 1rem; background: var(--color-surface-300-700); transition: background .15s; }
+.switch[data-state="checked"] { background: var(--color-primary-500); }
+.switch[data-focus-visible] { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
+.switch-thumb { position: absolute; width: .75rem; height: .75rem; left: .125rem; top: .125rem; border-radius: 50%; background: var(--color-surface-50-950); transition: transform .15s; }
+.switch-thumb[data-state="checked"] { transform: translateX(.8rem); }
+[data-scope="switch"][data-part="root"] { cursor: pointer; }
+[data-scope="switch"][data-part="root"][data-disabled] { cursor: default; opacity: .6; }
 
 /* ------------------------------------------------------------- settings */
 /* The settings dialog: a page-sized card (see Modal's `full`) holding a

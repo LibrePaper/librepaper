@@ -107,7 +107,12 @@
     openLintPanel,
   } from "@codemirror/lint";
   import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "loro-codemirror";
-  import { loroSyncAnnotation } from "loro-codemirror/dist/sync.js";
+  // The annotation loro-codemirror stamps on the transactions it applies
+  // itself, which is how a person's typing is told apart from a change
+  // arriving from a peer. The package publishes it from `dist/sync.js` alone
+  // and its `exports` map does not list that path, so it is reached by file
+  // rather than by name: `exports` gates bare specifiers, not paths.
+  import { loroSyncAnnotation } from "../../node_modules/loro-codemirror/dist/sync.js";
   import { UndoManager } from "loro-crdt";
 
   import { typstLanguage } from "../lib/typst-mode.js";
@@ -274,8 +279,9 @@
     const active = session.textOf(showing);
     const fromUnicode = active.convertPos(target.from, "utf16", "unicode") ?? target.from;
     const toUnicode = active.convertPos(target.to, "utf16", "unicode") ?? target.to;
-    const fromCursor = active.getCursor(fromUnicode, 0);
-    const toCursor = active.getCursor(toUnicode, 0);
+    // Reassigned below when the document moved while the item was fetched.
+    let fromCursor = active.getCursor(fromUnicode, 0);
+    let toCursor = active.getCursor(toUnicode, 0);
     const activeSession = session, activeFile = showing;
     try {
       const fetched = await zoteroItem(entry.zotero_item);

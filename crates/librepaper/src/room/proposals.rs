@@ -174,6 +174,28 @@ pub(crate) struct Decision<'a> {
     pub reviewer: PeerID,
 }
 
+/// A peer id for a branch that nothing else will use.
+///
+/// This is not a nicety. Loro names an operation by its peer and a counter that
+/// peer allocates, so two branches forked from the same point and claiming the
+/// same peer allocate the SAME names for different edits. Importing the second
+/// does not conflict and does not error: it is taken for an update already
+/// seen, and its operations are discarded in silence. Two people proposing a
+/// change to one paragraph would lose one of the proposals with nothing
+/// reported anywhere.
+///
+/// So a proposal mints its own peer when it opens. Borrowing one from the
+/// socket was the shape of that bug -- a socket can open more than one
+/// proposal, and did.
+fn fresh_peer() -> PeerID {
+    let bytes = crate::auth::random_bytes(8);
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&bytes);
+    // Peer 0 is Loro's own default, so taking it is the collision above with
+    // whoever else did not choose either.
+    PeerID::from_le_bytes(id) | 1
+}
+
 /// What the room does with a proposal, as opposed to what a document does with
 /// one.
 ///
@@ -203,11 +225,8 @@ impl super::Room {
     }
 
     /// Opens a proposal against the room's current state.
-    pub(crate) async fn open_proposal(
-        &self,
-        author: &str,
-        peer: PeerID,
-    ) -> Result<String, ProposalError> {
+    pub(crate) async fn open_proposal(&self, author: &str) -> Result<String, ProposalError> {
+        let peer = fresh_peer();
         let (catalog, document) = self.catalog_and_document()?;
         let base = {
             let state = self.state.lock().await;
@@ -575,5 +594,82 @@ mod tests {
             "Meanwhile.",
             "the concurrent edit survives"
         );
+    }
+}
+
+#[cfg(test)]
+mod peer_tests {
+    use super::*;
+
+    /// Two proposals against the same passage must both survive, intact.
+    ///
+    /// They will not if they share a peer id. Loro names an operation by its
+    /// peer and a counter that peer allocates, so two branches forked from one
+    /// point and claiming one peer allocate the same names for different edits.
+    /// Importing the second returns `Ok` and does not conflict, because the
+    /// names look like ones already seen. What comes out is not one proposal or
+    /// the other but a splice of both: text nobody wrote and nobody approved,
+    /// arrived at without a single error being reported.
+    #[test]
+    fn a_shared_peer_would_corrupt_two_proposals_into_neither() {
+        let room = session::new_doc();
+        room.set_peer_id(1).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+        let vv = session::encode_vector(&room);
+
+        // What the old code did: take the peer from the socket, so one socket
+        // opening two proposals gives both the same one.
+        let shared = 42;
+        let mut updates = Vec::new();
+        for wanted in ["The tabby sat.", "The lion sat."] {
+            let branch = room.fork();
+            branch.set_peer_id(shared).unwrap();
+            session::put_text(&branch, "main.md", wanted);
+            branch.commit();
+            updates.push(session::encode_diff(&branch, &vv).unwrap());
+        }
+        for update in &updates {
+            session::apply_update(&room, update).expect("neither import errors");
+        }
+        let got = session::texts_of(&room).get("main.md").cloned().unwrap();
+        assert!(
+            got != "The tabby sat." && got != "The lion sat.",
+            "a shared peer does not merely lose the second proposal -- it corrupts the text \
+             into one that nobody proposed. Got {got:?}, and neither author wrote that. \
+             Pinned so a change that reintroduces peer sharing fails here and not in a paper."
+        );
+
+        // What it does now: each proposal mints its own, so both arrive.
+        let fresh = session::new_doc();
+        fresh.set_peer_id(1).unwrap();
+        session::put_text(&fresh, "main.md", "The cat sat.");
+        fresh.commit();
+        let vv = session::encode_vector(&fresh);
+        let mut peers = Vec::new();
+        for wanted in ["The tabby sat.", "The lion sat."] {
+            let branch = fresh.fork();
+            let peer = fresh_peer();
+            peers.push(peer);
+            branch.set_peer_id(peer).unwrap();
+            session::put_text(&branch, "main.md", wanted);
+            branch.commit();
+            session::apply_update(&fresh, &session::encode_diff(&branch, &vv).unwrap()).unwrap();
+        }
+        assert_ne!(peers[0], peers[1], "each proposal mints its own peer");
+        let both = fresh.oplog_vv();
+        assert!(
+            both.get(&peers[0]).is_some() && both.get(&peers[1]).is_some(),
+            "both proposals' operations are in the graph"
+        );
+    }
+
+    #[test]
+    fn a_minted_peer_is_never_zero() {
+        // Zero is what a document that never chose gets, so taking it is a
+        // collision with everyone who did not choose either.
+        for _ in 0..64 {
+            assert_ne!(fresh_peer(), 0);
+        }
     }
 }

@@ -1,5 +1,5 @@
 <script>
-  import { Menu } from "@skeletonlabs/skeleton-svelte";
+  import { Menu, Switch } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
 
   let {
@@ -217,7 +217,16 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="panel changes-panel" role="application" tabindex="0" onkeydown={keydown} aria-label="Changes review" aria-keyshortcuts="ArrowDown ArrowUp J K A R">
   <header class="changes-header">
-    <div class="changes-title-row"><h2>Changes</h2><label class="tracking-toggle" title={canTrack ? "Track subsequent edits in this document" : "Editing is unavailable"}><span>Track changes</span><input type="checkbox" aria-label={`Track changes: ${tracking ? "On" : "Off"}`} checked={tracking} disabled={!canTrack} onchange={(event) => ontracking?.(event.currentTarget.checked)} /><span class="switch" aria-hidden="true"></span></label></div>
+    <!-- A real switch rather than a checkbox with a switch painted over it:
+         the state is the control's own, so the name no longer has to carry
+         "On" or "Off" for a screen reader to read it out. -->
+    <div class="changes-title-row"><h2>Changes</h2><Switch class="tracking-toggle" checked={tracking} disabled={!canTrack}
+      title={canTrack ? "Track subsequent edits in this document" : "Editing is unavailable"}
+      onCheckedChange={({ checked }) => ontracking?.(checked)}>
+      <Switch.Label>Track changes</Switch.Label>
+      <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
+      <Switch.HiddenInput />
+    </Switch></div>
     <div class="changes-meta" aria-live="polite">{allPending} pending{allRows.length !== allPending ? ` · ${allRows.length} total` : ""}{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}</div>
     <div class="filter-bar">
       <select aria-label="Change status" value={activeFilters.status} onchange={(event) => updateFilter("status", event)}><option value="pending">Pending</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="all">All statuses</option></select>
@@ -272,7 +281,9 @@
   .changes-header { position: sticky; top: 0; z-index: 2; flex: 0 0 auto; padding: var(--spacing); background: var(--color-sidebar); border-bottom: 1px solid var(--color-surface-200-800); }
   .changes-title-row, .filters, .row-head { display: flex; align-items: center; gap: var(--spacing); } .changes-title-row { flex-wrap: wrap; justify-content: space-between; } h2 { margin: 0; font-size: 1rem; }
   .changes-meta, .row-context, .row-status { color: var(--color-surface-500-400); font-size: .75rem; }
-  .tracking-toggle { display: flex; align-items: center; gap: .45rem; font-size: .78rem; cursor: pointer; } .tracking-toggle input { position: absolute; opacity: 0; pointer-events: none; } .switch { position: relative; width: 1.8rem; height: 1rem; border-radius: 1rem; background: var(--color-surface-300-700); transition: background .15s; } .switch::after { content: ""; position: absolute; width: .75rem; height: .75rem; left: .125rem; top: .125rem; border-radius: 50%; background: var(--color-surface-50-950); transition: transform .15s; } .tracking-toggle input:checked + .switch { background: var(--color-primary-500); } .tracking-toggle input:checked + .switch::after { transform: translateX(.8rem); } .tracking-toggle input:focus-visible + .switch { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
+  /* The track and thumb are `.switch` in librepaper.css, worn here and in the
+     settings dialog alike; this is only where the words sit beside them. */
+  .changes-panel :global(.tracking-toggle) { display: flex; align-items: center; gap: .45rem; font-size: .78rem; }
   /* The header of a panel that can be dragged down to fifteen rem: a row that
      insists on a width is a row that pushes the ••• button out of the column.
      So the status select takes what is left rather than asking for seven rem
