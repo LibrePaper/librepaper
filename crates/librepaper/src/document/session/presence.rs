@@ -10,9 +10,13 @@ use loro::awareness::{EphemeralStore, EphemeralSubscriber, LocalEphemeralCallbac
 use loro::{LoroValue, Subscription};
 use std::collections::HashMap;
 
-/// Peer presence timeout in milliseconds. Matches y-protocols' `outdatedTimeout` constant
-/// used in the browser's Awareness implementation. Entries are considered stale 30 seconds
-/// after their last update.
+/// How long a peer stays listed after its last word, in milliseconds.
+///
+/// Thirty seconds is long enough to ride out a laptop lid closing for a moment
+/// and short enough that somebody who has actually gone does not sit in the
+/// list looking present. The browser expires peers on the same number, so a
+/// collaborator disappears from both sides at roughly the same moment rather
+/// than lingering on one.
 const PRESENCE_TIMEOUT_MS: i64 = 30_000;
 
 /// Ephemeral presence state for peers in a document room.
