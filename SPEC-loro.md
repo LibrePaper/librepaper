@@ -577,7 +577,7 @@ Character-by-character typing, the way a paper is actually written:
 | heavily revised, 3 authors | 101 KB | 386,619 | **118 KB** | 248 KB |
 | rewritten many times, 3 authors | 104 KB | 1,049,312 | **286 KB** | 605 KB |
 
-A thinned snapshot is larger than the full operation log in every case.
+A thinned snapshot is larger than the full operation log in every case here.
 Contiguous keystrokes by one peer run-length-encode to a single run; a
 materialized state does not. A million keystrokes of history costs 286 KB,
 against a 16 MB admission ceiling and a 32 MB compressed base limit. This is the measurement §3.6 rests on.
@@ -603,9 +603,30 @@ today at any price.
 
 ### 7.4 Reproducing
 
-The harness replays one scripted edit stream into both libraries over prose
-drawn from `docs/`, and reports raw and compressed sizes per export mode. It
-is not yet in the repository; landing it under `tools/` is tracked in §9.
+`tools/measure` types prose from `docs/` into a document one character at a
+time and reports what it costs, for each of the questions above. Run it with
+`cargo run --release --manifest-path tools/measure/Cargo.toml`. It is outside
+the workspace for the reason `tools/fuzz` is: nothing that builds the binary
+should pull in a benchmark's dependencies.
+
+**It does not reproduce §7.2's strongest claim.** Typing 100 KB with three
+authors taking turns, the full history compresses to 32,984 bytes and a thinned
+snapshot to 31,078 — so thinning is *smaller* there, where §7.2 says it is
+larger in every case. The scenario is not one of §7.2's four (it is pure
+composition with no revision, and the numbers above were taken on a different
+corpus), so this does not refute those rows. What it does is retire the word
+"every".
+
+§3.6 does not move, because the size argument was never what it rested on.
+Thinning costs contract 6 and contract 7 outright — every past state reachable,
+and no retention window past which an offline client cannot merge — and buys,
+in the one case measured where it wins at all, about six per cent. A decision
+that would be wrong if a ratio moved by a tenth was not a decision about ratios.
+
+The first version of this harness typed one paragraph over and over, and 300 KB
+of it compressed to 228 bytes. Every ratio it produced was a measurement of the
+repetition rather than of the format. That is why it reads real prose, and it
+is worth knowing before trusting a number out of a harness like this one.
 
 ## 8. Testing
 
@@ -623,7 +644,8 @@ is not yet in the repository; landing it under `tools/` is tracked in §9.
 
 ## 9. Follow-ups, deliberately out of scope
 
-1. Land the measurement harness under `tools/` so §7 is reproducible.
+1. ~~Land the measurement harness under `tools/`~~ -- done, and §7.4 records
+   where it disagrees with §7.2.
 2. Rename the `y-*` wire messages (§5).
 3. Evaluate `LoroTree` to collapse `files` + `paths`.
 4. Reconsider checkpoint density now that contract 6 makes every intermediate

@@ -1,5 +1,6 @@
 <script>
-  import MergeEditor from "../MergeEditor.svelte";
+  let MergeEditor = $state(null);
+  $effect(() => { void import("../MergeEditor.svelte").then((m) => (MergeEditor = m.default)); });
   let { source, canEdit = false, onrestore } = $props();
   const result = $derived(source.result);
   const path = $derived(source.path);
@@ -56,9 +57,9 @@
     {:else if oldText === undefined && newText === undefined}
       <p role="status">{path ? "This file has no text source to display." : "This version has no source files."}</p>
     {:else}
-      <MergeEditor {path} oldText={oldText ?? ""} newText={newText ?? ""}
+      {#if MergeEditor}<MergeEditor {path} oldText={oldText ?? ""} newText={newText ?? ""}
         diff={result.diff} editable={false} baselineLabel={result.oldLabel} targetLabel={result.newLabel}
-        note={fileNote} />
+        note={fileNote} />{/if}
     {/if}
   {:else}
     <p role="status">Select a version to compare it with the current source.</p>

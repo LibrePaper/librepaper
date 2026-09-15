@@ -67,6 +67,12 @@ export async function signOut() {
   location.reload();
 }
 
+/// Asks the server to erase the signed-in account: what it owns is queued for
+/// deletion, its authorship elsewhere is unlinked, and the session is
+/// invalidated on the spot -- so this is the last request this browser makes
+/// as that account. A POST carrying the same header every state change does.
+export const eraseAccount = () => post("/api/account/erase");
+
 /// The one door. Which providers this deployment has is the server's business:
 /// this address is a redirect when there is one and a choice when there are
 /// two, so no page has to render a button per provider.

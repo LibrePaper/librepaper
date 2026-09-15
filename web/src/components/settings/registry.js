@@ -13,6 +13,9 @@ const build = ({ format, mayEdit }) => ["latex", "typst", "markdown", "quarto"].
 const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
 const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
 const local = ({ format, mayEdit }) => ["typst", "markdown", "quarto"].includes(format) && mayEdit;
+// The account is the deployment's, not the document's: whoever is signed in
+// is offered it whatever they happen to have open.
+const account = ({ signedIn }) => Boolean(signedIn);
 
 export const CATEGORIES = [
   {
@@ -51,6 +54,15 @@ export const CATEGORIES = [
       { id: "local-binding", says: "Binding ID", terms: "quarto hosted", offered: quarto },
       { id: "local-tools", says: "Available tools", terms: "versions latex quarto biber" },
       { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
+    ],
+  },
+  {
+    id: "account", says: "Account", offered: account,
+    note: "This account on this deployment, not this document.",
+    entries: [
+      { id: "account-identity", says: "Signed in as", terms: "github google handle email name provider identity" },
+      { id: "account-privacy", says: "Privacy", terms: "privacy data retention gdpr notice cookies storage" },
+      { id: "account-erase", says: "Erase this account", terms: "erase delete account remove close gdpr right erasure forget" },
     ],
   },
 ];

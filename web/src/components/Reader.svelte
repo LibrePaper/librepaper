@@ -3354,7 +3354,8 @@
                 buildPreferences={buildPreferences} documentId={SLUG} userId={buildUserId} onbuildpreferences={setBuildPreferences}
                 main={previewMain} bindingId={quartoBindingId} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
                 options={quartoOptions}
-                onapplyoptions={applyRenderOptions} />
+                onapplyoptions={applyRenderOptions}
+                account={me} />
 
 <Modal bind:open={commenting} title={tool === "editing" ? "Suggest a change" : "Add comment"}>
   {#snippet children()}

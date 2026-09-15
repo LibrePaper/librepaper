@@ -1,0 +1,21 @@
+# What a document costs to keep, measured rather than guessed.
+#
+# SPEC-loro.md §7 rests on numbers -- that full history is about the size of the
+# paper, that a thinned snapshot is bigger than the log it thins, that one
+# export mode is half the size of another. Those decide how the document is
+# stored, so they should be reproducible by anyone who doubts them.
+#
+# Outside the workspace for the reason tools/fuzz is: nothing that builds the
+# binary should pull in a benchmark's dependencies.
+[package]
+name = "librepaper-measure"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+loro = "1.16.0"
+zstd = "0.13"
+
+[profile.release]
+opt-level = 3

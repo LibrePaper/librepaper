@@ -12,6 +12,7 @@
   import BuildSettings from "./BuildSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
   import LocalAppSettings from "./LocalAppSettings.svelte";
+  import AccountSettings from "./AccountSettings.svelte";
 
   let {
     open = $bindable(false),
@@ -32,9 +33,12 @@
     onbindingid,
     options,
     onapplyoptions,
+    // Who is signed in, which is what the account category is about. `{}`
+    // when nobody is, and then that category is not offered at all.
+    account = {},
   } = $props();
 
-  const context = $derived({ format: sourceFormat, mayEdit });
+  const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider) });
   const available = $derived(offered(context));
   // The category shown: the one asked for, or the first offered when that is
   // not (the document changed format, or this browser lost the right to edit).
@@ -86,6 +90,8 @@
           <RenderingSettings {options} {onapplyoptions} />
         {:else if shown.id === "local"}
           <LocalAppSettings {main} {sourceFormat} {bindingId} {onbindingid} />
+        {:else if shown.id === "account"}
+          <AccountSettings {account} />
         {/if}
       {/if}
     </div>
