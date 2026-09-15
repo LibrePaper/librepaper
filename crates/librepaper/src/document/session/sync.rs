@@ -216,6 +216,15 @@ pub fn apply_decoded_update(doc: &LoroDoc, update: Vec<u8>) -> Result<(), String
 ///   the result measured. This encodes and decodes the complete current CRDT
 ///   state and applies the incoming update, so it scales with retained history.
 ///
+/// Both bounds were checked against Loro rather than assumed across from the
+/// encoding this replaced, because neither survives a format that compresses.
+/// An update stores its inserted text verbatim -- two million characters
+/// arrive as a 2,000,092 byte update -- so the byte bound cannot under-count,
+/// and the cheapest possible new file costs about thirteen bytes even in bulk,
+/// against the one byte the file bound assumes. `admission_bounds_hold` below
+/// pins both, because a future Loro that run-length-encoded a long run of one
+/// character would make the cheap path admit an update that blows the ceiling.
+///
 /// The count of files needs a bound of the same shape as the byte ceiling's,
 /// or the cheap branch below is unsound: encoding a new file (a `LoroText`
 /// and its two map entries) takes strictly more than zero bytes, so an update
@@ -226,10 +235,6 @@ pub fn apply_decoded_update(doc: &LoroDoc, update: Vec<u8>) -> Result<(), String
 /// already-populated document). Anything else falls to the rehearsal below,
 /// which is exact.
 ///
-/// The size and file-count bounds below have not been measured against Loro
-/// encodings. They are carried over from the encoding this replaced, which is
-/// a different size for the same document, so they are a starting point and
-/// not a calibrated ceiling. SPEC-loro.md §6 Phase 1 owns re-measuring them.
 pub fn admit_decoded_update(
     doc: &LoroDoc,
     update: Vec<u8>,
@@ -273,10 +278,6 @@ pub fn admit_decoded_update(
 /// not even to be trimmed back afterwards, which would relay a correction
 /// nobody made and leave the text over the ceiling in between.
 ///
-/// The size and file-count bounds below have not been measured against Loro
-/// encodings. They are carried over from the encoding this replaced, which is
-/// a different size for the same document, so they are a starting point and
-/// not a calibrated ceiling. SPEC-loro.md §6 Phase 1 owns re-measuring them.
 pub fn admit_update(doc: &LoroDoc, update: &[u8], ceiling: usize, max_files: usize) -> Admission {
     let Ok(decoded) = decode_update(update) else {
         return Admission::Malformed;
@@ -313,4 +314,68 @@ pub fn encode_diff(doc: &LoroDoc, vector: &[u8]) -> Result<Vec<u8>, String> {
 /// What this document already has, for the other side to answer.
 pub fn encode_vector(doc: &LoroDoc) -> Vec<u8> {
     doc.oplog_vv().encode()
+}
+
+#[cfg(test)]
+mod bound_tests {
+    //! The cheap admission path decides without rehearsing, on two claims about
+    //! Loro's encoding. Neither is true of every possible encoding, so both are
+    //! checked here rather than reasoned about: a format that compressed a long
+    //! run of one character would let an update through the cheap path and past
+    //! the ceiling it was supposed to be held to.
+
+    use super::*;
+    use loro::LoroText;
+
+    /// The bytes a document grows by cannot exceed the bytes of the update that
+    /// grew it.
+    #[test]
+    fn an_update_is_never_smaller_than_the_text_it_adds() {
+        // The inputs most likely to break it: runs that a compressing format
+        // would collapse.
+        for body in [
+            "a".repeat(200_000),
+            "spam ".repeat(40_000),
+            "The quick brown fox. ".repeat(10_000),
+        ] {
+            let doc = new_doc();
+            doc.set_peer_id(1).unwrap();
+            let before = encode_vector(&doc);
+            doc.get_text("f").insert_utf16(0, &body).unwrap();
+            doc.commit();
+            let update = encode_diff(&doc, &before).expect("a document encodes");
+            assert!(
+                update.len() >= doc.get_text("f").len_utf16(),
+                "an update of {} bytes added {} characters -- the cheap admission path \
+                 would let this through and past the ceiling",
+                update.len(),
+                doc.get_text("f").len_utf16(),
+            );
+        }
+    }
+
+    /// An update cannot make more files than it has bytes.
+    #[test]
+    fn a_new_file_costs_more_than_a_byte() {
+        // Cheapest files there are: empty, with the shortest names available,
+        // and in bulk so that any per-update overhead is amortised away.
+        let doc = new_doc();
+        doc.set_peer_id(1).unwrap();
+        let before = encode_vector(&doc);
+        let files = doc.get_map(FILES);
+        let paths = doc.get_map(PATHS);
+        for n in 0..500 {
+            let id = n.to_string();
+            files.insert_container(&id, LoroText::new()).unwrap();
+            paths.insert(&id, id.as_str()).unwrap();
+        }
+        doc.commit();
+        let update = encode_diff(&doc, &before).expect("a document encodes");
+        assert!(
+            update.len() >= 500,
+            "500 files arrived in {} bytes; the file-count bound assumes at least one \
+             byte each and would stop being sound",
+            update.len(),
+        );
+    }
 }

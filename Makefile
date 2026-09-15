@@ -106,6 +106,26 @@ test-release-workloads:  ## Run supported-limit and diagnostic workloads
 	@cargo test -p librepaper persistence_default_limits_refuse_without_discarding_dirty_rooms -- --ignored --nocapture
 	@cargo test -p librepaper mcp_protocol_transfer_benchmark -- --ignored --nocapture
 
+# The components, in a real browser. Not part of `test`: each one builds a
+# bundle with vite and drives a headless chromium, which is minutes rather than
+# seconds. But nothing else runs them, and a substrate change once left three of
+# them referring to a library that had been uninstalled -- broken for as long as
+# nobody looked, because every other check passed.
+browser:  ## Run the component tests in headless chromium (needs chromium)
+	@command -v chromium >/dev/null || command -v google-chrome >/dev/null || \
+		{ echo "no chromium to drive; skipping the browser tests"; exit 0; }
+	@failed=""; \
+	for test in web/tests/browser/*.mjs; do \
+		printf '%s: ' "$$(basename $$test)"; \
+		if (cd web && timeout 300 node "../$$test" >/tmp/browser-test.log 2>&1); then \
+			echo ok; \
+		else \
+			echo FAILED; failed="$$failed $$(basename $$test)"; \
+			sed 's/^/    /' /tmp/browser-test.log | tail -8; \
+		fi; \
+	done; \
+	[ -z "$$failed" ] || { echo "failed:$$failed"; exit 1; }
+
 # The rendered reader, in a real browser. Not part of `test`: it needs the
 # built binary and a chromium, and it starts a server of its own on a
 # temporary directory. It touches no deployment and no data but its own.
