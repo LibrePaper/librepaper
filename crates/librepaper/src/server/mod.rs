@@ -1018,4 +1018,3 @@ impl Server {
 /// binary, so a documentation change never needs a release and a deployment
 /// never carries a copy of the text.
 pub const DOCUMENTATION: &str = "https://librepaper.org";
-
