@@ -127,7 +127,13 @@ export function createProjectSession({
 
   function rebind() {
     const next = mainText();
-    if (next === bound) return;
+    // By container id, not by handle: `files.get(id)` mints a fresh LoroText
+    // wrapper on every call, so comparing the objects reads as "the main file
+    // was swapped" once per commit -- once per keystroke -- and everything
+    // hanging off `onSwap` tears itself down and builds again, the editor and
+    // its caret among it. A handle stays live across edits, so the one already
+    // bound is kept rather than replaced by an equivalent.
+    if (next?.id === bound?.id) return;
     // Unsubscribe all watchers from the old bound text
     if (bound && textSubs.has(bound.id)) {
       const subs = textSubs.get(bound.id);

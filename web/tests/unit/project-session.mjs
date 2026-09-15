@@ -41,10 +41,38 @@ try {
 }
 assert.equal(closed, true);
 
+// A swap is the main file becoming a different file. Editing the main file is
+// not one: everything hanging off `onSwap` rebuilds itself, so a swap per
+// keystroke used to throw the editor -- and the caret with it -- back to the
+// top of the file on every commit.
+const swapping = createProjectSession({ send: () => {}, onState: () => {} });
+try {
+  const main = swapping.addText("paper.md", "hello");
+  swapping.setMain(main);
+  swapping.doc.commit();
+  await new Promise((resume) => setTimeout(resume, 20));
+  let swaps = 0;
+  swapping.onSwap(() => { swaps += 1; });
+  swapping.textOf(main).insert(5, " world");
+  swapping.doc.commit();
+  await new Promise((resume) => setTimeout(resume, 20));
+  assert.equal(swaps, 0);
+  assert.equal(swapping.text.toString(), "hello world");
+
+  const other = swapping.addText("other.md", "x");
+  swapping.setMain(other);
+  swapping.doc.commit();
+  await new Promise((resume) => setTimeout(resume, 20));
+  assert.equal(swaps, 1);
+  assert.equal(swapping.text.toString(), "x");
+} finally {
+  swapping.leave();
+}
+
 const first = projectIdentity({ server: "https://paper.example/path", slug: "paper", createdAt: "one" });
 const same = projectIdentity({ server: "https://paper.example", slug: "paper", createdAt: "one" });
 const recreated = projectIdentity({ server: "https://paper.example", slug: "paper", createdAt: "two" });
 assert.equal(sameProject(first, same), true);
 assert.throws(() => assertSameProject(first, recreated), { code: "project-identity-changed" });
 
-console.log("project-session: persistence, identity and acknowledgement boundaries passed");
+console.log("project-session: persistence, identity, swap and acknowledgement boundaries passed");
