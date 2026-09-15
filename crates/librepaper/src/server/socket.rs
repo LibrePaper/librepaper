@@ -677,6 +677,146 @@ impl Server {
                         continue 'reader;
                     }
 
+                    // A proposal is a branch (SPEC-loro.md §3.3). What crosses
+                    // this boundary is the branch's operations and a decision
+                    // naming one of its hunks by index -- never a delta run and
+                    // never an offset, because the server counts text in code
+                    // points where the browser counts UTF-16 (§5.2).
+                    if incoming.kind.starts_with("proposal-") {
+                        if !may_edit {
+                            let _ = send_outgoing(&tx, Outgoing::Text(
+                                json!({
+                                    "type": "error",
+                                    "message": "proposing and reviewing changes is restricted to editors",
+                                    "request_id": incoming.request_id,
+                                    "version": 1,
+                                    "protocol": "librepaper.room.v1",
+                                }).to_string(),
+                            )).await;
+                            continue 'reader;
+                        }
+                        let by = who.attribution();
+                        let by = by.display().to_string();
+                        let refuse = |error: crate::room::proposals::ProposalError| {
+                            json!({
+                                "type": "error",
+                                "message": error.to_string(),
+                                "stale": matches!(error, crate::room::proposals::ProposalError::Stale),
+                                "proposal_id": incoming.proposal_id,
+                                "request_id": incoming.request_id,
+                                "version": 1,
+                                "protocol": "librepaper.room.v1",
+                            })
+                        };
+                        let payload = match incoming.kind.as_str() {
+                            "proposal-open" => match room.open_proposal(&by, socket_id).await {
+                                Ok(id) => json!({
+                                    "type": "proposal-opened", "proposal_id": id,
+                                    "request_id": incoming.request_id,
+                                    "version": 1, "protocol": "librepaper.room.v1",
+                                }),
+                                Err(error) => refuse(error),
+                            },
+                            "proposal-update" => {
+                                let (Some(branch), Some(tip)) = (
+                                    crate::room::decode_update(&incoming.update),
+                                    crate::room::decode_update(&incoming.tip),
+                                ) else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"that proposal update could not be read","request_id":incoming.request_id}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                match room.update_proposal(&incoming.proposal_id, &tip, &branch).await {
+                                    Ok(()) => json!({
+                                        "type": "proposal-updated",
+                                        "proposal_id": incoming.proposal_id,
+                                        "request_id": incoming.request_id,
+                                        "version": 1, "protocol": "librepaper.room.v1",
+                                    }),
+                                    Err(error) => refuse(error),
+                                }
+                            }
+                            "proposal-decide" => {
+                                let Some(against) = crate::room::decode_update(&incoming.tip) else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"a decision must say which version it was made against","request_id":incoming.request_id}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                let note = (!incoming.note.is_empty()).then(|| incoming.note.clone());
+                                match room
+                                    .decide_hunk(
+                                        &incoming.proposal_id,
+                                        crate::room::proposals::Decision {
+                                            hunk: incoming.hunk,
+                                            accepted: incoming.accepted,
+                                            by: &by,
+                                            against: &against,
+                                            note,
+                                            reviewer: socket_id,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    // The proposal is now wholly decided, so its
+                                    // accepted hunks have reached the document.
+                                    // One update carries the merge and the
+                                    // reverts together: between them the document
+                                    // holds the declined text, and §3.4 is that
+                                    // no peer ever sees that state.
+                                    Ok(Some(update)) => {
+                                        room.broadcast_editors_except(
+                                            None,
+                                            &json!({"type": "doc-update", "update": crate::room::encode_update(&update)}),
+                                        )
+                                        .await;
+                                        json!({
+                                            "type": "proposal-decided",
+                                            "proposal_id": incoming.proposal_id,
+                                            "hunk": incoming.hunk,
+                                            "accepted": incoming.accepted,
+                                            "resolved": true,
+                                            "request_id": incoming.request_id,
+                                            "version": 1, "protocol": "librepaper.room.v1",
+                                        })
+                                    }
+                                    // Recorded, but the proposal still has hunks
+                                    // nobody has answered for, so the document
+                                    // has not moved (§5.1a).
+                                    Ok(None) => json!({
+                                        "type": "proposal-decided",
+                                        "proposal_id": incoming.proposal_id,
+                                        "hunk": incoming.hunk,
+                                        "accepted": incoming.accepted,
+                                        "resolved": false,
+                                        "request_id": incoming.request_id,
+                                        "version": 1, "protocol": "librepaper.room.v1",
+                                    }),
+                                    Err(error) => refuse(error),
+                                }
+                            }
+                            "proposal-list" => match room.open_proposals().await {
+                                Ok(open) => json!({
+                                    "type": "proposal-list", "proposals": open,
+                                    "request_id": incoming.request_id,
+                                    "version": 1, "protocol": "librepaper.room.v1",
+                                }),
+                                Err(error) => refuse(error),
+                            },
+                            _ => continue 'reader,
+                        };
+                        // Everyone reviewing needs to know a decision was made,
+                        // not just whoever made it.
+                        if payload["type"] == "proposal-decided" {
+                            room.broadcast_editors_except(Some(socket_id), &payload).await;
+                        }
+                        if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
+                            break 'reader;
+                        }
+                        continue 'reader;
+                    }
+
                     // Suggestions carry source anchors and proposed source
                     // text. Rendered commenters may submit annotations, but
                     // only editors may create editorial source suggestions.

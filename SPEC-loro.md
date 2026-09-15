@@ -152,6 +152,21 @@ forge, and no status field inside the document.
 `Delete` and the `Insert` that replaces it are one decision, not two. This
 grouping is ours; Loro has no hunk concept.
 
+One refinement, found by building it. The diff arrives character-level —
+replacing "cat" with "tabby" is not one delete and one insert but several tiny
+edits with a letter or two retained between them, because that genuinely is the
+shortest way from one to the other. Nobody reviews at that grain. So two
+changes separated by **eight or fewer retained units** are one hunk: about a
+word, on the reasoning that a change resuming within a word is the same edit as
+far as a reader is concerned.
+
+That number is a presentation choice, and it is load-bearing in a way a
+presentation choice usually is not: a decision names a hunk by its index
+(§5.2), so the browser and the server must group identically or "decline the
+second one" reverts something else. Both sides carry the constant, and neither
+may change it alone.
+
+
 ### 3.4 Accept, decline, and attribution
 
 Loro's `apply_diff` re-authors applied text as the applying peer. Applying a
@@ -263,9 +278,10 @@ the message shapes:
 Three properties follow from the Google Docs model, and each one costs
 something:
 
-**Decisions stream; they are not batched.** Clicking accept applies
-immediately and broadcasts. There is no review session to submit, so
-`proposal-decide` names one hunk, not a set.
+**Decisions stream; they are not batched.** Clicking accept records that
+decision and broadcasts it at once. There is no review session to submit, so
+`proposal-decide` names one hunk, not a set. When the decision reaches the
+document is a separate question, answered in §5.1a.
 
 **The author keeps typing while a proposal is open.** A proposal is therefore
 never frozen, and a decision can race an edit to the same branch. This is why
@@ -275,6 +291,38 @@ has since changed underneath the reviewer.
 
 **Main keeps moving too.** A proposal's base goes stale by design, which is the
 case `document::hunks`' stale-base test covers.
+
+### 5.1a When a decision reaches the document
+
+A decision is **recorded** the moment it is made and broadcast to everyone
+reviewing. The document changes when the proposal **resolves** — when every
+hunk has been decided, or the reviewer closes it with the rest declined.
+
+This is not the obvious design and it is worth saying why it is the right one.
+Merge-then-revert (§3.4) has to know which hunks were declined *before* it
+merges, because the revert is computed against the branch tip. Applying each
+decision to the document as it arrives would mean merging on the first accept
+and then, on a later accept, re-applying a hunk that had already been
+reverted — as the reviewer, since the reviewer is the peer doing the applying.
+That is exactly the re-authoring §3.4 exists to avoid: the author's prose would
+end up attributed to whoever approved it, which is contract 4 broken in the one
+place it was written to protect.
+
+The alternative — merge everything up front and revert only what is declined —
+keeps attribution but puts un-accepted prose into the shared document, where a
+client that does not know about proposals, or a render, or an export, would
+show it as though it had been agreed. A proposal that is indistinguishable from
+the document is not a proposal.
+
+So the merge happens once, atomically, when the proposal resolves, exactly as
+§3.4 describes. What streams is the decision, not the text.
+
+For a tracked edit this distinction is invisible: it is usually one hunk, so
+deciding it resolves the proposal and the document changes on the click. It is
+visible only on a multi-hunk proposal — an agent run, say — where the paper
+changes once at the end rather than in pieces. That is also the better
+behaviour there: a run that touches many files should land or not land, rather
+than leaving the paper half-rewritten while somebody works through the list.
 
 ### 5.2 Diffs are computed on both sides, and never exchanged
 

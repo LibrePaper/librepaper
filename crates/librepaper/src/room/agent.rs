@@ -579,46 +579,9 @@ impl Room {
             policy_editor: authority.policy_editor,
             unowned_publisher: authority.unowned_publisher,
         };
-        let prospective_acceptance = if let Some(acceptance) = &request.acceptance {
-            let mut comment = self
-                .state
-                .lock()
-                .await
-                .comments
-                .iter()
-                .find(|comment| comment.id == acceptance.comment_id)
-                .cloned()
-                .ok_or_else(|| AgentError::Conflict("suggestion disappeared".into()))?;
-            if super::agent_comments::comment_version(&comment) != acceptance.expected_version
-                || !comment.outcome.is_empty()
-            {
-                return Err(AgentError::Conflict("suggestion changed".into()));
-            }
-            comment.outcome = "accepted".into();
-            comment.resolved = true;
-            comment.resolved_at = Some(crate::util::timestamp());
-            Some(comment)
-        } else {
-            None
-        };
-        self.write_session_inner_with_acceptance(
-            false,
-            true,
-            prospective_acceptance
-                .as_ref()
-                .map(|comment| (comment, &actor)),
-        )
-        .await
-        .map_err(AgentError::from)?;
-        if let Some(updated) = &prospective_acceptance {
-            let mut state = self.state.lock().await;
-            let comment = state
-                .comments
-                .iter_mut()
-                .find(|comment| comment.id == updated.id)
-                .ok_or_else(|| AgentError::Conflict("suggestion disappeared".into()))?;
-            *comment = updated.clone();
-        }
+        self.write_session_inner(false, true)
+            .await
+            .map_err(AgentError::from)?;
         let checkpoint = self
             .checkpoint_now(
                 "cli",

@@ -44,7 +44,8 @@
 // proposal model rests on.
 #![allow(dead_code)]
 
-use loro::TextDelta;
+use loro::event::{Diff, DiffBatch};
+use loro::{ContainerID, TextDelta};
 
 /// One reviewable decision: a maximal run of non-retain deltas.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,37 +65,101 @@ pub struct Hunk {
     pub inserted: String,
 }
 
+/// How much untouched text may sit between two changes before they stop being
+/// one decision.
+///
+/// The diff arrives character-level: replacing "cat" with "tabby" is not one
+/// delete and one insert but a handful of tiny edits with a letter or two
+/// retained between them, because that is genuinely the smallest way to get
+/// from one to the other. Nobody reviews at that grain. A reviewer decides
+/// about "cat became tabby", and would be baffled to be asked separately about
+/// inserting "abby".
+///
+/// Eight is a word: changes that resume within about a word of each other are
+/// the same edit as far as a reader is concerned. This is a presentation
+/// choice and it is ours -- Loro has no hunk concept and no opinion here.
+const SAME_DECISION_WITHIN: usize = 8;
+
+/// The delta ranges that make up each hunk, in order.
+///
+/// Both [`hunks`] and [`keep_declined`] walk this, and they must: a hunk's
+/// index is how a decision names it (§5.2), so if the two disagreed about where
+/// hunks begin, a reviewer's "decline the second one" would revert something
+/// else. One function decides, and both read it.
+fn runs(deltas: &[TextDelta]) -> Vec<std::ops::Range<usize>> {
+    let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut i = 0usize;
+    while i < deltas.len() {
+        if matches!(deltas[i], TextDelta::Retain { .. }) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < deltas.len() {
+            if let TextDelta::Retain { retain, .. } = &deltas[i] {
+                // A short gap is inside the change; a long one ends it. Look
+                // past the gap first: a retain at the very end of the deltas
+                // is trailing context, not a bridge to anything.
+                let bridges = *retain <= SAME_DECISION_WITHIN
+                    && deltas[i + 1..]
+                        .iter()
+                        .any(|d| !matches!(d, TextDelta::Retain { .. }));
+                if !bridges {
+                    break;
+                }
+            }
+            i += 1;
+        }
+        out.push(start..i);
+    }
+    out
+}
+
 /// Split a text delta run into hunks.
 pub fn hunks(deltas: &[TextDelta]) -> Vec<Hunk> {
     let mut out = Vec::new();
     let mut cursor = 0usize;
-    let mut i = 0usize;
-    while i < deltas.len() {
-        if let TextDelta::Retain { retain, .. } = &deltas[i] {
-            cursor += retain;
-            i += 1;
-            continue;
-        }
-        let start = cursor;
+    let mut at = 0usize;
+    for run in runs(deltas) {
+        // Everything retained before this hunk moves the old-side cursor.
+        cursor += old_side(&deltas[at..run.start]);
         let mut deleted = 0usize;
         let mut inserted = String::new();
-        while i < deltas.len() {
-            match &deltas[i] {
-                TextDelta::Retain { .. } => break,
+        for delta in &deltas[run.clone()] {
+            match delta {
                 TextDelta::Delete { delete } => deleted += delete,
                 TextDelta::Insert { insert, .. } => inserted.push_str(insert),
+                // Text bridged over inside a hunk is untouched on both sides, so
+                // it counts towards how far the hunk reaches. It cannot be added
+                // to `inserted`, because a retain carries a length and not the
+                // text it retained -- so `inserted` is what the hunk ADDS, and a
+                // caller wanting to show the result reads the file rather than
+                // reassembling it from here.
+                TextDelta::Retain { retain, .. } => deleted += retain,
             }
-            i += 1;
         }
-        cursor += deleted;
         out.push(Hunk {
             index: out.len(),
-            start,
+            start: cursor,
             deleted,
             inserted,
         });
+        cursor += deleted;
+        at = run.end;
     }
     out
+}
+
+/// How much of the old side a stretch of deltas covers.
+fn old_side(deltas: &[TextDelta]) -> usize {
+    deltas
+        .iter()
+        .map(|d| match d {
+            TextDelta::Retain { retain, .. } => *retain,
+            TextDelta::Delete { delete } => *delete,
+            TextDelta::Insert { .. } => 0,
+        })
+        .sum()
 }
 
 /// Keep only the declined hunks of an inverse diff, so that applying the result
@@ -104,36 +169,21 @@ pub fn hunks(deltas: &[TextDelta]) -> Vec<Hunk> {
 /// `declined` is asked about each hunk by its index, in order.
 pub fn keep_declined(deltas: &[TextDelta], declined: impl Fn(usize) -> bool) -> Vec<TextDelta> {
     let mut out: Vec<TextDelta> = Vec::new();
-    let mut i = 0usize;
-    let mut hunk = 0usize;
-    while i < deltas.len() {
-        if let TextDelta::Retain { retain, attributes } = &deltas[i] {
-            out.push(TextDelta::Retain {
-                retain: *retain,
-                attributes: attributes.clone(),
-            });
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < deltas.len() && !matches!(deltas[i], TextDelta::Retain { .. }) {
-            i += 1;
-        }
-        let run = &deltas[start..i];
-        if declined(hunk) {
-            out.extend(run.iter().cloned());
+    let mut at = 0usize;
+    for (index, run) in runs(deltas).into_iter().enumerate() {
+        out.extend(deltas[at..run.start].iter().cloned());
+        if declined(index) {
+            out.extend(deltas[run.clone()].iter().cloned());
         } else {
             // The hunk is accepted, so the branch's text stays. Retain exactly
-            // what this hunk would have removed -- its tip-side length, which
-            // on the inverse diff is the sum of its deletes.
-            let keep: usize = run
+            // what reverting it would have consumed on the tip side: its
+            // deletes, plus anything it bridged over.
+            let keep: usize = deltas[run.clone()]
                 .iter()
-                .map(|d| {
-                    if let TextDelta::Delete { delete } = d {
-                        *delete
-                    } else {
-                        0
-                    }
+                .map(|d| match d {
+                    TextDelta::Delete { delete } => *delete,
+                    TextDelta::Retain { retain, .. } => *retain,
+                    TextDelta::Insert { .. } => 0,
                 })
                 .sum();
             if keep > 0 {
@@ -143,7 +193,53 @@ pub fn keep_declined(deltas: &[TextDelta], declined: impl Fn(usize) -> bool) -> 
                 });
             }
         }
-        hunk += 1;
+        at = run.end;
+    }
+    out.extend(deltas[at..].iter().cloned());
+    out
+}
+
+/// Every hunk in a diff, numbered across the whole batch rather than within
+/// each file.
+///
+/// A proposal can touch several files, and a reviewer decides about its hunks
+/// in one list. Numbering per container would mean "hunk 2" named a different
+/// decision depending on which file you asked about, so the count runs on
+/// across containers in the order the batch presents them -- the same order
+/// [`keep_declined_batch`] walks, which is what makes an index mean the same
+/// thing to both.
+pub fn hunks_of_batch(batch: &DiffBatch) -> Vec<(ContainerID, Hunk)> {
+    let mut out = Vec::new();
+    let mut next = 0usize;
+    for (cid, diff) in batch.iter() {
+        let Diff::Text(deltas) = diff else { continue };
+        for mut hunk in hunks(deltas) {
+            hunk.index = next;
+            next += 1;
+            out.push((cid.clone(), hunk));
+        }
+    }
+    out
+}
+
+/// The inverse diff, filtered to the declined hunks across every file it
+/// touches.
+///
+/// `declined` is asked about global hunk indices, numbered as
+/// [`hunks_of_batch`] numbers them. A container whose hunks are all accepted
+/// still contributes an entry: applying a run of retains is how the text it
+/// holds is left alone.
+pub fn keep_declined_batch(batch: &DiffBatch, declined: impl Fn(usize) -> bool) -> DiffBatch {
+    let mut out = DiffBatch::default();
+    let mut next = 0usize;
+    for (cid, diff) in batch.iter() {
+        let Diff::Text(deltas) = diff else { continue };
+        let first = next;
+        next += hunks(deltas).len();
+        let kept = keep_declined(deltas, |local| declined(first + local));
+        // `push` refuses a container the batch already names, and a batch never
+        // names one twice, so the error cannot arise from a well-formed diff.
+        let _ = out.push(cid.clone(), Diff::Text(kept));
     }
     out
 }

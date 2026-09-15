@@ -12,11 +12,13 @@ mod access;
 mod annotations;
 mod collaboration;
 mod jobs;
+mod proposals;
 mod publications;
 mod repository;
 
 pub use collaboration::{CollaborationBase, CollaborationState, PersistedUpdate};
 pub use jobs::{Job, JobClaim, JobStatus, NewJob};
+pub use proposals::{NewProposal, StoredDecision, StoredProposal};
 pub use publications::{
     NewPublication, NewPublicationFile, PublicationFileRecord, PublicationRecord,
 };

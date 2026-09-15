@@ -40,6 +40,7 @@ mod figures;
 #[cfg(test)]
 mod idle_room_tests;
 pub(crate) mod outgoing;
+pub(crate) mod proposals;
 mod resident;
 pub(crate) mod text;
 
@@ -103,15 +104,36 @@ pub struct Message {
     pub resolved: bool,
     #[serde(default)]
     pub temp_id: String,
-    /// A Yjs update, base64-encoded.
+    /// A document update, base64-encoded.
     #[serde(default)]
     pub update: String,
-    /// A Yjs state vector, base64-encoded: what the sender already has, so the
+    /// A version vector, base64-encoded: what the sender already has, so the
     /// server can answer with the rest and nothing more.
     #[serde(default)]
     pub vector: String,
+    /// The proposal a message is about (§5.1).
+    #[serde(default)]
+    pub proposal_id: String,
+    /// Which hunk of it, numbered across the whole proposal as §5.2 numbers
+    /// them. An index rather than an offset, because the two sides count text
+    /// differently and an index is the one name that means the same to both.
+    #[serde(default)]
+    pub hunk: usize,
+    /// Whether the reviewer took that hunk.
+    #[serde(default)]
+    pub accepted: bool,
+    /// A branch frontier, base64-encoded. `tip` on a decision is the tip the
+    /// reviewer was looking at, so a decision about a diff that has since
+    /// changed can be refused rather than applied to text nobody reviewed.
+    #[serde(default)]
+    pub base: String,
+    #[serde(default)]
+    pub tip: String,
+    /// Why, which matters most when the answer is no.
+    #[serde(default)]
+    pub note: String,
     /// The sender's own number for this update, counted up per socket and sent
-    /// back on `y-ack` once the update it names is durable. A browser holds
+    /// back on `doc-ack` once the update it names is durable. A browser holds
     /// everything above the last acknowledged number and resends it after a
     /// reconnect.
     #[serde(default)]
@@ -132,8 +154,8 @@ pub struct Message {
     /// client never has to infer which request a frame belongs to.
     #[serde(default)]
     pub request_id: String,
-    /// The revision the caller inspected. Anchored comments preserve this
-    /// value so suggestion acceptance can use the existing stale path.
+    /// The revision the caller inspected, kept so a comment can say which
+    /// version of the text it was written against.
     #[serde(default)]
     pub revision: String,
     /// Publication the rendered selection came from. The server treats this
@@ -1675,16 +1697,6 @@ impl Room {
         only_dirty: bool,
         acknowledge: bool,
     ) -> Result<Option<(i64, i64)>, WriteError> {
-        self.write_session_inner_with_acceptance(only_dirty, acknowledge, None)
-            .await
-    }
-
-    pub(crate) async fn write_session_inner_with_acceptance(
-        &self,
-        only_dirty: bool,
-        acknowledge: bool,
-        acceptance: Option<(&Comment, &crate::document::store::MutationActor)>,
-    ) -> Result<Option<(i64, i64)>, WriteError> {
         let _writer = self.session_write.lock().await;
         if self.read_only() {
             return Err(self.fenced());
@@ -1722,28 +1734,14 @@ impl Room {
             (body, generation, durable)
         };
         let size = body.len() as i64;
-        let durable_sequence = if let Some((comment, actor)) = acceptance {
-            let comment_id = uuid::Uuid::parse_str(&comment.id)
-                .map_err(|_| WriteError::Invalid("annotation id is invalid".into()))?;
-            catalog
-                .append_update_and_accept_suggestion(
-                    comment_id,
-                    catalog::annotation_input(document_id, comment)?,
-                    &body,
-                    &catalog::mutation_authorization(actor)?,
-                )
-                .await
-                .map_err(|error| WriteError::Storage(error.to_string()))?
-        } else {
-            let collaboration = crate::storage::collaboration::CollaborationStorage::new(
-                catalog.clone(),
-                self.blobs.clone(),
-            );
-            collaboration
-                .append(document_id, &body)
-                .await
-                .map_err(|error| WriteError::Storage(error.to_string()))?
-        };
+        let collaboration = crate::storage::collaboration::CollaborationStorage::new(
+            catalog.clone(),
+            self.blobs.clone(),
+        );
+        let durable_sequence = collaboration
+            .append(document_id, &body)
+            .await
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
         if durable_sequence % 100 == 0 {
             catalog
                 .enqueue_job(crate::storage::postgres::NewJob {
