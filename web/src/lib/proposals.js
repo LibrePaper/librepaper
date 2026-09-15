@@ -187,9 +187,14 @@ export function createProposals({ session, send, mayEdit }) {
           });
         }
       } else if (message.type === "proposal-decided") {
-        // The server has applied a decision to the document. The proposal is done.
-        // Close the local branch if it was ours.
-        this.stop();
+        // Somebody decided a hunk. Only close the local branch when the
+        // proposal that resolved is the one this browser is drafting --
+        // closing on anyone's decision would throw away unsent work the
+        // moment a coauthor answered a different proposal.
+        if (message.resolved && proposal && message.proposal_id === proposal.id) {
+          this.stop();
+        }
+        this._openProposals?.delete(message.proposal_id);
       }
     },
 
@@ -222,12 +227,20 @@ export function createProposals({ session, send, mayEdit }) {
         const hunks = [];
         let hunkIndex = 0;
 
+        // Which file each hunk is in. A hunk without that cannot be drawn:
+        // its offsets are into one text, and the editor is showing one text.
+        const fileOf = new Map();
+        const files = session.doc.getMap("files");
+        for (const id of files.keys()) {
+          const text = files.get(id);
+          if (text?.kind?.() === "Text") fileOf.set(text.id, id);
+        }
         for (const [cid, diffValue] of diff) {
           if (diffValue.type !== "text") continue;
-          // TextDiff has a diff array of Delta<string> objects.
           const textHunks = hunkify(diffValue.diff);
           for (const hunk of textHunks) {
             hunk.index = hunkIndex++;
+            hunk.file = fileOf.get(cid) ?? null;
           }
           hunks.push(...textHunks);
         }

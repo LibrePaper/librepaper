@@ -1133,3 +1133,33 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   width: 20rem;
   max-width: calc(100vw - var(--spacing) * 8);
 }
+
+/* ------------------------------------------------------- proposed changes */
+
+/* A change somebody has offered, drawn in the text it would change.
+ *
+ * Neither of these is the document: the words are a drawing over text that
+ * still says what it said, and they stay that way until the proposal resolves.
+ * So they are marked as insertions and deletions rather than coloured, which
+ * is also what a screen reader announces them as. */
+.proposal-added {
+  text-decoration: underline;
+  text-decoration-style: solid;
+  text-underline-offset: 2px;
+  background: color-mix(in srgb, var(--presence, var(--color-primary-500)) 12%, transparent);
+}
+
+/* Struck through but still readable. A reviewer deciding whether to lose a
+ * sentence has to be able to read the sentence. */
+.proposal-removed {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+/* The hunk being looked at, so that a decision taken in the margin is visibly
+ * about this passage and not the one below it. */
+.proposal-selected {
+  outline: 2px solid var(--presence, var(--color-primary-500));
+  outline-offset: 1px;
+  border-radius: var(--radius-base);
+}
