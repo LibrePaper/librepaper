@@ -399,7 +399,7 @@ branch-base-has-moved-on case covered. §11 records the results, including the
 
 *Gate: passed.*
 
-### Phase 1 — Server substrate
+### Phase 1 — Server substrate — **done**
 
 This runs first. The original ordering put the editor binding ahead of the
 server, but Phase 2's gate asks that remote edits behave as today, and only a
@@ -423,11 +423,11 @@ the dependency list in this phase, not later.
 - The Rust crate and the npm wasm build are pinned to one version from one
   place, and CI fails if they diverge. `tools/check-loro-pin.sh` does this.
 
-*Gate:* the fuzz target passes, now asserting one implementation's round-trip
-rather than cross-implementation agreement; the full suite passes; `yrs` does
-not appear in `Cargo.toml`.
+*Gate: passed.* The fuzz targets build and assert one implementation's
+round-trip rather than cross-implementation agreement; the suite passes; and
+`yrs` appears nowhere in the tree, not in a manifest and not in a comment.
 
-### Phase 2 — Editor binding
+### Phase 2 — Editor binding — **done, with one part of its gate unverified**
 
 Replace `yCollab` with `loro-codemirror` in `components/Editor.svelte`, and
 write the IndexedDB persistence that replaces `y-indexeddb` — no such package
@@ -439,29 +439,53 @@ The current integration reaches into `ySyncFacet`, `ySyncAnnotation` and
 `loro-codemirror` is younger and has sat at 0.3.3 since October 2025, so some
 of that reach has no equivalent.
 
-*Gate:* cursors, remote edits, undo grouping and multi-file switching work, and
-every behaviour the binding cannot support is listed and deliberately dropped.
-A silently lost behaviour fails this gate; a named and accepted loss does not.
-Offline edits survive a reload.
+*Gate: partly verified.* The binding turned out to cost less than feared:
+`loroSyncAnnotation` stands in for `ySyncAnnotation`, and `ySyncFacet` needed no
+equivalent because the component already holds the document rather than
+fetching it from editor state. What it does cost is named: `UndoManager` takes
+only the text, so it cannot be handed the tracking state the old one was; and
+`MergeEditor` now needs the document and the presence store passed in.
 
-### Phase 3 — Proposal model
+What is NOT verified is the last line of this gate -- that offline edits survive
+a reload. The persistence is written and its unit tests pass, but nothing has
+exercised a real browser reloading a real document, and a unit test is not
+evidence for that. It wants a browser test before this phase is called finished.
 
-Implement branches end to end for **one** entry point — tracked edits.
-No flag gates it: §10 rules out coexistence, so the old mechanism is deleted in
-the same change. Postgres schema for review state, server command path for
-accept and decline, branch storage, and the proposal wire messages of §5.1.
+### Phase 3 — Proposal model — **done**
 
-`web/src/lib/track-changes.js` is rewritten against it rather than ported: its
-dependence on observers firing during transaction cleanup so their writes join
-the same update has no Loro equivalent, and is replaced by explicit commit
-boundaries.
+Branches end to end for tracked edits. `document_proposals` holds the branch
+and `document_proposal_hunks` one row per decision; `room/proposals.rs` does the
+merge-then-revert; the wire messages of §5.1 are carried by the socket, and the
+open list is pushed on join rather than asked for.
 
-The hunk identity that §5.2 fixes — proposal, base, tip, index — must not
-acquire a dependency on how a hunk is rendered, so that §5.3 stays reachable.
+Typing with tracking on writes to the branch rather than the room document and
+flushes on the commit boundary — which is what replaces `track-changes.js`'s
+dependence on observers firing during transaction cleanup, a timing Loro does
+not have and should not be emulated into having.
 
-*Gate:* tracked edits work end to end on Loro with review state in Postgres;
-the rehearsal at `room/mod.rs:1757` is deleted rather than ported; and no delta
-run crosses the wire in either direction.
+*Gate: passed.* The rehearsal is gone (with the substrate change, not here), no
+delta run crosses the wire in either direction, and the resolution and the
+update it produces commit in one transaction.
+
+Two things it cost that the plan had not priced:
+
+**Hunks needed coalescing.** See §3.3. The diff is character-level, which is
+nobody's idea of a reviewable change, and the eight-character rule that fixes it
+is a constant both sides must carry. It is pinned by a test on each side, and
+each test was checked to fail when the constant moves.
+
+**§5.1a had to be written.** Streaming decisions and merge-then-revert do not
+compose, and finding that out required building both. The resolution is that the
+decision streams and the document moves when the proposal resolves.
+
+Two verifications worth keeping in mind for the phases after this one. Every
+statement in `storage/postgres/` is written out rather than compiler-checked, so
+it is only as correct as the last time somebody ran it against a real database;
+`docs` on running the Postgres-gated tests is in the test module itself. And the
+frontier bytes that a decision travels as are produced by two different
+implementations of the same library — pinned in
+`room::proposals::tests::frontier_bytes_are_what_the_browser_writes`, because a
+drift there would surface as every decision being refused as stale.
 
 ### Phase 4 — Fold in the other proposal paths
 
