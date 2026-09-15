@@ -126,6 +126,13 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
         if path.starts_with("wasm/") {
             continue;
         }
+        // A compressed copy is an encoding of the file beside it, not a file
+        // of its own. It is attached below; it is never a route, or a browser
+        // that asked for the bundle could be handed brotli it never
+        // negotiated, under a name ending in ".br".
+        if path.ends_with(".br") {
+            continue;
+        }
         let kind = content_type(&path);
         let route = format!("/{path}");
         // The bundler names every asset for a digest of its own contents, so
@@ -145,12 +152,17 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
         } else {
             axum::body::Bytes::from_static(entry.contents())
         };
+        // What the build compressed, if it compressed this one. Only the
+        // immutable directories have copies -- see web/tools/compress-shell.mjs
+        // -- because a page is rewritten as it is served and a page compressed
+        // at build time would still carry the placeholder.
+        let brotli = file(&format!("{path}.br")).map(axum::body::Bytes::from_static);
         shell.insert(
             route,
             ShellFile {
                 kind,
                 body,
-                brotli: None,
+                brotli,
                 immutable,
             },
         );
@@ -165,4 +177,70 @@ fn walk(dir: &'static Dir<'static>) -> Vec<&'static File<'static>> {
         found.extend(walk(child));
     }
     found
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+
+    fn shell() -> HashMap<String, ShellFile> {
+        load_shell(&Configuration::default()).expect("the shell is embedded in the binary")
+    }
+
+    /// The bundle a reader waits for is the one worth compressing, and the
+    /// build compresses it. Before this, every asset was served raw: the
+    /// server has no compression middleware, so nothing else would have.
+    #[test]
+    fn the_bundled_assets_carry_a_compressed_copy() {
+        let shell = shell();
+        let scripts: Vec<_> = shell
+            .iter()
+            .filter(|(route, _)| route.starts_with("/assets/") && route.ends_with(".js"))
+            .collect();
+        assert!(
+            !scripts.is_empty(),
+            "the shell has no bundled scripts, so this proves nothing"
+        );
+        let compressed = scripts
+            .iter()
+            .filter(|(_, file)| file.brotli.is_some())
+            .count();
+        assert!(
+            compressed > 0,
+            "no bundled script has a brotli copy: has `bun run build` been run without \
+             tools/compress-shell.mjs?"
+        );
+        for (route, file) in &scripts {
+            if let Some(brotli) = &file.brotli {
+                assert!(
+                    brotli.len() < file.body.len(),
+                    "{route} is larger compressed, so the copy should not have been written"
+                );
+            }
+        }
+    }
+
+    /// A compressed copy is an encoding, not a file. Serving one under its own
+    /// name would hand brotli to a browser that never negotiated it.
+    #[test]
+    fn a_compressed_copy_is_never_a_route_of_its_own() {
+        for route in shell().keys() {
+            assert!(!route.ends_with(".br"), "{route} is served as a file");
+        }
+    }
+
+    /// Pages are rewritten as they are served -- `__MODULES__` becomes this
+    /// deployment's renderer URLs -- so a page compressed at build time would
+    /// be served with the placeholder still in it.
+    #[test]
+    fn pages_are_never_served_precompressed() {
+        for (route, file) in shell() {
+            if file.kind.starts_with("text/html") {
+                assert!(
+                    file.brotli.is_none(),
+                    "{route} is a page and carries a build-time compressed copy"
+                );
+            }
+        }
+    }
 }
