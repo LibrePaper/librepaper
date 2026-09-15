@@ -835,7 +835,21 @@
     const request_id = newRequestKey();
     const promise = new Promise((resolve, reject) => suggestionDecisions.set(request_id, { commentId: comment.id, resolve, reject }));
     let sent;
-    try { sent = collaboration?.send({ type: action, comment_id: comment.id, request_id }); }
+    // A suggestion is a proposal with a remark attached (§1.2), so deciding one
+    // is deciding its hunk. A suggestion is one hunk by construction, which is
+    // why the index is zero, and the tip it was reviewed against travels with
+    // the decision so that a suggestion the author has refined since is refused
+    // rather than agreed to in a form nobody read.
+    try {
+      sent = collaboration?.send({
+        type: "proposal-decide",
+        proposal_id: comment.proposal,
+        hunk: 0,
+        accepted: action === "accept",
+        tip: proposalTip(comment.proposal),
+        request_id,
+      });
+    }
     catch (error) {
       suggestionDecisions.delete(request_id);
       suggestions.clearDeciding(comment);
@@ -944,9 +958,31 @@
     return pendingChat?.send(text) || Promise.resolve(false);
   }
 
+  // What the server says is open, kept so a decision can name the version it
+  // was made against. The editor holds the branch somebody is drafting; this
+  // is only the list, which the reader needs to draw cards and to decide.
+  const openProposals = new Map();
+  function proposalTip(id) {
+    return openProposals.get(id)?.tip || "";
+  }
+
   function receive(event) {
-    // Route proposal messages to the editor component if it's active
     if (event.type?.startsWith("proposal-") || (event.type === "error" && event.stale)) {
+      if (event.type === "proposal-list") {
+        openProposals.clear();
+        for (const open of event.proposals || []) openProposals.set(open.id, open);
+      } else if (event.type === "proposal-decided" && event.resolved) {
+        openProposals.delete(event.proposal_id);
+      }
+      // Whoever asked for this decision is waiting on it. The reply used to be
+      // an `accept` or `reject` frame; it is a decided proposal now, and a
+      // refusal still arrives as an error carrying the same request.
+      const waiting = event.request_id && suggestionDecisions.get(event.request_id);
+      if (waiting) {
+        suggestionDecisions.delete(event.request_id);
+        if (event.type === "proposal-decided") waiting.resolve(event);
+        else waiting.reject(new Error(event.message || "that decision was refused"));
+      }
       editor?.receiveProposal?.(event);
       return;
     }
